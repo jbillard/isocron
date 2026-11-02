@@ -116,3 +116,134 @@ function sortBy<T, K extends Ord>(x: T[n], key: (v: T) => K): T[n] {
 function toReversed<T>(x: T[n]): T[n] {
     return map(iota(n), (i) => x[n - 1 - i]);
 }
+
+// `Option` (D158): the result of `get` of a `Map`, read with `??` or
+// `match`; a program that declares `Option`, `None` or `Some` replaces it.
+type Option<T> = None | Some(T);
+
+// `Map<K, V>` (D158): a dictionary, never changed in place. Its three
+// arrays: the keys in the order of their first insertion, their values,
+// and `order`, the positions of the keys sorted (`keys[order[j]]` is the
+// key of rank j), searched by bisection. Built at once from its entries,
+// in O(n log n); `set` and `delete` give a new map, in O(n log n).
+
+// the position of `k` among the keys, -1 if absent: ranks [lo, hi). The
+// functions of maps read sizes from their parameters, never with `len`,
+// which a program may replace.
+function $find<K extends Key>(keys: K[n], order: i64[n], k: K, lo: i64, hi: i64): i64 {
+    const mid = (lo + hi) / 2;
+    return lo >= hi ? -1 : (keys[order[mid]] < k ? $find(keys, order, k, mid + 1, hi) : (k < keys[order[mid]] ? $find(keys, order, k, lo, mid) : order[mid]));
+}
+
+function $findIn<K extends Key>(keys: K[n], order: i64[n], k: K): i64 {
+    return $find(keys, order, k, 0, n);
+}
+
+// the first rank of each run of equal keys, `idx` the order of the keys
+function $runs<K extends Key>(ks: K[n], idx: i64[n]): i64[m] {
+    return filter(iota(n), (p) => p == 0 || ks[idx[p - 1]] != ks[idx[p]]);
+}
+
+// the map of `ks` and `vs`, `starts` their runs: each key at its first
+// position, with its last value (as `set` of TypeScript, one entry after
+// the other)
+function $mapRuns<K extends Key, V>(ks: K[n], vs: V[n], idx: i64[n], starts: i64[m]): Map<K, V> {
+    const firsts = map(iota(m), (r) => idx[starts[r]]);
+    const lasts = map(iota(m), (r) => idx[(r + 1 < m ? starts[r + 1] : n) - 1]);
+    // the run at each position of insertion, and its inverse
+    const byFirst = argsort(firsts);
+    return $mapOf(map(byFirst, (r) => ks[firsts[r]]), map(byFirst, (r) => vs[lasts[r]]), argsort(byFirst));
+}
+
+function $mapFrom<K extends Key, V>(ks: K[n], vs: V[n]): Map<K, V> {
+    const idx = argsort(ks);
+    return $mapRuns(ks, vs, idx, $runs(ks, idx));
+}
+
+// `Map(entries)`: TypeScript's `new Map(entries)`
+function Map<K extends Key, V>(entries: [K, V][n]): Map<K, V> {
+    const ks = map(entries, (e) => {
+        const [k, v] = e;
+        return k;
+    });
+    const vs = map(entries, (e) => {
+        const [k, v] = e;
+        return v;
+    });
+    return $mapFrom(ks, vs);
+}
+
+function $countRuns<K extends Key>(ks: K[n], idx: i64[n], starts: i64[m]): Map<K, i64> {
+    const byFirst = argsort(map(iota(m), (r) => idx[starts[r]]));
+    const counts = map(byFirst, (r) => (r + 1 < m ? starts[r + 1] : n) - starts[r]);
+    return $mapOf(map(byFirst, (r) => ks[idx[starts[r]]]), counts, argsort(byFirst));
+}
+
+// `countBy(xs, f)`: the number of the elements of each key `f(x)`, the keys
+// in the order of their first element
+function countBy<T, K extends Key>(xs: T[n], f: (x: T) => K): Map<K, i64> {
+    const ks = map(xs, f);
+    const idx = argsort(ks);
+    return $countRuns(ks, idx, $runs(ks, idx));
+}
+
+function get<K extends Key, V>(m: Map<K, V>, k: K): Option<V> {
+    const [keys, values, order] = $mapParts(m);
+    const i = $findIn(keys, order, k);
+    if (i < 0) {
+        return None;
+    } else {
+        return Some(values[i]);
+    }
+}
+
+function has<K extends Key, V>(m: Map<K, V>, k: K): boolean {
+    const [keys, values, order] = $mapParts(m);
+    return $findIn(keys, order, k) >= 0;
+}
+
+function keys<K extends Key, V>(m: Map<K, V>): K[k] {
+    const [ks, vs, order] = $mapParts(m);
+    return ks;
+}
+
+function values<K extends Key, V>(m: Map<K, V>): V[k] {
+    const [ks, vs, order] = $mapParts(m);
+    return vs;
+}
+
+function $pairs<K, V>(ks: K[n], vs: V[n]): [K, V][n] {
+    return map(iota(n), (i) => [ks[i], vs[i]] as const);
+}
+
+function entries<K extends Key, V>(m: Map<K, V>): [K, V][k] {
+    const [ks, vs, order] = $mapParts(m);
+    return $pairs(ks, vs);
+}
+
+function $set<K extends Key, V>(ks: K[n], vs: V[n], order: i64[n], k: K, v: V): Map<K, V> {
+    const i = $findIn(ks, order, k);
+    if (i >= 0) {
+        return $mapOf(ks, vs.with(i, v), order);
+    } else {
+        return $mapFrom(map(iota(n + 1), (j) => j < n ? ks[j] : k), map(iota(n + 1), (j) => j < n ? vs[j] : v));
+    }
+}
+
+// a new map: `k` with the value `v`, at its place if `m` has it, else last
+function set<K extends Key, V>(m: Map<K, V>, k: K, v: V): Map<K, V> {
+    const [ks, vs, order] = $mapParts(m);
+    return $set(ks, vs, order, k, v);
+}
+
+function $delete<K extends Key, V>(ks: K[n], vs: V[n], order: i64[n], k: K): Map<K, V> {
+    const i = $findIn(ks, order, k);
+    const kept = filter(iota(n), (j) => j != i);
+    return $mapFrom(map(kept, (j) => ks[j]), map(kept, (j) => vs[j]));
+}
+
+// a new map without `k`
+function delete<K extends Key, V>(m: Map<K, V>, k: K): Map<K, V> {
+    const [ks, vs, order] = $mapParts(m);
+    return $delete(ks, vs, order, k);
+}

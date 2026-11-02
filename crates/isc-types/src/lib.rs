@@ -12,7 +12,7 @@ pub const PRELUDE: &str = include_str!("prelude.isc");
 /// File id of the user program in `SourceFiles` built by `check_source`.
 pub const USER_FILE: u32 = 0;
 /// File id of the prelude.
-pub const PRELUDE_FILE: u32 = 1;
+pub use isc_syntax::PRELUDE_FILE;
 
 pub fn source_files(user_name: &str) -> SourceFiles {
     let mut f = SourceFiles::new();
@@ -29,6 +29,23 @@ pub fn check_source(src: &str) -> Result<tast::TProgram, Diagnostic> {
 
 /// Checks a parsed program (its modules merged, D139) with the prelude.
 pub fn check_parsed(user: &isc_syntax::ast::Program) -> Result<tast::TProgram, Diagnostic> {
-    let prelude = isc_syntax::parse(PRELUDE, PRELUDE_FILE)?;
+    let mut prelude = isc_syntax::parse(PRELUDE, PRELUDE_FILE)?;
+    // `Map<K, V>` (D158): a sum type of the prelude whose only constructor no
+    // program can write; the lowering gives it its layout
+    use isc_syntax::ast::{Decl, Generic, TypeDecl, Variant};
+    let sp = isc_syntax::Span::new(PRELUDE_FILE, 1, 1);
+    let g = |n: &str| Generic { name: n.into(), class: None, span: sp };
+    prelude.decls.insert(
+        0,
+        Decl::Type(TypeDecl {
+            name: "Map".into(),
+            span: sp,
+            generics: vec![g("K"), g("V")],
+            variants: vec![Variant { name: MAP_CTOR.into(), fields: Vec::new(), span: sp }],
+        }),
+    );
     check::check_program(user, &prelude)
 }
+
+/// The constructor of the built-in `Map` (D158).
+pub const MAP_CTOR: &str = "$Map";

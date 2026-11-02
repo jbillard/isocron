@@ -73,6 +73,10 @@ impl fmt::Display for Diagnostic {
 
 pub type Result<T> = std::result::Result<T, Diagnostic>;
 
+/// The file number of the prelude (the standard library written in
+/// Isocron).
+pub const PRELUDE_FILE: u32 = 1;
+
 /// File names indexed by `Span::file`.
 #[derive(Clone, Debug, Default)]
 pub struct SourceFiles {

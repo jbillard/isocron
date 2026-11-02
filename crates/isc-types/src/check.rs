@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tast::*;
+use crate::types::class::Classes;
 use crate::types::{class, IntKind, Poly, Size, SymId, Ty, TyDisplay};
 use isc_syntax::ast::{self, BinOp, Class, ExprKind, PatternKind, SizeExpr, TypeKind, UnOp};
 use isc_syntax::lexer::Scalar;
@@ -21,7 +22,7 @@ fn poc(span: Span, what: &str) -> Diagnostic {
     Diagnostic::new(span, format!("{} is not supported in the POC (SPEC section 15)", what))
 }
 
-fn class_bits(c: Option<Class>) -> u8 {
+fn class_bits(c: Option<Class>) -> Classes {
     // every type parameter can be an array element (`[n]T`)
     class::ELEM
         | match c {
@@ -30,11 +31,29 @@ fn class_bits(c: Option<Class>) -> u8 {
             // ordered: the scalars and the strings (D134, D155)
             Some(Class::Ord) => class::ORD | class::EQ,
             Some(Class::Eq) => class::EQ,
+            Some(Class::Key) => class::KEY | class::ORD | class::EQ,
         }
 }
 
 /// Can `t` be the element type of an array: a scalar, a string, a type
 /// parameter, or a tuple of these.
+/// Does a value of type `t` hold a `Map` (D158)?
+fn holds_map(g: &Globals, t: &Ty) -> bool {
+    match t {
+        Ty::Sum { id, args, .. } => is_map(&g.sums, *id) || args.iter().any(|a| holds_map(g, a)),
+        Ty::Tuple(ts) => ts.iter().any(|a| holds_map(g, a)),
+        Ty::Record(fs) => fs.iter().any(|(_, a)| holds_map(g, a)),
+        Ty::Array(_, e) => holds_map(g, e),
+        _ => false,
+    }
+}
+
+/// Is the sum type `id` the `Map` of the prelude (D158)?
+fn is_map(sums: &[SumDef], id: u32) -> bool {
+    let d = &sums[id as usize];
+    d.variants.len() == 1 && d.variants[0].name == crate::MAP_CTOR
+}
+
 fn is_elem_ty(t: &Ty) -> bool {
     match t {
         Ty::Int(_) | Ty::F64 | Ty::F32 | Ty::Bool | Ty::Str | Ty::Param(_) => true,
@@ -155,6 +174,8 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "parseInt" => Prim::ParseInt,
         "BigInt" => Prim::ToBigInt,
         "RegExp" | "$RegExp" => Prim::RegExpNew,
+        "$mapOf" => Prim::MapOf,
+        "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
         "countMatches" => Prim::RxCount,
@@ -187,7 +208,7 @@ struct Sig {
     name: String,
     span: Span,
     is_action: bool,
-    generics: Vec<(String, u8)>,
+    generics: Vec<(String, Classes)>,
     syms: Vec<SymInfo>,
     param_names: Vec<(String, Span)>,
     param_tys: Vec<Ty>,
@@ -195,7 +216,7 @@ struct Sig {
 }
 
 struct SigCtx<'a> {
-    generics: &'a [(String, u8)],
+    generics: &'a [(String, Classes)],
     /// The sum types declared in the program: (name, number of parameters).
     sums: &'a [(String, usize)],
     syms: &'a mut Vec<SymInfo>,
@@ -339,7 +360,7 @@ fn alone_in(t: &Ty, s: SymId) -> bool {
 fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Result<Sig> {
     let mut generics = Vec::new();
     for g in &d.generics {
-        if generics.iter().any(|(n, _): &(String, u8)| n == &g.name) {
+        if generics.iter().any(|(n, _): &(String, Classes)| n == &g.name) {
             return err(g.span, format!("duplicate type parameter `{}`", g.name));
         }
         generics.push((g.name.clone(), class_bits(g.class)));
@@ -425,7 +446,7 @@ enum LitKind {
 #[derive(Clone, Debug)]
 struct TVar {
     bound: Option<Ty>,
-    classes: u8,
+    classes: Classes,
     lit: LitKind,
     span: Span,
 }
@@ -447,6 +468,9 @@ enum Mode {
 
 struct FnCx<'g> {
     g: &'g Globals,
+    /// The call being checked is `x.m(...)` (D158): `m` names a function,
+    /// not a local variable that is not one.
+    method_call: bool,
     fn_id: FnId,
     /// The module of the function (D139): an unqualified name is first
     /// looked for there, then among the names its file imports (D150).
@@ -454,7 +478,7 @@ struct FnCx<'g> {
     file: u32,
     is_action: bool,
     lambda_depth: u32,
-    generics: Vec<(String, u8)>,
+    generics: Vec<(String, Classes)>,
     syms: Vec<SymInfo>,
     tvars: Vec<TVar>,
     svars: Vec<(Option<Size>, Span)>,
@@ -470,7 +494,7 @@ struct FnCx<'g> {
     dyn_flag: bool,
     /// The sum types whose constraint is being checked: a recursive type
     /// meets it inside itself when it meets it (D103).
-    constraining: Vec<(u32, Vec<Ty>, u8)>,
+    constraining: Vec<(u32, Vec<Ty>, Classes)>,
 }
 
 struct Globals {
@@ -490,7 +514,7 @@ struct Globals {
 impl<'g> FnCx<'g> {
     // ----- variables ----------------------------------------------------
 
-    fn fresh(&mut self, classes: u8, lit: LitKind, span: Span) -> Ty {
+    fn fresh(&mut self, classes: Classes, lit: LitKind, span: Span) -> Ty {
         self.tvars.push(TVar { bound: None, classes, lit, span });
         Ty::Var((self.tvars.len() - 1) as u32)
     }
@@ -561,7 +585,7 @@ impl<'g> FnCx<'g> {
     }
 
     /// Applies class and literal constraints to a type.
-    fn constrain(&mut self, t: &Ty, classes: u8, lit: LitKind) -> std::result::Result<(), UErr> {
+    fn constrain(&mut self, t: &Ty, classes: Classes, lit: LitKind) -> std::result::Result<(), UErr> {
         let t = self.shallow(t);
         let what = || -> String {
             let mut v = Vec::new();
@@ -580,7 +604,9 @@ impl<'g> FnCx<'g> {
             if classes & class::NUM != 0 {
                 v.push("a numeric type (class Num)");
             }
-            if classes & class::ORD != 0 {
+            if classes & class::KEY != 0 {
+                v.push("a key of a Map (class Key: an integer, a boolean, a string or a bigint)");
+            } else if classes & class::ORD != 0 {
                 v.push("an ordered type (class Ord)");
             }
             if classes & class::EQ != 0 && v.is_empty() {
@@ -612,6 +638,11 @@ impl<'g> FnCx<'g> {
                         "a floating-point literal cannot have an integer type".to_string(),
                     ));
                 }
+                if tv.lit == LitKind::Float && tv.classes & class::KEY != 0 {
+                    return Err(UErr::Constraint(
+                        "a float cannot be a key of a Map (class Key: an integer, a boolean, a string or a bigint)".to_string(),
+                    ));
+                }
                 Ok(())
             }
             Ty::Int(_) => {
@@ -621,7 +652,7 @@ impl<'g> FnCx<'g> {
                 Ok(())
             }
             Ty::F64 | Ty::F32 => {
-                if classes & class::INTEGRAL != 0 {
+                if classes & (class::INTEGRAL | class::KEY) != 0 {
                     return fail(&t, self);
                 }
                 Ok(())
@@ -668,7 +699,7 @@ impl<'g> FnCx<'g> {
             }
             // ordered by bytes, lexicographic (D134)
             Ty::Str => {
-                if lit != LitKind::None || classes & !(class::EQ | class::ORD | class::ELEM | class::ROW) != 0 {
+                if lit != LitKind::None || classes & !(class::EQ | class::ORD | class::ELEM | class::ROW | class::KEY) != 0 {
                     return fail(&t, self);
                 }
                 Ok(())
@@ -694,6 +725,14 @@ impl<'g> FnCx<'g> {
             Ty::Sum { id, args, .. } => {
                 if lit != LitKind::None || classes & !(class::EQ | class::ELEM) != 0 {
                     return fail(&t, self);
+                }
+                // a `Map` (D158) is three arrays: not an element of an
+                // array, no equality (a type parameter is an element)
+                if is_map(&self.g.sums, *id) && classes != 0 {
+                    return Err(UErr::Constraint(format!(
+                        "a Map cannot be {}: it is neither compared, nor stored in an array or a constructor, nor the value of a type parameter",
+                        if classes & class::EQ != 0 { "compared" } else { "stored here" }
+                    )));
                 }
                 let key = (*id, args.clone(), classes);
                 if self.constraining.contains(&key) {
@@ -839,7 +878,7 @@ impl<'g> FnCx<'g> {
         }
     }
 
-    fn require(&mut self, t: &Ty, classes: u8, span: Span) -> Result<()> {
+    fn require(&mut self, t: &Ty, classes: Classes, span: Span) -> Result<()> {
         match self.constrain(t, classes, LitKind::None) {
             Ok(()) => Ok(()),
             Err(UErr::Constraint(m)) => err(span, m),
@@ -999,6 +1038,11 @@ impl<'g> FnCx<'g> {
             }
             ExprKind::Field(x, name) => {
                 let x = self.check(x, None)?;
+                // `m.size` of a `Map` (D158): the number of its keys
+                if name == "size" && self.map_args(&x.ty).is_some() {
+                    let call = TExprKind::Call { callee: Callee::Prim(Prim::MapSize), args: vec![x], size_checks: Vec::new() };
+                    return Ok(self.mk(call, Ty::Int(IntKind::I64), span));
+                }
                 let (i, ty) = self.field_of(&x.ty, name, x.span)?;
                 Ok(self.mk(TExprKind::Field(Box::new(x), i), ty, span))
             }
@@ -1226,6 +1270,22 @@ impl<'g> FnCx<'g> {
 
     /// The index and type of field `name` of a record type, which must be
     /// known at this point (records are structural, SPEC section 4).
+    /// The type `Map<k, v>` of the prelude (D158).
+    fn map_ty(&self, k: Ty, v: Ty, span: Span) -> Result<Ty> {
+        match self.g.sums.iter().position(|d| d.variants.len() == 1 && d.variants[0].name == crate::MAP_CTOR) {
+            Some(id) => Ok(Ty::Sum { id: id as u32, name: "Map".into(), args: vec![k, v] }),
+            None => err(span, "the built-in `Map` is replaced by the type `Map` of the program"),
+        }
+    }
+
+    /// `Some((k, v))` if `t` is `Map<k, v>` of the prelude.
+    fn map_args(&self, t: &Ty) -> Option<(Ty, Ty)> {
+        match self.shallow(t) {
+            Ty::Sum { id, args, .. } if is_map(&self.g.sums, id) => Some((args[0].clone(), args[1].clone())),
+            _ => None,
+        }
+    }
+
     fn field_of(&mut self, t: &Ty, name: &str, span: Span) -> Result<(u32, Ty)> {
         match self.shallow(t) {
             Ty::Record(fs) => match fs.iter().position(|(n, _)| n == name) {
@@ -1486,7 +1546,7 @@ impl<'g> FnCx<'g> {
     /// type parameters and fresh size variables for its size variables.
     fn instantiate_value(&mut self, id: FnId, span: Span) -> (Vec<Ty>, Vec<Ty>, Ty) {
         let sig = &self.g.sigs[id];
-        let gens: Vec<u8> = sig.generics.iter().map(|g| g.1).collect();
+        let gens: Vec<Classes> = sig.generics.iter().map(|g| g.1).collect();
         let nsyms = sig.syms.len();
         let type_args: Vec<Ty> = gens.iter().map(|c| self.fresh(*c, LitKind::None, span)).collect();
         let sizes: Vec<Size> = (0..nsyms).map(|_| self.fresh_size(span)).collect();
@@ -1590,6 +1650,7 @@ impl<'g> FnCx<'g> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<TExpr> {
+        let method_call = std::mem::take(&mut self.method_call);
         // `x.m(a, ...)`: the call `m(x, a, ...)`, unless `x` is a variable
         // holding a record with a field `m` (a function stored there, D148)
         if let ExprKind::Field(recv, m) = &f.kind {
@@ -1607,11 +1668,16 @@ impl<'g> FnCx<'g> {
                 let callee = ast::Expr { kind: ExprKind::Var(m.clone()), span: f.span };
                 let mut all = vec![(**recv).clone()];
                 all.extend(args.iter().cloned());
+                self.method_call = true;
                 return self.check_call(&callee, &all, span, expected);
             }
         }
         if let ExprKind::Var(name) = &f.kind {
-            if self.lookup(name).is_none() && self.sym_by_name(name).is_none() {
+            // `m.keys()` with a local `keys` that is not a function: the
+            // function `keys`, as in TypeScript
+            let shadowed = method_call
+                && self.lookup(name).is_some_and(|l| !matches!(self.shallow(&self.locals[l as usize].ty), Ty::Fn(..)));
+            if (shadowed || self.lookup(name).is_none()) && self.sym_by_name(name).is_none() {
                 let name = &self.q(name);
                 if self.g.ctors.contains_key(name.as_str()) {
                     return self.check_construct(name, args, span);
@@ -1914,6 +1980,8 @@ impl<'g> FnCx<'g> {
             Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
             Prim::ReplaceAll | Prim::StrSlice | Prim::Replace => 3,
             Prim::RxTest | Prim::RxSearch | Prim::RxCount | Prim::RxMatches => 2,
+            Prim::MapOf => 3,
+            Prim::MapParts | Prim::MapSize => 1,
             Prim::RegExpNew => {
                 if args.len() == 1 {
                     1
@@ -2329,6 +2397,38 @@ impl<'g> FnCx<'g> {
                     None => self.mk(TExprKind::Lit(Lit::Str(String::new())), Ty::Str, span),
                 };
                 Ok(mk(vec![a, f], Ty::RegExp, self))
+            }
+            // `$mapOf(keys, values, order)` and `$mapParts(m)` (D158)
+            Prim::MapOf => {
+                let ks = self.check(&args[0], None)?;
+                let k = self.expect_array(&ks.ty, ks.span, "the keys of a Map")?;
+                self.require(&k, class::KEY, ks.span)?;
+                let vs = self.check(&args[1], None)?;
+                let v = self.expect_array(&vs.ty, vs.span, "the values of a Map")?;
+                let ord = self.check(&args[2], None)?;
+                let n = match self.shallow(&ks.ty) {
+                    Ty::Array(s, _) => s,
+                    _ => unreachable!(),
+                };
+                self.unify(&Ty::Array(n.clone(), Box::new(v.clone())), &vs.ty, vs.span)?;
+                self.unify(&Ty::Array(n, Box::new(Ty::Int(IntKind::I64))), &ord.ty, ord.span)?;
+                let t = self.map_ty(k, v, span)?;
+                Ok(mk(vec![ks, vs, ord], t, self))
+            }
+            Prim::MapParts | Prim::MapSize => {
+                let m = self.check(&args[0], None)?;
+                let (k, v) = match self.map_args(&m.ty) {
+                    Some(kv) => kv,
+                    None => return err(m.span, format!("expected a Map, found `{}`", self.show(&m.ty))),
+                };
+                if p == Prim::MapSize {
+                    return Ok(mk(vec![m], Ty::Int(IntKind::I64), self));
+                }
+                let s = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                let n = Size::Poly(Poly::sym(s));
+                let t = Ty::Tuple(vec![Ty::Array(n.clone(), Box::new(k)), Ty::Array(n.clone(), Box::new(v)), Ty::Array(n, Box::new(Ty::Int(IntKind::I64)))]);
+                Ok(mk(vec![m], t, self))
             }
             Prim::RxTest => {
                 let r = self.check(&args[0], Some(&Ty::RegExp))?;
@@ -3011,7 +3111,7 @@ fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>,
     let mut sums = Vec::new();
     let mut ctors: HashMap<String, (u32, u32)> = HashMap::new();
     for (id, t) in decls.iter().enumerate() {
-        let mut generics: Vec<(String, u8)> = Vec::new();
+        let mut generics: Vec<(String, Classes)> = Vec::new();
         for g in &t.generics {
             if generics.iter().any(|(n, _)| n == &g.name) {
                 return err(g.span, format!("duplicate type parameter `{}`", g.name));
@@ -3091,6 +3191,7 @@ fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>,
 fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Result<TFn> {
     let sig = &g.sigs[id];
     let mut cx = FnCx {
+        method_call: false,
         g,
         fn_id: id,
         module: module_of(&d.name).map(|m| m.to_string()),
@@ -3144,6 +3245,9 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         }
         if t == Ty::RegExp {
             return err(sp, "a RegExp cannot be printed");
+        }
+        if holds_map(g, &t) {
+            return err(sp, "a Map cannot be printed: print `m.entries()`");
         }
     }
     Ok(TFn {

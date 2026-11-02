@@ -128,10 +128,10 @@
 
 - [x] (1) Syntax: named imports `import { f, T } from "./m";`, `export` (what is not exported is private), modules in subdirectories, template literals `${...}` (D150)
 - [x] (2) Known holes: functions in sum types, functions returning functions, a recursive function given a lambda that reads a size, arrays of arrays of strings; "Not implemented yet" of the guide holds only what DECISIONS defers after v1 (D152, D153, D154)
-- [ ] (3) Standard library: `sort`, `sort_by`, `abs`, `floor`, `ceil`, `round`, `trunc`, `tan`, `atan`, `atan2`, `asin`, `acos`, seeded random numbers, standard input, `to_fixed`, `pad_start`, string functions, `Map<K, V>`, `bigint`, regular expressions
+- [x] (3) Standard library: `sort`, `sort_by`, `abs`, `floor`, `ceil`, `round`, `trunc`, `tan`, `atan`, `atan2`, `asin`, `acos`, seeded random numbers, standard input, `to_fixed`, `pad_start`, string functions, `Map<K, V>`, `bigint`, regular expressions
   - [x] `Math` functions, string functions of TypeScript, `toFixed`, standard input, `random`, `sort`, `sortBy`, `toReversed`, `iota(n)` of any integer (D155)
   - [x] `bigint`; pure parsing; `Number`, `parseFloat`, `parseInt` (D156)
-  - [ ] `Map<K, V>`
+  - [x] `Map<K, V>`, `Option`, `??`, `countBy` (D158)
   - [x] Regular expressions (D157)
 - [ ] (4) The ten Benchmarks Game programs, outputs identical to the references in our Docker image
 - [ ] (5) SPEC section 16 "avant la v1" decided and written; grammar = parser; every feature in the guide with a tested example

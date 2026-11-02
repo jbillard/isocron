@@ -581,6 +581,12 @@ impl<'p> Lower<'p> {
         Ok(idx)
     }
 
+    /// Is the sum type `id` the built-in `Map` (D158)?
+    fn is_map(&self, id: u32) -> bool {
+        let d = &self.p.sums[id as usize];
+        d.variants.len() == 1 && d.variants[0].name == isc_types::MAP_CTOR
+    }
+
     fn is_rec(&self, env: &Env, t: &Ty) -> bool {
         matches!(self.conc(env, t), Ty::Sum { id, .. } if self.p.sums[id as usize].recursive)
     }
@@ -613,6 +619,7 @@ impl<'p> Lower<'p> {
                 s => Shape::Array(Box::new(s)),
             },
             Ty::Sum { id, args, .. } if self.p.sums[id as usize].recursive => Shape::Rec(self.rec_index(env, id, &args, span)?),
+            Ty::Sum { id, .. } if self.is_map(id) => Shape::Plain,
             Ty::Sum { id, args, .. } => {
                 let def = &self.p.sums[id as usize];
                 let (_, slots) = self.sum_layout(env, id, &args, span)?;
@@ -719,6 +726,13 @@ impl<'p> Lower<'p> {
             Ty::Str | Ty::RegExp => Type::Str,
             Ty::BigInt => Type::Big,
             Ty::Sum { id, args, .. } if self.p.sums[id as usize].recursive => Type::Rec(self.rec_index(env, id, &args, span)?),
+            // `Map<K, V>` (D158): the keys, the values, the positions of the
+            // keys sorted
+            Ty::Sum { id, args, .. } if self.is_map(id) => Type::Tuple(vec![
+                Type::Array(Box::new(self.ty(env, &args[0], span)?)),
+                Type::Array(Box::new(self.ty(env, &args[1], span)?)),
+                Type::Array(Box::new(Type::Int(IntKind::I64))),
+            ]),
             Ty::Sum { id, args, .. } => Type::Tuple(self.sum_layout(env, id, &args, span)?.0),
             // a record is a tuple of its fields, sorted by name
             Ty::Record(fs) => {
@@ -2281,6 +2295,18 @@ impl<'p> Lower<'p> {
         let span = e.span;
         let ty = self.ty(env, &e.ty, span)?;
         let kind = match p {
+            // `Map<K, V>` (D158): its three arrays
+            Prim::MapOf => ExprKind::Tuple(args.iter().map(|a| self.expr(env, a)).collect::<R<_>>()?),
+            Prim::MapParts => return self.expr(env, &args[0]),
+            Prim::MapSize => {
+                let m = self.expr(env, &args[0])?;
+                let kt = match &m.ty {
+                    Type::Tuple(ts) => ts[0].clone(),
+                    _ => return internal(span, "a Map is not a tuple"),
+                };
+                let keys = Expr::new(ExprKind::Proj(Box::new(m), 0), kt, span);
+                ExprKind::Len(Box::new(keys))
+            }
             // strings (D134)
             // the functions of strings of TypeScript (D155)
             Prim::IndexOf

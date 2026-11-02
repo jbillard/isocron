@@ -229,21 +229,27 @@ impl Ty {
 
 /// Class constraints, as a bit set.
 pub mod class {
-    pub const NUM: u8 = 1;
-    pub const ORD: u8 = 2;
-    pub const EQ: u8 = 4;
+    /// A set of classes: one bit each.
+    pub type Classes = u16;
+    pub const NUM: Classes = 1;
+    pub const ORD: Classes = 2;
+    pub const EQ: Classes = 4;
     /// Internal: must be an integer type (indices, integer exponents).
-    pub const INTEGRAL: u8 = 8;
+    pub const INTEGRAL: Classes = 8;
     /// Internal: must be a scalar (int, float or bool).
-    pub const SCALAR: u8 = 16;
+    pub const SCALAR: Classes = 16;
     /// Internal: must be a floating-point type (`sqrt`).
-    pub const FLOAT: u8 = 32;
+    pub const FLOAT: Classes = 32;
     /// Internal: can be an array element: a scalar, a string, or a tuple of
     /// these (arrays of tuples are stored in columns, SPEC section 4).
-    pub const ELEM: u8 = 64;
+    pub const ELEM: Classes = 64;
     /// Internal: can be an element of a row of an array of arrays: a scalar
     /// or a string (D154).
-    pub const ROW: u8 = 128;
+    pub const ROW: Classes = 128;
+    /// A key of a `Map` (D158): an integer, a boolean, a string or a
+    /// `bigint` (class `Key`); not a float, whose equality (NaN) is not
+    /// that of a key.
+    pub const KEY: Classes = 256;
 }
 
 pub struct TyDisplay<'a> {

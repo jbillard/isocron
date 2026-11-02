@@ -1173,3 +1173,77 @@ pub mod rx {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------
+// `Map<K, V>` (D158): its keys in the order of their first insertion, and
+// the permutation of these keys sorted, to find one by bisection. The keys
+// are compared by a total order in which equal keys are those of
+// ECMAScript's SameValueZero (NaN is NaN, -0 is +0).
+
+pub mod map {
+    use alloc::vec::Vec;
+    use core::cmp::Ordering;
+
+    /// The distinct keys of `n` keys (compared by `cmp(i, j)`): for each, in
+    /// the order of its first occurrence, that occurrence, its last one,
+    /// its number of occurrences; and the permutation of the distinct keys
+    /// sorted.
+    pub struct Groups {
+        pub first: Vec<i64>,
+        pub last: Vec<i64>,
+        pub count: Vec<i64>,
+        pub order: Vec<i64>,
+    }
+
+    pub fn group(n: usize, cmp: &dyn Fn(usize, usize) -> Ordering) -> Groups {
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&i, &j| cmp(i, j).then(i.cmp(&j)));
+        // the runs of equal keys, in the order of the keys
+        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+        let mut k = 0;
+        while k < n {
+            let mut e = k + 1;
+            while e < n && cmp(idx[k], idx[e]) == Ordering::Equal {
+                e += 1;
+            }
+            // the run is sorted by index: its first and last occurrences
+            runs.push((idx[k], idx[e - 1], e - k));
+            k = e;
+        }
+        // positions by first occurrence
+        let mut by_first: Vec<usize> = (0..runs.len()).collect();
+        by_first.sort_by_key(|&r| runs[r].0);
+        let mut pos = alloc::vec![0i64; runs.len()];
+        for (p, &r) in by_first.iter().enumerate() {
+            pos[r] = p as i64;
+        }
+        Groups {
+            first: by_first.iter().map(|&r| runs[r].0 as i64).collect(),
+            last: by_first.iter().map(|&r| runs[r].1 as i64).collect(),
+            count: by_first.iter().map(|&r| runs[r].2 as i64).collect(),
+            // the runs are in the order of the keys
+            order: (0..runs.len()).map(|r| pos[r]).collect(),
+        }
+    }
+
+    /// The position of a key among the keys of a map, -1 if absent:
+    /// `probe(i)` compares the key at position `i` with the one looked for.
+    pub fn find(order: &[i64], probe: &dyn Fn(usize) -> Ordering) -> i64 {
+        let (mut lo, mut hi) = (0usize, order.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match probe(order[mid] as usize) {
+                Ordering::Less => lo = mid + 1,
+                Ordering::Greater => hi = mid,
+                Ordering::Equal => return order[mid],
+            }
+        }
+        -1
+    }
+
+    /// The order of the keys of floats: SameValueZero for equality.
+    pub fn order_f64(a: f64, b: f64) -> Ordering {
+        let z = |x: f64| if x == 0.0 { 0.0 } else { x };
+        super::order_f64(z(a), z(b))
+    }
+}

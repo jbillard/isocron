@@ -233,12 +233,13 @@ impl P {
         loop {
             let (name, span) = self.ident("a type parameter")?;
             let class = if self.eat_word("extends") {
-                let (c, sp) = self.ident("`Num`, `Ord` or `Eq`")?;
+                let (c, sp) = self.ident("`Num`, `Ord`, `Eq` or `Key`")?;
                 Some(match c.as_str() {
                     "Num" => Class::Num,
                     "Ord" => Class::Ord,
                     "Eq" => Class::Eq,
-                    _ => return Err(Diagnostic::new(sp, format!("unknown class `{}` (`Num`, `Ord` or `Eq`)", c))),
+                    "Key" => Class::Key,
+                    _ => return Err(Diagnostic::new(sp, format!("unknown class `{}` (`Num`, `Ord`, `Eq` or `Key`)", c))),
                 })
             } else {
                 None
@@ -669,7 +670,7 @@ impl P {
             return self.lambda();
         }
         let span = self.span();
-        let c = self.binary(L_OR)?;
+        let c = self.coalesce()?;
         if self.eat(S::Question) {
             let t = self.expr()?;
             self.expect(S::Colon)?;
@@ -677,6 +678,25 @@ impl P {
             return Ok(Expr { kind: ExprKind::If(Box::new(c), Box::new(t), Box::new(f)), span });
         }
         Ok(c)
+    }
+
+    /// `a ?? b` (D158): the value of `Some` in `a`, else `b`; below `||`,
+    /// and `a ?? b ?? c` is `a ?? (b ?? c)`, so that `b` may be an `Option`
+    /// too, as in TypeScript.
+    fn coalesce(&mut self) -> Result<Expr> {
+        let a = self.binary(L_OR)?;
+        if !self.is(S::QuestionQuestion) {
+            return Ok(a);
+        }
+        let span = self.bump().span;
+        let b = self.coalesce()?;
+        let pat = |kind| Pattern { kind, span };
+        let var = || Expr { kind: ExprKind::Var("$some".into()), span };
+        let arms = vec![
+            (pat(PatternKind::Ctor("Some".into(), vec![pat(PatternKind::Var("$some".into()))])), var()),
+            (pat(PatternKind::Ctor("None".into(), Vec::new())), b),
+        ];
+        Ok(Expr { kind: ExprKind::Match(Box::new(a), arms), span })
     }
 
     /// After `(`, the matching `)` is followed by `=>`.
@@ -963,6 +983,19 @@ impl P {
 
     fn primary(&mut self) -> Result<Expr> {
         let span = self.span();
+        // `new Map(...)`, `new RegExp(...)`: the calls of TypeScript (D158)
+        if let T::Ident(w) = self.peek() {
+            if w == "new" {
+                if let T::Ident(c) = self.peek_at(1).clone() {
+                    if c == "Map" || c == "RegExp" {
+                        self.bump();
+                        return self.primary();
+                    }
+                    let sp = self.toks[self.pos + 1].span;
+                    return Err(Diagnostic::new(sp, format!("`new {}`: `new` makes only a `Map` or a `RegExp`; a value is made by a call or a literal", c)));
+                }
+            }
+        }
         let kind = match self.peek().clone() {
             T::Int { value, suffix } => {
                 self.bump();

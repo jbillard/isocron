@@ -251,3 +251,88 @@ fn regular_expressions() {
         assert!(r.stderr.contains(want), "{}", r.stderr);
     }
 }
+
+const MAP: &str = r##"action main(args: string[k]): i32 {
+    const m = Map([["b", 2] as const, ["a", 1] as const, ["c", 3] as const, ["a", 10] as const]);
+    print(m.size);
+    print(m.keys());
+    print(m.values());
+    print(m.entries());
+    print(m.has("a"));
+    print(m.has("z"));
+    print(m.get("a"));
+    print(m.get("z"));
+    const m2 = m.set("d", 4).set("b", 20).delete("c");
+    print(m2.entries());
+    const c = countBy(["x", "y", "x", "z", "x"], (s) => s);
+    print(c.entries());
+    return 0;
+}
+"##;
+
+const MAP_COUNT: &str = r##"function total(m: Map<string, i64>, ws: string[n]): i64 {
+    return sum(map(ws, (w) => m.get(w) ?? 0));
+}
+
+action main(args: string[k]): i32 {
+    const words = "the cat and the dog and the bird".split(" ");
+    const counts = countBy(words, (w) => w);
+    print(counts.entries());
+    print(counts.get("the") ?? 0);
+    print(counts.get("fish") ?? 0);
+    print(counts.get("fish") ?? counts.get("cat") ?? -1);
+    print(total(counts, ["the", "and", "fish"]));
+    const sorted = sortBy(counts.entries(), (e) => {
+        const [w, c] = e;
+        return -c;
+    });
+    print(sorted);
+    const byLen = Map(map(words, (w) => [w.length, w] as const));
+    print(byLen.entries());
+    const values = 7;
+    print(counts.values());
+    print(values);
+    return 0;
+}
+"##;
+
+/// `Map<K, V>` (D158): built from its entries (each key at its first
+/// insertion, with its last value), `size`, `get` with `??`, `has`, `keys`,
+/// `values`, `entries`, `set`, `delete`, `countBy`; a method is not hidden
+/// by a local variable of the same name.
+#[test]
+fn maps() {
+    agree(MAP, "std_map", &[], "3\n[b, a, c]\n[2, 10, 3]\n[(b, 2), (a, 10), (c, 3)]\ntrue\nfalse\nSome(10)\nNone\n[(b, 20), (a, 10), (d, 4)]\n[(x, 3), (y, 1), (z, 1)]\n");
+    agree(MAP_COUNT, "std_map_count", &[], "[(the, 3), (cat, 1), (and, 2), (dog, 1), (bird, 1)]\n3\n0\n1\n5\n[(the, 3), (and, 2), (cat, 1), (dog, 1), (bird, 1)]\n[(3, the), (4, bird)]\n[3, 1, 2, 1, 1]\n7\n");
+    valgrind_clean(MAP, "std_map", &[]);
+    valgrind_clean(MAP_COUNT, "std_map_count", &[]);
+}
+
+/// What a `Map` refuses, at compile time: a float key, printing, equality,
+/// an array of maps; `new` of anything but `Map` and `RegExp`.
+#[test]
+fn map_errors() {
+    for (body, want) in [
+        ("const m = Map([[1.5, 2] as const]);\n    print(m.size);", "2:19: error: a float cannot be a key of a Map (class Key: an integer, a boolean, a string or a bigint)"),
+        ("const x = 1.5;\n    const m = Map([[x, 2] as const]);\n    print(m.size);", "3:19: error: a float cannot be a key of a Map"),
+        ("const m = Map([[1, 2] as const]);\n    print(m);", "3:11: error: a Map cannot be printed: print `m.entries()`"),
+        ("const m = Map([[1, 2] as const]);\n    print(m == m);", "error: a Map cannot be compared"),
+        ("const m = Map([[1, 2] as const]);\n    print([m, m].length);", "error: a Map cannot be stored here"),
+        ("const p = new Foo(1);", "2:19: error: `new Foo`: `new` makes only a `Map` or a `RegExp`"),
+    ] {
+        let src = format!("action main(args: string[k]): i32 {{\n    {}\n    return 0;\n}}\n", body);
+        match iscc::frontend("t.isc", &src) {
+            Ok(_) => panic!("accepted: {}", body),
+            Err(e) => assert!(e.contains(want), "{}\n{}", body, e),
+        }
+    }
+}
+
+/// A part of a tuple that is not memory is read after the parts that are
+/// memory are taken out (the memory check refused it).
+#[test]
+fn scalar_part_after_taken_parts() {
+    let src = "action main(args: string[k]): i32 {\n    const x = [\"a\"];\n    const p = [3, x, 4] as const;\n    const [r, q, s] = p;\n    print(r + s);\n    print(q);\n    return 0;\n}\n";
+    agree(src, "tuple_scalar_part", &[], "7\n[a]\n");
+    valgrind_clean(src, "tuple_scalar_part", &[]);
+}

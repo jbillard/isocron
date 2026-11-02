@@ -2640,3 +2640,33 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   compiled when the program is (an invalid one is a compile error); a
   `RegExp` value is the text `flags/source`, compiled again at each use
   (a cache is later work). Not printed, not compared.
+- **D158 — `Map<K, V>`, `Option`, `??` (2026-11-03).** A dictionary that is
+  a value, never changed in place, as the rest of the language: `Map(entries)`
+  (also `new Map(entries)`; `new` makes nothing else) keeps each key at its
+  first entry with its last value, the result of TypeScript's `set` entry
+  after entry; `countBy(xs, f)` counts by key (the name of lodash: TypeScript
+  has no counting, and its `Map.groupBy` gives rows of different lengths).
+  `m.size`, `has`, `get` (an `Option<V>`), `keys`, `values`, `entries` (arrays
+  in the order of first insertion, as the iterators), `set` and `delete` (a
+  new map). `type Option<T> = None | Some(T)` joins the prelude (a program
+  that declares one of these names replaces it, as `Result`); `a ?? b` is
+  `match (a) { Some(x) => x, None => b }`, right-associative below `||`,
+  TypeScript's `??` with `None` for `undefined`. Layout: three arrays, the
+  keys by first insertion, the values, and the ranks of the keys sorted
+  (`argsort`), searched by bisection: built in O(n log n) with no hashing
+  (the same order and bits everywhere, and parallel sorting later),
+  `get` in O(log n); `set` rebuilds in O(n log n), so a map is made from
+  all its entries at once (a hash table changed in place needs uniqueness
+  of the map, later work). In the checker it is a sum type of the prelude
+  with one constructor `$Map` that no program can write (a name of the
+  prelude may start with `$`); its functions are written in Isocron over
+  two primitives, `$mapOf(keys, values, order)` and `$mapParts(m)`, and the
+  lowering lays it out as the tuple of the three arrays. A key has the new
+  class `Key` (integers, booleans, strings, `bigint`): a float is refused at
+  compile time, NaN not being equal to itself (the classes are now 16
+  bits). A map is not printed, compared, stored in an array or a
+  constructor, nor the value of a type parameter (it is three arrays). The
+  call `x.m(...)` now names the function `m` even if a local `m` that is
+  not a function exists (`const keys = ...; m.keys()`), as in TypeScript.
+  Found on the way: reading a scalar part of a tuple after its parts that
+  own memory were taken was refused by the memory check (D138); allowed.

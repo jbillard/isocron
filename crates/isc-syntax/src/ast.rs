@@ -43,6 +43,7 @@ pub enum Class {
     Num,
     Ord,
     Eq,
+    Key,
 }
 
 impl Class {
@@ -51,6 +52,7 @@ impl Class {
             Class::Num => "Num",
             Class::Ord => "Ord",
             Class::Eq => "Eq",
+            Class::Key => "Key",
         }
     }
 }

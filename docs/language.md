@@ -417,7 +417,8 @@ parameters. `requireTail` accepts such calls.
 | `string` | immutable UTF-8 text: literals `"..."`, the command-line arguments (see [Strings](#strings)) |
 | `[A, B, ...]` | tuples: `[a, b] as const`, taken apart with `const [a, b] = ...` |
 | `{a: A, b: B}` | records: fields by name; the order of the fields does not matter |
-| `Option<T>`, ... | sum types declared with `type` |
+| `Option<T>`, ... | sum types declared with `type` (`Option` is in the prelude) |
+| `Map<K, V>` | a dictionary (see [Maps](#maps)) |
 | `T[n]` | arrays of `n` elements of a scalar type (integers, floats, `boolean`), `string`, or a tuple of these |
 | `T[r][c]` | `r` rows of `c` elements (see [Windows and arrays of arrays](#windows-and-arrays-of-arrays)) |
 | `(a: A) => B`, `(A, B) => C` | functions, as parameters of a `function` |
@@ -710,6 +711,7 @@ From lowest to highest precedence, as in TypeScript (the ECMAScript standard):
 | Operators | Associativity |
 | --- | --- |
 | `c ? a : b` | right |
+| `a ?? b` (of an `Option`, see [Maps](#maps)) | right |
 | `\|\|` | left |
 | `&&` | left |
 | `\|` (bitwise or) | left |
@@ -889,6 +891,51 @@ action main(args: string[k]): i32 {
 [a, bb, ccc]
 [59, 16, 16, 4]
 [59, 16, 16, 4]
+```
+
+### Maps
+
+A `Map<K, V>` is a dictionary, never changed in place. `Map(entries)` (or
+`new Map(entries)`, as in TypeScript) makes one from an array of pairs: each
+key keeps the place of its first entry and takes the value of its last one,
+the rule of `set` applied entry after entry. `countBy(xs, f)` is the map of
+each key `f(x)` to its number of elements. Then:
+
+* `m.size`, `m.has(k)`, `m.get(k)` (an `Option<V>`: `Some(v)` or `None`);
+* `m.keys()`, `m.values()`, `m.entries()`: arrays, in the order of the
+  first insertions, as the iterators of TypeScript;
+* `m.set(k, v)` and `m.delete(k)`: a new map (in TypeScript, the same map
+  changed).
+
+`a ?? b` is the value of `a` if it is `Some`, else `b`, as `??` of
+TypeScript for `undefined`; `a ?? b ?? c` tries `a`, then `b`. The keys
+have the class `Key`: integers, booleans, strings and `bigint`; a float is
+refused, its equality not being one of keys (NaN). A map is stored as three
+arrays (keys, values, the keys in order): built at once in O(n log n), `get`
+and `has` in O(log n), `set` and `delete` in O(n log n), so a map is built
+from all its entries rather than by `set` in a loop. A map is neither
+printed (print `m.entries()`), nor compared, nor stored in an array.
+
+```isc
+action main(args: string[k]): i32 {
+    const words = "the cat and the dog and the bird".split(" ");
+    const counts = countBy(words, (w) => w);
+    print(counts.entries());
+    print(counts.get("the") ?? 0);
+    print(counts.get("fish") ?? 0);
+    const ages = new Map([["ann", 31] as const, ["bob", 27] as const]);
+    print(ages.set("cy", 40).delete("ann").entries());
+    print(ages.has("ann"));
+    return 0;
+}
+```
+
+```output
+[(the, 3), (cat, 1), (and, 2), (dog, 1), (bird, 1)]
+3
+0
+[(bob, 27), (cy, 40)]
+true
 ```
 
 ### Element-wise operators
@@ -1563,7 +1610,9 @@ action main(args: string[k]): i32 {
 
 The classes of type parameters are `Num` (integers and `f64`: `+ - * / %`,
 literals such as `0` and `1`, equality), `Ord` (ordered types: integers, `f64`,
-`boolean`, `string`; `<`, `<=`, `>`, `>=`) and `Eq` (equality). A type
+`boolean`, `string`; `<`, `<=`, `>`, `>=`), `Eq` (equality) and `Key` (the
+keys of a `Map`: integers, `boolean`, `string`, `bigint`, ordered, not
+floats). A type
 parameter takes its class with `extends`: `<T extends Num>`. A function can be passed
 as an argument, chosen at run time and stored in a tuple, a record or an
 array (see "Functions chosen at run time" and "Functions in structures"); a

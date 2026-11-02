@@ -148,6 +148,13 @@ pub enum Prim {
     /// Regular expressions (D157): `RegExp(source, flags)`, `re.test(s)`,
     /// `s.search(re)`, `countMatches(s, re)`, `matches(s, re)`, and
     /// `s.replace(p, to)` of a text or a `RegExp`.
+    /// `Map<K, V>` (D158), for the prelude: `$mapOf(keys, values, order)`
+    /// and `$mapParts(m)`, its three arrays (the keys in the order of their
+    /// first insertion, their values, the positions of the keys sorted)
+    MapOf,
+    MapParts,
+    /// `m.size`
+    MapSize,
     RegExpNew,
     RxTest,
     RxSearch,
@@ -406,7 +413,7 @@ pub struct TFn {
     pub span: Span,
     pub is_action: bool,
     pub from_prelude: bool,
-    pub generics: Vec<(String, u8)>,
+    pub generics: Vec<(String, crate::types::class::Classes)>,
     pub syms: Vec<SymInfo>,
     pub params: Vec<LocalId>,
     pub param_tys: Vec<Ty>,

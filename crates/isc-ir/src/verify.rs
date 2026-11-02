@@ -368,6 +368,9 @@ impl<'p> Checker<'p> {
                         }
                         Ok(if comps[*i as usize].has_heap() { Val::Fresh } else { Val::Scalar })
                     }
+                    // a scalar part is only read: allowed once the parts
+                    // that own memory are taken
+                    State::Owned { .. } if !comps[*i as usize].has_heap() => Ok(Val::Scalar),
                     _ => fail(e.span, format!("a part of `{}` is taken, but it does not own its value here", name)),
                 }
             }

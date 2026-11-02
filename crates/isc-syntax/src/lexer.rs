@@ -67,6 +67,8 @@ pub(crate) enum S {
     Dot,
     Ellipsis,
     Question,
+    /// `??` (D158)
+    QuestionQuestion,
     FatArrow,
     Assign,
     EqEq,
@@ -112,6 +114,7 @@ impl S {
             S::Dot => ".",
             S::Ellipsis => "...",
             S::Question => "?",
+            S::QuestionQuestion => "??",
             S::FatArrow => "=>",
             S::Assign => "=",
             S::EqEq => "==",
@@ -300,7 +303,10 @@ pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
             lex_number(&chars, &mut i, span)?
         } else if c == '"' || c == '\'' {
             lex_quoted(&chars, &mut i, span, c)?
-        } else if c.is_ascii_alphabetic() || c == '_' {
+        } else if c.is_ascii_alphabetic() || c == '_' || (c == '$' && file == crate::PRELUDE_FILE) {
+            // a name of the prelude may start with `$`: no program can
+            // write it (D158)
+            i += 1;
             while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
@@ -329,6 +335,7 @@ pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
                 (';', ..) => (S::Semi, 1),
                 (':', ..) => (S::Colon, 1),
                 ('.', ..) => (S::Dot, 1),
+                ('?', Some('?'), _) => (S::QuestionQuestion, 2),
                 ('?', ..) => (S::Question, 1),
                 ('=', ..) => (S::Assign, 1),
                 ('<', ..) => (S::Lt, 1),
