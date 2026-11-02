@@ -448,12 +448,11 @@ fn functions_chosen_by_match() {
     for k in ["0", "1", "2"] {
         same_everywhere(MATCHED_BINDS, &format!("matched_binds{}", k), &[k]);
     }
-    let e = iscc::frontend(
-        "m.isc",
-        "type L = Nil | Cons(i64, L);\n\naction main(args: string[k]): i32 {\n    const l = Cons(1, Cons(2, Nil));\n    const f = match (l) {\n        Cons(a, Cons(b, t)) => (v) => v + a + b,\n        _ => (v) => v,\n    };\n    print(map([1], f));\n    return 0;\n}\n",
-    )
-    .unwrap_err();
-    assert!(e.contains("binds variables below its first level"), "{}", e);
+    // variables bound below the first level of the pattern (D152)
+    let src = "type L = Nil | Cons(i64, L);\n\naction main(args: string[k]): i32 {\n    const l = Cons(1, Cons(2, Nil));\n    const f = match (l) {\n        Cons(a, Cons(b, t)) => (v) => v + a + b,\n        _ => (v) => v,\n    };\n    print(map([1], f));\n    return 0;\n}\n";
+    assert_eq!(interp_ok(src, &[]), "[4]\n");
+    let bin = compile(src, "matched_deep");
+    assert_eq!(run_bin(&bin, &[]).stdout, "[4]\n");
 }
 
 /// A recursive function with a function parameter (D128): one

@@ -307,8 +307,33 @@ action main(args: string[k]): i32 {
 ",
     )
     .unwrap();
+    // the size `m` the lambda reads: a parameter of the specialization (D152)
+    let p = lower(&t).unwrap();
+    assert_eq!(p.fns.len(), 1);
+    assert_eq!(p.fns[0].params.len(), 2, "n and the size m");
+    // a lambda that reads a function of its context: no specialization yet
+    let t = isc_types::check_source(
+        "function apply(f: (i64) => i64, n: i64): i64 {
+    if (n == 0) {
+        return 0;
+    } else {
+        return f(n) + apply(f, n - 1);
+    }
+}
+
+function twice(g: (i64) => i64): i64 {
+    return apply((v) => g(g(v)), 3);
+}
+
+action main(args: string[k]): i32 {
+    print(twice((v) => v + 1));
+    return 0;
+}
+",
+    )
+    .unwrap();
     let e = lower(&t).unwrap_err();
-    assert!(e.message.contains("a recursive function given a function that reads a size or a function of its context"), "{}", e);
+    assert!(e.message.contains("a recursive function given a function that reads a function of its context"), "{}", e);
 }
 
 /// Uniqueness in the branches of an `if` (D105): the last use of a variable
