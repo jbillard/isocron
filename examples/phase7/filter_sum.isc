@@ -5,6 +5,10 @@ function filterSum(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 3) {
+        print("usage: filter_sum <input.f64> <output.f64> <reps>");
+        return 2;
+    }
     const x = readF64(args[0]);
     // one call before the timer: the pages of its result are touched, as
     // the other languages touch their output buffers (DECISIONS D117)

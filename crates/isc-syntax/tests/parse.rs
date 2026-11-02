@@ -18,7 +18,12 @@ fn poc_programs_parse() {
         });
         let main = main.unwrap_or_else(|| panic!("{}: no main", name));
         assert!(main.is_action);
-        match &main.body.kind {
+        // `if (args.length < 3) { ...; return 2; }`, then the kernel
+        let body = match &main.body.kind {
+            ExprKind::If(_, _, rest) => rest,
+            _ => &main.body,
+        };
+        match &body.kind {
             ExprKind::Block(stmts, last) => {
                 assert!(stmts.len() >= 4, "{}: {} statements", name, stmts.len());
                 assert!(matches!(last.kind, ExprKind::Int { value: 0, .. }));

@@ -1422,6 +1422,10 @@ function stdDev(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 3) {
+        print("usage: std_dev <input.f64> <output.f64> <reps>");
+        return 2;
+    }
     const x = readF64(args[0]);
     const [r, ns] = bench(parseI64(args[2]), () => stdDev(x));
     print(ns);
@@ -1429,6 +1433,10 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ```
+
+Without its arguments, the program prints its usage and exits with code 2;
+reading `args[0]` when there is none would be a panic (an index out of
+bounds).
 
 ### C functions: `declare function`
 

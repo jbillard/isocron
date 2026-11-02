@@ -4,6 +4,10 @@ function histogram(values: u8[n]): u32[256] {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 3) {
+        print("usage: histogram <input.u8> <output.f64> <reps>");
+        return 2;
+    }
     const x = readBytes(args[0]);
     const [h, ns] = bench(parseI64(args[2]), () => histogram(x));
     print(ns);

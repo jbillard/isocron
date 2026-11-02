@@ -32,6 +32,10 @@ function pixels(n: size, nb: size): u8[n * nb] {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: mandelbrot <N>");
+        return 2;
+    }
     const n = parseI64(args[0]);
     const nb = (n + 7) / 8;
     printBytes(bytes("P4\n" + toString(n) + " " + toString(n) + "\n"));

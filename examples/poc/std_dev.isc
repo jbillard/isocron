@@ -5,6 +5,10 @@ function stdDev(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 3) {
+        print("usage: std_dev <input.f64> <output.f64> <reps>");
+        return 2;
+    }
     const x = readF64(args[0]);
     const [r, ns] = bench(parseI64(args[2]), () => stdDev(x));
     print(ns);

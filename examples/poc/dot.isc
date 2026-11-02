@@ -1,5 +1,9 @@
 // dot.isc        usage: dot <a.f64> <b.f64> <output.f64> <reps>
 action main(args: string[k]): i32 {
+    if (args.length < 4) {
+        print("usage: dot <a.f64> <b.f64> <output.f64> <reps>");
+        return 2;
+    }
     const a = readF64(args[0]);
     const b = readF64(args[1]);
     const [r, ns] = bench(parseI64(args[3]), () => dot(a, b));

@@ -5,6 +5,10 @@ function prefixSum(x: i64[n]): i64[n] {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 3) {
+        print("usage: prefix_sum <input.f64> <output.f64> <reps>");
+        return 2;
+    }
     const x = map(readF64(args[0]), (v) => i64(v));
     // one call before the timer: the pages of its result are touched, as
     // the other languages touch their output buffers (DECISIONS D117)

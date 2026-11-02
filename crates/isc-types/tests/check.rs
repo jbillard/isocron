@@ -77,6 +77,12 @@ fn dot_has_runtime_size_check() {
                 }
                 walk(r, found);
             }
+            // the check of the number of arguments, then the kernel
+            TExprKind::If(c, t, f) => {
+                walk(c, found);
+                walk(t, found);
+                walk(f, found);
+            }
             _ => {}
         }
     }

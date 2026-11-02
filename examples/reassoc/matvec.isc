@@ -11,6 +11,10 @@ function matvec(a: f64[k], v: f64[m], rows: size): f64[rows] {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 4) {
+        print("usage: matvec <matrix.f64> <vector.f64> <output.f64> <reps>");
+        return 2;
+    }
     const a = readF64(args[0]);
     const v = readF64(args[1]);
     const rows = rowsOf(a, v);

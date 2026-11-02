@@ -7,6 +7,10 @@ function fastDot(a: f64[n], b: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
+    if (args.length < 4) {
+        print("usage: dot <a.f64> <b.f64> <output.f64> <reps>");
+        return 2;
+    }
     const a = readF64(args[0]);
     const b = readF64(args[1]);
     const [r, ns] = bench(parseI64(args[3]), () => fastDot(a, b));
