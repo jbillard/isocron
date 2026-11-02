@@ -1,0 +1,83 @@
+// Isocron standard library (POC subset, SPEC section 6).
+// `sqrt` is a primitive of the runtime (correctly rounded, SPEC section 10).
+function sum<T extends Num>(x: T[n]): T {
+    return reduce(x, (+), 0);
+}
+
+function product<T extends Num>(x: T[n]): T {
+    return reduce(x, (*), 1);
+}
+
+function mean(x: f64[n]): f64 {
+    return sum(x) / f64(n);
+}
+
+function dot<T extends Num>(a: T[n], b: T[n]): T {
+    return sum(a * b);
+}
+
+function count<T>(x: T[n], p: (T) => boolean): i64 {
+    return sum(map(x, (v) => p(v) ? 1 : 0));
+}
+
+// `scatter` (SPEC section 16, v1; DECISIONS D111): `dest` where each
+// `vals[k]` is combined with `op` into the element at `idx[k]`, in the order
+// of k (the rule of collisions: several values at one index are combined
+// in that order); an index out of bounds is a panic.
+function scatter<T>(dest: T[m], idx: i64[n], vals: T[n], op: (T, T) => T): T[m] {
+    return fold(zip(idx, vals), dest, (r, p) => {
+        const [i, v] = p;
+        return r.with(i, op(r[i], v));
+    });
+}
+
+// `Result` (DECISIONS D138): the value of an action that can fail, or the
+// message of its error. Each `try_` action returns it where the action of
+// the same name would panic; a program that declares `Result`, `Ok` or
+// `Err` replaces this type, and the `try_` actions are then left out.
+type Result<T, E> = Ok(T) | Err(E);
+
+// the functions of a program take precedence over the primitives, even
+// here: the prelude compares with `""` rather than calling `len`
+function result_of<T>(r: [T, string]): Result<T, string> {
+    const [v, e] = r;
+    return e == "" ? Ok(v) : Err(e);
+}
+
+function done_or(e: string): Result<void, string> {
+    return e == "" ? Ok(()) : Err(e);
+}
+
+action try_parse_i64(s: string): Result<i64, string> {
+    return result_of(parse_i64_or_error(s));
+}
+
+action try_parse_f64(s: string): Result<f64, string> {
+    return result_of(parse_f64_or_error(s));
+}
+
+action try_read_bytes(path: string): Result<u8[k], string> {
+    return result_of(read_bytes_or_error(path));
+}
+
+action try_read_f64(path: string): Result<f64[k], string> {
+    return result_of(read_f64_or_error(path));
+}
+
+action try_read_text(path: string): Result<string, string> {
+    return result_of(read_text_or_error(path));
+}
+
+// an array of arrays is not a value of a type parameter: no `result_of`
+action try_read_csv_f64(path: string, skip: i64): Result<f64[r][c], string> {
+    const [m, e] = read_csv_f64_or_error(path, skip);
+    return e == "" ? Ok(m) : Err(e);
+}
+
+action try_write_bytes(path: string, x: u8[n]): Result<void, string> {
+    return done_or(write_bytes_or_error(path, x));
+}
+
+action try_write_text(path: string, s: string): Result<void, string> {
+    return done_or(write_text_or_error(path, s));
+}

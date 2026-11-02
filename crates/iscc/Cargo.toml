@@ -1,0 +1,16 @@
+[package]
+name = "iscc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "iscc"
+path = "src/main.rs"
+
+[dependencies]
+isc-syntax = { path = "../isc-syntax" }
+isc-types = { path = "../isc-types" }
+isc-ir = { path = "../isc-ir" }
+isc-interp = { path = "../isc-interp" }
+isc-codegen = { path = "../isc-codegen" }

@@ -1,0 +1,13 @@
+// std_dev.isc    usage: std_dev <input.f64> <output.f64> <reps>
+function std_dev(x: f64[n]): f64 {
+    const m = mean(x);
+    return sqrt(sum((x - m) ** 2) / f64(n));
+}
+
+action main(args: string[k]): i32 {
+    const x = read_f64(args[0]);
+    const [r, ns] = bench(parse_i64(args[2]), () => std_dev(x));
+    print(ns);
+    write_f64(args[1], [r]);
+    return 0;
+}

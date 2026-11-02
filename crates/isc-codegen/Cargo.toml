@@ -1,0 +1,9 @@
+[package]
+name = "isc-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+isc-syntax = { path = "../isc-syntax" }
+isc-ir = { path = "../isc-ir" }

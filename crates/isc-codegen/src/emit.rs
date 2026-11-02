@@ -1,0 +1,6319 @@
+//! IR to textual LLVM IR.
+//!
+//! * Fusion (rule F1): a producer (`map`, element-wise operator, `iota`,
+//!   `fill`, `zeros`) in a consumer slot is never stored: its elements are
+//!   computed inside the consumer's loop (`Src`).
+//! * `reduce` follows the fixed form of section 10. Its V = 32 interleaved
+//!   accumulators are one `<32 x T>` value (several passes over the block
+//!   when the target has too few registers, `reduce_passes`), so the main
+//!   loop is SIMD code by construction; the final tree is `shufflevector`s of
+//!   halves.
+//! * Element-wise loops are emitted 16 elements at a time with vector types
+//!   when every operation of the element computation has a vector form,
+//!   followed by a scalar tail loop.
+//! * Floating-point instructions carry no fast-math flag (section 13).
+//! * `bench` calls its body through a function pointer laundered by an empty
+//!   `asm`, so that LLVM can neither hoist, merge nor delete the repetitions
+//!   (section 12).
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use isc_ir::*;
+use isc_syntax::Span;
+
+/// V, the number of interleaved accumulators of the fixed reduction form
+/// (SPEC section 10). Other values are an experiment (`iscc --lanes`), not
+/// the language.
+pub const LANES: u32 = 32;
+pub const BLOCK: i64 = 4096;
+
+/// Levels of the reduction of a stream (`reduce_stream`): B^5 = 2^60
+/// elements kept.
+const STREAM_LEVELS: i64 = 5;
+/// At most this many blocks: the results of the tasks of a `reduce` are
+/// each in their own 128 bytes (see `reduce`).
+const PAD_BLOCKS: i64 = 32;
+/// The LLVM type of an array of arrays (D95).
+const NESTED: &str = "{ ptr, i64, i64, i64 }";
+
+/// The lambda of a `scan` is a predefined associative operator of SPEC
+/// section 6 on integers (`+`, `*`, `min`, `max`) or booleans (`and`, `or`,
+/// lowered to `if`): `(a, b) -> a op b`, or `b op a` (they commute).
+fn assoc_scan_op(l: &Lambda, t: &Type) -> bool {
+    if l.params.len() != 2 {
+        return false;
+    }
+    let (p, q) = (l.params[0], l.params[1]);
+    let var = |e: &Expr, v: VarId| matches!(&e.kind, ExprKind::Var(w, _) if *w == v);
+    let pair = |a: &Expr, b: &Expr| (var(a, p) && var(b, q)) || (var(a, q) && var(b, p));
+    match (t, &l.body.kind) {
+        (Type::Int(_), ExprKind::Binary(op, a, b)) => {
+            matches!(op, BinOp::Add | BinOp::Mul | BinOp::Min | BinOp::Max) && pair(a, b)
+        }
+        (Type::Bool, ExprKind::If(c, a, b)) => {
+            let lit = |e: &Expr, x: bool| matches!(&e.kind, ExprKind::Lit(Lit::Bool(y)) if *y == x);
+            // `c and a` is `if c then a else false`, `c or b` is `if c then true else b`
+            (lit(b, false) && pair(c, a)) || (lit(a, true) && pair(c, b))
+        }
+        _ => false,
+    }
+}
+
+/// The operator of a `scan` of integers that can be computed in a vector
+/// register: `+`, `*`, `min`, `max` (exact, associative and commutative),
+/// with the value that leaves the other operand unchanged.
+fn int_scan_op(l: &Lambda, t: &Type) -> Option<(BinOp, i128)> {
+    let Type::Int(k) = t else { return None };
+    if !assoc_scan_op(l, t) {
+        return None;
+    }
+    let ExprKind::Binary(op, _, _) = &l.body.kind else { return None };
+    let b = k.bits();
+    let (lo, hi) = if k.signed() { (-(1i128 << (b - 1)), (1i128 << (b - 1)) - 1) } else { (0, (1i128 << b) - 1) };
+    // an unsigned maximum is written as -1 (all bits set) in LLVM
+    let hi = if k.signed() { hi } else { -1 };
+    let neutral = match op {
+        BinOp::Add => 0,
+        BinOp::Mul => 1,
+        BinOp::Min => hi,
+        BinOp::Max => lo,
+        _ => return None,
+    };
+    Some((*op, neutral))
+}
+
+/// Largest array of block results of a `reduce` on the
+/// stack; beyond, on the heap. 32 KiB: 4096 results of `f64`, inputs up to
+/// 2^24 elements, a small part of the default stack of a thread (DECISIONS
+/// D86).
+const STACK_SCRATCH: i64 = 32 << 10;
+/// From this size on, the array of a `reduce` is read from memory, not from
+/// the caches (twice the 16 MiB of L3 of xeon), and the loop of its blocks
+/// takes STREAM_UNROLL rows per iteration: large `sum`, one core, 3483863.0
+/// against 3527408.4 ns; slower from the caches (small `sum` 1866.1 against
+/// 1760.5 ns, 8 MB 176172.2 against 174722.3 ns; DECISIONS D86).
+const STREAM_BYTES: i64 = 32 << 20;
+const STREAM_UNROLL: i64 = 4;
+/// Width of the element-wise loops (speed only, never results).
+pub const MAP_WIDTH: u32 = 16;
+/// Chunks per thread of a `map` whose elements are loops (D121, D143).
+const HEAVY_CHUNKS: i64 = 8;
+
+/// Instruction set targeted by the back-end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isa {
+    /// The host CPU with LLVM's default tuning (on recent Intel CPUs with
+    /// AVX-512, LLVM prefers 256-bit vectors).
+    Native,
+    /// The host CPU without any AVX-512 feature.
+    Avx2,
+    /// The host CPU, 512-bit vectors allowed and preferred.
+    Avx512,
+    /// SSE4.2 without AVX, the instruction set of the Celeron J3455 of the
+    /// POC (LLVM CPU `goldmont`: 16 `xmm` registers of 2 doubles).
+    Sse,
+    /// AVX without AVX2 or FMA: Ivy Bridge (LLVM CPU `ivybridge`), the
+    /// i5-3330 of the Benchmarks Game; 16 `ymm` registers of 4 doubles.
+    Avx,
+    /// WebAssembly with WASI (`wasm32-wasi`), 128-bit SIMD (`simd128`).
+    Wasm32,
+    /// The same with threads (`wasm32-wasi-threads`: wasi-threads, shared
+    /// memory, atomics).
+    Wasm32Threads,
+}
+
+impl Isa {
+    pub fn is_wasm(self) -> bool {
+        matches!(self, Isa::Wasm32 | Isa::Wasm32Threads)
+    }
+
+    /// The vector registers the back-end allocates for this instruction set:
+    /// (bytes per register, number of registers). With AVX-512, LLVM's
+    /// default tuning (`Native`) uses 256-bit vectors, in 32 registers.
+    pub fn vector_registers(self) -> (u32, u32) {
+        match self {
+            // the engine maps `v128` values to 128-bit registers, 16 on x86-64
+            Isa::Sse | Isa::Wasm32 | Isa::Wasm32Threads => (16, 16),
+            Isa::Avx2 | Isa::Avx => (32, 16),
+            Isa::Avx512 => (64, 32),
+            Isa::Native => {
+                let f = crate::backend::host_features();
+                let has = |name: &str| f.split(',').any(|x| x == format!("+{}", name));
+                if has("avx512vl") {
+                    (32, 32)
+                } else if has("avx") {
+                    (32, 16)
+                } else {
+                    (16, 16)
+                }
+            }
+        }
+    }
+}
+
+/// Number of passes over a block for `w` accumulators of `elem_bytes` bytes
+/// whose elements read `loads` arrays: the registers of the accumulators of
+/// one pass, plus one register per array read, must fit in the vector
+/// registers of the target, otherwise LLVM spills accumulators inside the
+/// loop. With AVX (registers of 32 bytes or more), one of the loads is folded
+/// into the arithmetic instruction and needs no register; SSE cannot fold an
+/// unaligned load. Pass p updates the accumulators p·w/passes ..
+/// (p+1)·w/passes - 1, each with its elements in increasing order, so the
+/// result is the fixed form whatever the number of passes (speed only).
+pub fn reduce_passes(w: u32, elem_bytes: u32, loads: u32, regs: (u32, u32)) -> u32 {
+    let (bytes, count) = regs;
+    let temps = if bytes >= 32 { loads.saturating_sub(1) } else { loads };
+    let mut passes = 1;
+    while passes < w && (w / passes * elem_bytes).div_ceil(bytes) + temps > count {
+        passes *= 2;
+    }
+    passes
+}
+
+/// Elements per chunk of the passes of `reduce_passes`: the chunk of every
+/// array read takes at most 16 KiB together (L1 holds 24 KiB or more on the
+/// targets measured), and is a whole number of rows of `w` elements.
+pub fn reduce_chunk(w: u32, elem_bytes: u32, loads: u32) -> i64 {
+    let mut c = BLOCK;
+    while c > w as i64 && c * (elem_bytes * loads) as i64 > 16 * 1024 {
+        c /= 2;
+    }
+    c
+}
+
+impl Src<'_> {
+    /// Number of arrays read to compute one element.
+    fn loads(&self) -> u32 {
+        match self {
+            Src::Mat { .. } | Src::Rows { .. } => 1,
+            Src::Iota | Src::Uniform(_) => 0,
+            Src::Map(srcs, _) => srcs.iter().map(Src::loads).sum(),
+            Src::Offset { inner, .. } => inner.loads(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub lanes: u32,
+    pub isa: Isa,
+    /// Size from which the array of a `reduce` is read four rows at a time
+    /// (STREAM_BYTES; the tests lower it to run that loop on small arrays).
+    pub stream_bytes: i64,
+    /// Largest scratch array of a `reduce` on the stack (STACK_SCRATCH; the
+    /// tests lower it to run the heap path).
+    pub stack_scratch: i64,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH }
+    }
+}
+
+type R<T> = Result<T, String>;
+
+#[derive(Clone, Debug)]
+pub struct V {
+    /// SSA name or constant.
+    pub r: String,
+    /// LLVM type.
+    pub t: String,
+    /// The same value for every lane (a scalar usable at any width).
+    pub uni: bool,
+}
+
+/// A scalar-typed value is the same in every lane of a vector loop.
+fn uni(x: &V) -> bool {
+    !x.t.starts_with('<')
+}
+
+fn v(r: impl Into<String>, t: impl Into<String>) -> V {
+    V { r: r.into(), t: t.into(), uni: true }
+}
+
+pub fn lt(t: &Type) -> String {
+    match t {
+        Type::Int(k) => format!("i{}", k.bits()),
+        Type::F64 => "double".into(),
+        Type::F32 => "float".into(),
+        Type::Bool | Type::Unit => "i1".into(),
+        // an array of arrays: its block, rows, columns, and the distance in
+        // elements from a row to the next (the columns, or 1 for `window`)
+        Type::Array(e) if e.is_array() => NESTED.into(),
+        Type::Str | Type::Array(_) => "{ ptr, i64 }".into(),
+        // a node of a recursive type (D103)
+        Type::Rec(_) => "ptr".into(),
+        Type::Tuple(ts) => {
+            if ts.is_empty() {
+                "{}".into()
+            } else {
+                format!("{{ {} }}", ts.iter().map(lt).collect::<Vec<_>>().join(", "))
+            }
+        }
+    }
+}
+
+/// Type of an array element in memory.
+fn mt(t: &Type) -> String {
+    match t {
+        Type::Bool => "i8".into(),
+        t => lt(t),
+    }
+}
+
+fn esize(t: &Type) -> i64 {
+    match t {
+        Type::Int(k) => (k.bits() / 8) as i64,
+        Type::F64 => 8,
+        Type::F32 => 4,
+        Type::Bool | Type::Unit => 1,
+        Type::Str | Type::Array(_) => 16,
+        Type::Rec(_) => 8,
+        Type::Tuple(ts) => ts.iter().map(esize).sum::<i64>().max(1),
+    }
+}
+
+/// The scalar leaves of an element type, in memory order, with the path of
+/// tuple indices that leads to each (a scalar is its own single leaf).
+fn leaves(t: &Type) -> Vec<(Vec<u32>, Type)> {
+    match t {
+        Type::Tuple(ts) => {
+            let mut out = Vec::new();
+            for (i, c) in ts.iter().enumerate() {
+                for (mut p, l) in leaves(c) {
+                    p.insert(0, i as u32);
+                    out.push((p, l));
+                }
+            }
+            out
+        }
+        t => vec![(Vec::new(), t.clone())],
+    }
+}
+
+fn vt(t: &Type, w: u32) -> String {
+    if w == 1 {
+        lt(t)
+    } else {
+        format!("<{} x {}>", w, lt(t))
+    }
+}
+
+/// A `float` constant: LLVM writes it as the `double` of the same value.
+fn fconst32(f: f32) -> String {
+    format!("0x{:016X}", (f as f64).to_bits())
+}
+
+fn fconst(f: f64) -> String {
+    format!("0x{:016X}", f.to_bits())
+}
+
+fn llvm_string(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_graphic() && b != b'"' && b != b'\\' || b == b' ' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\{:02X}", b));
+        }
+    }
+    out
+}
+
+/// The element source of a fused loop.
+/// The suffix of a scalar type in the names of LLVM intrinsics.
+fn ty_suffix(t: &Type) -> String {
+    match t {
+        Type::F64 => "f64".into(),
+        Type::F32 => "f32".into(),
+        Type::Int(k) => format!("i{}", k.bits()),
+        _ => "i1".into(),
+    }
+}
+
+/// A `filter` and the `map`s that follow it (`prepare_stream`).
+struct Stream<'e> {
+    base: Src<'e>,
+    n: String,
+    pred: &'e Lambda,
+    posts: Vec<&'e Lambda>,
+    /// The source, the predicate and the maps work on vectors, and the maps
+    /// cannot panic (computed for the rejected elements too): the vector
+    /// path of `reduce_stream` (D110).
+    vec: bool,
+}
+
+enum Src<'e> {
+    /// A materialized array: `len` is its length (the layout of its columns).
+    Mat { ptr: String, len: String, elem: Type },
+    Iota,
+    Uniform(V),
+    Map(Vec<Src<'e>>, &'e Lambda),
+    /// The rows of an array of arrays (each a view `{ ptr, i64 }`).
+    Rows { ptr: String, cols: String, stride: String, elem: Type },
+    /// The elements of `inner` from `start` on: a slice of a producer (D101).
+    Offset { inner: Box<Src<'e>>, start: String },
+}
+
+#[derive(Default)]
+struct Func {
+    allocas: Vec<String>,
+    body: Vec<String>,
+    tmp: u32,
+}
+
+pub struct Gen<'p> {
+    p: &'p Program,
+    opts: Options,
+    /// In vector code: the lanes on the current path (a `<w x i1>`), None
+    /// for all of them; the entry mask of a SPMD call (D140).
+    mask: Option<String>,
+    /// The condition of an `if` of a SPMD body, computed by the guard that
+    /// tells whether it is uniform (D146).
+    spmd_cond: Option<V>,
+    /// `Isa::vector_registers` of the target.
+    vregs: (u32, u32),
+    /// Inside a task of a parallel loop: nested loops stay sequential.
+    in_task: bool,
+    /// While the first level of a `reduce` is emitted: an `i1`, true when its
+    /// array has at least STREAM_BYTES bytes (see `reduce_block`).
+    stream: Option<String>,
+    /// Loops of `for_range_scalar` so far (their metadata ends the module).
+    scalar_loops: u32,
+    ntask: u32,
+    decls: BTreeSet<String>,
+    globals: Vec<String>,
+    funcs: Vec<String>,
+    strs: HashMap<String, (String, usize)>,
+    nbench: u32,
+    f: Func,
+    env: HashMap<VarId, V>,
+    /// The function being emitted: its direct tail calls, turned into jumps
+    /// to `TailLoop::head` (D102).
+    tail: Option<TailLoop>,
+    /// The functions that free or print the nodes of each recursive type
+    /// (`(type, atomic)` for the frees), emitted at the end (D103).
+    rec_drops: BTreeSet<(u32, bool)>,
+    rec_prints: BTreeSet<u32>,
+    /// The equality functions of recursive types to emit (D129).
+    rec_eqs: BTreeSet<u32>,
+    /// The operation being emitted is inside `allow_reassoc` (D109).
+    fast_math: bool,
+    /// The tail calls of the function being emitted to other functions,
+    /// with the temporaries to free before them (D113).
+    other_tails: HashMap<*const Expr, Vec<VarId>>,
+    /// Expressions whose value is already computed: the `reduce` of each
+    /// window in the cascade of `window_cascade` (D115).
+    pre: HashMap<*const Expr, V>,
+    /// The next outlined task prefers 512-bit vectors (`#1`), set by
+    /// `window_cascade` (D115).
+    wide_task: bool,
+    /// The attribute group `#1` is used.
+    wide_used: bool,
+}
+
+/// A value of this type holds nodes of a recursive type (D130).
+/// An element of this type owns memory of its own: a node (D130) or a
+/// string (D134); arrays of them free and copy each element.
+fn holds_owned(t: &Type) -> bool {
+    match t {
+        Type::Rec(_) | Type::Str => true,
+        Type::Tuple(ts) => ts.iter().any(holds_owned),
+        Type::Array(e) => holds_owned(e),
+        _ => false,
+    }
+}
+
+/// `e` contains a loop of its own (`reduce`, `fold`, `scan`, `filter`):
+/// an element of a `map` that costs much more than an operation.
+fn inner_loop(e: &Expr) -> bool {
+    matches!(e.kind, ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Call(..))
+        || e.children().into_iter().any(inner_loop)
+}
+
+// ---------------------------------------------------------------------
+// SPMD calls (D140): a recursive function whose recursive calls are all
+// tail calls to itself, of scalars, that cannot panic whatever its
+// arguments, is computed for the lanes of vector code at once: each lane
+// has its state, a lane that reaches a result keeps it and stops, the loop
+// goes on while a lane is active (the lanes not on the call's path start
+// stopped).
+
+thread_local! {
+    /// The functions of the program computed lane by lane in vector code.
+    static SPMD: std::cell::RefCell<HashSet<u32>> = std::cell::RefCell::new(HashSet::new());
+}
+
+/// The largest number of parameters of the SPMD functions called in `e`,
+/// if it calls one: the state each lane keeps.
+fn spmd_state(p: &Program, e: &Expr) -> Option<usize> {
+    let own = match &e.kind {
+        ExprKind::Call(f, _) if SPMD.with(|s| s.borrow().contains(f)) => Some(p.fns[*f as usize].params.len()),
+        _ => None,
+    };
+    e.children().into_iter().filter_map(|c| spmd_state(p, c)).chain(own).max()
+}
+
+/// The tail calls of `f` in its body (the leaves of `spmd_shape`).
+fn spmd_tail_calls(e: &Expr, f: u32, out: &mut Vec<*const Vec<Expr>>) {
+    match &e.kind {
+        ExprKind::Let { body, .. } => spmd_tail_calls(body, f, out),
+        ExprKind::If(_, t, x) => {
+            spmd_tail_calls(t, f, out);
+            spmd_tail_calls(x, f, out);
+        }
+        ExprKind::Call(g, args) if *g == f => out.push(args as *const Vec<Expr>),
+        _ => {}
+    }
+}
+
+/// The parameters of a SPMD function that keep one value for all the active
+/// lanes (D140): uniform at the call (`entry`), and given by every tail call
+/// the same expression of such parameters and literals (a counter `i + 1`).
+/// The lanes start together, so they stay together: these are scalars.
+fn spmd_uniform(fun: &isc_ir::Function, f: u32, entry: &[bool]) -> Vec<bool> {
+    let mut calls = Vec::new();
+    spmd_tail_calls(&fun.body, f, &mut calls);
+    // SAFETY: the pointers are into `fun.body`, borrowed for this function
+    let calls: Vec<&Vec<Expr>> = calls.into_iter().map(|c| unsafe { &*c }).collect();
+    fn only(e: &Expr, params: &[VarId], u: &[bool]) -> bool {
+        match &e.kind {
+            ExprKind::Var(v, _) => params.iter().position(|p| p == v).map(|k| u[k]).unwrap_or(false),
+            ExprKind::Lit(_) | ExprKind::Binary(..) | ExprKind::Unary(..) | ExprKind::Convert(_) => {
+                e.children().into_iter().all(|c| only(c, params, u))
+            }
+            _ => false,
+        }
+    }
+    let mut u = entry.to_vec();
+    loop {
+        let mut changed = false;
+        for k in 0..u.len() {
+            if !u[k] {
+                continue;
+            }
+            let ok = calls.iter().all(|c| same_expr(&c[k], &calls[0][k]) && only(&c[k], &fun.params, &u));
+            if !ok {
+                u[k] = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            return u;
+        }
+    }
+}
+
+fn spmd_fns(p: &Program) -> HashSet<u32> {
+    let mut out = HashSet::new();
+    for (i, f) in p.fns.iter().enumerate() {
+        let i = i as u32;
+        let scalars = f.params.iter().all(|v| p.vars[*v as usize].ty.is_scalar()) && f.body.ty.is_scalar();
+        if !scalars || !isc_ir::passes::cannot_panic(&f.body) {
+            continue;
+        }
+        let mut varying: HashSet<VarId> = f.params.iter().copied().collect();
+        if spmd_shape(&f.body, i, &mut varying) {
+            out.insert(i);
+        }
+    }
+    out
+}
+
+/// The body of a SPMD function: `let`s and `if`s whose leaves are values
+/// of vector code or tail calls of the function itself.
+fn spmd_shape(e: &Expr, f: u32, varying: &mut HashSet<VarId>) -> bool {
+    match &e.kind {
+        ExprKind::Let { var, init, body, .. } => {
+            if !vec_ok(init, varying) {
+                return false;
+            }
+            varying.insert(*var);
+            spmd_shape(body, f, varying)
+        }
+        ExprKind::If(c, t, x) => vec_ok(c, varying) && spmd_shape(t, f, varying) && spmd_shape(x, f, varying),
+        ExprKind::Call(g, args) if *g == f => args.iter().all(|a| vec_ok(a, varying)),
+        _ => vec_ok(e, varying),
+    }
+}
+
+/// The `reduce` of the row in `(w) -> ... reduce(w, op, z) ...`, when the
+/// row is used nowhere else (D115).
+fn window_reduce_of(l: &Lambda) -> Option<&Expr> {
+    fn uses(e: &Expr, w: VarId) -> usize {
+        let own = usize::from(matches!(e.kind, ExprKind::Var(v, _) if v == w));
+        own + e.children().into_iter().map(|c| uses(c, w)).sum::<usize>()
+    }
+    fn find(e: &Expr, w: VarId) -> Option<&Expr> {
+        if let ExprKind::Reduce(x, _, _) = &e.kind {
+            if matches!(x.kind, ExprKind::Var(v, _) if v == w) && e.ty.is_scalar() {
+                return Some(e);
+            }
+        }
+        e.children().into_iter().find_map(|c| find(c, w))
+    }
+    let w = *l.params.first()?;
+    if l.params.len() != 1 || uses(&l.body, w) != 1 {
+        return None;
+    }
+    find(&l.body, w)
+}
+
+fn rec_drop_name(i: u32, atomic: bool) -> String {
+    if atomic {
+        format!("isc_rec_drop_{}_atomic", i)
+    } else {
+        format!("isc_rec_drop_{}", i)
+    }
+}
+
+/// A recursive function whose direct tail calls are a loop.
+struct TailLoop {
+    calls: HashMap<*const Expr, isc_ir::passes::TailCall>,
+    head: String,
+    /// Per parameter: its slot, and for an array the slot of a flag set when
+    /// the loop owns its value (a temporary moved into it by a tail call).
+    slots: Vec<(String, Option<String>, Type)>,
+}
+
+
+const RUNTIME_DECLS: &[&str] = &[
+    "declare ptr @isc_alloc(i64)",
+    "declare ptr @isc_alloc_zeroed(i64)",
+    "declare void @isc_free(ptr)",
+    "declare void @isc_read_f64(ptr, ptr, i64, i32, i32)",
+    "declare void @isc_read_f32(ptr, ptr, i64, i32, i32)",
+    "declare void @isc_read_bytes(ptr, ptr, i64, i32, i32)",
+    "declare void @isc_write_f64(ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_write_f32(ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_write_bytes(ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_print_i64(i64)",
+    "declare void @isc_print_u64(i64)",
+    "declare void @isc_print_f64(double)",
+    "declare void @isc_print_f32(float)",
+    "declare void @isc_print_bool(i32)",
+    "declare void @isc_print_str(ptr, i64)",
+    "declare void @isc_print_newline()",
+    "declare void @isc_print_bytes(ptr, i64)",
+    "declare void @isc_flush()",
+    "declare void @isc_try_parse_i64(ptr, ptr, ptr, i64)",
+    "declare void @isc_try_parse_f64(ptr, ptr, ptr, i64)",
+    "declare void @isc_try_read_bytes(ptr, ptr, ptr, i64)",
+    "declare void @isc_try_read_f64(ptr, ptr, ptr, i64)",
+    "declare void @isc_try_read_text(ptr, ptr, ptr, i64)",
+    "declare void @isc_try_read_csv_f64(ptr, ptr, ptr, i64, i64)",
+    "declare void @isc_try_write_bytes(ptr, ptr, i64, ptr, i64)",
+    "declare i64 @isc_clock_ns()",
+    "declare i64 @isc_parse_i64(ptr, i64, i32, i32)",
+    "declare double @isc_parse_f64(ptr, i64, i32, i32)",
+    "declare void @isc_str_new(ptr, ptr, i64)",
+    "declare void @isc_str_concat(ptr, ptr, i64, ptr, i64)",
+    "declare i32 @isc_str_cmp(ptr, i64, ptr, i64)",
+    "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
+    "declare void @isc_to_string_i64(ptr, i64)",
+    "declare void @isc_to_string_u64(ptr, i64)",
+    "declare void @isc_to_string_f64(ptr, double)",
+    "declare void @isc_to_string_f32(ptr, float)",
+    "declare void @isc_to_string_bool(ptr, i32)",
+    "declare void @isc_read_text(ptr, ptr, i64, i32, i32)",
+    "declare void @isc_write_text(ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_lines(ptr, ptr, i64)",
+    "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_trim(ptr, ptr, i64)",
+    "declare void @isc_join(ptr, ptr, i64, ptr, i64)",
+    "declare void @isc_parse_csv_f64(ptr, ptr, i64, i64, i32, i32)",
+    "declare void @isc_read_csv_f64(ptr, ptr, i64, i64, i32, i32)",
+    "declare void @isc_args(ptr, i32, ptr)",
+    "declare void @isc_panic_bounds(i64, i64, i32, i32, i32) noreturn",
+    "declare void @isc_panic_size(i64, i64, i32, i32) noreturn",
+    "declare void @isc_panic_slice(i64, i64, i64, i32, i32) noreturn",
+    "declare void @isc_panic_window(i64, i64, i32, i32) noreturn",
+    "declare void @isc_panic_negsize(i64, i32, i32) noreturn",
+    "declare void @isc_panic_div0(i32, i32) noreturn",
+    "declare void @isc_panic_negexp(i64, i32, i32) noreturn",
+    "declare void @isc_panic_bench(i64, i32, i32) noreturn",
+    "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)",
+    "declare ptr @llvm.stacksave.p0()",
+    "declare void @llvm.stackrestore.p0(ptr)",
+    "declare void @isc_parallel_for(i64, ptr, ptr, i64)",
+    "declare void @isc_parallel_for_dynamic(i64, ptr, ptr, i64)",
+    "declare i64 @isc_thread_count()",
+    "declare ptr @isc_cstr(ptr, i64, ptr, i64, i32, i32)",
+];
+
+/// Emits the LLVM module of a program.
+pub fn emit(p: &Program) -> R<String> {
+    emit_with(p, &Options::default())
+}
+
+/// Emits the LLVM module of a program with explicit options.
+pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
+    if !opts.lanes.is_power_of_two() || opts.lanes < 2 || BLOCK % opts.lanes as i64 != 0 {
+        return Err(format!("--lanes {}: V must be a power of two dividing {}", opts.lanes, BLOCK));
+    }
+    SPMD.with(|s| *s.borrow_mut() = spmd_fns(p));
+    let mut g = Gen {
+        p,
+        opts: *opts,
+        mask: None,
+        spmd_cond: None,
+        vregs: opts.isa.vector_registers(),
+        in_task: false,
+        stream: None,
+        scalar_loops: 0,
+        ntask: 0,
+        decls: BTreeSet::new(),
+        globals: Vec::new(),
+        funcs: Vec::new(),
+        strs: HashMap::new(),
+        nbench: 0,
+        f: Func::default(),
+        env: HashMap::new(),
+        tail: None,
+        rec_drops: BTreeSet::new(),
+        rec_prints: BTreeSet::new(),
+        rec_eqs: BTreeSet::new(),
+        fast_math: false,
+        other_tails: HashMap::new(),
+        pre: HashMap::new(),
+        wide_task: false,
+        wide_used: false,
+    };
+    // the recursive functions (D102)
+    for i in 0..p.fns.len() {
+        g.emit_fn(i)?;
+    }
+    let slot = g.alloca("{ ptr, i64 }");
+    g.emit(format!("call void @isc_args(ptr {}, i32 %argc, ptr %argv)", slot));
+    let args = g.ins(format!("load {{ ptr, i64 }}, ptr {}", slot));
+    g.env.insert(p.args, v(args.clone(), "{ ptr, i64 }"));
+    let r = g.ex(&p.body, 1)?;
+    // the array of the arguments and their strings (copies, D134), owned
+    // by `main` unless it gave it away (D96)
+    if p.drop_args {
+        let t = Type::Array(Box::new(Type::Str));
+        g.drop_value(&v(args.clone(), "{ ptr, i64 }"), &t);
+    }
+    g.emit("call void @isc_flush()");
+    g.emit(format!("ret i32 {}", r.r));
+    let attrs = g.attrs();
+    // the C library of WASI calls `__main_argc_argv`, the name clang gives to
+    // `main(argc, argv)` on WebAssembly
+    let main_name = if opts.isa.is_wasm() { "__main_argc_argv" } else { "main" };
+    // with recursive functions, the body of `main` runs on a thread with a
+    // large stack (`isc_run_big_stack`, D102)
+    let big_stack = !p.fns.is_empty() && !opts.isa.is_wasm();
+    let body_name = if big_stack { "isc_main_body" } else { main_name };
+    let mut main = g.finish(&format!("define i32 @{}(i32 %argc, ptr %argv){}", body_name, attrs));
+    g.emit_rec_helpers()?;
+    if big_stack {
+        g.decls.insert("declare i32 @isc_run_big_stack(ptr, i32, ptr)".into());
+        main.push_str(&format!(
+            "\ndefine i32 @{}(i32 %argc, ptr %argv) {{\nentry:\n  %r = call i32 @isc_run_big_stack(ptr @isc_main_body, i32 %argc, ptr %argv)\n  ret i32 %r\n}}\n",
+            main_name
+        ));
+    }
+    let mut out = String::new();
+    out.push_str("; Isocron module\n\n");
+    for d in RUNTIME_DECLS {
+        out.push_str(d);
+        out.push('\n');
+    }
+    for d in &g.decls {
+        out.push_str(d);
+        out.push('\n');
+    }
+    out.push('\n');
+    for gl in &g.globals {
+        out.push_str(gl);
+        out.push('\n');
+    }
+    out.push('\n');
+    for f in &g.funcs {
+        out.push_str(f);
+        out.push('\n');
+    }
+    out.push_str(&main);
+    if opts.isa == Isa::Wasm32Threads {
+        // the waits of the thread pool of the runtime (unstable in Rust)
+        out.push_str(
+            "\ndeclare i32 @llvm.wasm.memory.atomic.wait32(ptr, i32, i64)\n\
+             declare i32 @llvm.wasm.memory.atomic.notify(ptr, i32)\n\
+             define void @isc_wasm_wait32(ptr %p, i32 %v) {\n  \
+             %r = call i32 @llvm.wasm.memory.atomic.wait32(ptr %p, i32 %v, i64 -1)\n  ret void\n}\n\
+             define void @isc_wasm_notify(ptr %p) {\n  \
+             %r = call i32 @llvm.wasm.memory.atomic.notify(ptr %p, i32 -1)\n  ret void\n}\n",
+        );
+    }
+    if g.scalar_loops > 0 {
+        out.push_str("\n!0 = !{!\"llvm.loop.vectorize.enable\", i1 false}\n!1 = !{!\"llvm.loop.unroll.disable\"}\n");
+        for k in 0..g.scalar_loops {
+            out.push_str(&format!("!{0} = distinct !{{!{0}, !0, !1}}\n", k + 2));
+        }
+    }
+    if opts.isa == Isa::Avx512 {
+        // explicit 512-bit vectors stay in zmm registers instead of being split
+        out.push_str("\nattributes #0 = { \"min-legal-vector-width\"=\"512\" \"prefer-vector-width\"=\"512\" }\n");
+    }
+    if g.wide_used {
+        out.push_str("\nattributes #1 = { \"min-legal-vector-width\"=\"512\" \"prefer-vector-width\"=\"512\" }\n");
+    }
+
+    Ok(out)
+}
+
+fn free_vars(e: &Expr, bound: &mut HashSet<VarId>, out: &mut Vec<VarId>) {
+    match &e.kind {
+        ExprKind::Var(v, _) => {
+            if !bound.contains(v) && !out.contains(v) {
+                out.push(*v);
+            }
+        }
+        ExprKind::Let { var, init, body, .. } => {
+            free_vars(init, bound, out);
+            bound.insert(*var);
+            free_vars(body, bound, out);
+        }
+        _ => {
+            match &e.kind {
+                ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+                    for p in &l.params {
+                        bound.insert(*p);
+                    }
+                }
+                _ => {}
+            }
+            for c in e.children() {
+                free_vars(c, bound, out);
+            }
+        }
+    }
+}
+
+fn mentions(e: &Expr, vars: &HashSet<VarId>) -> bool {
+    if let ExprKind::Var(v, _) = e.kind {
+        return vars.contains(&v);
+    }
+    e.children().into_iter().any(|c| mentions(c, vars))
+}
+
+/// `e` frees `v` somewhere (`Free`, D105).
+fn frees(e: &Expr, v: VarId) -> bool {
+    matches!(e.kind, ExprKind::Free(w, _) if w == v) || e.children().into_iter().any(|c| frees(c, v))
+}
+
+/// No panic and no effect: may be evaluated speculatively (`select`).
+fn safe(e: &Expr) -> bool {
+    isc_ir::passes::cannot_panic(e)
+}
+
+fn is_signed(t: &Type) -> bool {
+    matches!(t, Type::Int(k) if k.signed())
+}
+
+/// Can this element computation be emitted with vector types?
+fn vec_ok(e: &Expr, varying: &mut HashSet<VarId>) -> bool {
+    vec_ok_given(e, varying, std::ptr::null())
+}
+
+/// `vec_ok`, the expression `given` (a `reduce` whose value is computed
+/// elsewhere, D115) counting as a varying scalar.
+fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> bool {
+    if std::ptr::eq(e, given) {
+        return true;
+    }
+    if !e.ty.is_scalar() {
+        return false;
+    }
+    let has_given = |x: &Expr| -> bool {
+        fn find(x: &Expr, g: *const Expr) -> bool {
+            std::ptr::eq(x, g) || x.children().into_iter().any(|c| find(c, g))
+        }
+        !given.is_null() && find(x, given)
+    };
+    match &e.kind {
+        ExprKind::Lit(_) | ExprKind::Var(..) => true,
+        ExprKind::Let { var, init, body, .. } => {
+            if !vec_ok_given(init, varying, given) {
+                return false;
+            }
+            if mentions(init, varying) || has_given(init) {
+                varying.insert(*var);
+            }
+            vec_ok_given(body, varying, given)
+        }
+        ExprKind::Unary(_, x) | ExprKind::Convert(x) | ExprKind::Sqrt(x) => vec_ok_given(x, varying, given),
+        // `fma` is an instruction; the other functions are calls of the
+        // runtime, one element at a time
+        ExprKind::Math(MathFn::Fma, xs) => xs.iter().all(|x| vec_ok_given(x, varying, given)),
+        ExprKind::Binary(_, a, b) => vec_ok_given(a, varying, given) && vec_ok_given(b, varying, given),
+        ExprKind::Pow(b, k) => {
+            vec_ok_given(b, varying, given) && !mentions(k, varying) && !has_given(k) && vec_ok_given(k, varying, given)
+        }
+        ExprKind::If(c, t, f) => {
+            vec_ok_given(c, varying, given)
+                && vec_ok_given(t, varying, given)
+                && vec_ok_given(f, varying, given)
+                && safe(t)
+                && safe(f)
+        }
+        // a SPMD call (D140)
+        ExprKind::Call(f, args) => SPMD.with(|s| s.borrow().contains(f)) && args.iter().all(|a| vec_ok_given(a, varying, given)),
+        // a `fold` over the same elements in every lane (`iota(8)`, an
+        // array of the context): a scalar loop of a vector accumulator
+        ExprKind::Fold(x, init, l) => {
+            matches!(x.kind, ExprKind::Iota(_) | ExprKind::Var(..))
+                && x.ty.elem().is_scalar()
+                && !mentions(x, varying)
+                && !has_given(x)
+                && vec_ok_given(init, varying, given)
+                && {
+                    varying.insert(l.params[0]);
+                    varying.remove(&l.params[1]);
+                    vec_ok_given(&l.body, varying, given)
+                }
+        }
+        _ => false,
+    }
+}
+
+fn lam_ok(l: &Lambda) -> bool {
+    let mut varying: HashSet<VarId> = l.params.iter().copied().collect();
+    vec_ok(&l.body, &mut varying)
+}
+
+fn src_vec_ok(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Map(ins, l) => ins.iter().all(src_vec_ok) && lam_ok(l),
+        ExprKind::Slice(x, _, _) if isc_ir::passes::is_producer(x) => src_vec_ok(x),
+        _ => e.ty.is_array() && e.ty.elem().is_scalar(),
+    }
+}
+
+/// Structural equality of two expressions, ignoring positions and moves
+/// (enough for the index expressions of rule P).
+fn same_expr(a: &Expr, b: &Expr) -> bool {
+    use ExprKind::*;
+    if a.ty != b.ty {
+        return false;
+    }
+    match (&a.kind, &b.kind) {
+        (Lit(x), Lit(y)) => x == y,
+        (Var(x, _), Var(y, _)) => x == y,
+        (Unary(o, x), Unary(p, y)) => o == p && same_expr(x, y),
+        (Binary(o, x1, x2), Binary(p, y1, y2)) => o == p && same_expr(x1, y1) && same_expr(x2, y2),
+        (Convert(x), Convert(y)) => same_expr(x, y),
+        (Index(x1, x2), Index(y1, y2)) => same_expr(x1, y1) && same_expr(x2, y2),
+        _ => false,
+    }
+}
+
+/// Rule P of the privatized accumulation (DECISIONS D50): the function of a
+/// `fold` is `(c, v) -> c with [g(v)] = c[g(v)] + h(v)` (or `h(v) + c[g(v)]`)
+/// with an integer array accumulator, and neither `g` nor `h` uses `c`.
+/// Integer addition modulo 2^bits is associative and commutative, so the fold
+/// may be computed by chunks into private zero copies added to `init` at the
+/// end: same result for any chunking. Returns `(g(v), h(v), position of the
+/// read c[g(v)])`: the read is evaluated before the update (section 8, rule
+/// 2), so it is the one that reports an index out of bounds.
+fn additive_update(l: &Lambda) -> Option<(&Expr, &Expr, Span)> {
+    if l.params.len() != 2 {
+        return None;
+    }
+    let c = l.params[0];
+    if !matches!(&l.body.ty, Type::Array(e) if matches!(**e, Type::Int(_))) {
+        return None;
+    }
+    let (target, index, value) = match &l.body.kind {
+        ExprKind::Update { target, index, value, .. } => (target, index, value),
+        _ => return None,
+    };
+    if !matches!(target.kind, ExprKind::Var(t, _) if t == c) {
+        return None;
+    }
+    let reads = |e: &Expr| matches!(&e.kind, ExprKind::Index(a, i) if matches!(a.kind, ExprKind::Var(t, _) if t == c) && same_expr(i, index));
+    let (h, read) = match &value.kind {
+        ExprKind::Binary(BinOp::Add, a, b) if reads(a) => (b, a.span),
+        ExprKind::Binary(BinOp::Add, a, b) if reads(b) => (a, b.span),
+        _ => return None,
+    };
+    let cs: HashSet<VarId> = [c].into_iter().collect();
+    if mentions(index, &cs) || mentions(h, &cs) {
+        return None;
+    }
+    Some((index, h, read))
+}
+
+impl<'p> Gen<'p> {
+    // ----- emission helpers ------------------------------------------------
+
+    fn emit(&mut self, s: impl Into<String>) {
+        self.f.body.push(format!("  {}", s.into()));
+    }
+
+    fn tmp(&mut self) -> String {
+        self.f.tmp += 1;
+        format!("%t{}", self.f.tmp)
+    }
+
+    fn ins(&mut self, rhs: String) -> String {
+        let t = self.tmp();
+        self.emit(format!("{} = {}", t, rhs));
+        t
+    }
+
+    fn label(&mut self) -> String {
+        self.f.tmp += 1;
+        format!("L{}", self.f.tmp)
+    }
+
+    fn block(&mut self, l: &str) {
+        self.f.body.push(format!("{}:", l));
+    }
+
+    fn br(&mut self, l: &str) {
+        self.emit(format!("br label %{}", l));
+    }
+
+    fn cbr(&mut self, c: &str, a: &str, b: &str) {
+        self.emit(format!("br i1 {}, label %{}, label %{}", c, a, b));
+    }
+
+    fn alloca(&mut self, ty: &str) -> String {
+        let t = self.tmp();
+        self.f.allocas.push(format!("  {} = alloca {}", t, ty));
+        t
+    }
+
+
+    /// Function attributes (the attribute group of `Isa::Avx512`).
+    fn attrs(&self) -> &'static str {
+        if self.opts.isa == Isa::Avx512 {
+            " #0"
+        } else {
+            ""
+        }
+    }
+
+    fn finish(&mut self, header: &str) -> String {
+        let f = std::mem::take(&mut self.f);
+        let mut s = format!("{} {{\nentry:\n", header);
+        for a in &f.allocas {
+            s.push_str(a);
+            s.push('\n');
+        }
+        for b in &f.body {
+            s.push_str(b);
+            s.push('\n');
+        }
+        s.push_str("}\n");
+        s
+    }
+
+    fn pos(span: Span) -> String {
+        format!("i32 {}, i32 {}", span.line, span.col)
+    }
+
+    /// A recursive function: `define internal <result> @isc_fn_<i>(<params>)`
+    /// (D102). Its parameters are borrowed, its result is new.
+    fn emit_fn(&mut self, i: usize) -> R<()> {
+        let f = &self.p.fns[i];
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_task = std::mem::replace(&mut self.in_task, false);
+        let mut ps = Vec::new();
+        for (k, var) in f.params.iter().enumerate() {
+            let t = lt(&self.p.vars[*var as usize].ty);
+            ps.push(format!("{} %a{}", t, k));
+            self.env.insert(*var, v(format!("%a{}", k), t));
+        }
+        if !self.opts.isa.is_wasm() {
+            self.stack_check(&f.name, f.span);
+        }
+        // direct tail calls: the parameters in slots, the body a loop
+        let calls = isc_ir::passes::tail_calls(i as u32, f);
+        // the tail calls to other functions, unless the loop of this one owns
+        // an array (it must free it after such a call)
+        let moves = calls.values().any(|c| !c.moved.is_empty());
+        // (WebAssembly: no other calling convention than C's, so no such call)
+        let others =
+            if moves || self.opts.isa.is_wasm() { HashMap::new() } else { isc_ir::passes::other_tail_calls(i as u32, f) };
+        let saved_others = std::mem::replace(&mut self.other_tails, others);
+        let saved_tail = self.tail.take();
+        if !calls.is_empty() {
+            let mut slots = Vec::new();
+            for (k, var) in f.params.iter().enumerate() {
+                let ty = self.p.vars[*var as usize].ty.clone();
+                let t = lt(&ty);
+                let s = self.alloca(&t);
+                self.emit(format!("store {} %a{}, ptr {}", t, k, s));
+                let owned = if ty.has_heap() {
+                    let o = self.alloca("i1");
+                    self.emit(format!("store i1 false, ptr {}", o));
+                    Some(o)
+                } else {
+                    None
+                };
+                slots.push((s, owned, ty));
+            }
+            let head = self.label();
+            self.br(&head);
+            self.block(&head);
+            for (var, (s, _, ty)) in f.params.iter().zip(&slots) {
+                let t = lt(ty);
+                let x = self.ins(format!("load {}, ptr {}", t, s));
+                self.env.insert(*var, v(x, t));
+            }
+            self.tail = Some(TailLoop { calls, head, slots });
+        }
+        let ret = lt(&f.body.ty);
+        let r = self.ex(&f.body, 1);
+        if let Ok(x) = &r {
+            // the parameters the loop owns are freed on return
+            if let Some(tl) = self.tail.take() {
+                for (s, owned, ty) in &tl.slots {
+                    let Some(o) = owned else { continue };
+                    let own = self.ins(format!("load i1, ptr {}", o));
+                    let lf = self.label();
+                    let ld = self.label();
+                    self.cbr(&own, &lf, &ld);
+                    self.block(&lf);
+                    let t = lt(ty);
+                    let val = self.ins(format!("load {}, ptr {}", t, s));
+                    self.drop_value(&v(val, t), ty);
+                    self.br(&ld);
+                    self.block(&ld);
+                }
+            }
+            self.emit(format!("ret {} {}", ret, x.r));
+        }
+        self.tail = saved_tail;
+        let attrs = self.attrs();
+        // `tailcc`: a call marked `tail` and followed by `ret` reuses the frame
+        // (mutual tail recursion, D113)
+        let cc = self.fn_cc();
+        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}", cc, ret, i, ps.join(", "), attrs));
+        self.other_tails = saved_others;
+        self.f = saved_f;
+        self.env = saved_env;
+        self.in_task = saved_task;
+        r?;
+        self.funcs.push(text);
+        Ok(())
+    }
+
+    /// A direct tail call: the new parameters in their slots, then a jump to
+    /// the start of the body. A temporary passed as an array parameter is
+    /// moved into the loop (the old value freed if the loop owned it).
+    fn tail_jump(&mut self, e: &Expr, args: &[Expr]) -> R<V> {
+        let mut vals = Vec::new();
+        for a in args {
+            vals.push(self.ex(a, 1)?);
+        }
+        let tl = self.tail.take().unwrap();
+        let tc = &tl.calls[&(e as *const Expr)];
+        for var in &tc.free_first {
+            let ty = self.p.vars[*var as usize].ty.clone();
+            let x = self.env[var].clone();
+            self.drop_value(&x, &ty);
+        }
+        for (k, x) in vals.iter().enumerate() {
+            let (s, owned, ty) = &tl.slots[k];
+            let t = lt(ty);
+            if let Some((_, _)) = tc.moved.iter().find(|(j, _)| *j == k) {
+                let o = owned.as_ref().unwrap();
+                let own = self.ins(format!("load i1, ptr {}", o));
+                let lf = self.label();
+                let ld = self.label();
+                self.cbr(&own, &lf, &ld);
+                self.block(&lf);
+                let old = self.ins(format!("load {}, ptr {}", t, s));
+                self.drop_value(&v(old, t.clone()), ty);
+                self.br(&ld);
+                self.block(&ld);
+                self.emit(format!("store i1 true, ptr {}", o));
+            }
+            self.emit(format!("store {} {}, ptr {}", t, x.r, s));
+        }
+        let head = tl.head.clone();
+        self.tail = Some(tl);
+        self.br(&head);
+        // the rest of the expression is never reached
+        let dead = self.label();
+        self.block(&dead);
+        let ret = lt(&e.ty);
+        Ok(V { r: "poison".into(), t: ret, uni: true })
+    }
+
+    /// The calling convention of the recursive functions: `tailcc` (D113),
+    /// C's on WebAssembly.
+    fn fn_cc(&self) -> &'static str {
+        if self.opts.isa.is_wasm() {
+            ""
+        } else {
+            "tailcc "
+        }
+    }
+
+    /// At the entry of a recursive function: a panic when the frame is
+    /// below the floor of the thread's stack (`isc_stack_floor`, computed
+    /// once per thread, kept in a thread-local variable).
+    fn stack_check(&mut self, name: &str, span: Span) {
+        self.decls.insert("declare i64 @isc_stack_floor()".into());
+        self.decls.insert("declare void @isc_panic_stack(ptr, i64, i32, i32) noreturn".into());
+        self.decls.insert("declare ptr @llvm.frameaddress.p0(i32)".into());
+        let tls = "@isc_stack_floor_tls = internal thread_local global i64 0".to_string();
+        if !self.globals.contains(&tls) {
+            self.globals.push(tls);
+        }
+        let slot = self.alloca("i64");
+        let fl = self.ins("load i64, ptr @isc_stack_floor_tls".to_string());
+        self.emit(format!("store i64 {}, ptr {}", fl, slot));
+        let unset = self.ins(format!("icmp eq i64 {}, 0", fl));
+        let linit = self.label();
+        let ljoin = self.label();
+        self.cbr(&unset, &linit, &ljoin);
+        self.block(&linit);
+        let x = self.ins("call i64 @isc_stack_floor()".to_string());
+        // unknown (0): 1, so that it is not asked again and never stops
+        let z = self.ins(format!("icmp eq i64 {}, 0", x));
+        let x1 = self.ins(format!("select i1 {}, i64 1, i64 {}", z, x));
+        self.emit(format!("store i64 {}, ptr @isc_stack_floor_tls", x1));
+        self.emit(format!("store i64 {}, ptr {}", x1, slot));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let floor = self.ins(format!("load i64, ptr {}", slot));
+        let fa = self.ins("call ptr @llvm.frameaddress.p0(i32 0)".to_string());
+        let fi = self.ins(format!("ptrtoint ptr {} to i64", fa));
+        let ok = self.ins(format!("icmp uge i64 {}, {}", fi, floor));
+        let (sname, n) = self.str_const(name);
+        self.guard(&ok, format!("call void @isc_panic_stack(ptr {}, i64 {}, {})", sname, n, Self::pos(span)));
+    }
+
+    /// Branches to a panic call unless `ok` holds.
+    fn guard(&mut self, ok: &str, call: String) {
+        let lok = self.label();
+        let lfail = self.label();
+        self.cbr(ok, &lok, &lfail);
+        self.block(&lfail);
+        self.emit(call);
+        self.emit("unreachable");
+        self.block(&lok);
+    }
+
+    fn str_const(&mut self, s: &str) -> (String, usize) {
+        if let Some(x) = self.strs.get(s) {
+            return x.clone();
+        }
+        let name = format!("@.str.{}", self.strs.len());
+        let n = s.len();
+        self.globals.push(format!(
+            "{} = private unnamed_addr constant [{} x i8] c\"{}\"",
+            name,
+            n.max(1),
+            if n == 0 { "\\00".to_string() } else { llvm_string(s) }
+        ));
+        self.strs.insert(s.to_string(), (name.clone(), n));
+        (name, n)
+    }
+
+    /// `for (i = lo; i < hi - (step - 1); i += step) body(i)`
+    fn for_range(&mut self, lo: &str, hi: &str, step: i64, body: &mut dyn FnMut(&mut Self, &str) -> R<()>) -> R<()> {
+        self.for_range_md(lo, hi, step, false, body)
+    }
+
+    /// `for_range` that LLVM neither vectorizes nor unrolls: for loops of a
+    /// few iterations, which LLVM would otherwise turn into a vector loop,
+    /// its run-time checks and its epilogue (compilation time, D86).
+    fn for_range_scalar(&mut self, lo: &str, hi: &str, step: i64, body: &mut dyn FnMut(&mut Self, &str) -> R<()>) -> R<()> {
+        self.for_range_md(lo, hi, step, true, body)
+    }
+
+    fn for_range_md(&mut self, lo: &str, hi: &str, step: i64, scalar: bool, body: &mut dyn FnMut(&mut Self, &str) -> R<()>) -> R<()> {
+        let ia = self.alloca("i64");
+        self.emit(format!("store i64 {}, ptr {}", lo, ia));
+        let limit = if step == 1 { hi.to_string() } else { self.ins(format!("sub i64 {}, {}", hi, step - 1)) };
+        let head = self.label();
+        let lbody = self.label();
+        let exit = self.label();
+        self.br(&head);
+        self.block(&head);
+        let i = self.ins(format!("load i64, ptr {}", ia));
+        let c = self.ins(format!("icmp slt i64 {}, {}", i, limit));
+        self.cbr(&c, &lbody, &exit);
+        self.block(&lbody);
+        body(self, &i)?;
+        let i2 = self.ins(format!("add i64 {}, {}", i, step));
+        self.emit(format!("store i64 {}, ptr {}", i2, ia));
+        if scalar {
+            // a distinct loop identifier, its properties !0 and !1 (see `emit_with`)
+            self.scalar_loops += 1;
+            self.emit(format!("br label %{}, !llvm.loop !{}", head, self.scalar_loops + 1));
+        } else {
+            self.br(&head);
+        }
+        self.block(&exit);
+        Ok(())
+    }
+
+    /// Repeats a uniform value in every lane.
+    fn widen(&mut self, x: &V, w: u32) -> V {
+        if w == 1 || !uni(&x) {
+            return x.clone();
+        }
+        let vty = format!("<{} x {}>", w, x.t);
+        let a = self.ins(format!("insertelement {} poison, {} {}, i64 0", vty, x.t, x.r));
+        let b = self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> zeroinitializer", vty, a, vty, w));
+        V { r: b, t: vty, uni: false }
+    }
+
+    /// A constant `c` of scalar type `t`, at width `w`.
+    fn cst(&self, t: &str, c: &str, w: u32) -> String {
+        if w == 1 {
+            c.to_string()
+        } else {
+            format!("<{}>", vec![format!("{} {}", t, c); w as usize].join(", "))
+        }
+    }
+
+    /// The block, rows, columns and stride of an array of arrays.
+    fn nested_parts(&mut self, x: &V) -> (String, String, String, String) {
+        let f: Vec<String> = (0..4).map(|i| self.ins(format!("extractvalue {} {}, {}", NESTED, x.r, i))).collect();
+        (f[0].clone(), f[1].clone(), f[2].clone(), f[3].clone())
+    }
+
+    fn nested(&mut self, ptr: &str, rows: &str, cols: &str, stride: &str) -> V {
+        let mut acc = "poison".to_string();
+        for (i, (t, x)) in [("ptr", ptr), ("i64", rows), ("i64", cols), ("i64", stride)].iter().enumerate() {
+            acc = self.ins(format!("insertvalue {} {}, {} {}, {}", NESTED, acc, t, x, i));
+        }
+        v(acc, NESTED)
+    }
+
+    /// Row `idx` of an array of arrays: a view `{ ptr, i64 }` of its block.
+    fn row_view(&mut self, ptr: &str, cols: &str, stride: &str, idx: &str, elem: &Type) -> V {
+        let off = self.ins(format!("mul i64 {}, {}", idx, stride));
+        let q = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(elem), ptr, off));
+        self.arr(&q, cols)
+    }
+
+    fn arr(&mut self, ptr: &str, len: &str) -> V {
+        let a = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", ptr));
+        let b = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", a, len));
+        v(b, "{ ptr, i64 }")
+    }
+
+    // ----- arrays of tuples: one column per scalar leaf (SPEC section 4) -----
+    //
+    // An array of `n` tuples is one block: the column of leaf c starts at the
+    // sum of the previous columns, each rounded up to 64 bytes (a cache line,
+    // and the alignment of every vector access); the array value is still
+    // `{ ptr, i64 }`. An array of scalars is one column.
+
+    /// Bytes of the column of a leaf of `size` bytes, as an IR value.
+    fn column_bytes(&mut self, n: &str, size: i64) -> String {
+        let b = self.ins(format!("mul i64 {}, {}", n, size));
+        let r = self.ins(format!("add i64 {}, 63", b));
+        self.ins(format!("and i64 {}, -64", r))
+    }
+
+    /// Bytes of an array of `n` elements.
+    fn array_bytes(&mut self, n: &str, elem: &Type) -> String {
+        if !matches!(elem, Type::Tuple(_)) {
+            return self.ins(format!("mul i64 {}, {}", n, esize(elem)));
+        }
+        let mut total = "0".to_string();
+        for (_, leaf) in leaves(elem) {
+            let c = self.column_bytes(n, esize(&leaf));
+            total = self.ins(format!("add i64 {}, {}", total, c));
+        }
+        total
+    }
+
+    fn alloc_elems(&mut self, n: &str, elem: &Type) -> String {
+        let bytes = self.array_bytes(n, elem);
+        self.ins(format!("call ptr @isc_alloc(i64 {})", bytes))
+    }
+
+    /// A scratch array of `n` elements: on the stack, aligned to 128 bytes,
+    /// when it takes at most STACK_SCRATCH bytes, else on the heap. `heap` is
+    /// an `i1` slot set to whether it is on the heap (see `free_scratch`);
+    /// the caller saves the stack before (`llvm.stacksave`) and restores it
+    /// once the array is dead.
+    fn alloc_scratch(&mut self, n: &str, elem: &Type, heap: &str) -> String {
+        // the stack part is always reserved, 0 bytes for a large array: one
+        // branch only, to the heap (less code to compile)
+        let bytes = self.array_bytes(n, elem);
+        let pp = self.alloca("ptr");
+        let small = self.ins(format!("icmp ule i64 {}, {}", bytes, self.opts.stack_scratch));
+        let b1 = self.ins(format!("add i64 {}, 127", bytes));
+        let b2 = self.ins(format!("and i64 {}, -128", b1));
+        let b3 = self.ins(format!("select i1 {}, i64 {}, i64 0", small, b2));
+        let s = self.ins(format!("alloca i8, i64 {}, align 128", b3));
+        self.emit(format!("store ptr {}, ptr {}", s, pp));
+        let large = self.ins(format!("xor i1 {}, true", small));
+        self.emit(format!("store i1 {}, ptr {}", large, heap));
+        let lheap = self.label();
+        let ljoin = self.label();
+        self.cbr(&small, &ljoin, &lheap);
+        self.block(&lheap);
+        let h = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+        self.emit(format!("store ptr {}, ptr {}", h, pp));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        self.ins(format!("load ptr, ptr {}", pp))
+    }
+
+    /// `i1`: an array of `n` elements of `elem` has at least STREAM_BYTES bytes.
+    fn stream_flag(&mut self, n: &str, elem: &Type) -> String {
+        let bytes = self.array_bytes(n, elem);
+        self.ins(format!("icmp sge i64 {}, {}", bytes, self.opts.stream_bytes))
+    }
+
+    /// Frees a scratch array of `alloc_scratch` when it is on the heap.
+    fn free_scratch(&mut self, p: &str, heap: &str) {
+        let on_heap = self.ins(format!("load i1, ptr {}", heap));
+        let lfree = self.label();
+        let lend = self.label();
+        self.cbr(&on_heap, &lfree, &lend);
+        self.block(&lfree);
+        self.emit(format!("call void @isc_free(ptr {})", p));
+        self.br(&lend);
+        self.block(&lend);
+    }
+
+    /// Start of the column of each leaf of a tuple element type.
+    fn columns(&mut self, ptr: &str, n: &str, elem: &Type) -> Vec<(Vec<u32>, Type, String)> {
+        let mut out = Vec::new();
+        let mut off = "0".to_string();
+        for (path, leaf) in leaves(elem) {
+            let base = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", ptr, off));
+            let c = self.column_bytes(n, esize(&leaf));
+            off = self.ins(format!("add i64 {}, {}", off, c));
+            out.push((path, leaf, base));
+        }
+        out
+    }
+
+    /// Element `idx` of an array of `n` elements at `ptr` (`w` consecutive
+    /// elements as a vector; tuples are loaded one at a time).
+    fn load_elem(&mut self, ptr: &str, n: &str, idx: &str, elem: &Type, w: u32) -> V {
+        if let Type::Tuple(_) = elem {
+            let ty = lt(elem);
+            let mut acc = "poison".to_string();
+            for (path, leaf, base) in self.columns(ptr, n, elem) {
+                let x = self.load_scalar(&base, idx, &leaf, 1);
+                let path: Vec<String> = path.iter().map(|i| i.to_string()).collect();
+                acc = self.ins(format!("insertvalue {} {}, {} {}, {}", ty, acc, x.t, x.r, path.join(", ")));
+            }
+            return V { r: acc, t: ty, uni: false };
+        }
+        self.load_scalar(ptr, idx, elem, w)
+    }
+
+    fn store_elem(&mut self, ptr: &str, n: &str, idx: &str, elem: &Type, x: &V, w: u32) {
+        if let Type::Tuple(_) = elem {
+            for (path, leaf, base) in self.columns(ptr, n, elem) {
+                let path: Vec<String> = path.iter().map(|i| i.to_string()).collect();
+                let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, path.join(", ")));
+                self.store_scalar(&base, idx, &leaf, &v(f, lt(&leaf)), 1);
+            }
+            return;
+        }
+        self.store_scalar(ptr, idx, elem, x, w)
+    }
+
+    fn load_scalar(&mut self, ptr: &str, idx: &str, elem: &Type, w: u32) -> V {
+        let m = mt(elem);
+        let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, idx));
+        if w == 1 {
+            let x = self.ins(format!("load {}, ptr {}", m, g));
+            if *elem == Type::Bool {
+                let b = self.ins(format!("trunc i8 {} to i1", x));
+                return V { r: b, t: "i1".into(), uni: false };
+            }
+            return V { r: x, t: m, uni: false };
+        }
+        let vm = format!("<{} x {}>", w, m);
+        let x = self.ins(format!("load {}, ptr {}, align {}", vm, g, esize(elem)));
+        if *elem == Type::Bool {
+            let b = self.ins(format!("trunc {} {} to <{} x i1>", vm, x, w));
+            return V { r: b, t: format!("<{} x i1>", w), uni: false };
+        }
+        V { r: x, t: vm, uni: false }
+    }
+
+    fn store_scalar(&mut self, ptr: &str, idx: &str, elem: &Type, x: &V, w: u32) {
+        let m = mt(elem);
+        let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, idx));
+        let x = self.widen(x, w);
+        if w == 1 {
+            let val = if *elem == Type::Bool { self.ins(format!("zext i1 {} to i8", x.r)) } else { x.r.clone() };
+            self.emit(format!("store {} {}, ptr {}", m, val, g));
+        } else {
+            let vm = format!("<{} x {}>", w, m);
+            let val = if *elem == Type::Bool {
+                self.ins(format!("zext <{} x i1> {} to {}", w, x.r, vm))
+            } else {
+                x.r.clone()
+            };
+            self.emit(format!("store {} {}, ptr {}, align {}", vm, val, g, esize(elem)));
+        }
+    }
+
+    fn zero(t: &Type) -> String {
+        match t {
+            Type::F64 => fconst(0.0),
+            Type::F32 => fconst32(0.0),
+            Type::Bool | Type::Unit => "false".into(),
+            Type::Int(_) => "0".into(),
+            Type::Rec(_) => "null".into(),
+            _ => "zeroinitializer".into(),
+        }
+    }
+
+    // ----- memory management -----------------------------------------------
+
+    fn drop_value(&mut self, x: &V, t: &Type) {
+        match t {
+            // one owner less: the node is freed by the last one (D103)
+            Type::Rec(i) => {
+                let atomic = self.in_task;
+                self.rec_drops.insert((*i, atomic));
+                self.emit(format!("call void @{}(ptr {})", rec_drop_name(*i, atomic), x.r));
+            }
+            Type::Array(e) if e.is_array() => {
+                let p = self.ins(format!("extractvalue {} {}, 0", NESTED, x.r));
+                self.emit(format!("call void @isc_free(ptr {})", p));
+            }
+            // a string: its bytes (D134)
+            Type::Str => {
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+                self.emit(format!("call void @isc_free(ptr {})", p));
+            }
+            Type::Array(e) => {
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+                // each node of the elements: one owner less (D130)
+                if holds_owned(e) {
+                    let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", x.r));
+                    let et = (**e).clone();
+                    self.for_range_scalar("0", &n, 1, &mut |g, i| {
+                        let el = g.load_elem(&p, &n, i, &et, 1);
+                        g.drop_value(&el, &et);
+                        Ok(())
+                    })
+                    .expect("the drop of the elements");
+                }
+                self.emit(format!("call void @isc_free(ptr {})", p));
+            }
+            Type::Tuple(ts) => {
+                for (i, c) in ts.iter().enumerate() {
+                    if c.has_heap() {
+                        let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+                        self.drop_value(&v(f, lt(c)), c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn copy_value(&mut self, x: &V, t: &Type) -> V {
+        match t {
+            Type::Array(e) if e.is_array() => {
+                // into one block, rows contiguous (a window becomes a matrix)
+                let inner = e.elem().clone();
+                let (p, rows, cols, stride) = self.nested_parts(x);
+                let total = self.ins(format!("mul i64 {}, {}", rows, cols));
+                let q = self.alloc_elems(&total, &inner);
+                let es_sz = esize(&inner);
+                self.for_range("0", &rows, 1, &mut |g, i| {
+                    let so = g.ins(format!("mul i64 {}, {}", i, stride));
+                    let from = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&inner), p, so));
+                    let dof = g.ins(format!("mul i64 {}, {}", i, cols));
+                    let to = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&inner), q, dof));
+                    let bytes = g.ins(format!("mul i64 {}, {}", cols, es_sz));
+                    g.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", to, from, bytes));
+                    Ok(())
+                })
+                .expect("copy of rows");
+                self.nested(&q, &rows, &cols, &cols)
+            }
+            Type::Array(e) => {
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+                let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", x.r));
+                let bytes = self.array_bytes(&n, e);
+                let q = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+                self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", q, p, bytes));
+                // each node of the elements: one owner more (D130); each
+                // string: a copy of its own (D134)
+                if holds_owned(e) {
+                    let et = (**e).clone();
+                    self.for_range_scalar("0", &n, 1, &mut |g, i| {
+                        let el = g.load_elem(&p, &n, i, &et, 1);
+                        let c = g.copy_value(&el, &et);
+                        g.store_elem(&q, &n, i, &et, &c, 1);
+                        Ok(())
+                    })
+                    .expect("the copy of the elements");
+                }
+                self.arr(&q, &n)
+            }
+            // one owner more (D103)
+            Type::Rec(_) => {
+                self.rec_incref(&x.r);
+                x.clone()
+            }
+            // a string: a new one (D134)
+            Type::Str => {
+                let (p, n) = self.str_parts(x);
+                let out = self.alloca("{ ptr, i64 }");
+                self.emit(format!("call void @isc_str_new(ptr {}, ptr {}, i64 {})", out, p, n));
+                v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }")
+            }
+            Type::Tuple(ts) => {
+                let mut acc = "poison".to_string();
+                for (i, c) in ts.iter().enumerate() {
+                    let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+                    let fc = self.copy_value(&v(f, lt(c)), c);
+                    acc = self.ins(format!("insertvalue {} {}, {} {}, {}", x.t, acc, fc.t, fc.r, i));
+                }
+                v(acc, x.t.clone())
+            }
+            _ => x.clone(),
+        }
+    }
+
+    /// The type of a node in memory: its count, then its tuple.
+    fn rec_node_ty(&self, i: u32) -> String {
+        format!("{{ i64, {} }}", lt(&self.p.recs[i as usize].layout))
+    }
+
+    /// Adds one owner to a node: atomic in a task (other threads may hold
+    /// it), a plain increment otherwise (SPEC section 8).
+    fn rec_incref(&mut self, p: &str) {
+        if self.in_task {
+            self.emit(format!("atomicrmw add ptr {}, i64 1 monotonic", p));
+        } else {
+            let c = self.ins(format!("load i64, ptr {}", p));
+            let c1 = self.ins(format!("add i64 {}, 1", c));
+            self.emit(format!("store i64 {}, ptr {}", c1, p));
+        }
+    }
+
+    /// The frees and prints of nodes asked for so far (each may ask for
+    /// others: until none is left).
+    fn emit_rec_helpers(&mut self) -> R<()> {
+        let mut done_drops = BTreeSet::new();
+        let mut done_prints = BTreeSet::new();
+        let mut done_eqs = BTreeSet::new();
+        loop {
+            if let Some(&i) = self.rec_eqs.iter().find(|i| !done_eqs.contains(*i)) {
+                done_eqs.insert(i);
+                self.emit_rec_eq(i)?;
+                continue;
+            }
+            if let Some(&k) = self.rec_drops.iter().find(|k| !done_drops.contains(*k)) {
+                done_drops.insert(k);
+                self.emit_rec_drop(k.0, k.1)?;
+                continue;
+            }
+            if let Some(&i) = self.rec_prints.iter().find(|i| !done_prints.contains(*i)) {
+                done_prints.insert(i);
+                self.emit_rec_print(i)?;
+                continue;
+            }
+            return Ok(());
+        }
+    }
+
+    /// `void @isc_rec_drop_<i>(ptr %p)`: one owner less; the last one frees
+    /// the parts of the node, then the node. The last part that is a node is
+    /// freed by a tail call, so that freeing a long list does not use the
+    /// stack.
+    fn emit_rec_drop(&mut self, i: u32, atomic: bool) -> R<()> {
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_task = std::mem::replace(&mut self.in_task, atomic);
+        let nt = self.rec_node_ty(i);
+        let layout = self.p.recs[i as usize].layout.clone();
+        let lay = lt(&layout);
+        let lnull = self.label();
+        let lgo = self.label();
+        let isnull = self.ins("icmp eq ptr %p, null".to_string());
+        self.cbr(&isnull, &lnull, &lgo);
+        self.block(&lnull);
+        self.emit("ret void");
+        self.block(&lgo);
+        let last = if atomic {
+            let old = self.ins("atomicrmw sub ptr %p, i64 1 acq_rel".to_string());
+            self.ins(format!("icmp eq i64 {}, 1", old))
+        } else {
+            let c = self.ins("load i64, ptr %p".to_string());
+            let c1 = self.ins(format!("sub i64 {}, 1", c));
+            self.emit(format!("store i64 {}, ptr %p", c1));
+            self.ins(format!("icmp eq i64 {}, 0", c1))
+        };
+        let lfree = self.label();
+        let lkeep = self.label();
+        self.cbr(&last, &lfree, &lkeep);
+        self.block(&lkeep);
+        self.emit("ret void");
+        self.block(&lfree);
+        let pt = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", nt));
+        let t = self.ins(format!("load {}, ptr {}", lay, pt));
+        let comps = match &layout {
+            Type::Tuple(ts) => ts.clone(),
+            _ => Vec::new(),
+        };
+        let tail = comps.iter().rposition(|c| matches!(c, Type::Rec(_)));
+        for (k, c) in comps.iter().enumerate() {
+            if c.has_heap() && Some(k) != tail {
+                let f = self.ins(format!("extractvalue {} {}, {}", lay, t, k));
+                self.drop_value(&v(f, lt(c)), c);
+            }
+        }
+        let rest = tail.map(|k| (self.ins(format!("extractvalue {} {}, {}", lay, t, k)), comps[k].clone()));
+        self.emit("call void @isc_free(ptr %p)".to_string());
+        if let Some((f, Type::Rec(j))) = rest {
+            self.rec_drops.insert((j, atomic));
+            self.emit(format!("tail call void @{}(ptr {})", rec_drop_name(j, atomic), f));
+        }
+        self.emit("ret void");
+        let text = self.finish(&format!("define internal void @{}(ptr %p)", rec_drop_name(i, atomic)));
+        self.f = saved_f;
+        self.env = saved_env;
+        self.in_task = saved_task;
+        self.funcs.push(text);
+        Ok(())
+    }
+
+    /// `i1 @isc_rec_eq_<i>(ptr %p, ptr %q)`: the structural equality of two
+    /// nodes (D129): component by component, the tag first, IEEE equality
+    /// of the floats (no shortcut for the same node: NaN differs from
+    /// itself); the last component that is a node by a tail call, so that
+    /// comparing long lists does not use the stack.
+    fn emit_rec_eq(&mut self, i: u32) -> R<()> {
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_task = std::mem::replace(&mut self.in_task, false);
+        let nt = self.rec_node_ty(i);
+        let layout = self.p.recs[i as usize].layout.clone();
+        let lay = lt(&layout);
+        let pn = self.ins("icmp eq ptr %p, null".to_string());
+        let qn = self.ins("icmp eq ptr %q, null".to_string());
+        let either = self.ins(format!("or i1 {}, {}", pn, qn));
+        let lnull = self.label();
+        let lgo = self.label();
+        self.cbr(&either, &lnull, &lgo);
+        self.block(&lnull);
+        let both = self.ins(format!("and i1 {}, {}", pn, qn));
+        self.emit(format!("ret i1 {}", both));
+        self.block(&lgo);
+        let pp = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", nt));
+        let qq = self.ins(format!("getelementptr inbounds {}, ptr %q, i32 0, i32 1", nt));
+        let tp = self.ins(format!("load {}, ptr {}", lay, pp));
+        let tq = self.ins(format!("load {}, ptr {}", lay, qq));
+        let comps = match &layout {
+            Type::Tuple(ts) => ts.clone(),
+            other => vec![other.clone()],
+        };
+        let tail = comps.iter().rposition(|c| matches!(c, Type::Rec(_)));
+        let res = (|| -> R<()> {
+            for (k, c) in comps.iter().enumerate() {
+                if Some(k) == tail {
+                    continue;
+                }
+                let (a, b) = if matches!(layout, Type::Tuple(_)) {
+                    (self.ins(format!("extractvalue {} {}, {}", lay, tp, k)), self.ins(format!("extractvalue {} {}, {}", lay, tq, k)))
+                } else {
+                    (tp.clone(), tq.clone())
+                };
+                let eq = self.eq_value(&v(a, lt(c)), &v(b, lt(c)), c)?;
+                let lnext = self.label();
+                let lno = self.label();
+                self.cbr(&eq, &lnext, &lno);
+                self.block(&lno);
+                self.emit("ret i1 false");
+                self.block(&lnext);
+            }
+            if let Some(k) = tail {
+                let a = self.ins(format!("extractvalue {} {}, {}", lay, tp, k));
+                let b = self.ins(format!("extractvalue {} {}, {}", lay, tq, k));
+                let Type::Rec(j) = comps[k] else { unreachable!() };
+                self.rec_eqs.insert(j);
+                let r = self.ins(format!("tail call i1 @isc_rec_eq_{}(ptr {}, ptr {})", j, a, b));
+                self.emit(format!("ret i1 {}", r));
+            } else {
+                self.emit("ret i1 true");
+            }
+            Ok(())
+        })();
+        let text = self.finish(&format!("define internal i1 @isc_rec_eq_{}(ptr %p, ptr %q)", i));
+        self.f = saved_f;
+        self.env = saved_env;
+        self.in_task = saved_task;
+        res?;
+        self.funcs.push(text);
+        Ok(())
+    }
+
+    /// The equality of two values of type `t` (an `i1`): scalars (IEEE for
+    /// floats), tuples, arrays element by element, nodes by their function.
+    fn eq_value(&mut self, a: &V, b: &V, t: &Type) -> R<String> {
+        Ok(match t {
+            Type::Int(_) | Type::Bool => self.ins(format!("icmp eq {} {}, {}", lt(t), a.r, b.r)),
+            Type::F64 | Type::F32 => self.ins(format!("fcmp oeq {} {}, {}", lt(t), a.r, b.r)),
+            Type::Unit => "true".to_string(),
+            Type::Str => {
+                let (p, n) = self.str_parts(a);
+                let (q, m) = self.str_parts(b);
+                let c = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
+                self.ins(format!("icmp eq i32 {}, 0", c))
+            }
+            Type::Rec(j) => {
+                self.rec_eqs.insert(*j);
+                self.ins(format!("call i1 @isc_rec_eq_{}(ptr {}, ptr {})", j, a.r, b.r))
+            }
+            Type::Tuple(ts) => {
+                let mut acc = "true".to_string();
+                for (k, c) in ts.iter().enumerate() {
+                    let x = self.ins(format!("extractvalue {} {}, {}", a.t, a.r, k));
+                    let y = self.ins(format!("extractvalue {} {}, {}", b.t, b.r, k));
+                    let e = self.eq_value(&v(x, lt(c)), &v(y, lt(c)), c)?;
+                    acc = self.ins(format!("and i1 {}, {}", acc, e));
+                }
+                acc
+            }
+            Type::Array(et) if !et.is_array() => {
+                let (pa, na) = self.str_parts(a);
+                let (pb, nb) = self.str_parts(b);
+                let same = self.ins(format!("icmp eq i64 {}, {}", na, nb));
+                let flag = self.alloca("i1");
+                self.emit(format!("store i1 {}, ptr {}", same, flag));
+                let n = self.ins(format!("select i1 {}, i64 {}, i64 0", same, na));
+                let et = (**et).clone();
+                self.for_range_scalar("0", &n, 1, &mut |g, i| {
+                    let x = g.load_elem(&pa, &na, i, &et, 1);
+                    let y = g.load_elem(&pb, &nb, i, &et, 1);
+                    let e = g.eq_value(&x, &y, &et)?;
+                    let f = g.ins(format!("load i1, ptr {}", flag));
+                    let f2 = g.ins(format!("and i1 {}, {}", f, e));
+                    g.emit(format!("store i1 {}, ptr {}", f2, flag));
+                    Ok(())
+                })?;
+                self.ins(format!("load i1, ptr {}", flag))
+            }
+            other => return Err(format!("codegen: equality of {:?} in a recursive type", other)),
+        })
+    }
+
+    /// `void @isc_rec_print_<i>(ptr %p)`: prints the tuple of the node.
+    fn emit_rec_print(&mut self, i: u32) -> R<()> {
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_task = std::mem::replace(&mut self.in_task, false);
+        let nt = self.rec_node_ty(i);
+        let r = self.p.recs[i as usize].clone();
+        let lay = lt(&r.layout);
+        let pt = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", nt));
+        let t = self.ins(format!("load {}, ptr {}", lay, pt));
+        let res = self.print_value(&v(t, lay), &r.layout, &r.shape);
+        self.emit("ret void");
+        let text = self.finish(&format!("define internal void @isc_rec_print_{}(ptr %p)", i));
+        self.f = saved_f;
+        self.env = saved_env;
+        self.in_task = saved_task;
+        res?;
+        self.funcs.push(text);
+        Ok(())
+    }
+
+    fn black_box(&mut self, x: &V) {
+        let slot = self.alloca(&x.t);
+        if self.opts.isa.is_wasm() {
+            // no inline assembly in WebAssembly: a volatile store is kept too
+            self.emit(format!("store volatile {} {}, ptr {}", x.t, x.r, slot));
+            return;
+        }
+        self.emit(format!("store {} {}, ptr {}", x.t, x.r, slot));
+        self.emit(format!("call void asm sideeffect \"\", \"r,~{{memory}}\"(ptr {})", slot));
+    }
+
+    // ----- expressions -------------------------------------------------------
+
+    fn var_ty(&self, v: VarId) -> &Type {
+        &self.p.vars[v as usize].ty
+    }
+
+    fn bind(&mut self, var: VarId, x: V) {
+        self.env.insert(var, x);
+    }
+
+    /// Compiles an expression; `w > 1` only for element computations
+    /// accepted by `vec_ok`.
+    fn ex(&mut self, e: &Expr, w: u32) -> R<V> {
+        use ExprKind::*;
+        let span = e.span;
+        if !self.pre.is_empty() {
+            if let Some(x) = self.pre.get(&(e as *const Expr)) {
+                return Ok(x.clone());
+            }
+        }
+        match &e.kind {
+            // a new string of the bytes of a constant (D134)
+            StrLit(s) => {
+                let (g, n) = self.str_const(s);
+                let out = self.alloca("{ ptr, i64 }");
+                self.emit(format!("call void @isc_str_new(ptr {}, ptr {}, i64 {})", out, g, n));
+                Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
+            }
+            StrOp(op, es) => self.str_op(e, *op, es),
+            Lit(l) => Ok(match l {
+                isc_ir::Lit::Int(i) => v(i.to_string(), lt(&e.ty)),
+                isc_ir::Lit::F64(f) => v(fconst(*f), "double"),
+                isc_ir::Lit::F32(f) => v(fconst32(*f), "float"),
+                isc_ir::Lit::Bool(b) => v(b.to_string(), "i1"),
+                isc_ir::Lit::Unit => v("false", "i1"),
+            }),
+            Var(x, _) => self.env.get(x).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", x)),
+            Let { var, init, body, stmt, drop } => {
+                let iv = self.ex(init, w)?;
+                self.bind(*var, iv.clone());
+                if *stmt && w == 1 {
+                    self.black_box(&iv);
+                }
+                // a value the rest never reads is freed at once, not at the
+                // end of its scope: its memory is given again to the next
+                // allocation (`let (_, _) = bench(1, f)` before the timed
+                // call, DECISIONS D117)
+                let early = *drop && w == 1 && !mentions(body, &HashSet::from([*var])) && !frees(body, *var);
+                if early {
+                    let t = self.var_ty(*var).clone();
+                    self.drop_value(&iv, &t);
+                }
+                let r = self.ex(body, w)?;
+                if *drop && !early {
+                    let t = self.var_ty(*var).clone();
+                    self.drop_value(&iv, &t);
+                }
+                Ok(r)
+            }
+            Tuple(es) => {
+                let t = lt(&e.ty);
+                let mut acc = "poison".to_string();
+                for (i, x) in es.iter().enumerate() {
+                    let xv = self.ex(x, 1)?;
+                    acc = self.ins(format!("insertvalue {} {}, {} {}, {}", t, acc, xv.t, xv.r, i));
+                }
+                if es.is_empty() {
+                    acc = "zeroinitializer".into();
+                }
+                Ok(v(acc, t))
+            }
+            Proj(x, i) | Take(x, i) => {
+                let xv = self.ex(x, 1)?;
+                let r = self.ins(format!("extractvalue {} {}, {}", xv.t, xv.r, i));
+                Ok(v(r, lt(&e.ty)))
+            }
+            Unary(op, x) => {
+                let xv = self.ex(x, w)?;
+                let ww = if uni(&xv) { 1 } else { w };
+                let t = vt(&x.ty, ww);
+                let r = match (op, &x.ty) {
+                    (UnOp::Not, _) => {
+                        let c = self.cst("i1", "true", ww);
+                        self.ins(format!("xor {} {}, {}", t, xv.r, c))
+                    }
+                    (UnOp::Neg, Type::F64 | Type::F32) => self.ins(format!("fneg {} {}", t, xv.r)),
+                    (UnOp::Neg, Type::Int(_)) => {
+                        let z = if ww == 1 { "0".to_string() } else { "zeroinitializer".into() };
+                        self.ins(format!("sub {} {}, {}", t, z, xv.r))
+                    }
+                    _ => return Err("codegen: bad unary operand".into()),
+                };
+                Ok(V { r, t, uni: uni(&xv) })
+            }
+            // two values of a recursive type: their equality function (D129)
+            Binary(BinOp::Eq, a, b) if matches!(a.ty, Type::Rec(_)) => {
+                let av = self.ex(a, 1)?;
+                let bv = self.ex(b, 1)?;
+                let Type::Rec(j) = a.ty else { unreachable!() };
+                self.rec_eqs.insert(j);
+                let r = self.ins(format!("call i1 @isc_rec_eq_{}(ptr {}, ptr {})", j, av.r, bv.r));
+                Ok(v(r, "i1"))
+            }
+            Binary(op, a, b) => {
+                let av = self.ex(a, w)?;
+                let bv = self.ex(b, w)?;
+                // inside `allow_reassoc` (D109)
+                let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
+                let r = self.binop(*op, av, bv, &a.ty, w, span);
+                self.fast_math = saved;
+                r
+            }
+            Pow(b, k) => {
+                // inside `allow_reassoc`, its multiplications too (D109,
+                // D123: `(x - m) ^ 2` contracted with the sum into an FMA)
+                let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
+                let r = self.pow(b, k, w, span);
+                self.fast_math = saved;
+                r
+            }
+            Convert(x) => {
+                let xv = self.ex(x, w)?;
+                self.convert(xv, &x.ty, &e.ty, w)
+            }
+            // one rounding: the instruction (D108)
+            Math(MathFn::Fma, xs) => {
+                let vs: Vec<V> = xs.iter().map(|x| self.ex(x, w)).collect::<R<_>>()?;
+                let all_uni = vs.iter().all(uni);
+                let ww = if all_uni { 1 } else { w };
+                let vs: Vec<V> = vs.iter().map(|x| self.widen(x, ww)).collect();
+                let (s, f) = if e.ty == Type::F32 { ("float", "f32") } else { ("double", "f64") };
+                let (t, name) = if ww == 1 {
+                    (s.to_string(), format!("llvm.fma.{}", f))
+                } else {
+                    (format!("<{} x {}>", ww, s), format!("llvm.fma.v{}{}", ww, f))
+                };
+                self.decls.insert(format!("declare {} @{}({}, {}, {})", t, name, t, t, t));
+                let r = self.ins(format!("call {} @{}({} {}, {} {}, {} {})", t, name, t, vs[0].r, t, vs[1].r, t, vs[2].r));
+                Ok(V { r, t, uni: all_uni })
+            }
+            // a function of the runtime, the same everywhere (D108)
+            Math(f, xs) => {
+                let vs: Vec<V> = xs.iter().map(|x| self.ex(x, 1)).collect::<R<_>>()?;
+                let (s, suffix) = if e.ty == Type::F32 { ("float", "f") } else { ("double", "") };
+                let name = format!("isc_{}{}", f.name(), suffix);
+                let ps = vec![s; vs.len()].join(", ");
+                self.decls.insert(format!("declare {} @{}({})", s, name, ps));
+                let args: Vec<String> = vs.iter().map(|x| format!("{} {}", s, x.r)).collect();
+                let r = self.ins(format!("call {} @{}({})", s, name, args.join(", ")));
+                Ok(V { r, t: s.to_string(), uni: vs.iter().all(uni) })
+            }
+            Sqrt(x) => {
+                let xv = self.ex(x, w)?;
+                let ww = if uni(&xv) { 1 } else { w };
+                let (s, f) = if x.ty == Type::F32 { ("float", "f32") } else { ("double", "f64") };
+                let (t, name) = if ww == 1 {
+                    (s.to_string(), format!("llvm.sqrt.{}", f))
+                } else {
+                    (format!("<{} x {}>", ww, s), format!("llvm.sqrt.v{}{}", ww, f))
+                };
+                self.decls.insert(format!("declare {} @{}({})", t, name, t));
+                let r = self.ins(format!("call {} @{}({} {})", t, name, t, xv.r));
+                Ok(V { r, t, uni: uni(&xv) })
+            }
+            If(c, t, f) => {
+                if w > 1 {
+                    let cv = self.ex(c, w)?;
+                    // the lanes of each branch, for the SPMD calls in them
+                    let saved = self.mask.clone();
+                    let (mt, mf) = self.branch_masks(&cv, w);
+                    self.mask = Some(mt);
+                    let tv = self.ex(t, w);
+                    self.mask = Some(mf);
+                    let fv = self.ex(f, w);
+                    self.mask = saved;
+                    let (tv, fv) = (tv?, fv?);
+                    let all_uni = uni(&cv) && uni(&tv) && uni(&fv);
+                    if all_uni {
+                        let r = self.ins(format!("select i1 {}, {} {}, {} {}", cv.r, tv.t, tv.r, fv.t, fv.r));
+                        return Ok(V { r, t: tv.t, uni: true });
+                    }
+                    let tv = self.widen(&tv, w);
+                    let fv = self.widen(&fv, w);
+                    let cv = self.widen(&cv, w);
+                    let r = self.ins(format!("select {} {}, {} {}, {} {}", cv.t, cv.r, tv.t, tv.r, fv.t, fv.r));
+                    return Ok(V { r, t: tv.t, uni: false });
+                }
+                let cv = self.ex(c, 1)?;
+                let lt_ = self.label();
+                let lf = self.label();
+                let lj = self.label();
+                self.cbr(&cv.r, &lt_, &lf);
+                self.block(&lt_);
+                let tv = self.ex(t, 1)?;
+                let tend = self.current_label(&lt_);
+                self.br(&lj);
+                self.block(&lf);
+                let fv = self.ex(f, 1)?;
+                let fend = self.current_label(&lf);
+                self.br(&lj);
+                self.block(&lj);
+                let ty = lt(&e.ty);
+                let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", ty, tv.r, tend, fv.r, fend));
+                Ok(v(r, ty))
+            }
+            Len(x) => {
+                let (_, n) = self.prepare_src(x)?;
+                Ok(v(n, "i64"))
+            }
+            ArrayLit(es) if e.ty.elem().is_array() => {
+                // rows copied into one block (they have the same length: a
+                // run-time test when it is not known at compilation)
+                let inner = e.ty.elem().elem().clone();
+                let rows = es.len().to_string();
+                let mut vals = Vec::new();
+                for x in es {
+                    vals.push(self.ex(x, 1)?);
+                }
+                let cols = if vals.is_empty() {
+                    "0".to_string()
+                } else {
+                    self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", vals[0].r))
+                };
+                let total = self.ins(format!("mul i64 {}, {}", rows, cols));
+                let p = self.alloc_elems(&total, &inner);
+                let es_sz = esize(&inner);
+                for (i, xv) in vals.iter().enumerate() {
+                    let q = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                    let m = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+                    let same = self.ins(format!("icmp eq i64 {}, {}", m, cols));
+                    self.guard(&same, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", m, cols, Self::pos(span)));
+                    let off = self.ins(format!("mul i64 {}, {}", i, cols));
+                    let dst = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&inner), p, off));
+                    let bytes = self.ins(format!("mul i64 {}, {}", cols, es_sz));
+                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, q, bytes));
+                    // the elements of a literal are its own (the ownership
+                    // pass copies an element still used elsewhere): the row,
+                    // copied into the block, is freed
+                    self.emit(format!("call void @isc_free(ptr {})", q));
+                }
+                Ok(self.nested(&p, &rows, &cols, &cols))
+            }
+            ArrayLit(es) => {
+                let et = e.ty.elem().clone();
+                let n = es.len().to_string();
+                let p = self.alloc_elems(&n, &et);
+                for (i, x) in es.iter().enumerate() {
+                    let xv = self.ex(x, 1)?;
+                    self.store_elem(&p, &n, &i.to_string(), &et, &xv, 1);
+                }
+                Ok(self.arr(&p, &n))
+            }
+            Index(a, i) => {
+                let (src, n) = self.prepare_src(a)?;
+                let iv = self.ex(i, 1)?;
+                let idx = self.index64(&iv, &i.ty);
+                self.bounds(&idx, &n, &i.ty, span);
+                self.elem(&src, &idx, 1)
+            }
+            Window(x, k) => {
+                // a view of `x`: rows `n - k + 1`, columns `k`, stride 1
+                let xv = self.ex(x, 1)?;
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+                let kv = self.ex(k, 1)?;
+                let ok = self.ins(format!("icmp sle i64 {}, {}", kv.r, n));
+                self.guard(&ok, format!("call void @isc_panic_window(i64 {}, i64 {}, {})", kv.r, n, Self::pos(span)));
+                let d = self.ins(format!("sub i64 {}, {}", n, kv.r));
+                let rows = self.ins(format!("add i64 {}, 1", d));
+                Ok(self.nested(&p, &rows, &kv.r, "1"))
+            }
+            // a slice of a producer: only its elements computed, into new
+            // memory (D101)
+            Slice(x, ..) if isc_ir::passes::is_producer(x) => self.materialize(e),
+            Slice(x, a, b) => {
+                // a view of scalars, or a new array of the elements a .. b - 1,
+                // column by column for an array of tuples
+                let xv = self.ex(x, 1)?;
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+                let av = self.ex(a, 1)?;
+                let bv = self.ex(b, 1)?;
+                self.slice_check(&av.r, &bv.r, &n, span);
+                let m = self.ins(format!("sub i64 {}, {}", bv.r, av.r));
+                let elem_ty = e.ty.elem().clone();
+                if e.ty.slice_is_view() {
+                    // a view of the elements a .. b - 1 (rule F4, D97)
+                    let from = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&elem_ty), p, av.r));
+                    let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", from));
+                    let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, m));
+                    return Ok(V { r, t: "{ ptr, i64 }".into(), uni: true });
+                }
+                let dst = self.alloc_elems(&m, &elem_ty);
+                let leaf_tys: Vec<Type> = if matches!(elem_ty, Type::Tuple(_)) {
+                    leaves(&elem_ty).into_iter().map(|(_, l)| l).collect()
+                } else {
+                    vec![elem_ty.clone()]
+                };
+                let (srcs, dsts): (Vec<String>, Vec<String>) = if matches!(elem_ty, Type::Tuple(_)) {
+                    let s = self.columns(&p, &n, &elem_ty).into_iter().map(|(_, _, b)| b).collect();
+                    let d = self.columns(&dst, &m, &elem_ty).into_iter().map(|(_, _, b)| b).collect();
+                    (s, d)
+                } else {
+                    (vec![p.clone()], vec![dst.clone()])
+                };
+                for ((leaf, s), d) in leaf_tys.iter().zip(srcs).zip(dsts) {
+                    let sz = esize(leaf);
+                    let off = self.ins(format!("mul i64 {}, {}", av.r, sz));
+                    let from = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", s, off));
+                    let bytes = self.ins(format!("mul i64 {}, {}", m, sz));
+                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, from, bytes));
+                }
+                let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", dst));
+                let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, m));
+                Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+            }
+            Update { target, index, value, .. } => {
+                let iv = self.ex(index, 1)?;
+                let vv = self.ex(value, 1)?;
+                let av = self.ex(target, 1)?;
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", av.r));
+                let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", av.r));
+                let idx = self.index64(&iv, &index.ty);
+                self.bounds(&idx, &n, &index.ty, span);
+                let et = e.ty.elem().clone();
+                // the element replaced loses its owner: a node (D130)
+                if holds_owned(&et) {
+                    let old = self.load_elem(&p, &n, &idx, &et, 1);
+                    self.drop_value(&old, &et);
+                }
+                self.store_elem(&p, &n, &idx, &et, &vv, 1);
+                Ok(av)
+            }
+            Map(..) if isc_ir::passes::is_stream(e) => self.materialize_stream(e),
+            // the reductions of sliding windows, level by level (D115)
+            Map(ins, l) if ins.len() == 1 && ins[0].ty.elem().is_array() && window_reduce_of(l).is_some() => {
+                self.window_cascade(e)
+            }
+            // a `map` whose elements are arrays: an array of arrays (D126)
+            Map(..) if e.ty.elem().is_array() => self.materialize_rows(e),
+            Map(..) | Iota(_) | Fill(..) | Zeros(_) => self.materialize(e),
+            // values that own memory (strings, nodes, D134)
+            Reduce(x, l, z) if holds_owned(&e.ty) => self.reduce_owned(x, l, z),
+            Scan(x, l, z) if holds_owned(e.ty.elem()) => self.scan_owned(x, l, z),
+            Reduce(x, l, z) if isc_ir::passes::is_stream(x) => self.reduce_stream(x, l, z),
+            Reduce(x, l, z) if Self::columns_of(x, l, z).is_some() => {
+                let cols = Self::columns_of(x, l, z).unwrap();
+                self.reduce_columns(e, &cols)
+            }
+            Reduce(x, l, z) => self.reduce(e, x, l, z),
+            Scan(x, l, z) => self.scan(e, x, l, z),
+            Filter(x, l) => self.filter(x, l),
+            Fold(x, init, l) if w > 1 => self.fold_vec(x, init, l, w),
+            Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
+            Fold(x, init, l) => match additive_update(l) {
+                Some((gi, h, read)) if !self.in_task => self.fold_private(e, x, init, l, gi, h, read),
+                _ => self.fold(x, init, l),
+            },
+            CheckSize(a, b, body) => {
+                let av = self.ex(a, 1)?;
+                let bv = self.ex(b, 1)?;
+                let ok = self.ins(format!("icmp eq i64 {}, {}", av.r, bv.r));
+                self.guard(&ok, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", av.r, bv.r, Self::pos(span)));
+                self.ex(body, w)
+            }
+            CheckNonNegative(k, body) => {
+                let kv = self.ex(k, 1)?;
+                let ok = self.ins(format!("icmp sge i64 {}, 0", kv.r));
+                self.guard(&ok, format!("call void @isc_panic_negsize(i64 {}, {})", kv.r, Self::pos(span)));
+                self.ex(body, w)
+            }
+            Zero => Ok(v(Self::zero(&e.ty), lt(&e.ty))),
+            Copy(x) => {
+                let xv = self.ex(x, 1)?;
+                Ok(self.copy_value(&xv, &x.ty))
+            }
+            Action(op, args) => self.action(*op, args, e),
+            Bench(r, body) => self.bench(r, body, e),
+            // the body, then a variable freed (D105)
+            Free(var, body) => {
+                let r = self.ex(body, w)?;
+                let x = self.env[var].clone();
+                let ty = self.p.vars[*var as usize].ty.clone();
+                self.drop_value(&x, &ty);
+                Ok(r)
+            }
+            // a new node: one owner, its tuple (D103)
+            Box(x) => {
+                let Type::Rec(i) = e.ty else { return Err("internal error: box of a non-recursive type".into()) };
+                let t = self.ex(x, 1)?;
+                let nt = self.rec_node_ty(i);
+                let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
+                let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
+                let p = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+                self.emit(format!("store i64 1, ptr {}", p));
+                let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
+                self.emit(format!("store {} {}, ptr {}", t.t, t.r, pt));
+                Ok(v(p, "ptr"))
+            }
+            Unbox(x) => {
+                let Type::Rec(i) = x.ty else { return Err("internal error: unbox of a non-recursive type".into()) };
+                let p = self.ex(x, 1)?;
+                let nt = self.rec_node_ty(i);
+                let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p.r));
+                let lay = lt(&e.ty);
+                let t = self.ins(format!("load {}, ptr {}", lay, pt));
+                Ok(v(t, lay))
+            }
+            // a recursive function (D102)
+            Call(f, args) if w > 1 => self.spmd_call(*f, args, w),
+            Call(f, args) => {
+                let key = e as *const Expr;
+                if self.tail.as_ref().map(|t| t.calls.contains_key(&key)).unwrap_or(false) {
+                    return self.tail_jump(e, args);
+                }
+                let mut vals = Vec::new();
+                for a in args {
+                    let x = self.ex(a, 1)?;
+                    vals.push(format!("{} {}", x.t, x.r));
+                }
+                let ret = lt(&e.ty);
+                // a tail call to another function: its frame replaces this
+                // one (D113)
+                if let Some(first) = self.other_tails.get(&key).cloned() {
+                    for var in &first {
+                        let ty = self.p.vars[*var as usize].ty.clone();
+                        let x = self.env[var].clone();
+                        self.drop_value(&x, &ty);
+                    }
+                    let r = self.ins(format!("tail call tailcc {} @isc_fn_{}({})", ret, f, vals.join(", ")));
+                    self.emit(format!("ret {} {}", ret, r));
+                    let dead = self.label();
+                    self.block(&dead);
+                    return Ok(V { r: "poison".into(), t: ret, uni: true });
+                }
+                let cc = self.fn_cc();
+                let r = self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")));
+                Ok(V { r, t: ret, uni: true })
+            }
+        }
+    }
+
+    /// The label of the block currently being filled.
+    fn current_label(&self, default: &str) -> String {
+        for line in self.f.body.iter().rev() {
+            if !line.starts_with("  ") && line.ends_with(':') {
+                return line.trim_end_matches(':').to_string();
+            }
+        }
+        default.to_string()
+    }
+
+    fn index64(&mut self, iv: &V, t: &Type) -> String {
+        match t {
+            Type::Int(k) if k.bits() < 64 => {
+                let op = if k.signed() { "sext" } else { "zext" };
+                self.ins(format!("{} i{} {} to i64", op, k.bits(), iv.r))
+            }
+            _ => iv.r.clone(),
+        }
+    }
+
+    /// 0 <= a <= b <= n, or the panic of a slice.
+    fn slice_check(&mut self, a: &str, b: &str, n: &str, span: Span) {
+        let c0 = self.ins(format!("icmp sge i64 {}, 0", a));
+        let c1 = self.ins(format!("icmp sle i64 {}, {}", a, b));
+        let c2 = self.ins(format!("icmp sle i64 {}, {}", b, n));
+        let c01 = self.ins(format!("and i1 {}, {}", c0, c1));
+        let ok = self.ins(format!("and i1 {}, {}", c01, c2));
+        self.guard(&ok, format!("call void @isc_panic_slice(i64 {}, i64 {}, i64 {}, {})", a, b, n, Self::pos(span)));
+    }
+
+    fn bounds(&mut self, idx: &str, n: &str, t: &Type, span: Span) {
+        let ok = self.ins(format!("icmp ult i64 {}, {}", idx, n));
+        let unsigned = if is_signed(t) { 0 } else { 1 };
+        self.guard(&ok, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", idx, n, unsigned, Self::pos(span)));
+    }
+
+    fn binop(&mut self, op: BinOp, a: V, b: V, ty: &Type, w: u32, span: Span) -> R<V> {
+        let all_uni = uni(&a) && uni(&b);
+        let ww = if all_uni { 1 } else { w };
+        let a = self.widen(&a, ww);
+        let b = self.widen(&b, ww);
+        let t = vt(ty, ww);
+        let bool_t = vt(&Type::Bool, ww);
+        use BinOp::*;
+        if matches!(op, Min | Max) {
+            // IEEE 754-2019 `minimum` / `maximum` for floats (SPEC section 10:
+            // NaN gives NaN, -0 below +0), signed or unsigned for integers
+            let (scalar, name) = match ty {
+                Type::F64 => ("f64".to_string(), if op == Min { "minimum" } else { "maximum" }),
+                Type::F32 => ("f32".to_string(), if op == Min { "minimum" } else { "maximum" }),
+                Type::Int(k) => {
+                    let n = match (op, k.signed()) {
+                        (Min, true) => "smin",
+                        (Min, false) => "umin",
+                        (_, true) => "smax",
+                        (_, false) => "umax",
+                    };
+                    (format!("i{}", k.bits()), n)
+                }
+                _ => return Err(format!("codegen: {} on {:?}", op.text(), ty)),
+            };
+            let f = if ww == 1 { format!("llvm.{}.{}", name, scalar) } else { format!("llvm.{}.v{}{}", name, ww, scalar) };
+            self.decls.insert(format!("declare {} @{}({}, {})", t, f, t, t));
+            let r = self.ins(format!("call {} @{}({} {}, {} {})", t, f, t, a.r, t, b.r));
+            return Ok(V { r, t, uni: all_uni });
+        }
+        let (r, rt) = match ty {
+            Type::F64 | Type::F32 => {
+                let (ins, cmp) = match op {
+                    Add => ("fadd", false),
+                    Sub => ("fsub", false),
+                    Mul => ("fmul", false),
+                    Div => ("fdiv", false),
+                    Rem => ("frem", false),
+                    Eq => ("fcmp oeq", true),
+                    Ne => ("fcmp une", true),
+                    Lt => ("fcmp olt", true),
+                    Le => ("fcmp ole", true),
+                    Gt => ("fcmp ogt", true),
+                    Ge => ("fcmp oge", true),
+                    And | Or | Min | Max | BitAnd | BitOr | BitXor | Shl | Shr => return Err("codegen: logic on floats".into()),
+                };
+                // `allow_reassoc`: what `-fassociative-math` allows (SPEC
+                // section 10), not `-ffast-math`
+                let flags = if self.fast_math && !cmp { " reassoc nsz contract" } else { "" };
+                let r = self.ins(format!("{}{} {} {}, {}", ins, flags, t, a.r, b.r));
+                (r, if cmp { bool_t } else { t.clone() })
+            }
+            Type::Int(k) => {
+                let s = k.signed();
+                let cmp = |o: BinOp| -> Option<&'static str> {
+                    Some(match o {
+                        Eq => "eq",
+                        Ne => "ne",
+                        Lt => if s { "slt" } else { "ult" },
+                        Le => if s { "sle" } else { "ule" },
+                        Gt => if s { "sgt" } else { "ugt" },
+                        Ge => if s { "sge" } else { "uge" },
+                        _ => return None,
+                    })
+                };
+                if let Some(c) = cmp(op) {
+                    let r = self.ins(format!("icmp {} {} {}, {}", c, t, a.r, b.r));
+                    (r, bool_t)
+                } else {
+                    match op {
+                        Add | Sub | Mul => {
+                            let ins = match op {
+                                Add => "add",
+                                Sub => "sub",
+                                _ => "mul",
+                            };
+                            (self.ins(format!("{} {} {}, {}", ins, t, a.r, b.r)), t.clone())
+                        }
+                        Div | Rem => (self.intdiv(op, &a, &b, *k, ww, span), t.clone()),
+                        // bitwise (D136); the shift amount modulo the bits
+                        BitAnd | BitOr | BitXor => {
+                            let ins = match op {
+                                BitAnd => "and",
+                                BitOr => "or",
+                                _ => "xor",
+                            };
+                            (self.ins(format!("{} {} {}, {}", ins, t, a.r, b.r)), t.clone())
+                        }
+                        Shl | Shr => {
+                            let m = self.cst(&format!("i{}", k.bits()), &(k.bits() - 1).to_string(), ww);
+                            let amount = self.ins(format!("and {} {}, {}", t, b.r, m));
+                            let ins = match (op, s) {
+                                (Shl, _) => "shl",
+                                (_, true) => "ashr",
+                                _ => "lshr",
+                            };
+                            (self.ins(format!("{} {} {}, {}", ins, t, a.r, amount)), t.clone())
+                        }
+                        _ => return Err("codegen: logic on integers".into()),
+                    }
+                }
+            }
+            Type::Bool => {
+                let c = match op {
+                    Eq => "eq",
+                    Ne => "ne",
+                    Lt => "ult",
+                    Le => "ule",
+                    Gt => "ugt",
+                    Ge => "uge",
+                    _ => return Err("codegen: arithmetic on booleans".into()),
+                };
+                (self.ins(format!("icmp {} {} {}, {}", c, t, a.r, b.r)), bool_t)
+            }
+            _ => return Err(format!("codegen: binary operator on {:?}", ty)),
+        };
+        Ok(V { r, t: rt, uni: all_uni })
+    }
+
+    /// Integer division (section 4): truncation toward zero, panic on zero,
+    /// `MIN / -1 = MIN` and `MIN % -1 = 0`.
+    fn intdiv(&mut self, op: BinOp, a: &V, b: &V, k: IntKind, w: u32, span: Span) -> String {
+        let it = format!("i{}", k.bits());
+        let t = if w == 1 { it.clone() } else { format!("<{} x {}>", w, it) };
+        let z = if w == 1 { "0".to_string() } else { "zeroinitializer".to_string() };
+        let isz = self.ins(format!("icmp eq {} {}, {}", t, b.r, z));
+        let any = if w == 1 {
+            isz
+        } else {
+            let name = format!("llvm.vector.reduce.or.v{}i1", w);
+            self.decls.insert(format!("declare i1 @{}(<{} x i1>)", name, w));
+            self.ins(format!("call i1 @{}(<{} x i1> {})", name, w, isz))
+        };
+        let ok = self.ins(format!("xor i1 {}, true", any));
+        self.guard(&ok, format!("call void @isc_panic_div0({})", Self::pos(span)));
+        if !k.signed() {
+            let ins = if op == BinOp::Div { "udiv" } else { "urem" };
+            return self.ins(format!("{} {} {}, {}", ins, t, a.r, b.r));
+        }
+        let m1 = self.cst(&it, "-1", w);
+        let one = self.ct_one(&it, w);
+        let bt = if w == 1 { "i1".to_string() } else { format!("<{} x i1>", w) };
+        let ism1 = self.ins(format!("icmp eq {} {}, {}", t, b.r, m1));
+        let safe_b = self.ins(format!("select {} {}, {} {}, {} {}", bt, ism1, t, one, t, b.r));
+        if op == BinOp::Div {
+            let q = self.ins(format!("sdiv {} {}, {}", t, a.r, safe_b));
+            let neg = self.ins(format!("sub {} {}, {}", t, z, a.r));
+            self.ins(format!("select {} {}, {} {}, {} {}", bt, ism1, t, neg, t, q))
+        } else {
+            let q = self.ins(format!("srem {} {}, {}", t, a.r, safe_b));
+            self.ins(format!("select {} {}, {} {}, {} {}", bt, ism1, t, z, t, q))
+        }
+    }
+
+    fn ct_one(&self, it: &str, w: u32) -> String {
+        self.cst(it, "1", w)
+    }
+
+    fn mul(&mut self, a: &V, b: &V, ty: &Type, w: u32) -> V {
+        let all_uni = uni(&a) && uni(&b);
+        let ww = if all_uni { 1 } else { w };
+        let a = self.widen(a, ww);
+        let b = self.widen(b, ww);
+        let t = vt(ty, ww);
+        let ins = if ty.is_float() { "fmul" } else { "mul" };
+        let flags = if self.fast_math && ty.is_float() { " reassoc nsz contract" } else { "" };
+        let r = self.ins(format!("{}{} {} {}, {}", ins, flags, t, a.r, b.r));
+        V { r, t, uni: all_uni }
+    }
+
+    /// `x ^ k` (section 10): binary exponentiation, most significant bit
+    /// first; `x ^ 2` is exactly `x * x`.
+    fn pow(&mut self, b: &Expr, k: &Expr, w: u32, span: Span) -> R<V> {
+        let x = self.ex(b, w)?;
+        let one = match &b.ty {
+            Type::F64 => v(fconst(1.0), "double"),
+            Type::F32 => v(fconst32(1.0), "float"),
+            Type::Int(_) => v("1", lt(&b.ty)),
+            _ => return Err("codegen: bad pow base".into()),
+        };
+        if let ExprKind::Lit(Lit::Int(n)) = k.kind {
+            if !(is_signed(&k.ty) && n < 0) {
+                let e = n as u64;
+                if e == 0 {
+                    return Ok(one);
+                }
+                let top = 63 - e.leading_zeros();
+                let mut r = x.clone();
+                for bit in (0..top).rev() {
+                    r = self.mul(&r, &r, &b.ty, w);
+                    if (e >> bit) & 1 == 1 {
+                        r = self.mul(&r, &x, &b.ty, w);
+                    }
+                }
+                return Ok(r);
+            }
+        }
+        let kv = self.ex(k, 1)?;
+        let e = self.index64(&kv, &k.ty);
+        if is_signed(&k.ty) {
+            let ok = self.ins(format!("icmp sge i64 {}, 0", e));
+            self.guard(&ok, format!("call void @isc_panic_negexp(i64 {}, {})", e, Self::pos(span)));
+        }
+        // result for e == 0 is 1; otherwise loop over the bits below the top one
+        let rt = if uni(&x) { lt(&b.ty) } else { vt(&b.ty, w) };
+        let ra = self.alloca(&rt);
+        let onew = self.widen(&one, if uni(&x) { 1 } else { w });
+        self.emit(format!("store {} {}, ptr {}", rt, onew.r, ra));
+        let lz = self.label();
+        let lnz = self.label();
+        let ldone = self.label();
+        let isz = self.ins(format!("icmp eq i64 {}, 0", e));
+        self.cbr(&isz, &lz, &lnz);
+        self.block(&lnz);
+        self.decls.insert("declare i64 @llvm.ctlz.i64(i64, i1)".into());
+        let lzc = self.ins(format!("call i64 @llvm.ctlz.i64(i64 {}, i1 true)", e));
+        let top = self.ins(format!("sub i64 63, {}", lzc));
+        self.emit(format!("store {} {}, ptr {}", rt, x.r, ra));
+        let ba = self.alloca("i64");
+        self.emit(format!("store i64 {}, ptr {}", top, ba));
+        let head = self.label();
+        let body = self.label();
+        self.br(&head);
+        self.block(&head);
+        let bit = self.ins(format!("load i64, ptr {}", ba));
+        let more = self.ins(format!("icmp sgt i64 {}, 0", bit));
+        self.cbr(&more, &body, &ldone);
+        self.block(&body);
+        let bit1 = self.ins(format!("sub i64 {}, 1", bit));
+        self.emit(format!("store i64 {}, ptr {}", bit1, ba));
+        let r0 = self.ins(format!("load {}, ptr {}", rt, ra));
+        let rv = V { r: r0, t: rt.clone(), uni: uni(&x) };
+        let sq = self.mul(&rv, &rv, &b.ty, w);
+        let sx = self.mul(&sq, &x, &b.ty, w);
+        let sh = self.ins(format!("lshr i64 {}, {}", e, bit1));
+        let lb = self.ins(format!("and i64 {}, 1", sh));
+        let set = self.ins(format!("icmp eq i64 {}, 1", lb));
+        let sel = self.ins(format!("select i1 {}, {} {}, {} {}", set, rt, sx.r, rt, sq.r));
+        self.emit(format!("store {} {}, ptr {}", rt, sel, ra));
+        self.br(&head);
+        self.block(&lz);
+        self.br(&ldone);
+        self.block(&ldone);
+        let r = self.ins(format!("load {}, ptr {}", rt, ra));
+        Ok(V { r, t: rt, uni: uni(&x) })
+    }
+
+    fn convert(&mut self, x: V, from: &Type, to: &Type, w: u32) -> R<V> {
+        let ww = if uni(&x) { 1 } else { w };
+        let ft = vt(from, ww);
+        let tt = vt(to, ww);
+        let r = match (from, to) {
+            (Type::Int(a), Type::Int(b)) => {
+                if a.bits() == b.bits() {
+                    let u = uni(&x);
+                    return Ok(V { r: x.r, t: tt, uni: u });
+                } else if b.bits() < a.bits() {
+                    self.ins(format!("trunc {} {} to {}", ft, x.r, tt))
+                } else if a.signed() {
+                    self.ins(format!("sext {} {} to {}", ft, x.r, tt))
+                } else {
+                    self.ins(format!("zext {} {} to {}", ft, x.r, tt))
+                }
+            }
+            (Type::Int(a), Type::F64 | Type::F32) => {
+                let op = if a.signed() { "sitofp" } else { "uitofp" };
+                self.ins(format!("{} {} {} to {}", op, ft, x.r, tt))
+            }
+            (Type::F64 | Type::F32, Type::Int(b)) => {
+                let kind = if b.signed() { "fptosi" } else { "fptoui" };
+                let f = if *from == Type::F32 { "f32" } else { "f64" };
+                let name = if ww == 1 {
+                    format!("llvm.{}.sat.i{}.{}", kind, b.bits(), f)
+                } else {
+                    format!("llvm.{}.sat.v{}i{}.v{}{}", kind, ww, b.bits(), ww, f)
+                };
+                self.decls.insert(format!("declare {} @{}({})", tt, name, ft));
+                self.ins(format!("call {} @{}({} {})", tt, name, ft, x.r))
+            }
+            (Type::F32, Type::F64) => self.ins(format!("fpext {} {} to {}", ft, x.r, tt)),
+            (Type::F64, Type::F32) => self.ins(format!("fptrunc {} {} to {}", ft, x.r, tt)),
+            (Type::F64, Type::F64) | (Type::F32, Type::F32) => return Ok(x),
+            _ => return Err(format!("codegen: conversion {:?} -> {:?}", from, to)),
+        };
+        Ok(V { r, t: tt, uni: uni(&x) })
+    }
+
+    // ----- loops -------------------------------------------------------------
+
+    /// Evaluates the leaves of a producer tree; returns the source and the
+    /// length of the loop.
+    fn prepare_src<'e>(&mut self, e: &'e Expr) -> R<(Src<'e>, String)> {
+        match &e.kind {
+            // read by index: bound to a `let` by `place_streams` (D99)
+            ExprKind::Filter(..) => Err("internal error: a `filter` read by index".into()),
+            ExprKind::Map(ins, l) => {
+                let mut srcs = Vec::new();
+                let mut len = None;
+                for i in ins {
+                    let (s, n) = self.prepare_src(i)?;
+                    if len.is_none() {
+                        len = Some(n);
+                    }
+                    srcs.push(s);
+                }
+                Ok((Src::Map(srcs, l), len.unwrap()))
+            }
+            ExprKind::Iota(n) => {
+                let nv = self.ex(n, 1)?;
+                Ok((Src::Iota, nv.r))
+            }
+            // a slice of a producer: its elements from `a`, computed when read
+            ExprKind::Slice(x, a, b) if isc_ir::passes::is_producer(x) => {
+                let (inner, n) = self.prepare_src(x)?;
+                let av = self.ex(a, 1)?;
+                let bv = self.ex(b, 1)?;
+                self.slice_check(&av.r, &bv.r, &n, e.span);
+                let m = self.ins(format!("sub i64 {}, {}", bv.r, av.r));
+                Ok((Src::Offset { inner: Box::new(inner), start: av.r }, m))
+            }
+            ExprKind::Fill(n, x) => {
+                let nv = self.ex(n, 1)?;
+                let xv = self.ex(x, 1)?;
+                Ok((Src::Uniform(xv), nv.r))
+            }
+            ExprKind::Zeros(n) => {
+                let nv = self.ex(n, 1)?;
+                let et = e.ty.elem();
+                Ok((Src::Uniform(v(Self::zero(et), lt(et))), nv.r))
+            }
+            _ if e.ty.elem().is_array() => {
+                let a = self.ex(e, 1)?;
+                let (p, rows, cols, stride) = self.nested_parts(&a);
+                Ok((Src::Rows { ptr: p, cols, stride, elem: e.ty.elem().elem().clone() }, rows))
+            }
+            _ => {
+                let a = self.ex(e, 1)?;
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", a.r));
+                let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", a.r));
+                Ok((Src::Mat { ptr: p, len: n.clone(), elem: e.ty.elem().clone() }, n))
+            }
+        }
+    }
+
+    /// Element(s) `idx .. idx + w` of a source.
+    fn elem(&mut self, s: &Src, idx: &str, w: u32) -> R<V> {
+        match s {
+            Src::Mat { ptr, len, elem } => Ok(self.load_elem(ptr, len, idx, elem, w)),
+            Src::Iota => {
+                if w == 1 {
+                    return Ok(V { r: idx.to_string(), t: "i64".into(), uni: false });
+                }
+                let base = self.widen(&v(idx, "i64"), w);
+                let steps: Vec<String> = (0..w).map(|i| format!("i64 {}", i)).collect();
+                let r = self.ins(format!("add <{} x i64> {}, <{}>", w, base.r, steps.join(", ")));
+                Ok(V { r, t: format!("<{} x i64>", w), uni: false })
+            }
+            Src::Uniform(x) => Ok(x.clone()),
+            Src::Offset { inner, start } => {
+                let j = self.ins(format!("add i64 {}, {}", start, idx));
+                self.elem(inner, &j, w)
+            }
+            Src::Rows { ptr, cols, stride, elem } => Ok(self.row_view(ptr, cols, stride, idx, elem)),
+            Src::Map(srcs, l) => {
+                let mut args = Vec::new();
+                for s in srcs {
+                    args.push(self.elem(s, idx, w)?);
+                }
+                for (p, a) in l.params.iter().zip(args) {
+                    self.bind(*p, a);
+                }
+                self.ex(&l.body, w)
+            }
+        }
+    }
+
+    fn materialize(&mut self, e: &Expr) -> R<V> {
+        let et = e.ty.elem().clone();
+        if let ExprKind::Zeros(n) = &e.kind {
+            let nv = self.ex(n, 1)?;
+            let bytes = self.array_bytes(&nv.r, &et);
+            let p = self.ins(format!("call ptr @isc_alloc_zeroed(i64 {})", bytes));
+            return Ok(self.arr(&p, &nv.r));
+        }
+        let spmd = match &e.kind {
+            ExprKind::Map(_, l) => spmd_state(self.p, &l.body),
+            _ => None,
+        };
+        let w = match (src_vec_ok(e), spmd) {
+            (false, _) => 1,
+            (true, Some(state)) => self.spmd_width(state),
+            (true, None) => MAP_WIDTH,
+        };
+        let (src, n) = self.prepare_src(e)?;
+        let p = self.alloc_elems(&n, &et);
+        if self.in_task {
+            self.fill_range(&src, &p, &n, &et, "0", &n, w)?;
+            return Ok(self.arr(&p, &n));
+        }
+        // in parallel, by blocks of B elements; when each element is a loop
+        // of its own (a `reduce` per row), one chunk per thread: the
+        // elements do not depend on the cut (D121)
+        let heavy = matches!(&e.kind, ExprKind::Map(_, l) if inner_loop(&l.body));
+        let bs = if heavy {
+            // HEAVY_CHUNKS chunks per thread, taken in turn (`isc_parallel_for_dynamic`):
+            // elements of very different costs (a loop whose length depends
+            // on the element, D140) are shared out evenly (D143)
+            let t0 = self.ins("call i64 @isc_thread_count()".to_string());
+            let threads = self.ins(format!("mul i64 {}, {}", t0, HEAVY_CHUNKS));
+            let t1 = self.ins(format!("add i64 {}, {}", n, threads));
+            let t2 = self.ins(format!("sub i64 {}, 1", t1));
+            let t3 = self.ins(format!("sdiv i64 {}, {}", t2, threads));
+            let one = self.ins(format!("icmp slt i64 {}, 1", t3));
+            self.ins(format!("select i1 {}, i64 1, i64 {}", one, t3))
+        } else {
+            BLOCK.to_string()
+        };
+        let n0 = self.ins(format!("add i64 {}, {}", n, bs));
+        let n1 = self.ins(format!("sub i64 {}, 1", n0));
+        let c = self.ins(format!("sdiv i64 {}, {}", n1, bs));
+        let pv = v(p.clone(), "ptr");
+        let bsv = v(bs.clone(), "i64");
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &[pv, bsv], &mut |g, extra, i| {
+            let (src, n) = g.prepare_src(e)?;
+            let start = g.ins(format!("mul i64 {}, {}", i, extra[1].r));
+            let lim = g.ins(format!("add i64 {}, {}", start, extra[1].r));
+            let short = g.ins(format!("icmp slt i64 {}, {}", n, lim));
+            let end = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, n, lim));
+            if !heavy {
+                return g.fill_range(&src, &extra[0].r, &n, &et, &start, &end, w);
+            }
+            // each chunk starts at a different place of its range (then
+            // wraps): the threads do not read addresses a power of two
+            // apart at the same time (D121)
+            let len = g.ins(format!("sub i64 {}, {}", end, start));
+            let k = g.ins(format!("mul i64 {}, 37", i));
+            let empty = g.ins(format!("icmp slt i64 {}, 1", len));
+            let len1 = g.ins(format!("select i1 {}, i64 1, i64 {}", empty, len));
+            let rot = g.ins(format!("srem i64 {}, {}", k, len1));
+            let mid = g.ins(format!("add i64 {}, {}", start, rot));
+            g.fill_range(&src, &extra[0].r, &n, &et, &mid, &end, w)?;
+            g.fill_range(&src, &extra[0].r, &n, &et, &start, &mid, w)
+        })?;
+        // the chunks of elements that are loops: taken by the threads as they
+        // finish the one before (D145)
+        let pf = if heavy { "isc_parallel_for_dynamic" } else { "isc_parallel_for" };
+        self.emit(format!("call void @{}(i64 {}, ptr {}, ptr {}, i64 {})", pf, c, task, ctx, ctx_bytes));
+        Ok(self.arr(&p, &n))
+    }
+
+    /// `map(rows, (w) -> ... reduce(w, op, z) ...)` over windows (a view of
+    /// stride 1) of a width multiple of V, at most B: each window is one
+    /// block of the fixed form (section 10), and its tree shares its levels
+    /// with the windows next to it: the value of lane j is
+    /// L(p) = op(...op(z, x[p]), x[p + V]...) at p = i + j, and after the
+    /// level d the value of lane j is M_d(i + j) with
+    /// M_d(p) = op(M_2d(p), M_2d(p + d)); the result of window i is M_1(i).
+    /// So each level is computed once per position, by blocks of
+    /// `CASCADE` windows in two buffers on the stack (in parallel, block by
+    /// block, in a task that prefers 512-bit vectors on AVX-512), and the
+    /// rest of the lambda gets M_1(i) for its `reduce`: L in one pass for
+    /// lanes of at most 4 elements, the levels two at a time, the last one
+    /// with the lambda. The same bits as one `reduce` per window, which the
+    /// other windows (a stride other than 1, another width) still get
+    /// (D115).
+    fn window_cascade(&mut self, e: &Expr) -> R<V> {
+        const CASCADE: i64 = 1024;
+        let ExprKind::Map(ins, l) = &e.kind else { unreachable!() };
+        let red = window_reduce_of(l).unwrap();
+        let ExprKind::Reduce(_, op, z) = &red.kind else { unreachable!() };
+        let et = e.ty.elem().clone();
+        let rt = red.ty.clone();
+        let rlt = lt(&rt);
+        let lanes = self.opts.lanes as i64;
+        let rows_v = self.ex(&ins[0], 1)?;
+        let (_, rows, cols, stride) = self.nested_parts(&rows_v);
+        let one = self.ins(format!("icmp eq i64 {}, 1", stride));
+        let rem = self.ins(format!("srem i64 {}, {}", cols, lanes));
+        let multiple = self.ins(format!("icmp eq i64 {}, 0", rem));
+        let wide = self.ins(format!("icmp sge i64 {}, {}", cols, lanes));
+        let small = self.ins(format!("icmp sle i64 {}, {}", cols, BLOCK));
+        let c1 = self.ins(format!("and i1 {}, {}", one, multiple));
+        let c2 = self.ins(format!("and i1 {}, {}", wide, small));
+        let ok = self.ins(format!("and i1 {}, {}", c1, c2));
+        let res = self.alloca("{ ptr, i64 }");
+        let lfast = self.label();
+        let lslow = self.label();
+        let ljoin = self.label();
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lslow);
+        let slow = self.materialize(e)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", slow.r, res));
+        self.br(&ljoin);
+        self.block(&lfast);
+        let out = self.alloc_elems(&rows, &et);
+        let nb1 = self.ins(format!("add i64 {}, {}", rows, CASCADE - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", nb1, CASCADE));
+        // one block of windows: its levels, then the rest of the lambda
+        let chunk = |g: &mut Self, rows_v: &V, outp: &str, b: &str| -> R<()> {
+            let (p, rows, cols, _) = g.nested_parts(rows_v);
+            let zv = g.ex(z, 1)?;
+            let bt = format!("[{} x {}]", CASCADE + lanes, rlt);
+            let ba = g.alloca(&bt);
+            let bb = g.alloca(&bt);
+            let s = g.ins(format!("mul i64 {}, {}", b, CASCADE));
+            let left = g.ins(format!("sub i64 {}, {}", rows, s));
+            let short = g.ins(format!("icmp slt i64 {}, {}", left, CASCADE));
+            let cnt = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, left, CASCADE));
+            let per_lane = g.ins(format!("sdiv i64 {}, {}", cols, lanes));
+            // L(q) for q in 0 .. cnt + V - 1
+            let nl = g.ins(format!("add i64 {}, {}", cnt, lanes - 1));
+            let xs = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", rlt, p, s));
+            // z everywhere, then one pass per element of a lane: for each q
+            // the elements still come in their order, and each pass is a
+            // plain loop over q (vectorized)
+            // L(q) in one pass when a lane has at most FUSED_LANE elements
+            // (windows of V to 4 V: one loop per count, chosen here); the m
+            // elements of a lane in their order
+            const FUSED_LANE: i64 = 4;
+            let ldone = g.label();
+            for m in 1..=FUSED_LANE {
+                let is_m = g.ins(format!("icmp eq i64 {}, {}", per_lane, m));
+                let lyes = g.label();
+                let lno = g.label();
+                g.cbr(&is_m, &lyes, &lno);
+                g.block(&lyes);
+                g.for_range("0", &nl, 1, &mut |g, q| {
+                    let mut acc = zv.clone();
+                    for t in 0..m {
+                        let at = g.ins(format!("add i64 {}, {}", q, t * lanes));
+                        let px = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", rlt, xs, at));
+                        let xv = g.ins(format!("load {}, ptr {}", rlt, px));
+                        acc = g.apply2(op, acc, v(xv, rlt.clone()), 1)?;
+                    }
+                    let pq = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, ba, q));
+                    g.emit(format!("store {} {}, ptr {}", rlt, acc.r, pq));
+                    Ok(())
+                })?;
+                g.br(&ldone);
+                g.block(&lno);
+            }
+            // wider lanes: the first element of each lane with z, in one
+            // pass, then one pass per element
+            g.for_range("0", &nl, 1, &mut |g, q| {
+                let px = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", rlt, xs, q));
+                let xv = g.ins(format!("load {}, ptr {}", rlt, px));
+                let r = g.apply2(op, zv.clone(), v(xv, rlt.clone()), 1)?;
+                let pq = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, ba, q));
+                g.emit(format!("store {} {}, ptr {}", rlt, r.r, pq));
+                Ok(())
+            })?;
+            g.for_range_scalar("1", &per_lane, 1, &mut |g, t| {
+                let off = g.ins(format!("mul i64 {}, {}", t, lanes));
+                let xt = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", rlt, xs, off));
+                g.for_range("0", &nl, 1, &mut |g, q| {
+                    let px = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", rlt, xt, q));
+                    let xv = g.ins(format!("load {}, ptr {}", rlt, px));
+                    let pq = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, ba, q));
+                    let a = g.ins(format!("load {}, ptr {}", rlt, pq));
+                    let r = g.apply2(op, v(a, rlt.clone()), v(xv, rlt.clone()), 1)?;
+                    g.emit(format!("store {} {}, ptr {}", rlt, r.r, pq));
+                    Ok(())
+                })
+            })?;
+            g.br(&ldone);
+            g.block(&ldone);
+            // the levels d = V/2, ..., 2, from one buffer to the other, two
+            // at a time (d and d/2 in one pass: one store per position
+            // instead of two, the operands of the tree unchanged); the last
+            // one (d = 1) with the rest of the lambda
+            let mut d = lanes / 2;
+            let mut from = ba.clone();
+            let mut to = bb.clone();
+            while d >= 4 {
+                let h = d / 2;
+                let np = g.ins(format!("add i64 {}, {}", cnt, h - 1));
+                let (f, t) = (from.clone(), to.clone());
+                g.for_range("0", &np, 1, &mut |g, q| {
+                    let at = |g: &mut Self, off: i64| -> V {
+                        let qo = g.ins(format!("add i64 {}, {}", q, off));
+                        let p = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, f, qo));
+                        v(g.ins(format!("load {}, ptr {}", rlt, p)), rlt.clone())
+                    };
+                    let (a0, a1, b0, b1) = (at(g, 0), at(g, d), at(g, h), at(g, h + d));
+                    let a = g.apply2(op, a0, a1, 1)?;
+                    let b = g.apply2(op, b0, b1, 1)?;
+                    let r = g.apply2(op, a, b, 1)?;
+                    let pt = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, t, q));
+                    g.emit(format!("store {} {}, ptr {}", rlt, r.r, pt));
+                    Ok(())
+                })?;
+                std::mem::swap(&mut from, &mut to);
+                d /= 4;
+            }
+            while d >= 2 {
+                let np = g.ins(format!("add i64 {}, {}", cnt, d - 1));
+                let (f, t) = (from.clone(), to.clone());
+                g.for_range("0", &np, 1, &mut |g, q| {
+                    let qd = g.ins(format!("add i64 {}, {}", q, d));
+                    let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, f, q));
+                    let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, f, qd));
+                    let a = g.ins(format!("load {}, ptr {}", rlt, pa));
+                    let bv = g.ins(format!("load {}, ptr {}", rlt, pb));
+                    let r = g.apply2(op, v(a, rlt.clone()), v(bv, rlt.clone()), 1)?;
+                    let pt = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, t, q));
+                    g.emit(format!("store {} {}, ptr {}", rlt, r.r, pt));
+                    Ok(())
+                })?;
+                std::mem::swap(&mut from, &mut to);
+                d /= 2;
+            }
+            // the rest of the lambda, its `reduce` given: by vectors of 64
+            // bytes, with non-temporal stores when the result is larger
+            // than the caches (D122), then one at a time
+            let fin = from.clone();
+            let vw = (64 / esize(&rt)) as u32;
+            let mut tail_from = "0".to_string();
+            let body_vec = vec_ok_given(&l.body, &mut l.params.iter().copied().collect(), red as *const Expr);
+            if body_vec && et.is_scalar() && esize(&et) == esize(&rt) && vw > 1 {
+                let full = g.ins(format!("and i64 {}, -{}", cnt, vw));
+                let vty = format!("<{} x {}>", vw, rlt);
+                let nt = !g.opts.isa.is_wasm();
+                let bytes = g.ins(format!("mul i64 {}, {}", rows, esize(&et)));
+                let huge = g.ins(format!("icmp sge i64 {}, {}", bytes, g.opts.stream_bytes));
+                let lnt = g.label();
+                let lplain = g.label();
+                let lafter = g.label();
+                if nt {
+                    g.cbr(&huge, &lnt, &lplain);
+                } else {
+                    g.br(&lplain);
+                }
+                let modes: &[bool] = if nt { &[true, false] } else { &[false] };
+                for &streaming in modes {
+                    g.block(if streaming { &lnt } else { &lplain });
+                    g.for_range_scalar("0", &full, vw as i64, &mut |g, q| {
+                        let q1 = g.ins(format!("add i64 {}, 1", q));
+                        let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, fin, q));
+                        let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, fin, q1));
+                        let a = g.ins(format!("load {}, ptr {}, align {}", vty, pa, esize(&rt)));
+                        let bv = g.ins(format!("load {}, ptr {}, align {}", vty, pb, esize(&rt)));
+                        let r = g.apply2(op, V { r: a, t: vty.clone(), uni: false }, V { r: bv, t: vty.clone(), uni: false }, vw)?;
+                        g.pre.insert(red as *const Expr, r);
+                        let y = g.ex(&l.body, vw);
+                        g.pre.remove(&(red as *const Expr));
+                        let y = g.widen(&y?, vw);
+                        let i = g.ins(format!("add i64 {}, {}", s, q));
+                        if streaming {
+                            // 64-byte aligned: `s` a multiple of the block, `q` of vw
+                            let po = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&et), outp, i));
+                            g.emit(format!("store {} {}, ptr {}, align 64, !nontemporal !{{i32 1}}", y.t, y.r, po));
+                        } else {
+                            g.store_elem(outp, &rows, &i, &et, &y, vw);
+                        }
+                        Ok(())
+                    })?;
+                    if streaming {
+                        g.emit("call void @llvm.x86.sse.sfence()".to_string());
+                        g.decls.insert("declare void @llvm.x86.sse.sfence()".to_string());
+                    }
+                    g.br(&lafter);
+                }
+                g.block(&lafter);
+                tail_from = full;
+            }
+            g.for_range(&tail_from, &cnt, 1, &mut |g, q| {
+                let q1 = g.ins(format!("add i64 {}, 1", q));
+                let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, fin, q));
+                let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", bt, fin, q1));
+                let a = g.ins(format!("load {}, ptr {}", rlt, pa));
+                let bv = g.ins(format!("load {}, ptr {}", rlt, pb));
+                let r = g.apply2(op, v(a, rlt.clone()), v(bv, rlt.clone()), 1)?;
+                g.pre.insert(red as *const Expr, r);
+                let y = g.ex(&l.body, 1);
+                g.pre.remove(&(red as *const Expr));
+                let y = y?;
+                let i = g.ins(format!("add i64 {}, {}", s, q));
+                g.store_elem(outp, &rows, &i, &et, &y, 1);
+                Ok(())
+            })
+        };
+        if self.in_task {
+            let rv = rows_v.clone();
+            let o = out.clone();
+            self.for_range_scalar("0", &nb, 1, &mut |g, b| chunk(g, &rv, &o, b))?;
+        } else {
+            let extra = [v(out.clone(), "ptr")];
+            // passes over buffers in the L1 cache: 512-bit vectors halve
+            // their instructions (measured: 32 768 `f64`, 28.0 µs with
+            // 256-bit vectors, 19.8 µs with 512-bit ones, D115)
+            self.wide_task = true;
+            let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, b| {
+                let rv = g.ex(&ins[0], 1)?;
+                chunk(g, &rv, &extra[0].r, b)
+            })?;
+            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", nb, task, ctx, ctx_bytes));
+        }
+        let fast = self.arr(&out, &rows);
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", fast.r, res));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("load {{ ptr, i64 }}, ptr {}", res));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+    }
+
+    /// `map(x, f)` where `f` returns an array of scalars: an array of
+    /// arrays, its rows of the same length (the type says so: their size
+    /// does not depend on the element) in one block, row i written in its
+    /// place by `row_into` (D126); in parallel, one chunk of rows per
+    /// thread.
+    fn materialize_rows(&mut self, e: &Expr) -> R<V> {
+        let ExprKind::Map(ins, l) = &e.kind else { unreachable!() };
+        let row_ty = e.ty.elem().clone();
+        let et = row_ty.elem().clone();
+        if !et.is_scalar() {
+            return Err(format!("{}:{}: a `map` building an array of arrays of `{:?}` is not supported in the POC", e.span.line, e.span.col, et));
+        }
+        let mut srcs = Vec::new();
+        let mut n = String::new();
+        for x in ins {
+            let (s, len) = self.prepare_src(x)?;
+            srcs.push(s);
+            n = len;
+        }
+        // the length of the rows: that of row 0 (none: 0)
+        let some = self.ins(format!("icmp sgt i64 {}, 0", n));
+        let mslot = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", mslot));
+        let lfirst = self.label();
+        let ljoin = self.label();
+        self.cbr(&some, &lfirst, &ljoin);
+        self.block(&lfirst);
+        for (s, p) in srcs.iter().zip(l.params.iter()) {
+            let x = self.elem(s, "0", 1)?;
+            self.bind(*p, x);
+        }
+        let m0 = self.row_into(&l.body, None, &et)?;
+        self.emit(format!("store i64 {}, ptr {}", m0, mslot));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let m = self.ins(format!("load i64, ptr {}", mslot));
+        let total = self.ins(format!("mul i64 {}, {}", n, m));
+        let block = self.alloc_elems(&total, &et);
+        let esz = esize(&et);
+        if self.in_task {
+            let b = block.clone();
+            let mm = m.clone();
+            self.for_range_scalar("0", &n, 1, &mut |g, i| {
+                for (s, p) in srcs.iter().zip(l.params.iter()) {
+                    let x = g.elem(s, i, 1)?;
+                    g.bind(*p, x);
+                }
+                let off = g.ins(format!("mul i64 {}, {}", i, mm));
+                let off = g.ins(format!("mul i64 {}, {}", off, esz));
+                let dest = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, off));
+                g.row_into(&l.body, Some(&dest), &et)?;
+                Ok(())
+            })?;
+        } else {
+            let threads = self.ins("call i64 @isc_thread_count()".to_string());
+            let t1 = self.ins(format!("add i64 {}, {}", n, threads));
+            let t2 = self.ins(format!("sub i64 {}, 1", t1));
+            let t3 = self.ins(format!("sdiv i64 {}, {}", t2, threads));
+            let small = self.ins(format!("icmp slt i64 {}, 1", t3));
+            let bs = self.ins(format!("select i1 {}, i64 1, i64 {}", small, t3));
+            let c0 = self.ins(format!("add i64 {}, {}", n, bs));
+            let c1 = self.ins(format!("sub i64 {}, 1", c0));
+            let chunks = self.ins(format!("sdiv i64 {}, {}", c1, bs));
+            let extra = [v(block.clone(), "ptr"), v(m.clone(), "i64"), v(bs.clone(), "i64")];
+            let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, c| {
+                let mut srcs = Vec::new();
+                let mut n = String::new();
+                for x in ins {
+                    let (s, len) = g.prepare_src(x)?;
+                    srcs.push(s);
+                    n = len;
+                }
+                let start = g.ins(format!("mul i64 {}, {}", c, extra[2].r));
+                let lim = g.ins(format!("add i64 {}, {}", start, extra[2].r));
+                let short = g.ins(format!("icmp slt i64 {}, {}", n, lim));
+                let end = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, n, lim));
+                let (b, mm) = (extra[0].r.clone(), extra[1].r.clone());
+                g.for_range_scalar(&start, &end, 1, &mut |g, i| {
+                    for (s, p) in srcs.iter().zip(l.params.iter()) {
+                        let x = g.elem(s, i, 1)?;
+                        g.bind(*p, x);
+                    }
+                    let off = g.ins(format!("mul i64 {}, {}", i, mm));
+                    let off = g.ins(format!("mul i64 {}, {}", off, esz));
+                    let dest = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, off));
+                    g.row_into(&l.body, Some(&dest), &et)?;
+                    Ok(())
+                })
+            })?;
+            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", chunks, task, ctx, ctx_bytes));
+        }
+        Ok(self.nested(&block, &n, &m, &m))
+    }
+
+    /// The row `body` (an array of scalars of type `et`) written at `dest`
+    /// without a temporary array: a literal element by element, a producer
+    /// filled in place, a view (a variable, a slice, a row of another array
+    /// of arrays) copied; returns its length. With no `dest`, only the
+    /// length (a producer, a literal or a view: computed without writing
+    /// the elements).
+    fn row_into(&mut self, body: &Expr, dest: Option<&str>, et: &Type) -> R<String> {
+        use ExprKind::*;
+        match &body.kind {
+            Let { var, init, body: b, drop, .. } => {
+                let iv = self.ex(init, 1)?;
+                self.bind(*var, iv.clone());
+                let len = self.row_into(b, dest, et)?;
+                if *drop {
+                    let t = self.var_ty(*var).clone();
+                    self.drop_value(&iv, &t);
+                }
+                Ok(len)
+            }
+            ArrayLit(es) => {
+                if let Some(d) = dest {
+                    for (k, x) in es.iter().enumerate() {
+                        let xv = self.ex(x, 1)?;
+                        self.store_scalar(d, &k.to_string(), et, &xv, 1);
+                    }
+                }
+                Ok(es.len().to_string())
+            }
+            Map(..) | Iota(_) | Fill(..) | Zeros(_) => {
+                let (src, n) = self.prepare_src(body)?;
+                if let Some(d) = dest {
+                    let w = if src_vec_ok(body) { MAP_WIDTH } else { 1 };
+                    self.fill_range(&src, d, &n, et, "0", &n, w)?;
+                }
+                Ok(n)
+            }
+            Var(..) | Slice(..) | Index(..) => {
+                let xv = self.ex(body, 1)?;
+                let (p, n) = self.str_parts(&xv);
+                if let Some(d) = dest {
+                    let bytes = self.ins(format!("mul i64 {}, {}", n, esize(et)));
+                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, p, bytes));
+                }
+                // a variable moved here (a row computed by a `let` of the
+                // function): copied, then freed
+                if let Var(var, Use::Move) = &body.kind {
+                    let t = self.var_ty(*var).clone();
+                    self.drop_value(&xv, &t);
+                }
+                Ok(n)
+            }
+            _ => Err(format!(
+                "{}:{}: a `map` whose function returns this kind of array is not supported in the POC (a literal, a `map`, `iota`, `fill`, `zeros`, a variable or a slice)",
+                body.span.line, body.span.col
+            )),
+        }
+    }
+
+    /// Stores the elements `start .. end` of a source into `p`.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_range(&mut self, src: &Src, p: &str, n: &str, et: &Type, start: &str, end: &str, w: u32) -> R<()> {
+        let mut tail_start = start.to_string();
+        if w > 1 {
+            let len = self.ins(format!("sub i64 {}, {}", end, start));
+            let full = self.ins(format!("and i64 {}, -{}", len, w));
+            let vend = self.ins(format!("add i64 {}, {}", start, full));
+            self.for_range(start, &vend, w as i64, &mut |g, i| {
+                let x = g.elem(src, i, w)?;
+                g.store_elem(p, n, i, et, &x, w);
+                Ok(())
+            })?;
+            tail_start = vend;
+        }
+        self.for_range(&tail_start, end, 1, &mut |g, i| {
+            let x = g.elem(src, i, 1)?;
+            g.store_elem(p, n, i, et, &x, 1);
+            Ok(())
+        })
+    }
+
+    /// Emits `define internal void @isc_task_N(ptr %ctx, i64 %i)`, whose body
+    /// sees the free variables of `scope` (captured in a context struct, like
+    /// the body of `bench`) and the `extra` values; returns the function, the
+    /// context pointer and the size of the context in bytes, to give to
+    /// `isc_parallel_for` (which copies a small context into the line the
+    /// workers read the job from).
+    fn outline_task(
+        &mut self,
+        scope: &[&Expr],
+        extra: &[V],
+        body: &mut dyn FnMut(&mut Self, &[V], &str) -> R<()>,
+    ) -> R<(String, String, String)> {
+        let mut caps = Vec::new();
+        let mut bound = HashSet::new();
+        for e in scope {
+            free_vars(e, &mut bound, &mut caps);
+        }
+        let mut vals: Vec<V> = Vec::new();
+        for c in &caps {
+            vals.push(self.env.get(c).cloned().ok_or_else(|| format!("codegen: task capture %{} unbound", c))?);
+        }
+        vals.extend(extra.iter().cloned());
+        let ctx_ty = if vals.is_empty() {
+            "{ i1 }".to_string()
+        } else {
+            format!("{{ {} }}", vals.iter().map(|c| c.t.clone()).collect::<Vec<_>>().join(", "))
+        };
+        let ctxp = self.alloca(&ctx_ty);
+        let end = self.ins(format!("getelementptr {}, ptr null, i32 1", ctx_ty));
+        let ctx_bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
+        for (i, c) in vals.iter().enumerate() {
+            let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 {}", ctx_ty, ctxp, i));
+            self.emit(format!("store {} {}, ptr {}", c.t, c.r, g));
+        }
+        self.ntask += 1;
+        let name = format!("@isc_task_{}", self.ntask);
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_task = std::mem::replace(&mut self.in_task, true);
+        let mut loaded = Vec::new();
+        for (i, c) in vals.iter().enumerate() {
+            let g = self.ins(format!("getelementptr inbounds {}, ptr %ctx, i32 0, i32 {}", ctx_ty, i));
+            let x = self.ins(format!("load {}, ptr {}", c.t, g));
+            if i < caps.len() {
+                self.env.insert(caps[i], v(x, c.t.clone()));
+            } else {
+                loaded.push(v(x, c.t.clone()));
+            }
+        }
+        let wide = std::mem::take(&mut self.wide_task);
+        let r = body(self, &loaded, "%i");
+        self.emit("ret void");
+        let attrs = if wide && self.opts.isa == Isa::Native && self.opts.isa.vector_registers().0 == 32 && self.opts.isa.vector_registers().1 == 32 {
+            // AVX-512 on the host: 512-bit vectors for this task only
+            self.wide_used = true;
+            " #1"
+        } else {
+            self.attrs()
+        };
+        let text = self.finish(&format!("define internal void {}(ptr %ctx, i64 %i){}", name, attrs));
+        self.f = saved_f;
+        self.env = saved_env;
+        self.in_task = saved_task;
+        r?;
+        self.funcs.push(text);
+        Ok((name, ctxp, ctx_bytes))
+    }
+
+    /// Applies a two-parameter lambda at width `w`.
+    fn apply2(&mut self, l: &Lambda, a: V, b: V, w: u32) -> R<V> {
+        self.bind(l.params[0], a);
+        self.bind(l.params[1], b);
+        let r = self.ex(&l.body, w)?;
+        Ok(self.widen(&r, w))
+    }
+
+    /// `reduce_block` of section 10 over elements `start .. start + m`.
+    fn reduce_block(&mut self, src: &Src, start: &str, m: &str, l: &Lambda, z: &V, t: &Type, w: u32) -> R<V> {
+        let st = lt(t);
+        if w > 1 {
+            let vty = format!("<{} x {}>", w, st);
+            let acc = self.alloca(&vty);
+            let zw = self.widen(z, w);
+            self.emit(format!("store {} {}, ptr {}", vty, zw.r, acc));
+            let mfull = self.ins(format!("and i64 {}, -{}", m, w));
+            let passes = reduce_passes(w, esize(t) as u32, src.loads().max(1), self.vregs);
+            if passes == 1 {
+                let row = |g: &mut Self, i: &str| -> R<()> {
+                    let idx = g.ins(format!("add i64 {}, {}", start, i));
+                    let x = g.elem(src, &idx, w)?;
+                    let x = g.widen(&x, w);
+                    let a = g.ins(format!("load {}, ptr {}", vty, acc));
+                    let r = g.apply2(l, V { r: a, t: vty.clone(), uni: false }, x, w)?;
+                    g.emit(format!("store {} {}, ptr {}", vty, r.r, acc));
+                    Ok(())
+                };
+                // An array read from memory (`stream`, see STREAM_BYTES): four
+                // rows per iteration, then the rows left one at a time; each
+                // accumulator still receives its rows in order. Unrolled, the
+                // loop is faster from memory and slower from the caches
+                // (DECISIONS D86).
+                // One unrolled loop (no iteration when the array is not
+                // streamed), then one loop of single rows for the rest: two
+                // loops, not three, for LLVM to compile (compilation time).
+                let mut rows_done = "0".to_string();
+                if let Some(s) = self.stream.clone() {
+                    let group = w as i64 * STREAM_UNROLL;
+                    let mg = self.ins(format!("and i64 {}, -{}", m, group));
+                    let mgroups = self.ins(format!("select i1 {}, i64 {}, i64 0", s, mg));
+                    self.for_range("0", &mgroups, group, &mut |g, i| {
+                        for k in 0..STREAM_UNROLL {
+                            let ik = g.ins(format!("add i64 {}, {}", i, k * w as i64));
+                            row(g, &ik)?;
+                        }
+                        Ok(())
+                    })?;
+                    rows_done = mgroups;
+                }
+                self.for_range(&rows_done, &mfull, w as i64, &mut |g, i| row(g, i))?;
+            } else {
+                // more accumulators than registers: one pass per group of
+                // pw accumulators, each over every row of the block
+                let pw = w / passes;
+                let pty = format!("<{} x {}>", pw, st);
+                // The rows are taken in chunks of `chunk` elements that stay
+                // in L1; every pass runs over the chunk before the next chunk,
+                // so a cache line fetched for one pass (or by the next-line
+                // prefetcher) is still there for the others. Between chunks,
+                // the accumulators of each pass live in memory, through
+                // volatile accesses: kept in registers across the other
+                // passes, they would make LLVM spill accumulators in the loop.
+                let gbuf = self.alloca(&vty);
+                self.emit(format!("store volatile {} {}, ptr {}", vty, zw.r, gbuf));
+                let chunk = reduce_chunk(w, esize(t) as u32, src.loads().max(1));
+                let nch = self.ins(format!("add i64 {}, {}", mfull, chunk - 1));
+                let nch = self.ins(format!("sdiv i64 {}, {}", nch, chunk));
+                self.for_range("0", &nch, 1, &mut |g, c| {
+                    let lo = g.ins(format!("mul i64 {}, {}", c, chunk));
+                    let hi = g.ins(format!("add i64 {}, {}", lo, chunk));
+                    let short = g.ins(format!("icmp slt i64 {}, {}", mfull, hi));
+                    let hi = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, mfull, hi));
+                    for p in 0..passes {
+                        let gp = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", st, gbuf, p * pw));
+                        let a0 = g.ins(format!("load volatile {}, ptr {}", pty, gp));
+                        let pacc = g.alloca(&pty);
+                        g.emit(format!("store {} {}, ptr {}", pty, a0, pacc));
+                        g.for_range(&lo, &hi, w as i64, &mut |g, i| {
+                            let row = g.ins(format!("add i64 {}, {}", start, i));
+                            let idx = g.ins(format!("add i64 {}, {}", row, p * pw));
+                            let x = g.elem(src, &idx, pw)?;
+                            let x = g.widen(&x, pw);
+                            let a = g.ins(format!("load {}, ptr {}", pty, pacc));
+                            let r = g.apply2(l, V { r: a, t: pty.clone(), uni: false }, x, pw)?;
+                            g.emit(format!("store {} {}, ptr {}", pty, r.r, pacc));
+                            Ok(())
+                        })?;
+                        let res = g.ins(format!("load {}, ptr {}", pty, pacc));
+                        g.emit(format!("store volatile {} {}, ptr {}", pty, res, gp));
+                    }
+                    Ok(())
+                })?;
+                let all = self.ins(format!("load volatile {}, ptr {}", vty, gbuf));
+                self.emit(format!("store {} {}, ptr {}", vty, all, acc));
+            }
+            // the elements left (fewer than w): each into its lane, through
+            // an array of scalars. An `extractelement` / `insertelement` at a
+            // variable lane made LLVM store and reload every accumulator
+            // register for each element; the upper levels of a reduction of
+            // a few blocks are only such elements (DECISIONS D86).
+            // (a vector of `i1` is packed in memory, not laid out like the
+            // array: lane by lane in the register for it)
+            let old_tail = st == "i1";
+            if old_tail {
+                self.for_range(&mfull, m, 1, &mut |g, i| {
+                    let idx = g.ins(format!("add i64 {}, {}", start, i));
+                    let x = g.elem(src, &idx, 1)?;
+                    let lane = g.ins(format!("sub i64 {}, {}", i, mfull));
+                    let av = g.ins(format!("load {}, ptr {}", vty, acc));
+                    let a = g.ins(format!("extractelement {} {}, i64 {}", vty, av, lane));
+                    let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, x, 1)?;
+                    let av2 = g.ins(format!("insertelement {} {}, {} {}, i64 {}", vty, av, st, r.r, lane));
+                    g.emit(format!("store {} {}, ptr {}", vty, av2, acc));
+                    Ok(())
+                })?;
+            }
+            let rest = if old_tail { "false".to_string() } else { self.ins(format!("icmp slt i64 {}, {}", mfull, m)) };
+            let ltail = self.label();
+            let ldone = self.label();
+            self.cbr(&rest, &ltail, &ldone);
+            self.block(&ltail);
+            // a slot of the vector type, so that it has the alignment the
+            // store of the vector assumes (an array of scalars is aligned to
+            // one scalar only: the aligned store faulted)
+            let lanes_buf = self.alloca(&vty);
+            let av = self.ins(format!("load {}, ptr {}", vty, acc));
+            self.emit(format!("store {} {}, ptr {}", vty, av, lanes_buf));
+            self.for_range_scalar(&mfull, m, 1, &mut |g, i| {
+                let idx = g.ins(format!("add i64 {}, {}", start, i));
+                let x = g.elem(src, &idx, 1)?;
+                let lane = g.ins(format!("sub i64 {}, {}", i, mfull));
+                let pl = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", st, lanes_buf, lane));
+                let a = g.ins(format!("load {}, ptr {}", st, pl));
+                let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, x, 1)?;
+                g.emit(format!("store {} {}, ptr {}", st, r.r, pl));
+                Ok(())
+            })?;
+            let av2 = self.ins(format!("load {}, ptr {}", vty, lanes_buf));
+            self.emit(format!("store {} {}, ptr {}", vty, av2, acc));
+            self.br(&ldone);
+            self.block(&ldone);
+            // tree: acc[j] = op(acc[j], acc[j + d]) for d = 8, 4, 2, 1
+            let mut cur = V { r: self.ins(format!("load {}, ptr {}", vty, acc)), t: vty.clone(), uni: false };
+            let mut d = w / 2;
+            while d >= 1 {
+                let (lo, hi) = if d == 1 {
+                    let a = self.ins(format!("extractelement {} {}, i64 0", cur.t, cur.r));
+                    let b = self.ins(format!("extractelement {} {}, i64 1", cur.t, cur.r));
+                    (V { r: a, t: st.clone(), uni: false }, V { r: b, t: st.clone(), uni: false })
+                } else {
+                    let lo_idx: Vec<String> = (0..d).map(|i| format!("i32 {}", i)).collect();
+                    let hi_idx: Vec<String> = (d..2 * d).map(|i| format!("i32 {}", i)).collect();
+                    let ht = format!("<{} x {}>", d, st);
+                    let a = self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> <{}>", cur.t, cur.r, cur.t, d, lo_idx.join(", ")));
+                    let b = self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> <{}>", cur.t, cur.r, cur.t, d, hi_idx.join(", ")));
+                    (V { r: a, t: ht.clone(), uni: false }, V { r: b, t: ht, uni: false })
+                };
+                cur = self.apply2(l, lo, hi, d)?;
+                d /= 2;
+            }
+            cur.uni = true;
+            return Ok(cur);
+        }
+        // scalar version: V accumulators in memory
+        let lanes = self.opts.lanes;
+        let aty = format!("[{} x {}]", lanes, st);
+        let acc = self.alloca(&aty);
+        for j in 0..lanes {
+            let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", aty, acc, j));
+            self.emit(format!("store {} {}, ptr {}", st, z.r, g));
+        }
+        self.for_range("0", m, 1, &mut |g, i| {
+            let idx = g.ins(format!("add i64 {}, {}", start, i));
+            let x = g.elem(src, &idx, 1)?;
+            let lane = g.ins(format!("and i64 {}, {}", i, lanes - 1));
+            let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", aty, acc, lane));
+            let a = g.ins(format!("load {}, ptr {}", st, pa));
+            let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, x, 1)?;
+            g.emit(format!("store {} {}, ptr {}", st, r.r, pa));
+            Ok(())
+        })?;
+        let mut d = lanes / 2;
+        while d >= 1 {
+            for j in 0..d {
+                let pj = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", aty, acc, j));
+                let pk = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", aty, acc, j + d));
+                let a = self.ins(format!("load {}, ptr {}", st, pj));
+                let b = self.ins(format!("load {}, ptr {}", st, pk));
+                let r = self.apply2(l, V { r: a, t: st.clone(), uni: false }, V { r: b, t: st.clone(), uni: false }, 1)?;
+                self.emit(format!("store {} {}, ptr {}", st, r.r, pj));
+            }
+            d /= 2;
+        }
+        let p0 = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 0", aty, acc));
+        let r = self.ins(format!("load {}, ptr {}", st, p0));
+        Ok(v(r, st))
+    }
+
+    /// `reduce` of section 10: blocks of B elements, then the block results
+    /// are reduced the same way until one value remains.
+    fn reduce(&mut self, e: &Expr, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
+        // scalars are reduced with vectors; tuples one element at a time
+        let t = x.ty.elem().clone();
+        let zv = self.ex(z, 1)?;
+        let lanes = self.opts.lanes;
+        let w = if src_vec_ok(x) && lam_ok(l) { lanes } else { 1 };
+        let wm = if lam_ok(l) { lanes } else { 1 };
+        let (src, n) = self.prepare_src(x)?;
+        let m = mt(&t);
+        let big = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
+        let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let cdiv = self.ins(format!("sdiv i64 {}, {}", n1, BLOCK));
+        let c0 = self.ins(format!("select i1 {}, i64 {}, i64 1", big, cdiv));
+        // the block results on the stack when they fit: no allocation and
+        // no free per call (DECISIONS D86)
+        let sp = self.ins("call ptr @llvm.stacksave.p0()".to_string());
+        let parts_heap = self.alloca("i1");
+        self.emit(format!("store i1 false, ptr {}", parts_heap));
+        // one element: a column of 64 bytes per leaf for a tuple
+        let slot = if matches!(t, Type::Tuple(_)) { self.alloca(&format!("[{} x i64]", 8 * leaves(&t).len())) } else { self.alloca(&m) };
+        let pa = self.alloca("ptr");
+        self.emit(format!("store ptr {}, ptr {}", slot, pa));
+        let lalloc = self.label();
+        let ljoin = self.label();
+        self.cbr(&big, &lalloc, &ljoin);
+        self.block(&lalloc);
+        let hp = self.alloc_scratch(&c0, &t, &parts_heap);
+        self.emit(format!("store ptr {}, ptr {}", hp, pa));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let parts = self.ins(format!("load ptr, ptr {}", pa));
+        let bl = BLOCK.to_string();
+        if self.in_task {
+            let stream = if matches!(src, Src::Mat { .. }) { Some(self.stream_flag(&n, &t)) } else { None };
+            self.for_range("0", &c0, 1, &mut |g, j| {
+                let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+                let rem = g.ins(format!("sub i64 {}, {}", n, start));
+                let lt_ = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+                let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", lt_, rem, bl));
+                g.stream = stream.clone();
+                let r = g.reduce_block(&src, &start, &mm, l, &zv, &t, w);
+                g.stream = None;
+                let r = r?;
+                g.store_elem(&parts, &c0, j, &t, &r, 1);
+                Ok(())
+            })?;
+        } else {
+            // the first level in parallel: block j is computed by task j and
+            // stored in parts[j], so the result is the same for any number of
+            // threads (SPEC section 10)
+            // Few task results (at most PAD_BLOCKS): each in its own 128
+            // bytes (an aligned pair of cache lines), then copied into
+            // `parts`. Side by side they would share a cache line that the
+            // cores take from each other when the tasks end, all at once
+            // (false sharing): 32 blocks of `dot` with 8 threads, 2596.7 ns
+            // side by side, 2486.0 ns apart; beyond, the copy costs more
+            // than it saves (64 blocks: 18101.6 against 18269.8 ns;
+            // DECISIONS D81).
+            let min_leaf = leaves(&t).iter().map(|(_, ty)| esize(ty)).min().unwrap_or(8).max(1);
+            let cell = (128 / min_leaf).max(1);
+            let few = self.ins(format!("icmp sle i64 {}, {}", c0, PAD_BLOCKS));
+            let stride = self.ins(format!("select i1 {}, i64 {}, i64 1", few, cell));
+            let cdst = self.ins(format!("mul i64 {}, {}", c0, stride));
+            let pd = self.alloca("ptr");
+            self.emit(format!("store ptr {}, ptr {}", parts, pd));
+            let lpad = self.label();
+            let lgo = self.label();
+            self.cbr(&few, &lpad, &lgo);
+            self.block(&lpad);
+            // (on the heap: on the stack they cost more compilation time than
+            // they saved, DECISIONS D87)
+            let padded = self.alloc_elems(&cdst, &t);
+            self.emit(format!("store ptr {}, ptr {}", padded, pd));
+            self.br(&lgo);
+            self.block(&lgo);
+            let dst = self.ins(format!("load ptr, ptr {}", pd));
+            let extra = [v(dst.clone(), "ptr"), v(cdst.clone(), "i64"), v(stride.clone(), "i64")];
+            let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+                let (src, n) = g.prepare_src(x)?;
+                let zv = g.ex(z, 1)?;
+                let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+                let rem = g.ins(format!("sub i64 {}, {}", n, start));
+                let lt_ = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+                let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", lt_, rem, bl));
+                // only a materialized array: with an element-wise map in the
+                // loop, four rows per iteration were not faster (large `dot`,
+                // `std_dev`), and each unrolled loop is code to compile
+                g.stream = if matches!(src, Src::Mat { .. }) { Some(g.stream_flag(&n, &t)) } else { None };
+                let r = g.reduce_block(&src, &start, &mm, l, &zv, &t, w);
+                g.stream = None;
+                let r = r?;
+                let jj = g.ins(format!("mul i64 {}, {}", j, extra[2].r));
+                g.store_elem(&extra[0].r, &extra[1].r, &jj, &t, &r, 1);
+                Ok(())
+            })?;
+            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+            let lcopy = self.label();
+            let ldone = self.label();
+            self.cbr(&few, &lcopy, &ldone);
+            self.block(&lcopy);
+            self.for_range("0", &c0, 1, &mut |g, j| {
+                let jj = g.ins(format!("mul i64 {}, {}", j, cell));
+                let r = g.load_elem(&dst, &cdst, &jj, &t, 1);
+                g.store_elem(&parts, &c0, j, &t, &r, 1);
+                Ok(())
+            })?;
+            self.emit(format!("call void @isc_free(ptr {})", dst));
+            self.br(&ldone);
+            self.block(&ldone);
+        }
+        // upper levels, in place in `parts`
+        let ca = self.alloca("i64");
+        self.emit(format!("store i64 {}, ptr {}", c0, ca));
+        let head = self.label();
+        let body = self.label();
+        let done = self.label();
+        self.br(&head);
+        self.block(&head);
+        let c = self.ins(format!("load i64, ptr {}", ca));
+        let more = self.ins(format!("icmp sgt i64 {}, 1", c));
+        self.cbr(&more, &body, &done);
+        self.block(&body);
+        let c1 = self.ins(format!("add i64 {}, {}", c, BLOCK - 1));
+        let c2 = self.ins(format!("sdiv i64 {}, {}", c1, BLOCK));
+        let msrc = Src::Mat { ptr: parts.clone(), len: c0.clone(), elem: t.clone() };
+        self.for_range("0", &c2, 1, &mut |g, k| {
+            let start = g.ins(format!("mul i64 {}, {}", k, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", c, start));
+            let lt_ = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", lt_, rem, bl));
+            let r = g.reduce_block(&msrc, &start, &mm, l, &zv, &t, wm)?;
+            g.store_elem(&parts, &c0, k, &t, &r, 1);
+            Ok(())
+        })?;
+        self.emit(format!("store i64 {}, ptr {}", c2, ca));
+        self.br(&head);
+        self.block(&done);
+        let res = self.load_elem(&parts, &c0, "0", &t, 1);
+        // `parts_heap` is false unless `parts` came from the heap
+        self.free_scratch(&parts, &parts_heap);
+        self.emit(format!("call void @llvm.stackrestore.p0(ptr {})", sp));
+        Ok(V { r: res.r, t: res.t, uni: true })
+    }
+
+    /// `scan` (SPEC section 6): from left to right into a new array; its
+    /// source fused like the source of a `fold` (F1). With a predefined
+    /// associative operator on integers or booleans and more than one block,
+    /// in parallel (`scan_parallel`); otherwise sequential, as SPEC requires
+    /// for floats (section 10).
+    /// The array read by a `reduce` or a `scan` of values that own memory
+    /// (D134), and whether it is a new one, to free after: a variable is
+    /// borrowed; a `filter` (a stream) is evaluated into a new array.
+    fn owned_src(&mut self, x: &Expr) -> R<(V, String, String, bool)> {
+        let fresh = !matches!(x.kind, ExprKind::Var(..) | ExprKind::Proj(..) | ExprKind::Slice(..) | ExprKind::Index(..));
+        let a = if isc_ir::passes::is_stream(x) { self.materialize_stream(x)? } else { self.ex(x, 1)? };
+        let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", a.r));
+        let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", a.r));
+        Ok((a, p, n, fresh))
+    }
+
+    /// One block of the fixed form of `reduce` (section 10) for values that
+    /// own memory (D134): V lanes, each from a copy of `z`, element `i` into
+    /// lane `i mod V`, then the tree; every value replaced is freed, the
+    /// lanes other than the first at the end.
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_block_owned(&mut self, p: &str, n: &str, lo: &str, hi: &str, l: &Lambda, zv: &V, t: &Type) -> R<V> {
+        let lanes = self.opts.lanes as i64;
+        let ty = lt(t);
+        let accs = self.alloca(&format!("[{} x {}]", lanes, ty));
+        let lane = |g: &mut Self, j: &str| g.ins(format!("getelementptr inbounds [{} x {}], ptr {}, i64 0, i64 {}", lanes, ty, accs, j));
+        self.for_range_scalar("0", &lanes.to_string(), 1, &mut |g, j| {
+            let c = g.copy_value(zv, t);
+            let a = lane(g, j);
+            g.emit(format!("store {} {}, ptr {}", ty, c.r, a));
+            Ok(())
+        })?;
+        self.for_range_scalar(lo, hi, 1, &mut |g, i| {
+            let off = g.ins(format!("sub i64 {}, {}", i, lo));
+            let j = g.ins(format!("urem i64 {}, {}", off, lanes));
+            let slot = lane(g, &j);
+            let a = v(g.ins(format!("load {}, ptr {}", ty, slot)), ty.clone());
+            let x = g.load_elem(p, n, i, t, 1);
+            g.bind(l.params[0], a.clone());
+            g.bind(l.params[1], x);
+            let r = g.ex(&l.body, 1)?;
+            g.drop_value(&a, t);
+            g.emit(format!("store {} {}, ptr {}", ty, r.r, slot));
+            Ok(())
+        })?;
+        let mut d = lanes / 2;
+        while d >= 1 {
+            let dd = d;
+            self.for_range_scalar("0", &dd.to_string(), 1, &mut |g, j| {
+                let sa = lane(g, j);
+                let k = g.ins(format!("add i64 {}, {}", j, dd));
+                let sb = lane(g, &k);
+                let a = v(g.ins(format!("load {}, ptr {}", ty, sa)), ty.clone());
+                let b = v(g.ins(format!("load {}, ptr {}", ty, sb)), ty.clone());
+                g.bind(l.params[0], a.clone());
+                g.bind(l.params[1], b);
+                let r = g.ex(&l.body, 1)?;
+                g.drop_value(&a, t);
+                g.emit(format!("store {} {}, ptr {}", ty, r.r, sa));
+                Ok(())
+            })?;
+            d /= 2;
+        }
+        self.for_range_scalar("1", &lanes.to_string(), 1, &mut |g, j| {
+            let s = lane(g, j);
+            let a = v(g.ins(format!("load {}, ptr {}", ty, s)), ty.clone());
+            g.drop_value(&a, t);
+            Ok(())
+        })?;
+        let s0 = lane(self, "0");
+        Ok(v(self.ins(format!("load {}, ptr {}", ty, s0)), ty))
+    }
+
+    /// `reduce` of values that own memory (D134), the fixed form of section
+    /// 10 as in the interpreter: one block when there are at most B
+    /// elements, otherwise the results of the blocks of B reduced in the
+    /// same way, level by level; each level frees the one before.
+    fn reduce_owned(&mut self, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
+        let t = l.body.ty.clone();
+        let at = Type::Array(Box::new(t.clone()));
+        let zv = self.ex(z, 1)?;
+        let (av, p, n, fresh) = self.owned_src(x)?;
+        let curp = self.alloca("ptr");
+        let curn = self.alloca("i64");
+        let owned = self.alloca("i1");
+        self.emit(format!("store ptr {}, ptr {}", p, curp));
+        self.emit(format!("store i64 {}, ptr {}", n, curn));
+        self.emit(format!("store i1 false, ptr {}", owned));
+        let head = self.label();
+        let body = self.label();
+        let done = self.label();
+        self.br(&head);
+        self.block(&head);
+        let cp = self.ins(format!("load ptr, ptr {}", curp));
+        let c = self.ins(format!("load i64, ptr {}", curn));
+        let big = self.ins(format!("icmp sgt i64 {}, {}", c, BLOCK));
+        self.cbr(&big, &body, &done);
+        self.block(&body);
+        let c1 = self.ins(format!("add i64 {}, {}", c, BLOCK - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", c1, BLOCK));
+        let q = self.alloc_elems(&nb, &t);
+        self.for_range_scalar("0", &nb, 1, &mut |g, b| {
+            let lo = g.ins(format!("mul i64 {}, {}", b, BLOCK));
+            let lo2 = g.ins(format!("add i64 {}, {}", lo, BLOCK));
+            let lt2 = g.ins(format!("icmp slt i64 {}, {}", lo2, c));
+            let hi = g.ins(format!("select i1 {}, i64 {}, i64 {}", lt2, lo2, c));
+            let r = g.reduce_block_owned(&cp, &c, &lo, &hi, l, &zv, &t)?;
+            g.store_elem(&q, &nb, b, &t, &r, 1);
+            Ok(())
+        })?;
+        self.drop_level(&cp, &c, &owned, &at);
+        self.emit(format!("store ptr {}, ptr {}", q, curp));
+        self.emit(format!("store i64 {}, ptr {}", nb, curn));
+        self.emit(format!("store i1 true, ptr {}", owned));
+        self.br(&head);
+        self.block(&done);
+        let r = self.reduce_block_owned(&cp, &c, "0", &c, l, &zv, &t)?;
+        self.drop_level(&cp, &c, &owned, &at);
+        self.drop_value(&zv, &t);
+        if fresh {
+            self.drop_value(&av, &at);
+        }
+        Ok(r)
+    }
+
+    /// Frees a level of `reduce_owned` (its elements and its block) when it
+    /// is one of its own.
+    fn drop_level(&mut self, p: &str, n: &str, owned: &str, at: &Type) {
+        let o = self.ins(format!("load i1, ptr {}", owned));
+        let lfree = self.label();
+        let lnext = self.label();
+        self.cbr(&o, &lfree, &lnext);
+        self.block(&lfree);
+        let a = self.arr(p, n);
+        self.drop_value(&a, at);
+        self.br(&lnext);
+        self.block(&lnext);
+    }
+
+    /// `scan` of values that own memory (D134): from left to right, each
+    /// result owned by the new array and read as the next accumulator.
+    fn scan_owned(&mut self, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
+        let t = l.body.ty.clone();
+        let ty = lt(&t);
+        let zv = self.ex(z, 1)?;
+        let (av, p, n, fresh) = self.owned_src(x)?;
+        let out = self.alloc_elems(&n, &t);
+        let prev = self.alloca(&ty);
+        self.emit(format!("store {} {}, ptr {}", ty, zv.r, prev));
+        self.for_range_scalar("0", &n, 1, &mut |g, i| {
+            let a = v(g.ins(format!("load {}, ptr {}", ty, prev)), ty.clone());
+            let x = g.load_elem(&p, &n, i, &t, 1);
+            g.bind(l.params[0], a);
+            g.bind(l.params[1], x);
+            let r = g.ex(&l.body, 1)?;
+            g.store_elem(&out, &n, i, &t, &r, 1);
+            g.emit(format!("store {} {}, ptr {}", ty, r.r, prev));
+            Ok(())
+        })?;
+        self.drop_value(&zv, &t);
+        if fresh {
+            self.drop_value(&av, &Type::Array(Box::new(t.clone())));
+        }
+        Ok(self.arr(&out, &n))
+    }
+
+    fn scan(&mut self, e: &Expr, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
+        let elem_ty = x.ty.elem().clone();
+        let (src, n) = self.prepare_src(x)?;
+        let zv = self.ex(z, 1)?;
+        let out = self.alloc_elems(&n, &elem_ty);
+        if elem_ty.is_float() {
+            // the fixed form of a scan of floats (D112): the first block from
+            // `z`, the others from their first element plus the carry; in
+            // parallel with more than one block and one thread
+            let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
+            let lblk = self.label();
+            let lone = self.label();
+            let ljoin = self.label();
+            self.cbr(&several, &lblk, &lone);
+            self.block(&lblk);
+            if self.in_task {
+                self.scan_blocked_seq(&src, l, &zv, &out, &n)?;
+            } else {
+                let threads = self.ins("call i64 @isc_thread_count()".to_string());
+                let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
+                let lpar = self.label();
+                let lseq = self.label();
+                self.cbr(&multi, &lpar, &lseq);
+                self.block(&lpar);
+                self.scan_parallel_float(e, x, l, &zv, &out, &n)?;
+                self.br(&ljoin);
+                self.block(&lseq);
+                self.scan_blocked_seq(&src, l, &zv, &out, &n)?;
+            }
+            self.br(&ljoin);
+            self.block(&lone);
+            self.scan_range(&src, l, &zv, &out, &n, "0", &n, &n)?;
+            self.br(&ljoin);
+            self.block(&ljoin);
+        } else if !self.in_task && assoc_scan_op(l, &elem_ty) {
+            let vec = src_vec_ok(x);
+            // more than one block and more than one thread: with one thread
+            // the two passes of the parallel form cost twice the sequential one
+            let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
+            let threads = self.ins("call i64 @isc_thread_count()".to_string());
+            let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
+            let big = self.ins(format!("and i1 {}, {}", several, multi));
+            let lpar = self.label();
+            let lseq = self.label();
+            let ljoin = self.label();
+            self.cbr(&big, &lpar, &lseq);
+            self.block(&lpar);
+            self.scan_parallel(e, x, l, &zv, &out, &n)?;
+            self.br(&ljoin);
+            self.block(&lseq);
+            self.scan_range_fast(&src, vec, l, &zv, &out, &n, "0", &n)?;
+            self.br(&ljoin);
+            self.block(&ljoin);
+        } else {
+            self.scan_range_fast(&src, src_vec_ok(x), l, &zv, &out, &n, "0", &n)?;
+        }
+        let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", out));
+        let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, n));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+    }
+
+    /// `filter` (SPEC section 6): the elements counted, an array of exactly
+    /// that size (its columns are laid out for it), then the elements
+    /// written; the predicate is pure, so that it can be evaluated twice.
+    fn filter(&mut self, x: &Expr, l: &Lambda) -> R<V> {
+        let elem_ty = x.ty.elem().clone();
+        let (src, n) = self.prepare_src(x)?;
+        let cnt = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", cnt));
+        self.for_range("0", &n, 1, &mut |g, i| {
+            let el = g.elem(&src, i, 1)?;
+            g.bind(l.params[0], el);
+            let keep = g.ex(&l.body, 1)?;
+            let c = g.ins(format!("load i64, ptr {}", cnt));
+            let k = g.ins(format!("zext i1 {} to i64", keep.r));
+            let c2 = g.ins(format!("add i64 {}, {}", c, k));
+            g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+            Ok(())
+        })?;
+        let k = self.ins(format!("load i64, ptr {}", cnt));
+        let out = self.alloc_elems(&k, &elem_ty);
+        self.emit(format!("store i64 0, ptr {}", cnt));
+        self.for_range("0", &n, 1, &mut |g, i| {
+            let el = g.elem(&src, i, 1)?;
+            g.bind(l.params[0], el.clone());
+            let keep = g.ex(&l.body, 1)?;
+            let lyes = g.label();
+            let lnext = g.label();
+            g.cbr(&keep.r, &lyes, &lnext);
+            g.block(&lyes);
+            let c = g.ins(format!("load i64, ptr {}", cnt));
+            // a node kept: one owner more, the new array (D130)
+            let el = if holds_owned(&elem_ty) { g.copy_value(&el, &elem_ty) } else { el };
+            g.store_elem(&out, &k, &c, &elem_ty, &el, 1);
+            let c2 = g.ins(format!("add i64 {}, 1", c));
+            g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+            g.br(&lnext);
+            g.block(&lnext);
+            Ok(())
+        })?;
+        let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", out));
+        let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, k));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+    }
+
+    /// out[i] = op(out[i - 1], x[i]) for i in lo .. hi, out[lo - 1] = `z`;
+    /// returns the last value. `len` is the length of `out` (its layout).
+    #[allow(clippy::too_many_arguments)]
+    fn scan_range(&mut self, src: &Src, l: &Lambda, z: &V, out: &str, len: &str, lo: &str, hi: &str, _n: &str) -> R<V> {
+        let elem_ty = l.body.ty.clone();
+        let alt = lt(&elem_ty);
+        let acc = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, z.r, acc));
+        self.for_range(lo, hi, 1, &mut |g, i| {
+            let a = g.ins(format!("load {}, ptr {}", alt, acc));
+            let el = g.elem(src, i, 1)?;
+            g.bind(l.params[0], v(a, alt.clone()));
+            g.bind(l.params[1], el);
+            let r = g.ex(&l.body, 1)?;
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+            g.store_elem(out, len, i, &elem_ty, &r, 1);
+            Ok(())
+        })?;
+        let last = self.ins(format!("load {}, ptr {}", alt, acc));
+        Ok(v(last, alt))
+    }
+
+    /// The parallel `scan` of an associative operator: the reduction of each
+    /// block (task j), the inclusive values before each block from `z`, from
+    /// left to right (the caller), then each block again from its value
+    /// (task j). The operator is associative, so that the result is the one
+    /// of the sequential scan for any number of threads (SPEC section 6).
+    fn scan_parallel(&mut self, e: &Expr, x: &Expr, l: &Lambda, z: &V, out: &str, n: &str) -> R<()> {
+        let elem_ty = x.ty.elem().clone();
+        let alt = lt(&elem_ty);
+        let bl = BLOCK.to_string();
+        let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let c0 = self.ins(format!("sdiv i64 {}, {}", n1, BLOCK));
+        let parts = self.alloc_elems(&c0, &elem_ty);
+        // 1. the reduction of each block, from its first element
+        let extra = [v(parts.clone(), "ptr"), v(c0.clone(), "i64")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", n, start));
+            let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+            let end = g.ins(format!("add i64 {}, {}", start, m));
+            let first = g.elem(&src, &start, 1)?;
+            let acc = g.alloca(&alt);
+            g.emit(format!("store {} {}, ptr {}", alt, first.r, acc));
+            let from = g.ins(format!("add i64 {}, 1", start));
+            g.for_range(&from, &end, 1, &mut |g, i| {
+                let a = g.ins(format!("load {}, ptr {}", alt, acc));
+                let el = g.elem(&src, i, 1)?;
+                g.bind(l.params[0], v(a, alt.clone()));
+                g.bind(l.params[1], el);
+                let r = g.ex(&l.body, 1)?;
+                g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+                Ok(())
+            })?;
+            let p = g.ins(format!("load {}, ptr {}", alt, acc));
+            g.store_elem(&extra[0].r, &extra[1].r, j, &elem_ty, &v(p, alt.clone()), 1);
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        // 2. the value before each block: z, then op(before, reduction)
+        let run = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, z.r, run));
+        self.for_range("0", &c0, 1, &mut |g, j| {
+            let pj = g.load_elem(&parts, &c0, j, &elem_ty, 1);
+            let before = g.ins(format!("load {}, ptr {}", alt, run));
+            g.store_elem(&parts, &c0, j, &elem_ty, &v(before.clone(), alt.clone()), 1);
+            g.bind(l.params[0], v(before, alt.clone()));
+            g.bind(l.params[1], pj);
+            let r = g.ex(&l.body, 1)?;
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, run));
+            Ok(())
+        })?;
+        // 3. each block from the value before it
+        let extra = [v(parts.clone(), "ptr"), v(c0.clone(), "i64"), v(out.to_string(), "ptr"), v(n.to_string(), "i64")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", n, start));
+            let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+            let end = g.ins(format!("add i64 {}, {}", start, m));
+            let before = g.load_elem(&extra[0].r, &extra[1].r, j, &elem_ty, 1);
+            g.scan_range_fast(&src, src_vec_ok(x), l, &before, &extra[2].r, &extra[3].r, &start, &end)?;
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.emit(format!("call void @isc_free(ptr {})", parts));
+        Ok(())
+    }
+
+    /// `scan_range` of an operator of `int_scan_op` on a source read by
+    /// vectors (`vec`): W elements at a time (one register of 512 bits),
+    /// their inclusive scan in the register by log2(W) shifts (the lanes
+    /// shifted in hold the neutral value), then combined with the last
+    /// value of the vector before; the exact result of the scalar loop
+    /// (integers: the order of an associative, commutative operator does
+    /// not change the result). Any other scan: `scan_range`.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_range_fast(&mut self, src: &Src, vec: bool, l: &Lambda, z: &V, out: &str, len: &str, lo: &str, hi: &str) -> R<V> {
+        let et = l.body.ty.clone();
+        let Some((_, neutral)) = int_scan_op(l, &et).filter(|_| vec) else {
+            return self.scan_range(src, l, z, out, len, lo, hi, hi);
+        };
+        let st = lt(&et);
+        let w = 64 / esize(&et) as u32;
+        let vty = format!("<{} x {}>", w, st);
+        let span = self.ins(format!("sub i64 {}, {}", hi, lo));
+        let full = self.ins(format!("and i64 {}, -{}", span, w));
+        let vend = self.ins(format!("add i64 {}, {}", lo, full));
+        let carry = self.alloca(&vty);
+        let zw = self.widen(&V { uni: true, ..z.clone() }, w);
+        self.emit(format!("store {} {}, ptr {}", vty, zw.r, carry));
+        let ident = format!("<{}>", (0..w).map(|_| format!("{} {}", st, neutral)).collect::<Vec<_>>().join(", "));
+        // an output larger than the caches (STREAM_BYTES) is written with
+        // non-temporal stores: no read of each line before its write (its
+        // address: 64-byte aligned, `lo` a multiple of the block or 0)
+        let nt = !self.opts.isa.is_wasm();
+        let bytes = self.ins(format!("mul i64 {}, {}", len, esize(&et)));
+        let huge = self.ins(format!("icmp sge i64 {}, {}", bytes, self.opts.stream_bytes));
+        let lnt = self.label();
+        let lplain = self.label();
+        let lafter = self.label();
+        if nt {
+            self.cbr(&huge, &lnt, &lplain);
+        } else {
+            self.br(&lplain);
+        }
+        let modes: &[bool] = if nt { &[true, false] } else { &[false] };
+        for &streaming in modes {
+        self.block(if streaming { &lnt } else { &lplain });
+        self.for_range_scalar(lo, &vend, w as i64, &mut |g, i| {
+            let mut x = g.elem(src, i, w)?;
+            let mut s = 1;
+            while s < w {
+                // lane j gets lane j - s of x, the neutral value below s
+                let mask: Vec<String> = (0..w).map(|j| format!("i32 {}", if j < s { j } else { w + j - s })).collect();
+                let sh = g.ins(format!("shufflevector {} {}, {} {}, <{} x i32> <{}>", vty, ident, vty, x.r, w, mask.join(", ")));
+                x = g.apply2(l, x, V { r: sh, t: vty.clone(), uni: false }, w)?;
+                s *= 2;
+            }
+            // the carry of the next vector: op(carry, last lane of x), so
+            // that the permutation stays off the chain from one vector to
+            // the next (one operation per vector on it)
+            let c = g.ins(format!("load {}, ptr {}", vty, carry));
+            let cv = V { r: c, t: vty.clone(), uni: false };
+            let last = vec![format!("i32 {}", w - 1); w as usize].join(", ");
+            let xl = g.ins(format!("shufflevector {} {}, {} poison, <{} x i32> <{}>", vty, x.r, vty, w, last));
+            let y = g.apply2(l, cv.clone(), x, w)?;
+            if streaming {
+                let po = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", st, out, i));
+                g.emit(format!("store {} {}, ptr {}, align 64, !nontemporal !{{i32 1}}", vty, y.r, po));
+            } else {
+                g.store_elem(out, len, i, &et, &y, w);
+            }
+            let c2 = g.apply2(l, cv, V { r: xl, t: vty.clone(), uni: false }, w)?;
+            g.emit(format!("store {} {}, ptr {}", vty, c2.r, carry));
+            Ok(())
+        })?;
+        if streaming {
+            // the non-temporal stores ordered before what follows (another
+            // thread reads them after the end of the parallel loop)
+            self.emit("call void @llvm.x86.sse.sfence()".to_string());
+            self.decls.insert("declare void @llvm.x86.sse.sfence()".to_string());
+        }
+        self.br(&lafter);
+        }
+        self.block(&lafter);
+        let c = self.ins(format!("load {}, ptr {}", vty, carry));
+        let c0 = self.ins(format!("extractelement {} {}, i64 0", vty, c));
+        self.scan_range(src, l, &v(c0, st.clone()), out, len, &vend, hi, hi)
+    }
+
+    /// out[i] = op(carry, local_i) for i in lo .. hi, where local is the
+    /// scan of x[lo ..] from x[lo] (the blocks after the first of the fixed
+    /// form of a scan of floats, D112).
+    #[allow(clippy::too_many_arguments)]
+    fn scan_range_carry(&mut self, src: &Src, l: &Lambda, carry: &V, out: &str, len: &str, lo: &str, hi: &str) -> R<()> {
+        let elem_ty = l.body.ty.clone();
+        let alt = lt(&elem_ty);
+        let acc = self.alloca(&alt);
+        let first = self.elem(src, lo, 1)?;
+        self.emit(format!("store {} {}, ptr {}", alt, first.r, acc));
+        let r0 = self.apply2(l, carry.clone(), first, 1)?;
+        self.store_elem(out, len, lo, &elem_ty, &r0, 1);
+        let from = self.ins(format!("add i64 {}, 1", lo));
+        self.for_range(&from, hi, 1, &mut |g, i| {
+            let a = g.ins(format!("load {}, ptr {}", alt, acc));
+            let el = g.elem(src, i, 1)?;
+            let r = g.apply2(l, v(a, alt.clone()), el, 1)?;
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+            let o = g.apply2(l, carry.clone(), r, 1)?;
+            g.store_elem(out, len, i, &elem_ty, &o, 1);
+            Ok(())
+        })
+    }
+
+    /// The fixed form of a scan of floats in one pass: the first block from
+    /// `z`, each other block with the last value of the block before as its
+    /// carry.
+    fn scan_blocked_seq(&mut self, src: &Src, l: &Lambda, z: &V, out: &str, n: &str) -> R<()> {
+        let elem_ty = l.body.ty.clone();
+        let bl = BLOCK.to_string();
+        self.scan_range(src, l, z, out, n, "0", &bl, n)?;
+        let nb1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", nb1, BLOCK));
+        self.for_range_scalar("1", &nb, 1, &mut |g, b| {
+            let start = g.ins(format!("mul i64 {}, {}", b, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", n, start));
+            let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+            let end = g.ins(format!("add i64 {}, {}", start, m));
+            let prev = g.ins(format!("sub i64 {}, 1", start));
+            let carry = g.load_elem(out, n, &prev, &elem_ty, 1);
+            g.scan_range_carry(src, l, &carry, out, n, &start, &end)
+        })
+    }
+
+    /// The fixed form of a scan of floats in parallel: (1) the scan of each
+    /// block, from `z` for the first, from its first element for the others,
+    /// its last value kept; (2) the carries, from left to right: the last
+    /// value of the first block, then op(carry, last value); (3) each block
+    /// written. The same values as `scan_blocked_seq` for any number of
+    /// threads.
+    fn scan_parallel_float(&mut self, e: &Expr, x: &Expr, l: &Lambda, z: &V, out: &str, n: &str) -> R<()> {
+        let elem_ty = x.ty.elem().clone();
+        let alt = lt(&elem_ty);
+        let bl = BLOCK.to_string();
+        let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let c0 = self.ins(format!("sdiv i64 {}, {}", n1, BLOCK));
+        let parts = self.alloc_elems(&c0, &elem_ty);
+        let extra = [v(parts.clone(), "ptr"), v(c0.clone(), "i64"), z.clone()];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", n, start));
+            let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+            let end = g.ins(format!("add i64 {}, {}", start, m));
+            // block 0: from z; the others: from their first element
+            let first = g.elem(&src, &start, 1)?;
+            let zero = g.ins(format!("icmp eq i64 {}, 0", j));
+            let z0 = g.apply2(l, extra[2].clone(), first.clone(), 1)?;
+            let init = g.ins(format!("select i1 {}, {} {}, {} {}", zero, alt, z0.r, alt, first.r));
+            let acc = g.alloca(&alt);
+            g.emit(format!("store {} {}, ptr {}", alt, init, acc));
+            let from = g.ins(format!("add i64 {}, 1", start));
+            g.for_range(&from, &end, 1, &mut |g, i| {
+                let a = g.ins(format!("load {}, ptr {}", alt, acc));
+                let el = g.elem(&src, i, 1)?;
+                let r = g.apply2(l, v(a, alt.clone()), el, 1)?;
+                g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+                Ok(())
+            })?;
+            let p = g.ins(format!("load {}, ptr {}", alt, acc));
+            g.store_elem(&extra[0].r, &extra[1].r, j, &elem_ty, &v(p, alt.clone()), 1);
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        // 2. the carry of each block after the first, in parts[b]
+        let run = self.alloca(&alt);
+        let p0 = self.load_elem(&parts, &c0, "0", &elem_ty, 1);
+        self.emit(format!("store {} {}, ptr {}", alt, p0.r, run));
+        self.for_range_scalar("1", &c0, 1, &mut |g, b| {
+            let last = g.load_elem(&parts, &c0, b, &elem_ty, 1);
+            let carry = g.ins(format!("load {}, ptr {}", alt, run));
+            g.store_elem(&parts, &c0, b, &elem_ty, &v(carry.clone(), alt.clone()), 1);
+            let r = g.apply2(l, v(carry, alt.clone()), last, 1)?;
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, run));
+            Ok(())
+        })?;
+        // 3. each block written
+        let extra = [v(parts.clone(), "ptr"), v(c0.clone(), "i64"), v(out.to_string(), "ptr"), v(n.to_string(), "i64"), z.clone()];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", n, start));
+            let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+            let end = g.ins(format!("add i64 {}, {}", start, m));
+            let zero = g.ins(format!("icmp eq i64 {}, 0", j));
+            let lfirst = g.label();
+            let lrest = g.label();
+            let ldone = g.label();
+            g.cbr(&zero, &lfirst, &lrest);
+            g.block(&lfirst);
+            g.scan_range(&src, l, &extra[4], &extra[2].r, &extra[3].r, &start, &end, &n)?;
+            g.br(&ldone);
+            g.block(&lrest);
+            let carry = g.load_elem(&extra[0].r, &extra[1].r, j, &elem_ty, 1);
+            g.scan_range_carry(&src, l, &carry, &extra[2].r, &extra[3].r, &start, &end)?;
+            g.br(&ldone);
+            g.block(&ldone);
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.emit(format!("call void @isc_free(ptr {})", parts));
+        Ok(())
+    }
+
+    /// The width of a `map` whose elements call SPMD functions of `state`
+    /// parameters (D140): as many lanes as the vector registers hold with
+    /// about 8 bytes per parameter but one, at least 4 (the program can
+    /// give vectors of any width: on AVX-512 they are 512 bits wide). The
+    /// SPMD loop is bound by the latency of its chain of operations, so
+    /// independent lanes pay until the registers are full: mandelbrot
+    /// (5 parameters) on one core is fastest with 64 lanes on AVX-512, 16
+    /// with AVX or AVX2, 8 with SSE (D140).
+    fn spmd_width(&self, state: usize) -> u32 {
+        let f = crate::backend::host_features();
+        let has = |name: &str| f.split(',').any(|x| x == format!("+{}", name));
+        let bytes = match self.opts.isa {
+            Isa::Avx512 => 64 * 32,
+            // explicit vectors are 512 bits wide there: faster than 256 bits
+            // with the masks of AVX-512VL even with 4 cores at the lower
+            // frequency of AVX-512 (mandelbrot: 640 ms against 875 ms, D140)
+            Isa::Native if has("avx512f") => 64 * 32,
+            Isa::Sse | Isa::Wasm32 | Isa::Wasm32Threads => 16 * 16,
+            Isa::Native if !has("avx") => 16 * 16,
+            _ => 32 * 16,
+        };
+        let per_lane = 8 * (state.saturating_sub(1)).max(4) as u32;
+        let w = (bytes / per_lane).max(4);
+        // a power of two, at most 64
+        (1u32 << (31 - w.leading_zeros())).min(64)
+    }
+
+    /// The masks of the two branches of an `if` in vector code: the
+    /// current lanes with the condition, and with its negation.
+    fn branch_masks(&mut self, cv: &V, w: u32) -> (String, String) {
+        let mt = format!("<{} x i1>", w);
+        let c = self.widen(cv, w);
+        let all = self.cst("i1", "true", w);
+        let base = self.mask.clone().unwrap_or_else(|| all.clone());
+        let t = self.ins(format!("and {} {}, {}", mt, base, c.r));
+        let nc = self.ins(format!("xor {} {}, {}", mt, c.r, all));
+        let f = self.ins(format!("and {} {}, {}", mt, base, nc));
+        (t, f)
+    }
+
+    /// A `fold` in vector code over elements that are the same in every
+    /// lane (D140): a scalar loop, the accumulator a vector.
+    fn fold_vec(&mut self, x: &Expr, init: &Expr, l: &Lambda, w: u32) -> R<V> {
+        let (src, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, w)?;
+        let iv = self.widen(&iv, w);
+        let at = iv.t.clone();
+        let acc = self.alloca(&at);
+        self.emit(format!("store {} {}, ptr {}", at, iv.r, acc));
+        self.for_range_scalar("0", &n, 1, &mut |g, i| {
+            let a = V { r: g.ins(format!("load {}, ptr {}", at, acc)), t: at.clone(), uni: false };
+            let el = g.elem(&src, i, 1)?;
+            g.bind(l.params[0], a);
+            g.bind(l.params[1], el);
+            let r = g.ex(&l.body, w)?;
+            let r = g.widen(&r, w);
+            g.emit(format!("store {} {}, ptr {}", at, r.r, acc));
+            Ok(())
+        })?;
+        Ok(V { r: self.ins(format!("load {}, ptr {}", at, acc)), t: at, uni: false })
+    }
+
+    /// The target has mask registers (AVX-512).
+    fn has_mask_registers(&self) -> bool {
+        let f = crate::backend::host_features();
+        self.opts.isa == Isa::Avx512 || (self.opts.isa == Isa::Native && f.split(',').any(|x| x == "+avx512f"))
+    }
+
+    /// A SPMD call (D140): the state of each lane in vectors; at each
+    /// round the body is computed for every lane, a lane whose path ends
+    /// in a value keeps it and stops, a lane whose path ends in a tail call
+    /// takes its new arguments; the loop ends when no lane is active.
+    fn spmd_call(&mut self, f: u32, args: &[Expr], w: u32) -> R<V> {
+        let fun = &self.p.fns[f as usize];
+        let mt = format!("<{} x i1>", w);
+        let mut vals = Vec::new();
+        for a in args {
+            vals.push(self.ex(a, w)?);
+        }
+        let uniform = spmd_uniform(fun, f, &vals.iter().map(uni).collect::<Vec<_>>());
+        let mut state = Vec::new();
+        for ((x, p), &u) in vals.into_iter().zip(fun.params.iter()).zip(uniform.iter()) {
+            // a uniform parameter: one scalar for all the lanes
+            let x = if u { x } else { self.widen(&x, w) };
+            let slot = self.alloca(&x.t);
+            self.emit(format!("store {} {}, ptr {}", x.t, x.r, slot));
+            state.push((*p, slot, x.t.clone(), u));
+        }
+        let rt = format!("<{} x {}>", w, lt(&fun.body.ty));
+        let res = self.alloca(&rt);
+        self.emit(format!("store {} zeroinitializer, ptr {}", rt, res));
+        let active = self.alloca(&mt);
+        let all = self.cst("i1", "true", w);
+        let entry = self.mask.clone().unwrap_or_else(|| all.clone());
+        self.emit(format!("store {} {}, ptr {}", mt, entry, active));
+        let saved_mask = self.mask.take();
+        let head = self.label();
+        let done = self.label();
+        let lbody = self.label();
+        self.br(&head);
+        self.block(&head);
+        let act = self.ins(format!("load {}, ptr {}", mt, active));
+        let any = self.ins(format!("call i1 @llvm.vector.reduce.or.v{}i1({} {})", w, mt, act));
+        self.decls.insert(format!("declare i1 @llvm.vector.reduce.or.v{}i1({})", w, mt));
+        self.cbr(&any, &lbody, &done);
+        self.block(&lbody);
+        // the current state, and the next one: the first tail call reached
+        // gives it, the others only to their lanes (a lane that stops keeps
+        // no state)
+        let mut next = Vec::new();
+        for (p, slot, t, u) in &state {
+            let x = self.ins(format!("load {}, ptr {}", t, slot));
+            self.bind(*p, V { r: x.clone(), t: t.clone(), uni: *u });
+            next.push((x, false, *u, t.clone()));
+        }
+        let mut finished = "zeroinitializer".to_string();
+        let body = fun.body.clone();
+        self.spmd_body(&body, f, &act, w, &res, &rt, &mut next, &mut finished)?;
+        for ((_, slot, t, _), (x, _, _, _)) in state.iter().zip(next.iter()) {
+            self.emit(format!("store {} {}, ptr {}", t, x, slot));
+        }
+        let nf = self.ins(format!("xor {} {}, {}", mt, finished, all));
+        let act2 = self.ins(format!("and {} {}, {}", mt, act, nf));
+        self.emit(format!("store {} {}, ptr {}", mt, act2, active));
+        self.br(&head);
+        self.block(&done);
+        self.mask = saved_mask;
+        Ok(V { r: self.ins(format!("load {}, ptr {}", rt, res)), t: rt, uni: false })
+    }
+
+    /// One path of the body of a SPMD function under the lanes `m`; `next`:
+    /// the next value of each parameter, whether a tail call gave it,
+    /// whether it is uniform, and its type.
+    #[allow(clippy::too_many_arguments)]
+    fn spmd_body(
+        &mut self,
+        e: &Expr,
+        f: u32,
+        m: &str,
+        w: u32,
+        res: &str,
+        rt: &str,
+        next: &mut Vec<(String, bool, bool, String)>,
+        finished: &mut String,
+    ) -> R<()> {
+        let mt = format!("<{} x i1>", w);
+        match &e.kind {
+            ExprKind::Let { var, init, body, .. } => {
+                let x = self.ex(init, w)?;
+                self.bind(*var, x);
+                self.spmd_body(body, f, m, w, res, rt, next, finished)
+            }
+            // a uniform condition: every active lane takes the same branch, a
+            // real one, without masks (D146)
+            ExprKind::If(c, t, x) if { let cv = self.ex(c, w)?; let u = uni(&cv); self.spmd_cond = Some(cv); u } => {
+                let cv = self.spmd_cond.take().unwrap();
+                let (lt_, lf, lj) = (self.label(), self.label(), self.label());
+                self.cbr(&cv.r, &lt_, &lf);
+                self.block(&lt_);
+                let (mut next_t, mut fin_t) = (next.clone(), finished.clone());
+                self.spmd_body(t, f, m, w, res, rt, &mut next_t, &mut fin_t)?;
+                let end_t = self.current_label(&lt_);
+                self.br(&lj);
+                self.block(&lf);
+                let (mut next_f, mut fin_f) = (next.clone(), finished.clone());
+                self.spmd_body(x, f, m, w, res, rt, &mut next_f, &mut fin_f)?;
+                let end_f = self.current_label(&lf);
+                self.br(&lj);
+                self.block(&lj);
+                for k in 0..next.len() {
+                    let (vt, gt, u, ty) = next_t[k].clone();
+                    let (vf, gf, _, _) = next_f[k].clone();
+                    let v = if vt == vf { vt } else { self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", ty, vt, end_t, vf, end_f)) };
+                    next[k] = (v, gt || gf, u, ty);
+                }
+                *finished = if fin_t == fin_f {
+                    fin_t
+                } else {
+                    self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", mt, fin_t, end_t, fin_f, end_f))
+                };
+                Ok(())
+            }
+            ExprKind::If(c, t, x) => {
+                let cv = match self.spmd_cond.take() {
+                    Some(cv) => cv,
+                    None => self.ex(c, w)?,
+                };
+                let cv = self.widen(&cv, w);
+                let all = self.cst("i1", "true", w);
+                let mt_ = self.ins(format!("and {} {}, {}", mt, m, cv.r));
+                let nc = self.ins(format!("xor {} {}, {}", mt, cv.r, all));
+                let mf = self.ins(format!("and {} {}, {}", mt, m, nc));
+                self.spmd_body(t, f, &mt_, w, res, rt, next, finished)?;
+                self.spmd_body(x, f, &mf, w, res, rt, next, finished)
+            }
+            ExprKind::Call(g, args) if *g == f => {
+                for (k, a) in args.iter().enumerate() {
+                    let (cur, given, u, ty) = next[k].clone();
+                    if u {
+                        // the same value from every tail call
+                        if !given {
+                            let x = self.ex(a, w)?;
+                            if !uni(&x) {
+                                return Err("codegen: a uniform parameter of a SPMD call is not uniform".into());
+                            }
+                            next[k] = (x.r, true, true, ty);
+                        }
+                        continue;
+                    }
+                    let x = self.ex(a, w)?;
+                    let x = self.widen(&x, w);
+                    let r = if given { self.ins(format!("select {} {}, {} {}, {} {}", mt, m, x.t, x.r, x.t, cur)) } else { x.r };
+                    next[k] = (r, true, false, ty);
+                }
+                Ok(())
+            }
+            // a value: without mask registers, computed only in the rounds
+            // where a lane reaches it (each lane does once); with them
+            // (AVX-512) the test would cost more than the select (D140)
+            _ if self.has_mask_registers() || matches!(e.kind, ExprKind::Lit(_) | ExprKind::Var(..)) => {
+                let x = self.ex(e, w)?;
+                let x = self.widen(&x, w);
+                let r = self.ins(format!("load {}, ptr {}", rt, res));
+                let r2 = self.ins(format!("select {} {}, {} {}, {} {}", mt, m, rt, x.r, rt, r));
+                self.emit(format!("store {} {}, ptr {}", rt, r2, res));
+                *finished = self.ins(format!("or {} {}, {}", mt, finished, m));
+                Ok(())
+            }
+            _ => {
+                let any = self.ins(format!("call i1 @llvm.vector.reduce.or.v{}i1({} {})", w, mt, m));
+                self.decls.insert(format!("declare i1 @llvm.vector.reduce.or.v{}i1({})", w, mt));
+                let ldo = self.label();
+                let lnext = self.label();
+                self.cbr(&any, &ldo, &lnext);
+                self.block(&ldo);
+                let x = self.ex(e, w)?;
+                let x = self.widen(&x, w);
+                let r = self.ins(format!("load {}, ptr {}", rt, res));
+                let r2 = self.ins(format!("select {} {}, {} {}, {} {}", mt, m, rt, x.r, rt, r));
+                self.emit(format!("store {} {}, ptr {}", rt, r2, res));
+                self.br(&lnext);
+                self.block(&lnext);
+                *finished = self.ins(format!("or {} {}, {}", mt, finished, m));
+                Ok(())
+            }
+        }
+    }
+
+    fn fold(&mut self, x: &Expr, init: &Expr, l: &Lambda) -> R<V> {
+        let (src, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, 1)?;
+        let at = init.ty.clone();
+        let alt = lt(&at);
+        let acc = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, iv.r, acc));
+        self.for_range("0", &n, 1, &mut |g, i| {
+            let a = g.ins(format!("load {}, ptr {}", alt, acc));
+            let av = v(a, alt.clone());
+            let el = g.elem(&src, i, 1)?;
+            g.bind(l.params[0], av.clone());
+            g.bind(l.params[1], el);
+            let r = g.ex(&l.body, 1)?;
+            if l.drop_params[0] {
+                g.drop_value(&av, &at);
+            }
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+            Ok(())
+        })?;
+        let r = self.ins(format!("load {}, ptr {}", alt, acc));
+        Ok(v(r, alt))
+    }
+
+    // -----------------------------------------------------------------
+    // reductions of columns (rule F3, DECISIONS D100)
+
+    /// `reduce(map(xs, (v) -> (f_1(v), ..., f_k(v))), op, (z_1, ..., z_k))`
+    /// whose operator works component by component (the form `horizontal`
+    /// builds): the k reductions `reduce(map(xs, f_i), op_i, z_i)`, which
+    /// give the same results, as columns.
+    fn columns_of(x: &Expr, l: &Lambda, z: &Expr) -> Option<Vec<(Expr, Lambda, Expr)>> {
+        let Type::Tuple(ts) = &l.body.ty else { return None };
+        if ts.iter().any(|t| !t.is_scalar()) {
+            return None;
+        }
+        let (ExprKind::Map(ins, m), ExprKind::Tuple(ops), ExprKind::Tuple(zs)) = (&x.kind, &l.body.kind, &z.kind) else { return None };
+        let ExprKind::Tuple(fs) = &m.body.kind else { return None };
+        let k = ts.len();
+        if fs.len() != k || ops.len() != k || zs.len() != k {
+            return None;
+        }
+        let mut cols = Vec::new();
+        for i in 0..k {
+            // op_i: let a_i = A.i in let b_i = B.i in body_i
+            let ExprKind::Let { var: ai, init: pa, body: rest, .. } = &ops[i].kind else { return None };
+            let ExprKind::Let { var: bi, init: pb, body: bi_body, .. } = &rest.kind else { return None };
+            let proj_of = |e: &Expr, p: VarId| matches!(&e.kind, ExprKind::Proj(t, j) if *j as usize == i && matches!(t.kind, ExprKind::Var(w, _) if w == p));
+            if !proj_of(pa, l.params[0]) || !proj_of(pb, l.params[1]) {
+                return None;
+            }
+            // the column: the input itself when f_i is the identity
+            let src = match &fs[i].kind {
+                ExprKind::Var(w, _) if ins.len() == 1 && *w == m.params[0] => ins[0].clone(),
+                _ => Expr::new(
+                    ExprKind::Map(ins.clone(), Lambda { params: m.params.clone(), body: Box::new(fs[i].clone()), drop_params: vec![false; m.params.len()] }),
+                    Type::Array(Box::new(ts[i].clone())),
+                    x.span,
+                ),
+            };
+            let op = Lambda { params: vec![*ai, *bi], body: bi_body.clone(), drop_params: vec![false, false] };
+            cols.push((src, op, zs[i].clone()));
+        }
+        Some(cols)
+    }
+
+    /// The reductions of `cols`, one array read once: each block of B
+    /// elements is reduced for every column in turn while it is in the cache
+    /// (in parallel, block j by task j), then the block results of each
+    /// column are reduced as in `reduce`. Each column has the form of section
+    /// 10, so the same result as alone.
+    fn reduce_columns(&mut self, e: &Expr, cols: &[(Expr, Lambda, Expr)]) -> R<V> {
+        let lanes = self.opts.lanes;
+        let mut zs = Vec::new();
+        for (_, _, z) in cols {
+            zs.push(self.ex(z, 1)?);
+        }
+        let ts: Vec<Type> = cols.iter().map(|(x, _, _)| x.ty.elem().clone()).collect();
+        let ws: Vec<u32> = cols.iter().map(|(x, l, _)| if src_vec_ok(x) && lam_ok(l) { lanes } else { 1 }).collect();
+        let wms: Vec<u32> = cols.iter().map(|(_, l, _)| if lam_ok(l) { lanes } else { 1 }).collect();
+        let mut srcs = Vec::new();
+        let mut n = String::new();
+        for (x, _, _) in cols {
+            let (s, len) = self.prepare_src(x)?;
+            srcs.push(s);
+            n = len;
+        }
+        let k = cols.len();
+        let res: Vec<String> = ts.iter().map(|t| self.alloca(&lt(t))).collect();
+        let bl = BLOCK.to_string();
+        let big = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
+        let lsmall = self.label();
+        let lbig = self.label();
+        let lend = self.label();
+        self.cbr(&big, &lbig, &lsmall);
+        // one block
+        self.block(&lsmall);
+        for i in 0..k {
+            let r = self.reduce_block(&srcs[i], "0", &n, &cols[i].1, &zs[i], &ts[i], ws[i])?;
+            self.emit(format!("store {} {}, ptr {}", lt(&ts[i]), r.r, res[i]));
+        }
+        self.br(&lend);
+        // blocks: their results in `parts` (one array per column)
+        self.block(&lbig);
+        let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let c0 = self.ins(format!("sdiv i64 {}, {}", n1, BLOCK));
+        let parts: Vec<String> = ts.iter().map(|t| self.alloc_elems(&c0, t)).collect();
+        if self.in_task {
+            self.for_range("0", &c0, 1, &mut |g, j| {
+                let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+                let rem = g.ins(format!("sub i64 {}, {}", n, start));
+                let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+                let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+                for i in 0..k {
+                    let r = g.reduce_block(&srcs[i], &start, &mm, &cols[i].1, &zs[i], &ts[i], ws[i])?;
+                    g.store_elem(&parts[i], &c0, j, &ts[i], &r, 1);
+                }
+                Ok(())
+            })?;
+        } else {
+            let mut extra: Vec<V> = parts.iter().map(|p| v(p.clone(), "ptr")).collect();
+            extra.push(v(c0.clone(), "i64"));
+            let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+                let mut srcs = Vec::new();
+                let mut n = String::new();
+                for (x, _, _) in cols {
+                    let (s, len) = g.prepare_src(x)?;
+                    srcs.push(s);
+                    n = len;
+                }
+                let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+                let rem = g.ins(format!("sub i64 {}, {}", n, start));
+                let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+                let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+                for i in 0..k {
+                    let zv = g.ex(&cols[i].2, 1)?;
+                    let r = g.reduce_block(&srcs[i], &start, &mm, &cols[i].1, &zv, &ts[i], ws[i])?;
+                    g.store_elem(&extra[i].r, &extra[k].r, j, &ts[i], &r, 1);
+                }
+                Ok(())
+            })?;
+            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        }
+        // upper levels of each column, in place in its `parts`
+        for i in 0..k {
+            let ca = self.alloca("i64");
+            self.emit(format!("store i64 {}, ptr {}", c0, ca));
+            let head = self.label();
+            let body = self.label();
+            let done = self.label();
+            self.br(&head);
+            self.block(&head);
+            let c = self.ins(format!("load i64, ptr {}", ca));
+            let more = self.ins(format!("icmp sgt i64 {}, 1", c));
+            self.cbr(&more, &body, &done);
+            self.block(&body);
+            let c1 = self.ins(format!("add i64 {}, {}", c, BLOCK - 1));
+            let c2 = self.ins(format!("sdiv i64 {}, {}", c1, BLOCK));
+            let msrc = Src::Mat { ptr: parts[i].clone(), len: c0.clone(), elem: ts[i].clone() };
+            let (pi, ti, li, zi, wi) = (parts[i].clone(), ts[i].clone(), &cols[i].1, zs[i].clone(), wms[i]);
+            self.for_range("0", &c2, 1, &mut |g, q| {
+                let start = g.ins(format!("mul i64 {}, {}", q, BLOCK));
+                let rem = g.ins(format!("sub i64 {}, {}", c, start));
+                let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+                let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+                let r = g.reduce_block(&msrc, &start, &mm, li, &zi, &ti, wi)?;
+                g.store_elem(&pi, &c0, q, &ti, &r, 1);
+                Ok(())
+            })?;
+            self.emit(format!("store i64 {}, ptr {}", c2, ca));
+            self.br(&head);
+            self.block(&done);
+            let r = self.load_elem(&parts[i], &c0, "0", &ts[i], 1);
+            self.emit(format!("store {} {}, ptr {}", lt(&ts[i]), r.r, res[i]));
+            self.emit(format!("call void @isc_free(ptr {})", parts[i]));
+        }
+        self.br(&lend);
+        self.block(&lend);
+        let tt = Type::Tuple(ts.clone());
+        let mut acc = "poison".to_string();
+        for i in 0..k {
+            let r = self.ins(format!("load {}, ptr {}", lt(&ts[i]), res[i]));
+            acc = self.ins(format!("insertvalue {} {}, {} {}, {}", lt(&tt), acc, lt(&ts[i]), r, i));
+        }
+        Ok(V { r: acc, t: lt(&tt), uni: true })
+    }
+
+    // -----------------------------------------------------------------
+    // streams (rule F2, DECISIONS D99): a `filter`, possibly followed by
+    // `map`s of one input, read in order by a `reduce`, a `fold` or an
+    // evaluated `map`, in one pass over the filter's input
+
+    fn prepare_stream<'e>(&mut self, e: &'e Expr) -> R<Stream<'e>> {
+        match &e.kind {
+            ExprKind::Filter(x, l) => {
+                let (base, n) = self.prepare_src(x)?;
+                let vec = src_vec_ok(x) && lam_ok(l) && x.ty.elem().is_scalar();
+                Ok(Stream { base, n, pred: l, posts: Vec::new(), vec })
+            }
+            ExprKind::Map(ins, l) if ins.len() == 1 => {
+                let mut s = self.prepare_stream(&ins[0])?;
+                s.vec = s.vec && lam_ok(l) && isc_ir::passes::cannot_panic(&l.body) && e.ty.elem().is_scalar();
+                s.posts.push(l);
+                Ok(s)
+            }
+            _ => Err("internal error: not a stream".into()),
+        }
+    }
+
+    /// Calls `f` with each element the stream keeps, in order.
+    fn for_each_kept(&mut self, s: &Stream, f: &mut dyn FnMut(&mut Self, V) -> R<()>) -> R<()> {
+        let n = s.n.clone();
+        self.for_range("0", &n, 1, &mut |g, i| {
+            let el = g.elem(&s.base, i, 1)?;
+            g.bind(s.pred.params[0], el.clone());
+            let keep = g.ex(&s.pred.body, 1)?;
+            let lyes = g.label();
+            let lnext = g.label();
+            g.cbr(&keep.r, &lyes, &lnext);
+            g.block(&lyes);
+            let mut x = el;
+            for l in &s.posts {
+                g.bind(l.params[0], x);
+                x = g.ex(&l.body, 1)?;
+            }
+            f(g, x)?;
+            g.br(&lnext);
+            g.block(&lnext);
+            Ok(())
+        })
+    }
+
+    /// `fold` over a stream: the accumulator changes only for the elements
+    /// kept.
+    fn fold_stream(&mut self, x: &Expr, init: &Expr, l: &Lambda) -> R<V> {
+        let st = self.prepare_stream(x)?;
+        let iv = self.ex(init, 1)?;
+        let at = init.ty.clone();
+        let alt = lt(&at);
+        let acc = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, iv.r, acc));
+        self.for_each_kept(&st, &mut |g, el| {
+            let a = g.ins(format!("load {}, ptr {}", alt, acc));
+            let av = v(a, alt.clone());
+            g.bind(l.params[0], av.clone());
+            g.bind(l.params[1], el);
+            let r = g.ex(&l.body, 1)?;
+            if l.drop_params[0] {
+                g.drop_value(&av, &at);
+            }
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+            Ok(())
+        })?;
+        let r = self.ins(format!("load {}, ptr {}", alt, acc));
+        Ok(v(r, alt))
+    }
+
+    /// An evaluated `map` of a stream: the elements kept are counted, then
+    /// mapped into an array of exactly that size.
+    fn materialize_stream(&mut self, e: &Expr) -> R<V> {
+        let elem_ty = e.ty.elem().clone();
+        let st = self.prepare_stream(e)?;
+        let cnt = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", cnt));
+        let n = st.n.clone();
+        self.for_range("0", &n, 1, &mut |g, i| {
+            let el = g.elem(&st.base, i, 1)?;
+            g.bind(st.pred.params[0], el);
+            let keep = g.ex(&st.pred.body, 1)?;
+            let c = g.ins(format!("load i64, ptr {}", cnt));
+            let k = g.ins(format!("zext i1 {} to i64", keep.r));
+            let c2 = g.ins(format!("add i64 {}, {}", c, k));
+            g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+            Ok(())
+        })?;
+        let k = self.ins(format!("load i64, ptr {}", cnt));
+        let out = self.alloc_elems(&k, &elem_ty);
+        self.emit(format!("store i64 0, ptr {}", cnt));
+        self.for_each_kept(&st, &mut |g, x| {
+            let c = g.ins(format!("load i64, ptr {}", cnt));
+            let x = if holds_owned(&elem_ty) { g.copy_value(&x, &elem_ty) } else { x };
+            g.store_elem(&out, &k, &c, &elem_ty, &x, 1);
+            let c2 = g.ins(format!("add i64 {}, 1", c));
+            g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+            Ok(())
+        })?;
+        let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", out));
+        let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, k));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+    }
+
+    /// `reduce` over a stream, with the result of the form of section 10 on
+    /// the array of the kept elements, for any operator and any `e`: the k-th
+    /// element kept goes to accumulator k mod V of its block; a block of B
+    /// elements is closed when one more element comes, and its result goes,
+    /// the same way, to the level above (the reduction of the block results).
+    /// At the end, a level that has received no block result is the last
+    /// one; the levels below give theirs first. Sequential, in one pass.
+    fn reduce_stream(&mut self, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
+        let zv = self.ex(z, 1)?;
+        let st = self.prepare_stream(x)?;
+        let t = l.body.ty.clone();
+        if st.vec && lam_ok(l) && t.is_scalar() && !self.in_task {
+            // in parallel with more than one thread and two blocks of inputs
+            let threads = self.ins("call i64 @isc_thread_count()".to_string());
+            let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
+            let big = self.ins(format!("icmp sgt i64 {}, {}", st.n, 2 * BLOCK));
+            let par = self.ins(format!("and i1 {}, {}", multi, big));
+            let alt = lt(&t);
+            let res = self.alloca(&alt);
+            let lpar = self.label();
+            let lseq = self.label();
+            let ljoin = self.label();
+            self.cbr(&par, &lpar, &lseq);
+            self.block(&lpar);
+            let r = self.reduce_stream_parallel(x, &st, l, &zv, &t, &threads)?;
+            self.emit(format!("store {} {}, ptr {}", alt, r.r, res));
+            self.br(&ljoin);
+            self.block(&lseq);
+            let r = self.reduce_stream_seq(&st, l, &zv, &t)?;
+            self.emit(format!("store {} {}, ptr {}", alt, r.r, res));
+            self.br(&ljoin);
+            self.block(&ljoin);
+            let out = self.ins(format!("load {}, ptr {}", alt, res));
+            return Ok(v(out, alt));
+        }
+        self.reduce_stream_seq(&st, l, &zv, &t)
+    }
+
+    /// `reduce_stream` in one pass, on the current thread.
+    fn reduce_stream_seq(&mut self, st: &Stream, l: &Lambda, zv: &V, t: &Type) -> R<V> {
+        let zv = zv.clone();
+        let t = t.clone();
+        let alt = lt(&t);
+        let lanes = self.opts.lanes as i64;
+        let acc = self.alloca(&format!("[{} x {}]", STREAM_LEVELS * lanes, alt));
+        let cnt = self.alloca(&format!("[{} x i64]", STREAM_LEVELS));
+        let levels = STREAM_LEVELS.to_string();
+        let zc = zv.clone();
+        let altc = alt.clone();
+        self.for_range_scalar("0", &levels, 1, &mut |g, lv| {
+            g.rs_reset(&acc, &cnt, lv, &zc, &altc);
+            Ok(())
+        })?;
+        if st.vec && lam_ok(l) && t.is_scalar() {
+            self.stream_vector(st, l, &zv, &acc, &cnt, &t)?;
+        } else {
+            self.for_each_kept(st, &mut |g, el| g.rs_push(&acc, &cnt, "0", el, l, &zv, &alt))?;
+        }
+        // the result: the first level that has received no block result
+        let res = self.alloca(&alt);
+        let lvl = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", lvl));
+        let head = self.label();
+        let check = self.label();
+        let up = self.label();
+        let flush = self.label();
+        let next = self.label();
+        let fin = self.label();
+        let done = self.label();
+        self.br(&head);
+        self.block(&head);
+        let lv = self.ins(format!("load i64, ptr {}", lvl));
+        let last = self.ins(format!("icmp eq i64 {}, {}", lv, STREAM_LEVELS - 1));
+        self.cbr(&last, &fin, &check);
+        self.block(&check);
+        let lv1 = self.ins(format!("add i64 {}, 1", lv));
+        let p1 = self.ins(format!("getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 {}", STREAM_LEVELS, cnt, lv1));
+        let c1 = self.ins(format!("load i64, ptr {}", p1));
+        let has_up = self.ins(format!("icmp sgt i64 {}, 0", c1));
+        self.cbr(&has_up, &up, &fin);
+        self.block(&up);
+        let p0 = self.ins(format!("getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 {}", STREAM_LEVELS, cnt, lv));
+        let c0 = self.ins(format!("load i64, ptr {}", p0));
+        let partial = self.ins(format!("icmp sgt i64 {}, 0", c0));
+        self.cbr(&partial, &flush, &next);
+        self.block(&flush);
+        let r = self.rs_tree(&acc, &lv, l, &alt)?;
+        self.rs_push(&acc, &cnt, &lv1, r, l, &zv, &alt)?;
+        self.br(&next);
+        self.block(&next);
+        self.emit(format!("store i64 {}, ptr {}", lv1, lvl));
+        self.br(&head);
+        self.block(&fin);
+        let lvf = self.ins(format!("load i64, ptr {}", lvl));
+        let r = self.rs_tree(&acc, &lvf, l, &alt)?;
+        self.emit(format!("store {} {}, ptr {}", alt, r.r, res));
+        self.br(&done);
+        self.block(&done);
+        let out = self.ins(format!("load {}, ptr {}", alt, res));
+        Ok(v(out, alt))
+    }
+
+    /// `reduce_stream` on several threads, with the same result (D120). By
+    /// section 10, the reduction of the kept elements is the reduction of
+    /// the results of their blocks of B (one block: its result; none: the
+    /// tree of z). The inputs are cut into chunks of at most STREAM_CHUNK,
+    /// taken by rounds of one chunk per thread: (1) each chunk of the round
+    /// counts its kept elements; (2) from the counts, the index of the first
+    /// kept element of each chunk; a chunk owns the blocks that start in
+    /// its range of indices, skips the kept elements of a block started
+    /// before it and reads past its end to finish its last block
+    /// (`stream_blocks`); (3) at the end, the block results reduced in the
+    /// fixed form. The inputs of a round (8 MiB of `f64` with 8 threads) are
+    /// still in the caches when (2) reads them again.
+    fn reduce_stream_parallel(&mut self, x: &Expr, st: &Stream, l: &Lambda, zv: &V, t: &Type, threads: &str) -> R<V> {
+        const STREAM_CHUNK: i64 = 32 << 10;
+        let alt = lt(t);
+        let n = st.n.clone();
+        // chunks of a multiple of 64 inputs (lines of the compression)
+        let per = self.ins(format!("add i64 {}, {}", n, threads));
+        let per1 = self.ins(format!("sub i64 {}, 1", per));
+        let per2 = self.ins(format!("sdiv i64 {}, {}", per1, threads));
+        let ch0 = self.ins(format!("add i64 {}, 63", per2));
+        let ch1 = self.ins(format!("and i64 {}, -64", ch0));
+        let small = self.ins(format!("icmp slt i64 {}, {}", ch1, STREAM_CHUNK));
+        let ch = self.ins(format!("select i1 {}, i64 {}, i64 {}", small, ch1, STREAM_CHUNK));
+        let nc0 = self.ins(format!("add i64 {}, {}", n, ch));
+        let nc1 = self.ins(format!("sub i64 {}, 1", nc0));
+        let nc = self.ins(format!("sdiv i64 {}, {}", nc1, ch));
+        let nc_1 = self.ins(format!("add i64 {}, 1", nc));
+        // the kept elements of each chunk, and the index of the first kept
+        // element of each chunk (and of the chunk after the last)
+        let counts = self.alloc_elems(&nc, &Type::Int(IntKind::I64));
+        let starts = self.alloc_elems(&nc_1, &Type::Int(IntKind::I64));
+        // at most one block per B inputs, plus a partial one
+        let mb0 = self.ins(format!("sdiv i64 {}, {}", n, BLOCK));
+        let mb = self.ins(format!("add i64 {}, 2", mb0));
+        let parts = self.alloc_elems(&mb, t);
+        let run = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", run));
+        let nr0 = self.ins(format!("add i64 {}, {}", nc, threads));
+        let nr1 = self.ins(format!("sub i64 {}, 1", nr0));
+        let rounds = self.ins(format!("sdiv i64 {}, {}", nr1, threads));
+        // the count of chunk c (if c < nc)
+        let count = |g: &mut Self, extra: &[V], c: &str| -> R<()> {
+            let st = g.prepare_stream(x)?;
+            let inside = g.ins(format!("icmp slt i64 {}, {}", c, extra[2].r));
+            let lgo = g.label();
+            let lend = g.label();
+            g.cbr(&inside, &lgo, &lend);
+            g.block(&lgo);
+            let lo = g.ins(format!("mul i64 {}, {}", c, extra[1].r));
+            let lim = g.ins(format!("add i64 {}, {}", lo, extra[1].r));
+            let short = g.ins(format!("icmp slt i64 {}, {}", st.n, lim));
+            let hi = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, st.n, lim));
+            let k = g.alloca("i64");
+            g.emit(format!("store i64 0, ptr {}", k));
+            g.for_range(&lo, &hi, 1, &mut |g, i| {
+                let el = g.elem(&st.base, i, 1)?;
+                g.bind(st.pred.params[0], el);
+                let keep = g.ex(&st.pred.body, 1)?;
+                let one = g.ins(format!("zext i1 {} to i64", keep.r));
+                let a = g.ins(format!("load i64, ptr {}", k));
+                let b = g.ins(format!("add i64 {}, {}", a, one));
+                g.emit(format!("store i64 {}, ptr {}", b, k));
+                Ok(())
+            })?;
+            let kv = g.ins(format!("load i64, ptr {}", k));
+            let pc = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, c));
+            g.emit(format!("store i64 {}, ptr {}", kv, pc));
+            g.br(&lend);
+            g.block(&lend);
+            Ok(())
+        };
+        let count = std::cell::RefCell::new(count);
+        // round 0 counted first
+        let extra = [v(counts.clone(), "ptr"), v(ch.clone(), "i64"), v(nc.clone(), "i64")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[x], &extra, &mut |g, extra, j| (count.borrow_mut())(g, extra, j))?;
+        let m0 = self.ins(format!("icmp slt i64 {}, {}", nc, threads));
+        let m = self.ins(format!("select i1 {}, i64 {}, i64 {}", m0, nc, threads));
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", m, task, ctx, ctx_bytes));
+        self.for_range_scalar("0", &rounds, 1, &mut |g, r| {
+            let c_lo = g.ins(format!("mul i64 {}, {}", r, threads));
+            let lim = g.ins(format!("add i64 {}, {}", c_lo, threads));
+            let short = g.ins(format!("icmp slt i64 {}, {}", nc, lim));
+            let c_hi = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, nc, lim));
+            let m = g.ins(format!("sub i64 {}, {}", c_hi, c_lo));
+            // the starts of the chunks of the round and of the next chunk
+            g.for_range_scalar(&c_lo, &c_hi, 1, &mut |g, c| {
+                let pc = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", counts, c));
+                let k = g.ins(format!("load i64, ptr {}", pc));
+                let r = g.ins(format!("load i64, ptr {}", run));
+                let ps = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", starts, c));
+                g.emit(format!("store i64 {}, ptr {}", r, ps));
+                let r2 = g.ins(format!("add i64 {}, {}", r, k));
+                g.emit(format!("store i64 {}, ptr {}", r2, run));
+                Ok(())
+            })?;
+            let rr = g.ins(format!("load i64, ptr {}", run));
+            let pn = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", starts, c_hi));
+            g.emit(format!("store i64 {}, ptr {}", rr, pn));
+            // the blocks of the chunks of the round, then the count of the
+            // same chunk of the next round (its memory read while other
+            // threads compute)
+            let extra = [v(counts.clone(), "ptr"), v(ch.clone(), "i64"), v(nc.clone(), "i64"), v(starts.clone(), "ptr"), v(parts.clone(), "ptr"), zv.clone(), v(c_lo.clone(), "i64"), v(threads.to_string(), "i64")];
+            let (task, ctx, ctx_bytes) = g.outline_task(&[x], &extra, &mut |g, extra, j| {
+                let st = g.prepare_stream(x)?;
+                let c = g.ins(format!("add i64 {}, {}", extra[6].r, j));
+                let ps = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[3].r, c));
+                let s = g.ins(format!("load i64, ptr {}", ps));
+                let c1 = g.ins(format!("add i64 {}, 1", c));
+                let pe = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[3].r, c1));
+                let e = g.ins(format!("load i64, ptr {}", pe));
+                // blocks b0 .. b1: those that start in s .. e; the last one
+                // ends at its B-th element, or at the end of the inputs
+                let s1 = g.ins(format!("add i64 {}, {}", s, BLOCK - 1));
+                let b0 = g.ins(format!("sdiv i64 {}, {}", s1, BLOCK));
+                let e1 = g.ins(format!("add i64 {}, {}", e, BLOCK - 1));
+                let b1 = g.ins(format!("sdiv i64 {}, {}", e1, BLOCK));
+                let any = g.ins(format!("icmp slt i64 {}, {}", b0, b1));
+                let lgo = g.label();
+                let lend = g.label();
+                g.cbr(&any, &lgo, &lend);
+                g.block(&lgo);
+                let first = g.ins(format!("mul i64 {}, {}", b0, BLOCK));
+                let skip = g.ins(format!("sub i64 {}, {}", first, s));
+                let blocks = g.ins(format!("sub i64 {}, {}", b1, b0));
+                let take = g.ins(format!("mul i64 {}, {}", blocks, BLOCK));
+                let lo = g.ins(format!("mul i64 {}, {}", c, extra[1].r));
+                let zv = extra[5].clone();
+                let t2 = l.body.ty.clone();
+                g.stream_blocks(&st, l, &zv, &t2, &lo, &skip, &take, &extra[4].r, &b0)?;
+                g.br(&lend);
+                g.block(&lend);
+                let next = g.ins(format!("add i64 {}, {}", c, extra[7].r));
+                (count.borrow_mut())(g, extra, &next)
+            })?;
+            g.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", m, task, ctx, ctx_bytes));
+            Ok(())
+        })?;
+        let kk = self.ins(format!("load i64, ptr {}", run));
+        let nb0 = self.ins(format!("add i64 {}, {}", kk, BLOCK - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", nb0, BLOCK));
+        // (3) the block results: none, one, or their reduction
+        let res = self.alloca(&alt);
+        let one = self.ins(format!("icmp eq i64 {}, 1", nb));
+        let lone = self.label();
+        let lmore = self.label();
+        let ljoin = self.label();
+        self.cbr(&one, &lone, &lmore);
+        self.block(&lone);
+        let p0 = self.ins(format!("load {}, ptr {}", alt, parts));
+        self.emit(format!("store {} {}, ptr {}", alt, p0, res));
+        self.br(&ljoin);
+        self.block(&lmore);
+        let r = self.reduce_mat_seq(&parts, &nb, l, zv, t)?;
+        self.emit(format!("store {} {}, ptr {}", alt, r.r, res));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        self.emit(format!("call void @isc_free(ptr {})", parts));
+        self.emit(format!("call void @isc_free(ptr {})", counts));
+        self.emit(format!("call void @isc_free(ptr {})", starts));
+        let out = self.ins(format!("load {}, ptr {}", alt, res));
+        Ok(v(out, alt))
+    }
+
+    /// The fixed form of section 10 over the `n` scalars at `p`, on the
+    /// current thread: while there are more than B, the results of their
+    /// blocks replace them (block j is read before p[j] is written: j < j B
+    /// for j >= 1); then one `reduce_block`.
+    fn reduce_mat_seq(&mut self, p: &str, n: &str, l: &Lambda, z: &V, t: &Type) -> R<V> {
+        let w = if lam_ok(l) { self.opts.lanes } else { 1 };
+        let len = self.alloca("i64");
+        self.emit(format!("store i64 {}, ptr {}", n, len));
+        let head = self.label();
+        let lbody = self.label();
+        let lexit = self.label();
+        self.br(&head);
+        self.block(&head);
+        let m = self.ins(format!("load i64, ptr {}", len));
+        let big = self.ins(format!("icmp sgt i64 {}, {}", m, BLOCK));
+        self.cbr(&big, &lbody, &lexit);
+        self.block(&lbody);
+        let c1 = self.ins(format!("add i64 {}, {}", m, BLOCK - 1));
+        let c = self.ins(format!("sdiv i64 {}, {}", c1, BLOCK));
+        let src = Src::Mat { ptr: p.to_string(), len: m.clone(), elem: t.clone() };
+        let bl = BLOCK.to_string();
+        self.for_range_scalar("0", &c, 1, &mut |g, j| {
+            let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", m, start));
+            let lt_ = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let mm = g.ins(format!("select i1 {}, i64 {}, i64 {}", lt_, rem, bl));
+            let r = g.reduce_block(&src, &start, &mm, l, z, t, w)?;
+            g.store_elem(p, &c, j, t, &r, 1);
+            Ok(())
+        })?;
+        self.emit(format!("store i64 {}, ptr {}", c, len));
+        self.br(&head);
+        self.block(&lexit);
+        let m = self.ins(format!("load i64, ptr {}", len));
+        let src = Src::Mat { ptr: p.to_string(), len: m.clone(), elem: t.clone() };
+        self.reduce_block(&src, "0", &m, l, z, t, w)
+    }
+
+    /// The blocks of kept elements of indices first .. first + take, where
+    /// first is the index of the (skip + 1)-th kept element from input `lo`:
+    /// their results in parts[b0 ..] (the last one may be partial at the end
+    /// of the kept elements). As `stream_vector`: compressed by chunks of
+    /// COMPACT inputs, added by groups of V, the last ones one at a time
+    /// (D120).
+    #[allow(clippy::too_many_arguments)]
+    fn stream_blocks(&mut self, st: &Stream, l: &Lambda, z: &V, t: &Type, lo: &str, skip: &str, take: &str, parts: &str, b0: &str) -> R<()> {
+        const COMPACT: i64 = 1024;
+        let lanes = self.opts.lanes;
+        let alt = lt(t);
+        let cw = (64 / esize(t)).max(1) as u32;
+        let vty = format!("<{} x {}>", lanes, alt);
+        let cty = format!("<{} x {}>", cw, alt);
+        let mty = format!("<{} x i1>", cw);
+        let buf = self.alloca(&format!("[{} x {}]", COMPACT + 2 * lanes as i64 + cw as i64, alt));
+        let tree = self.alloca(&format!("[{} x {}]", STREAM_LEVELS * lanes as i64, alt));
+        let accv = self.alloca(&vty);
+        let zw = self.widen(z, lanes);
+        self.emit(format!("store {} {}, ptr {}", vty, zw.r, accv));
+        let slot = |g: &mut Self, init: &str| -> String {
+            let a = g.alloca("i64");
+            g.emit(format!("store i64 {}, ptr {}", init, a));
+            a
+        };
+        let fill = slot(self, "0");
+        let blk = slot(self, "0");
+        let bi = slot(self, b0);
+        let taken = slot(self, "0");
+        let left = slot(self, skip);
+        let pos = slot(self, lo);
+        let cname = format!("llvm.experimental.vector.compress.v{}{}", cw, ty_suffix(t));
+        self.decls.insert(format!("declare {} @{}({}, {}, {})", cty, cname, cty, mty, cty));
+        let pop = format!("llvm.ctpop.i{}", cw);
+        self.decls.insert(format!("declare i{} @{}(i{})", cw, pop, cw));
+        let n = st.n.clone();
+        let nfull = self.ins(format!("and i64 {}, -{}", n, cw));
+        // the block in the accumulators closed: its tree to parts[bi]
+        let close = |g: &mut Self| -> R<()> {
+            let av = g.ins(format!("load {}, ptr {}", vty, accv));
+            g.emit(format!("store {} {}, ptr {}, align {}", vty, av, tree, esize(t)));
+            let r = g.rs_tree(&tree, "0", l, &alt)?;
+            let b = g.ins(format!("load i64, ptr {}", bi));
+            let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, parts, b));
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, pb));
+            let b2 = g.ins(format!("add i64 {}, 1", b));
+            g.emit(format!("store i64 {}, ptr {}", b2, bi));
+            let zw = g.widen(z, lanes);
+            g.emit(format!("store {} {}, ptr {}", vty, zw.r, accv));
+            g.emit(format!("store i64 0, ptr {}", blk));
+            Ok(())
+        };
+        let close = std::cell::RefCell::new(close);
+        // up to `count` groups of V from the front of the buffer
+        let groups = |g: &mut Self, count: &str| -> R<()> {
+            g.for_range_scalar("0", count, 1, &mut |g, j| {
+                let b = g.ins(format!("load i64, ptr {}", blk));
+                let full = g.ins(format!("icmp eq i64 {}, {}", b, BLOCK));
+                let lc = g.label();
+                let lg = g.label();
+                g.cbr(&full, &lc, &lg);
+                g.block(&lc);
+                (close.borrow_mut())(g)?;
+                g.br(&lg);
+                g.block(&lg);
+                let off = g.ins(format!("mul i64 {}, {}", j, lanes));
+                let pg = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, off));
+                let gv = g.ins(format!("load {}, ptr {}, align {}", vty, pg, esize(t)));
+                let a = g.ins(format!("load {}, ptr {}", vty, accv));
+                let r = g.apply2(l, V { r: a, t: vty.clone(), uni: false }, V { r: gv, t: vty.clone(), uni: false }, lanes)?;
+                g.emit(format!("store {} {}, ptr {}", vty, r.r, accv));
+                let b = g.ins(format!("load i64, ptr {}", blk));
+                let b2 = g.ins(format!("add i64 {}, {}", b, lanes));
+                g.emit(format!("store i64 {}, ptr {}", b2, blk));
+                Ok(())
+            })
+        };
+        let groups = std::cell::RefCell::new(groups);
+        // drops the first min(fill, left) elements of the buffer
+        let drop_front = |g: &mut Self| -> R<()> {
+            let f = g.ins(format!("load i64, ptr {}", fill));
+            let lf = g.ins(format!("load i64, ptr {}", left));
+            let less = g.ins(format!("icmp ult i64 {}, {}", f, lf));
+            let d = g.ins(format!("select i1 {}, i64 {}, i64 {}", less, f, lf));
+            let rest = g.ins(format!("sub i64 {}, {}", f, d));
+            let some = g.ins(format!("icmp ugt i64 {}, 0", d));
+            let lm = g.label();
+            let ln = g.label();
+            g.cbr(&some, &lm, &ln);
+            g.block(&lm);
+            let nv0 = g.ins(format!("add i64 {}, {}", rest, lanes - 1));
+            let nv = g.ins(format!("udiv i64 {}, {}", nv0, lanes));
+            g.for_range_scalar("0", &nv, 1, &mut |g, j| {
+                let off = g.ins(format!("mul i64 {}, {}", j, lanes));
+                let from = g.ins(format!("add i64 {}, {}", off, d));
+                let pf = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, from));
+                let pt = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, off));
+                let x = g.ins(format!("load {}, ptr {}, align {}", vty, pf, esize(t)));
+                g.emit(format!("store {} {}, ptr {}, align {}", vty, x, pt, esize(t)));
+                Ok(())
+            })?;
+            g.emit(format!("store i64 {}, ptr {}", rest, fill));
+            let lf2 = g.ins(format!("sub i64 {}, {}", lf, d));
+            g.emit(format!("store i64 {}, ptr {}", lf2, left));
+            g.br(&ln);
+            g.block(&ln);
+            Ok(())
+        };
+        // by chunks of COMPACT inputs while kept elements are still wanted
+        let head = self.label();
+        let lbody = self.label();
+        let lexit = self.label();
+        self.br(&head);
+        self.block(&head);
+        let p = self.ins(format!("load i64, ptr {}", pos));
+        let more = self.ins(format!("icmp slt i64 {}, {}", p, nfull));
+        let tk = self.ins(format!("load i64, ptr {}", taken));
+        let want = self.ins(format!("icmp slt i64 {}, {}", tk, take));
+        let go = self.ins(format!("and i1 {}, {}", more, want));
+        self.cbr(&go, &lbody, &lexit);
+        self.block(&lbody);
+        let lim = self.ins(format!("add i64 {}, {}", p, COMPACT));
+        let short = self.ins(format!("icmp slt i64 {}, {}", nfull, lim));
+        let c1 = self.ins(format!("select i1 {}, i64 {}, i64 {}", short, nfull, lim));
+        self.for_range_scalar(&p, &c1, cw as i64, &mut |g, i| {
+            let x = g.elem(&st.base, i, cw)?;
+            let x = g.widen(&x, cw);
+            g.bind(st.pred.params[0], x.clone());
+            let keep = g.ex(&st.pred.body, cw)?;
+            let keep = g.widen(&keep, cw);
+            let mut y = x;
+            for q in &st.posts {
+                g.bind(q.params[0], y);
+                let r = g.ex(&q.body, cw)?;
+                y = g.widen(&r, cw);
+            }
+            let comp = g.ins(format!("call {} @{}({} {}, {} {}, {} poison)", cty, cname, cty, y.r, mty, keep.r, cty));
+            let c = g.ins(format!("load i64, ptr {}", fill));
+            let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, c));
+            g.emit(format!("store {} {}, ptr {}, align {}", cty, comp, at, esize(t)));
+            let bits = g.ins(format!("bitcast {} {} to i{}", mty, keep.r, cw));
+            let k = g.ins(format!("call i{} @{}(i{} {})", cw, pop, cw, bits));
+            let k64 = g.ins(format!("zext i{} {} to i64", cw, k));
+            let c2 = g.ins(format!("add i64 {}, {}", c, k64));
+            g.emit(format!("store i64 {}, ptr {}", c2, fill));
+            Ok(())
+        })?;
+        self.emit(format!("store i64 {}, ptr {}", c1, pos));
+        drop_front(self)?;
+        let f = self.ins(format!("load i64, ptr {}", fill));
+        let tk = self.ins(format!("load i64, ptr {}", taken));
+        let want = self.ins(format!("sub i64 {}, {}", take, tk));
+        let ng1 = self.ins(format!("udiv i64 {}, {}", f, lanes));
+        let ng2 = self.ins(format!("udiv i64 {}, {}", want, lanes));
+        let fewer = self.ins(format!("icmp ult i64 {}, {}", ng1, ng2));
+        let ng = self.ins(format!("select i1 {}, i64 {}, i64 {}", fewer, ng1, ng2));
+        (groups.borrow_mut())(self, &ng)?;
+        let used = self.ins(format!("mul i64 {}, {}", ng, lanes));
+        let tk2 = self.ins(format!("add i64 {}, {}", tk, used));
+        self.emit(format!("store i64 {}, ptr {}", tk2, taken));
+        // the fewer than V left to the front (when more are wanted)
+        let pr = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, used));
+        let rv = self.ins(format!("load {}, ptr {}, align {}", vty, pr, esize(t)));
+        self.emit(format!("store {} {}, ptr {}, align {}", vty, rv, buf, esize(t)));
+        let rest = self.ins(format!("sub i64 {}, {}", f, used));
+        self.emit(format!("store i64 {}, ptr {}", rest, fill));
+        self.br(&head);
+        self.block(&lexit);
+        // the last inputs (fewer than a line), one at a time, while kept
+        // elements are still wanted
+        let tk = self.ins(format!("load i64, ptr {}", taken));
+        let want = self.ins(format!("icmp slt i64 {}, {}", tk, take));
+        let ltail = self.label();
+        let lfin = self.label();
+        self.cbr(&want, &ltail, &lfin);
+        self.block(&ltail);
+        let p = self.ins(format!("load i64, ptr {}", pos));
+        self.for_range_scalar(&p, &n, 1, &mut |g, i| {
+            let x = g.elem(&st.base, i, 1)?;
+            g.bind(st.pred.params[0], x.clone());
+            let keep = g.ex(&st.pred.body, 1)?;
+            let ly = g.label();
+            let ln = g.label();
+            g.cbr(&keep.r, &ly, &ln);
+            g.block(&ly);
+            let lf = g.ins(format!("load i64, ptr {}", left));
+            let skipping = g.ins(format!("icmp ugt i64 {}, 0", lf));
+            let lsk = g.label();
+            let ladd = g.label();
+            g.cbr(&skipping, &lsk, &ladd);
+            g.block(&lsk);
+            let lf2 = g.ins(format!("sub i64 {}, 1", lf));
+            g.emit(format!("store i64 {}, ptr {}", lf2, left));
+            g.br(&ln);
+            g.block(&ladd);
+            let c = g.ins(format!("load i64, ptr {}", fill));
+            let tk = g.ins(format!("load i64, ptr {}", taken));
+            let have = g.ins(format!("add i64 {}, {}", tk, c));
+            let room = g.ins(format!("icmp slt i64 {}, {}", have, take));
+            let lput = g.label();
+            g.cbr(&room, &lput, &ln);
+            g.block(&lput);
+            let mut y = x;
+            for q in &st.posts {
+                g.bind(q.params[0], y);
+                y = g.ex(&q.body, 1)?;
+            }
+            let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, c));
+            g.emit(format!("store {} {}, ptr {}", alt, y.r, at));
+            let c2 = g.ins(format!("add i64 {}, 1", c));
+            g.emit(format!("store i64 {}, ptr {}", c2, fill));
+            g.br(&ln);
+            g.block(&ln);
+            Ok(())
+        })?;
+        // the buffer (fewer than V + a line): its groups, then one at a time
+        let f = self.ins(format!("load i64, ptr {}", fill));
+        let ng = self.ins(format!("udiv i64 {}, {}", f, lanes));
+        (groups.borrow_mut())(self, &ng)?;
+        let used = self.ins(format!("mul i64 {}, {}", ng, lanes));
+        let c = self.ins(format!("sub i64 {}, {}", f, used));
+        let some = self.ins(format!("icmp ugt i64 {}, 0", c));
+        let b = self.ins(format!("load i64, ptr {}", blk));
+        let full = self.ins(format!("icmp eq i64 {}, {}", b, BLOCK));
+        let both = self.ins(format!("and i1 {}, {}", some, full));
+        let lc = self.label();
+        let lg = self.label();
+        self.cbr(&both, &lc, &lg);
+        self.block(&lc);
+        (close.borrow_mut())(self)?;
+        self.br(&lg);
+        self.block(&lg);
+        let at = format!("[{} x {}]", lanes, alt);
+        self.for_range_scalar("0", &c, 1, &mut |g, j| {
+            let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, accv, j));
+            let from = g.ins(format!("add i64 {}, {}", used, j));
+            let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, from));
+            let a = g.ins(format!("load {}, ptr {}", alt, pa));
+            let bv = g.ins(format!("load {}, ptr {}", alt, pb));
+            let r = g.apply2(l, v(a, alt.clone()), v(bv, alt.clone()), 1)?;
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, pa));
+            Ok(())
+        })?;
+        let b = self.ins(format!("load i64, ptr {}", blk));
+        let b2 = self.ins(format!("add i64 {}, {}", b, c));
+        self.emit(format!("store i64 {}, ptr {}", b2, blk));
+        self.br(&lfin);
+        self.block(&lfin);
+        // the last block of this chunk
+        let b = self.ins(format!("load i64, ptr {}", blk));
+        let open = self.ins(format!("icmp sgt i64 {}, 0", b));
+        let lc = self.label();
+        let ld = self.label();
+        self.cbr(&open, &lc, &ld);
+        self.block(&lc);
+        (close.borrow_mut())(self)?;
+        self.br(&ld);
+        self.block(&ld);
+        Ok(())
+    }
+
+    /// Level 0 of `reduce_stream` with vectors (D110): each line of `cw`
+    /// elements is compared at once and its kept elements compressed (in
+    /// order) at the end of a buffer; each group of V kept elements is then
+    /// added, as one vector, to the V accumulators, which is the order of
+    /// section 10 (the k-th kept element in accumulator k mod V, since a
+    /// block holds a whole number of groups). A full block is closed, as in
+    /// `rs_push`, when the next group comes; the last elements go one at a
+    /// time. The accumulators and the count end in level 0 of `acc`/`cnt`.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_vector(&mut self, st: &Stream, l: &Lambda, z: &V, accm: &str, cnt: &str, t: &Type) -> R<()> {
+        let lanes = self.opts.lanes;
+        let alt = lt(t);
+        let cw = (64 / esize(t)).max(1) as u32;
+        let vty = format!("<{} x {}>", lanes, alt);
+        let cty = format!("<{} x {}>", cw, alt);
+        let mty = format!("<{} x i1>", cw);
+        // room for a chunk of COMPACT inputs after fewer than V kept ones,
+        // and for the read of V elements from the last full group
+        const COMPACT: i64 = 1024;
+        let buf = self.alloca(&format!("[{} x {}]", COMPACT + 2 * lanes as i64 + cw as i64, alt));
+        let accv = self.alloca(&vty);
+        let zw = self.widen(z, lanes);
+        self.emit(format!("store {} {}, ptr {}", vty, zw.r, accv));
+        let fill = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", fill));
+        let blk = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", blk));
+        let cname = format!("llvm.experimental.vector.compress.v{}{}", cw, ty_suffix(t));
+        self.decls.insert(format!("declare {} @{}({}, {}, {})", cty, cname, cty, mty, cty));
+        let pop = format!("llvm.ctpop.i{}", cw);
+        self.decls.insert(format!("declare i{} @{}(i{})", cw, pop, cw));
+        let n = st.n.clone();
+        let nfull = self.ins(format!("and i64 {}, -{}", n, cw));
+        // a group of V kept elements to the accumulators (the block closed
+        // first when it is full)
+        let group = |g: &mut Self| -> R<()> {
+            let b = g.ins(format!("load i64, ptr {}", blk));
+            let full = g.ins(format!("icmp eq i64 {}, {}", b, BLOCK));
+            let lclose = g.label();
+            let lgo = g.label();
+            g.cbr(&full, &lclose, &lgo);
+            g.block(&lclose);
+            g.stream_close(&accv, accm, cnt, &blk, l, z, t)?;
+            g.br(&lgo);
+            g.block(&lgo);
+            let gv = g.ins(format!("load {}, ptr {}, align {}", vty, buf, esize(t)));
+            let a = g.ins(format!("load {}, ptr {}", vty, accv));
+            let r = g.apply2(l, V { r: a, t: vty.clone(), uni: false }, V { r: gv, t: vty.clone(), uni: false }, lanes)?;
+            g.emit(format!("store {} {}, ptr {}", vty, r.r, accv));
+            let b = g.ins(format!("load i64, ptr {}", blk));
+            let b2 = g.ins(format!("add i64 {}, {}", b, lanes));
+            g.emit(format!("store i64 {}, ptr {}", b2, blk));
+            // the kept elements beyond the group to the front (fewer than cw)
+            let rest = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, lanes));
+            let rv = g.ins(format!("load {}, ptr {}, align {}", cty, rest, esize(t)));
+            g.emit(format!("store {} {}, ptr {}, align {}", cty, rv, buf, esize(t)));
+            let c = g.ins(format!("load i64, ptr {}", fill));
+            let c2 = g.ins(format!("sub i64 {}, {}", c, lanes));
+            g.emit(format!("store i64 {}, ptr {}", c2, fill));
+            Ok(())
+        };
+        let group = std::cell::RefCell::new(group);
+        // by chunks of COMPACT inputs: their kept elements compressed into
+        // the buffer, without a branch, then every full group of V added to
+        // the accumulators (a branch only to close a block, every B / V
+        // groups), the fewer than V left moved to the front; the kept
+        // elements reach the accumulators in the same order as one at a
+        // time (measured: 32 768 `f64`, 8 083 ns per call with a test after
+        // each compress, D119)
+        // (by chunk numbers: a loop of step COMPACT would skip the last,
+        // partial chunk)
+        let nc1 = self.ins(format!("add i64 {}, {}", nfull, COMPACT - 1));
+        let nchunks = self.ins(format!("udiv i64 {}, {}", nc1, COMPACT));
+        self.for_range_scalar("0", &nchunks, 1, &mut |g, ci| {
+            let c0 = g.ins(format!("mul i64 {}, {}", ci, COMPACT));
+            let c0 = c0.as_str();
+            let lim = g.ins(format!("add i64 {}, {}", c0, COMPACT));
+            let short = g.ins(format!("icmp slt i64 {}, {}", nfull, lim));
+            let c1 = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, nfull, lim));
+            g.for_range_scalar(c0, &c1, cw as i64, &mut |g, i| {
+                let x = g.elem(&st.base, i, cw)?;
+                let x = g.widen(&x, cw);
+                g.bind(st.pred.params[0], x.clone());
+                let keep = g.ex(&st.pred.body, cw)?;
+                let keep = g.widen(&keep, cw);
+                let mut y = x;
+                for p in &st.posts {
+                    g.bind(p.params[0], y);
+                    let r = g.ex(&p.body, cw)?;
+                    y = g.widen(&r, cw);
+                }
+                let comp = g.ins(format!("call {} @{}({} {}, {} {}, {} poison)", cty, cname, cty, y.r, mty, keep.r, cty));
+                let c = g.ins(format!("load i64, ptr {}", fill));
+                let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, c));
+                g.emit(format!("store {} {}, ptr {}, align {}", cty, comp, at, esize(t)));
+                let bits = g.ins(format!("bitcast {} {} to i{}", mty, keep.r, cw));
+                let k = g.ins(format!("call i{} @{}(i{} {})", cw, pop, cw, bits));
+                let k64 = g.ins(format!("zext i{} {} to i64", cw, k));
+                let c2 = g.ins(format!("add i64 {}, {}", c, k64));
+                g.emit(format!("store i64 {}, ptr {}", c2, fill));
+                Ok(())
+            })?;
+            let f = g.ins(format!("load i64, ptr {}", fill));
+            let ng = g.ins(format!("udiv i64 {}, {}", f, lanes));
+            g.for_range_scalar("0", &ng, 1, &mut |g, j| {
+                let b = g.ins(format!("load i64, ptr {}", blk));
+                let full = g.ins(format!("icmp eq i64 {}, {}", b, BLOCK));
+                let lclose = g.label();
+                let lgo = g.label();
+                g.cbr(&full, &lclose, &lgo);
+                g.block(&lclose);
+                g.stream_close(&accv, accm, cnt, &blk, l, z, t)?;
+                g.br(&lgo);
+                g.block(&lgo);
+                let off = g.ins(format!("mul i64 {}, {}", j, lanes));
+                let pg = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, off));
+                let gv = g.ins(format!("load {}, ptr {}, align {}", vty, pg, esize(t)));
+                let a = g.ins(format!("load {}, ptr {}", vty, accv));
+                let r = g.apply2(l, V { r: a, t: vty.clone(), uni: false }, V { r: gv, t: vty.clone(), uni: false }, lanes)?;
+                g.emit(format!("store {} {}, ptr {}", vty, r.r, accv));
+                let b = g.ins(format!("load i64, ptr {}", blk));
+                let b2 = g.ins(format!("add i64 {}, {}", b, lanes));
+                g.emit(format!("store i64 {}, ptr {}", b2, blk));
+                Ok(())
+            })?;
+            // the fewer than V left to the front
+            let used = g.ins(format!("mul i64 {}, {}", ng, lanes));
+            let pr = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, used));
+            let rv = g.ins(format!("load {}, ptr {}, align {}", vty, pr, esize(t)));
+            g.emit(format!("store {} {}, ptr {}, align {}", vty, rv, buf, esize(t)));
+            let left = g.ins(format!("sub i64 {}, {}", f, used));
+            g.emit(format!("store i64 {}, ptr {}", left, fill));
+            Ok(())
+        })?;
+        // the last elements, one at a time, into the buffer
+        self.for_range_scalar(&nfull, &n, 1, &mut |g, i| {
+            let x = g.elem(&st.base, i, 1)?;
+            g.bind(st.pred.params[0], x.clone());
+            let keep = g.ex(&st.pred.body, 1)?;
+            let ly = g.label();
+            let ln = g.label();
+            g.cbr(&keep.r, &ly, &ln);
+            g.block(&ly);
+            let mut y = x;
+            for p in &st.posts {
+                g.bind(p.params[0], y);
+                y = g.ex(&p.body, 1)?;
+            }
+            let c = g.ins(format!("load i64, ptr {}", fill));
+            let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, c));
+            g.emit(format!("store {} {}, ptr {}", alt, y.r, at));
+            let c2 = g.ins(format!("add i64 {}, 1", c));
+            g.emit(format!("store i64 {}, ptr {}", c2, fill));
+            let enough = g.ins(format!("icmp uge i64 {}, {}", c2, lanes));
+            let lg = g.label();
+            let lc = g.label();
+            g.cbr(&enough, &lg, &lc);
+            g.block(&lg);
+            (group.borrow_mut())(g)?;
+            g.br(&lc);
+            g.block(&lc);
+            g.br(&ln);
+            g.block(&ln);
+            Ok(())
+        })?;
+        // fewer than V left: a full block is closed first, then each one to
+        // its accumulator
+        let c = self.ins(format!("load i64, ptr {}", fill));
+        let some = self.ins(format!("icmp ugt i64 {}, 0", c));
+        let b = self.ins(format!("load i64, ptr {}", blk));
+        let full = self.ins(format!("icmp eq i64 {}, {}", b, BLOCK));
+        let both = self.ins(format!("and i1 {}, {}", some, full));
+        let lclose = self.label();
+        let lgo = self.label();
+        self.cbr(&both, &lclose, &lgo);
+        self.block(&lclose);
+        self.stream_close(&accv, accm, cnt, &blk, l, z, t)?;
+        self.br(&lgo);
+        self.block(&lgo);
+        let at = format!("[{} x {}]", lanes, alt);
+        self.for_range_scalar("0", &c, 1, &mut |g, j| {
+            let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, accv, j));
+            let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", alt, buf, j));
+            let a = g.ins(format!("load {}, ptr {}", alt, pa));
+            let bv = g.ins(format!("load {}, ptr {}", alt, pb));
+            let r = g.apply2(l, v(a, alt.clone()), v(bv, alt.clone()), 1)?;
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, pa));
+            Ok(())
+        })?;
+        let b = self.ins(format!("load i64, ptr {}", blk));
+        let b2 = self.ins(format!("add i64 {}, {}", b, c));
+        // level 0: the accumulators and the count of the open block
+        let av = self.ins(format!("load {}, ptr {}", vty, accv));
+        self.emit(format!("store {} {}, ptr {}, align {}", vty, av, accm, esize(t)));
+        let pc = self.ins(format!("getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 0", STREAM_LEVELS, cnt));
+        self.emit(format!("store i64 {}, ptr {}", b2, pc));
+        Ok(())
+    }
+
+    /// Closes the full block held in the vector of accumulators `accv`: its
+    /// tree (through level 0 of `accm`) goes to level 1, then `accv` starts
+    /// again from `z`.
+    #[allow(clippy::too_many_arguments)]
+    fn stream_close(&mut self, accv: &str, accm: &str, cnt: &str, blk: &str, l: &Lambda, z: &V, t: &Type) -> R<()> {
+        let lanes = self.opts.lanes;
+        let alt = lt(t);
+        let vty = format!("<{} x {}>", lanes, alt);
+        let av = self.ins(format!("load {}, ptr {}", vty, accv));
+        // `accm` is an array of scalars: aligned to one element only
+        self.emit(format!("store {} {}, ptr {}, align {}", vty, av, accm, esize(t)));
+        let r = self.rs_tree(accm, "0", l, &alt)?;
+        self.rs_push(accm, cnt, "1", r, l, z, &alt)?;
+        let zw = self.widen(z, lanes);
+        self.emit(format!("store {} {}, ptr {}", vty, zw.r, accv));
+        self.emit(format!("store i64 0, ptr {}", blk));
+        Ok(())
+    }
+
+    /// The accumulators of level `lv` set to `z`, its count to 0.
+    fn rs_reset(&mut self, acc: &str, cnt: &str, lv: &str, z: &V, alt: &str) {
+        let lanes = self.opts.lanes as i64;
+        let base = self.ins(format!("mul i64 {}, {}", lv, lanes));
+        let total = STREAM_LEVELS * lanes;
+        let at = format!("[{} x {}]", total, alt);
+        let _ = self.for_range_scalar("0", &lanes.to_string(), 1, &mut |g, j| {
+            let k = g.ins(format!("add i64 {}, {}", base, j));
+            let p = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, acc, k));
+            g.emit(format!("store {} {}, ptr {}", alt, z.r, p));
+            Ok(())
+        });
+        let pc = self.ins(format!("getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 {}", STREAM_LEVELS, cnt, lv));
+        self.emit(format!("store i64 0, ptr {}", pc));
+    }
+
+    /// The tree of section 10 over the V accumulators of level `lv`:
+    /// acc[j] = op(acc[j], acc[j + d]) for d = V/2, ..., 1; returns acc[0].
+    fn rs_tree(&mut self, acc: &str, lv: &str, l: &Lambda, alt: &str) -> R<V> {
+        let lanes = self.opts.lanes as i64;
+        let base = self.ins(format!("mul i64 {}, {}", lv, lanes));
+        let at = format!("[{} x {}]", STREAM_LEVELS * lanes, alt);
+        let steps = (lanes as u64).trailing_zeros().to_string();
+        let half = (lanes / 2).to_string();
+        let alts = alt.to_string();
+        self.for_range_scalar("0", &steps, 1, &mut |g, s| {
+            let d = g.ins(format!("lshr i64 {}, {}", half, s));
+            g.for_range_scalar("0", &d, 1, &mut |g, j| {
+                let k = g.ins(format!("add i64 {}, {}", base, j));
+                let kd = g.ins(format!("add i64 {}, {}", k, d));
+                let pj = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, acc, k));
+                let pk = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, acc, kd));
+                let a = g.ins(format!("load {}, ptr {}", alts, pj));
+                let b = g.ins(format!("load {}, ptr {}", alts, pk));
+                let r = g.apply2(l, v(a, alts.clone()), v(b, alts.clone()), 1)?;
+                g.emit(format!("store {} {}, ptr {}", alts, r.r, pj));
+                Ok(())
+            })
+        })?;
+        let p0 = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, acc, base));
+        let r = self.ins(format!("load {}, ptr {}", alt, p0));
+        Ok(v(r, alt.to_string()))
+    }
+
+    /// Adds `x` to level `lv` (accumulator count mod V), without closing it.
+    fn rs_add(&mut self, acc: &str, cnt: &str, lv: &str, x: V, l: &Lambda, alt: &str) -> R<()> {
+        let lanes = self.opts.lanes as i64;
+        let at = format!("[{} x {}]", STREAM_LEVELS * lanes, alt);
+        let pc = self.ins(format!("getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 {}", STREAM_LEVELS, cnt, lv));
+        let c = self.ins(format!("load i64, ptr {}", pc));
+        let lane = self.ins(format!("and i64 {}, {}", c, lanes - 1));
+        let base = self.ins(format!("mul i64 {}, {}", lv, lanes));
+        let k = self.ins(format!("add i64 {}, {}", base, lane));
+        let p = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 0, i64 {}", at, acc, k));
+        let a = self.ins(format!("load {}, ptr {}", alt, p));
+        let r = self.apply2(l, v(a, alt.to_string()), x, 1)?;
+        self.emit(format!("store {} {}, ptr {}", alt, r.r, p));
+        let c2 = self.ins(format!("add i64 {}, 1", c));
+        self.emit(format!("store i64 {}, ptr {}", c2, pc));
+        Ok(())
+    }
+
+    /// Adds `x` to level `start`; a full level (B elements) is closed first:
+    /// its result goes to the level above, the same way.
+    #[allow(clippy::too_many_arguments)]
+    fn rs_push(&mut self, acc: &str, cnt: &str, start: &str, x: V, l: &Lambda, z: &V, alt: &str) -> R<()> {
+        let lvl = self.alloca("i64");
+        let cur = self.alloca(alt);
+        self.emit(format!("store i64 {}, ptr {}", start, lvl));
+        self.emit(format!("store {} {}, ptr {}", alt, x.r, cur));
+        let head = self.label();
+        let close = self.label();
+        let add = self.label();
+        let done = self.label();
+        self.br(&head);
+        self.block(&head);
+        let lv = self.ins(format!("load i64, ptr {}", lvl));
+        let pc = self.ins(format!("getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 {}", STREAM_LEVELS, cnt, lv));
+        let c = self.ins(format!("load i64, ptr {}", pc));
+        let full = self.ins(format!("icmp eq i64 {}, {}", c, BLOCK));
+        let below_top = self.ins(format!("icmp slt i64 {}, {}", lv, STREAM_LEVELS - 1));
+        let both = self.ins(format!("and i1 {}, {}", full, below_top));
+        self.cbr(&both, &close, &add);
+        self.block(&close);
+        let r = self.rs_tree(acc, &lv, l, alt)?;
+        self.rs_reset(acc, cnt, &lv, z, alt);
+        let xv = self.ins(format!("load {}, ptr {}", alt, cur));
+        self.rs_add(acc, cnt, &lv, v(xv, alt.to_string()), l, alt)?;
+        self.emit(format!("store {} {}, ptr {}", alt, r.r, cur));
+        let lv1 = self.ins(format!("add i64 {}, 1", lv));
+        self.emit(format!("store i64 {}, ptr {}", lv1, lvl));
+        self.br(&head);
+        self.block(&add);
+        let xv = self.ins(format!("load {}, ptr {}", alt, cur));
+        self.rs_add(acc, cnt, &lv, v(xv, alt.to_string()), l, alt)?;
+        self.br(&done);
+        self.block(&done);
+        Ok(())
+    }
+
+    /// A `fold` of rule P (`additive_update`): one contiguous chunk of `x` per
+    /// thread, each accumulated into four interleaved private zero copies
+    /// (independent dependency chains when values repeat), merged into the
+    /// task's copy; the task copies are then added to `init` in place.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_private(&mut self, e: &Expr, x: &Expr, init: &Expr, l: &Lambda, gi: &Expr, h: &Expr, span: Span) -> R<V> {
+        // 8 private copies per task: with a skewed input (the same few
+        // counters again and again) each copy's chain of dependent increments
+        // is half as long as with 4, and the processor overlaps them; on the
+        // skewed histogram 4.4 % faster than with 4 copies, the same speed on
+        // a uniform input (DECISIONS D78)
+        const K: usize = 8;
+        let et = init.ty.elem().clone();
+        let it = lt(&et);
+        let bytes_per = esize(&et);
+        let (_, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, 1)?;
+        let ip = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", iv.r));
+        let len = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", iv.r));
+        // tasks = min(threads, max(1, ceil(n / B)))
+        let thr = self.ins("call i64 @isc_thread_count()".into());
+        let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", n1, BLOCK));
+        let nb1 = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 1)", nb));
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        let tasks = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", thr, nb1));
+        // The K copies of a task in one block, `stride` bytes apart: at least
+        // the size of a copy and (4096 / K) times an odd number, so that the
+        // same counter of two copies is never a multiple of 4096 bytes apart.
+        // Otherwise both have the same 12 low address bits, the processor
+        // makes each load of one copy wait for the pending stores to the
+        // other ("4K aliasing"), and the independent chains of the copies
+        // become one (DECISIONS D64). Computed in the IR, so that LLVM folds
+        // it when the length is a constant. The blocks of all the tasks are
+        // allocated here at once (D77): a task never allocates, so the
+        // threads of the pool never create a memory arena of their own.
+        let bytes = self.ins(format!("mul i64 {}, {}", len, bytes_per));
+        let unit = 4096 / K as i64;
+        let m = self.ins(format!("add i64 {}, {}", bytes, unit - 1));
+        let m = self.ins(format!("udiv i64 {}, {}", m, unit));
+        let m = self.ins(format!("or i64 {}, 1", m));
+        let stride = self.ins(format!("mul i64 {}, {}", m, unit));
+        // The block of a task: its K copies, then its failure record
+        // { failed (0 or 1), the index out of bounds }, in whole pages of
+        // 4096 bytes, aligned on a page (DECISIONS D78). The L2 streamer of a
+        // core prefetches ahead up to the end of the page: it must never
+        // fetch a line of the block of another thread, whose counters would
+        // then move between the cores; and no two tasks write the same line.
+        let copies = self.ins(format!("mul i64 {}, {}", stride, K));
+        let need = self.ins(format!("add i64 {}, 4111", copies));
+        let per_task = self.ins(format!("and i64 {}, -4096", need));
+        let all_bytes = self.ins(format!("mul i64 {}, {}", per_task, tasks));
+        let all_bytes = self.ins(format!("add i64 {}, 4096", all_bytes));
+        let raw = self.ins(format!("call ptr @isc_alloc(i64 {})", all_bytes));
+        let addr = self.ins(format!("ptrtoint ptr {} to i64", raw));
+        let pad = self.ins(format!("sub i64 0, {}", addr));
+        let pad = self.ins(format!("and i64 {}, 4095", pad));
+        let all = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", raw, pad));
+        let p_v = l.params[1];
+        let extra = [
+            v(tasks.clone(), "i64"),
+            v(len.clone(), "i64"),
+            v(all.clone(), "ptr"),
+            v(stride.clone(), "i64"),
+            v(per_task.clone(), "i64"),
+        ];
+        // The number of counters, when the initial value says it (`zeros()`
+        // of a sized type, an array literal): then the task knows it as a
+        // constant, and LLVM addresses the copies from one register with
+        // constant offsets and keeps only the loop without checks.
+        let const_len: Option<i64> = match &init.kind {
+            ExprKind::Zeros(n) => match n.kind {
+                ExprKind::Lit(Lit::Int(c)) if c >= 0 => Some(c),
+                _ => None,
+            },
+            ExprKind::ArrayLit(es) => Some(es.len() as i64),
+            _ => None,
+        };
+        // 4 rounds of the K copies per iteration: 32 elements, so that the
+        // instructions of the loop itself are a small part of the work
+        // (measured against 8, 16 and 64 elements, DECISIONS D78)
+        let unroll: usize = 4;
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, ex, t| {
+            let (tasks, all) = (ex[0].r.clone(), ex[2].r.clone());
+            let (len, stride, per_task) = match const_len {
+                Some(c) => {
+                    let unit = 4096 / K as i64;
+                    let m = ((c * bytes_per + unit - 1) / unit) | 1;
+                    let st = m * unit;
+                    (c.to_string(), st.to_string(), ((st * K as i64 + 4111) & -4096).to_string())
+                }
+                None => (ex[1].r.clone(), ex[3].r.clone(), ex[4].r.clone()),
+            };
+            let total = g.ins(format!("mul i64 {}, {}", stride, K));
+            let off = g.ins(format!("mul i64 {}, {}", per_task, t));
+            let block = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", all, off));
+            // A task that meets an index out of bounds records it and stops;
+            // the caller reports the failure of the first task that failed,
+            // which is the first one in the order of the elements (each task
+            // takes the next chunk): the panic is the sequential one, for any
+            // number of threads (SPEC section 8, rule 2).
+            let fslot = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", block, total));
+            g.emit(format!("store {{ i64, i64 }} {{ i64 0, i64 0 }}, ptr {}", fslot));
+            let lstop = g.label();
+            let (src, n) = g.prepare_src(x)?;
+            let a = g.ins(format!("mul i64 {}, {}", n, t));
+            let lo = g.ins(format!("sdiv i64 {}, {}", a, tasks));
+            let t1 = g.ins(format!("add i64 {}, 1", t));
+            let b = g.ins(format!("mul i64 {}, {}", n, t1));
+            let hi = g.ins(format!("sdiv i64 {}, {}", b, tasks));
+            g.decls.insert("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
+            g.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 0, i64 {}, i1 false)", block, total));
+            let subs: Vec<String> = (0..K)
+                .map(|k| {
+                    let off = g.ins(format!("mul i64 {}, {}", stride, k));
+                    g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", block, off))
+                })
+                .collect();
+            let add_into = |g: &mut Self, sub: &str, i: &str, check: bool| -> R<()> {
+                let el = g.elem(&src, i, 1)?;
+                g.bind(p_v, el);
+                let idx = g.ex(gi, 1)?;
+                let val = g.ex(h, 1)?;
+                let i64x = g.index64(&idx, &gi.ty);
+                if check {
+                    let ok = g.ins(format!("icmp ult i64 {}, {}", i64x, len));
+                    let lok = g.label();
+                    let lbad = g.label();
+                    g.cbr(&ok, &lok, &lbad);
+                    g.block(&lbad);
+                    let rec = g.ins(format!("insertvalue {{ i64, i64 }} {{ i64 1, i64 0 }}, i64 {}, 1", i64x));
+                    g.emit(format!("store {{ i64, i64 }} {}, ptr {}", rec, fslot));
+                    g.br(&lstop);
+                    g.block(&lok);
+                }
+                let gp = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", it, sub, i64x));
+                let old = g.ins(format!("load {}, ptr {}", it, gp));
+                let new = g.ins(format!("add {} {}, {}", it, old, val.r));
+                g.emit(format!("store {} {}, ptr {}", it, new, gp));
+                Ok(())
+            };
+            // `unroll` rounds of the K copies per iteration (fewer loop
+            // instructions per element)
+            let step = (K * unroll) as i64;
+            let span_len = g.ins(format!("sub i64 {}, {}", hi, lo));
+            let full = g.ins(format!("and i64 {}, -{}", span_len, step));
+            let q = g.ins(format!("add i64 {}, {}", lo, full));
+            let main_loop = |g: &mut Self, check: bool| -> R<()> {
+                g.for_range(&lo, &q, step, &mut |g, i| {
+                    for j in 0..K * unroll {
+                        let ij = g.ins(format!("add i64 {}, {}", i, j));
+                        add_into(g, &subs[j % K], &ij, check)?;
+                    }
+                    Ok(())
+                })
+            };
+            // An unsigned index of b bits is below 2^b: when the counters are
+            // at least that many, no index can be out of bounds and the loop
+            // runs without checks (SPEC section 5: the compiler removes the
+            // checks it proves useless); otherwise every index is checked.
+            match &gi.ty {
+                Type::Int(k) if !k.signed() && k.bits() < 64 => {
+                    let max = (1u64 << k.bits()) - 1;
+                    let safe = g.ins(format!("icmp ugt i64 {}, {}", len, max));
+                    let lfast = g.label();
+                    let lcheck = g.label();
+                    let ljoin = g.label();
+                    g.cbr(&safe, &lfast, &lcheck);
+                    g.block(&lfast);
+                    main_loop(g, false)?;
+                    g.br(&ljoin);
+                    g.block(&lcheck);
+                    main_loop(g, true)?;
+                    g.br(&ljoin);
+                    g.block(&ljoin);
+                }
+                _ => main_loop(g, true)?,
+            }
+            g.for_range(&q, &hi, 1, &mut |g, i| add_into(g, &subs[0], i, true))?;
+            // merge the interleaved copies into the first one
+            g.for_range("0", &len, 1, &mut |g, j| {
+                let p0 = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", it, subs[0], j));
+                let mut acc = g.ins(format!("load {}, ptr {}", it, p0));
+                for sub in &subs[1..] {
+                    let pk = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", it, sub, j));
+                    let x = g.ins(format!("load {}, ptr {}", it, pk));
+                    acc = g.ins(format!("add {} {}, {}", it, acc, x));
+                }
+                g.emit(format!("store {} {}, ptr {}", it, acc, p0));
+                Ok(())
+            })?;
+            g.br(&lstop);
+            g.block(&lstop);
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", tasks, task, ctx, ctx_bytes));
+        // the first failure, in the order of the tasks
+        let unsigned = if is_signed(&gi.ty) { 0 } else { 1 };
+        self.for_range("0", &tasks, 1, &mut |g, t| {
+            let off = g.ins(format!("mul i64 {}, {}", per_task, t));
+            let off = g.ins(format!("add i64 {}, {}", off, copies));
+            let fslot = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", all, off));
+            let f = g.ins(format!("load {{ i64, i64 }}, ptr {}", fslot));
+            let failed = g.ins(format!("extractvalue {{ i64, i64 }} {}, 0", f));
+            let bad = g.ins(format!("extractvalue {{ i64, i64 }} {}, 1", f));
+            let ok = g.ins(format!("icmp eq i64 {}, 0", failed));
+            g.guard(&ok, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", bad, len, unsigned, Self::pos(span)));
+            Ok(())
+        })?;
+        // add the private copies to the initial value, in place
+        self.for_range("0", &tasks, 1, &mut |g, t| {
+            // the merged copies of task t are its first copy
+            let off = g.ins(format!("mul i64 {}, {}", per_task, t));
+            let pt = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", all, off));
+            g.for_range("0", &len, 1, &mut |g, j| {
+                let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", it, ip, j));
+                let pb = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", it, pt, j));
+                let a = g.ins(format!("load {}, ptr {}", it, pa));
+                let b = g.ins(format!("load {}, ptr {}", it, pb));
+                let s = g.ins(format!("add {} {}, {}", it, a, b));
+                g.emit(format!("store {} {}, ptr {}", it, s, pa));
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_free(ptr {})", raw));
+        Ok(iv)
+    }
+
+    // ----- actions -------------------------------------------------------------
+
+    fn str_parts(&mut self, s: &V) -> (String, String) {
+        let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", s.r));
+        let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", s.r));
+        (p, n)
+    }
+
+    fn print_lit(&mut self, s: &str) {
+        let (g, n) = self.str_const(s);
+        self.emit(format!("call void @isc_print_str(ptr {}, i64 {})", g, n));
+    }
+
+    /// The operations on strings (D134): each in the runtime; a result
+    /// string is new, the operands are only read.
+    fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
+        use isc_ir::StrOp as S;
+        let mut vals = Vec::new();
+        for x in es {
+            vals.push(self.ex(x, 1)?);
+        }
+        let new_str = |g: &mut Self, call: String| {
+            let out = g.alloca("{ ptr, i64 }");
+            g.emit(call.replace("OUT", &out));
+            v(g.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }")
+        };
+        Ok(match op {
+            S::Concat => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                new_str(self, format!("call void @isc_str_concat(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+            }
+            S::Len => {
+                let (_, n) = self.str_parts(&vals[0]);
+                v(n, "i64")
+            }
+            // the bytes: an array of `u8`, the same layout
+            S::Bytes => {
+                let (p, n) = self.str_parts(&vals[0]);
+                new_str(self, format!("call void @isc_str_new(ptr OUT, ptr {}, i64 {})", p, n))
+            }
+            S::FromBytes => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let pos = Self::pos(e.span);
+                new_str(self, format!("call void @isc_str_from_bytes(ptr OUT, ptr {}, i64 {}, {})", p, n, pos))
+            }
+            S::ToString => {
+                let x = &vals[0];
+                let call = match &es[0].ty {
+                    Type::Int(k) => {
+                        let w = if k.bits() < 64 {
+                            let op = if k.signed() { "sext" } else { "zext" };
+                            self.ins(format!("{} i{} {} to i64", op, k.bits(), x.r))
+                        } else {
+                            x.r.clone()
+                        };
+                        let f = if k.signed() { "isc_to_string_i64" } else { "isc_to_string_u64" };
+                        format!("call void @{}(ptr OUT, i64 {})", f, w)
+                    }
+                    Type::F64 => format!("call void @isc_to_string_f64(ptr OUT, double {})", x.r),
+                    Type::F32 => format!("call void @isc_to_string_f32(ptr OUT, float {})", x.r),
+                    Type::Bool => {
+                        let b = self.ins(format!("zext i1 {} to i32", x.r));
+                        format!("call void @isc_to_string_bool(ptr OUT, i32 {})", b)
+                    }
+                    t => return Err(format!("codegen: to_string of {:?}", t)),
+                };
+                new_str(self, call)
+            }
+            // text (D135): an array of strings has the layout of a string
+            S::Lines => {
+                let (p, n) = self.str_parts(&vals[0]);
+                new_str(self, format!("call void @isc_lines(ptr OUT, ptr {}, i64 {})", p, n))
+            }
+            S::Split => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let pos = Self::pos(e.span);
+                new_str(self, format!("call void @isc_split(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, q, m, pos))
+            }
+            S::Trim => {
+                let (p, n) = self.str_parts(&vals[0]);
+                new_str(self, format!("call void @isc_trim(ptr OUT, ptr {}, i64 {})", p, n))
+            }
+            S::Join => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                new_str(self, format!("call void @isc_join(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+            }
+            S::Cmp(b) => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let c = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
+                let pred = match b {
+                    BinOp::Eq => "eq",
+                    BinOp::Ne => "ne",
+                    BinOp::Lt => "slt",
+                    BinOp::Le => "sle",
+                    BinOp::Gt => "sgt",
+                    BinOp::Ge => "sge",
+                    _ => unreachable!(),
+                };
+                v(self.ins(format!("icmp {} i32 {}, 0", pred, c)), "i1")
+            }
+        })
+    }
+
+    fn print_value(&mut self, x: &V, t: &Type, shape: &Shape) -> R<()> {
+        match t {
+            Type::Int(k) => {
+                let w = if k.bits() < 64 {
+                    let op = if k.signed() { "sext" } else { "zext" };
+                    self.ins(format!("{} i{} {} to i64", op, k.bits(), x.r))
+                } else {
+                    x.r.clone()
+                };
+                let f = if k.signed() { "isc_print_i64" } else { "isc_print_u64" };
+                self.emit(format!("call void @{}(i64 {})", f, w));
+            }
+            Type::F64 => self.emit(format!("call void @isc_print_f64(double {})", x.r)),
+            Type::F32 => self.emit(format!("call void @isc_print_f32(float {})", x.r)),
+            Type::Bool => {
+                let b = self.ins(format!("zext i1 {} to i32", x.r));
+                self.emit(format!("call void @isc_print_bool(i32 {})", b));
+            }
+            Type::Unit => self.print_lit("()"),
+            Type::Rec(i) => {
+                self.rec_prints.insert(*i);
+                self.emit(format!("call void @isc_rec_print_{}(ptr {})", i, x.r));
+            }
+            Type::Str => {
+                let (p, n) = self.str_parts(x);
+                self.emit(format!("call void @isc_print_str(ptr {}, i64 {})", p, n));
+            }
+            Type::Tuple(ts) if matches!(shape, Shape::Sum(_)) => {
+                // the constructor of the tag, then its slots
+                let vars = match shape {
+                    Shape::Sum(v) => v.clone(),
+                    _ => unreachable!(),
+                };
+                let tag = self.ins(format!("extractvalue {} {}, 0", x.t, x.r));
+                let done = self.label();
+                for (k, (name, slots, shapes)) in vars.iter().enumerate() {
+                    let this = self.label();
+                    let next = self.label();
+                    let is = self.ins(format!("icmp eq i32 {}, {}", tag, k));
+                    self.cbr(&is, &this, &next);
+                    self.block(&this);
+                    self.print_lit(name);
+                    if !slots.is_empty() {
+                        self.print_lit("(");
+                        for (i, (&slot, sh)) in slots.iter().zip(shapes.iter()).enumerate() {
+                            if i > 0 {
+                                self.print_lit(", ");
+                            }
+                            let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, slot));
+                            let ct = ts[slot as usize].clone();
+                            self.print_value(&v(f, lt(&ct)), &ct, sh)?;
+                        }
+                        self.print_lit(")");
+                    }
+                    self.br(&done);
+                    self.block(&next);
+                }
+                self.br(&done);
+                self.block(&done);
+            }
+            Type::Tuple(ts) => {
+                let (open, close, names, subs) = match shape {
+                    Shape::Record(ns, ss) => ("{", "}", Some(ns.clone()), Some(ss.clone())),
+                    Shape::Tuple(ss) => ("(", ")", None, Some(ss.clone())),
+                    _ => ("(", ")", None, None),
+                };
+                self.print_lit(open);
+                for (i, c) in ts.iter().enumerate() {
+                    if i > 0 {
+                        self.print_lit(", ");
+                    }
+                    if let Some(ns) = &names {
+                        self.print_lit(&format!("{}: ", ns[i]));
+                    }
+                    let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+                    let sub = subs.as_ref().map(|ss| ss[i].clone()).unwrap_or(Shape::Plain);
+                    self.print_value(&v(f, lt(c)), c, &sub)?;
+                }
+                self.print_lit(close);
+            }
+            Type::Array(et) if et.is_array() => {
+                let inner = et.elem().clone();
+                let (p, rows, cols, stride) = self.nested_parts(x);
+                let sub = match shape {
+                    Shape::Array(e) => (**e).clone(),
+                    _ => Shape::Plain,
+                };
+                let et = (**et).clone();
+                self.print_lit("[");
+                self.for_range("0", &rows, 1, &mut |g, i| {
+                    let first = g.ins(format!("icmp eq i64 {}, 0", i));
+                    let lsep = g.label();
+                    let lel = g.label();
+                    g.cbr(&first, &lel, &lsep);
+                    g.block(&lsep);
+                    g.print_lit(", ");
+                    g.br(&lel);
+                    g.block(&lel);
+                    let row = g.row_view(&p, &cols, &stride, i, &inner);
+                    g.print_value(&row, &et, &sub)
+                })?;
+                self.print_lit("]");
+            }
+            Type::Array(et) => {
+                let (p, n) = self.str_parts(x);
+                self.print_lit("[");
+                let et = (**et).clone();
+                let sub = match shape {
+                    Shape::Array(e) => (**e).clone(),
+                    _ => Shape::Plain,
+                };
+                self.for_range("0", &n, 1, &mut |g, i| {
+                    let first = g.ins(format!("icmp eq i64 {}, 0", i));
+                    let lsep = g.label();
+                    let lel = g.label();
+                    g.cbr(&first, &lel, &lsep);
+                    g.block(&lsep);
+                    g.print_lit(", ");
+                    g.br(&lel);
+                    g.block(&lel);
+                    let el = g.load_elem(&p, &n, i, &et, 1);
+                    g.print_value(&el, &et, &sub)
+                })?;
+                self.print_lit("]");
+            }
+        }
+        Ok(())
+    }
+
+    fn action(&mut self, op: ActionOp, args: &[Expr], e: &Expr) -> R<V> {
+        let mut vals = Vec::new();
+        for a in args {
+            vals.push(self.ex(a, 1)?);
+        }
+        let pos = Self::pos(e.span);
+        Ok(match op {
+            ActionOp::ReadF64 | ActionOp::ReadF32 | ActionOp::ReadBytes => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let f = match op {
+                    ActionOp::ReadF64 => "isc_read_f64",
+                    ActionOp::ReadF32 => "isc_read_f32",
+                    _ => "isc_read_bytes",
+                };
+                let slot = self.alloca("{ ptr, i64 }");
+                self.emit(format!("call void @{}(ptr {}, ptr {}, i64 {}, {})", f, slot, p, n, pos));
+                let r = self.ins(format!("load {{ ptr, i64 }}, ptr {}", slot));
+                v(r, "{ ptr, i64 }")
+            }
+            ActionOp::WriteF64 | ActionOp::WriteF32 | ActionOp::WriteBytes => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (d, m) = self.str_parts(&vals[1]);
+                let f = match op {
+                    ActionOp::WriteF64 => "isc_write_f64",
+                    ActionOp::WriteF32 => "isc_write_f32",
+                    _ => "isc_write_bytes",
+                };
+                self.emit(format!("call void @{}(ptr {}, i64 {}, ptr {}, i64 {}, {})", f, p, n, d, m, pos));
+                v("false", "i1")
+            }
+            ActionOp::Print(k) => {
+                let shape = self.p.shapes[k as usize].clone();
+                self.print_value(&vals[0], &args[0].ty, &shape)?;
+                self.emit("call void @isc_print_newline()");
+                v("false", "i1")
+            }
+            ActionOp::Clock => v(self.ins("call i64 @isc_clock_ns()".into()), "i64"),
+            ActionOp::ParseI64 => {
+                let (p, n) = self.str_parts(&vals[0]);
+                v(self.ins(format!("call i64 @isc_parse_i64(ptr {}, i64 {}, {})", p, n, pos)), "i64")
+            }
+            ActionOp::ParseF64 => {
+                let (p, n) = self.str_parts(&vals[0]);
+                v(self.ins(format!("call double @isc_parse_f64(ptr {}, i64 {}, {})", p, n, pos)), "double")
+            }
+            ActionOp::PrintBytes => {
+                let (p, n) = self.str_parts(&vals[0]);
+                self.emit(format!("call void @isc_print_bytes(ptr {}, i64 {})", p, n));
+                v("false", "i1")
+            }
+            // the fallible forms (D138): the value and the message through
+            // pointers, then the pair
+            ActionOp::OrError(f) => {
+                use isc_ir::Fallible as F;
+                let (p, n) = self.str_parts(&vals[0]);
+                let err = self.alloca("{ ptr, i64 }");
+                if matches!(f, F::WriteBytes | F::WriteText) {
+                    let (d, m) = self.str_parts(&vals[1]);
+                    self.emit(format!("call void @isc_try_write_bytes(ptr {}, ptr {}, i64 {}, ptr {}, i64 {})", err, p, n, d, m));
+                    return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", err)), "{ ptr, i64 }"));
+                }
+                let (vt, name) = match f {
+                    F::ParseI64 => ("i64".to_string(), "isc_try_parse_i64"),
+                    F::ParseF64 => ("double".to_string(), "isc_try_parse_f64"),
+                    F::ReadBytes => ("{ ptr, i64 }".to_string(), "isc_try_read_bytes"),
+                    F::ReadF64 => ("{ ptr, i64 }".to_string(), "isc_try_read_f64"),
+                    F::ReadText => ("{ ptr, i64 }".to_string(), "isc_try_read_text"),
+                    F::ReadCsvF64 => (NESTED.to_string(), "isc_try_read_csv_f64"),
+                    F::WriteBytes | F::WriteText => unreachable!(),
+                };
+                let val = self.alloca(&vt);
+                let skip = if f == F::ReadCsvF64 { format!(", i64 {}", vals[1].r) } else { String::new() };
+                self.emit(format!("call void @{}(ptr {}, ptr {}, ptr {}, i64 {}{})", name, val, err, p, n, skip));
+                let x = self.ins(format!("load {}, ptr {}", vt, val));
+                let m = self.ins(format!("load {{ ptr, i64 }}, ptr {}", err));
+                let tt = lt(&e.ty);
+                let t0 = self.ins(format!("insertvalue {} poison, {} {}, 0", tt, vt, x));
+                v(self.ins(format!("insertvalue {} {}, {{ ptr, i64 }} {}, 1", tt, t0, m)), tt)
+            }
+            // text (D135)
+            ActionOp::ReadText => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let slot = self.alloca("{ ptr, i64 }");
+                self.emit(format!("call void @isc_read_text(ptr {}, ptr {}, i64 {}, {})", slot, p, n, pos));
+                v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", slot)), "{ ptr, i64 }")
+            }
+            ActionOp::WriteText => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (d, m) = self.str_parts(&vals[1]);
+                self.emit(format!("call void @isc_write_text(ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, d, m, pos));
+                v("false", "i1")
+            }
+            ActionOp::ParseCsvF64 | ActionOp::ReadCsvF64 => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let f = if op == ActionOp::ParseCsvF64 { "isc_parse_csv_f64" } else { "isc_read_csv_f64" };
+                let slot = self.alloca(NESTED);
+                self.emit(format!("call void @{}(ptr {}, ptr {}, i64 {}, i64 {}, {})", f, slot, p, n, vals[1].r, pos));
+                v(self.ins(format!("load {}, ptr {}", NESTED, slot)), NESTED)
+            }
+            ActionOp::Extern(i) => self.call_extern(i, &vals, e)?,
+        })
+    }
+
+    /// A call of a C function (System V x86-64, D125): integers with their
+    /// C extension (`signext`/`zeroext` below 32 bits), `bool` as `i1
+    /// zeroext`, floats as `float`/`double`, a `string` as a NUL-terminated
+    /// copy freed after the call, an array of scalars as a pointer to its
+    /// elements and its length.
+    fn call_extern(&mut self, i: u32, vals: &[V], e: &Expr) -> R<V> {
+        // the same code for WebAssembly: its C ABI passes these scalars and
+        // pointers directly (WASI's C library for libc and libm)
+        let f = self.p.externs[i as usize].clone();
+        let int_attr = |t: &Type| -> String {
+            match t {
+                Type::Int(k) if k.bits() < 32 => format!("i{} {}", k.bits(), if k.signed() { "signext" } else { "zeroext" }),
+                Type::Int(k) => format!("i{}", k.bits()),
+                Type::Bool => "i1 zeroext".to_string(),
+                Type::F64 => "double".to_string(),
+                Type::F32 => "float".to_string(),
+                _ => "void".to_string(),
+            }
+        };
+        let mut decl_params = Vec::new();
+        let mut call_args = Vec::new();
+        let mut copies = Vec::new();
+        for (x, t) in vals.iter().zip(f.params.iter()) {
+            match t {
+                Type::Str => {
+                    let (p, n) = self.str_parts(x);
+                    let (g, gl) = self.str_const(&f.name);
+                    let c = self.ins(format!("call ptr @isc_cstr(ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, g, gl, Self::pos(e.span)));
+                    decl_params.push("ptr".to_string());
+                    call_args.push(format!("ptr {}", c));
+                    copies.push(c);
+                }
+                Type::Array(_) => {
+                    let (p, n) = self.str_parts(x);
+                    decl_params.push("ptr".to_string());
+                    decl_params.push("i64".to_string());
+                    call_args.push(format!("ptr {}", p));
+                    call_args.push(format!("i64 {}", n));
+                }
+                t => {
+                    let a = int_attr(t);
+                    decl_params.push(a.clone());
+                    call_args.push(format!("{} {}", a, x.r));
+                }
+            }
+        }
+        let ret = match &f.ret {
+            Type::Int(k) if k.bits() < 32 => format!("{} i{}", if k.signed() { "signext" } else { "zeroext" }, k.bits()),
+            Type::Bool => "zeroext i1".to_string(),
+            t => int_attr(t),
+        };
+        self.decls.insert(format!("declare {} @{}({})", ret, f.name, decl_params.join(", ")));
+        // `nobuiltin`: LLVM must not replace the call of a C function it
+        // knows (`cbrt` computed at compilation, `strlen` of a constant): the
+        // call is an effect of the action, run as written, with the result
+        // of the library the program is linked with
+        let call = format!("call {} @{}({}) nobuiltin", ret, f.name, call_args.join(", "));
+        let r = if f.ret == Type::Unit {
+            self.emit(call);
+            v("false", "i1")
+        } else {
+            v(self.ins(call), lt(&f.ret))
+        };
+        for c in copies {
+            self.emit(format!("call void @isc_free(ptr {})", c));
+        }
+        Ok(r)
+    }
+
+    /// `bench(r, f)`: the body becomes a function called through an opaque
+    /// pointer, `r` times; all results but the last are freed.
+    fn bench(&mut self, reps: &Expr, body: &Expr, e: &Expr) -> R<V> {
+        let rv = self.ex(reps, 1)?;
+        let ok = self.ins(format!("icmp sge i64 {}, 1", rv.r));
+        self.guard(&ok, format!("call void @isc_panic_bench(i64 {}, {})", rv.r, Self::pos(e.span)));
+        let mut caps = Vec::new();
+        free_vars(body, &mut HashSet::new(), &mut caps);
+        let cap_vals: Vec<V> = caps.iter().map(|c| self.env[c].clone()).collect();
+        let env_ty = if cap_vals.is_empty() {
+            "{ i1 }".to_string()
+        } else {
+            format!("{{ {} }}", cap_vals.iter().map(|c| c.t.clone()).collect::<Vec<_>>().join(", "))
+        };
+        let envp = self.alloca(&env_ty);
+        for (i, c) in cap_vals.iter().enumerate() {
+            let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 {}", env_ty, envp, i));
+            self.emit(format!("store {} {}, ptr {}", c.t, c.r, g));
+        }
+        // the body function
+        self.nbench += 1;
+        let name = format!("@isc_bench_{}", self.nbench);
+        let rt = lt(&body.ty);
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        for (i, c) in caps.iter().enumerate() {
+            let t = cap_vals[i].t.clone();
+            let g = self.ins(format!("getelementptr inbounds {}, ptr %env, i32 0, i32 {}", env_ty, i));
+            let x = self.ins(format!("load {}, ptr {}", t, g));
+            self.env.insert(*c, v(x, t));
+        }
+        let r = self.ex(body, 1)?;
+        self.emit(format!("ret {} {}", rt, r.r));
+        let attrs = self.attrs();
+        let text = self.finish(&format!("define internal {} {}(ptr %env) noinline{}", rt, name, attrs));
+        self.funcs.push(text);
+        self.f = saved_f;
+        self.env = saved_env;
+        // the loop
+        let t0 = self.ins("call i64 @isc_clock_ns()".into());
+        let ia = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", ia));
+        let lloop = self.label();
+        let lnext = self.label();
+        let ldone = self.label();
+        self.br(&lloop);
+        self.block(&lloop);
+        let fp = if self.opts.isa.is_wasm() {
+            // the function pointer goes through a volatile slot: LLVM cannot
+            // see which function is called, so it cannot hoist or merge calls
+            let fs = self.alloca("ptr");
+            self.emit(format!("store volatile ptr {}, ptr {}", name, fs));
+            self.ins(format!("load volatile ptr, ptr {}", fs))
+        } else {
+            self.ins(format!("call ptr asm sideeffect \"\", \"=r,0\"(ptr {})", name))
+        };
+        let res = self.ins(format!("call {} {}(ptr {})", rt, fp, envp));
+        let i = self.ins(format!("load i64, ptr {}", ia));
+        let i1 = self.ins(format!("add i64 {}, 1", i));
+        self.emit(format!("store i64 {}, ptr {}", i1, ia));
+        let last = self.ins(format!("icmp sge i64 {}, {}", i1, rv.r));
+        self.cbr(&last, &ldone, &lnext);
+        self.block(&lnext);
+        self.drop_value(&v(res.clone(), rt.clone()), &body.ty);
+        self.br(&lloop);
+        self.block(&ldone);
+        let t1 = self.ins("call i64 @isc_clock_ns()".into());
+        let ns = self.ins(format!("sub i64 {}, {}", t1, t0));
+        let tt = lt(&e.ty);
+        let a = self.ins(format!("insertvalue {} poison, {} {}, 0", tt, rt, res));
+        let b = self.ins(format!("insertvalue {} {}, i64 {}, 1", tt, a, ns));
+        Ok(v(b, tt))
+    }
+}

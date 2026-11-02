@@ -1,0 +1,21 @@
+// moving_average_b.isc  usage: moving_average_b <input.f64> <output.f64> <reps>
+// comparison B of SPEC section 14: the best algorithm in Isocron. The
+// windows themselves: the compiler shares the levels of the fixed form
+// between neighbouring windows (DECISIONS D115), about 7 operations per
+// window, exact, and faster than the prefix sums of
+// `moving_average_prefix.isc` (DECISIONS D118). The same program as
+// `moving_average.isc`.
+function moving_average_b(x: f64[n]): f64[n - 63] {
+    return map(window(x, 64), (w) => sum(w) / 64.0);
+}
+
+action main(args: string[k]): i32 {
+    const x = read_f64(args[0]);
+    // one call before the timer: the pages of its result are touched, as
+    // the other languages touch their output buffers (DECISIONS D117)
+    const [_, _] = bench(1, () => moving_average_b(x));
+    const [r, ns] = bench(parse_i64(args[2]), () => moving_average_b(x));
+    print(ns);
+    write_f64(args[1], r);
+    return 0;
+}

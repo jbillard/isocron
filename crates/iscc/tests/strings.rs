@@ -1,0 +1,253 @@
+//! Strings (DECISIONS D134): literals and their escapes, `++`, the order by
+//! bytes, `len`, `bytes`, `string_of`, `to_string`, `parse_f64`; strings in
+//! arrays, tuples, sum and recursive types, in `fold`, `reduce` and `scan`.
+//! The interpreter and the compiled program print the same text, and the
+//! compiled program frees every string (Valgrind, when installed).
+
+mod common;
+use common::*;
+
+fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    if !vg.is_file() {
+        eprintln!("valgrind not installed: {} skipped", name);
+        return;
+    }
+    let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+    let bin = compile_with(src, &format!("{}_vg", name), opts);
+    let out = std::process::Command::new(vg)
+        .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
+        .arg(&bin)
+        .args(args)
+        .env("ISC_ALLOC", "glibc")
+        .env("ISC_THREADS", "2")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{} under valgrind:\n{}", name, err);
+}
+
+/// The interpreter and the compiled program print `expected`, and the
+/// compiled program frees everything.
+fn agree(src: &str, name: &str, args: &[&str], expected: &str) {
+    assert_eq!(interp_ok(src, args), expected, "interpreter");
+    let bin = compile(src, name);
+    let r = run_bin(&bin, args);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout, expected, "compiled");
+    valgrind_clean(src, name, args);
+}
+
+const OPS: &str = r#"function greet(name: string): string {
+    return "Bonjour, " + name + " !";
+}
+
+function label(x: f64): string {
+    return "x = " + to_string(x);
+}
+
+// `+` of strings is the primitive whatever the functions of the program
+function concat(a: string, b: string): string {
+    return b;
+}
+
+action main(args: string[k]): i32 {
+    print(greet("monde"));
+    print(label(1.5));
+    print(len("héllo"));
+    print("abc" < "abd");
+    print("abc" == "ab" + "c");
+    print("b" >= "abc");
+    print("Z" < "a");
+    print("" < "a");
+    print(bytes("AZ"));
+    print(string_of(bytes("ok\tfin")));
+    print(to_string(42) + "/" + to_string(-7i8) + "/" + to_string(true) + "/" + to_string(255u8) + "/" + to_string(0.1f32));
+    print("" + "");
+    print(len(""));
+    print(parse_f64("2.5e-3"));
+    print("☺ \"citation\" \\ 😀");
+    print(map(args, (a) => len(a)));
+    print(map(args, (a) => a + "!"));
+    print(filter(args, (a) => a > "f"));
+    print("a" + "b" == concat("a", "b"));
+    return 0;
+}
+"#;
+
+#[test]
+fn string_operations() {
+    agree(
+        OPS,
+        "str_ops",
+        &["un", "deux", "trois"],
+        "Bonjour, monde !\nx = 1.5\n6\ntrue\ntrue\ntrue\ntrue\ntrue\n[65, 90]\nok\tfin\n42/-7/true/255/0.1\n\n0\n0.0025\n\u{263A} \"citation\" \\ \u{1F600}\n[2, 4, 5]\n[un!, deux!, trois!]\n[un, trois]\nfalse\n",
+    );
+}
+
+const VALUES: &str = r#"type Opt = Some(string) | None;
+
+type Tree = Leaf | Node(Tree, string, Tree);
+
+function pick(b: boolean, x: string, y: string): string {
+    if (b) {
+        return x;
+    } else {
+        return y;
+    }
+}
+
+function first(xs: string[n]): Opt {
+    if (n > 0) {
+        return Some(xs[0]);
+    } else {
+        return None;
+    }
+}
+
+function show(o: Opt): string {
+    return match (o) {
+        Some(s) => concat(concat("Some(", s), ")"),
+        None => "None",
+    };
+}
+
+function insert(t: Tree, s: string): Tree {
+    return match (t) {
+        Leaf => Node(Leaf, s, Leaf),
+        Node(l, v, r) => s < v ? Node(insert(l, s), v, r) : Node(l, v, insert(r, s)),
+    };
+}
+
+function walk(t: Tree): string {
+    return match (t) {
+        Leaf => "",
+        Node(l, v, r) => concat(concat(concat(walk(l), v), " "), walk(r)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const xs = ["pomme", "kiwi", "abricot"];
+    print(xs);
+    print(pick(true, xs[0], xs[1]));
+    print(show(first(xs)));
+    print(show(first(filter(xs, (a) => len(a) > 10))));
+    const t = fold(xs, Leaf, (acc, s) => insert(acc, s));
+    print(walk(t));
+    print(fold(xs, "", (acc, s) => concat(acc, s)));
+    const ys = xs.with(1, "figue");
+    print(ys);
+    const p = [xs[2], 3] as const;
+    print(p);
+    const [s, n] = p;
+    print(concat(s, to_string(n)));
+    print(map(iota(5), (i) => to_string(i * i)));
+    print(xs == ["pomme", "kiwi", "abricot"]);
+    print(xs == ys);
+    print(t == insert(insert(insert(Leaf, "pomme"), "kiwi"), "abricot"));
+    print(map(xs, (a) => [a, len(a)] as const));
+    return 0;
+}
+"#;
+
+#[test]
+fn strings_in_values() {
+    agree(
+        VALUES,
+        "str_values",
+        &[],
+        "[pomme, kiwi, abricot]\npomme\nSome(pomme)\nNone\nabricot kiwi pomme \npommekiwiabricot\n[pomme, figue, abricot]\n(abricot, 3)\nabricot3\n[0, 1, 4, 9, 16]\ntrue\nfalse\ntrue\n[(pomme, 5), (kiwi, 4), (abricot, 7)]\n",
+    );
+}
+
+const REDUCTIONS: &str = r#"type List = Nil | Cons(i64, List);
+
+function smaller(a: string, b: string): string {
+    if (a < b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+function second(a: List, b: List): List {
+    return b;
+}
+
+action main(args: string[k]): i32 {
+    const big = map(iota(10000), (i) => to_string(i * 7919 % 10007));
+    const z = "~";
+    print(reduce(big, smaller, z));
+    print(reduce(big, (a, b) => len(a) >= len(b) ? a : b, ""));
+    print(len(reduce(filter(big, (s) => len(s) == 2), (a, b) => concat(a, b), "")));
+    print(reduce(["a", "b", "c", "d", "e"], (a, b) => concat(a, b), ""));
+    print(scan(filter(args, (s) => s != "x"), (a, b) => concat(a, b), z));
+    const ws = map(filter(big, (s) => len(s) < 2), (s) => concat(s, "!"));
+    print(ws);
+    print(fold(big, 0, (acc, s) => acc + len(s)));
+    print(reduce(map(big, (s) => len(s)), (+), 0));
+    const ls = map(iota(5), (i) => Cons(i, Nil));
+    print(reduce(ls, second, Nil));
+    print(z);
+    return 0;
+}
+"#;
+
+#[test]
+fn reductions_of_strings() {
+    // the fixed form of section 10, independently
+    let big: Vec<String> = (0..10000i64).map(|i| ((i * 7919) % 10007).to_string()).collect();
+    let refs: Vec<&str> = big.iter().map(|s| s.as_str()).collect();
+    let smallest = fixed_reduce(&refs, "~", &|a, b| if a < b { a } else { b });
+    let longest = fixed_reduce(&refs, "", &|a, b| if a.len() >= b.len() { a } else { b });
+    let total: usize = big.iter().map(|s| s.len()).sum();
+    let two: usize = big.iter().filter(|s| s.len() == 2).map(|s| s.len()).sum();
+    let expected = format!(
+        "{}\n{}\n{}\naecbd\n[~a, ~ab]\n[0!, 9!, 8!, 7!, 6!, 5!, 4!, 3!, 2!, 1!]\n{}\n{}\nNil\n~\n",
+        smallest, longest, two, total, total
+    );
+    agree(REDUCTIONS, "str_reductions", &["a", "x", "b"], &expected);
+}
+
+#[test]
+fn string_panics() {
+    let bad = "action main(args: string[k]): i32 {\n    print(string_of(map(bytes(args[0]), (b) => b == 65u8 ? 255u8 : b)));\n    return 0;\n}\n";
+    let m = interp_panic(bad, &["xxA"]);
+    assert!(m.contains("string_of: the bytes are not UTF-8 (invalid from byte 2)"), "{}", m);
+    let bin = compile(bad, "str_utf8");
+    let r = run_bin(&bin, &["xxA"]);
+    assert_ne!(r.code, 0);
+    assert!(r.stderr.contains("string_of: the bytes are not UTF-8 (invalid from byte 2)"), "{}", r.stderr);
+    let nan = "action main(args: string[k]): i32 {\n    print(parse_f64(args[0]));\n    return 0;\n}\n";
+    let m = interp_panic(nan, &["1,5"]);
+    assert!(m.contains("parse_f64: `1,5` is not a valid number"), "{}", m);
+    let bin = compile(nan, "str_parse");
+    let r = run_bin(&bin, &["1,5"]);
+    assert!(r.stderr.contains("parse_f64: `1,5` is not a valid number"), "{}", r.stderr);
+}
+
+fn error(src: &str) -> String {
+    match iscc::frontend("test.isc", src) {
+        Ok(_) => panic!("expected an error"),
+        Err(e) => e,
+    }
+}
+
+#[test]
+fn string_errors() {
+    let e = error("action main(args: string[k]): i32 {\n    print(\"abc);\n    return 0;\n}\n");
+    assert!(e.contains("unterminated string literal"), "{}", e);
+    let e = error("action main(args: string[k]): i32 {\n    print(\"a\\qb\");\n    return 0;\n}\n");
+    assert!(e.contains("unknown escape `\\q`"), "{}", e);
+    let e = error("action main(args: string[k]): i32 {\n    print(\"\\u{110000}\");\n    return 0;\n}\n");
+    assert!(e.contains("invalid escape"), "{}", e);
+    let e = error("action main(args: string[k]): i32 {\n    print(\"a\" - \"b\");\n    return 0;\n}\n");
+    assert!(e.contains("string"), "{}", e);
+    let e = error("action main(args: string[k]): i32 {\n    print(\"a\" < 1);\n    return 0;\n}\n");
+    assert!(e.contains("string"), "{}", e);
+    let e = error("action main(args: string[k]): i32 {\n    print(concat(1, 2));\n    return 0;\n}\n");
+    assert!(e.contains("string"), "{}", e);
+    // a `fn` cannot parse (an action, as `parse_i64`)
+    let e = error("function f(s: string): f64 {\n    return parse_f64(s);\n}\n\naction main(args: string[k]): i32 {\n    print(f(\"1\"));\n    return 0;\n}\n");
+    assert!(e.contains("parse_f64"), "{}", e);
+}

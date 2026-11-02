@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/isc-syntax",
+    "crates/isc-types",
+    "crates/isc-ir",
+    "crates/isc-interp",
+    "crates/isc-codegen",
+    "crates/isc-runtime-core",
+    "crates/iscc",
+]
+resolver = "2"
+# built by crates/iscc/build.rs with panic = "abort"
+exclude = ["crates/isc-runtime"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+debug = false
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,15 @@
+[package]
+name = "isc-bench-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Not a member of the compiler workspace.
+[workspace]
+
+[dependencies]
+# parallel variants (SPEC section 14: Rust uses rayon)
+rayon = "1"
+
+[profile.release]
+# `cargo build --release` defaults, as required by SPEC section 14.

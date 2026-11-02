@@ -1,0 +1,40 @@
+// mandelbrot (The Computer Language Benchmarks Game): the Mandelbrot set
+// as a P4 bitmap of N x N pixels on the standard output. The escape is
+// tested every 4 iterations, as the fastest programs of the Benchmarks Game
+// do: a point with |z| > 2 never comes back (and |z| stays far below an
+// overflow in 3 more iterations), so the image is the same.
+// usage: mandelbrot <N>
+// 12 groups of 4 iterations of z := z^2 + c, each followed by the test,
+// then 2 more iterations and the test of the 50th
+function inside(cr: f64, ci: f64, zr: f64, zi: f64, g: i64): boolean {
+    const zr1 = zr * zr - zi * zi + cr;
+    const zi1 = 2.0 * zr * zi + ci;
+    const zr2 = zr1 * zr1 - zi1 * zi1 + cr;
+    const zi2 = 2.0 * zr1 * zi1 + ci;
+    if (g == 12) return zr2 * zr2 + zi2 * zi2 <= 4.0;
+    const zr3 = zr2 * zr2 - zi2 * zi2 + cr;
+    const zi3 = 2.0 * zr2 * zi2 + ci;
+    const zr4 = zr3 * zr3 - zi3 * zi3 + cr;
+    const zi4 = 2.0 * zr3 * zi3 + ci;
+    if (zr4 * zr4 + zi4 * zi4 > 4.0) return false;
+    return inside(cr, ci, zr4, zi4, g + 1);
+}
+
+// the 8 pixels from x0 on row y, the first one in the high bit
+function byte(n: i64, y: i64, x0: i64): u8 {
+    const ci = 2.0 * f64(y) / f64(n) - 1.0;
+    const pixel = (x) => x < n && inside(2.0 * f64(x) / f64(n) - 1.5, ci, 0.0, 0.0, 0) ? 1u8 : 0u8;
+    return fold(iota(8), 0u8, (acc, k) => acc << 1 | pixel(x0 + k));
+}
+
+function pixels(n: size, nb: size): u8[n * nb] {
+    return map(iota(n * nb), (i) => byte(n, i / nb, 8 * (i % nb)));
+}
+
+action main(args: string[k]): i32 {
+    const n = parse_i64(args[0]);
+    const nb = (n + 7) / 8;
+    print_bytes(bytes("P4\n" + to_string(n) + " " + to_string(n) + "\n"));
+    print_bytes(pixels(n, nb));
+    return 0;
+}

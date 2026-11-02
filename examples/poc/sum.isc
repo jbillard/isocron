@@ -1,0 +1,8 @@
+// sum.isc        usage: sum <input.f64> <output.f64> <reps>
+action main(args: string[k]): i32 {
+    const x = read_f64(args[0]);
+    const [r, ns] = bench(parse_i64(args[2]), () => sum(x));
+    print(ns);
+    write_f64(args[1], [r]);
+    return 0;
+}

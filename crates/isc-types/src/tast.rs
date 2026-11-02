@@ -1,0 +1,376 @@
+//! Typed AST produced by the checker. Every expression carries its type.
+//! Types may mention the type parameters (`Ty::Param`) and size symbols of
+//! the enclosing function; they never contain inference variables.
+
+use crate::types::{IntKind, Poly, SymId, Ty};
+use isc_syntax::ast::{BinOp, Modifier, UnOp};
+use isc_syntax::Span;
+
+pub type FnId = usize;
+pub type LocalId = u32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScalarTy {
+    Int(IntKind),
+    F64,
+    F32,
+}
+
+impl ScalarTy {
+    pub fn to_ty(self) -> Ty {
+        match self {
+            ScalarTy::Int(k) => Ty::Int(k),
+            ScalarTy::F64 => Ty::F64,
+            ScalarTy::F32 => Ty::F32,
+        }
+    }
+}
+
+/// The actions with a fallible form `<name>_or_error` (D138): the value
+/// and an error message, `""` when the action succeeds, instead of a panic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Fallible {
+    ParseI64,
+    ParseF64,
+    ReadBytes,
+    ReadF64,
+    ReadText,
+    ReadCsvF64,
+    WriteBytes,
+    WriteText,
+}
+
+impl Fallible {
+    pub fn from_name(name: &str) -> Option<Fallible> {
+        Some(match name.strip_suffix("_or_error")? {
+            "parse_i64" => Fallible::ParseI64,
+            "parse_f64" => Fallible::ParseF64,
+            "read_bytes" => Fallible::ReadBytes,
+            "read_f64" => Fallible::ReadF64,
+            "read_text" => Fallible::ReadText,
+            "read_csv_f64" => Fallible::ReadCsvF64,
+            "write_bytes" => Fallible::WriteBytes,
+            "write_text" => Fallible::WriteText,
+            _ => return None,
+        })
+    }
+}
+
+/// Built-in primitives (SPEC sections 6 and 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Prim {
+    Map,
+    /// `scan(x, op, e)`: the inclusive cumulation, from left to right.
+    Scan,
+    /// `filter(x, p)`: the elements where `p` is true, in order.
+    Filter,
+    /// `window(x, k)`: the sliding windows of `k` elements, a view.
+    Window,
+    /// `zip(a, b)`: the pairs of two arrays of the same size (section 6).
+    Zip,
+    /// `min(a, b)` of two numbers, or `min(x)` of an array (sections 6, 10).
+    Min,
+    Max,
+    Reduce,
+    Fold,
+    Zeros,
+    Iota,
+    Fill,
+    Sqrt,
+    /// `exp`, `log`, `sin`, `cos`, `pow`, `fma` (SPEC section 10, D108).
+    Math(MathFn),
+    Convert(ScalarTy),
+    ReadF64,
+    ReadF32,
+    ReadBytes,
+    WriteF64,
+    WriteF32,
+    WriteBytes,
+    Print,
+    Clock,
+    Bench,
+    ParseI64,
+    /// Strings (D134): `concat(a, b)` (also `a ++ b`), `len(s)` (bytes),
+    /// `bytes(s)`, `string_of(b)` (UTF-8 checked), `to_string(v)` of a
+    /// scalar, and the action `parse_f64(s)`.
+    Concat,
+    StrLen,
+    Bytes,
+    StringOf,
+    ToString,
+    ParseF64,
+    /// Text (D135): the actions `read_text`, `write_text`,
+    /// `parse_csv_f64(text, skip)`, `read_csv_f64(path, skip)`; the
+    /// functions `lines`, `split`, `trim`, `join`.
+    ReadText,
+    WriteText,
+    ParseCsvF64,
+    ReadCsvF64,
+    Lines,
+    Split,
+    Trim,
+    Join,
+    /// `print_bytes(x)`: the bytes of `x` to the standard output (D136).
+    PrintBytes,
+    /// A fallible form of an action (D138).
+    OrError(Fallible),
+}
+
+/// The mathematical functions of the runtime (SPEC section 10): one
+/// implementation for every target and for the interpreter (D108); `fma`
+/// rounds once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MathFn {
+    Exp,
+    Log,
+    Sin,
+    Cos,
+    Pow,
+    Fma,
+}
+
+impl MathFn {
+    pub fn arity(self) -> usize {
+        match self {
+            MathFn::Pow => 2,
+            MathFn::Fma => 3,
+            _ => 1,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            MathFn::Exp => "exp",
+            MathFn::Log => "log",
+            MathFn::Sin => "sin",
+            MathFn::Cos => "cos",
+            MathFn::Pow => "pow",
+            MathFn::Fma => "fma",
+        }
+    }
+}
+
+impl Prim {
+    pub fn is_action(self) -> bool {
+        matches!(
+            self,
+            Prim::ReadF64
+                | Prim::ReadF32
+                | Prim::ReadBytes
+                | Prim::WriteF64
+                | Prim::WriteF32
+                | Prim::WriteBytes
+                | Prim::Print
+                | Prim::Clock
+                | Prim::Bench
+                | Prim::ParseI64
+                | Prim::ParseF64
+                | Prim::ReadText
+                | Prim::WriteText
+                | Prim::ParseCsvF64
+                | Prim::ReadCsvF64
+                | Prim::PrintBytes
+                | Prim::OrError(_)
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Lit {
+    Int(i128),
+    /// The value rounded to binary64 and, directly, to binary32.
+    Float(f64, f32),
+    Bool(bool),
+    Unit,
+    /// A string literal (D134).
+    Str(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TExpr {
+    pub kind: TExprKind,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Callee {
+    /// A top-level function, with its type arguments.
+    Fn { id: FnId, type_args: Vec<Ty> },
+    Prim(Prim),
+    /// Any expression of function type (local, lambda, operator, ...).
+    Value(Box<TExpr>),
+    /// A C function declared with `extern` (`TProgram::externs`).
+    Extern(u32),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TExprKind {
+    Lit(Lit),
+    Local(LocalId),
+    /// The value of a size expression, as an `i64`.
+    SizeVal(Poly),
+    /// A top-level function used as a value.
+    FnRef { id: FnId, type_args: Vec<Ty> },
+    /// A primitive used as a value (`sqrt`, conversions).
+    PrimRef(Prim),
+    /// An operator used as a value: `(+)`.
+    OpRef(BinOp),
+    /// A tuple, or a record (its fields in the order of their names).
+    Tuple(Vec<TExpr>),
+    Array(Vec<TExpr>),
+    /// Field `index` of a record (fields in the order of their names).
+    Field(Box<TExpr>, u32),
+    /// `r with .f = v`: the record with field `index` replaced.
+    FieldUpdate { target: Box<TExpr>, index: u32, value: Box<TExpr> },
+    /// A value of a sum type: constructor `variant` of `sums[sum]`.
+    Construct { sum: u32, variant: u32, args: Vec<TExpr> },
+    /// `match`: the first arm whose pattern matches (the arms are exhaustive).
+    Match(Box<TExpr>, Vec<(TPat, TExpr)>),
+    /// `size_checks` lists the parameters whose array size could not be
+    /// proved equal to the declared size at compile time: a run-time test is
+    /// inserted for each (SPEC section 4).
+    Call { callee: Callee, args: Vec<TExpr>, size_checks: Vec<usize> },
+    Index(Box<TExpr>, Box<TExpr>),
+    /// `x[a..b]` (SPEC section 6); its size is an existential symbol.
+    Slice(Box<TExpr>, Box<TExpr>, Box<TExpr>),
+    Update { target: Box<TExpr>, index: Box<TExpr>, value: Box<TExpr>, require_unique: bool },
+    Unary(UnOp, Box<TExpr>),
+    /// `size_check` is set for an element-wise operation on two arrays whose
+    /// sizes are not provably equal.
+    Binary { op: BinOp, lhs: Box<TExpr>, rhs: Box<TExpr>, size_check: bool },
+    Pow(Box<TExpr>, Box<TExpr>),
+    If(Box<TExpr>, Box<TExpr>, Box<TExpr>),
+    Lambda(Vec<LocalId>, Box<TExpr>),
+    Block(Vec<TStmt>, Box<TExpr>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TStmt {
+    Let(TPat, TExpr),
+    Expr(TExpr),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TPat {
+    Wild(Ty),
+    Bind(LocalId),
+    /// A tuple, or a record (its fields in the order of their names).
+    Tuple(Vec<TPat>, Ty),
+    /// A literal (in `match`).
+    Lit(Lit, Ty),
+    /// A constructor of a sum type, with the patterns of its payload.
+    Ctor { sum: u32, variant: u32, subs: Vec<TPat>, ty: Ty },
+}
+
+/// A sum type declared with `type Name<T, ...> = A | B(T, ...)`. In the
+/// payload types, `Ty::Param(i)` is the i-th parameter of the type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SumDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub variants: Vec<VariantDef>,
+    /// The type contains itself, directly or through other types: its values
+    /// are on the heap, with a reference count (SPEC section 8, D103).
+    pub recursive: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantDef {
+    pub name: String,
+    pub payload: Vec<Ty>,
+}
+
+impl SumDef {
+    /// The payload types of a variant for the type arguments `args`.
+    pub fn payload(&self, variant: usize, args: &[Ty]) -> Vec<Ty> {
+        self.variants[variant].payload.iter().map(|t| subst_params(t, args)).collect()
+    }
+}
+
+/// `t` with `Ty::Param(i)` replaced by `args[i]`.
+pub fn subst_params(t: &Ty, args: &[Ty]) -> Ty {
+    match t {
+        Ty::Param(i) => args[*i as usize].clone(),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| subst_params(t, args)).collect()),
+        Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), subst_params(t, args))).collect()),
+        Ty::Sum { id, name, args: a } => {
+            Ty::Sum { id: *id, name: name.clone(), args: a.iter().map(|t| subst_params(t, args)).collect() }
+        }
+        Ty::Array(s, e) => Ty::Array(s.clone(), Box::new(subst_params(e, args))),
+        Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| subst_params(t, args)).collect(), Box::new(subst_params(r, args))),
+        t => t.clone(),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Local {
+    pub name: String,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SymOrigin {
+    /// Bound by the size of the given (top-level array) parameter.
+    Param(usize),
+    /// The value of the given `size` parameter (`k: size`).
+    SizeParam(usize),
+    /// The value of a local `i64` variable, given as a `size` argument.
+    Local(LocalId),
+    /// Fixed at run time by the primitive call at this position.
+    Existential(Span),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymInfo {
+    pub name: String,
+    pub origin: SymOrigin,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TFn {
+    pub name: String,
+    pub span: Span,
+    pub is_action: bool,
+    pub from_prelude: bool,
+    pub generics: Vec<(String, u8)>,
+    pub syms: Vec<SymInfo>,
+    pub params: Vec<LocalId>,
+    pub param_tys: Vec<Ty>,
+    pub ret: Ty,
+    pub locals: Vec<Local>,
+    pub body: TExpr,
+    /// The requirements of the declaration (SPEC section 9), checked on the
+    /// IR (D106).
+    pub requires: Vec<(Modifier, Span)>,
+}
+
+impl TFn {
+    pub fn sym_name(&self, s: SymId) -> String {
+        self.syms.get(s as usize).map(|i| i.name.clone()).unwrap_or_else(|| format!("?{}", s))
+    }
+}
+
+/// A C function declared with `extern name(params) -> type` (System V
+/// x86-64 ABI): scalars as C scalars, `string` as a NUL-terminated copy,
+/// an array of scalars as a pointer to its elements (read only) followed by
+/// its length (D125).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TExtern {
+    pub name: String,
+    pub span: Span,
+    pub params: Vec<Ty>,
+    pub ret: Ty,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TProgram {
+    pub fns: Vec<TFn>,
+    pub main: FnId,
+    pub sums: Vec<SumDef>,
+    /// The C functions declared with `extern` (SPEC section 12, D125).
+    pub externs: Vec<TExtern>,
+    /// `recursive[f]`: `f` can call itself (it is not inlined, SPEC section
+    /// 11).
+    pub recursive: Vec<bool>,
+}

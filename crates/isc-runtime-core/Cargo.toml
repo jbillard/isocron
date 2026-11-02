@@ -1,0 +1,10 @@
+[package]
+name = "isc-runtime-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# the mathematical functions of musl, in Rust, without std: one
+# implementation for the interpreter and every target (D108)
+libm = { version = "0.2", default-features = false }

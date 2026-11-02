@@ -1,0 +1,21 @@
+// moving_average_prefix.isc  usage: moving_average_prefix <input.f64> <output.f64> <reps>
+// the moving average in O(n) by prefix sums (`scan`, left to right), then
+// one difference per window. Its results differ from the sums of the
+// windows by the rounding of the prefix sums. Not the program of
+// comparison B: `moving_average_b.isc` (the windows, D115) is exact and
+// faster (DECISIONS D118).
+function moving_average_prefix(x: f64[n]): f64[n - 63] {
+    const p = scan(x, (+), 0.0);
+    return map(iota(n - 63), (i) => (p[i + 63] - (i == 0 ? 0.0 : p[i - 1])) / 64.0);
+}
+
+action main(args: string[k]): i32 {
+    const x = read_f64(args[0]);
+    // one call before the timer: the pages of its result are touched, as
+    // the other languages touch their output buffers (DECISIONS D117)
+    const [_, _] = bench(1, () => moving_average_prefix(x));
+    const [r, ns] = bench(parse_i64(args[2]), () => moving_average_prefix(x));
+    print(ns);
+    write_f64(args[1], r);
+    return 0;
+}

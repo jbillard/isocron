@@ -1,0 +1,6 @@
+# The programs of the Benchmarks Game we compare with: the fastest of each
+# language on its site (2026-11-02), with the options of its command line.
+mandelbrot/mandelbrot.gpp-4.gpp    c++
+mandelbrot/mandelbrot.gcc-6.gcc    c
+mandelbrot/mandelbrot.rust-4.rust  rust
+mandelbrot/mandelbrot.go-4.go      go

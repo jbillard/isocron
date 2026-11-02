@@ -1,0 +1,16 @@
+// dot.isc (reassociated)  usage: dot <a.f64> <b.f64> <output.f64> <reps>
+// `allow_reassoc` (SPEC section 10): compared with the reassociated variants
+// of the other languages (section 14, DECISIONS D123)
+@allow_reassoc
+function fast_dot(a: f64[n], b: f64[n]): f64 {
+    return dot(a, b);
+}
+
+action main(args: string[k]): i32 {
+    const a = read_f64(args[0]);
+    const b = read_f64(args[1]);
+    const [r, ns] = bench(parse_i64(args[3]), () => fast_dot(a, b));
+    print(ns);
+    write_f64(args[2], [r]);
+    return 0;
+}

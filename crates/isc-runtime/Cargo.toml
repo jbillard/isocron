@@ -1,0 +1,36 @@
+[package]
+name = "isc-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Built without the standard library, hence with `panic = "abort"`, which
+# cannot be set for one crate of a workspace: the runtime is its own
+# workspace, built and embedded by `crates/iscc/build.rs`. Its unit tests
+# live in isc-runtime-core, the end-to-end tests in iscc.
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+isc-runtime-core = { path = "../isc-runtime-core" }
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+# One object for the runtime and the parts of `core` it uses: the archive
+# `iscc` writes and links at each build is smaller, and links faster
+# (DECISIONS D87).
+lto = "fat"
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"
+
+# set by crates/iscc/build.rs for the target wasm32-wasip1-threads
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(isc_wasm_threads)"] }

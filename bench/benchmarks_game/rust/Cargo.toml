@@ -1,0 +1,13 @@
+# The Rust programs of the Benchmarks Game, one at a time as src/main.rs
+# (build_programs.sh); their dependencies fetched when the image is built.
+[package]
+name = "bg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rayon = "=1.12.0"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1

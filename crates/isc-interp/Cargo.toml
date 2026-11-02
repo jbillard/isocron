@@ -1,0 +1,13 @@
+[package]
+name = "isc-interp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+isc-syntax = { path = "../isc-syntax" }
+isc-ir = { path = "../isc-ir" }
+isc-runtime-core = { path = "../isc-runtime-core" }
+
+[dev-dependencies]
+isc-types = { path = "../isc-types" }

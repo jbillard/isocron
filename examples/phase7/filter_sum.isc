@@ -1,0 +1,16 @@
+// filter_sum.isc  usage: filter_sum <input.f64> <output.f64> <reps>
+// the sum of the positive elements: fusion F2, one pass, no array
+function filter_sum(x: f64[n]): f64 {
+    return sum(filter(x, (v) => v > 0.0));
+}
+
+action main(args: string[k]): i32 {
+    const x = read_f64(args[0]);
+    // one call before the timer: the pages of its result are touched, as
+    // the other languages touch their output buffers (DECISIONS D117)
+    const [_, _] = bench(1, () => filter_sum(x));
+    const [r, ns] = bench(parse_i64(args[2]), () => filter_sum(x));
+    print(ns);
+    write_f64(args[1], [r]);
+    return 0;
+}

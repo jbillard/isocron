@@ -1,0 +1,15 @@
+// sum.isc (reassociated)  usage: sum <input.f64> <output.f64> <reps>
+// `allow_reassoc` (SPEC section 10): compared with the reassociated variants
+// of the other languages (section 14, DECISIONS D123)
+@allow_reassoc
+function fast_sum(x: f64[n]): f64 {
+    return sum(x);
+}
+
+action main(args: string[k]): i32 {
+    const x = read_f64(args[0]);
+    const [r, ns] = bench(parse_i64(args[2]), () => fast_sum(x));
+    print(ns);
+    write_f64(args[1], [r]);
+    return 0;
+}
