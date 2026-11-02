@@ -71,7 +71,7 @@ La syntaxe reprend celle de TypeScript (D148) : accolades, `;` obligatoires, `co
 
 - Commentaires : `//` jusqu'à la fin de la ligne, `/* ... */` sur plusieurs lignes.
 - Identifiants : lettres ASCII, chiffres et `_`, sans chiffre en tête.
-- Littéraux : entiers `42`, `0xFF`, `1_000_000` ; flottants `3.14`, `1e-9` ; booléens `true`, `false` ; chaînes `"..."`. Leur type est fixé par le contexte (section 4).
+- Littéraux : entiers `42`, `0xFF`, `1_000_000` ; flottants `3.14`, `1e-9` ; booléens `true`, `false` ; chaînes `"..."` ou `'...'` ; gabarits `` `n = ${n}` `` (D150), sur plusieurs lignes si besoin. Leur type est fixé par le contexte (section 4).
 - Suffixes de type facultatifs : `42u8`, `1.0f32`.
 - Un opérateur entre parenthèses est une fonction : `(+)`, `(*)`, `(&&)`.
 - Mots réservés : `function`, `action`, `declare`, `type`, `const`, `return`, `if`, `else`, `match`, `import`, `export`, `true`, `false`, `size`, `with`. `let`, `var` et `fn` sont réservés pour donner un message clair.
@@ -81,7 +81,9 @@ La syntaxe reprend celle de TypeScript (D148) : accolades, `;` obligatoires, `co
 
 ```ebnf
 program      = { import } { declaration } ;
-import       = "import" "*" "as" IDENT "from" STRING ";" ;
+import       = "import" ( "*" "as" IDENT
+                        | "{" IDENT [ "as" IDENT ] { "," IDENT [ "as" IDENT ] } "}" )
+               "from" STRING ";" ;
 declaration  = { decorator } [ "export" ] ( function | action )
              | type_decl | declare ;
 decorator    = "@" ( "require_no_alloc" | "require_fused"
@@ -131,9 +133,10 @@ power_right  = unary [ "**" power_right ] ;
 unary        = ( "-" | "!" ) unary | postfix ;
 postfix      = primary { "(" [ args ] ")" | "[" expr "]" | "." IDENT
                        | "as" "const" } ;
-primary      = LITERAL | STRING | IDENT | "(" ")" | "(" BINOP ")"
+primary      = LITERAL | STRING | template | IDENT | "(" ")" | "(" BINOP ")"
              | "(" expr ")" | "[" [ args ] "]" | record | match
              | "require_unique" "(" expr ")" ;
+template     = "`" TEXT { "${" expr "}" TEXT } "`" ;
 record       = "{" field { "," field } [ "," ] "}"
              | "{" "..." expr "," field { "," field } [ "," ] "}" ;
 field        = IDENT [ ":" expr ] ;
@@ -152,7 +155,8 @@ pattern      = "_" | IDENT [ "." IDENT ] | LITERAL | "-" NUMBER | "(" ")"
 - **Tuples** : `[a, b]` est un tableau ; `[a, b] as const` est un tuple, de type `[A, B]`. Là où un tuple est attendu (type annoncé, résultat déclaré), `[a, b]` suffit.
 - **Tableaux à deux dimensions** : `T[r][c]` est un tableau de `r` lignes de `c` éléments ; `x[i]` est une ligne.
 - **Motifs** : un `IDENT` suivi de `(` est un constructeur de type somme ; seul, c'est une variable, sauf s'il nomme un constructeur sans argument.
-- `m.f`, `m.T` et `m.C` désignent les déclarations d'un module importé par `import * as m from "./m";`.
+- **Modules** (D139, D150) : `import * as m from "./m";` donne accès à ce que le module exporte sous les noms `m.f`, `m.T`, `m.C` ; `import { f, g as h } from "./m";` rend ces noms utilisables sans préfixe, après les variables locales. Un chemin commençant par `./` ou `../` est relatif au fichier qui importe ; un nom nu est cherché dans `$ISC_PATH`. Seul ce qui est déclaré avec `export` est visible d'un autre fichier ; un module est un fichier, lu une seule fois.
+- **Gabarits** : `` `a${e}b` `` est la concaténation des textes et des insertions, chacune écrite comme `print` l'écrit (scalaire ou chaîne).
 
 ### Priorité des opérateurs
 

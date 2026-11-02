@@ -122,21 +122,30 @@ including inside the standard library.
 
 ### Modules
 
-`import * as name from "./name";`, at the top of a file, reads the file
-`name.isc` from the directory of the importing file, else from the
-directories listed in `$ISC_PATH` (separated by `:`). Its declarations are
-then reached as `name.f`, `name.T` and `name.C`, in expressions, types and
-patterns:
+A file can use the declarations another file exports. At the top of a
+file:
+
+* `import * as geom from "./geom";` reads `geom.isc`; what it exports is
+  then reached as `geom.f`, `geom.T` and `geom.C`, in expressions, types and
+  patterns;
+* `import { area, Shape, Circle as Disc } from "./geom";` makes these names
+  usable without a prefix (`as` renames one).
+
+A path that starts with `./` or `../` is relative to the importing file
+(`"./lib/util"` reads `lib/util.isc`); a bare name (`"util"`) is looked for
+in the directories listed in `$ISC_PATH` (separated by `:`). Only what a
+module declares with `export` can be reached from another file: a
+function, a type (and its constructors) or a `declare function`.
 
 ```
 // geom.isc
-type Shape = Circle(f64) | Square(f64);
+export type Shape = Circle(f64) | Square(f64);
 
 function sq(x: f64): f64 {
     return x * x;
 }
 
-function area(s: Shape): f64 {
+export function area(s: Shape): f64 {
     return match (s) {
         Circle(r) => 3.0 * sq(r),
         Square(c) => sq(c),
@@ -147,12 +156,14 @@ function area(s: Shape): f64 {
 ```
 // main.isc
 import * as geom from "./geom";
+import { area, Square } from "./geom";
 
 action main(args: string[k]): i32 {
     const c: geom.Shape = geom.Circle(2.0);
     print(geom.area(c)); // 12
+    print(area(Square(3.0))); // 9
     match (c) {
-        geom.Square(s) => print(s),
+        Square(s) => print(s),
         _ => print("not a square"),
     };
     return 0;
@@ -160,13 +171,17 @@ action main(args: string[k]): i32 {
 ```
 
 Inside a module, an unqualified name is looked for among the module's own
-declarations first: `geom.isc` calls `sq` and could declare its own `sum`
-without changing the `sum` of the program. Everything a module declares is
-public. A module is read once whatever the number of files that import it;
-an import cycle, a missing module and a module that declares `main` are
-compile errors. In the importing file, `geom.x` always means the module,
-even where a variable is named `geom`. A `declare function` of a module
-keeps its C name, without the module prefix.
+declarations first, then among the names it imports by name: `geom.isc`
+calls `sq` and could declare its own `sum` without changing the `sum` of
+the program. A name imported by name comes after the local variables: a
+`const area = ...` hides the imported `area` in its scope, as in
+TypeScript. A module is one file: read once whatever the number of files
+and the paths that import it, so its types are the same everywhere. An
+import cycle, a missing module, a name the module does not export, a name
+both imported and declared, and a module that declares `main` are compile
+errors. In the importing file, `geom.x` always means the module, even
+where a variable is named `geom`. A `declare function` names a C function:
+it keeps its C name and is global to the program.
 
 ### Functions chosen at run time
 
@@ -407,9 +422,14 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 Each of these functions can also be called as a method: `s.trim()`,
 `words.join(", ")`.
 
+A template literal `` `n = ${n}` `` is the concatenation of its texts and of
+its insertions, each written as `print` writes it: a scalar or a string (an
+array is a compile error). It may span several lines; `` \` `` and `\${`
+write the characters themselves.
+
 ```isc
 function plural(n: i64, word: string): string {
-    return to_string(n) + " " + (n == 1 ? word : word + "s");
+    return `${n} ${n == 1 ? word : word + "s"}`;
 }
 
 action main(args: string[k]): i32 {

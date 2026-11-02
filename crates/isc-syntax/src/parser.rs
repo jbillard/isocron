@@ -30,8 +30,9 @@ pub fn parse(src: &str, file: u32) -> Result<Program> {
 struct P {
     toks: Vec<Tok>,
     pos: usize,
-    /// The modules of `import * as m from "./name"`: (m, name).
-    modules: Vec<(String, String)>,
+    /// The prefixes `m` of `import * as m from "..."`: `m.x` is a qualified
+    /// name, resolved when the modules are loaded (D150).
+    modules: Vec<String>,
     in_action: bool,
 }
 
@@ -112,15 +113,17 @@ impl P {
             t => self.error(format!("expected {}, found {}", what, describe(&t))),
         }
     }
-    /// `m.x` of an imported module: the name `name.x` (D139).
+    /// `m.x` of an imported module: the qualified name `m.x`, its prefix
+    /// replaced by the module when the modules are loaded (D139, D150).
     fn module_of(&self, alias: &str) -> Option<String> {
-        self.modules.iter().find(|(a, _)| a == alias).map(|(_, n)| n.clone())
+        self.modules.iter().find(|a| *a == alias).cloned()
     }
 
     // ----- declarations ----------------------------------------------
 
     fn program(&mut self) -> Result<Program> {
         let mut decls = Vec::new();
+        let mut exports = Vec::new();
         while *self.peek() != T::Eof {
             if self.is_word("import") {
                 if !decls.iter().all(|d| matches!(d, Decl::Import(..))) {
@@ -142,19 +145,19 @@ impl P {
                 };
                 modifiers.push((m, sp));
             }
-            self.eat_word("export");
-            if self.is_word("function") || self.is_word("action") {
+            let exported = self.eat_word("export");
+            let decl = if self.is_word("function") || self.is_word("action") {
                 let is_action = self.is_word("action");
                 if is_action && !modifiers.is_empty() {
                     return Err(Diagnostic::new(modifiers[0].1, "a decorator goes on a `function`, not on an `action`"));
                 }
-                decls.push(Decl::Fn(self.function(is_action, modifiers)?));
+                Decl::Fn(self.function(is_action, modifiers)?)
             } else if !modifiers.is_empty() {
                 return self.error("a decorator goes before `function`");
             } else if self.is_word("type") {
-                decls.push(Decl::Type(self.type_decl()?));
+                Decl::Type(self.type_decl()?)
             } else if self.is_word("declare") {
-                decls.push(Decl::Extern(self.declare()?));
+                Decl::Extern(self.declare()?)
             } else if self.is_word("let") || self.is_word("const") {
                 return self.error("a program declares functions, actions and types; `const` goes inside a body");
             } else {
@@ -162,20 +165,56 @@ impl P {
                     "expected a declaration (`function`, `action`, `type`, `declare function` or `import`), found {}",
                     describe(self.peek())
                 ));
+            };
+            if exported {
+                match &decl {
+                    Decl::Fn(f) => exports.push(f.name.clone()),
+                    Decl::Extern(e) => exports.push(e.name.clone()),
+                    Decl::Type(t) => {
+                        exports.push(t.name.clone());
+                        exports.extend(t.variants.iter().map(|v| v.name.clone()));
+                    }
+                    Decl::Import(_) => {}
+                }
             }
+            decls.push(decl);
         }
-        Ok(Program { decls })
+        Ok(Program { decls, exports, imported: Vec::new() })
     }
 
+    /// `import * as m from "spec";` or `import { f, g as h } from "spec";`
+    /// (D150): the module is found and read when the modules are loaded.
     fn import(&mut self) -> Result<Decl> {
         self.expect_word("import")?;
-        if !self.eat(S::Star) {
-            return self.error("expected `import * as name from \"./file\"` (named imports are not supported yet)");
+        let mut alias = None;
+        let mut names = Vec::new();
+        if self.eat(S::Star) {
+            self.expect_word("as")?;
+            let (a, sp) = self.ident("a module name")?;
+            if self.modules.contains(&a) {
+                return Err(Diagnostic::new(sp, format!("`{}` names two imported modules", a)));
+            }
+            self.modules.push(a.clone());
+            alias = Some(a);
+        } else if self.eat(S::LBrace) {
+            while !self.is(S::RBrace) {
+                let (n, sp) = self.ident("an imported name")?;
+                let local = if self.eat_word("as") { self.ident("a local name")?.0 } else { n.clone() };
+                if names.iter().any(|(_, l, _): &(String, String, Span)| *l == local) {
+                    return Err(Diagnostic::new(sp, format!("`{}` is imported twice", local)));
+                }
+                names.push((n, local, sp));
+                if !self.eat(S::Comma) {
+                    break;
+                }
+            }
+            self.expect(S::RBrace)?;
+        } else {
+            return self.error("expected `import * as name from \"...\";` or `import { a, b } from \"...\";`");
         }
-        self.expect_word("as")?;
-        let (alias, sp) = self.ident("a module name")?;
         self.expect_word("from")?;
-        let path = match self.peek().clone() {
+        let span = self.span();
+        let spec = match self.peek().clone() {
             T::Str(s) => {
                 self.bump();
                 s
@@ -183,16 +222,7 @@ impl P {
             t => return self.error(format!("expected the path of the module, a string, found {}", describe(&t))),
         };
         self.expect(S::Semi)?;
-        let file = path.rsplit('/').next().unwrap_or(&path);
-        let name = file.strip_suffix(".isc").unwrap_or(file).to_string();
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(Diagnostic::new(sp, format!("`{}` does not name a module (a file `name.isc`)", path)));
-        }
-        if self.modules.iter().any(|(a, _)| a == &alias) {
-            return Err(Diagnostic::new(sp, format!("the module `{}` is imported twice", alias)));
-        }
-        self.modules.push((alias, name.clone()));
-        Ok(Decl::Import(name, sp))
+        Ok(Decl::Import(Import { spec, span, alias, names }))
     }
 
     fn generics(&mut self) -> Result<Vec<Generic>> {
@@ -980,9 +1010,48 @@ impl P {
                 ExprKind::Array(self.args(S::RBracket)?)
             }
             T::Sym(S::LBrace) => return self.record(),
+            T::Sym(S::Backtick) => return self.template(),
             t => return self.error(format!("expected an expression, found {}", describe(&t))),
         };
         Ok(Expr { kind, span })
+    }
+
+    /// `` `a${e}b` `` (D150): the concatenation of the texts and of the
+    /// insertions, each written as `print` writes it (`$text`, a name no
+    /// program can declare).
+    fn template(&mut self) -> Result<Expr> {
+        let span = self.expect(S::Backtick)?;
+        let mut parts: Vec<Expr> = Vec::new();
+        loop {
+            let (text, sp) = match self.peek().clone() {
+                T::Str(t) => (t, self.bump().span),
+                t => return self.error(format!("expected the text of a template literal, found {}", describe(&t))),
+            };
+            if !text.is_empty() {
+                parts.push(Expr { kind: ExprKind::Str(text), span: sp });
+            }
+            if self.eat(S::Backtick) {
+                break;
+            }
+            self.expect(S::TplOpen)?;
+            let e = self.expr()?;
+            self.expect(S::TplClose)?;
+            let callee = Expr { kind: ExprKind::Var("$text".into()), span: e.span };
+            parts.push(Expr { span: e.span, kind: ExprKind::Call(Box::new(callee), vec![e]) });
+        }
+        let mut it = parts.into_iter();
+        let mut acc = match it.next() {
+            Some(e) => e,
+            None => return Ok(Expr { kind: ExprKind::Str(String::new()), span }),
+        };
+        if !matches!(acc.kind, ExprKind::Str(_)) && it.len() == 0 {
+            // `${e}` alone is the text of `e`
+            return Ok(acc);
+        }
+        for e in it {
+            acc = Expr { span, kind: ExprKind::Binary(BinOp::Add, Box::new(acc), Box::new(e)) };
+        }
+        Ok(acc)
     }
 
     /// `(op)`: an operator alone between parentheses.

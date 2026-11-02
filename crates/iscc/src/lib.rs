@@ -16,92 +16,186 @@ pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     Ok(p)
 }
 
-/// The modules of a program (D139): `import m` reads `m.isc` from the
-/// directory of the importing file, else from the directories of
-/// `$ISC_PATH` (separated by `:`); each module is read once, an import
-/// cycle is an error. The declarations of `m` are renamed `m.f`, `m.T`,
-/// `m.C` (a name with a dot, which no program can write otherwise) and
-/// added to the program; inside `m`, an unqualified name is looked for in
-/// `m` first (the type checker). `extern` functions keep their C name.
+/// The modules of a program (D139, D150). `import ... from "./m"` (or
+/// `"../lib/m"`) reads `m.isc` relative to the importing file; a bare name
+/// `"m"` is searched in the directories of `$ISC_PATH` (separated by `:`).
+/// A module is identified by its file: read once, whatever the paths that
+/// name it; an import cycle is an error. Its declarations are renamed
+/// `m.f`, `m.T`, `m.C` (a name with a dot, which no program can write;
+/// `m~2` when two files are named `m.isc`) and added to the program;
+/// inside `m`, an unqualified name is looked for in `m` first (the type
+/// checker). Only what a module exports can be reached from another file:
+/// `alias.x` is rewritten here, the names imported by name are given to
+/// the type checker, which looks them up after the local variables. A
+/// `declare function` keeps its C name and is global.
 fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mut isc_syntax::SourceFiles) -> Result<(), isc_syntax::Diagnostic> {
-    use isc_syntax::ast::Decl;
-    use isc_syntax::Diagnostic;
-    fn find(name: &str, dir: &Path) -> Option<PathBuf> {
-        let mut dirs = vec![dir.to_path_buf()];
+    use isc_syntax::ast::{Decl, Program};
+    use isc_syntax::{Diagnostic, Span};
+
+    struct Module {
+        file: PathBuf,
+        key: String,
+        declared: Vec<String>,
+        exports: Vec<String>,
+    }
+    struct State {
+        modules: Vec<Module>,
+        /// The files being loaded, outermost first (for the cycles).
+        chain: Vec<(PathBuf, String)>,
+        out: Vec<Decl>,
+        imported: Vec<(u32, String, String)>,
+    }
+
+    fn canonical(p: &Path) -> PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    }
+
+    fn resolve(spec: &str, dir: &Path, span: Span) -> Result<PathBuf, Diagnostic> {
+        let file = if spec.ends_with(".isc") { spec.to_string() } else { format!("{}.isc", spec) };
+        if spec.starts_with("./") || spec.starts_with("../") || spec.starts_with('/') {
+            let p = dir.join(&file);
+            if p.is_file() {
+                return Ok(p);
+            }
+            return Err(Diagnostic::new(span, format!("module \"{}\" not found: no file `{}`", spec, p.display())));
+        }
+        let mut dirs = Vec::new();
         if let Ok(p) = std::env::var("ISC_PATH") {
             dirs.extend(p.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
         }
-        dirs.into_iter().map(|d| d.join(format!("{}.isc", name))).find(|f| f.is_file())
+        if let Some(p) = dirs.iter().map(|d| d.join(&file)).find(|f| f.is_file()) {
+            return Ok(p);
+        }
+        let hint = if dir.join(&file).is_file() { format!("; the file next to this one is \"./{}\"", spec) } else { String::new() };
+        Err(Diagnostic::new(span, format!("module \"{}\" not found in $ISC_PATH{}", spec, hint)))
     }
-    #[allow(clippy::too_many_arguments)]
-    fn visit(
-        imports: Vec<(String, isc_syntax::Span)>,
-        dir: &Path,
-        chain: &mut Vec<String>,
-        loaded: &mut Vec<String>,
-        out: &mut Vec<Decl>,
-        files: &mut isc_syntax::SourceFiles,
-    ) -> Result<(), Diagnostic> {
-        for (name, span) in imports {
-            if chain.contains(&name) {
-                let mut cycle = chain.clone();
-                cycle.push(name.clone());
-                return Err(Diagnostic::new(span, format!("import cycle: {}", cycle.join(" -> "))));
+
+    fn own_names(p: &Program) -> Vec<String> {
+        let mut v = Vec::new();
+        for d in &p.decls {
+            match d {
+                Decl::Fn(f) => v.push(f.name.clone()),
+                Decl::Extern(e) => v.push(e.name.clone()),
+                Decl::Type(t) => {
+                    v.push(t.name.clone());
+                    v.extend(t.variants.iter().map(|x| x.name.clone()));
+                }
+                Decl::Import(_) => {}
             }
-            if loaded.contains(&name) {
-                continue;
+        }
+        v
+    }
+
+    /// Loads the imports of `prog` (file `id`, in `dir`), then resolves its
+    /// qualified names and its names imported by name.
+    fn process(prog: &mut Program, id: u32, dir: &Path, st: &mut State, files: &mut isc_syntax::SourceFiles) -> Result<(), Diagnostic> {
+        let imports: Vec<isc_syntax::ast::Import> =
+            prog.decls.iter().filter_map(|d| if let Decl::Import(i) = d { Some(i.clone()) } else { None }).collect();
+        let own = own_names(prog);
+        let mut aliases: Vec<(String, usize, String)> = Vec::new();
+        for imp in &imports {
+            let file = canonical(&resolve(&imp.spec, dir, imp.span)?);
+            if let Some(k) = st.chain.iter().position(|(f, _)| *f == file) {
+                let mut names: Vec<String> = st.chain[k..].iter().map(|(_, n)| n.clone()).collect();
+                names.push(st.chain[k].1.clone());
+                return Err(Diagnostic::new(imp.span, format!("import cycle: {}", names.join(" -> "))));
             }
-            let Some(file) = find(&name, dir) else {
-                return Err(Diagnostic::new(
-                    span,
-                    format!("module `{}` not found: no `{}.isc` next to this file or in $ISC_PATH", name, name),
-                ));
+            let m = match st.modules.iter().position(|m| m.file == file) {
+                Some(m) => m,
+                None => {
+                    let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || stem.starts_with(|c: char| c.is_ascii_digit()) {
+                        return Err(Diagnostic::new(imp.span, format!("`{}` cannot be a module: its file name must be a name (letters, digits, `_`)", file.display())));
+                    }
+                    let mut key = stem.clone();
+                    let mut n = 1;
+                    while st.modules.iter().any(|m| m.key == key) {
+                        n += 1;
+                        key = format!("{}~{}", stem, n);
+                    }
+                    let src = std::fs::read_to_string(&file)
+                        .map_err(|e| Diagnostic::new(imp.span, format!("cannot read `{}`: {}", file.display(), e)))?;
+                    let fid = files.add(file.display().to_string());
+                    let mut mp = isc_syntax::parse(&src, fid)?;
+                    for d in &mp.decls {
+                        if let Decl::Fn(f) = d {
+                            if f.name == "main" {
+                                return Err(Diagnostic::new(f.span, format!("the module `{}` declares `main`; only a program does", stem)));
+                            }
+                        }
+                    }
+                    st.chain.push((file.clone(), stem.clone()));
+                    let mdir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+                    process(&mut mp, fid, &mdir, st, files)?;
+                    st.chain.pop();
+                    let declared = own_names(&mp);
+                    for d in mp.decls {
+                        match d {
+                            Decl::Import(_) => {}
+                            Decl::Fn(mut f) => {
+                                f.name = format!("{}.{}", key, f.name);
+                                st.out.push(Decl::Fn(f));
+                            }
+                            Decl::Type(mut t) => {
+                                t.name = format!("{}.{}", key, t.name);
+                                for v in t.variants.iter_mut() {
+                                    v.name = format!("{}.{}", key, v.name);
+                                }
+                                st.out.push(Decl::Type(t));
+                            }
+                            Decl::Extern(e) => st.out.push(Decl::Extern(e)),
+                        }
+                    }
+                    st.modules.push(Module { file: file.clone(), key, declared, exports: mp.exports });
+                    st.modules.len() - 1
+                }
             };
-            let src = std::fs::read_to_string(&file)
-                .map_err(|e| Diagnostic::new(span, format!("cannot read `{}`: {}", file.display(), e)))?;
-            let id = files.add(file.display().to_string());
-            let m = isc_syntax::parse(&src, id)?;
-            let mut sub = Vec::new();
-            let mut decls = Vec::new();
-            for d in m.decls {
-                match d {
-                    Decl::Import(n, s) => sub.push((n, s)),
-                    Decl::Fn(mut f) => {
-                        if f.name == "main" {
-                            return Err(Diagnostic::new(f.span, format!("the module `{}` declares `main`; only a program does", name)));
-                        }
-                        f.name = format!("{}.{}", name, f.name);
-                        decls.push(Decl::Fn(f));
+            if let Some(a) = &imp.alias {
+                aliases.push((a.clone(), m, imp.spec.clone()));
+            }
+            for (name, local, sp) in &imp.names {
+                let md = &st.modules[m];
+                if !md.exports.contains(name) {
+                    let why = if md.declared.contains(name) { "declares it but does not export it" } else { "does not declare it" };
+                    return Err(Diagnostic::new(*sp, format!("`{}` cannot be imported: the module \"{}\" {}", name, imp.spec, why)));
+                }
+                if own.contains(local) {
+                    return Err(Diagnostic::new(*sp, format!("`{}` is both imported and declared in this file", local)));
+                }
+                if st.imported.iter().any(|(f, l, _)| *f == id && l == local) {
+                    return Err(Diagnostic::new(*sp, format!("`{}` is imported twice", local)));
+                }
+                st.imported.push((id, local.clone(), format!("{}.{}", md.key, name)));
+            }
+        }
+        // `alias.x`: the declaration `x` of the module, if it exports it
+        let modules = &st.modules;
+        isc_syntax::ast::visit_names(prog, &mut |n: &mut String, sp: Span| {
+            if let Some((a, x)) = n.split_once('.') {
+                if let Some((_, m, spec)) = aliases.iter().find(|(al, _, _)| al == a) {
+                    let md = &modules[*m];
+                    if !md.exports.contains(&x.to_string()) {
+                        let why = if md.declared.iter().any(|d| d == x) { "declares it but does not export it" } else { "does not declare it" };
+                        return Err(Diagnostic::new(sp, format!("`{}`: the module \"{}\" {}", n, spec, why)));
                     }
-                    Decl::Type(mut t) => {
-                        t.name = format!("{}.{}", name, t.name);
-                        for v in t.variants.iter_mut() {
-                            v.name = format!("{}.{}", name, v.name);
-                        }
-                        decls.push(Decl::Type(t));
-                    }
-                    Decl::Extern(e) => decls.push(Decl::Extern(e)),
+                    *n = format!("{}.{}", md.key, x);
                 }
             }
-            chain.push(name.clone());
-            let sub_dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
-            visit(sub, &sub_dir, chain, loaded, out, files)?;
-            chain.pop();
-            loaded.push(name);
-            out.extend(decls);
-        }
+            Ok(())
+        })?;
+        prog.decls.retain(|d| !matches!(d, Decl::Import(..)));
         Ok(())
     }
-    let imports: Vec<(String, isc_syntax::Span)> =
-        root.decls.iter().filter_map(|d| if let Decl::Import(n, s) = d { Some((n.clone(), *s)) } else { None }).collect();
-    if imports.is_empty() {
+
+    if !root.decls.iter().any(|d| matches!(d, Decl::Import(..))) {
         return Ok(());
     }
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    let mut out = Vec::new();
-    visit(imports, &dir, &mut Vec::new(), &mut Vec::new(), &mut out, files)?;
-    root.decls.retain(|d| !matches!(d, Decl::Import(..)));
-    root.decls.extend(out);
+    let root_name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut st = State { modules: Vec::new(), chain: vec![(canonical(path), root_name)], out: Vec::new(), imported: Vec::new() };
+    process(root, isc_types::USER_FILE, &dir, &mut st, files)?;
+    root.decls.extend(st.out);
+    root.imported = st.imported;
     Ok(())
 }
 

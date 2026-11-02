@@ -2451,3 +2451,31 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     `v` as the value of that arm or lambda: `match` is an expression, so its
     `return` does not leave the enclosing function (in TypeScript, a
     `return` inside a `switch` would). To be confirmed by the author.
+- **D150 — Modules as in TypeScript; template literals (2026-11-02).**
+  - `import * as m from "spec";` and `import { f, g as h } from "spec";`.
+    A spec that starts with `./` or `../` (or `/`) is a path relative to
+    the importing file, `.isc` added; a bare name is looked for in
+    `$ISC_PATH` only (D139 also looked next to the file: TypeScript's
+    rule is simpler to read, and the error names the file next to it when
+    there is one). A module is its file (canonical path): read once
+    whatever the paths that name it, so that its types are the same
+    everywhere; its key is the file name (`m~2` for a second file of the
+    same name), which no program can write.
+  - `export` makes a function, a type (with its constructors) or a
+    `declare function` visible to other files; anything else is private
+    (as in TypeScript; D139 made everything public). A C function stays
+    global under its C name: its symbol is global anyway.
+  - `m.x` is resolved when the modules are loaded, by a walk of the names
+    of the tree (a qualified name has no scope); a name imported by name
+    is resolved by the type checker after the local variables and the
+    module's own declarations, so that `const area = 5;` hides an imported
+    `area` as in TypeScript. A name both imported and declared in a file,
+    a name the module does not export (the error says whether it is
+    private or missing) and an alias used twice are compile errors.
+  - Template literals `` `a${e}b` ``: the lexer splits the text and the
+    insertions (nested templates and braces inside an insertion
+    included); the parser writes `"a" + $text(e) + "b"`, where `$text` is
+    `to_string` under a name no program can declare (a program may have
+    its own `to_string`). `to_string` of a string is the string itself
+    (as `String(s)`); an array is a compile error ("expected a scalar
+    type"), not JavaScript's `1,2`, since `print` writes `[1, 2]`.

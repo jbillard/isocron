@@ -251,3 +251,37 @@ fn string_errors() {
     let e = error("function f(s: string): f64 {\n    return parse_f64(s);\n}\n\naction main(args: string[k]): i32 {\n    print(f(\"1\"));\n    return 0;\n}\n");
     assert!(e.contains("parse_f64"), "{}", e);
 }
+
+const TEMPLATES: &str = r#"function label(name: string, x: f64): string {
+    return `${name} = ${x}`;
+}
+
+action main(args: string[k]): i32 {
+    const n = 3;
+    print(`n = ${n}, n * n = ${n * n}, ${n > 2}, ${-7i8}, ${255u8}`);
+    print(label(args[0], 3.25));
+    print(`${args[0]}`);
+    print(``);
+    print(`two
+lines, braces { } and \` \${x}`);
+    print(`nested: ${`[${n + 1}]`} ${{ a: 1 }.a}`);
+    print(map(iota(3), (i) => `#${i}`));
+    return 0;
+}
+"#;
+
+/// Template literals (D150): the texts and the insertions concatenated,
+/// each insertion written as `print` writes it.
+#[test]
+fn template_literals() {
+    agree(
+        TEMPLATES,
+        "str_templates",
+        &["pi"],
+        "n = 3, n * n = 9, true, -7, 255\npi = 3.25\npi\n\ntwo\nlines, braces { } and ` ${x}\nnested: [4] 1\n[#0, #1, #2]\n",
+    );
+    let e = error("action main(args: string[k]): i32 {\n    print(`a ${[1, 2]}`);\n    return 0;\n}\n");
+    assert!(e.contains("test.isc:2:16: error: expected a scalar type"), "{}", e);
+    let e = error("action main(args: string[k]): i32 {\n    print(`a ${1 + 2`);\n    return 0;\n}\n");
+    assert!(e.contains("unterminated template literal"), "{}", e);
+}

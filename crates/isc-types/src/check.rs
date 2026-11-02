@@ -99,7 +99,8 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "len" => Prim::StrLen,
         "bytes" => Prim::Bytes,
         "string_of" => Prim::StringOf,
-        "to_string" => Prim::ToString,
+        // `$text`: an insertion of a template literal (D150)
+        "to_string" | "$text" => Prim::ToString,
         "read_text" => Prim::ReadText,
         "write_text" => Prim::WriteText,
         "parse_csv_f64" => Prim::ParseCsvF64,
@@ -153,7 +154,12 @@ struct SigCtx<'a> {
     result: bool,
     /// The module of the declaration (D139): its own types first.
     module: Option<&'a str>,
+    /// The names its file imports by name (D150): after its own types.
+    imports: Option<&'a HashMap<String, String>>,
 }
+
+/// The names each file imports by name (D150): file -> local -> `m.x`.
+type Imports = HashMap<u32, HashMap<String, String>>;
 
 /// The module of a declaration named `m.x` (D139).
 fn module_of(name: &str) -> Option<&str> {
@@ -200,6 +206,7 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
                 .module
                 .filter(|_| !name.contains('.'))
                 .and_then(|m| cx.sums.iter().position(|(n, _)| *n == format!("{}.{}", m, name)))
+                .or_else(|| cx.imports.and_then(|i| i.get(name)).and_then(|q| cx.sums.iter().position(|(n, _)| n == q)))
                 .or_else(|| cx.sums.iter().position(|(n, _)| n == name))
             {
                 let arity = cx.sums[id].1;
@@ -274,7 +281,7 @@ fn alone_in(t: &Ty, s: SymId) -> bool {
     }
 }
 
-fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)]) -> Result<Sig> {
+fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Result<Sig> {
     let mut generics = Vec::new();
     for g in &d.generics {
         if generics.iter().any(|(n, _): &(String, u8)| n == &g.name) {
@@ -304,7 +311,7 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)]) -> Result<Sig> {
                 Ty::Int(IntKind::I64)
             }
             ast::ParamType::Type(t) => {
-                type_from_ast(t, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: false, module: module_of(&d.name) })?
+                type_from_ast(t, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: false, module: module_of(&d.name), imports: imports.get(&d.span.file) })?
             }
         };
         param_names.push((p.name.clone(), p.span));
@@ -338,7 +345,7 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)]) -> Result<Sig> {
     // at run time by the function (SPEC section 4), alone as the size of an
     // array (`[k]T` or `[k <= n]T`).
     let nparams_syms = syms.len();
-    let ret = type_from_ast(&d.ret, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: true, module: module_of(&d.name) })?;
+    let ret = type_from_ast(&d.ret, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: true, module: module_of(&d.name), imports: imports.get(&d.span.file) })?;
     for s in nparams_syms..syms.len() {
         if !alone_in(&ret, s as SymId) {
             return err(
@@ -387,8 +394,9 @@ struct FnCx<'g> {
     g: &'g Globals,
     fn_id: FnId,
     /// The module of the function (D139): an unqualified name is first
-    /// looked for there.
+    /// looked for there, then among the names its file imports (D150).
     module: Option<String>,
+    file: u32,
     is_action: bool,
     lambda_depth: u32,
     generics: Vec<(String, u8)>,
@@ -421,6 +429,7 @@ struct Globals {
     sums: Vec<SumDef>,
     heads: Vec<(String, usize)>,
     ctors: HashMap<String, (u32, u32)>,
+    imports: Imports,
 }
 
 impl<'g> FnCx<'g> {
@@ -1116,7 +1125,7 @@ impl<'g> FnCx<'g> {
         let mut syms: Vec<SymInfo> = self.syms.clone();
         let generics = self.generics.clone();
         let n = syms.len();
-        let ty = type_from_ast(t, &mut SigCtx { generics: &generics, sums: &self.g.heads, syms: &mut syms, allow_new: false, result: false, module: self.module.as_deref() })?;
+        let ty = type_from_ast(t, &mut SigCtx { generics: &generics, sums: &self.g.heads, syms: &mut syms, allow_new: false, result: false, module: self.module.as_deref(), imports: self.g.imports.get(&self.file) })?;
         debug_assert_eq!(n, syms.len());
         Ok(ty)
     }
@@ -1287,13 +1296,17 @@ impl<'g> FnCx<'g> {
     /// A global name seen from the function's module (D139): `m.x` when the
     /// module declares `x`, else `x`.
     fn q(&self, name: &str) -> String {
+        if name.contains('.') {
+            return name.to_string();
+        }
         if let Some(m) = &self.module {
-            if !name.contains('.') {
-                let qn = format!("{}.{}", m, name);
-                if self.g.names.contains_key(&qn) || self.g.ctors.contains_key(&qn) {
-                    return qn;
-                }
+            let qn = format!("{}.{}", m, name);
+            if self.g.names.contains_key(&qn) || self.g.ctors.contains_key(&qn) {
+                return qn;
             }
+        }
+        if let Some(qn) = self.g.imports.get(&self.file).and_then(|i| i.get(name)) {
+            return qn.clone();
         }
         name.to_string()
     }
@@ -2175,6 +2188,10 @@ impl<'g> FnCx<'g> {
             }
             Prim::ToString => {
                 let x = self.check(&args[0], None)?;
+                // the text of a string is itself (as `String(s)`)
+                if self.shallow(&x.ty) == Ty::Str {
+                    return Ok(x);
+                }
                 let t = self.fresh(class::SCALAR, LitKind::None, x.span);
                 self.unify(&t, &x.ty, x.span)?;
                 Ok(mk(vec![x], Ty::Str, self))
@@ -2493,7 +2510,11 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
             K::Scalar(_) | K::Str | K::Unit => false,
         }
     }
-    let (sums, heads, ctors) = check_type_decls(&merged)?;
+    let mut imports: Imports = HashMap::new();
+    for (file, local, q) in &user.imported {
+        imports.entry(*file).or_default().insert(local.clone(), q.clone());
+    }
+    let (sums, heads, ctors) = check_type_decls(&merged, &imports)?;
     let mut decls: Vec<(&ast::FnDecl, bool)> = Vec::new();
     let mut names: HashMap<String, FnId> = HashMap::new();
     for d in &user.decls {
@@ -2526,7 +2547,7 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
     }
     let mut sigs = Vec::new();
     for (d, _) in &decls {
-        sigs.push(sig_of(d, &heads)?);
+        sigs.push(sig_of(d, &heads, &imports)?);
     }
     // the `extern` functions after the functions (D125)
     let first_extern = sigs.len();
@@ -2555,14 +2576,14 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
                 modifiers: Vec::new(),
                 body: ast::Expr { kind: ast::ExprKind::Unit, span: e.span },
             };
-            let sig = sig_of(&decl, &heads)?;
+            let sig = sig_of(&decl, &heads, &imports)?;
             check_extern_sig(e, &sig)?;
             externs.push(TExtern { name: e.name.clone(), span: e.span, params: sig.param_tys.clone(), ret: sig.ret.clone() });
             names.insert(e.name.clone(), sigs.len());
             sigs.push(sig);
         }
     }
-    let globals = Globals { sigs, names, first_extern, sums, heads, ctors };
+    let globals = Globals { sigs, names, first_extern, sums, heads, ctors, imports };
     let mut fns = Vec::new();
     for (id, (d, from_prelude)) in decls.iter().enumerate() {
         fns.push(check_fn(&globals, id, d, *from_prelude)?);
@@ -2631,7 +2652,7 @@ fn check_extern_sig(e: &ast::ExternDecl, sig: &Sig) -> Result<()> {
 /// then the payloads. A type that contains itself, directly or through other
 /// types, is rejected until reference counting exists (stage 2, phase 3).
 #[allow(clippy::type_complexity)]
-fn check_type_decls(p: &ast::Program) -> Result<(Vec<SumDef>, Vec<(String, usize)>, HashMap<String, (u32, u32)>)> {
+fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>, Vec<(String, usize)>, HashMap<String, (u32, u32)>)> {
     let decls: Vec<&ast::TypeDecl> = p
         .decls
         .iter()
@@ -2672,7 +2693,7 @@ fn check_type_decls(p: &ast::Program) -> Result<(Vec<SumDef>, Vec<(String, usize
             let mut syms = Vec::new();
             let mut payload = Vec::new();
             for f in &v.fields {
-                let ty = type_from_ast(f, &mut SigCtx { generics: &generics, sums: &heads, syms: &mut syms, allow_new: false, result: false, module: module_of(&t.name) })?;
+                let ty = type_from_ast(f, &mut SigCtx { generics: &generics, sums: &heads, syms: &mut syms, allow_new: false, result: false, module: module_of(&t.name), imports: imports.get(&t.span.file) })?;
                 if contains_fn(&ty) {
                     return err(f.span, "a function stored in a constructor (SPEC section 11)");
                 }
@@ -2731,6 +2752,7 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         g,
         fn_id: id,
         module: module_of(&d.name).map(|m| m.to_string()),
+        file: d.span.file,
         is_action: sig.is_action,
         lambda_depth: 0,
         generics: sig.generics.clone(),

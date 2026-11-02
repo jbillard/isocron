@@ -90,6 +90,11 @@ pub(crate) enum S {
     Caret,
     Bang,
     At,
+    /// The delimiters of a template literal (D150): `` ` ``, `${` and the
+    /// `}` that closes an insertion.
+    Backtick,
+    TplOpen,
+    TplClose,
 }
 
 impl S {
@@ -130,6 +135,9 @@ impl S {
             S::Caret => "^",
             S::Bang => "!",
             S::At => "@",
+            S::Backtick => "`",
+            S::TplOpen => "${",
+            S::TplClose => "}",
         }
     }
 }
@@ -167,8 +175,35 @@ pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
     let chars: Vec<char> = src.chars().collect();
     let mut toks = Vec::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
+    // the open insertions `${` of template literals, each with its depth of
+    // braces
+    let mut tpl: Vec<u32> = Vec::new();
     while i < chars.len() {
         let c = chars[i];
+        if c == '`' {
+            let span = Span::new(file, line, col);
+            toks.push(Tok { t: T::Sym(S::Backtick), span });
+            i += 1;
+            col += 1;
+            lex_template_text(&chars, &mut i, &mut line, &mut col, file, span, &mut toks, &mut tpl)?;
+            continue;
+        }
+        if c == '}' && tpl.last() == Some(&0) {
+            tpl.pop();
+            let span = Span::new(file, line, col);
+            toks.push(Tok { t: T::Sym(S::TplClose), span });
+            i += 1;
+            col += 1;
+            lex_template_text(&chars, &mut i, &mut line, &mut col, file, span, &mut toks, &mut tpl)?;
+            continue;
+        }
+        if let Some(d) = tpl.last_mut() {
+            if c == '{' {
+                *d += 1;
+            } else if c == '}' {
+                *d -= 1;
+            }
+        }
         if c == '\n' {
             i += 1;
             line += 1;
@@ -266,6 +301,9 @@ pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
         col += (i - start) as u32;
         toks.push(Tok { t, span });
     }
+    if !tpl.is_empty() {
+        return Err(Diagnostic::new(Span::new(file, line, col), "unterminated template literal: an insertion `${` is not closed"));
+    }
     toks.push(Tok { t: T::Eof, span: Span::new(file, line, col) });
     Ok(toks)
 }
@@ -285,40 +323,99 @@ fn lex_quoted(chars: &[char], i: &mut usize, span: Span, quote: char) -> Result<
                 return Ok(T::Str(s));
             }
             '\n' => return Err(Diagnostic::new(span, "unterminated string literal (a string is on one line; `\\n` for a new line)".to_string())),
-            '\\' => {
-                let e = chars.get(*i + 1).copied();
-                *i += 2;
-                match e {
-                    Some('n') => s.push('\n'),
-                    Some('t') => s.push('\t'),
-                    Some('r') => s.push('\r'),
-                    Some('0') => s.push('\0'),
-                    Some('\\') => s.push('\\'),
-                    Some('"') => s.push('"'),
-                    Some('\'') => s.push('\''),
-                    Some('u') if chars.get(*i) == Some(&'{') => {
-                        let start = *i + 1;
-                        let mut j = start;
-                        while j < chars.len() && chars[j].is_ascii_hexdigit() {
-                            j += 1;
-                        }
-                        let hex: String = chars[start..j].iter().collect();
-                        let code = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
-                        match (chars.get(j), code) {
-                            (Some('}'), Some(ch)) if !hex.is_empty() => {
-                                s.push(ch);
-                                *i = j + 1;
-                            }
-                            _ => return Err(Diagnostic::new(span, "invalid escape `\\u{...}` in a string literal".to_string())),
-                        }
-                    }
-                    Some(x) => return Err(Diagnostic::new(span, format!("unknown escape `\\{}` in a string literal", x))),
-                    None => return Err(Diagnostic::new(span, "unterminated string literal".to_string())),
-                }
-            }
+            '\\' => s.push(lex_escape(chars, i, span)?),
             _ => {
                 s.push(c);
                 *i += 1;
+            }
+        }
+    }
+}
+
+/// The escape at `chars[*i]` (a `\\`), in a string or a template literal.
+fn lex_escape(chars: &[char], i: &mut usize, span: Span) -> Result<char> {
+    let e = chars.get(*i + 1).copied();
+    *i += 2;
+    Ok(match e {
+        Some('n') => '\n',
+        Some('t') => '\t',
+        Some('r') => '\r',
+        Some('0') => '\0',
+        Some('\\') => '\\',
+        Some('"') => '"',
+        Some('\'') => '\'',
+        Some('`') => '`',
+        Some('$') => '$',
+        Some('u') if chars.get(*i) == Some(&'{') => {
+            let start = *i + 1;
+            let mut j = start;
+            while j < chars.len() && chars[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            let hex: String = chars[start..j].iter().collect();
+            let code = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
+            match (chars.get(j), code) {
+                (Some('}'), Some(ch)) if !hex.is_empty() => {
+                    *i = j + 1;
+                    ch
+                }
+                _ => return Err(Diagnostic::new(span, "invalid escape `\\u{...}` in a string literal".to_string())),
+            }
+        }
+        Some(x) => return Err(Diagnostic::new(span, format!("unknown escape `\\{}` in a string literal", x))),
+        None => return Err(Diagnostic::new(span, "unterminated string literal".to_string())),
+    })
+}
+
+/// The text of a template literal from `chars[*i]` up to its end `` ` `` or
+/// an insertion `${` (D150): a string token, then the delimiter; an
+/// insertion pushes its depth of braces on `tpl`.
+#[allow(clippy::too_many_arguments)]
+fn lex_template_text(
+    chars: &[char],
+    i: &mut usize,
+    line: &mut u32,
+    col: &mut u32,
+    file: u32,
+    start: Span,
+    toks: &mut Vec<Tok>,
+    tpl: &mut Vec<u32>,
+) -> Result<()> {
+    let span = Span::new(file, *line, *col);
+    let mut s = String::new();
+    loop {
+        match chars.get(*i) {
+            None => return Err(Diagnostic::new(start, "unterminated template literal")),
+            Some('`') => {
+                toks.push(Tok { t: T::Str(s), span });
+                toks.push(Tok { t: T::Sym(S::Backtick), span: Span::new(file, *line, *col) });
+                *i += 1;
+                *col += 1;
+                return Ok(());
+            }
+            Some('$') if chars.get(*i + 1) == Some(&'{') => {
+                toks.push(Tok { t: T::Str(s), span });
+                toks.push(Tok { t: T::Sym(S::TplOpen), span: Span::new(file, *line, *col) });
+                *i += 2;
+                *col += 2;
+                tpl.push(0);
+                return Ok(());
+            }
+            Some('\\') => {
+                let k = *i;
+                s.push(lex_escape(chars, i, Span::new(file, *line, *col))?);
+                *col += (*i - k) as u32;
+            }
+            Some('\n') => {
+                s.push('\n');
+                *i += 1;
+                *line += 1;
+                *col = 1;
+            }
+            Some(&c) => {
+                s.push(c);
+                *i += 1;
+                *col += 1;
             }
         }
     }
@@ -454,6 +551,38 @@ mod tests {
             ]
         );
         assert_eq!(toks("'a\\'b' \"\\u{263A}\"")[..2], [T::Str("a'b".into()), T::Str("\u{263A}".into())]);
+    }
+
+    #[test]
+    fn templates() {
+        assert_eq!(
+            toks("`a${x}b${ {c: 1}.c }`"),
+            vec![
+                T::Sym(S::Backtick),
+                T::Str("a".into()),
+                T::Sym(S::TplOpen),
+                T::Ident("x".into()),
+                T::Sym(S::TplClose),
+                T::Str("b".into()),
+                T::Sym(S::TplOpen),
+                T::Sym(S::LBrace),
+                T::Ident("c".into()),
+                T::Sym(S::Colon),
+                T::Int { value: 1, suffix: None },
+                T::Sym(S::RBrace),
+                T::Sym(S::Dot),
+                T::Ident("c".into()),
+                T::Sym(S::TplClose),
+                T::Str("".into()),
+                T::Sym(S::Backtick),
+                T::Eof
+            ]
+        );
+        // a template on two lines: the positions after it follow
+        let t = lex("`a\nb` c", 0).unwrap();
+        assert_eq!((t[3].span.line, t[3].span.col), (2, 4));
+        assert!(lex("`a${x", 0).is_err());
+        assert!(lex("`a", 0).is_err());
     }
 
     #[test]
