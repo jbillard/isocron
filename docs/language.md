@@ -179,9 +179,10 @@ A path that starts with `./` or `../` is relative to the importing file
 (`"./lib/util"` reads `lib/util.isc`); a bare name (`"util"`) is looked for
 in the directories listed in `$ISC_PATH` (separated by `:`). Only what a
 module declares with `export` can be reached from another file: a
-function, a type (and its constructors) or a `declare function`.
+function, a type (and its constructors), a type alias, a constant or a
+`declare function`.
 
-```
+```isc-file geom.isc
 // geom.isc
 export type Shape = Circle(f64) | Square(f64);
 
@@ -197,21 +198,27 @@ export function area(s: Shape): f64 {
 }
 ```
 
-```
+```isc
 // main.isc
 import * as geom from "./geom";
 import { area, Square } from "./geom";
 
 action main(args: string[k]): i32 {
     const c: geom.Shape = geom.Circle(2.0);
-    print(geom.area(c)); // 12
-    print(area(Square(3.0))); // 9
+    print(geom.area(c));
+    print(area(Square(3.0)));
     match (c) {
         Square(s) => print(s),
         _ => print("not a square"),
     };
     return 0;
 }
+```
+
+```output
+12
+9
+not a square
 ```
 
 Inside a module, an unqualified name is looked for among the module's own
@@ -602,6 +609,27 @@ World
 [1.00, 0.13, -3]
 ```
 
+```isc
+action main(args: string[k]): i32 {
+    const s = "  Isocron v1  ";
+    const t = s.trim();
+    print([t.includes("cron"), t.startsWith("Iso"), t.endsWith("v2")] as const);
+    print(`[${s.trimStart()}] [${s.trimEnd()}] ${t.toLowerCase()}`);
+    print([String(2.5), (42).toString(), String(true)].join("/"));
+    print([Number("0x1F"), Number(""), parseFloat("3.5kg"), parseInt("ff", 16), parseInt("12.9")]);
+    print(Number("abc"));
+    return 0;
+}
+```
+
+```output
+(true, true, false)
+[Isocron v1  ] [  Isocron v1] isocron v1
+2.5/42/true
+[31, 0, 3.5, 255, 12]
+NaN
+```
+
 A template literal `` `n = ${n}` `` is the concatenation of its texts and of
 its insertions, each written as `print` writes it: a scalar or a string (an
 array is a compile error). It may span several lines; `` \` `` and `\${`
@@ -808,6 +836,21 @@ action main(args: string[k]): i32 {
 5
 ```
 
+```isc
+action main(args: string[k]): i32 {
+    print([Math.floor(-2.5), Math.ceil(-2.5), Math.round(-2.5), Math.round(2.5), Math.trunc(-2.7)]);
+    print([Math.abs(-3), Math.abs(-1.5) == 1.5 ? 1 : 0] as const);
+    print([Math.tan(0.0), Math.asin(1.0) * 2.0, Math.acos(1.0), Math.atan(1.0) * 4.0, Math.atan2(1.0, -1.0)]);
+    return 0;
+}
+```
+
+```output
+[-3, -2, -2, 3, -2]
+(3, 1)
+[0, 3.141592653589793, 0, 3.141592653589793, 2.356194490192345]
+```
+
 ### `const`, `if`, lambdas, methods
 
 ```isc
@@ -905,6 +948,26 @@ action main(args: string[k]): i32 {
 [true, false]
 ```
 
+`RegExp(source, flags)` and `new RegExp(source, flags)` build one from a
+text known at run time; an invalid one is then a panic:
+
+```isc
+action main(args: string[k]): i32 {
+    const word = "c.t";
+    const re = new RegExp(word.replaceAll(".", "[a-z]"), "g");
+    print(matches("cat cut cart cot", re));
+    print("one two three".search(/t[wh]/));
+    print(RegExp("^\\d+$").test("2026"));
+    return 0;
+}
+```
+
+```output
+[cat, cut, cot]
+4
+true
+```
+
 ### Sorting and random numbers
 
 `sort(x)` and `sortBy(x, key)` return a new array, sorted in a stable way
@@ -935,6 +998,19 @@ action main(args: string[k]): i32 {
 [a, bb, ccc]
 [59, 16, 16, 4]
 [59, 16, 16, 4]
+```
+
+```isc
+action main(args: string[k]): i32 {
+    print(iota(3).map((i) => random(7, i).toFixed(6)));
+    print(random(7, 1) == random(7, 1));
+    return 0;
+}
+```
+
+```output
+[0.524346, 0.302139, 0.940996]
+true
 ```
 
 ### Maps
@@ -980,6 +1056,36 @@ action main(args: string[k]): i32 {
 0
 [(bob, 27), (cy, 40)]
 true
+```
+
+A function over maps declares its keys `Key`:
+
+```isc
+function invert<K extends Key, V extends Key>(m: Map<K, V>): Map<V, K> {
+    return Map(m.entries().map((e) => {
+        const [k, v] = e;
+        return [v, k] as const;
+    }));
+}
+
+action main(args: string[k]): i32 {
+    const codes = new Map([["fr", 33] as const, ["de", 49] as const, ["it", 39] as const]);
+    print(codes.keys());
+    print(codes.values());
+    const names = invert(codes);
+    print(names.size);
+    print(names.get(49) ?? "?");
+    print(names.get(1) ?? "?");
+    return 0;
+}
+```
+
+```output
+[fr, de, it]
+[33, 49, 39]
+3
+de
+?
 ```
 
 ### Element-wise operators
@@ -1685,6 +1791,57 @@ action.
 | `parseCsvF64(text, skip)` | `(string, i64) => f64[r][c]` | the same from a text |
 | `clock()` | `() => u64` | a monotonic time in nanoseconds |
 | `bench(r, f)` | `(i64, () => T) => [T, u64]` | calls `f` `r` times (`r >= 1`), returns the last result and the total time in nanoseconds |
+
+The standard input is read once, whole: after `readStdinLines()`, a
+`readStdinText()` finds its end.
+
+```isc
+action main(args: string[k]): i32 {
+    const lines = readStdinLines();
+    print(lines.length);
+    print(lines.map((l) => l.split(",").map(parseI64).sum()));
+    print(readStdinText().length);
+    return 0;
+}
+```
+
+```input
+1,2,3
+10,20
+```
+
+```output
+2
+[6, 30]
+0
+```
+
+`printBytes` writes bytes as they are, without a newline; files are read
+and written whole (this example needs a writable directory, so the guide
+only type-checks it):
+
+```isc
+action main(args: string[k]): i32 {
+    printBytes(bytes("no newline, "));
+    printBytes([10u8]);
+    return 0;
+}
+```
+
+```output
+no newline, 
+```
+
+```isc-check
+action main(args: string[k]): i32 {
+    const t0 = clock();
+    writeText("notes.txt", "first\nsecond\n");
+    const text = readText("notes.txt");
+    print(lines(text).length);
+    print(`${f64(clock() - t0) * 1e-9} s`);
+    return 0;
+}
+```
 
 A CSV file of numbers has one row per line and fields separated by commas;
 spaces around a field are ignored, blank lines are skipped, and every row

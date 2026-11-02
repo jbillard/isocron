@@ -71,7 +71,7 @@ La syntaxe reprend celle de TypeScript (D148) : accolades, `;` obligatoires, `co
 
 - Commentaires : `//` jusqu'à la fin de la ligne, `/* ... */` sur plusieurs lignes.
 - Identifiants : lettres ASCII, chiffres et `_`, sans chiffre en tête.
-- Littéraux : entiers `42`, `0xFF`, `1_000_000` ; flottants `3.14`, `1e-9` ; booléens `true`, `false` ; chaînes `"..."` ou `'...'` ; gabarits `` `n = ${n}` `` (D150), sur plusieurs lignes si besoin. Leur type est fixé par le contexte (section 4).
+- Littéraux : entiers `42`, `0xFF`, `1_000_000` ; flottants `3.14`, `1e-9` ; booléens `true`, `false` ; chaînes `"..."` ou `'...'` ; gabarits `` `n = ${n}` `` (D150), sur plusieurs lignes si besoin ; entiers de taille quelconque `123n`, `0xffn` (`bigint`, D156) ; expressions régulières `/source/drapeaux` (D157), là où une expression commence (au début, après `return` ou après tout signe sauf `)`, `]`, `}` et la fin d'un gabarit ; ailleurs `/` est la division), drapeaux parmi `g`, `i`, `m`, `s`, `u`. Le type des littéraux numériques est fixé par le contexte (section 4).
 - Suffixes de type facultatifs : `42u8`, `1.0f32`.
 - Un opérateur entre parenthèses est une fonction : `(+)`, `(*)`, `(&&)`.
 - Mots réservés : `function`, `action`, `declare`, `type`, `const`, `return`, `if`, `else`, `match`, `import`, `export`, `true`, `false`, `size`, `with`. `let`, `var` et `fn` sont réservés pour donner un message clair.
@@ -84,23 +84,25 @@ program      = { import } { declaration } ;
 import       = "import" ( "*" "as" IDENT
                         | "{" IDENT [ "as" IDENT ] { "," IDENT [ "as" IDENT ] } "}" )
                "from" STRING ";" ;
-declaration  = { decorator } [ "export" ] ( function | action )
-             | type_decl | declare ;
+declaration  = { decorator } [ "export" ]
+               ( function | action | type_decl | const_decl | declare ) ;
 decorator    = "@" ( "requireNoAlloc" | "requireFused"
                    | "requireTail" | "allowReassoc" ) ;
 function     = "function" IDENT [ generics ] "(" [ params ] ")" ":" type block ;
 action       = "action" IDENT "(" [ params ] ")" ":" type block ;
 declare      = "declare" "function" IDENT "(" [ params ] ")" ":" type ";" ;
-type_decl    = "type" IDENT [ generics ] "=" [ "|" ] variant { "|" variant } ";" ;
+type_decl    = "type" IDENT [ generics ] "="
+               ( type | [ "|" ] variant { "|" variant } ) ";" ;
 variant      = IDENT [ "(" type { "," type } ")" ] ;
+const_decl   = "const" IDENT [ ":" type ] "=" expr ";" ;
 generics     = "<" IDENT [ "extends" CLASS ] { "," IDENT [ "extends" CLASS ] } ">" ;
-CLASS        = "Num" | "Ord" | "Eq" ;
+CLASS        = "Num" | "Ord" | "Eq" | "Key" ;
 params       = param { "," param } ;
 param        = IDENT ":" ( type | "size" ) ;
 
 type         = base_type { "[" dim "]" } ;
 dim          = size_expr | IDENT "<=" size_expr ;
-base_type    = SCALAR | "string" | "void"
+base_type    = SCALAR | "string" | "bigint" | "void"
              | IDENT [ "." IDENT ] [ "<" type { "," type } ">" ]
              | "[" [ type { "," type } ] "]"
              | "{" IDENT ":" type { "," IDENT ":" type } "}"
@@ -123,7 +125,8 @@ branch       = block | statement ;
 expr         = lambda | cond ;
 lambda       = ( IDENT | "(" [ lparam { "," lparam } ] ")" ) "=>" ( expr | block ) ;
 lparam       = IDENT [ ":" type ] ;
-cond         = binary [ "?" expr ":" expr ] ;
+cond         = coalesce [ "?" expr ":" expr ] ;
+coalesce     = binary [ "??" coalesce ] ;
 binary       = power { BINOP power } ;
 BINOP        = "||" | "&&" | "|" | "^" | "&" | "==" | "===" | "!=" | "!=="
              | "<" | "<=" | ">" | ">=" | "<<" | ">>"
@@ -133,9 +136,10 @@ power_right  = unary [ "**" power_right ] ;
 unary        = ( "-" | "!" ) unary | postfix ;
 postfix      = primary { "(" [ args ] ")" | "[" expr "]" | "." IDENT
                        | "as" "const" } ;
-primary      = LITERAL | STRING | template | IDENT | "(" ")" | "(" BINOP ")"
-             | "(" expr ")" | "[" [ args ] "]" | record | match
-             | "requireUnique" "(" expr ")" ;
+primary      = LITERAL | STRING | BIGINT | REGEX | template | IDENT
+             | "(" ")" | "(" BINOP ")" | "(" expr ")" | "[" [ args ] "]"
+             | record | match | "requireUnique" "(" expr ")"
+             | "new" ( "Map" | "RegExp" ) ;
 template     = "`" TEXT { "${" expr "}" TEXT } "`" ;
 record       = "{" field { "," field } [ "," ] "}"
              | "{" "..." expr "," field { "," field } [ "," ] "}" ;
@@ -149,15 +153,19 @@ pattern      = "_" | IDENT [ "." IDENT ] | LITERAL | "-" NUMBER | "(" ")"
              | "{" IDENT [ ":" pattern ] { "," IDENT [ ":" pattern ] } "}" ;
 ```
 
+- **Déclarations de type** (D159) : après `=`, un type qui commence par `{`, `[`, `(`, un type prédéfini (`f64`, `string`, `boolean`, `bigint`, `void`...) ou un `IDENT` suivi de `<` ou `[` fait de la déclaration un alias, comme en TypeScript : l'alias est ce type, remplacé partout avant la vérification, et une variable de taille qu'il contient devient une variable de la signature qui l'emploie ; sinon la déclaration est un type somme (`type A = B;` est un type somme à un constructeur). Un alias qui se contient lui-même est une erreur.
+- **Constantes** (D159) : un `const` au niveau des déclarations est une valeur lisible de toute fonction. Sans type, sa valeur est un littéral ou un tableau de littéraux, du type du `number` de TypeScript pour les nombres (`i64` ou `f64`) ; sinon le type est écrit. Une variable locale du même nom la masque ; une constante qui dépend d'elle-même est une erreur.
+- **Décorateurs** : seulement devant `function`.
 - **Corps** : un `function` se termine par `return` sur chaque chemin. Un `if` dont une branche contient `return` choisit la valeur : la suite du corps continue la branche qui ne retourne pas (`if (n < 2) return n;` en tête de fonction est une garde). Dans une `action`, un `if` sans `return` est une instruction ; la dernière instruction d'une action sans `return` donne `void`.
 - **Lambda ou parenthèse** : après `(`, le parser cherche la `)` correspondante ; si elle est suivie de `=>`, c'est une lambda.
-- **Méthodes** : `x.m(a, b)` est `m(x, a, b)`, résolu par le vérificateur de types quand `x` n'est ni un record ni un module (`xs.map(f)`, `x.sum()`). `x.length` est `len(x)`, `x.slice(a, b)` la tranche de `a` inclus à `b` exclu, `x.with(i, v)` la mise à jour (section 8), `{ ...r, f: v }` la mise à jour d'un champ.
+- **Méthodes** : `x.m(a, b)` est `m(x, a, b)`, résolu par le vérificateur de types quand `x` n'est ni un record ni un module (`xs.map(f)`, `x.sum()`) ; `m` y désigne toujours une fonction, même si une variable locale du même nom existe (D158). `m.size` est le nombre de clés d'un `Map`. `x.length` est `len(x)`, `x.slice(a, b)` la tranche de `a` inclus à `b` exclu, `x.with(i, v)` la mise à jour (section 8), `{ ...r, f: v }` la mise à jour d'un champ.
 - **Tuples** : `[a, b]` est un tableau ; `[a, b] as const` est un tuple, de type `[A, B]`. Là où un tuple est attendu (type annoncé, résultat déclaré), `[a, b]` suffit.
 - **Tableaux à deux dimensions** : `T[r][c]` est un tableau de `r` lignes de `c` éléments ; `x[i]` est une ligne.
 - **Motifs** : un `IDENT` suivi de `(` est un constructeur de type somme ; seul, c'est une variable, sauf s'il nomme un constructeur sans argument.
 - **Modules** (D139, D150) : `import * as m from "./m";` donne accès à ce que le module exporte sous les noms `m.f`, `m.T`, `m.C` ; `import { f, g as h } from "./m";` rend ces noms utilisables sans préfixe, après les variables locales. Un chemin commençant par `./` ou `../` est relatif au fichier qui importe ; un nom nu est cherché dans `$ISC_PATH`. Seul ce qui est déclaré avec `export` est visible d'un autre fichier ; un module est un fichier, lu une seule fois.
 - **Noms** (D151) : la bibliothèque suit les conventions de TypeScript, en camelCase (`readF64`, `parseCsvF64`, `printBytes`, `@requireFused`), et reprend ses noms là où le sens est le même (`String(x)`, `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`) ; un nom de TypeScript n'est repris qu'avec son sens : `parseFloat("1,5")` vaut 1 comme en TypeScript, `parseF64`, strict, refuse ce texte (D156). `parseI64` et `parseF64` sont des fonctions pures, comme `Number`, `parseFloat` et `parseInt`.
 - **Gabarits** : `` `a${e}b` `` est la concaténation des textes et des insertions, chacune écrite comme `print` l'écrit (scalaire ou chaîne).
+- **`??` et `new`** (D158) : `a ?? b` est la valeur de `Some` dans l'`Option` `a`, sinon `b` (le `??` de TypeScript, `None` tenant lieu d'`undefined`) ; `new Map(e)` et `new RegExp(s, f)` sont les appels `Map(e)` et `RegExp(s, f)` ; `new` ne construit rien d'autre.
 
 ### Priorité des opérateurs
 
@@ -166,19 +174,20 @@ Les niveaux sont ceux de TypeScript (norme ECMAScript).
 | Niveau | Opérateurs | Associativité |
 | --- | --- | --- |
 | 1 (le plus faible) | `? :` | droite |
-| 2 | `\|\|` | gauche |
-| 3 | `&&` | gauche |
-| 4 | `\|` | gauche |
-| 5 | `^` (ou exclusif bit à bit) | gauche |
-| 6 | `&` | gauche |
-| 7 | `==` `===` `!=` `!==` | aucune |
-| 8 | `<` `<=` `>` `>=` | aucune |
-| 9 | `<<` `>>` | gauche |
-| 10 | `+` `-` | gauche |
-| 11 | `*` `/` `%` | gauche |
-| 12 | `-` unaire, `!` | — |
-| 13 | `**` (puissance) | droite |
-| 14 (le plus fort) | appel, indice, `.`, `as const` | gauche |
+| 2 | `??` | droite |
+| 3 | `\|\|` | gauche |
+| 4 | `&&` | gauche |
+| 5 | `\|` | gauche |
+| 6 | `^` (ou exclusif bit à bit) | gauche |
+| 7 | `&` | gauche |
+| 8 | `==` `===` `!=` `!==` | aucune |
+| 9 | `<` `<=` `>` `>=` | aucune |
+| 10 | `<<` `>>` | gauche |
+| 11 | `+` `-` | gauche |
+| 12 | `*` `/` `%` | gauche |
+| 13 | `-` unaire, `!` | — |
+| 14 | `**` (puissance) | droite |
+| 15 (le plus fort) | appel, indice, `.`, `as const` | gauche |
 
 Décisions :
 - comme en TypeScript, `-x ** 2` est refusé : il faut écrire `-(x ** 2)` ou `(-x) ** 2` ; `2 ** -1` est accepté ;
@@ -262,12 +271,19 @@ type Result<T, E> = Ok(T) | Err(E);
 
 - Représentation : étiquette plus charge utile, à plat, sans allocation.
 - Types récursifs (listes, arbres) : autorisés, alloués sur le tas avec comptage de références. Chacun apparaît dans le memory report.
+- `Option<T>` et `Result<T, E>` sont dans la bibliothèque standard ; un programme qui déclare l'un de ces noms ou de leurs constructeurs les remplace (D138, D158).
+
+### Types de la bibliothèque
+
+- `RegExp` (D157) : une expression régulière, compilée par un moteur en temps linéaire (pas de référence arrière ni d'assertion de contexte) ; une expression littérale invalide est une erreur de compilation. Ni affichée ni comparée.
+- `Map<K, V>` (D158) : un dictionnaire immuable dont les clés gardent l'ordre de leur première insertion ; construit d'un bloc en O(n log n), lu en O(log n). Ni affiché, ni comparé, ni rangé dans un tableau ou un constructeur.
+- Un alias `type Nom = T;` n'est pas un nouveau type : c'est `T` (D159).
 
 ### Génériques et classes
 
 - Paramètres de type : `function first<T>(x: T[n]): T`.
 - Monomorphisation obligatoire : une version compilée par combinaison de types utilisée, aucune valeur emballée (boxing).
-- Classes prédéfinies, non extensibles en v0 : `Num` (+ − × ÷, élément neutre `0` et `1`), `Ord` (comparaisons), `Eq` (égalité). Exemple : `function sum<T extends Num>(x: T[n]): T`.
+- Classes prédéfinies, non extensibles en v0 : `Num` (+ − × ÷, élément neutre `0` et `1`), `Ord` (comparaisons : entiers, flottants, booléens, chaînes, `bigint`), `Eq` (égalité), `Key` (clés d'un `Map` : entiers, booléens, chaînes, `bigint` ; ni les flottants, dont l'égalité n'en est pas une pour NaN, D158). Exemple : `function sum<T extends Num>(x: T[n]): T`.
 
 ### Inférence
 
@@ -309,7 +325,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 - **Opérateurs prédéfinis associatifs** sur entiers et booléens : `+`, `*` (arithmétique modulaire), `min`, `max`, `&&`, `||`. Ce sont les seuls pour lesquels `scan` est parallélisé, car un cumul parallèle n'est identique au cumul séquentiel que si `op` est associatif.
 - **Élément neutre de `reduce`** : `e` devrait être neutre pour `op`, mais le compilateur ne peut pas le vérifier. S'il ne l'est pas, le résultat reste celui, déterministe, de la forme de la section 10 ; il diffère alors d'un parcours séquentiel.
-- **Règle P, accumulation privatisée** (décision) : un `fold(x, init, f)` dont la fonction a la forme `(c, v) => c.with(g(v), c[g(v)] + h(v))` (ou `h(v) + c[g(v)]`), où les éléments de `c` sont des entiers et où ni `g` ni `h` n'utilisent `c`, peut être calculé en parallèle. `x` est découpé en morceaux consécutifs ; chaque morceau est accumulé dans une copie privée, remplie de zéros et de la taille de `init` ; les copies sont ensuite ajoutées à `init` élément par élément. L'addition entière modulo 2^bits est associative et commutative : le résultat est identique à celui du `fold` séquentiel pour tout découpage, donc pour tout nombre de cœurs. Les indices restent vérifiés : un indice hors bornes est une panne, à la position de la lecture `c[g(v)]`. La règle ne s'applique ni aux accumulateurs flottants (leur addition n'est pas associative) ni à une autre forme de mise à jour. C'est le cas de l'histogramme ; la forme générale (`scatter`) reste ouverte (section 16).
+- **Règle P, accumulation privatisée** (décision) : un `fold(x, init, f)` dont la fonction a la forme `(c, v) => c.with(g(v), c[g(v)] + h(v))` (ou `h(v) + c[g(v)]`), où les éléments de `c` sont des entiers et où ni `g` ni `h` n'utilisent `c`, peut être calculé en parallèle. `x` est découpé en morceaux consécutifs ; chaque morceau est accumulé dans une copie privée, remplie de zéros et de la taille de `init` ; les copies sont ensuite ajoutées à `init` élément par élément. L'addition entière modulo 2^bits est associative et commutative : le résultat est identique à celui du `fold` séquentiel pour tout découpage, donc pour tout nombre de cœurs. Les indices restent vérifiés : un indice hors bornes est une panne, à la position de la lecture `c[g(v)]`. La règle ne s'applique ni aux accumulateurs flottants (leur addition n'est pas associative) ni à une autre forme de mise à jour. C'est le cas de l'histogramme. La forme générale est `scatter(dest, idx, vals, op)` (D111) : les valeurs d'un même indice sont combinées dans l'ordre de k, quel que soit l'opérateur ; elle n'est parallèle que sous la forme de la règle P.
 
 ### Opérateurs élément par élément
 
@@ -320,7 +336,11 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 - `sum(x) = reduce(x, (+), 0)`, `product`, `min`, `max` (sémantique flottante en section 10).
 - `count(x, p)`, `mean(x)`, `dot(a, b) = sum(a * b)`.
-- Fonctions mathématiques : `sqrt`, `fma`, `pow`, `exp`, `log`, `sin`, `cos` (section 10).
+- Fonctions mathématiques : `sqrt`, `fma`, `pow`, `exp`, `log`, `sin`, `cos` (section 10), et l'espace `Math` de TypeScript : `floor`, `ceil`, `trunc`, `round`, `abs`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `PI`, `E` (D151, D155).
+- Tri stable `sort`, `sortBy`, `toReversed` ; nombres aléatoires à graine `random(seed, i)` et `randomInt`, les mêmes bits partout (D155).
+- Chaînes et texte (D134, D135, D155) : `slice`, `indexOf`, `includes`, `startsWith`, `endsWith`, `replace`, `replaceAll`, `toUpperCase`, `toLowerCase`, `padStart`, `padEnd`, `repeat`, `trim`, `split`, `join`, `toFixed`, `String`, `Number`, `parseFloat`, `parseInt`, `parseI64`, `parseF64` ; entrée standard `readStdin`, `readStdinText`, `readStdinLines`.
+- Expressions régulières (D157) : `test`, `search`, `countMatches`, `matches`, `replace`, `replaceAll`. `Map` (D158) : `Map(entrées)`, `countBy`, `size`, `get`, `has`, `keys`, `values`, `entries`, `set`, `delete`.
+- Le guide (`docs/language.md`) donne le type et un exemple testé de chacune.
 
 ## 7. Règles de fusion
 
@@ -376,6 +396,22 @@ Une valeur est **unique** à un point du programme si aucune utilisation ultéri
 6. L'accumulateur de `fold` est unique s'il n'est utilisé nulle part ailleurs. Dans `histogram`, le tableau `zeros()` est donc mis à jour en place à chaque étape.
 7. Une vue (`window`, `x.slice(a, b)`, `zip`) partage la mémoire de sa source : tant qu'elle est vivante, la source n'est pas unique.
 
+### Algorithme d'unicité (D161)
+
+L'analyse s'applique au corps de chaque fonction de l'IR, après inlining et spécialisation. Elle décide, pour chaque valeur qui possède de la mémoire (tableau, chaîne, `bigint`, nœud d'un type récursif, tuple qui en contient), où elle est déplacée, copiée ou libérée. Les étapes, dans l'ordre :
+
+1. **Régions.** Le corps forme un arbre de régions : la région de la fonction ; chaque branche d'un `if` ouvre une région marquée par ce `if` et son côté ; le corps de la lambda d'un `map`, `reduce`, `fold`, `scan` ou `filter` ouvre une région sans côté (il peut s'exécuter plusieurs fois).
+2. **Ordre.** Chaque lecture d'une variable reçoit un numéro dans l'ordre d'évaluation : de gauche à droite et en profondeur, la valeur d'un `const` avant la suite, `i` et `v` avant `e` dans `e.with(i, v)` (règle 2 ci-dessus).
+3. **Possession et alias.** Une variable possède sa valeur si l'expression qui la définit produit de la mémoire neuve (un littéral, un `map`, le résultat d'un appel ou d'une action) ; l'accumulateur d'un `fold` possède la sienne, et `main` possède le tableau de ses arguments. Une variable définie par une vue ou une partie d'une autre (une variable, une composante, une ligne, une fenêtre, une tranche qui est une vue) est un alias de ses bases : ses lectures comptent comme des lectures de ses bases, et elle ne possède rien. Un tuple neuf décomposé par `const [a, b] = t` transmet la possession à ses composantes.
+4. **Dernière lecture sur son chemin.** Une lecture d'une variable `v` qui possède sa valeur est candidate si sa région est celle où `v` est définie, ou une branche de `if` sous elle atteinte sans traverser de corps de lambda, et si chaque lecture postérieure de `v` (ou d'un de ses alias) est dans l'autre branche d'un `if` qui les sépare. Il y a ainsi au plus une candidate par chemin d'exécution.
+5. **Positions qui prennent une valeur.** Prennent la valeur qu'elles reçoivent : la cible et le nouvel élément d'une mise à jour `with`, la valeur initiale d'un `fold`, le résultat d'une fonction, d'un corps de `const`, de `fold` ou de `bench`, une composante d'un tuple ou d'un littéral de tableau, le contenu d'un nœud, l'élément neutre et chaque résultat de l'opérateur d'un `reduce` ou `scan` de valeurs qui possèdent de la mémoire. Toutes les autres positions ne font que lire : indice, longueur, entrées d'un `map`, opérandes des opérations de chaînes, arguments des actions et de `print`.
+6. **Déplacement ou copie.** Quand une position qui prend une valeur reçoit une valeur empruntée dont l'expression finit par une variable `v`, la lecture est un déplacement si elle est candidate (étape 4) et si `v` possède sa valeur ; sinon une copie explicite est insérée, et le memory report en donne la raison : `v` est lue de nouveau (à la ligne indiquée), `v` est une entrée ou une partie d'une autre valeur, `v` est définie hors de cette boucle ou de cette branche, ou une partie de `v` est gardée comme une valeur à part. Pour un `if` dont les deux branches empruntent, chaque branche est traitée séparément.
+7. **`requireUnique`.** Si l'étape 6 doit copier la cible d'un `with` marqué `requireUnique`, la compilation échoue avec cette raison.
+8. **Libération.** Une variable qui possède sa valeur et n'est pas déplacée sur tous les chemins est libérée à la fin de sa portée ; si elle est déplacée dans une branche d'un `if` et pas dans l'autre, elle est libérée au début de l'autre branche. Une valeur neuve qui n'est que lue est d'abord liée à une variable, libérée après la lecture.
+9. **Vérification.** Un vérificateur indépendant relit l'IR obtenu (D96) : chaque valeur possédée est libérée une fois ou déplacée, aucune valeur empruntée n'est donnée, aucune variable n'est lue après son déplacement, aucune vue ne survit à sa source. Un échec est un défaut du compilateur, jamais une erreur du programme.
+
+Les nœuds des types récursifs portent un compteur de références (D103) ; les tableaux n'en ont pas : une valeur partagée est copiée, et chaque copie figure dans le memory report.
+
 ### Résultats et destination-passing
 
 Quand une fonction produit un nouveau tableau, l'appelant fournit la mémoire du résultat (destination-passing). L'allocation n'est pas supprimée : elle est déplacée chez l'appelant, qui peut la réutiliser d'un appel à l'autre. C'est ce qui rend `requireNoAlloc` utilisable sur des fonctions qui retournent des tableaux.
@@ -413,7 +449,7 @@ Une exigence est une garantie écrite par le programmeur ; si le compilateur ne 
 
 - Une exigence se vérifie uniquement à partir des règles de cette spécification, jamais des optimisations propres à une implémentation.
 - Elle donne donc le même verdict sur toute cible et avec tout compilateur conforme. C'est pourquoi `requireNoAlloc` interdit aussi les tableaux sur la pile : le seuil de placement sur la pile ne peut pas changer le verdict.
-- Conséquence : l'algorithme d'analyse d'unicité devra être spécifié pas à pas (section 16).
+- Conséquence : l'algorithme d'analyse d'unicité est spécifié pas à pas (section 8, D161).
 
 ### Exemples
 
@@ -499,7 +535,7 @@ Pourquoi cette forme :
 
 ### `scan` flottant
 
-En v0, `scan` sur des flottants est séquentiel, de gauche à droite. Une forme parallèle fixe est envisageable plus tard (section 16).
+Un `scan` sur des flottants a une forme fixe (D112) : le premier bloc de B éléments est cumulé de gauche à droite depuis l'élément neutre ; chaque bloc suivant est cumulé depuis son propre premier élément, puis chacune de ses valeurs est combinée à la dernière valeur du bloc précédent. Jusqu'à B éléments, c'est le cumul de gauche à droite ; au-delà, il en diffère par l'arrondi des retenues, et il donne les mêmes valeurs pour tout nombre de threads.
 
 ### Mode `allowReassoc`
 
@@ -522,7 +558,7 @@ Les fonctions passées en argument sont résolues à la compilation : aucune fer
 ### Récursion
 
 - Récursion terminale directe : doit être compilée en boucle, sans croissance de pile.
-- Récursion terminale mutuelle : non garantie en v0 (section 16).
+- Récursion terminale mutuelle (D113) : un appel en position terminale d'une fonction récursive à une autre réutilise le cadre quand les tableaux qu'il passe sont des paramètres de l'appelant et que la boucle de l'appelant ne possède aucun tableau ; `@requireTail` l'accepte.
 - Récursion non terminale : autorisée, utilise la pile, signalée dans le memory report. Un dépassement de pile est une panne.
 - Une `function` récursive n'est pas inlinée ; son résultat tableau est matérialisé (règle M2).
 
@@ -756,21 +792,24 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 | --- | --- | --- |
 | Valeur de B (4 096) ; V = 32 est tranché (section 10) | grain du parallélisme et coût des niveaux supérieurs de l'arbre, pas encore mesurés | étape 2 |
 | Coût réel du mode reproductible face aux variantes réassociées | conditionne l'intérêt du mode par défaut | fin du POC |
-| Algorithme d'unicité spécifié pas à pas | sans lui, `requireUnique` n'est pas portable | étape 2, phase 3 |
 | `@requireVectorized` et cibles multiples | une même fonction peut passer sur une cible et échouer sur une autre | après la phase 7 |
 | Débordement entier modulaire | peut bloquer des optimisations que C obtient par comportement indéfini | après mesures |
 | Croissance du code due à l'inlining total | l'inlining sans seuil garantit la fusion mais peut gonfler les binaires ; toute limite devra être une règle de la spécification, pas une heuristique | étape 2, phase 2 |
 | Seuil de placement sur la pile | performances des petits tableaux (n'affecte aucun verdict) | étape 2, phase 3 |
 | Précision des fonctions transcendantes | reproductibilité contre vitesse | étape 2 |
 | Disposition automatique (lignes ou colonnes) | aujourd'hui toujours en colonnes | après la phase 7 |
-| Fonctions stockées dans des structures | expressivité contre spécialisation garantie | v1 |
-| Récursion terminale mutuelle | certains algorithmes s'écrivent ainsi | v1 |
-| `scan` flottant parallèle à forme fixe | aujourd'hui séquentiel | v1 |
-| `scatter` et règle de collision | histogrammes parallèles au-delà de la règle P (section 6) | v1 |
-| Passage des valeurs aux fonctions `extern` (section 12) : un tableau de scalaires en pointeur suivi de sa longueur `int64_t`, une `string` en copie terminée par un octet nul, au plus 6 paramètres entiers et 8 flottants, pas de fonction variadique ; décidé provisoirement (DECISIONS D125) | interopérabilité avec les bibliothèques C | avant la v1 |
-| Partie 3, intégrée à la grammaire de la section 3 avec la syntaxe 2 (D148), décidée provisoirement : chaînes (littéraux, `+`, ordre par octets, D134), texte et CSV (D135), opérateurs bit à bit `&` `\|` `^` `<<` `>>` aux niveaux de TypeScript (décalage modulo le nombre de bits), `concat` des tableaux, `printBytes` (D136), `Result` et actions `try_` (D138), modules `import * as m from "./m";` et noms `m.x` (D139) | programmes idiomatiques du Benchmarks Game, entrées-sorties texte, erreurs sans panne, programmes en plusieurs fichiers | avant la v1 |
 | Comportement FMA par défaut de Rust, Go, Zig, Fortran | équité de la variante stricte | P5 du POC |
 | Unicité du nom « Isocron » | deux recherches web n'ont trouvé aucun langage de ce nom ; pas une preuve | avant publication |
+
+### Questions tranchées pour la v1 (D161)
+
+- **Algorithme d'unicité** : écrit pas à pas à la section 8 ; c'est celui de l'implémentation, qu'un vérificateur indépendant contrôle.
+- **Passage des valeurs aux fonctions `extern`** (section 12, D125) : un tableau de scalaires en pointeur suivi de sa longueur `int64_t`, une `string` en copie terminée par un octet nul (une chaîne qui contient un octet nul est une panne), au plus 6 paramètres entiers et 8 flottants, pas de fonction variadique, un résultat scalaire ou `void`.
+- **Partie 3** (bibliothèque et syntaxe des programmes idiomatiques), dans la grammaire de la section 3 : chaînes (littéraux, `+`, ordre par octets, D134), texte et CSV (D135), opérateurs bit à bit aux niveaux de TypeScript (décalage modulo le nombre de bits), `concat` des tableaux, `printBytes` (D136), `Result` et actions `try` (D138), modules et imports nommés, `export` (D139, D150), gabarits (D150), noms de TypeScript (D151), fonctions de `Math`, de chaînes, `toFixed`, entrée standard, `random`, `sort` (D155), `bigint` et analyse des nombres (D156), expressions régulières en temps linéaire (D157), `Map<K, V>`, `Option` et `??` (D158), alias de types et constantes (D159). Les dix programmes du Benchmarks Game s'écrivent avec (D160).
+- **Fonctions stockées dans des structures** : dans les tuples, records, tableaux (D148) et types somme (D153), chaque appel spécialisé pour chaque fonction possible ; une fonction stockée dans un type somme qui lit une variable de son contexte reste refusée.
+- **Récursion terminale mutuelle** (D113) : un appel terminal à une autre fonction récursive réutilise le cadre quand les tableaux passés survivent à l'appelant.
+- **`scan` flottant parallèle à forme fixe** (D112) : le premier bloc de B éléments cumulé depuis l'élément neutre, chaque bloc suivant depuis son premier élément puis combiné à la retenue du bloc précédent ; les mêmes valeurs pour tout nombre de threads.
+- **`scatter` et règle de collision** (D111) : les valeurs d'un même indice combinées dans l'ordre de k, quel que soit l'opérateur.
 
 ## 17. Références
 

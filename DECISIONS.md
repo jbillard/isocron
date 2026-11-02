@@ -2708,3 +2708,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   stay outside the repository), interpreted, compiled and under Valgrind,
   the three readers of FASTA on the output of our fasta. Their measurement
   and the programs of the other languages for nine of them are later work.
+- **D161 — The questions of SPEC section 16 before v1, decided
+  (2026-11-03).** (1) The uniqueness algorithm is written step by step in
+  SPEC section 8: regions (the branches of an `if`, the bodies of
+  lambdas), the order of evaluation, owned variables and aliases, the last
+  use on each path, the positions that take a value, move or copy (with
+  the reason in the memory report), `requireUnique`, freeing, and the
+  independent check (D96). It is the algorithm of the implementation
+  (`passes.rs`, `ownership`), which makes `requireUnique` portable: any
+  conforming compiler gives the same verdicts. (2) The values passed to
+  `extern` functions (D125) are final for v1. (3) Part 3 is final, with
+  what v1 added (D150 to D159), written in the grammar of section 3 (now
+  that of the parser: type aliases, constants, `??`, `new`, the literals of
+  `bigint` and of regular expressions, the class `Key`) and in the types
+  and the library of sections 4 and 6. (4) The points of section 16 marked
+  v1 are confirmed: functions in structures (D148, D153), mutual tail
+  recursion (D113), the fixed form of a parallel scan of floats (D112),
+  `scatter` and its rule of collisions (D111); SPEC sections 6, 10 and 11
+  say so. The questions left in section 16 are those of after v1.
