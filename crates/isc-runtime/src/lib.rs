@@ -328,6 +328,50 @@ fn os_error<'a>(code: c_int) -> (&'a str, c_int) {
 /// Reads a whole file into a 64-byte aligned buffer, like `std::fs::read`.
 /// Reads a file; an error instead of a panic (D138): the buffer freed and
 /// the file closed.
+/// The whole standard input (D155), read until end of file.
+unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
+    let mut cap: usize = 1 << 16;
+    let mut buf = isc_alloc(cap as i64);
+    let mut len: usize = 0;
+    loop {
+        if len == cap {
+            let nb = isc_alloc((cap * 2) as i64);
+            core::ptr::copy_nonoverlapping(buf, nb, len);
+            isc_free(buf);
+            buf = nb;
+            cap *= 2;
+        }
+        let r = read(0, buf.add(len) as *mut c_void, cap - len);
+        if r < 0 {
+            let e = errno();
+            if e == EINTR {
+                continue;
+            }
+            let (detail, code) = os_error(e);
+            die(line, col, &Panic::Read { path: "<standard input>", detail, code })
+        }
+        if r == 0 {
+            break;
+        }
+        len += r as usize;
+    }
+    IscArray { ptr: buf, len: len as i64 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_read_stdin(out: *mut IscArray, line: i32, col: i32) {
+    *out = read_stdin_all(line, col);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_read_stdin_text(out: *mut IscStr, line: i32, col: i32) {
+    let a = read_stdin_all(line, col);
+    if let Err(e) = core::str::from_utf8(bytes_of(a.ptr, a.len)) {
+        die(line, col, &Panic::StdinNotUtf8(e.valid_up_to() as i64))
+    }
+    *out = IscStr { ptr: a.ptr, len: a.len };
+}
+
 unsafe fn try_read_file(path: &str) -> Result<IscArray, Panic<'_>> {
     let cp = c_path(path);
     let fd = open(cp, O_RDONLY | O_CLOEXEC);
@@ -753,6 +797,148 @@ pub unsafe extern "C" fn isc_split(out: *mut IscArray, p: *const u8, n: i64, q: 
 pub unsafe extern "C" fn isc_trim(out: *mut IscStr, p: *const u8, n: i64) {
     let s = core::str::from_utf8_unchecked(bytes_of(p, n));
     *out = new_str(s.trim().as_bytes());
+}
+
+/// A new string of the text that `f` writes (two passes: counted, then
+/// written into a block of that size).
+unsafe fn written(f: &dyn Fn(&mut dyn Write) -> fmt::Result) -> IscStr {
+    struct Count(usize);
+    impl Write for Count {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            self.0 += s.len();
+            Ok(())
+        }
+    }
+    struct Fill(*mut u8, usize);
+    impl Write for Fill {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            unsafe { core::ptr::copy_nonoverlapping(s.as_ptr(), self.0.add(self.1), s.len()) };
+            self.1 += s.len();
+            Ok(())
+        }
+    }
+    let mut c = Count(0);
+    let _ = f(&mut c);
+    let q = isc_alloc(c.0 as i64);
+    let mut w = Fill(q, 0);
+    let _ = f(&mut w);
+    IscStr { ptr: q, len: c.0 as i64 }
+}
+
+unsafe fn text<'a>(p: *const u8, n: i64) -> &'a str {
+    core::str::from_utf8_unchecked(bytes_of(p, n))
+}
+
+// the functions of strings of TypeScript (D155): the code of
+// `isc-runtime-core`, as the interpreter
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_index_of(p: *const u8, n: i64, q: *const u8, m: i64) -> i64 {
+    sem::index_of(text(p, n), text(q, m))
+}
+
+/// 0 `includes`, 1 `startsWith`, 2 `endsWith`.
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_test(p: *const u8, n: i64, q: *const u8, m: i64, which: i32) -> i32 {
+    let (s, t) = (text(p, n), text(q, m));
+    (match which {
+        0 => s.contains(t),
+        1 => s.starts_with(t),
+        _ => s.ends_with(t),
+    }) as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_replace_all(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, r: *const u8, k: i64) {
+    let (s, from, to) = (text(p, n), text(q, m), text(r, k));
+    *out = written(&|w| sem::replace_all(w, s, from, to));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_to_case(out: *mut IscStr, p: *const u8, n: i64, upper: i32) {
+    let s = text(p, n);
+    *out = written(&|w| sem::to_case(w, s, upper != 0));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
+    let (s, fill) = (text(p, n), text(q, m));
+    *out = written(&|w| sem::pad(w, s, len, fill, start != 0));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_repeat(out: *mut IscStr, p: *const u8, n: i64, count: i64, line: i32, col: i32) {
+    let s = text(p, n);
+    if count < 0 {
+        die(line, col, &Panic::RepeatNegative(count))
+    }
+    *out = written(&|w| {
+        let _ = sem::repeat(w, s, count);
+        Ok(())
+    });
+}
+
+/// 0 `trimStart`, 1 `trimEnd`.
+#[no_mangle]
+pub unsafe extern "C" fn isc_trim_side(out: *mut IscStr, p: *const u8, n: i64, end: i32) {
+    let s = text(p, n);
+    *out = new_str(if end != 0 { s.trim_end() } else { s.trim_start() }.as_bytes());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_slice(out: *mut IscStr, p: *const u8, n: i64, a: i64, b: i64, line: i32, col: i32) {
+    match sem::slice_str(text(p, n), a, b) {
+        Ok(x) => *out = new_str(x.as_bytes()),
+        Err(e) => die(line, col, &e),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_to_fixed(out: *mut IscStr, x: f64, d: i64, line: i32, col: i32) {
+    if !(0..=100).contains(&d) {
+        die(line, col, &Panic::FixedDigits(d))
+    }
+    *out = written(&|w| {
+        let _ = sem::write_fixed(w, x, d);
+        Ok(())
+    });
+}
+
+/// `argsort(x)` (D155): the indices of the elements in their order, the
+/// ties by index (stable). `kind`: 0..=3 `i8`..`i64`, 4..=7 `u8`..`u64`,
+/// 8 `f32`, 9 `f64`, 10 `bool` (a byte), 11 `string`.
+#[no_mangle]
+pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, kind: i32) {
+    use core::cmp::Ordering;
+    let n = n.max(0) as usize;
+    let q = isc_alloc((n * 8) as i64) as *mut i64;
+    let idx = core::slice::from_raw_parts_mut(q, n);
+    for (i, x) in idx.iter_mut().enumerate() {
+        *x = i as i64;
+    }
+    unsafe fn at<T: Copy>(p: *const u8, i: i64) -> T {
+        *(p as *const T).add(i as usize)
+    }
+    let cmp = |i: i64, j: i64| -> Ordering {
+        match kind {
+            0 => at::<i8>(p, i).cmp(&at::<i8>(p, j)),
+            1 => at::<i16>(p, i).cmp(&at::<i16>(p, j)),
+            2 => at::<i32>(p, i).cmp(&at::<i32>(p, j)),
+            3 => at::<i64>(p, i).cmp(&at::<i64>(p, j)),
+            4 | 10 => at::<u8>(p, i).cmp(&at::<u8>(p, j)),
+            5 => at::<u16>(p, i).cmp(&at::<u16>(p, j)),
+            6 => at::<u32>(p, i).cmp(&at::<u32>(p, j)),
+            7 => at::<u64>(p, i).cmp(&at::<u64>(p, j)),
+            8 => sem::order_f64(at::<f32>(p, i) as f64, at::<f32>(p, j) as f64),
+            9 => sem::order_f64(at::<f64>(p, i), at::<f64>(p, j)),
+            _ => {
+                let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
+                bytes_of(a.ptr, a.len).cmp(bytes_of(b.ptr, b.len))
+            }
+        }
+    };
+    idx.sort_unstable_by(|&i, &j| cmp(i, j).then(i.cmp(&j)));
+    *out = IscArray { ptr: q as *mut u8, len: n as i64 };
 }
 
 /// `join(xs, sep)`: the strings of `xs` with `sep` between them.
@@ -1427,6 +1613,86 @@ pub extern "C" fn isc_panic_bench(r: i64, line: i32, col: i32) -> ! {
 // mathematical functions (D108): those of `isc_runtime_core`, called by the
 // generated code
 
+#[no_mangle]
+pub extern "C" fn isc_tan(x: f64) -> f64 {
+    sem::tan_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_tanf(x: f32) -> f32 {
+    sem::tan_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_asin(x: f64) -> f64 {
+    sem::asin_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_asinf(x: f32) -> f32 {
+    sem::asin_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_acos(x: f64) -> f64 {
+    sem::acos_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_acosf(x: f32) -> f32 {
+    sem::acos_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_atan(x: f64) -> f64 {
+    sem::atan_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_atanf(x: f32) -> f32 {
+    sem::atan_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_floor(x: f64) -> f64 {
+    sem::floor_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_floorf(x: f32) -> f32 {
+    sem::floor_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_ceil(x: f64) -> f64 {
+    sem::ceil_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_ceilf(x: f32) -> f32 {
+    sem::ceil_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_trunc(x: f64) -> f64 {
+    sem::trunc_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_truncf(x: f32) -> f32 {
+    sem::trunc_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_round(x: f64) -> f64 {
+    sem::round_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_roundf(x: f32) -> f32 {
+    sem::round_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_abs(x: f64) -> f64 {
+    sem::abs_f64(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_absf(x: f32) -> f32 {
+    sem::abs_f32(x)
+}
+#[no_mangle]
+pub extern "C" fn isc_atan2(y: f64, x: f64) -> f64 {
+    sem::atan2_f64(y, x)
+}
+#[no_mangle]
+pub extern "C" fn isc_atan2f(y: f32, x: f32) -> f32 {
+    sem::atan2_f32(y, x)
+}
 #[no_mangle]
 pub extern "C" fn isc_exp(x: f64) -> f64 {
     sem::exp_f64(x)

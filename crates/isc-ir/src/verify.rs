@@ -260,10 +260,8 @@ impl<'p> Checker<'p> {
                     let v = self.eval(x)?;
                     self.borrow(v, x)?;
                 }
-                Ok(match op {
-                    crate::StrOp::Len | crate::StrOp::Cmp(_) => Val::Scalar,
-                    _ => Val::Fresh,
-                })
+                let _ = op;
+                Ok(if e.ty.has_heap() { Val::Fresh } else { Val::Scalar })
             }
             // an empty array, or a zero tuple: owned like any new value
             Zero => Ok(fresh(heap)),

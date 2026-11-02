@@ -2549,3 +2549,43 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   element is a copy; and `fill(n, toString(i))` (a new string) failed the
   memory check (never freed), now bound, copied, then freed. Ragged arrays
   and arrays of arrays of arrays are after v1.
+- **D155 — The standard library of v1, first part (2026-11-02).** Each
+  function means what it means in TypeScript (the ECMAScript standard),
+  with one difference everywhere: a length or an index of a string counts
+  bytes of UTF-8, not units of UTF-16. The code of each function is in
+  `isc-runtime-core` (no `std`, written through `core::fmt::Write`), the
+  same for the interpreter and the compiled program.
+  - `Math.floor`, `ceil`, `trunc`, `round` (a half toward +inf, -0 kept, as
+    ECMAScript), `abs` (of an integer too: `x < 0 ? -x : x`, modulo 2^bits),
+    `tan`, `asin`, `acos`, `atan`, `atan2` (musl's `libm`, D108).
+  - Strings: `indexOf`, `includes`, `startsWith`, `endsWith`, `replaceAll`
+    (an empty pattern: around each character), `toUpperCase`,
+    `toLowerCase` (Unicode, no locale), `padStart`, `padEnd` (2 or 3
+    arguments; the last copy of the filling cut before a character that
+    would pass the length), `repeat`, `trimStart`, `trimEnd`, `s.slice(a,
+    b)` (no clamping, no negative index, a panic inside a character).
+  - `x.toFixed(d)`: the exact decimal value (Rust's formatting at 1100
+    decimals is exact), rounded at `d` decimals, a half away from zero
+    after the sign (ECMAScript takes the larger of two equally near
+    numbers); `NaN`, `Infinity`; from 1e21 on, the text of `print` (no
+    exponent anywhere in Isocron). `(99.995).toFixed(2)` is `100.00`: the
+    double nearest 99.995 is above it.
+  - The standard input: `readStdin()`, `readStdinText()`,
+    `readStdinLines()` (`lines` of the text), read once; a later read finds
+    its end. The interpreter can be given its input (`rt::STDIN`, the
+    tests).
+  - `random(seed, i)`: SplitMix64 of a counter, in the prelude (a function
+    of its arguments: parallel, the same bits everywhere; checked against
+    an independent Rust version); `randomInt(seed, i, n)`. TypeScript's
+    `Math.random()` has no seed and no meaning in a pure function.
+  - `sort(x)`, `sortBy(x, key)`, stable, by the order of the type
+    (floats: -0 before +0, NaN last), from the primitive `argsort` (the
+    runtime sorts indices with `sort_unstable_by` of `core`, ties broken by
+    the index: stable without allocation); `toReversed`. TypeScript's
+    `sort` sorts in place by the texts of the numbers: Isocron keeps the
+    names of the goal for an order that is not TypeScript's.
+  - The class `Ord` holds the strings (a type parameter `T extends Ord`
+    no longer requires a scalar; its comparisons are those of the instance).
+  - `iota(n)` and `fill(n, v)` of any `i64` (the author asked how to write
+    a simple loop: `const n = 5; iota(n)` was refused): a size known at run
+    time, checked positive or zero.

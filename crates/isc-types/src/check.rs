@@ -27,7 +27,8 @@ fn class_bits(c: Option<Class>) -> u8 {
         | match c {
             None => 0,
             Some(Class::Num) => class::NUM | class::EQ | class::SCALAR,
-            Some(Class::Ord) => class::ORD | class::EQ | class::SCALAR,
+            // ordered: the scalars and the strings (D134, D155)
+            Some(Class::Ord) => class::ORD | class::EQ,
             Some(Class::Eq) => class::EQ,
         }
 }
@@ -65,7 +66,9 @@ fn scalar_ty(s: Scalar, _span: Span) -> Result<Ty> {
 
 /// The functions of TypeScript's `Math` that Isocron has (D151): `Math.f`
 /// is the primitive `f`.
-const MATH: &[&str] = &["sqrt", "exp", "log", "sin", "cos", "pow", "min", "max"];
+const MATH: &[&str] = &[
+    "sqrt", "exp", "log", "sin", "cos", "pow", "min", "max", "tan", "asin", "acos", "atan", "atan2", "floor", "ceil", "trunc", "round", "abs",
+];
 
 fn prim_by_name(name: &str) -> Option<Prim> {
     let name = match name.strip_prefix("Math.") {
@@ -93,6 +96,17 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "cos" => Prim::Math(MathFn::Cos),
         "pow" => Prim::Math(MathFn::Pow),
         "fma" => Prim::Math(MathFn::Fma),
+        "tan" => Prim::Math(MathFn::Tan),
+        "asin" => Prim::Math(MathFn::Asin),
+        "acos" => Prim::Math(MathFn::Acos),
+        "atan" => Prim::Math(MathFn::Atan),
+        "atan2" => Prim::Math(MathFn::Atan2),
+        "floor" => Prim::Math(MathFn::Floor),
+        "ceil" => Prim::Math(MathFn::Ceil),
+        "trunc" => Prim::Math(MathFn::Trunc),
+        "round" => Prim::Math(MathFn::Round),
+        // of an integer too: lowered to a comparison (D155)
+        "abs" => Prim::Math(MathFn::Abs),
         "readF64" => Prim::ReadF64,
         "readF32" => Prim::ReadF32,
         "readBytes" => Prim::ReadBytes,
@@ -119,6 +133,23 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "lines" => Prim::Lines,
         "split" => Prim::Split,
         "trim" => Prim::Trim,
+        "indexOf" => Prim::IndexOf,
+        "includes" => Prim::Includes,
+        "startsWith" => Prim::StartsWith,
+        "endsWith" => Prim::EndsWith,
+        "replaceAll" => Prim::ReplaceAll,
+        "toUpperCase" => Prim::ToUpper,
+        "toLowerCase" => Prim::ToLower,
+        "padStart" => Prim::PadStart,
+        "padEnd" => Prim::PadEnd,
+        "repeat" => Prim::Repeat,
+        "trimStart" => Prim::TrimStart,
+        "trimEnd" => Prim::TrimEnd,
+        "toFixed" => Prim::ToFixed,
+        "readStdin" => Prim::ReadStdin,
+        "readStdinText" => Prim::ReadStdinText,
+        "readStdinLines" => Prim::ReadStdinLines,
+        "argsort" => Prim::ArgSort,
         "join" => Prim::Join,
         "printBytes" => Prim::PrintBytes,
         _ if Fallible::from_name(name).is_some() => Prim::OrError(Fallible::from_name(name).unwrap()),
@@ -936,10 +967,24 @@ impl<'g> FnCx<'g> {
                 let (i, ty) = self.field_of(&x.ty, name, x.span)?;
                 Ok(self.mk(TExprKind::Field(Box::new(x), i), ty, span))
             }
-            ExprKind::Slice(x, a, b) => {
+            ExprKind::Slice(x0, a0, b0) => {
                 // `[b - a]T`: a size known at run time, like the result of
                 // `readF64`; the bounds are tested then (a panic outside)
-                let x = self.check(x, None)?;
+                let x = self.check(x0, None)?;
+                // the bytes of a string (D155)
+                if self.shallow(&x.ty) == Ty::Str {
+                    let i64t = Ty::Int(IntKind::I64);
+                    let a = self.check(a0, Some(&i64t))?;
+                    self.unify(&i64t, &a.ty, a.span)?;
+                    let b = self.check(b0, Some(&i64t))?;
+                    self.unify(&i64t, &b.ty, b.span)?;
+                    return Ok(self.mk(
+                        TExprKind::Call { callee: Callee::Prim(Prim::StrSlice), args: vec![x, a, b], size_checks: Vec::new() },
+                        Ty::Str,
+                        span,
+                    ));
+                }
+                let (a, b) = (a0, b0);
                 let elem = self.expect_array(&x.ty, x.span, "a sliced value")?;
                 let a = self.check(a, None)?;
                 self.require(&a.ty, class::INTEGRAL | class::SCALAR, a.span)?;
@@ -1357,7 +1402,8 @@ impl<'g> FnCx<'g> {
                     Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone()], Box::new(a)), span))
                 }
                 Prim::Math(f) => {
-                    let a = self.fresh(class::FLOAT | class::SCALAR, LitKind::None, span);
+                    let c = if f == MathFn::Abs { class::NUM } else { class::FLOAT };
+                    let a = self.fresh(c | class::SCALAR, LitKind::None, span);
                     Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone(); f.arity()], Box::new(a)), span))
                 }
                 Prim::Convert(t) => {
@@ -1366,7 +1412,9 @@ impl<'g> FnCx<'g> {
                 }
                 // the functions of strings whose result has no size of its
                 // own (D135): `map(xs, trim)`, `reduce(xs, (++), "")`
-                Prim::Trim => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str)), span)),
+                Prim::Trim | Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd => {
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str)), span))
+                }
                 Prim::StrLen => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64))), span)),
                 Prim::Concat => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str, Ty::Str], Box::new(Ty::Str)), span)),
                 Prim::ToString => {
@@ -1443,10 +1491,15 @@ impl<'g> FnCx<'g> {
                 return err(span, format!("`{}` cannot compare arrays; only `==` and `!=` can", op.text()));
             }
             self.unify(&lhs.ty, &rhs.ty, rhs.span)?;
-            // strings: ordered by bytes (D134)
-            if self.shallow(&lhs.ty) != Ty::Str {
-                self.require(&lhs.ty, class::ORD | class::SCALAR, lhs.span)?;
-                self.deferred_scalar.push((lhs.ty.clone(), lhs.span));
+            // strings: ordered by bytes (D134); a type parameter of class
+            // `Ord`: a scalar or a string, known in each instance (D155)
+            match self.shallow(&lhs.ty) {
+                Ty::Str => {}
+                Ty::Param(_) => self.require(&lhs.ty, class::ORD, lhs.span)?,
+                _ => {
+                    self.require(&lhs.ty, class::ORD | class::SCALAR, lhs.span)?;
+                    self.deferred_scalar.push((lhs.ty.clone(), lhs.span));
+                }
             }
             Ty::Bool
         } else {
@@ -1802,7 +1855,7 @@ impl<'g> FnCx<'g> {
             );
         }
         let n = match p {
-            Prim::Zeros | Prim::Clock => 0,
+            Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print => 1,
             Prim::Math(f) => f.arity(),
             Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString => 1,
@@ -1813,6 +1866,17 @@ impl<'g> FnCx<'g> {
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
+            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort => 1,
+            Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
+            Prim::ReplaceAll | Prim::StrSlice => 3,
+            // `padStart(s, n)` pads with spaces, as TypeScript
+            Prim::PadStart | Prim::PadEnd => {
+                if args.len() == 2 {
+                    2
+                } else {
+                    3
+                }
+            }
             // `min(a, b)` of two numbers, `min(x)` of an array
             Prim::Min | Prim::Max => {
                 if args.len() == 1 {
@@ -1975,25 +2039,30 @@ impl<'g> FnCx<'g> {
                 Ok(mk(vec![], Ty::Array(s, Box::new(e)), self))
             }
             Prim::Iota => {
-                let n = self.size_arg(&args[0])?;
-                let arg = self.mk(TExprKind::SizeVal(n.clone()), Ty::Int(IntKind::I64), args[0].span);
-                Ok(mk(vec![arg], Ty::Array(Size::Poly(n), Box::new(Ty::Int(IntKind::I64))), self))
+                let (arg, n) = self.length_arg(&args[0], span)?;
+                Ok(mk(vec![arg], Ty::Array(n, Box::new(Ty::Int(IntKind::I64))), self))
             }
             Prim::Fill => {
-                let n = self.size_arg(&args[0])?;
-                let arg = self.mk(TExprKind::SizeVal(n.clone()), Ty::Int(IntKind::I64), args[0].span);
+                let (arg, n) = self.length_arg(&args[0], span)?;
                 let hint = match expected.map(|t| self.shallow(t)) {
                     Some(Ty::Array(_, e)) => Some(*e),
                     _ => None,
                 };
                 let v = self.check(&args[1], hint.as_ref())?;
                 self.require(&v.ty, class::ELEM, v.span)?;
-                let ty = Ty::Array(Size::Poly(n), Box::new(v.ty.clone()));
+                let ty = Ty::Array(n, Box::new(v.ty.clone()));
                 Ok(mk(vec![arg, v], ty, self))
             }
             Prim::Sqrt => {
                 let x = self.check(&args[0], expected)?;
                 self.require(&x.ty, class::FLOAT | class::SCALAR, x.span)?;
+                let t = x.ty.clone();
+                Ok(mk(vec![x], t, self))
+            }
+            // `abs` of a number (D155)
+            Prim::Math(MathFn::Abs) => {
+                let x = self.check(&args[0], expected)?;
+                self.require(&x.ty, class::NUM | class::SCALAR, x.span)?;
                 let t = x.ty.clone();
                 Ok(mk(vec![x], t, self))
             }
@@ -2129,6 +2198,86 @@ impl<'g> FnCx<'g> {
                 self.unify(&want, &x.ty, x.span)?;
                 Ok(mk(vec![x], Ty::Unit, self))
             }
+            // the order of the elements (D155): integers, floats, booleans,
+            // strings
+            Prim::ArgSort => {
+                let x = self.check(&args[0], None)?;
+                let elem = self.expect_array(&x.ty, x.span, "the argument of `argsort`")?;
+                self.require(&elem, class::ORD, x.span)?;
+                let size = match self.shallow(&x.ty) {
+                    Ty::Array(s, _) => s,
+                    _ => self.fresh_size(span),
+                };
+                Ok(mk(vec![x], Ty::Array(size, Box::new(Ty::Int(IntKind::I64))), self))
+            }
+            // the standard input (D155)
+            Prim::ReadStdin => {
+                let s = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                Ok(mk(vec![], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::U8))), self))
+            }
+            Prim::ReadStdinText => Ok(mk(vec![], Ty::Str, self)),
+            Prim::ReadStdinLines => {
+                let s = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                Ok(mk(vec![], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Str)), self))
+            }
+            // the functions of strings of TypeScript (D155)
+            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd => {
+                let a = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &a.ty, a.span)?;
+                Ok(mk(vec![a], Ty::Str, self))
+            }
+            Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::ReplaceAll => {
+                let mut xs = Vec::new();
+                for a in args {
+                    let x = self.check(a, Some(&Ty::Str))?;
+                    self.unify(&Ty::Str, &x.ty, x.span)?;
+                    xs.push(x);
+                }
+                let t = match p {
+                    Prim::IndexOf => Ty::Int(IntKind::I64),
+                    Prim::ReplaceAll => Ty::Str,
+                    _ => Ty::Bool,
+                };
+                Ok(mk(xs, t, self))
+            }
+            Prim::PadStart | Prim::PadEnd | Prim::Repeat | Prim::StrSlice => {
+                let a = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &a.ty, a.span)?;
+                let i64t = Ty::Int(IntKind::I64);
+                let b = self.check(&args[1], Some(&i64t))?;
+                self.unify(&i64t, &b.ty, b.span)?;
+                let mut xs = vec![a, b];
+                match p {
+                    Prim::StrSlice => {
+                        let c = self.check(&args[2], Some(&i64t))?;
+                        self.unify(&i64t, &c.ty, c.span)?;
+                        xs.push(c);
+                    }
+                    Prim::PadStart | Prim::PadEnd => {
+                        let c = match args.get(2) {
+                            Some(f) => {
+                                let c = self.check(f, Some(&Ty::Str))?;
+                                self.unify(&Ty::Str, &c.ty, c.span)?;
+                                c
+                            }
+                            None => self.mk(TExprKind::Lit(Lit::Str(" ".into())), Ty::Str, span),
+                        };
+                        xs.push(c);
+                    }
+                    _ => {}
+                }
+                Ok(mk(xs, Ty::Str, self))
+            }
+            Prim::ToFixed => {
+                let x = self.check(&args[0], None)?;
+                self.require(&x.ty, class::FLOAT | class::SCALAR, x.span)?;
+                let i64t = Ty::Int(IntKind::I64);
+                let d = self.check(&args[1], Some(&i64t))?;
+                self.unify(&i64t, &d.ty, d.span)?;
+                Ok(mk(vec![x, d], Ty::Str, self))
+            }
             // text (D135)
             Prim::ReadText | Prim::Trim => {
                 let a = self.check(&args[0], Some(&Ty::Str))?;
@@ -2254,6 +2403,24 @@ impl<'g> FnCx<'g> {
             }
             _ => None,
         }
+    }
+
+    /// The length of `iota` and `fill`: a size (its type knows it), or any
+    /// `i64`, a size known at run time (D155: `iota(n)` of a `const n`),
+    /// checked positive or zero when the arrays are built.
+    fn length_arg(&mut self, e: &ast::Expr, span: Span) -> Result<(TExpr, Size)> {
+        let saved = self.syms.len();
+        if let Ok(n) = self.size_arg(e) {
+            let arg = self.mk(TExprKind::SizeVal(n.clone()), Ty::Int(IntKind::I64), e.span);
+            return Ok((arg, Size::Poly(n)));
+        }
+        self.syms.truncate(saved);
+        let i64t = Ty::Int(IntKind::I64);
+        let x = self.check(e, Some(&i64t))?;
+        self.unify(&i64t, &x.ty, x.span)?;
+        let s = self.syms.len() as SymId;
+        self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+        Ok((x, Size::Poly(Poly::sym(s))))
     }
 
     fn size_arg(&mut self, e: &ast::Expr) -> Result<Poly> {

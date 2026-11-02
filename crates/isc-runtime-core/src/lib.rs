@@ -149,6 +149,16 @@ pub enum Panic<'a> {
     CsvField { line: i64, field: i64, text: &'a str },
     /// A CSV row whose number of fields differs from the first row's.
     CsvRagged { line: i64, fields: i64, expected: i64 },
+    /// `s.slice(a, b)` that cuts a character of UTF-8 (D155).
+    NotCharBoundary(i64),
+    /// `s.slice(a, b)` with `a < 0`, `a > b` or `b` past the end.
+    StrSlice { a: i64, b: i64, len: i64 },
+    /// `s.repeat(n)` with `n < 0` (D155).
+    RepeatNegative(i64),
+    /// `x.toFixed(d)` with `d` outside 0 ..= 100 (D155).
+    FixedDigits(i64),
+    /// `readStdinText()` of bytes that are not UTF-8 (D155).
+    StdinNotUtf8(i64),
 }
 
 impl fmt::Display for Panic<'_> {
@@ -172,6 +182,11 @@ impl fmt::Display for Panic<'_> {
                 let word = |n: i64| if n == 1 { "field" } else { "fields" };
                 write!(f, "csv: line {} has {} {}, the first row has {}", line, fields, word(*fields), expected)
             }
+            Panic::NotCharBoundary(i) => write!(f, "slice: the index {} is inside a character of UTF-8", i),
+            Panic::StrSlice { a, b, len } => write!(f, "slice out of bounds: [{}..{}] of a string of {} bytes", a, b, len),
+            Panic::RepeatNegative(n) => write!(f, "repeat: the count is negative: {}", n),
+            Panic::FixedDigits(d) => write!(f, "toFixed: the number of digits must be between 0 and 100, got {}", d),
+            Panic::StdinNotUtf8(at) => write!(f, "readStdinText: the standard input is not UTF-8 text (invalid from byte {})", at),
             Panic::Size { a, b } => write!(f, "size mismatch: {} != {}", a, b),
             Panic::DivByZero => f.write_str("integer division by zero"),
             Panic::NegativeExponent(k) => write!(f, "negative integer exponent: {}", k),
@@ -364,6 +379,48 @@ pub fn pow_f64(x: f64, y: f64) -> f64 {
 pub fn fma_f64(a: f64, b: f64, c: f64) -> f64 {
     libm::fma(a, b, c)
 }
+pub fn tan_f64(x: f64) -> f64 {
+    libm::tan(x)
+}
+pub fn asin_f64(x: f64) -> f64 {
+    libm::asin(x)
+}
+pub fn acos_f64(x: f64) -> f64 {
+    libm::acos(x)
+}
+pub fn atan_f64(x: f64) -> f64 {
+    libm::atan(x)
+}
+pub fn atan2_f64(y: f64, x: f64) -> f64 {
+    libm::atan2(y, x)
+}
+pub fn floor_f64(x: f64) -> f64 {
+    libm::floor(x)
+}
+pub fn ceil_f64(x: f64) -> f64 {
+    libm::ceil(x)
+}
+pub fn trunc_f64(x: f64) -> f64 {
+    libm::trunc(x)
+}
+pub fn abs_f64(x: f64) -> f64 {
+    libm::fabs(x)
+}
+/// `Math.round` (D155): to the nearest integer, a half toward +inf, as
+/// JavaScript (`Math.round(-2.5)` is -2, `Math.round(-0.25)` is -0).
+pub fn round_f64(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    let r = libm::floor(x);
+    // exact: `x` and `floor(x)` are within 1 of each other
+    let y = if x - r >= 0.5 { r + 1.0 } else { r };
+    if y == 0.0 && x.is_sign_negative() {
+        -0.0
+    } else {
+        y
+    }
+}
 pub fn exp_f32(x: f32) -> f32 {
     libm::expf(x)
 }
@@ -381,4 +438,241 @@ pub fn pow_f32(x: f32, y: f32) -> f32 {
 }
 pub fn fma_f32(a: f32, b: f32, c: f32) -> f32 {
     libm::fmaf(a, b, c)
+}
+pub fn tan_f32(x: f32) -> f32 {
+    libm::tanf(x)
+}
+pub fn asin_f32(x: f32) -> f32 {
+    libm::asinf(x)
+}
+pub fn acos_f32(x: f32) -> f32 {
+    libm::acosf(x)
+}
+pub fn atan_f32(x: f32) -> f32 {
+    libm::atanf(x)
+}
+pub fn atan2_f32(y: f32, x: f32) -> f32 {
+    libm::atan2f(y, x)
+}
+pub fn floor_f32(x: f32) -> f32 {
+    libm::floorf(x)
+}
+pub fn ceil_f32(x: f32) -> f32 {
+    libm::ceilf(x)
+}
+pub fn trunc_f32(x: f32) -> f32 {
+    libm::truncf(x)
+}
+pub fn abs_f32(x: f32) -> f32 {
+    libm::fabsf(x)
+}
+pub fn round_f32(x: f32) -> f32 {
+    if !x.is_finite() {
+        return x;
+    }
+    let r = libm::floorf(x);
+    let y = if x - r >= 0.5 { r + 1.0 } else { r };
+    if y == 0.0 && x.is_sign_negative() {
+        -0.0
+    } else {
+        y
+    }
+}
+
+// ---------------------------------------------------------------------
+// the functions of strings of TypeScript (D155), on bytes of UTF-8: the
+// same code for the interpreter and the runtime, writing their text
+// through `core::fmt::Write`
+
+/// The order of `sort` (D155) on floats: by value, -0 before +0, every NaN
+/// after the numbers (equal to each other).
+pub fn order_f64(a: f64, b: f64) -> core::cmp::Ordering {
+    use core::cmp::Ordering::*;
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Equal,
+        (true, false) => Greater,
+        (false, true) => Less,
+        _ if a == b => a.is_sign_positive().cmp(&b.is_sign_positive()),
+        _ if a < b => Less,
+        _ => Greater,
+    }
+}
+
+/// `s.indexOf(t)`: the byte index of the first `t` in `s`, -1 if none.
+pub fn index_of(s: &str, t: &str) -> i64 {
+    s.find(t).map(|i| i as i64).unwrap_or(-1)
+}
+
+/// `s.replaceAll(from, to)`: every `from`, left to right, replaced; an
+/// empty `from` puts `to` before each character and at the end (as
+/// JavaScript).
+pub fn replace_all(w: &mut dyn Write, s: &str, from: &str, to: &str) -> fmt::Result {
+    if from.is_empty() {
+        for c in s.chars() {
+            w.write_str(to)?;
+            w.write_char(c)?;
+        }
+        return w.write_str(to);
+    }
+    let mut last = 0;
+    for (i, _) in s.match_indices(from) {
+        w.write_str(&s[last..i])?;
+        w.write_str(to)?;
+        last = i + from.len();
+    }
+    w.write_str(&s[last..])
+}
+
+/// `s.toUpperCase()`, `s.toLowerCase()`: the mappings of Unicode, without a
+/// locale.
+pub fn to_case(w: &mut dyn Write, s: &str, upper: bool) -> fmt::Result {
+    for c in s.chars() {
+        if upper {
+            for u in c.to_uppercase() {
+                w.write_char(u)?;
+            }
+        } else {
+            for u in c.to_lowercase() {
+                w.write_char(u)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `s.padStart(n, fill)`, `s.padEnd(n, fill)`: `s` padded to `n` bytes with
+/// copies of `fill`, the last one cut before a character that would pass
+/// `n`; `s` itself when it has `n` bytes or more or when `fill` is empty.
+pub fn pad(w: &mut dyn Write, s: &str, n: i64, fill: &str, start: bool) -> fmt::Result {
+    let missing = n - s.len() as i64;
+    if missing <= 0 || fill.is_empty() {
+        return w.write_str(s);
+    }
+    if !start {
+        w.write_str(s)?;
+    }
+    let mut left = missing as usize;
+    'fill: loop {
+        for c in fill.chars() {
+            if c.len_utf8() > left {
+                break 'fill;
+            }
+            w.write_char(c)?;
+            left -= c.len_utf8();
+            if left == 0 {
+                break 'fill;
+            }
+        }
+    }
+    if start {
+        w.write_str(s)?;
+    }
+    Ok(())
+}
+
+/// `s.repeat(n)`.
+pub fn repeat<'a>(w: &mut dyn Write, s: &str, n: i64) -> Result<(), Panic<'a>> {
+    if n < 0 {
+        return Err(Panic::RepeatNegative(n));
+    }
+    for _ in 0..n {
+        let _ = w.write_str(s);
+    }
+    Ok(())
+}
+
+/// `s.slice(a, b)`: the bytes `a .. b`, which must not cut a character.
+pub fn slice_str<'a>(s: &'a str, a: i64, b: i64) -> Result<&'a str, Panic<'a>> {
+    let len = s.len() as i64;
+    if a < 0 || a > b || b > len {
+        return Err(Panic::StrSlice { a, b, len });
+    }
+    for i in [a, b] {
+        if !s.is_char_boundary(i as usize) {
+            return Err(Panic::NotCharBoundary(i));
+        }
+    }
+    Ok(&s[a as usize..b as usize])
+}
+
+/// `x.toFixed(d)` (D155), as JavaScript: `d` decimals, the exact value of
+/// `x` rounded to the nearest, a half away from zero (JavaScript takes the
+/// larger of two equally near numbers, after the sign); `NaN`,
+/// `Infinity`, `-Infinity`; from 1e21 on, the text of `print`.
+pub fn write_fixed<'a>(w: &mut dyn Write, x: f64, d: i64) -> Result<(), Panic<'a>> {
+    if !(0..=100).contains(&d) {
+        return Err(Panic::FixedDigits(d));
+    }
+    let _ = fixed(w, x, d as usize);
+    Ok(())
+}
+
+fn fixed(w: &mut dyn Write, x: f64, d: usize) -> fmt::Result {
+    if x.is_nan() {
+        return w.write_str("NaN");
+    }
+    if x.is_infinite() {
+        return w.write_str(if x > 0.0 { "Infinity" } else { "-Infinity" });
+    }
+    if x.abs() >= 1e21 {
+        return write_f64(w, x);
+    }
+    // the exact decimal value of |x| (a double has at most 1074 decimals):
+    // its integer digits, then its first d + 1 decimals
+    struct Digits {
+        int: [u8; 24],
+        nint: usize,
+        frac: [u8; 102],
+        nfrac: usize,
+        point: bool,
+        want: usize,
+    }
+    impl Write for Digits {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            for b in s.bytes() {
+                if b == b'.' {
+                    self.point = true;
+                } else if !self.point {
+                    self.int[self.nint] = b - b'0';
+                    self.nint += 1;
+                } else if self.nfrac < self.want {
+                    self.frac[self.nfrac] = b - b'0';
+                    self.nfrac += 1;
+                }
+            }
+            Ok(())
+        }
+    }
+    let mut g = Digits { int: [0; 24], nint: 0, frac: [0; 102], nfrac: 0, point: false, want: d + 1 };
+    write!(g, "{:.1100}", x.abs())?;
+    let up = g.frac[d] >= 5;
+    // the kept digits, integer then decimals, rounded up from the right
+    let mut all = [0u8; 126];
+    let n = g.nint + d;
+    all[..g.nint].copy_from_slice(&g.int[..g.nint]);
+    all[g.nint..n].copy_from_slice(&g.frac[..d]);
+    let mut carry = up;
+    let mut i = n;
+    while carry && i > 0 {
+        i -= 1;
+        if all[i] == 9 {
+            all[i] = 0;
+        } else {
+            all[i] += 1;
+            carry = false;
+        }
+    }
+    if x < 0.0 {
+        w.write_char('-')?;
+    }
+    if carry {
+        w.write_char('1')?;
+    }
+    for (k, digit) in all[..n].iter().enumerate() {
+        if k == g.nint {
+            w.write_char('.')?;
+        }
+        w.write_char((b'0' + digit) as char)?;
+    }
+    Ok(())
 }

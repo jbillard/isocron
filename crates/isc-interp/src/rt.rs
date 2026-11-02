@@ -5,7 +5,7 @@
 use isc_runtime_core::{self as sem, Panic};
 pub use isc_runtime_core::{maximum_f32, maximum_f64, minimum_f32, minimum_f64, CANONICAL_NAN_BITS, PANIC_EXIT_CODE};
 
-fn text(p: &Panic) -> String {
+pub fn text(p: &Panic) -> String {
     p.to_string()
 }
 
@@ -102,6 +102,20 @@ fn io_text(e: &std::io::Error, path: &str, reading: bool) -> String {
         }
         None => format!("cannot {} `{}`: {}", if reading { "read" } else { "write" }, path, e),
     }
+}
+
+/// The bytes given in place of the standard input (the tests); none: the
+/// standard input of the process.
+pub static STDIN: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+/// The whole standard input (D155): read once; a later read finds its end.
+pub fn read_stdin() -> Result<Vec<u8>, String> {
+    if let Some(b) = STDIN.lock().unwrap().as_mut() {
+        return Ok(std::mem::take(b));
+    }
+    let mut b = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::stdin(), &mut b).map_err(|e| io_text(&e, "<standard input>", true))?;
+    Ok(b)
 }
 
 pub fn read_bytes_file(path: &str) -> Result<Vec<u8>, String> {

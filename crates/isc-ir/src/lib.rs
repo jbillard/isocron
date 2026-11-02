@@ -131,6 +131,9 @@ pub enum ActionOp {
     OrError(Fallible),
     /// A call of the C function `Program::externs[i]` (D125).
     Extern(u32),
+    /// The standard input (D155): its bytes, its text.
+    ReadStdin,
+    ReadStdinText,
 }
 
 /// The operations on strings (D134).
@@ -153,6 +156,24 @@ pub enum StrOp {
     Split,
     Trim,
     Join,
+    /// The functions of TypeScript (D155).
+    IndexOf,
+    Includes,
+    StartsWith,
+    EndsWith,
+    ReplaceAll,
+    ToUpper,
+    ToLower,
+    PadStart,
+    PadEnd,
+    Repeat,
+    TrimStart,
+    TrimEnd,
+    /// `toFixed(x, d)` of a `f64`.
+    ToFixed,
+    Slice,
+    /// `argsort(x)` of an array of scalars or strings (D155): a new `[n]i64`.
+    ArgSort,
 }
 
 /// A C function declared with `extern` (D125): its parameters (scalars,

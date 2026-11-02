@@ -621,6 +621,18 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_lines(ptr, ptr, i64)",
     "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_trim(ptr, ptr, i64)",
+    "declare i64 @isc_index_of(ptr, i64, ptr, i64)",
+    "declare i32 @isc_str_test(ptr, i64, ptr, i64, i32)",
+    "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64)",
+    "declare void @isc_to_case(ptr, ptr, i64, i32)",
+    "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
+    "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
+    "declare void @isc_trim_side(ptr, ptr, i64, i32)",
+    "declare void @isc_str_slice(ptr, ptr, i64, i64, i64, i32, i32)",
+    "declare void @isc_to_fixed(ptr, double, i64, i32, i32)",
+    "declare void @isc_read_stdin(ptr, i32, i32)",
+    "declare void @isc_argsort(ptr, ptr, i64, i32)",
+    "declare void @isc_read_stdin_text(ptr, i32, i32)",
     "declare void @isc_join(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_parse_csv_f64(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_read_csv_f64(ptr, ptr, i64, i64, i32, i32)",
@@ -6002,6 +6014,70 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 new_str(self, format!("call void @isc_trim(ptr OUT, ptr {}, i64 {})", p, n))
             }
+            // the functions of TypeScript (D155)
+            S::IndexOf => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                v(self.ins(format!("call i64 @isc_index_of(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m)), "i64")
+            }
+            S::Includes | S::StartsWith | S::EndsWith => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let which = match op {
+                    S::Includes => 0,
+                    S::StartsWith => 1,
+                    _ => 2,
+                };
+                let r = self.ins(format!("call i32 @isc_str_test(ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, q, m, which));
+                v(self.ins(format!("icmp ne i32 {}, 0", r)), "i1")
+            }
+            S::ReplaceAll => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let (r, k) = self.str_parts(&vals[2]);
+                new_str(self, format!("call void @isc_replace_all(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m, r, k))
+            }
+            S::ToUpper | S::ToLower => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let up = (op == S::ToUpper) as i32;
+                new_str(self, format!("call void @isc_to_case(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, up))
+            }
+            S::PadStart | S::PadEnd => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[2]);
+                let start = (op == S::PadStart) as i32;
+                new_str(self, format!("call void @isc_pad(ptr OUT, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, vals[1].r, q, m, start))
+            }
+            S::Repeat => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let pos = Self::pos(e.span);
+                new_str(self, format!("call void @isc_repeat(ptr OUT, ptr {}, i64 {}, i64 {}, {})", p, n, vals[1].r, pos))
+            }
+            S::TrimStart | S::TrimEnd => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let end = (op == S::TrimEnd) as i32;
+                new_str(self, format!("call void @isc_trim_side(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, end))
+            }
+            S::Slice => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let pos = Self::pos(e.span);
+                new_str(self, format!("call void @isc_str_slice(ptr OUT, ptr {}, i64 {}, i64 {}, i64 {}, {})", p, n, vals[1].r, vals[2].r, pos))
+            }
+            S::ArgSort => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let kind = match es[0].ty.elem() {
+                    Type::Int(k) => (k.bits().trailing_zeros() as i32 - 3) + if k.signed() { 0 } else { 4 },
+                    Type::F32 => 8,
+                    Type::F64 => 9,
+                    Type::Bool => 10,
+                    _ => 11,
+                };
+                new_str(self, format!("call void @isc_argsort(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
+            }
+            S::ToFixed => {
+                let pos = Self::pos(e.span);
+                new_str(self, format!("call void @isc_to_fixed(ptr OUT, double {}, i64 {}, {})", vals[0].r, vals[1].r, pos))
+            }
             S::Join => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
@@ -6161,6 +6237,14 @@ impl<'p> Gen<'p> {
         }
         let pos = Self::pos(e.span);
         Ok(match op {
+            // the standard input (D155)
+            ActionOp::ReadStdin | ActionOp::ReadStdinText => {
+                let f = if op == ActionOp::ReadStdin { "isc_read_stdin" } else { "isc_read_stdin_text" };
+                let slot = self.alloca("{ ptr, i64 }");
+                self.emit(format!("call void @{}(ptr {}, {})", f, slot, pos));
+                let r = self.ins(format!("load {{ ptr, i64 }}, ptr {}", slot));
+                v(r, "{ ptr, i64 }")
+            }
             ActionOp::ReadF64 | ActionOp::ReadF32 | ActionOp::ReadBytes => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let f = match op {

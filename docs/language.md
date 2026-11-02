@@ -488,9 +488,41 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 | `stringOf(b)` | `(u8[n]) => string` | the text of these bytes; a panic if they are not UTF-8 |
 | `String(x)`, `x.toString()` | `(scalar) => string` | the text `print` writes (a string is itself) |
 | `parseF64(s)` | `(string) => f64` (an action) | a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic |
+| `s.indexOf(t)` | `(string, string) => i64` | the byte index of the first `t`, -1 if none |
+| `s.includes(t)`, `s.startsWith(t)`, `s.endsWith(t)` | `(string, string) => boolean` | |
+| `s.replaceAll(a, b)` | `(string, string, string) => string` | every `a` replaced by `b`, left to right (`a` empty: `b` around each character) |
+| `s.toUpperCase()`, `s.toLowerCase()` | `(string) => string` | the case mappings of Unicode, without a locale (`"straße".toUpperCase()` is `"STRASSE"`) |
+| `s.padStart(n, fill)`, `s.padEnd(n, fill)` | `(string, i64, string) => string` | padded to `n` bytes with copies of `fill` (a space when omitted) |
+| `s.repeat(n)` | `(string, i64) => string` | `n` copies (`n < 0`: a panic) |
+| `s.trimStart()`, `s.trimEnd()` | `(string) => string` | without the white space at one end |
+| `s.slice(a, b)` | `(string, i64, i64) => string` | the bytes `a` to `b - 1`; bounds outside or inside a character: a panic |
+| `x.toFixed(d)` | `(f64, i64) => string` | `d` decimals (0 to 100), the exact value rounded to the nearest, a half away from zero |
 
 Each of these functions can also be called as a method: `s.trim()`,
-`words.join(", ")`.
+`words.join(", ")`. They mean what they mean in TypeScript (the ECMAScript
+standard), with one difference: a length or an index counts the bytes of
+UTF-8, not the units of UTF-16. `toFixed` from 1e21 on writes the number as
+`print` does (TypeScript writes `1e+21`).
+
+```isc
+action main(args: string[k]): i32 {
+    const s = "Hello, World";
+    print([s.indexOf("World"), s.indexOf("x")] as const);
+    print(s.replaceAll("l", "L").toUpperCase());
+    print("7".padStart(3, "0") + "|" + "ab".padEnd(4) + "|");
+    print(s.slice(7, 12));
+    print([(1.005).toFixed(2), (0.125).toFixed(2), (-2.5).toFixed(0)]);
+    return 0;
+}
+```
+
+```output
+(7, -1)
+HELLO, WORLD
+007|ab  |
+World
+[1.00, 0.13, -3]
+```
 
 A template literal `` `n = ${n}` `` is the concatenation of its texts and of
 its insertions, each written as `print` writes it: a scalar or a string (an
@@ -640,7 +672,7 @@ action main(args: string[k]): i32 {
 
 ### Operators
 
-From lowest to highest precedence, as in JavaScript:
+From lowest to highest precedence, as in TypeScript (the ECMAScript standard):
 
 | Operators | Associativity |
 | --- | --- |
@@ -671,9 +703,13 @@ From lowest to highest precedence, as in JavaScript:
 * `==` and `!=` compare values, including arrays (arrays of different lengths
   are different) and tuples; `===` and `!==` are the same operators.
 * `+` adds numbers and concatenates strings.
+* `Math.floor`, `Math.ceil`, `Math.trunc`, `Math.round` and `Math.abs` (also
+  without `Math.`) are those of TypeScript: `Math.round` rounds a half toward
+  +inf (`Math.round(-2.5)` is -2, `Math.round(-0.25)` is -0); `abs` takes an
+  integer too (modulo 2^bits: the minimum is itself).
 * `&`, `|`, `^`, `<<` and `>>` take integers of the same type, as `+` does
   (element-wise on arrays too). They are below the comparisons, as in
-  JavaScript: `x & 1 == 0` is `x & (1 == 0)`, a type error; write
+  TypeScript: `x & 1 == 0` is `x & (1 == 0)`, a type error; write
   `(x & 1) == 0`. `>>` is arithmetic on signed types and
   logical on unsigned ones; the shift amount is taken modulo the number of
   bits (`1 << 65` is `2` on `i64`).
@@ -752,8 +788,42 @@ action main(args: string[k]): i32 {
 | `zip(a, b)` | the pairs `[a[i], b[i]]` of two arrays of the same size, as tuples |
 | `concat(a, b)` | the elements of `a`, then those of `b`: a `T[n]` and a `T[m]` give a `T[n + m]` (`+` of two arrays adds them element by element) |
 
-The argument of `iota` and `fill` must be a size: an integer literal, a size
-variable, or a sum or product of these.
+The length given to `iota` and `fill` is a size (an integer literal, a size
+variable, a sum or product of these: the type of the result knows it) or any
+`i64` (`iota(n)` of a `const n`, `fill(args.length, "")`): the size is then
+known at run time, and a negative length is a panic.
+
+### Sorting and random numbers
+
+`sort(x)` and `sortBy(x, key)` return a new array, sorted in a stable way
+(equal elements keep their order) by the order of the type: integers and
+booleans by value, floats with -0 before +0 and every NaN last, strings by
+their bytes. Unlike TypeScript's `sort`, nothing is sorted in place and the
+default order is not that of the texts of the numbers. `x.toReversed()` is
+the reversed array.
+
+`random(seed, i)` is the number `i` of the sequence of `seed`, uniform in
+[0, 1): a function of its arguments (SplitMix64 on a counter), so that a
+`map` over `iota(n)` draws `n` numbers in parallel, with the same bits on
+every machine. `randomInt(seed, i, n)` is an integer in [0, n).
+
+```isc
+action main(args: string[k]): i32 {
+    print(sort([5, -1, 3, 3]));
+    print(["ccc", "a", "bb"].sortBy((w) => w.length));
+    const xs = iota(4).map((i) => randomInt(42, i, 100));
+    print(xs);
+    print(sort(xs).toReversed());
+    return 0;
+}
+```
+
+```output
+[-1, 3, 3, 5]
+[a, bb, ccc]
+[59, 16, 16, 4]
+[59, 16, 16, 4]
+```
 
 ### Element-wise operators
 
@@ -1012,7 +1082,7 @@ is copied only when a value must own it: the target of `with`, a component
 of a tuple, the result of a block that outlives `x`. A slice of an array of
 tuples is still a copy. A slice of an array being computed, like
 `x.map(f).slice(a, b)`, computes only the elements `a` to `b - 1`. Unlike
-JavaScript's `slice`, the bounds are not clamped and a negative bound does
+TypeScript's `slice`, the bounds are not clamped and a negative bound does
 not count from the end: both are panics.
 
 ```isc
@@ -1093,7 +1163,7 @@ fields) is a panic, `size mismatch`.
 
 * `x[i]` reads element `i`; any integer type can be an index; an index out of
   bounds is a panic.
-* `x.with(i, v)` is a new array equal to `x` except at `i` (as JavaScript's
+* `x.with(i, v)` is a new array equal to `x` except at `i` (as TypeScript's
   `Array.prototype.with`). If `x` is not used anywhere else, the compiler
   updates it in place; otherwise it copies it. Write
   `requireUnique(x.with(i, v))` to make the in-place update a requirement:
@@ -1452,6 +1522,7 @@ action.
 | `parseI64(s)` | `(string) => i64` | `+5`, `-12`, `007`; anything else is a panic |
 | `parseF64(s)` | `(string) => f64` | `2.5`, `-1e-3`, `inf`, `NaN`; anything else is a panic |
 | `readText(path)` | `(string) => string` | reads a UTF-8 text file (anything else is a panic) |
+| `readStdin()`, `readStdinText()`, `readStdinLines()` | `() => u8[k]`, `() => string`, `() => string[k]` | the whole standard input: its bytes, its text (UTF-8, or a panic), its lines; read once (a later read finds its end) |
 | `writeText(path, s)` | `(string, string) => void` | writes a text file |
 | `readCsvF64(path, skip)` | `(string, i64) => f64[r][c]` | reads a CSV file of numbers, after `skip` header lines |
 | `parseCsvF64(text, skip)` | `(string, i64) => f64[r][c]` | the same from a text |
@@ -1829,8 +1900,9 @@ action main(args: string[k]): i32 {
 * **Floating point.** IEEE 754, rounding to nearest: no implicit fused
   multiply-add (`a * b + c` rounds twice; `fma(a, b, c)` rounds once), no
   reassociation, no algebraic simplification, subnormals kept, `sqrt`
-  correctly rounded. `exp`, `log`, `sin`, `cos` and `pow` (also written
-  `x ** y` with a floating-point `y`), for `f64` and `f32`, come from the
+  correctly rounded. `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`,
+  `atan`, `atan2` and `pow` (also written `x ** y` with a floating-point
+  `y`), for `f64` and `f32`, come from the
   runtime of Isocron: the same code on every target and in the
   interpreter, so that their results are the same bits everywhere (they are
   within one unit in the last place, not always correctly rounded).

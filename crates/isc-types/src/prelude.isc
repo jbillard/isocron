@@ -81,3 +81,38 @@ action tryWriteBytes(path: string, x: u8[n]): Result<void, string> {
 action tryWriteText(path: string, s: string): Result<void, string> {
     return doneOr(writeTextOrError(path, s));
 }
+
+// Seeded random numbers (D155): `random(seed, i)` is the number `i` of the
+// sequence of `seed`, uniform in [0, 1) (53 bits), by SplitMix64 on a
+// counter: no state, the same bits everywhere, computed in parallel.
+function splitMix64(z0: u64): u64 {
+    const z1 = (z0 ^ (z0 >> 30u64)) * 0xbf58476d1ce4e5b9u64;
+    const z2 = (z1 ^ (z1 >> 27u64)) * 0x94d049bb133111ebu64;
+    return z2 ^ (z2 >> 31u64);
+}
+
+function random(seed: i64, i: i64): f64 {
+    const x = splitMix64(splitMix64(u64(seed)) + (u64(i) + 1u64) * 0x9e3779b97f4a7c15u64);
+    return f64(x >> 11u64) * 0.00000000000000011102230246251565;
+}
+
+// an integer in [0, n), from `random`
+function randomInt(seed: i64, i: i64, n: i64): i64 {
+    return i64(random(seed, i) * f64(n));
+}
+
+// Sorting (D155): stable, by the order of the type (integers and booleans
+// by value, floats with -0 before +0 and NaN last, strings by bytes); never
+// in place. `argsort` is a primitive: the order of the elements.
+function sort<T extends Ord>(x: T[n]): T[n] {
+    return map(argsort(x), (i) => x[i]);
+}
+
+function sortBy<T, K extends Ord>(x: T[n], key: (v: T) => K): T[n] {
+    return map(argsort(map(x, key)), (i) => x[i]);
+}
+
+// the elements in the reverse order (TypeScript's `toReversed`)
+function toReversed<T>(x: T[n]): T[n] {
+    return map(iota(n), (i) => x[n - 1 - i]);
+}

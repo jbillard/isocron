@@ -114,6 +114,30 @@ pub enum Prim {
     PrintBytes,
     /// A fallible form of an action (D138).
     OrError(Fallible),
+    /// The functions of strings of TypeScript (D155), on bytes of UTF-8.
+    IndexOf,
+    Includes,
+    StartsWith,
+    EndsWith,
+    ReplaceAll,
+    ToUpper,
+    ToLower,
+    PadStart,
+    PadEnd,
+    Repeat,
+    TrimStart,
+    TrimEnd,
+    /// `x.toFixed(d)`: `d` decimals, as JavaScript.
+    ToFixed,
+    /// `s.slice(a, b)` of a string.
+    StrSlice,
+    /// The standard input (D155): its bytes, its text, its lines.
+    ReadStdin,
+    ReadStdinText,
+    ReadStdinLines,
+    /// `argsort(x)`: the indices of the elements in their order, stable
+    /// (D155): the primitive of `sort` and `sortBy`.
+    ArgSort,
 }
 
 /// The mathematical functions of the runtime (SPEC section 10): one
@@ -127,12 +151,24 @@ pub enum MathFn {
     Cos,
     Pow,
     Fma,
+    // D155: those of TypeScript's `Math` (`round` as JavaScript rounds:
+    // half toward +inf), and `abs` of a float
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Floor,
+    Ceil,
+    Trunc,
+    Round,
+    Abs,
 }
 
 impl MathFn {
     pub fn arity(self) -> usize {
         match self {
-            MathFn::Pow => 2,
+            MathFn::Pow | MathFn::Atan2 => 2,
             MathFn::Fma => 3,
             _ => 1,
         }
@@ -145,6 +181,16 @@ impl MathFn {
             MathFn::Cos => "cos",
             MathFn::Pow => "pow",
             MathFn::Fma => "fma",
+            MathFn::Tan => "tan",
+            MathFn::Asin => "asin",
+            MathFn::Acos => "acos",
+            MathFn::Atan => "atan",
+            MathFn::Atan2 => "atan2",
+            MathFn::Floor => "floor",
+            MathFn::Ceil => "ceil",
+            MathFn::Trunc => "trunc",
+            MathFn::Round => "round",
+            MathFn::Abs => "abs",
         }
     }
 }
@@ -165,6 +211,9 @@ impl Prim {
                 | Prim::ParseI64
                 | Prim::ParseF64
                 | Prim::ReadText
+                | Prim::ReadStdin
+                | Prim::ReadStdinText
+                | Prim::ReadStdinLines
                 | Prim::WriteText
                 | Prim::ParseCsvF64
                 | Prim::ReadCsvF64

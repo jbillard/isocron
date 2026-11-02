@@ -330,3 +330,42 @@ fn arrays_of_arrays_of_strings() {
     assert_eq!(r.code, 101);
     assert!(r.stderr.contains("panic at line 6, column 51: size mismatch: 2 != 3"), "{}", r.stderr);
 }
+
+const TS_STRINGS: &str = r#"action main(args: string[k]): i32 {
+    const s = "Hello, World, hello";
+    print([s.indexOf("World"), s.indexOf("x"), "".indexOf("")] as const);
+    print([s.includes("lo, W"), s.startsWith("Hell"), s.endsWith("llo"), s.endsWith("x")] as const);
+    print(s.replaceAll("llo", "LLO"));
+    print("abc".replaceAll("", "-"));
+    print(s.toUpperCase() + " " + "ÉTÉ straße".toLowerCase() + " " + "straße".toUpperCase());
+    print("[" + "7".padStart(3, "0") + "|" + "ab".padEnd(5) + "|" + "x".padStart(6, "ab") + "|" + "abc".padStart(2) + "]");
+    print("ab".repeat(3) + "|" + "  x  ".trimStart() + "|" + "  x  ".trimEnd() + "|");
+    print(s.slice(7, 12));
+    print([(1.005).toFixed(2), (0.125).toFixed(2), (2.5).toFixed(0), (-2.5).toFixed(0), (-0.001).toFixed(2), (123.456).toFixed(10), (1e-7).toFixed(10)]);
+    print([(0.0).toFixed(3), (-0.0).toFixed(1), (99.995).toFixed(2), (0.5).toFixed(0), (1.45).toFixed(1), (1e21).toFixed(2), (12.5f32).toFixed(3)]);
+    print(map(["a", "b"], toUpperCase));
+    return 0;
+}
+"#;
+
+/// The functions of strings of TypeScript (D155), on bytes of UTF-8;
+/// `toFixed` as JavaScript (the exact value, a half away from zero: the
+/// double nearest 99.995 is above it, so `100.00`).
+#[test]
+fn typescript_string_functions() {
+    agree(TS_STRINGS, "str_ts", &[], "(7, -1, 0)\n(true, true, true, false)\nHeLLO, World, heLLO\n-a-b-c-\nHELLO, WORLD, HELLO été straße STRASSE\n[007|ab   |ababax|abc]\nababab|x  |  x|\nWorld\n[1.00, 0.13, 3, -3, -0.00, 123.4560000000, 0.0000001000]\n[0.000, 0.0, 100.00, 1, 1.4, 1000000000000000000000, 12.500]\n[A, B]\n");
+    for (body, want) in [
+        ("print(\"ab\".repeat(-1))", "panic at line 2, column 22: repeat: the count is negative: -1"),
+        ("print(\"é\".slice(0, 1))", "panic at line 2, column 20: slice: the index 1 is inside a character of UTF-8"),
+        ("print(\"abc\".slice(2, 5))", "panic at line 2, column 22: slice out of bounds: [2..5] of a string of 3 bytes"),
+        ("print((1.5).toFixed(101))", "panic at line 2, column 24: toFixed: the number of digits must be between 0 and 100, got 101"),
+    ] {
+        let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
+        let m = interp_panic(&src, &[]);
+        assert!(m.starts_with(want), "{}: {}", body, m);
+        let bin = compile(&src, "str_ts_panic");
+        let r = run_bin(&bin, &[]);
+        assert_eq!(r.code, 101, "{}", body);
+        assert!(r.stderr.starts_with(want), "{}: {}", body, r.stderr);
+    }
+}

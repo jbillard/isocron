@@ -204,6 +204,84 @@ impl Interp<'_> {
                 Value::Array(Rc::new(Array::Str(t.split(&*sep).map(Rc::from).collect())))
             }
             S::Trim => Value::Str(Rc::from(s(&vs[0]).trim())),
+            // the functions of TypeScript (D155): the code of the runtime
+            S::IndexOf => Value::Int(isc_runtime_core::index_of(&s(&vs[0]), &s(&vs[1]))),
+            S::Includes => Value::Bool(s(&vs[0]).contains(&*s(&vs[1]))),
+            S::StartsWith => Value::Bool(s(&vs[0]).starts_with(&*s(&vs[1]))),
+            S::EndsWith => Value::Bool(s(&vs[0]).ends_with(&*s(&vs[1]))),
+            S::TrimStart => Value::Str(Rc::from(s(&vs[0]).trim_start())),
+            S::TrimEnd => Value::Str(Rc::from(s(&vs[0]).trim_end())),
+            S::ReplaceAll => {
+                let mut out = String::new();
+                let _ = isc_runtime_core::replace_all(&mut out, &s(&vs[0]), &s(&vs[1]), &s(&vs[2]));
+                Value::Str(Rc::from(out))
+            }
+            S::ToUpper | S::ToLower => {
+                let mut out = String::new();
+                let _ = isc_runtime_core::to_case(&mut out, &s(&vs[0]), op == S::ToUpper);
+                Value::Str(Rc::from(out))
+            }
+            S::PadStart | S::PadEnd => {
+                let mut out = String::new();
+                let n = match vs[1] {
+                    Value::Int(n) => n,
+                    _ => 0,
+                };
+                let _ = isc_runtime_core::pad(&mut out, &s(&vs[0]), n, &s(&vs[2]), op == S::PadStart);
+                Value::Str(Rc::from(out))
+            }
+            S::Repeat => {
+                let mut out = String::new();
+                let n = match vs[1] {
+                    Value::Int(n) => n,
+                    _ => 0,
+                };
+                if let Err(p) = isc_runtime_core::repeat(&mut out, &s(&vs[0]), n) {
+                    return panic_at(e, std::format!("{}", p));
+                }
+                Value::Str(Rc::from(out))
+            }
+            S::Slice => {
+                let t = s(&vs[0]);
+                let (a, b) = match (&vs[1], &vs[2]) {
+                    (Value::Int(a), Value::Int(b)) => (*a, *b),
+                    _ => (0, 0),
+                };
+                match isc_runtime_core::slice_str(&t, a, b) {
+                    Ok(x) => Value::Str(Rc::from(x)),
+                    Err(p) => return panic_at(e, std::format!("{}", p)),
+                }
+            }
+            // stable: the ties by index (D155)
+            S::ArgSort => {
+                let a = match &vs[0] {
+                    Value::Array(a) => a.clone(),
+                    v => panic!("array expected, got {:?}", v),
+                };
+                let unsigned = matches!(es[0].ty.elem(), Type::Int(k) if !k.signed());
+                let mut idx: Vec<usize> = (0..a.len()).collect();
+                match &*a {
+                    Array::Int(v) if unsigned => idx.sort_by(|&i, &j| (v[i] as u64).cmp(&(v[j] as u64)).then(i.cmp(&j))),
+                    Array::Int(v) => idx.sort_by(|&i, &j| v[i].cmp(&v[j]).then(i.cmp(&j))),
+                    Array::F64(v) => idx.sort_by(|&i, &j| isc_runtime_core::order_f64(v[i], v[j]).then(i.cmp(&j))),
+                    Array::F32(v) => idx.sort_by(|&i, &j| isc_runtime_core::order_f64(v[i] as f64, v[j] as f64).then(i.cmp(&j))),
+                    Array::Bool(v) => idx.sort_by(|&i, &j| v[i].cmp(&v[j]).then(i.cmp(&j))),
+                    Array::Str(v) => idx.sort_by(|&i, &j| v[i].as_bytes().cmp(v[j].as_bytes()).then(i.cmp(&j))),
+                    a => panic!("argsort of {:?}", a),
+                }
+                Value::Array(Rc::new(Array::Int(idx.into_iter().map(|i| i as i64).collect())))
+            }
+            S::ToFixed => {
+                let mut out = String::new();
+                let (x, d) = match (&vs[0], &vs[1]) {
+                    (Value::F64(x), Value::Int(d)) => (*x, *d),
+                    _ => (0.0, 0),
+                };
+                if let Err(p) = isc_runtime_core::write_fixed(&mut out, x, d) {
+                    return panic_at(e, std::format!("{}", p));
+                }
+                Value::Str(Rc::from(out))
+            }
             S::Join => {
                 let parts: Vec<Rc<str>> = match &vs[0] {
                     Value::Array(a) => match &**a {
@@ -999,6 +1077,20 @@ impl<'a> Interp<'a> {
                 }
                 Value::Unit
             }
+            // the standard input (D155)
+            ActionOp::ReadStdin => {
+                let b = rt::read_stdin().map_err(|m| Panic { line: e.span.line, col: e.span.col, msg: m })?;
+                Value::Array(Rc::new(Array::Int(b.into_iter().map(|x| x as i64).collect())))
+            }
+            ActionOp::ReadStdinText => {
+                let b = rt::read_stdin().map_err(|m| Panic { line: e.span.line, col: e.span.col, msg: m })?;
+                match String::from_utf8(b) {
+                    Ok(t) => Value::Str(Rc::from(t)),
+                    Err(err) => {
+                        return panic_at(e, rt::text(&isc_runtime_core::Panic::StdinNotUtf8(err.utf8_error().valid_up_to() as i64)))
+                    }
+                }
+            }
             ActionOp::ReadBytes => {
                 let p = self.string(&args[0])?;
                 match rt::read_bytes_file(&p) {
@@ -1340,6 +1432,26 @@ fn math(f: MathFn, vs: &[Value]) -> Value {
         (MathFn::Cos, [Value::F64(x)]) => Value::F64(m::cos_f64(*x)),
         (MathFn::Pow, [Value::F64(x), Value::F64(y)]) => Value::F64(m::pow_f64(*x, *y)),
         (MathFn::Fma, [Value::F64(a), Value::F64(b), Value::F64(c)]) => Value::F64(m::fma_f64(*a, *b, *c)),
+        (MathFn::Tan, [Value::F64(x)]) => Value::F64(m::tan_f64(*x)),
+        (MathFn::Asin, [Value::F64(x)]) => Value::F64(m::asin_f64(*x)),
+        (MathFn::Acos, [Value::F64(x)]) => Value::F64(m::acos_f64(*x)),
+        (MathFn::Atan, [Value::F64(x)]) => Value::F64(m::atan_f64(*x)),
+        (MathFn::Atan2, [Value::F64(y), Value::F64(x)]) => Value::F64(m::atan2_f64(*y, *x)),
+        (MathFn::Floor, [Value::F64(x)]) => Value::F64(m::floor_f64(*x)),
+        (MathFn::Ceil, [Value::F64(x)]) => Value::F64(m::ceil_f64(*x)),
+        (MathFn::Trunc, [Value::F64(x)]) => Value::F64(m::trunc_f64(*x)),
+        (MathFn::Round, [Value::F64(x)]) => Value::F64(m::round_f64(*x)),
+        (MathFn::Abs, [Value::F64(x)]) => Value::F64(m::abs_f64(*x)),
+        (MathFn::Tan, [Value::F32(x)]) => Value::F32(m::tan_f32(*x)),
+        (MathFn::Asin, [Value::F32(x)]) => Value::F32(m::asin_f32(*x)),
+        (MathFn::Acos, [Value::F32(x)]) => Value::F32(m::acos_f32(*x)),
+        (MathFn::Atan, [Value::F32(x)]) => Value::F32(m::atan_f32(*x)),
+        (MathFn::Atan2, [Value::F32(y), Value::F32(x)]) => Value::F32(m::atan2_f32(*y, *x)),
+        (MathFn::Floor, [Value::F32(x)]) => Value::F32(m::floor_f32(*x)),
+        (MathFn::Ceil, [Value::F32(x)]) => Value::F32(m::ceil_f32(*x)),
+        (MathFn::Trunc, [Value::F32(x)]) => Value::F32(m::trunc_f32(*x)),
+        (MathFn::Round, [Value::F32(x)]) => Value::F32(m::round_f32(*x)),
+        (MathFn::Abs, [Value::F32(x)]) => Value::F32(m::abs_f32(*x)),
         (MathFn::Exp, [Value::F32(x)]) => Value::F32(m::exp_f32(*x)),
         (MathFn::Log, [Value::F32(x)]) => Value::F32(m::log_f32(*x)),
         (MathFn::Sin, [Value::F32(x)]) => Value::F32(m::sin_f32(*x)),

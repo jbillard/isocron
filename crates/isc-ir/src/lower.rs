@@ -1855,9 +1855,24 @@ impl<'p> Lower<'p> {
                 Ok(Expr::new(ExprKind::Math(*f, xs), ret.clone(), span))
             }
             // the functions of strings used as values (D135)
-            FuncVal::Prim(p @ (Prim::Trim | Prim::StrLen | Prim::Concat | Prim::ToString | Prim::StringOf | Prim::Join)) => {
+            FuncVal::Prim(
+                p @ (Prim::Trim
+                | Prim::StrLen
+                | Prim::Concat
+                | Prim::ToString
+                | Prim::StringOf
+                | Prim::Join
+                | Prim::ToUpper
+                | Prim::ToLower
+                | Prim::TrimStart
+                | Prim::TrimEnd),
+            ) => {
                 let op = match p {
                     Prim::Trim => StrOp::Trim,
+                    Prim::ToUpper => StrOp::ToUpper,
+                    Prim::ToLower => StrOp::ToLower,
+                    Prim::TrimStart => StrOp::TrimStart,
+                    Prim::TrimEnd => StrOp::TrimEnd,
                     Prim::StrLen => StrOp::Len,
                     Prim::Concat => StrOp::Concat,
                     Prim::ToString => StrOp::ToString,
@@ -2200,6 +2215,51 @@ impl<'p> Lower<'p> {
         let ty = self.ty(env, &e.ty, span)?;
         let kind = match p {
             // strings (D134)
+            // the functions of strings of TypeScript (D155)
+            Prim::IndexOf
+            | Prim::Includes
+            | Prim::StartsWith
+            | Prim::EndsWith
+            | Prim::ReplaceAll
+            | Prim::ToUpper
+            | Prim::ToLower
+            | Prim::PadStart
+            | Prim::PadEnd
+            | Prim::Repeat
+            | Prim::TrimStart
+            | Prim::TrimEnd
+            | Prim::ToFixed
+            | Prim::ArgSort
+            | Prim::StrSlice => {
+                let op = match p {
+                    Prim::ArgSort => StrOp::ArgSort,
+                    Prim::IndexOf => StrOp::IndexOf,
+                    Prim::Includes => StrOp::Includes,
+                    Prim::StartsWith => StrOp::StartsWith,
+                    Prim::EndsWith => StrOp::EndsWith,
+                    Prim::ReplaceAll => StrOp::ReplaceAll,
+                    Prim::ToUpper => StrOp::ToUpper,
+                    Prim::ToLower => StrOp::ToLower,
+                    Prim::PadStart => StrOp::PadStart,
+                    Prim::PadEnd => StrOp::PadEnd,
+                    Prim::Repeat => StrOp::Repeat,
+                    Prim::TrimStart => StrOp::TrimStart,
+                    Prim::TrimEnd => StrOp::TrimEnd,
+                    Prim::ToFixed => StrOp::ToFixed,
+                    _ => StrOp::Slice,
+                };
+                let mut out = Vec::new();
+                for a in args {
+                    let mut x = self.expr(env, a)?;
+                    // `toFixed` of a `f32`: its exact value, as a `f64`
+                    if op == StrOp::ToFixed && x.ty == Type::F32 {
+                        let sp = x.span;
+                        x = Expr::new(ExprKind::Convert(Box::new(x)), Type::F64, sp);
+                    }
+                    out.push(x);
+                }
+                ExprKind::StrOp(op, out)
+            }
             Prim::Concat | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::Lines | Prim::Split | Prim::Trim | Prim::Join => {
                 let op = match p {
                     Prim::Concat => StrOp::Concat,
@@ -2366,6 +2426,29 @@ impl<'p> Lower<'p> {
                 };
                 ExprKind::Zeros(Box::new(n))
             }
+            // a length known at run time (D155): checked positive or zero
+            Prim::Iota | Prim::Fill if !matches!(args[0].kind, TExprKind::SizeVal(_)) => {
+                let n = self.expr(env, &args[0])?;
+                let i64t = Type::Int(IntKind::I64);
+                let v = self.new_var("length", i64t.clone());
+                let nv = Expr::var(v, i64t.clone(), span);
+                let kind = if p == Prim::Iota {
+                    ExprKind::Iota(Box::new(nv.clone()))
+                } else {
+                    let x = self.expr(env, &args[1])?;
+                    if x.ty.has_heap() && !matches!(x.kind, ExprKind::Var(..)) {
+                        let t = self.new_var("filled", x.ty.clone());
+                        let (xt, sp) = (x.ty.clone(), x.span);
+                        let inner = Expr::new(ExprKind::Fill(Box::new(nv.clone()), Box::new(Expr::var(t, xt, sp))), ty.clone(), span);
+                        let checked = Expr::new(ExprKind::CheckNonNegative(Box::new(nv), Box::new(self.let_(t, x, inner, false, span))), ty, span);
+                        return Ok(self.let_(v, n, checked, false, span));
+                    }
+                    ExprKind::Fill(Box::new(nv.clone()), Box::new(x))
+                };
+                let built = Expr::new(kind, ty.clone(), span);
+                let checked = Expr::new(ExprKind::CheckNonNegative(Box::new(nv), Box::new(built)), ty, span);
+                return Ok(self.let_(v, n, checked, false, span));
+            }
             Prim::Iota => ExprKind::Iota(Box::new(self.expr(env, &args[0])?)),
             Prim::Fill => {
                 let n = self.expr(env, &args[0])?;
@@ -2381,6 +2464,23 @@ impl<'p> Lower<'p> {
                 ExprKind::Fill(Box::new(n), Box::new(v))
             }
             Prim::Sqrt => ExprKind::Sqrt(Box::new(self.expr(env, &args[0])?)),
+            // `abs` of an integer (D155): `x < 0 ? -x : x` (modulo 2^bits:
+            // the minimum stays itself)
+            Prim::Math(MathFn::Abs) if matches!(ty, Type::Int(_)) => {
+                let x = self.expr(env, &args[0])?;
+                if let Type::Int(k) = &ty {
+                    if !k.signed() {
+                        return Ok(x);
+                    }
+                }
+                let v = self.new_var("x", ty.clone());
+                let xv = Expr::var(v, ty.clone(), span);
+                let zero = Expr::lit(Lit::Int(0), ty.clone(), span);
+                let neg = Expr::new(ExprKind::Binary(BinOp::Lt, Box::new(xv.clone()), Box::new(zero)), Type::Bool, span);
+                let minus = Expr::new(ExprKind::Unary(isc_syntax::ast::UnOp::Neg, Box::new(xv.clone())), ty.clone(), span);
+                let body = Expr::new(ExprKind::If(Box::new(neg), Box::new(minus), Box::new(xv)), ty.clone(), span);
+                return Ok(self.let_(v, x, body, false, span));
+            }
             Prim::Math(f) => {
                 let mut xs = Vec::new();
                 for a in args {
@@ -2398,6 +2498,13 @@ impl<'p> Lower<'p> {
                 };
                 let body = self.apply(&fv, Vec::new(), &body_ty, span)?;
                 ExprKind::Bench(Box::new(r), Box::new(body))
+            }
+            // the standard input (D155); its lines: `lines` of its text
+            Prim::ReadStdin => ExprKind::Action(ActionOp::ReadStdin, Vec::new()),
+            Prim::ReadStdinText => ExprKind::Action(ActionOp::ReadStdinText, Vec::new()),
+            Prim::ReadStdinLines => {
+                let t = Expr::new(ExprKind::Action(ActionOp::ReadStdinText, Vec::new()), Type::Str, span);
+                ExprKind::StrOp(StrOp::Lines, vec![t])
             }
             Prim::ReadF64
             | Prim::ReadF32

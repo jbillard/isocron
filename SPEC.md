@@ -156,12 +156,12 @@ pattern      = "_" | IDENT [ "." IDENT ] | LITERAL | "-" NUMBER | "(" ")"
 - **Tableaux à deux dimensions** : `T[r][c]` est un tableau de `r` lignes de `c` éléments ; `x[i]` est une ligne.
 - **Motifs** : un `IDENT` suivi de `(` est un constructeur de type somme ; seul, c'est une variable, sauf s'il nomme un constructeur sans argument.
 - **Modules** (D139, D150) : `import * as m from "./m";` donne accès à ce que le module exporte sous les noms `m.f`, `m.T`, `m.C` ; `import { f, g as h } from "./m";` rend ces noms utilisables sans préfixe, après les variables locales. Un chemin commençant par `./` ou `../` est relatif au fichier qui importe ; un nom nu est cherché dans `$ISC_PATH`. Seul ce qui est déclaré avec `export` est visible d'un autre fichier ; un module est un fichier, lu une seule fois.
-- **Noms** (D151) : la bibliothèque suit les conventions de TypeScript, en camelCase (`readF64`, `parseCsvF64`, `printBytes`, `@requireFused`), et reprend ses noms là où le sens est le même (`String(x)`, `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`) ; un nom de TypeScript au sens différent n'est pas repris (`parseFloat("1,5")` vaut 1 en JavaScript ; `parseF64` refuse ce texte).
+- **Noms** (D151) : la bibliothèque suit les conventions de TypeScript, en camelCase (`readF64`, `parseCsvF64`, `printBytes`, `@requireFused`), et reprend ses noms là où le sens est le même (`String(x)`, `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`) ; un nom de TypeScript au sens différent n'est pas repris (`parseFloat("1,5")` vaut 1 en TypeScript ; `parseF64` refuse ce texte).
 - **Gabarits** : `` `a${e}b` `` est la concaténation des textes et des insertions, chacune écrite comme `print` l'écrit (scalaire ou chaîne).
 
 ### Priorité des opérateurs
 
-Les niveaux sont ceux de JavaScript.
+Les niveaux sont ceux de TypeScript (norme ECMAScript).
 
 | Niveau | Opérateurs | Associativité |
 | --- | --- | --- |
@@ -182,9 +182,9 @@ Les niveaux sont ceux de JavaScript.
 
 Décisions :
 - comme en TypeScript, `-x ** 2` est refusé : il faut écrire `-(x ** 2)` ou `(-x) ** 2` ; `2 ** -1` est accepté ;
-- les comparaisons ne s'enchaînent pas : `a < b < c` est une erreur (en JavaScript, elle compare un booléen à `c`) ;
+- les comparaisons ne s'enchaînent pas : `a < b < c` est une erreur (en TypeScript, elle compare un booléen à `c`) ;
 - `===` et `!==` sont `==` et `!=` : l'égalité porte toujours sur les valeurs, tableaux compris ;
-- `&`, `|` et `^` sont sous les comparaisons, comme en JavaScript : `a & b == c` est `a & (b == c)`, une erreur de type pour des entiers.
+- `&`, `|` et `^` sont sous les comparaisons, comme en TypeScript : `a & b == c` est `a & (b == c)`, une erreur de type pour des entiers.
 
 ### Exemple complet
 
@@ -297,7 +297,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 | `filter(x, p)` | `(T[n], (T) => boolean) => T[k <= n]` | garde les éléments où `p` est vrai, dans l'ordre | oui |
 | `fold(x, init, f)` | `(T[n], A, (A, T) => A) => A` | parcours de gauche à droite | non, par définition, sauf sous la règle P (ci-dessous) |
 | `window(x, k)` | `(T[n], k: size) => T[n - k + 1][k]` | fenêtres glissantes ; une vue, jamais copiée ; panne si `k > n` | oui |
-| `x.slice(a, b)` | `(T[n], i64, i64) => T[b - a]` | sous-tableau ; une vue ; panne si `a < 0`, `a > b` ou `b > n` (sans les conventions de JavaScript pour les bornes négatives ou trop grandes) | — |
+| `x.slice(a, b)` | `(T[n], i64, i64) => T[b - a]` | sous-tableau ; une vue ; panne si `a < 0`, `a > b` ou `b > n` (sans les conventions de TypeScript pour les bornes négatives ou trop grandes) | — |
 | `iota(n)` | `(n: size) => i64[n]` | `[0, 1, …, n - 1]` | oui |
 | `fill(n, v)` | `(n: size, T) => T[n]` | `n` copies de `v` | oui |
 | `zeros()` | `() => T[n]` avec `T extends Num` | taille déduite du type attendu | oui |
@@ -768,7 +768,7 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 | `scan` flottant parallèle à forme fixe | aujourd'hui séquentiel | v1 |
 | `scatter` et règle de collision | histogrammes parallèles au-delà de la règle P (section 6) | v1 |
 | Passage des valeurs aux fonctions `extern` (section 12) : un tableau de scalaires en pointeur suivi de sa longueur `int64_t`, une `string` en copie terminée par un octet nul, au plus 6 paramètres entiers et 8 flottants, pas de fonction variadique ; décidé provisoirement (DECISIONS D125) | interopérabilité avec les bibliothèques C | avant la v1 |
-| Partie 3, intégrée à la grammaire de la section 3 avec la syntaxe 2 (D148), décidée provisoirement : chaînes (littéraux, `+`, ordre par octets, D134), texte et CSV (D135), opérateurs bit à bit `&` `\|` `^` `<<` `>>` aux niveaux de JavaScript (décalage modulo le nombre de bits), `concat` des tableaux, `printBytes` (D136), `Result` et actions `try_` (D138), modules `import * as m from "./m";` et noms `m.x` (D139) | programmes idiomatiques du Benchmarks Game, entrées-sorties texte, erreurs sans panne, programmes en plusieurs fichiers | avant la v1 |
+| Partie 3, intégrée à la grammaire de la section 3 avec la syntaxe 2 (D148), décidée provisoirement : chaînes (littéraux, `+`, ordre par octets, D134), texte et CSV (D135), opérateurs bit à bit `&` `\|` `^` `<<` `>>` aux niveaux de TypeScript (décalage modulo le nombre de bits), `concat` des tableaux, `printBytes` (D136), `Result` et actions `try_` (D138), modules `import * as m from "./m";` et noms `m.x` (D139) | programmes idiomatiques du Benchmarks Game, entrées-sorties texte, erreurs sans panne, programmes en plusieurs fichiers | avant la v1 |
 | Comportement FMA par défaut de Rust, Go, Zig, Fortran | équité de la variante stricte | P5 du POC |
 | Unicité du nom « Isocron » | deux recherches web n'ont trouvé aucun langage de ce nom ; pas une preuve | avant publication |
 
