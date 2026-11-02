@@ -98,6 +98,27 @@ const SEEK_SET: c_int = 0;
 const SEEK_END: c_int = 2;
 const EINTR: c_int = 4;
 
+// `alloc`, for the `bigint` of isc-runtime-core (D156): the blocks of the
+// runtime (aligned on 64 bytes, the largest alignment asked)
+extern crate alloc;
+
+struct RuntimeAlloc;
+
+unsafe impl core::alloc::GlobalAlloc for RuntimeAlloc {
+    unsafe fn alloc(&self, l: core::alloc::Layout) -> *mut u8 {
+        if l.align() > ARRAY_ALIGN {
+            return core::ptr::null_mut();
+        }
+        isc_alloc(l.size().max(1) as i64)
+    }
+    unsafe fn dealloc(&self, p: *mut u8, _: core::alloc::Layout) {
+        isc_free(p)
+    }
+}
+
+#[global_allocator]
+static RUNTIME_ALLOC: RuntimeAlloc = RuntimeAlloc;
+
 /// Panics in the runtime itself (a bug) abort the process.
 #[panic_handler]
 fn rust_panic(_: &core::panic::PanicInfo) -> ! {
@@ -904,6 +925,74 @@ pub unsafe extern "C" fn isc_to_fixed(out: *mut IscStr, x: f64, d: i64, line: i3
     });
 }
 
+// `bigint` (D156): the code of isc-runtime-core, as the interpreter
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_print_big(p: *const u8, n: i64) {
+    let _ = sem::big::write_decimal(&mut Stdout, bytes_of(p, n));
+}
+
+/// `+ - * / % **` and the negation (0 to 6).
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_op(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, op: i32, line: i32, col: i32) {
+    match sem::big::op(op as u8, bytes_of(p, n), bytes_of(q, m)) {
+        Ok(v) => *out = new_str(&v),
+        Err(e) => die(line, col, &e),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_cmp(p: *const u8, n: i64, q: *const u8, m: i64) -> i32 {
+    sem::big::cmp(bytes_of(p, n), bytes_of(q, m)) as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_from_i64(out: *mut IscStr, x: i64) {
+    *out = new_str(&sem::big::from_i64(x));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_from_u64(out: *mut IscStr, x: u64) {
+    *out = new_str(&sem::big::from_u64(x));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_parse(out: *mut IscStr, p: *const u8, n: i64, line: i32, col: i32) {
+    let s = text(p, n);
+    match sem::big::parse(s) {
+        Some(v) => *out = new_str(&v),
+        None => die(line, col, &Panic::ParseBigInt(s)),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_to_i64(p: *const u8, n: i64) -> i64 {
+    sem::big::to_i64(bytes_of(p, n))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_to_f64(p: *const u8, n: i64) -> f64 {
+    sem::big::to_f64(bytes_of(p, n))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_big_to_string(out: *mut IscStr, p: *const u8, n: i64) {
+    let b = bytes_of(p, n);
+    *out = written(&|w| sem::big::write_decimal(w, b));
+}
+
+/// ECMAScript's `Number(s)` (0), `parseFloat(s)` (1), `parseInt(s, radix)`
+/// (2) (D156).
+#[no_mangle]
+pub unsafe extern "C" fn isc_js_number(p: *const u8, n: i64, which: i32, radix: i64) -> f64 {
+    let s = text(p, n);
+    match which {
+        0 => sem::js_number(s),
+        1 => sem::js_parse_float(s),
+        _ => sem::js_parse_int(s, radix),
+    }
+}
+
 /// `argsort(x)` (D155): the indices of the elements in their order, the
 /// ties by index (stable). `kind`: 0..=3 `i8`..`i64`, 4..=7 `u8`..`u64`,
 /// 8 `f32`, 9 `f64`, 10 `bool` (a byte), 11 `string`.
@@ -931,6 +1020,10 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
             7 => at::<u64>(p, i).cmp(&at::<u64>(p, j)),
             8 => sem::order_f64(at::<f32>(p, i) as f64, at::<f32>(p, j) as f64),
             9 => sem::order_f64(at::<f64>(p, i), at::<f64>(p, j)),
+            12 => {
+                let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
+                sem::big::cmp(bytes_of(a.ptr, a.len), bytes_of(b.ptr, b.len))
+            }
             _ => {
                 let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
                 bytes_of(a.ptr, a.len).cmp(bytes_of(b.ptr, b.len))

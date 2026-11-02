@@ -119,3 +119,86 @@ fn lengths_known_at_run_time() {
     assert_eq!(r.code, 101);
     assert!(r.stderr.contains(want), "{}", r.stderr);
 }
+
+const JS: &str = r#"action main(args: string[k]): i32 {
+    print(["42", " 2.5e3 ", "", "12abc", "0x1F", "0b101", "-Infinity", ".5", "5.", "1_000", "-0x10", "\u{A0}7\u{FEFF}"].map(Number));
+    print(["12.5abc", "abc", "  -.5e3x", "1e", "Infinityx", "+3"].map(parseFloat));
+    print([parseInt("42px"), parseInt("ff", 16), parseInt("0x1A"), parseInt("101", 2), parseInt("z", 37), parseInt("-0"), parseInt("123456789012345678901234567890")]);
+    print([Number(7i32), Number(2.5f32)]);
+    return 0;
+}
+"#;
+
+const PARSING: &str = r#"function total(t: string): f64 {
+    return sum(lines(t).map(parseF64));
+}
+
+action main(args: string[k]): i32 {
+    print(args.map((a) => parseI64(a)));
+    print(total("1.5\n2.25\n"));
+    print(args.map((a) => match (tryParseF64(a)) {
+        Ok(v) => v,
+        Err(e) => -1.0,
+    }));
+    return 0;
+}
+"#;
+
+/// `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` as ECMAScript (D156):
+/// a `f64`, NaN when the text is not a number; `parseI64` and `parseF64`
+/// are functions, usable in a lambda.
+#[test]
+fn conversions_of_texts() {
+    agree(JS, "std_js", &[], "[42, 2500, 0, NaN, 31, 5, -inf, 0.5, 5, NaN, NaN, 7]\n[12.5, NaN, -500, 1, inf, 3]\n[42, 255, 26, 5, NaN, -0, 123456789012345680000000000000]\n[7, 2.5]\n");
+    agree(PARSING, "std_parse", &["7", "8"], "[7, 8]\n3.75\n[7, 8]\n");
+    assert_eq!(interp_panic(PARSING, &["7", "x"]), "panic at line 6, column 35: parseI64: `x` is not a valid integer");
+}
+
+const BIG: &str = r#"function fact(n: i64, acc: bigint): bigint {
+    if (n <= 1) return acc;
+    return fact(n - 1, acc * BigInt(n));
+}
+
+action main(args: string[k]): i32 {
+    const a = 123456789012345678901234567890n;
+    const b = -98765432109876543210n;
+    print(a + b);
+    print([a * b, a / b, a % b, -a] as const);
+    print(2n ** 100n);
+    print(fact(30, 1n));
+    print([a > b, a == a + 0n, b < 0n, 0n == BigInt(0)] as const);
+    print(`${a}`.length);
+    print([i64(2n ** 64n + 5n), i64(-7n), Number(2n ** 70n)] as const);
+    print(BigInt("  -42 ") + 0xffn);
+    print(sort([5n, -3n, 2n ** 80n, 0n]));
+    print(reduce([1n, 2n, 3n], (+), 0n));
+    print(sum([10n, 20n]));
+    return 0;
+}
+"#;
+
+/// `bigint` (D156): literals `123n`, `+ - * / % **` (`/` toward zero, `%` of
+/// the sign of the dividend), comparisons, `BigInt(x)`, conversions modulo
+/// 2^64 and to the nearest `f64`, its text, sorting, the generic `sum`;
+/// the values checked against Python's integers.
+#[test]
+fn big_integers() {
+    agree(BIG, "std_big", &[], "123456788913580246791358024680\n(-12193263113702179522496570642237463801111263526900, -1249999988, 60185185207253086410, -123456789012345678901234567890)\n1267650600228229401496703205376\n265252859812191058636308480000000\n(true, true, true, true)\n30\n(5, -7, 1180591620717411300000)\n213\n[-3, 0, 5, 1208925819614629174706176]\n6\n30\n");
+    for (body, want) in [
+        ("print(1n / 0n)", "panic at line 2, column 14: integer division by zero"),
+        ("print(2n ** -1n)", "panic at line 2, column 14: negative integer exponent: -1"),
+        ("print(BigInt(\"1.5\"))", "panic at line 2, column 17: BigInt: `1.5` is not an integer"),
+    ] {
+        let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
+        assert_eq!(interp_panic(&src, &[]), want, "{}", body);
+        let bin = compile(&src, "std_big_panic");
+        let r = run_bin(&bin, &[]);
+        assert_eq!(r.code, 101, "{}", body);
+        assert!(r.stderr.contains(want), "{}: {}", body, r.stderr);
+    }
+    // no mixing with the other numbers, as in TypeScript
+    match iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(1n + 1.5);\n    return 0;\n}\n") {
+        Ok(_) => panic!("accepted"),
+        Err(e) => assert!(e.contains("found `bigint`"), "{}", e),
+    }
+}

@@ -186,6 +186,8 @@ pub enum Size {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
+    /// An integer of any size (D156): owned, as a string.
+    BigInt,
     Int(IntKind),
     F64,
     F32,
@@ -257,6 +259,7 @@ impl fmt::Display for TyDisplay<'_> {
             Ty::Bool => write!(f, "boolean"),
             Ty::Unit => write!(f, "void"),
             Ty::Str => write!(f, "string"),
+            Ty::BigInt => write!(f, "bigint"),
             // the syntax of the programs (D148): `[A, B]`
             Ty::Tuple(ts) => {
                 write!(f, "[")?;

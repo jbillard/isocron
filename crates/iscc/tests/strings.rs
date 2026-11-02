@@ -247,9 +247,9 @@ fn string_errors() {
     assert!(e.contains("string"), "{}", e);
     let e = error("action main(args: string[k]): i32 {\n    print(concat(1, 2));\n    return 0;\n}\n");
     assert!(e.contains("string"), "{}", e);
-    // a `fn` cannot parse (an action, as `parseI64`)
-    let e = error("function f(s: string): f64 {\n    return parseF64(s);\n}\n\naction main(args: string[k]): i32 {\n    print(f(\"1\"));\n    return 0;\n}\n");
-    assert!(e.contains("parseF64"), "{}", e);
+    // parsing has no effect: a function may parse (D156)
+    let src = "function f(s: string): f64 {\n    return parseF64(s);\n}\n\naction main(args: string[k]): i32 {\n    print(f(\"1\"));\n    return 0;\n}\n";
+    assert_eq!(interp_ok(src, &[]), "1\n");
 }
 
 const TEMPLATES: &str = r#"function label(name: string, x: f64): string {

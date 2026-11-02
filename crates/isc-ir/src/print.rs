@@ -11,6 +11,7 @@ pub fn type_str(t: &Type) -> String {
         Type::Bool => "boolean".into(),
         Type::Unit => "void".into(),
         Type::Str => "string".into(),
+        Type::Big => "bigint".into(),
         Type::Tuple(ts) => format!("[{}]", ts.iter().map(type_str).collect::<Vec<_>>().join(", ")),
         Type::Array(e) => format!("{}[]", type_str(e)),
         Type::Rec(i) => format!("rec#{}", i),

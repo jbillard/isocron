@@ -412,6 +412,7 @@ parameters. `requireTail` accepts such calls.
 | `f64` | IEEE 754 binary64 |
 | `f32` | IEEE 754 binary32 |
 | `boolean` | `true`, `false` |
+| `bigint` | integers of any size: literals `123n`, `0xffn` (see [Big integers](#big-integers)) |
 | `void` | the result of an action that returns nothing |
 | `string` | immutable UTF-8 text: literals `"..."`, the command-line arguments (see [Strings](#strings)) |
 | `[A, B, ...]` | tuples: `[a, b] as const`, taken apart with `const [a, b] = ...` |
@@ -468,6 +469,37 @@ action main(args: string[k]): i32 {
 binary32, as IEEE 754 requires, and a literal of type `f32` is rounded
 directly from its decimal text (never through `f64`).
 
+### Big integers
+
+A `bigint` is an integer of any size, as in TypeScript: literals `123n`,
+`-0xffn`, the operators `+ - * / % **` (`/` truncates toward zero, `%` has
+the sign of the dividend, a division by `0n` or a negative exponent is a
+panic), the comparisons, `BigInt(x)` of an integer or of a text, `i64(b)`
+(modulo 2^64), `f64(b)` and `Number(b)` (the nearest float), `String(b)`
+and `${b}`. A `bigint` does not mix with the other numbers: `1n + 1.5` is a
+type error. Like a string, it is owned and freed; an array of them is
+sorted by `sort`, and the generic functions of numbers (`sum`) take it.
+
+```isc
+function factorial(n: i64, acc: bigint): bigint {
+    if (n <= 1) return acc;
+    return factorial(n - 1, acc * BigInt(n));
+}
+
+action main(args: string[k]): i32 {
+    print(factorial(25, 1n));
+    print(2n ** 70n / 3n);
+    print([10n, -2n, 7n].sum());
+    return 0;
+}
+```
+
+```output
+15511210043330985984000000
+393530540239137101141
+15
+```
+
 ### Strings
 
 A `string` is immutable UTF-8 text. A literal is written `"..."` on one line,
@@ -487,7 +519,8 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 | `bytes(s)` | `(string) => u8[k]` | the bytes |
 | `stringOf(b)` | `(u8[n]) => string` | the text of these bytes; a panic if they are not UTF-8 |
 | `String(x)`, `x.toString()` | `(scalar) => string` | the text `print` writes (a string is itself) |
-| `parseF64(s)` | `(string) => f64` (an action) | a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic |
+| `parseI64(s)`, `parseF64(s)` | `(string) => i64`, `(string) => f64` | a decimal integer (`+5`, `-12`), a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic (`tryParseI64`, `tryParseF64`: a `Result`) |
+| `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` | `(string) => f64` | as ECMAScript: `Number` of the whole text (`""` is 0, `"0x1F"` is 31), `parseFloat` and `parseInt` of its longest prefix; NaN when there is no number |
 | `s.indexOf(t)` | `(string, string) => i64` | the byte index of the first `t`, -1 if none |
 | `s.includes(t)`, `s.startsWith(t)`, `s.endsWith(t)` | `(string, string) => boolean` | |
 | `s.replaceAll(a, b)` | `(string, string, string) => string` | every `a` replaced by `b`, left to right (`a` empty: `b` around each character) |
@@ -1519,8 +1552,6 @@ action.
 | `readF32(path)`, `writeF32(path, x)` | as for `f64` | little-endian binary32 values (canonical NaN `0x7FC00000`) |
 | `print(x)` | `(T) => void` | prints a value and a newline |
 | `printBytes(x)` | `(u8[n]) => void` | writes the bytes to the standard output, as they are (binary output) |
-| `parseI64(s)` | `(string) => i64` | `+5`, `-12`, `007`; anything else is a panic |
-| `parseF64(s)` | `(string) => f64` | `2.5`, `-1e-3`, `inf`, `NaN`; anything else is a panic |
 | `readText(path)` | `(string) => string` | reads a UTF-8 text file (anything else is a panic) |
 | `readStdin()`, `readStdinText()`, `readStdinLines()` | `() => u8[k]`, `() => string`, `() => string[k]` | the whole standard input: its bytes, its text (UTF-8, or a panic), its lines; read once (a later read finds its end) |
 | `writeText(path, s)` | `(string, string) => void` | writes a text file |

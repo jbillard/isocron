@@ -48,11 +48,11 @@ function doneOr(e: string): Result<void, string> {
     return e == "" ? Ok(()) : Err(e);
 }
 
-action tryParseI64(s: string): Result<i64, string> {
+function tryParseI64(s: string): Result<i64, string> {
     return resultOf(parseI64OrError(s));
 }
 
-action tryParseF64(s: string): Result<f64, string> {
+function tryParseF64(s: string): Result<f64, string> {
     return resultOf(parseF64OrError(s));
 }
 

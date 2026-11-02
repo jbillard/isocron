@@ -241,7 +241,7 @@ pub fn lt(t: &Type) -> String {
         // an array of arrays: its block, rows, columns, and the distance in
         // elements from a row to the next (the columns, or 1 for `window`)
         Type::Array(e) if e.is_array() => NESTED.into(),
-        Type::Str | Type::Array(_) => "{ ptr, i64 }".into(),
+        Type::Str | Type::Big | Type::Array(_) => "{ ptr, i64 }".into(),
         // a node of a recursive type (D103)
         Type::Rec(_) => "ptr".into(),
         Type::Tuple(ts) => {
@@ -268,7 +268,7 @@ fn esize(t: &Type) -> i64 {
         Type::F64 => 8,
         Type::F32 => 4,
         Type::Bool | Type::Unit => 1,
-        Type::Str | Type::Array(_) => 16,
+        Type::Str | Type::Big | Type::Array(_) => 16,
         Type::Rec(_) => 8,
         Type::Tuple(ts) => ts.iter().map(esize).sum::<i64>().max(1),
     }
@@ -418,7 +418,7 @@ pub struct Gen<'p> {
 /// string (D134); arrays of them free and copy each element.
 fn holds_owned(t: &Type) -> bool {
     match t {
-        Type::Rec(_) | Type::Str => true,
+        Type::Rec(_) | Type::Str | Type::Big => true,
         Type::Tuple(ts) => ts.iter().any(holds_owned),
         Type::Array(e) => holds_owned(e),
         _ => false,
@@ -632,6 +632,16 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_fixed(ptr, double, i64, i32, i32)",
     "declare void @isc_read_stdin(ptr, i32, i32)",
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
+    "declare double @isc_js_number(ptr, i64, i32, i64)",
+    "declare void @isc_print_big(ptr, i64)",
+    "declare void @isc_big_op(ptr, ptr, i64, ptr, i64, i32, i32, i32)",
+    "declare i32 @isc_big_cmp(ptr, i64, ptr, i64)",
+    "declare void @isc_big_from_i64(ptr, i64)",
+    "declare void @isc_big_from_u64(ptr, i64)",
+    "declare void @isc_big_parse(ptr, ptr, i64, i32, i32)",
+    "declare i64 @isc_big_to_i64(ptr, i64)",
+    "declare double @isc_big_to_f64(ptr, i64)",
+    "declare void @isc_big_to_string(ptr, ptr, i64)",
     "declare void @isc_read_stdin_text(ptr, i32, i32)",
     "declare void @isc_join(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_parse_csv_f64(ptr, ptr, i64, i64, i32, i32)",
@@ -1513,7 +1523,7 @@ impl<'p> Gen<'p> {
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
             // a string: its bytes (D134)
-            Type::Str => {
+            Type::Str | Type::Big => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
@@ -1601,7 +1611,7 @@ impl<'p> Gen<'p> {
                 x.clone()
             }
             // a string: a new one (D134)
-            Type::Str => {
+            Type::Str | Type::Big => {
                 let (p, n) = self.str_parts(x);
                 let out = self.alloca("{ ptr, i64 }");
                 self.emit(format!("call void @isc_str_new(ptr {}, ptr {}, i64 {})", out, p, n));
@@ -1801,7 +1811,7 @@ impl<'p> Gen<'p> {
             Type::Int(_) | Type::Bool => self.ins(format!("icmp eq {} {}, {}", lt(t), a.r, b.r)),
             Type::F64 | Type::F32 => self.ins(format!("fcmp oeq {} {}, {}", lt(t), a.r, b.r)),
             Type::Unit => "true".to_string(),
-            Type::Str => {
+            Type::Str | Type::Big => {
                 let (p, n) = self.str_parts(a);
                 let (q, m) = self.str_parts(b);
                 let c = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
@@ -3068,7 +3078,7 @@ impl<'p> Gen<'p> {
         let ExprKind::Map(ins, l) = &e.kind else { unreachable!() };
         let row_ty = e.ty.elem().clone();
         let et = row_ty.elem().clone();
-        if !et.is_scalar() && et != Type::Str {
+        if !et.is_scalar() && et != Type::Str && et != Type::Big {
             return Err(format!("{}:{}: a `map` building an array of arrays of `{:?}` is not supported in the POC", e.span.line, e.span.col, et));
         }
         let mut srcs = Vec::new();
@@ -6063,6 +6073,70 @@ impl<'p> Gen<'p> {
                 let pos = Self::pos(e.span);
                 new_str(self, format!("call void @isc_str_slice(ptr OUT, ptr {}, i64 {}, i64 {}, i64 {}, {})", p, n, vals[1].r, vals[2].r, pos))
             }
+            // `bigint` (D156): the code of the runtime
+            S::Big(b) => {
+                use isc_ir::BigOp as B;
+                let pos = Self::pos(e.span);
+                match b {
+                    B::Add | B::Sub | B::Mul | B::Div | B::Rem | B::Pow | B::Neg => {
+                        let code = match b {
+                            B::Add => 0,
+                            B::Sub => 1,
+                            B::Mul => 2,
+                            B::Div => 3,
+                            B::Rem => 4,
+                            B::Pow => 5,
+                            _ => 6,
+                        };
+                        let (p, n) = self.str_parts(&vals[0]);
+                        let (q, m) = if vals.len() > 1 { self.str_parts(&vals[1]) } else { ("null".to_string(), "0".to_string()) };
+                        new_str(self, format!("call void @isc_big_op(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, {})", p, n, q, m, code, pos))
+                    }
+                    B::Cmp(op) => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        let (q, m) = self.str_parts(&vals[1]);
+                        let c = self.ins(format!("call i32 @isc_big_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
+                        let pred = match op {
+                            BinOp::Lt => "slt",
+                            BinOp::Le => "sle",
+                            BinOp::Gt => "sgt",
+                            _ => "sge",
+                        };
+                        v(self.ins(format!("icmp {} i32 {}, 0", pred, c)), "i1")
+                    }
+                    B::FromI64 => new_str(self, format!("call void @isc_big_from_i64(ptr OUT, i64 {})", vals[0].r)),
+                    B::FromU64 => new_str(self, format!("call void @isc_big_from_u64(ptr OUT, i64 {})", vals[0].r)),
+                    B::Parse => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        new_str(self, format!("call void @isc_big_parse(ptr OUT, ptr {}, i64 {}, {})", p, n, pos))
+                    }
+                    B::ToI64 => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        v(self.ins(format!("call i64 @isc_big_to_i64(ptr {}, i64 {})", p, n)), "i64")
+                    }
+                    B::ToF64 => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        v(self.ins(format!("call double @isc_big_to_f64(ptr {}, i64 {})", p, n)), "double")
+                    }
+                    B::ToString => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        new_str(self, format!("call void @isc_big_to_string(ptr OUT, ptr {}, i64 {})", p, n))
+                    }
+                    B::ArgSort => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        new_str(self, format!("call void @isc_argsort(ptr OUT, ptr {}, i64 {}, i32 12)", p, n))
+                    }
+                }
+            }
+            S::JsNumber | S::JsParseFloat | S::JsParseInt => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (which, radix) = match op {
+                    S::JsNumber => (0, "0".to_string()),
+                    S::JsParseFloat => (1, "0".to_string()),
+                    _ => (2, vals[1].r.clone()),
+                };
+                v(self.ins(format!("call double @isc_js_number(ptr {}, i64 {}, i32 {}, i64 {})", p, n, which, radix)), "double")
+            }
             S::ArgSort => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let kind = match es[0].ty.elem() {
@@ -6127,6 +6201,11 @@ impl<'p> Gen<'p> {
             Type::Str => {
                 let (p, n) = self.str_parts(x);
                 self.emit(format!("call void @isc_print_str(ptr {}, i64 {})", p, n));
+            }
+            // a `bigint`: its decimal text (D156)
+            Type::Big => {
+                let (p, n) = self.str_parts(x);
+                self.emit(format!("call void @isc_print_big(ptr {}, i64 {})", p, n));
             }
             Type::Tuple(ts) if matches!(shape, Shape::Sum(_)) => {
                 // the constructor of the tag, then its slots

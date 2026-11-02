@@ -7,3 +7,5 @@ license.workspace = true
 [dependencies]
 isc-syntax = { path = "../isc-syntax" }
 isc-types = { path = "../isc-types" }
+# the encoding of the `bigint` literals (D156)
+isc-runtime-core = { path = "../isc-runtime-core" }

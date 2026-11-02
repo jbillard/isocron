@@ -138,6 +138,13 @@ pub enum Prim {
     /// `argsort(x)`: the indices of the elements in their order, stable
     /// (D155): the primitive of `sort` and `sortBy`.
     ArgSort,
+    /// `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` of ECMAScript
+    /// (D156): a `f64`, NaN for a text that is not a number.
+    JsNumber,
+    ParseFloat,
+    ParseInt,
+    /// `BigInt(x)` of an integer or of a text (D156).
+    ToBigInt,
 }
 
 /// The mathematical functions of the runtime (SPEC section 10): one
@@ -208,8 +215,6 @@ impl Prim {
                 | Prim::Print
                 | Prim::Clock
                 | Prim::Bench
-                | Prim::ParseI64
-                | Prim::ParseF64
                 | Prim::ReadText
                 | Prim::ReadStdin
                 | Prim::ReadStdinText
@@ -218,7 +223,15 @@ impl Prim {
                 | Prim::ParseCsvF64
                 | Prim::ReadCsvF64
                 | Prim::PrintBytes
-                | Prim::OrError(_)
+                // parsing a text has no effect: a function (D156)
+                | Prim::OrError(
+                    Fallible::ReadBytes
+                        | Fallible::ReadF64
+                        | Fallible::ReadText
+                        | Fallible::ReadCsvF64
+                        | Fallible::WriteBytes
+                        | Fallible::WriteText
+                )
         )
     }
 }
@@ -232,6 +245,8 @@ pub enum Lit {
     Unit,
     /// A string literal (D134).
     Str(String),
+    /// A `bigint` literal (D156): its digits, their radix, its sign.
+    BigInt(String, u32, bool),
 }
 
 #[derive(Clone, Debug, PartialEq)]

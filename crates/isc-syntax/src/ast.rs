@@ -138,6 +138,8 @@ pub struct TypeExpr {
 pub enum TypeKind {
     Scalar(Scalar),
     Str,
+    /// `bigint` (D156).
+    BigInt,
     Unit,
     Named(String, Vec<TypeExpr>),
     Array(SizeExpr, Box<TypeExpr>),
@@ -241,6 +243,8 @@ pub enum ExprKind {
     /// Integer literal; `neg` is set when a unary minus was folded into it.
     Int { value: u128, neg: bool, suffix: Option<Scalar> },
     Float { value: f64, value32: f32, suffix: Option<Scalar> },
+    /// A `bigint` literal (D156): its digits in `radix`, negated or not.
+    BigInt { digits: String, radix: u32, neg: bool },
     Bool(bool),
     /// A string literal (D134).
     Str(String),
@@ -355,7 +359,7 @@ fn visit_type(t: &mut TypeExpr, f: &mut NameVisitor) -> crate::Result<()> {
             }
             visit_type(r, f)?;
         }
-        TypeKind::Scalar(_) | TypeKind::Str | TypeKind::Unit => {}
+        TypeKind::Scalar(_) | TypeKind::Str | TypeKind::BigInt | TypeKind::Unit => {}
     }
     Ok(())
 }
@@ -387,7 +391,7 @@ fn visit_pattern(p: &mut Pattern, f: &mut NameVisitor) -> crate::Result<()> {
 fn visit_expr(e: &mut Expr, f: &mut NameVisitor) -> crate::Result<()> {
     match &mut e.kind {
         ExprKind::Var(n) => f(n, e.span)?,
-        ExprKind::Int { .. } | ExprKind::Float { .. } | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Unit | ExprKind::OpFn(_) => {}
+        ExprKind::Int { .. } | ExprKind::Float { .. } | ExprKind::BigInt { .. } | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Unit | ExprKind::OpFn(_) => {}
         ExprKind::Tuple(es) | ExprKind::Array(es) => {
             for x in es.iter_mut() {
                 visit_expr(x, f)?;

@@ -2,9 +2,11 @@
 //! without the standard library) and by the interpreter (`isc-interp`): the
 //! text of every panic message, the printing of numbers and the canonical NaN.
 //! Both sides write through `core::fmt::Write`, so that they produce the same
-//! bytes. No allocation, no standard library: only `core`.
+//! bytes. No standard library: `core`, and `alloc` for `bigint` (D156).
 
 #![no_std]
+
+extern crate alloc;
 
 use core::fmt::{self, Write};
 
@@ -159,6 +161,10 @@ pub enum Panic<'a> {
     FixedDigits(i64),
     /// `readStdinText()` of bytes that are not UTF-8 (D155).
     StdinNotUtf8(i64),
+    /// `BigInt(s)` of a text that is not an integer (D156).
+    ParseBigInt(&'a str),
+    /// `a ** b` of a `bigint` with `b` past 2^32 - 1.
+    BigExponent,
 }
 
 impl fmt::Display for Panic<'_> {
@@ -186,6 +192,8 @@ impl fmt::Display for Panic<'_> {
             Panic::StrSlice { a, b, len } => write!(f, "slice out of bounds: [{}..{}] of a string of {} bytes", a, b, len),
             Panic::RepeatNegative(n) => write!(f, "repeat: the count is negative: {}", n),
             Panic::FixedDigits(d) => write!(f, "toFixed: the number of digits must be between 0 and 100, got {}", d),
+            Panic::ParseBigInt(t) => write!(f, "BigInt: `{}` is not an integer", t),
+            Panic::BigExponent => write!(f, "the exponent of a bigint is too large (above 4294967295)"),
             Panic::StdinNotUtf8(at) => write!(f, "readStdinText: the standard input is not UTF-8 text (invalid from byte {})", at),
             Panic::Size { a, b } => write!(f, "size mismatch: {} != {}", a, b),
             Panic::DivByZero => f.write_str("integer division by zero"),
@@ -675,4 +683,314 @@ fn fixed(w: &mut dyn Write, x: f64, d: usize) -> fmt::Result {
         w.write_char((b'0' + digit) as char)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// `bigint` (D156): a value is the byte `+` or `-`, then the digits of its
+// magnitude in base 128, least significant first, without a last zero; 0
+// is no byte (the zero of every value of the IR): canonical (equal values,
+// equal bytes), and ASCII (the interpreter holds it as a string)
+
+pub mod big {
+    use super::Panic;
+    use alloc::vec::Vec;
+    use core::cmp::Ordering;
+    use core::fmt::{self, Write};
+    use num_bigint::{BigInt, BigUint, Sign};
+    use num_traits::{Signed, ToPrimitive, Zero};
+
+    pub fn decode(e: &[u8]) -> BigInt {
+        let neg = e.first() == Some(&b'-');
+        let digits = if e.is_empty() { e } else { &e[1..] };
+        let mag = if digits.is_empty() { BigUint::zero() } else { BigUint::from_radix_le(digits, 128).unwrap_or_default() };
+        BigInt::from_biguint(if neg { Sign::Minus } else { Sign::Plus }, mag)
+    }
+
+    pub fn encode(b: &BigInt) -> Vec<u8> {
+        let mut out = Vec::new();
+        if !b.is_zero() {
+            out.push(if b.is_negative() { b'-' } else { b'+' });
+            let mut d = b.magnitude().to_radix_le(128);
+            while d.last() == Some(&0) {
+                d.pop();
+            }
+            out.extend_from_slice(&d);
+        }
+        out
+    }
+
+    pub fn from_i64(x: i64) -> Vec<u8> {
+        encode(&BigInt::from(x))
+    }
+
+    pub fn from_u64(x: u64) -> Vec<u8> {
+        encode(&BigInt::from(x))
+    }
+
+    /// A literal: its decimal digits (from the compiler).
+    pub fn literal(decimal: &str, neg: bool) -> Vec<u8> {
+        literal_radix(decimal, 10, neg)
+    }
+
+    pub fn literal_radix(digits: &str, radix: u32, neg: bool) -> Vec<u8> {
+        let m = BigUint::parse_bytes(digits.as_bytes(), radix).unwrap_or_default();
+        encode(&BigInt::from_biguint(if neg { Sign::Minus } else { Sign::Plus }, m))
+    }
+
+    /// `+ - * / % **` and the negation (`op` 0 to 6): `/` truncates toward
+    /// zero and `%` has the sign of the dividend, as ECMAScript.
+    pub fn op(op: u8, a: &[u8], b: &[u8]) -> Result<Vec<u8>, Panic<'static>> {
+        let (x, y) = (decode(a), decode(b));
+        let r = match op {
+            0 => x + y,
+            1 => x - y,
+            2 => x * y,
+            3 | 4 => {
+                if y.is_zero() {
+                    return Err(Panic::DivByZero);
+                }
+                if op == 3 {
+                    x / y
+                } else {
+                    x % y
+                }
+            }
+            5 => {
+                if y.is_negative() {
+                    return Err(Panic::NegativeExponent(y.to_i64().unwrap_or(i64::MIN)));
+                }
+                let e = y.to_u32().ok_or(Panic::BigExponent)?;
+                num_traits::Pow::pow(x, e)
+            }
+            _ => -x,
+        };
+        Ok(encode(&r))
+    }
+
+    pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
+        decode(a).cmp(&decode(b))
+    }
+
+    /// The value modulo 2^64, as `BigInt.asIntN(64, x)`.
+    pub fn to_i64(a: &[u8]) -> i64 {
+        let x = decode(a);
+        let low = x.magnitude().iter_u64_digits().next().unwrap_or(0);
+        if x.is_negative() {
+            (low as i64).wrapping_neg()
+        } else {
+            low as i64
+        }
+    }
+
+    /// The nearest `f64` (a half to even), as `Number(x)`.
+    pub fn to_f64(a: &[u8]) -> f64 {
+        let x = decode(a);
+        let m = x.magnitude();
+        let bits = m.bits();
+        let v = if bits <= 64 {
+            m.to_u64().unwrap_or(0) as f64
+        } else {
+            // the 64 first bits, and a last bit set when any of the others
+            // is: rounded once, to nearest even
+            let shift = bits - 64;
+            let top: BigUint = m >> shift;
+            let mut t = top.to_u64().unwrap_or(0);
+            if m.trailing_zeros().unwrap_or(0) < shift {
+                t |= 1;
+            }
+            let f = t as f64;
+            if shift > 1100 {
+                f64::INFINITY
+            } else {
+                libm::scalbn(f, shift as i32)
+            }
+        };
+        if x.is_negative() {
+            -v
+        } else {
+            v
+        }
+    }
+
+    pub fn write_decimal(w: &mut dyn Write, a: &[u8]) -> fmt::Result {
+        let x = decode(a);
+        w.write_str(&x.to_str_radix(10))
+    }
+
+    /// `BigInt(s)`: an optional sign, then decimal digits (white space
+    /// around allowed, as ECMAScript).
+    pub fn parse(s: &str) -> Option<Vec<u8>> {
+        let t = s.trim();
+        let (neg, digits) = match t.as_bytes().first() {
+            Some(b'-') => (true, &t[1..]),
+            Some(b'+') => (false, &t[1..]),
+            _ => (false, t),
+        };
+        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        Some(literal(digits, neg))
+    }
+}
+
+// ---------------------------------------------------------------------
+// `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` of ECMAScript
+// (D156): a `f64`, NaN when the text is not a number, never a panic
+
+/// The white space of ECMAScript (`StrWhiteSpaceChar`): its spaces (the
+/// category Zs, the tabs, U+FEFF) and its line terminators.
+fn js_space(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n' | '\u{B}' | '\u{C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'
+    )
+}
+
+/// The length of the longest prefix of `s` that is a `StrDecimalLiteral`
+/// without its sign (`Infinity`, digits, a point, an exponent).
+fn decimal_prefix(s: &str) -> usize {
+    if s.starts_with("Infinity") {
+        return 8;
+    }
+    let b = s.as_bytes();
+    let mut i = 0;
+    let digits = |i: &mut usize| {
+        let s = *i;
+        while *i < b.len() && b[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        *i - s
+    };
+    let int = digits(&mut i);
+    let mut frac = 0;
+    if i < b.len() && b[i] == b'.' {
+        let mut j = i + 1;
+        frac = digits(&mut j);
+        if int > 0 || frac > 0 {
+            i = j;
+        }
+    }
+    if int == 0 && frac == 0 {
+        return 0;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        if digits(&mut j) > 0 {
+            i = j;
+        }
+    }
+    i
+}
+
+/// The value of a decimal literal (validated by `decimal_prefix`).
+fn decimal_value(t: &str) -> f64 {
+    if t == "Infinity" {
+        return f64::INFINITY;
+    }
+    t.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// `Number(s)`: the whole text (white space around it ignored) is a number:
+/// decimal with a sign, `Infinity`, or `0x`, `0o`, `0b` without a sign;
+/// empty: 0; anything else: NaN.
+pub fn js_number(s: &str) -> f64 {
+    let t = s.trim_matches(js_space);
+    if t.is_empty() {
+        return 0.0;
+    }
+    let b = t.as_bytes();
+    if b.len() > 2 && b[0] == b'0' {
+        let radix = match b[1] {
+            b'x' | b'X' => 16,
+            b'o' | b'O' => 8,
+            b'b' | b'B' => 2,
+            _ => 0,
+        };
+        if radix > 0 {
+            let digits = &t[2..];
+            return if digits.chars().all(|c| c.is_digit(radix)) { radix_value(digits, radix) } else { f64::NAN };
+        }
+    }
+    let (neg, rest) = match b[0] {
+        b'-' => (true, &t[1..]),
+        b'+' => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let n = decimal_prefix(rest);
+    if n == 0 || n != rest.len() {
+        return f64::NAN;
+    }
+    let v = decimal_value(rest);
+    if neg {
+        -v
+    } else {
+        v
+    }
+}
+
+/// The integer of these digits in this radix, rounded once to the nearest
+/// `f64`.
+fn radix_value(digits: &str, radix: u32) -> f64 {
+    let d: alloc::vec::Vec<u8> = digits.chars().map(|c| c.to_digit(radix).unwrap_or(0) as u8).collect();
+    match num_bigint::BigUint::from_radix_be(&d, radix) {
+        Some(m) => big::to_f64(&big::encode(&num_bigint::BigInt::from(m))),
+        None => f64::NAN,
+    }
+}
+
+/// `parseFloat(s)`: the longest decimal prefix after the white space and a
+/// sign; none: NaN.
+pub fn js_parse_float(s: &str) -> f64 {
+    let t = s.trim_start_matches(js_space);
+    let (neg, rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let n = decimal_prefix(rest);
+    if n == 0 {
+        return f64::NAN;
+    }
+    let v = decimal_value(&rest[..n]);
+    if neg {
+        -v
+    } else {
+        v
+    }
+}
+
+/// `parseInt(s, radix)`: the longest prefix of digits of the radix (2 to
+/// 36; 0: none given, 10, or 16 after `0x`) after the white space and a
+/// sign; none, or a radix outside: NaN.
+pub fn js_parse_int(s: &str, radix: i64) -> f64 {
+    let t = s.trim_start_matches(js_space);
+    let (neg, mut rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let mut r = radix;
+    if r != 0 && !(2..=36).contains(&r) {
+        return f64::NAN;
+    }
+    if (r == 0 || r == 16) && (rest.starts_with("0x") || rest.starts_with("0X")) {
+        rest = &rest[2..];
+        r = 16;
+    }
+    if r == 0 {
+        r = 10;
+    }
+    let n = rest.chars().take_while(|c| c.is_digit(r as u32)).count();
+    if n == 0 {
+        return f64::NAN;
+    }
+    let v = radix_value(&rest[..n], r as u32);
+    if neg {
+        -v
+    } else {
+        v
+    }
 }

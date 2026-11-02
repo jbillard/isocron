@@ -99,7 +99,7 @@ impl Array {
             Type::F64 => Array::F64(Vec::with_capacity(n)),
             Type::F32 => Array::F32(Vec::with_capacity(n)),
             Type::Bool => Array::Bool(Vec::with_capacity(n)),
-            Type::Str => Array::Str(Vec::with_capacity(n)),
+            Type::Str | Type::Big => Array::Str(Vec::with_capacity(n)),
             Type::Tuple(ts) => Array::Tuple(ts.iter().map(|t| Array::with_capacity(t, n)).collect()),
             Type::Array(_) => Array::Rows(Vec::with_capacity(n)),
             Type::Rec(_) => Array::Nodes(Vec::with_capacity(n)),
@@ -251,6 +251,88 @@ impl Interp<'_> {
                     Ok(x) => Value::Str(Rc::from(x)),
                     Err(p) => return panic_at(e, std::format!("{}", p)),
                 }
+            }
+            // `bigint` (D156): the code of the runtime
+            S::Big(b) => {
+                use isc_ir::BigOp as B;
+                use isc_runtime_core::big;
+                let bytes = |v: &Value| match v {
+                    Value::Str(x) => x.as_bytes().to_vec(),
+                    v => panic!("bigint expected, got {:?}", v),
+                };
+                let enc = |v: Vec<u8>| Value::Str(Rc::from(String::from_utf8(v).unwrap_or_default()));
+                match b {
+                    B::Add | B::Sub | B::Mul | B::Div | B::Rem | B::Pow | B::Neg => {
+                        let code = match b {
+                            B::Add => 0,
+                            B::Sub => 1,
+                            B::Mul => 2,
+                            B::Div => 3,
+                            B::Rem => 4,
+                            B::Pow => 5,
+                            _ => 6,
+                        };
+                        let y = if vs.len() > 1 { bytes(&vs[1]) } else { Vec::new() };
+                        match big::op(code, &bytes(&vs[0]), &y) {
+                            Ok(r) => enc(r),
+                            Err(p) => return panic_at(e, std::format!("{}", p)),
+                        }
+                    }
+                    B::Cmp(op) => {
+                        let o = big::cmp(&bytes(&vs[0]), &bytes(&vs[1]));
+                        Value::Bool(match op {
+                            BinOp::Lt => o.is_lt(),
+                            BinOp::Le => o.is_le(),
+                            BinOp::Gt => o.is_gt(),
+                            _ => o.is_ge(),
+                        })
+                    }
+                    B::FromI64 => match vs[0] {
+                        Value::Int(i) => enc(big::from_i64(i)),
+                        _ => panic!("integer expected"),
+                    },
+                    B::FromU64 => match vs[0] {
+                        Value::Int(i) => enc(big::from_u64(i as u64)),
+                        _ => panic!("integer expected"),
+                    },
+                    B::Parse => {
+                        let t = s(&vs[0]);
+                        match big::parse(&t) {
+                            Some(r) => enc(r),
+                            None => return panic_at(e, rt::text(&isc_runtime_core::Panic::ParseBigInt(&t))),
+                        }
+                    }
+                    B::ToI64 => Value::Int(big::to_i64(&bytes(&vs[0]))),
+                    B::ToF64 => Value::F64(big::to_f64(&bytes(&vs[0]))),
+                    B::ToString => {
+                        let mut out = String::new();
+                        let _ = big::write_decimal(&mut out, &bytes(&vs[0]));
+                        Value::Str(Rc::from(out))
+                    }
+                    B::ArgSort => {
+                        let a = match &vs[0] {
+                            Value::Array(a) => a.clone(),
+                            v => panic!("array expected, got {:?}", v),
+                        };
+                        let v: Vec<Vec<u8>> = match &*a {
+                            Array::Str(v) => v.iter().map(|x| x.as_bytes().to_vec()).collect(),
+                            a => panic!("argsort of {:?}", a),
+                        };
+                        let mut idx: Vec<usize> = (0..v.len()).collect();
+                        idx.sort_by(|&i, &j| big::cmp(&v[i], &v[j]).then(i.cmp(&j)));
+                        Value::Array(Rc::new(Array::Int(idx.into_iter().map(|i| i as i64).collect())))
+                    }
+                }
+            }
+            // ECMAScript's conversions (D156)
+            S::JsNumber => Value::F64(isc_runtime_core::js_number(&s(&vs[0]))),
+            S::JsParseFloat => Value::F64(isc_runtime_core::js_parse_float(&s(&vs[0]))),
+            S::JsParseInt => {
+                let r = match vs[1] {
+                    Value::Int(r) => r,
+                    _ => 0,
+                };
+                Value::F64(isc_runtime_core::js_parse_int(&s(&vs[0]), r))
             }
             // stable: the ties by index (D155)
             S::ArgSort => {
@@ -1346,6 +1428,10 @@ fn print_value(v: &Value, t: &Type, shape: &isc_ir::Shape, recs: &[RecType], s: 
         (Value::F32(f), _) => s.push_str(&rt::format_f32(*f)),
         (Value::Bool(b), _) => s.push_str(if *b { "true" } else { "false" }),
         (Value::Unit, _) => s.push_str("()"),
+        // a `bigint`: its decimal text (D156)
+        (Value::Str(x), Type::Big) => {
+            let _ = isc_runtime_core::big::write_decimal(s, x.as_bytes());
+        }
         (Value::Str(x), _) => s.push_str(x),
         (Value::Tuple(vs), Type::Tuple(ts)) if matches!(shape, Shape::Sum(_)) => {
             let vars = match shape {
@@ -1414,7 +1500,8 @@ fn zero_value(t: &Type) -> Value {
         Type::F32 => Value::F32(0.0),
         Type::Bool => Value::Bool(false),
         Type::Unit => Value::Unit,
-        Type::Str => Value::Str(Rc::from("")),
+        // the zero `bigint` has no byte (D156)
+        Type::Str | Type::Big => Value::Str(Rc::from("")),
         Type::Tuple(ts) => Value::Tuple(Rc::new(ts.iter().map(zero_value).collect())),
         Type::Array(e) => Value::Array(Rc::new(Array::with_capacity(e, 0))),
         // the slot of a variant not taken: never read

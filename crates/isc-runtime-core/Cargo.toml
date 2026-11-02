@@ -8,3 +8,7 @@ license.workspace = true
 # the mathematical functions of musl, in Rust, without std: one
 # implementation for the interpreter and every target (D108)
 libm = { version = "0.2", default-features = false }
+# arbitrary integers (`bigint`, D156), without std: the same code for the
+# interpreter and every target (the runtime gives `alloc` its allocator)
+num-bigint = { version = "0.4", default-features = false }
+num-traits = { version = "0.2", default-features = false }

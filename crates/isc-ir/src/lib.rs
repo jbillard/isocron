@@ -34,6 +34,9 @@ pub enum Type {
     Bool,
     Unit,
     Str,
+    /// An integer of any size (D156): laid out, owned and freed as a
+    /// string (its bytes: `isc_runtime_core::big`).
+    Big,
     Tuple(Vec<Type>),
     Array(Box<Type>),
     /// A value of the recursive type `Program::recs[i]`: a pointer to a
@@ -68,7 +71,7 @@ impl Type {
     pub fn has_heap(&self) -> bool {
         match self {
             // a string is owned and freed as an array of bytes (D134)
-            Type::Array(_) | Type::Rec(_) | Type::Str => true,
+            Type::Array(_) | Type::Rec(_) | Type::Str | Type::Big => true,
             Type::Tuple(ts) => ts.iter().any(|t| t.has_heap()),
             _ => false,
         }
@@ -173,6 +176,37 @@ pub enum StrOp {
     ToFixed,
     Slice,
     /// `argsort(x)` of an array of scalars or strings (D155): a new `[n]i64`.
+    ArgSort,
+    /// An operation of `bigint` (D156).
+    Big(BigOp),
+    /// ECMAScript's `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` (D156).
+    JsNumber,
+    JsParseFloat,
+    JsParseInt,
+}
+
+/// The operations of `bigint` (D156): `/` truncated toward zero, `%` of the
+/// sign of the dividend, as ECMAScript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BigOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Pow,
+    Neg,
+    /// `<`, `<=`, `>`, `>=` (equality is by bytes: the bytes are canonical).
+    Cmp(BinOp),
+    /// From an `i64`, a `u64`, a text (a panic if it is not an integer).
+    FromI64,
+    FromU64,
+    Parse,
+    /// To an `i64` (modulo 2^64), the nearest `f64`, its decimal text.
+    ToI64,
+    ToF64,
+    ToString,
+    /// `argsort` of an array of `bigint`.
     ArgSort,
 }
 

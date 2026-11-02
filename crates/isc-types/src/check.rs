@@ -150,6 +150,10 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "readStdinText" => Prim::ReadStdinText,
         "readStdinLines" => Prim::ReadStdinLines,
         "argsort" => Prim::ArgSort,
+        "Number" => Prim::JsNumber,
+        "parseFloat" => Prim::ParseFloat,
+        "parseInt" => Prim::ParseInt,
+        "BigInt" => Prim::ToBigInt,
         "join" => Prim::Join,
         "printBytes" => Prim::PrintBytes,
         _ if Fallible::from_name(name).is_some() => Prim::OrError(Fallible::from_name(name).unwrap()),
@@ -237,6 +241,7 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
     Ok(match &t.kind {
         TypeKind::Scalar(s) => scalar_ty(*s, t.span)?,
         TypeKind::Str => Ty::Str,
+        TypeKind::BigInt => Ty::BigInt,
         TypeKind::Unit => Ty::Unit,
         TypeKind::Named(name, args) => {
             if let Some(i) = cx.generics.iter().position(|g| &g.0 == name) {
@@ -638,6 +643,13 @@ impl<'g> FnCx<'g> {
                 }
                 Ok(())
             }
+            // an integer of any size (D156): every class of the integers
+            Ty::BigInt => {
+                if lit == LitKind::Float || classes & class::FLOAT != 0 {
+                    return fail(&t, self);
+                }
+                Ok(())
+            }
             // ordered by bytes, lexicographic (D134)
             Ty::Str => {
                 if lit != LitKind::None || classes & !(class::EQ | class::ORD | class::ELEM | class::ROW) != 0 {
@@ -755,7 +767,7 @@ impl<'g> FnCx<'g> {
             (Ty::Var(x), _) => self.bind(*x, &b),
             (_, Ty::Var(y)) => self.bind(*y, &a),
             (Ty::Int(k1), Ty::Int(k2)) if k1 == k2 => Ok(()),
-            (Ty::F64, Ty::F64) | (Ty::F32, Ty::F32) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Str, Ty::Str) => Ok(()),
+            (Ty::F64, Ty::F64) | (Ty::F32, Ty::F32) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Str, Ty::Str) | (Ty::BigInt, Ty::BigInt) => Ok(()),
             (Ty::Param(p), Ty::Param(q)) if p == q => Ok(()),
             (Ty::Tuple(x), Ty::Tuple(y)) if x.len() == y.len() => {
                 for (s, t) in x.iter().zip(y.iter()) {
@@ -897,6 +909,13 @@ impl<'g> FnCx<'g> {
             }
             ExprKind::Bool(b) => Ok(self.mk(TExprKind::Lit(Lit::Bool(*b)), Ty::Bool, span)),
             ExprKind::Str(s) => Ok(self.mk(TExprKind::Lit(Lit::Str(s.clone())), Ty::Str, span)),
+            ExprKind::BigInt { digits, radix, neg } => {
+                let t = self.mk(TExprKind::Lit(Lit::BigInt(digits.clone(), *radix, *neg)), Ty::BigInt, span);
+                if let Some(e) = expected {
+                    self.unify(e, &Ty::BigInt, span)?;
+                }
+                Ok(t)
+            }
             ExprKind::Unit => Ok(self.mk(TExprKind::Lit(Lit::Unit), Ty::Unit, span)),
             ExprKind::Var(name) => self.check_var(name, span),
             ExprKind::OpFn(op) => {
@@ -1415,6 +1434,8 @@ impl<'g> FnCx<'g> {
                 Prim::Trim | Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd => {
                     Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str)), span))
                 }
+                Prim::ParseI64 => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64))), span)),
+                Prim::ParseF64 | Prim::ParseFloat | Prim::JsNumber => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::F64)), span)),
                 Prim::StrLen => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64))), span)),
                 Prim::Concat => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str, Ty::Str], Box::new(Ty::Str)), span)),
                 Prim::ToString => {
@@ -1494,7 +1515,7 @@ impl<'g> FnCx<'g> {
             // strings: ordered by bytes (D134); a type parameter of class
             // `Ord`: a scalar or a string, known in each instance (D155)
             match self.shallow(&lhs.ty) {
-                Ty::Str => {}
+                Ty::Str | Ty::BigInt => {}
                 Ty::Param(_) => self.require(&lhs.ty, class::ORD, lhs.span)?,
                 _ => {
                     self.require(&lhs.ty, class::ORD | class::SCALAR, lhs.span)?;
@@ -1866,7 +1887,14 @@ impl<'g> FnCx<'g> {
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
-            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort => 1,
+            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt => 1,
+            Prim::ParseInt => {
+                if args.len() == 1 {
+                    1
+                } else {
+                    2
+                }
+            }
             Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
             Prim::ReplaceAll | Prim::StrSlice => 3,
             // `padStart(s, n)` pads with spaces, as TypeScript
@@ -2209,6 +2237,42 @@ impl<'g> FnCx<'g> {
                     _ => self.fresh_size(span),
                 };
                 Ok(mk(vec![x], Ty::Array(size, Box::new(Ty::Int(IntKind::I64))), self))
+            }
+            // `BigInt(x)` of an integer, or of a text (a panic if it is not
+            // an integer) (D156)
+            Prim::ToBigInt => {
+                let x = self.check(&args[0], None)?;
+                match self.shallow(&x.ty) {
+                    Ty::Str | Ty::BigInt => {}
+                    _ => self.require(&x.ty, class::INTEGRAL | class::SCALAR, x.span)?,
+                }
+                Ok(mk(vec![x], Ty::BigInt, self))
+            }
+            // ECMAScript's conversions (D156): `Number` of a text or of a number
+            Prim::JsNumber => {
+                let x = self.check(&args[0], None)?;
+                if self.shallow(&x.ty) != Ty::Str {
+                    self.require(&x.ty, class::NUM | class::SCALAR, x.span)?;
+                }
+                Ok(mk(vec![x], Ty::F64, self))
+            }
+            Prim::ParseFloat | Prim::ParseInt => {
+                let a = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &a.ty, a.span)?;
+                let mut xs = vec![a];
+                if p == Prim::ParseInt {
+                    let i64t = Ty::Int(IntKind::I64);
+                    let r = match args.get(1) {
+                        Some(r) => {
+                            let r = self.check(r, Some(&i64t))?;
+                            self.unify(&i64t, &r.ty, r.span)?;
+                            r
+                        }
+                        None => self.mk(TExprKind::Lit(Lit::Int(0)), i64t, span),
+                    };
+                    xs.push(r);
+                }
+                Ok(mk(xs, Ty::F64, self))
             }
             // the standard input (D155)
             Prim::ReadStdin => {
@@ -2711,7 +2775,7 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
             K::Tuple(ts) => ts.iter().any(|a| mentions(a, names)),
             K::Record(fs) => fs.iter().any(|(_, a)| mentions(a, names)),
             K::Fn(ps, r) => ps.iter().any(|a| mentions(a, names)) || mentions(r, names),
-            K::Scalar(_) | K::Str | K::Unit => false,
+            K::Scalar(_) | K::Str | K::BigInt | K::Unit => false,
         }
     }
     let mut imports: Imports = HashMap::new();
@@ -2997,7 +3061,7 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
     }
     for (t, sp) in cx.deferred_scalar.clone() {
         let t = cx.zonk(&t)?;
-        if !t.is_scalar() && !matches!(t, Ty::Param(_)) {
+        if !t.is_scalar() && !matches!(t, Ty::Param(_) | Ty::BigInt) {
             return err(sp, format!("expected a scalar here, found `{}`; add a type annotation", cx.show(&t)));
         }
     }

@@ -144,6 +144,8 @@ impl S {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum T {
+    /// A `bigint` literal `123n`, `0xffn` (D156): its digits and radix.
+    BigInt(String, u32),
     Int { value: u128, suffix: Option<Scalar> },
     Float { value: f64, value32: f32, suffix: Option<Scalar> },
     Str(String),
@@ -162,6 +164,7 @@ pub(crate) fn describe(t: &T) -> String {
     match t {
         T::Int { value, .. } => format!("integer `{}`", value),
         T::Float { value, .. } => format!("float `{}`", value),
+        T::BigInt(d, _) => format!("bigint `{}n`", d),
         T::Str(s) => format!("string {:?}", s),
         T::Ident(s) => format!("`{}`", s),
         T::Sym(s) => format!("`{}`", s.text()),
@@ -468,6 +471,11 @@ fn lex_number(chars: &[char], i: &mut usize, span: Span) -> Result<T> {
                 digits(i, &mut text);
             }
         }
+    }
+    // `123n`: a `bigint` (D156)
+    if !is_float && *i < chars.len() && chars[*i] == 'n' && !chars.get(*i + 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
+        *i += 1;
+        return Ok(T::BigInt(text, if radix_hex { 16 } else { 10 }));
     }
     // Optional type suffix: `42u8`, `1.0f32`.
     let mut suffix = None;

@@ -150,7 +150,7 @@ fn elem_bytes(t: &Type) -> u64 {
         Type::F64 => 8,
         Type::F32 => 4,
         Type::Bool | Type::Unit => 1,
-        Type::Str => 16,
+        Type::Str | Type::Big => 16,
         Type::Tuple(ts) => ts.iter().map(elem_bytes).sum(),
         Type::Array(_) => 16,
         Type::Rec(_) => 8,

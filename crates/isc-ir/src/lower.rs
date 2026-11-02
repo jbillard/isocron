@@ -265,6 +265,7 @@ fn extern_fns(p: &TProgram) -> Vec<ExternFn> {
             Ty::F32 => Type::F32,
             Ty::Bool => Type::Bool,
             Ty::Str => Type::Str,
+            Ty::BigInt => Type::Big,
             Ty::Array(_, e) => Type::Array(Box::new(ty(e))),
             _ => Type::Unit,
         }
@@ -716,6 +717,7 @@ impl<'p> Lower<'p> {
             Ty::Bool => Type::Bool,
             Ty::Unit => Type::Unit,
             Ty::Str => Type::Str,
+            Ty::BigInt => Type::Big,
             Ty::Sum { id, args, .. } if self.p.sums[id as usize].recursive => Type::Rec(self.rec_index(env, id, &args, span)?),
             Ty::Sum { id, args, .. } => Type::Tuple(self.sum_layout(env, id, &args, span)?.0),
             // a record is a tuple of its fields, sorted by name
@@ -829,6 +831,18 @@ impl<'p> Lower<'p> {
         let t = self.ty(env, ty, span)?;
         if let tast::Lit::Str(s) = l {
             return Ok(Expr::new(ExprKind::StrLit(s.clone()), Type::Str, span));
+        }
+        // a `bigint` (D156): its bytes, computed here
+        let big = |b: Vec<u8>| Expr::new(ExprKind::StrLit(String::from_utf8(b).unwrap_or_default()), Type::Big, span);
+        match (l, &t) {
+            (tast::Lit::BigInt(digits, radix, neg), _) => {
+                return Ok(big(isc_runtime_core::big::literal_radix(digits, *radix, *neg)));
+            }
+            (tast::Lit::Int(v), Type::Big) => {
+                let b = if *v < 0 { isc_runtime_core::big::literal(&(-v).to_string(), true) } else { isc_runtime_core::big::literal(&v.to_string(), false) };
+                return Ok(big(b));
+            }
+            _ => {}
         }
         let lit = match (l, &t) {
             (tast::Lit::Int(v), Type::Int(k)) => {
@@ -1023,6 +1037,9 @@ impl<'p> Lower<'p> {
             }
             TExprKind::Unary(op, x) => {
                 let x = self.expr(env, x)?;
+                if x.ty == Type::Big {
+                    return Ok(Expr::new(ExprKind::StrOp(StrOp::Big(BigOp::Neg), vec![x]), Type::Big, span));
+                }
                 if x.ty.is_array() {
                     let et = x.ty.elem().clone();
                     let p = self.new_var("x", et.clone());
@@ -1068,6 +1085,11 @@ impl<'p> Lower<'p> {
             TExprKind::Pow(b, k) => {
                 let b = self.expr(env, b)?;
                 let k = self.expr(env, k)?;
+                // `bigint` (D156): an exponent of any integer type
+                if b.ty == Type::Big {
+                    let k = self.to_big(k, span);
+                    return Ok(Expr::new(ExprKind::StrOp(StrOp::Big(BigOp::Pow), vec![b, k]), Type::Big, span));
+                }
                 if b.ty.is_array() {
                     let et = b.ty.elem().clone();
                     let p = self.new_var("x", et.clone());
@@ -1093,6 +1115,21 @@ impl<'p> Lower<'p> {
                 Ok(Expr::new(ExprKind::If(Box::new(c), Box::new(t), Box::new(f)), ty, span))
             }
             TExprKind::Block(stmts, r) => self.block(env, stmts, r),
+        }
+    }
+
+    /// An integer as a `bigint` (D156).
+    fn to_big(&mut self, x: Expr, span: Span) -> Expr {
+        match &x.ty {
+            Type::Big => x,
+            Type::Int(k) if !k.signed() => {
+                let x = if k.bits() < 64 { Expr::new(ExprKind::Convert(Box::new(x)), Type::Int(IntKind::U64), span) } else { x };
+                Expr::new(ExprKind::StrOp(StrOp::Big(BigOp::FromU64), vec![x]), Type::Big, span)
+            }
+            _ => {
+                let x = if x.ty != Type::Int(IntKind::I64) { Expr::new(ExprKind::Convert(Box::new(x)), Type::Int(IntKind::I64), span) } else { x };
+                Expr::new(ExprKind::StrOp(StrOp::Big(BigOp::FromI64), vec![x]), Type::Big, span)
+            }
         }
     }
 
@@ -1158,6 +1195,29 @@ impl<'p> Lower<'p> {
     /// A binary operator on IR values; arithmetic on arrays is element-wise.
     fn binary(&mut self, op: BinOp, l: Expr, r: Expr, span: Span) -> R<Expr> {
         let boolean = Type::Bool;
+        // `bigint` (D156): its operations; equality by bytes, below
+        if l.ty == Type::Big && !matches!(op, BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or) {
+            let (b, t) = match op {
+                BinOp::Add => (BigOp::Add, Type::Big),
+                BinOp::Sub => (BigOp::Sub, Type::Big),
+                BinOp::Mul => (BigOp::Mul, Type::Big),
+                BinOp::Div => (BigOp::Div, Type::Big),
+                BinOp::Rem => (BigOp::Rem, Type::Big),
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => (BigOp::Cmp(op), boolean),
+                // `min` and `max`: a comparison and a choice
+                BinOp::Min | BinOp::Max => {
+                    let (a, b) = (self.new_var("a", Type::Big), self.new_var("b", Type::Big));
+                    let (av, bv) = (Expr::var(a, Type::Big, span), Expr::var(b, Type::Big, span));
+                    let c = if op == BinOp::Min { BinOp::Le } else { BinOp::Ge };
+                    let test = Expr::new(ExprKind::StrOp(StrOp::Big(BigOp::Cmp(c)), vec![av.clone(), bv.clone()]), Type::Bool, span);
+                    let pick = Expr::new(ExprKind::If(Box::new(test), Box::new(av), Box::new(bv)), Type::Big, span);
+                    let inner = self.let_(b, r, pick, false, span);
+                    return Ok(self.let_(a, l, inner, false, span));
+                }
+                _ => return Err(Diagnostic::new(span, format!("`{}` does not apply to a `bigint`", op.text()))),
+            };
+            return Ok(Expr::new(ExprKind::StrOp(StrOp::Big(b), vec![l, r]), t, span));
+        }
         match op {
             BinOp::And => Ok(Expr::new(
                 ExprKind::If(Box::new(l), Box::new(r), Box::new(Expr::lit(Lit::Bool(false), Type::Bool, span))),
@@ -1231,8 +1291,8 @@ impl<'p> Lower<'p> {
                 let inner = self.let_(b, r, t, false, span);
                 Ok(self.let_(a, l, inner, false, span))
             }
-            // by bytes (D134)
-            Type::Str => Ok(Expr::new(ExprKind::StrOp(StrOp::Cmp(BinOp::Eq), vec![l, r]), bt, span)),
+            // by bytes (D134); a `bigint` too: its bytes are canonical (D156)
+            Type::Str | Type::Big => Ok(Expr::new(ExprKind::StrOp(StrOp::Cmp(BinOp::Eq), vec![l, r]), bt, span)),
             // structural, by a function of the code generator (D129); the
             // strings by bytes (D134)
             Type::Rec(_) => {
@@ -1886,6 +1946,8 @@ impl<'p> Lower<'p> {
                         Arg::Func(_) => return internal(span, "bad primitive argument"),
                     }
                 }
+                // `toString` of a `bigint` (D156)
+                let op = if op == StrOp::ToString && xs.first().is_some_and(|x| x.ty == Type::Big) { StrOp::Big(BigOp::ToString) } else { op };
                 Ok(Expr::new(ExprKind::StrOp(op, xs), ret.clone(), span))
             }
             FuncVal::Prim(p) => {
@@ -1899,6 +1961,11 @@ impl<'p> Lower<'p> {
                         Ok(Expr::new(ExprKind::Sqrt(Box::new(x)), t, span))
                     }
                     Prim::Convert(_) => Ok(Expr::new(ExprKind::Convert(Box::new(x)), ret.clone(), span)),
+                    // parsing as a function (D156): `lines(t).map(parseF64)`
+                    Prim::ParseI64 => Ok(Expr::new(ExprKind::Action(ActionOp::ParseI64, vec![x]), ret.clone(), span)),
+                    Prim::ParseF64 => Ok(Expr::new(ExprKind::Action(ActionOp::ParseF64, vec![x]), ret.clone(), span)),
+                    Prim::ParseFloat => Ok(Expr::new(ExprKind::StrOp(StrOp::JsParseFloat, vec![x]), ret.clone(), span)),
+                    Prim::JsNumber => Ok(Expr::new(ExprKind::StrOp(StrOp::JsNumber, vec![x]), ret.clone(), span)),
                     _ => internal(span, "primitive used as a value"),
                 }
             }
@@ -2230,9 +2297,13 @@ impl<'p> Lower<'p> {
             | Prim::TrimEnd
             | Prim::ToFixed
             | Prim::ArgSort
+            | Prim::ParseFloat
+            | Prim::ParseInt
             | Prim::StrSlice => {
                 let op = match p {
                     Prim::ArgSort => StrOp::ArgSort,
+                    Prim::ParseFloat => StrOp::JsParseFloat,
+                    Prim::ParseInt => StrOp::JsParseInt,
                     Prim::IndexOf => StrOp::IndexOf,
                     Prim::Includes => StrOp::Includes,
                     Prim::StartsWith => StrOp::StartsWith,
@@ -2258,7 +2329,12 @@ impl<'p> Lower<'p> {
                     }
                     out.push(x);
                 }
-                ExprKind::StrOp(op, out)
+                // the order of `bigint` (D156)
+                if op == StrOp::ArgSort && out[0].ty.elem() == &Type::Big {
+                    ExprKind::StrOp(StrOp::Big(BigOp::ArgSort), out)
+                } else {
+                    ExprKind::StrOp(op, out)
+                }
             }
             Prim::Concat | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::Lines | Prim::Split | Prim::Trim | Prim::Join => {
                 let op = match p {
@@ -2276,7 +2352,9 @@ impl<'p> Lower<'p> {
                 for a in args {
                     out.push(self.expr(env, a)?);
                 }
-                if op == StrOp::Len && out[0].ty.is_array() {
+                if op == StrOp::ToString && out[0].ty == Type::Big {
+                    ExprKind::StrOp(StrOp::Big(BigOp::ToString), out)
+                } else if op == StrOp::Len && out[0].ty.is_array() {
                     ExprKind::Len(Box::new(out.remove(0)))
                 } else if op == StrOp::Concat && out[0].ty.is_array() {
                     let b = out.pop().unwrap();
@@ -2449,6 +2527,18 @@ impl<'p> Lower<'p> {
                 let checked = Expr::new(ExprKind::CheckNonNegative(Box::new(nv), Box::new(built)), ty, span);
                 return Ok(self.let_(v, n, checked, false, span));
             }
+            // `Number(x)` (D156): of a text, ECMAScript's conversion; of a
+            // number, its `f64`
+            Prim::JsNumber => {
+                let x = self.expr(env, &args[0])?;
+                if x.ty == Type::Str {
+                    ExprKind::StrOp(StrOp::JsNumber, vec![x])
+                } else if x.ty == Type::Big {
+                    ExprKind::StrOp(StrOp::Big(BigOp::ToF64), vec![x])
+                } else {
+                    ExprKind::Convert(Box::new(x))
+                }
+            }
             Prim::Iota => ExprKind::Iota(Box::new(self.expr(env, &args[0])?)),
             Prim::Fill => {
                 let n = self.expr(env, &args[0])?;
@@ -2488,7 +2578,28 @@ impl<'p> Lower<'p> {
                 }
                 ExprKind::Math(f, xs)
             }
+            // of a `bigint` (D156): modulo 2^64, or the nearest float
+            Prim::Convert(_) if args[0].ty == Ty::BigInt || self.conc(env, &args[0].ty) == Ty::BigInt => {
+                let x = self.expr(env, &args[0])?;
+                let (op, t) = match &ty {
+                    Type::F64 | Type::F32 => (BigOp::ToF64, Type::F64),
+                    _ => (BigOp::ToI64, Type::Int(IntKind::I64)),
+                };
+                let y = Expr::new(ExprKind::StrOp(StrOp::Big(op), vec![x]), t.clone(), span);
+                if t == ty {
+                    return Ok(y);
+                }
+                ExprKind::Convert(Box::new(y))
+            }
             Prim::Convert(_) => ExprKind::Convert(Box::new(self.expr(env, &args[0])?)),
+            // `BigInt(x)` (D156)
+            Prim::ToBigInt => {
+                let x = self.expr(env, &args[0])?;
+                match &x.ty {
+                    Type::Str => ExprKind::StrOp(StrOp::Big(BigOp::Parse), vec![x]),
+                    _ => return Ok(self.to_big(x, span)),
+                }
+            }
             Prim::Bench => {
                 let r = self.expr(env, &args[0])?;
                 let fv = self.fn_value(env, &args[1])?;

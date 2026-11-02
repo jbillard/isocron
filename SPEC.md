@@ -156,7 +156,7 @@ pattern      = "_" | IDENT [ "." IDENT ] | LITERAL | "-" NUMBER | "(" ")"
 - **Tableaux à deux dimensions** : `T[r][c]` est un tableau de `r` lignes de `c` éléments ; `x[i]` est une ligne.
 - **Motifs** : un `IDENT` suivi de `(` est un constructeur de type somme ; seul, c'est une variable, sauf s'il nomme un constructeur sans argument.
 - **Modules** (D139, D150) : `import * as m from "./m";` donne accès à ce que le module exporte sous les noms `m.f`, `m.T`, `m.C` ; `import { f, g as h } from "./m";` rend ces noms utilisables sans préfixe, après les variables locales. Un chemin commençant par `./` ou `../` est relatif au fichier qui importe ; un nom nu est cherché dans `$ISC_PATH`. Seul ce qui est déclaré avec `export` est visible d'un autre fichier ; un module est un fichier, lu une seule fois.
-- **Noms** (D151) : la bibliothèque suit les conventions de TypeScript, en camelCase (`readF64`, `parseCsvF64`, `printBytes`, `@requireFused`), et reprend ses noms là où le sens est le même (`String(x)`, `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`) ; un nom de TypeScript au sens différent n'est pas repris (`parseFloat("1,5")` vaut 1 en TypeScript ; `parseF64` refuse ce texte).
+- **Noms** (D151) : la bibliothèque suit les conventions de TypeScript, en camelCase (`readF64`, `parseCsvF64`, `printBytes`, `@requireFused`), et reprend ses noms là où le sens est le même (`String(x)`, `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`) ; un nom de TypeScript n'est repris qu'avec son sens : `parseFloat("1,5")` vaut 1 comme en TypeScript, `parseF64`, strict, refuse ce texte (D156). `parseI64` et `parseF64` sont des fonctions pures, comme `Number`, `parseFloat` et `parseInt`.
 - **Gabarits** : `` `a${e}b` `` est la concaténation des textes et des insertions, chacune écrite comme `print` l'écrit (scalaire ou chaîne).
 
 ### Priorité des opérateurs
@@ -227,6 +227,7 @@ Chaque valeur a un type connu à la compilation, et aucune conversion entre vale
 | `boolean` | 1 octet | `true`, `false` |
 | `void` | 0 octet | type unité, résultat d'une action sans valeur |
 | `string` | opaque | texte UTF-8 immuable ; valeur comme les autres (D134) |
+| `bigint` | opaque | entier de taille quelconque, littéraux `123n` (D156) ; ne se mélange pas aux autres nombres |
 
 - **Littéraux** : un littéral sans suffixe prend le type exigé par son contexte (`c[v] + 1` avec `c[v]: u32` donne `1: u32`). Si le contexte ne fixe rien : `i64` pour un entier, `f64` pour un flottant. Un littéral hors de la plage du type est une erreur de compilation. Ce n'est pas une conversion : le littéral est typé directement.
 - **Débordement entier** : arithmétique modulaire, définie. C'est le comportement de Rust en mode release ; en C, le débordement signé est indéfini, ce qui autorise certaines optimisations (section 16).
@@ -550,7 +551,6 @@ Les instructions d'une `action` s'exécutent dans l'ordre écrit, **calculs purs
 | `print(v)` | `(T) => void` | écrit `v` sur la sortie standard ; un flottant est écrit sous la forme décimale la plus courte qui se relit en la même valeur (décision) |
 | `clock()` | `() => u64` | horloge monotone, en nanosecondes |
 | `bench(r, f)` | `(i64, () => U) => [U, u64]` | appelle `f` `r` fois et retourne le dernier résultat et la durée totale en nanosecondes |
-| `parseI64(s)` | `(string) => i64` | convertit un argument texte en entier ; panne si le texte n'est pas un entier valide |
 
 ### Règle de `bench`
 

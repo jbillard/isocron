@@ -380,6 +380,7 @@ impl P {
                     "boolean" => TypeKind::Scalar(Scalar::Bool),
                     "bool" => return Err(Diagnostic::new(span, "the type of `true` and `false` is written `boolean`")),
                     "string" => TypeKind::Str,
+                    "bigint" => TypeKind::BigInt,
                     "void" => TypeKind::Unit,
                     n if Scalar::from_name(n).is_some() => TypeKind::Scalar(Scalar::from_name(n).unwrap()),
                     _ => {
@@ -843,6 +844,9 @@ impl P {
             if let ExprKind::Float { value, value32, suffix } = e.kind {
                 return Ok(Expr { kind: ExprKind::Float { value: -value, value32: -value32, suffix }, span });
             }
+            if let ExprKind::BigInt { digits, radix, neg: false } = e.kind {
+                return Ok(Expr { kind: ExprKind::BigInt { digits, radix, neg: true }, span });
+            }
             return Ok(Expr { kind: ExprKind::Unary(UnOp::Neg, Box::new(e)), span });
         }
         if self.eat(S::Bang) {
@@ -971,6 +975,10 @@ impl P {
             T::Str(s) => {
                 self.bump();
                 ExprKind::Str(s)
+            }
+            T::BigInt(digits, radix) => {
+                self.bump();
+                ExprKind::BigInt { digits, radix, neg: false }
             }
             T::Ident(w) if w == "true" || w == "false" => {
                 self.bump();

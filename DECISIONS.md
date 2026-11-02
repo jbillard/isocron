@@ -2589,3 +2589,35 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   - `iota(n)` and `fill(n, v)` of any `i64` (the author asked how to write
     a simple loop: `const n = 5; iota(n)` was refused): a size known at run
     time, checked positive or zero.
+- **D156 — Parsing is pure; ECMAScript's conversions; `bigint`
+  (2026-11-02).**
+  - `parseI64`, `parseF64`, `tryParseI64`, `tryParseF64` are functions,
+    no longer actions: parsing a text has no effect (a panic is allowed in
+    a function, as an index out of bounds), and `lines(t).map(parseF64)`
+    must be writable (the author asked how to convert a string to a
+    number; `args.map((a) => parseI64(a))` was refused).
+  - `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` as ECMAScript: a
+    `f64`, NaN when there is no number, never a panic (the white space of
+    ECMAScript, `Infinity`, `0x`/`0o`/`0b` for `Number`, the longest prefix
+    for the two others, `parseInt` exact through a big integer then rounded
+    once). `parseI64` and `parseF64` stay strict (a panic, or a `Result`):
+    TypeScript's names now carry TypeScript's meaning, and the strict
+    forms keep theirs (D151).
+  - `bigint`, as TypeScript: literals `123n` and `0xffn`, `+ - * / % **`
+    (`/` toward zero, `%` of the sign of the dividend; a division by zero
+    and a negative exponent are panics), comparisons, `BigInt(x)` of an
+    integer or a text, `i64(b)` modulo 2^64, `f64(b)` and `Number(b)` to the
+    nearest (one rounding), its text; no mixing with the other numbers (a
+    type error). A literal takes the type its context requires (SPEC section 4): `0`
+    may be a `bigint`, so that the generic `sum` of the prelude takes it.
+  - Its representation: in the type checker `Ty::BigInt` (the classes of
+    the integers), in the IR `Type::Big`, laid out, owned, copied and freed
+    as a string (its bytes: `+` or `-`, then the digits of the magnitude in
+    base 128, least significant first; zero is no byte, the zero of every
+    value of the IR). The bytes are canonical, so equality compares bytes;
+    a distinct IR type keeps `(+)` of a `reduce` an addition, not a
+    concatenation. The arithmetic is `num-bigint` (`alloc`, no `std`) in
+    `isc-runtime-core`, for the interpreter and the compiled program; the
+    runtime gives `alloc` a global allocator over `isc_alloc`. Each
+    operation decodes and encodes its operands (linear, below the cost of
+    a multiplication or a division).
