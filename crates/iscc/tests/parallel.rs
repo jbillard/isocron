@@ -52,7 +52,7 @@ fn maps_and_multi_level_reductions_do_not_depend_on_threads() {
          function g(): f64 {{\n    return sum(map(iota({n}), (i) => 1.0 / f64(i + 1)));\n}}\n\
          action main(args: string[k]): i32 {{\n    \
          const m = map(iota(100003), (i) => f64(i) * 0.5 - 7.0);\n    \
-         write_f64(args[0], m);\n    \
+         writeF64(args[0], m);\n    \
          print(f());\n    \
          print(g());\n    \
          print(reduce(m, (a, b) => a - b, 0.25));\n    \
@@ -94,7 +94,7 @@ fn privatized_folds_match_the_interpreter() {
         "function f(x: u8[n]): u32[256] {\n    return fold(x, zeros(), (c, v) => c.with(v, c[v] + 2u32));\n}\n",
     ];
     for (i, f) in cases.iter().enumerate() {
-        let src = format!("{}\naction main(args: string[k]): i32 {{\n    print(f(read_bytes(args[0])));\n    return 0;\n}}\n", f);
+        let src = format!("{}\naction main(args: string[k]): i32 {{\n    print(f(readBytes(args[0])));\n    return 0;\n}}\n", f);
         let bin = compile(&src, &format!("p_rule_p{}", i));
         let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
         assert!(ll.contains("@isc_thread_count"), "case {}: rule P not applied", i);

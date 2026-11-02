@@ -178,7 +178,7 @@ pub struct Expr {
     pub kind: ExprKind,
     pub ty: Type,
     pub span: Span,
-    /// Inside a function with `allow_reassoc` (SPEC section 10, D109): its
+    /// Inside a function with `allowReassoc` (SPEC section 10, D109): its
     /// floating-point operations may be reassociated and contracted.
     pub reassoc: bool,
 }
@@ -282,7 +282,7 @@ pub struct Function {
     pub params: Vec<VarId>,
     pub body: Expr,
     pub span: isc_syntax::Span,
-    /// `require_tail` (SPEC section 9), with its position (D106).
+    /// `requireTail` (SPEC section 9), with its position (D106).
     pub require_tail: Option<isc_syntax::Span>,
 }
 
@@ -308,7 +308,7 @@ pub struct Program {
     pub recs: Vec<RecType>,
     /// Where a function is chosen at run time (defunctionalized, D107).
     pub choices: Vec<isc_syntax::Span>,
-    /// The functions with `allow_reassoc` (D109), for the memory report.
+    /// The functions with `allowReassoc` (D109), for the memory report.
     pub reassoc_fns: Vec<(String, isc_syntax::Span)>,
     /// The C functions declared with `extern` (D125).
     pub externs: Vec<ExternFn>,

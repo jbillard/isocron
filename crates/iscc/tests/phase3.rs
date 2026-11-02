@@ -99,13 +99,13 @@ function squares_plus(x: f64[n], k: i64): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const small = map(iota(9), (i) => f64(i));
     const d = doubled(small, 7);
     const fibs = map(iota(20), (i) => f64(fib(i)));
     const deep = map(iota(4), (i) => f64(count(small, i)));
     print(even(1001));
-    write_f64(args[1], [f64(fact(20)), sum(fibs), halve_sum(x), sum(x), sum(d), sum(deep), f64(count(fibs, 0)), walk(x, 0, 0.0), squares_plus(x, 3)]);
+    writeF64(args[1], [f64(fact(20)), sum(fibs), halve_sum(x), sum(x), sum(d), sum(deep), f64(count(fibs, 0)), walk(x, 0, 0.0), squares_plus(x, 3)]);
     return 0;
 }
 ";
@@ -131,9 +131,9 @@ fn recursion_inside_parallel_loops() {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const r = map(iota(64), (i) => total(x, i % 5));
-    write_f64(args[1], r);
+    writeF64(args[1], r);
     return 0;
 }
 ";
@@ -162,10 +162,10 @@ function doubled(x: f64[n], k: i64): f64[n] {
 }
 
 action main(args: string[k]): i32 {
-    const m = parse_i64(args[0]);
+    const m = parseI64(args[0]);
     print(count_down(m, 0));
     print(sum(doubled([1.0, 2.0, 3.0], m)));
-    write_f64(args[1], [1.0]);
+    writeF64(args[1], [1.0]);
     return 0;
 }
 ";
@@ -185,7 +185,7 @@ fn stack_overflow_is_a_panic() {
 }
 
 action main(args: string[k]): i32 {
-    print(grow([1.0, 2.0], parse_i64(args[0])));
+    print(grow([1.0, 2.0], parseI64(args[0])));
     return 0;
 }
 ";
@@ -251,7 +251,7 @@ function tail_of(l: List): List {
 }
 
 action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
+    const n = parseI64(args[0]);
     const l = build(n, Nil);
     print(length(l));
     print(total(l, 0));
@@ -261,7 +261,7 @@ action main(args: string[k]): i32 {
     print(build(3, Nil));
     print(leaves(tree(10)));
     print(tree(1));
-    write_f64(args[1], [1.0]);
+    writeF64(args[1], [1.0]);
     return 0;
 }
 ";
@@ -311,7 +311,7 @@ action main(args: string[k]): i32 {
     const l = build(5000, Nil);
     const r = map(iota(64), (i) => f64(total(skip(l, i * 10), 0)));
     print(sum(r));
-    write_f64(args[0], r);
+    writeF64(args[0], r);
     return 0;
 }
 ";
@@ -359,7 +359,7 @@ action main(args: string[k]): i32 {
     print(nested(x, 0));
     print(nested(x, 1));
     print(nested(x, 2));
-    write_f64(args[0], pick(x, true));
+    writeF64(args[0], pick(x, true));
     return 0;
 }
 ";
@@ -383,7 +383,7 @@ function apply_all(x: f64[n], f: (f64) => f64): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const k = parse_i64(args[0]);
+    const k = parseI64(args[0]);
     const x = map(iota(10), (i) => f64(i));
     const f = k > 0 ? double : square;
     print(sum(map(x, f)));
@@ -392,7 +392,7 @@ action main(args: string[k]): i32 {
     const g = k > 1 ? (v) => v + offset : k > 0 ? double : (v) => v - offset;
     print(map(x, g));
     print(sum(map(x, k % 2 == 0 ? square : double)));
-    write_f64(args[1], map(x, g));
+    writeF64(args[1], map(x, g));
     return 0;
 }
 ";
@@ -419,7 +419,7 @@ function square(v: f64): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const k = parse_i64(args[0]);
+    const k = parseI64(args[0]);
     const x = map(iota(6), (i) => f64(i));
     const op = k == 0 ? Double : k == 1 ? Square : k == 2 ? Shift : Halve;
     const f = match (op) {
@@ -435,7 +435,7 @@ action main(args: string[k]): i32 {
         _ => (v) => v - 1.0,
     };
     print(sum(map(x, g)));
-    write_f64(args[1], map(x, f));
+    writeF64(args[1], map(x, f));
     return 0;
 }
 ";
@@ -489,7 +489,7 @@ function sum_tree(f: (f64) => f64, x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
+    const n = parseI64(args[0]);
     print(apply_n(double, 1.0, n));
     print(apply_n((v) => v * 0.5 + 1.0, 3.0, n));
     print(apply_n(sqrt, 65536.0, 3));
@@ -499,7 +499,7 @@ action main(args: string[k]): i32 {
     const x = map(iota(9), (i) => f64(i));
     print(sum_tree(double, x));
     print(sum_tree((v) => v * v, x));
-    write_f64(args[1], [apply_n(double, 1.5, 4)]);
+    writeF64(args[1], [apply_n(double, 1.5, 4)]);
     return 0;
 }
 ";
@@ -537,7 +537,7 @@ function tree(d: i64, v: f64): Tree {
 }
 
 action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
+    const n = parseI64(args[0]);
     const a = build(n, Nil);
     const b = build(n, Nil);
     const c = build(n, Cons(0, Nil));
@@ -546,7 +546,7 @@ action main(args: string[k]): i32 {
     print([t == tree(8, 0.5), t == tree(8, 1.5), Leaf(0.0 / 0.0) == Leaf(0.0 / 0.0), Leaf(0.0) == Leaf(-0.0)]);
     const bag = Item([1, true] as const, 2.5, Item([2, false] as const, 0.0, Empty));
     print([bag == Item([1, true] as const, 2.5, Item([2, false] as const, -0.0, Empty)), bag == Item([1, true] as const, 2.5, Empty), bag == Item([1, false] as const, 2.5, Item([2, false] as const, 0.0, Empty))]);
-    write_f64(args[1], [1.0]);
+    writeF64(args[1], [1.0]);
     return 0;
 }
 ";
@@ -591,7 +591,7 @@ function total(x: List[n], i: i64): i64 {
 }
 
 action main(args: string[k]): i32 {
-    const m = parse_i64(args[0]);
+    const m = parseI64(args[0]);
     const a = [Nil, Cons(1, Nil), Cons(2, Cons(3, Nil))];
     print(a);
     print(map(a, (l) => len(l, 0)));
@@ -607,7 +607,7 @@ action main(args: string[k]): i32 {
     print([a == a, a == [Nil, Cons(1, Nil), Cons(2, Nil)]]);
     const pairs = map(iota(3), (i) => [i, build(i, Nil)] as const);
     print(pairs);
-    write_f64(args[1], map(b, (l) => f64(len(l, 0))));
+    writeF64(args[1], map(b, (l) => f64(len(l, 0))));
     return 0;
 }
 ";
@@ -640,7 +640,7 @@ function count_if(p: (i64) => boolean, k: i64): i64 {
 }
 
 action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
+    const n = parseI64(args[0]);
     const c = 2.5;
     const w = map(iota(4), (i) => f64(i) * 0.25);
     print(apply_n((v) => v * c, 1.0, n));
@@ -650,7 +650,7 @@ action main(args: string[k]): i32 {
     print([apply_n((v) => v + c, 0.0, 3), apply_n((v) => v + d, 0.0, 3)]);
     const m = n % 4 + 2;
     print(count_if((k) => k % m == 0, 50));
-    write_f64(args[1], [apply_n((v) => v * w[1] + c, 1.0, n)]);
+    writeF64(args[1], [apply_n((v) => v * w[1] + c, 1.0, n)]);
     return 0;
 }
 ";
@@ -670,7 +670,7 @@ const MATCHED_BINDS: &str = "type Op = Scale(f64) | Shift(f64) | Same;
 type List = Nil | Cons(i64, List);
 
 action main(args: string[k]): i32 {
-    const k = parse_i64(args[0]);
+    const k = parseI64(args[0]);
     const x = map(iota(5), (i) => f64(i));
     const op = k == 0 ? Scale(2.5) : k == 1 ? Shift(-1.0) : Same;
     const f = match (op) {
@@ -696,7 +696,7 @@ action main(args: string[k]): i32 {
         z => (v) => v * f64(z),
     };
     print(map(x, m));
-    write_f64(args[1], map(x, f));
+    writeF64(args[1], map(x, f));
     return 0;
 }
 ";

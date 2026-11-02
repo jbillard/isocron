@@ -1,16 +1,16 @@
 // filter_sum.isc (reassociated)  usage: filter_sum <input.f64> <output.f64> <reps>
-// `allow_reassoc` (SPEC section 10): a rejected element counts as 0.0, no
+// `allowReassoc` (SPEC section 10): a rejected element counts as 0.0, no
 // compaction (DECISIONS D123); compared with the reassociated variants of
 // the other languages (section 14)
-@allow_reassoc
-function filter_sum(x: f64[n]): f64 {
+@allowReassoc
+function filterSum(x: f64[n]): f64 {
     return sum(filter(x, (v) => v > 0.0));
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    const [r, ns] = bench(parse_i64(args[2]), () => filter_sum(x));
+    const x = readF64(args[0]);
+    const [r, ns] = bench(parseI64(args[2]), () => filterSum(x));
     print(ns);
-    write_f64(args[1], [r]);
+    writeF64(args[1], [r]);
     return 0;
 }

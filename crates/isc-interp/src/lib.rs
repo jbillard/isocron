@@ -977,7 +977,7 @@ impl<'a> Interp<'a> {
                 let a = self.array(&args[1])?;
                 let xs = match &*a {
                     Array::F32(v) => v.clone(),
-                    _ => panic!("write_f32 of non-f32"),
+                    _ => panic!("writeF32 of non-f32"),
                 };
                 if let Err(m) = rt::write_f32_file(&p, &xs) {
                     return panic_at(e, m);
@@ -996,7 +996,7 @@ impl<'a> Interp<'a> {
                 let a = self.array(&args[1])?;
                 let xs = match &*a {
                     Array::F64(v) => v.clone(),
-                    _ => panic!("write_f64 of non-f64"),
+                    _ => panic!("writeF64 of non-f64"),
                 };
                 if let Err(m) = rt::write_f64_file(&p, &xs) {
                     return panic_at(e, m);
@@ -1008,7 +1008,7 @@ impl<'a> Interp<'a> {
                 let a = self.array(&args[1])?;
                 let xs: Vec<u8> = match &*a {
                     Array::Int(v) => v.iter().map(|b| *b as u8).collect(),
-                    _ => panic!("write_bytes of non-u8"),
+                    _ => panic!("writeBytes of non-u8"),
                 };
                 if let Err(m) = rt::write_bytes_file(&p, &xs) {
                     return panic_at(e, m);
@@ -1064,7 +1064,7 @@ impl<'a> Interp<'a> {
                         } else {
                             match &*self.array(&args[1])? {
                                 Array::Int(v) => v.iter().map(|b| *b as u8).collect(),
-                                _ => panic!("write_bytes of non-u8"),
+                                _ => panic!("writeBytes of non-u8"),
                             }
                         };
                         Value::Str(Rc::from(rt::write_bytes_file(&a, &data).err().unwrap_or_default()))
@@ -1075,7 +1075,7 @@ impl<'a> Interp<'a> {
                 let a = self.array(&args[0])?;
                 let xs: Vec<u8> = match &*a {
                     Array::Int(v) => v.iter().map(|b| *b as u8).collect(),
-                    _ => panic!("print_bytes of non-u8"),
+                    _ => panic!("printBytes of non-u8"),
                 };
                 let _ = self.out.write_all(&xs);
                 Value::Unit

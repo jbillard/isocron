@@ -23,9 +23,9 @@ function pixels(n: size, nb: size): u8[n * nb] {
 }
 
 action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
+    const n = parseI64(args[0]);
     const nb = (n + 7) / 8;
-    print_bytes(bytes("P4\n" + to_string(n) + " " + to_string(n) + "\n"));
-    print_bytes(pixels(n, nb));
+    printBytes(bytes("P4\n" + toString(n) + " " + toString(n) + "\n"));
+    printBytes(pixels(n, nb));
     return 0;
 }

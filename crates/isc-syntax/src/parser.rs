@@ -137,10 +137,10 @@ impl P {
                 self.bump();
                 let (m, sp) = self.ident("a decorator")?;
                 let m = match m.as_str() {
-                    "require_no_alloc" => Modifier::RequireNoAlloc,
-                    "require_fused" => Modifier::RequireFused,
-                    "require_tail" => Modifier::RequireTail,
-                    "allow_reassoc" => Modifier::AllowReassoc,
+                    "requireNoAlloc" => Modifier::RequireNoAlloc,
+                    "requireFused" => Modifier::RequireFused,
+                    "requireTail" => Modifier::RequireTail,
+                    "allowReassoc" => Modifier::AllowReassoc,
                     _ => return Err(Diagnostic::new(sp, format!("unknown decorator `@{}`", m))),
                 };
                 modifiers.push((m, sp));
@@ -893,6 +893,15 @@ impl P {
                         e = Expr { kind: ExprKind::Var(format!("{}.{}", name, f)), span: e.span };
                         continue;
                     }
+                    // `Math.f`, `Math.PI`, `Math.E`, as in TypeScript (D151)
+                    if m == "Math" {
+                        e = match f.as_str() {
+                            "PI" => Expr { kind: ExprKind::Float { value: std::f64::consts::PI, value32: std::f32::consts::PI, suffix: None }, span: e.span },
+                            "E" => Expr { kind: ExprKind::Float { value: std::f64::consts::E, value32: std::f32::consts::E, suffix: None }, span: e.span },
+                            _ => Expr { kind: ExprKind::Var(format!("Math.{}", f)), span: e.span },
+                        };
+                        continue;
+                    }
                 }
                 match f.as_str() {
                     // `x.length`: `len(x)`
@@ -968,7 +977,7 @@ impl P {
                 ExprKind::Bool(w == "true")
             }
             T::Ident(w) if w == "match" => return self.match_expr(),
-            T::Ident(w) if w == "require_unique" && *self.peek_at(1) == T::Sym(S::LParen) => {
+            T::Ident(w) if w == "requireUnique" && *self.peek_at(1) == T::Sym(S::LParen) => {
                 self.bump();
                 self.bump();
                 let e = self.expr()?;
@@ -977,7 +986,7 @@ impl P {
                     ExprKind::Update { target, access, value, .. } => {
                         Ok(Expr { kind: ExprKind::Update { target, access, value, require_unique: true }, span: e.span })
                     }
-                    _ => Err(Diagnostic::new(span, "`require_unique(...)` takes an update `x.with(i, v)`")),
+                    _ => Err(Diagnostic::new(span, "`requireUnique(...)` takes an update `x.with(i, v)`")),
                 };
             }
             T::Ident(w) if RESERVED.contains(&w.as_str()) => {

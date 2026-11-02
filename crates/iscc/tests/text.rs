@@ -1,6 +1,6 @@
-//! Text files and CSV (DECISIONS D135): `read_text`, `write_text`, `lines`,
-//! `split`, `trim`, `join`, `len` of an array, `parse_csv_f64`,
-//! `read_csv_f64`. The interpreter and the compiled program print the same
+//! Text files and CSV (DECISIONS D135): `readText`, `writeText`, `lines`,
+//! `split`, `trim`, `join`, `len` of an array, `parseCsvF64`,
+//! `readCsvF64`. The interpreter and the compiled program print the same
 //! text and write the same file, the compiled program frees everything
 //! (Valgrind, when installed), and both panic with the same messages.
 
@@ -32,8 +32,8 @@ const TEXT: &str = r#"function words(s: string): string[k] {
 
 action main(args: string[k]): i32 {
     const out = args[0];
-    write_text(out, "alpha beta\n  gamma   delta \nepsilon\n");
-    const t = read_text(out);
+    writeText(out, "alpha beta\n  gamma   delta \nepsilon\n");
+    const t = readText(out);
     const ls = lines(t);
     print(ls);
     print(map(ls, (l) => len(words(l))));
@@ -45,13 +45,13 @@ action main(args: string[k]): i32 {
     print(concat(concat("[", trim("  \t padded \n")), "]"));
     print(join([], ","));
     print(reduce(map(ls, (l) => len(l)), (+), 0) == len(t) - len(ls));
-    const m = read_csv_f64(args[1], 1);
+    const m = readCsvF64(args[1], 1);
     print(m);
     print(map(m, (r) => sum(r)));
     print(map(iota(3), (j) => sum(map(m, (r) => r[j])) / f64(len(m))));
-    print(map(split(lines(read_text(args[1]))[0], ","), trim));
-    print(parse_csv_f64("1,2\n3,4", 0));
-    print(parse_csv_f64("", 0));
+    print(map(split(lines(readText(args[1]))[0], ","), trim));
+    print(parseCsvF64("1,2\n3,4", 0));
+    print(parseCsvF64("", 0));
     return 0;
 }
 "#;
@@ -87,11 +87,11 @@ fn text_panics() {
     let _ = std::fs::remove_file(&none);
     let s = |p: &std::path::PathBuf| p.to_string_lossy().to_string();
     let cases: Vec<(String, String, String)> = vec![
-        ("print(read_text(args[0]))".into(), s(&bad), format!("panic at line 2, column 20: read_text: `{}` is not UTF-8 text (invalid from byte 2)", s(&bad))),
-        ("print(read_csv_f64(args[0], 0))".into(), s(&ragged), "panic at line 2, column 23: csv: line 2 has 1 field, the first row has 2".into()),
-        ("print(read_csv_f64(args[0], 1))".into(), s(&field), "panic at line 2, column 23: csv: line 2, field 2: `x` is not a number".into()),
+        ("print(readText(args[0]))".into(), s(&bad), format!("panic at line 2, column 19: readText: `{}` is not UTF-8 text (invalid from byte 2)", s(&bad))),
+        ("print(readCsvF64(args[0], 0))".into(), s(&ragged), "panic at line 2, column 21: csv: line 2 has 1 field, the first row has 2".into()),
+        ("print(readCsvF64(args[0], 1))".into(), s(&field), "panic at line 2, column 21: csv: line 2, field 2: `x` is not a number".into()),
         ("print(split(args[0], \"\"))".into(), "abc".into(), "panic at line 2, column 16: split: the separator is empty".into()),
-        ("print(read_text(args[0]))".into(), s(&none), format!("panic at line 2, column 20: cannot read `{}`: No such file or directory (os error 2)", s(&none))),
+        ("print(readText(args[0]))".into(), s(&none), format!("panic at line 2, column 19: cannot read `{}`: No such file or directory (os error 2)", s(&none))),
     ];
     for (i, (body, arg, want)) in cases.iter().enumerate() {
         let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
@@ -106,9 +106,9 @@ fn text_panics() {
 
 #[test]
 fn text_errors() {
-    let e = iscc::frontend("t.isc", "function f(p: string): string {\n    return read_text(p);\n}\n\naction main(args: string[k]): i32 {\n    print(f(args[0]));\n    return 0;\n}\n").unwrap_err();
-    assert!(e.contains("read_text"), "{}", e);
-    let e = iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(read_csv_f64(args[0], 1.5));\n    return 0;\n}\n").unwrap_err();
+    let e = iscc::frontend("t.isc", "function f(p: string): string {\n    return readText(p);\n}\n\naction main(args: string[k]): i32 {\n    print(f(args[0]));\n    return 0;\n}\n").unwrap_err();
+    assert!(e.contains("readText"), "{}", e);
+    let e = iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(readCsvF64(args[0], 1.5));\n    return 0;\n}\n").unwrap_err();
     assert!(e.contains("i64") || e.contains("integer"), "{}", e);
     let e = iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(len(3));\n    return 0;\n}\n").unwrap_err();
     assert!(e.contains("string"), "{}", e);

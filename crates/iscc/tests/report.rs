@@ -17,7 +17,7 @@ fn dump(es: &[Entry]) -> String {
 }
 
 const RULES: &str = "action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
+    const a = readF64(args[0]);
     const x = map(a, (v) => v * 2.0);
     print(sum(x) + max(x));
     const s = scan(iota(100), (+), 0);
@@ -98,8 +98,8 @@ fn a_length_test_does_not_materialize() {
     // of `map(a, ...)`, which is the length of `a`
     let es = report(
         "action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const b = read_f64(args[1]);
+    const a = readF64(args[0]);
+    const b = readF64(args[1]);
     print(sum(map(zip(map(a, (v) => v * 2.0), b), (p) => {
         const [u, w] = p;
         return u * w;
@@ -118,7 +118,7 @@ fn a_length_test_does_not_materialize() {
 fn a_function_of_the_prelude_is_reported_where_it_is_called() {
     let es = report(
         "action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
+    const a = readF64(args[0]);
     print(sum(map(iota(3), (i) => a[i])));
     return 0;
 }
@@ -192,7 +192,7 @@ function t(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(s(x) + t(x));
     return 0;
 }
@@ -217,7 +217,7 @@ function wsum(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(mid(x) + wsum(x));
     return 0;
 }
@@ -260,7 +260,7 @@ function up(x: f64[n], k: i64): f64[n] {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(fib(10) + i64(walk(x, 0, 0.0)) + i64(sum(up(x, 3))));
     return 0;
 }

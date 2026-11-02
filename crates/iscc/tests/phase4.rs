@@ -1,5 +1,5 @@
-//! Stage 2, phase 4 (SPEC section 9): `require_no_alloc`, `require_fused`,
-//! `require_tail`, with positive and negative tests for each (DECISIONS
+//! Stage 2, phase 4 (SPEC section 9): `requireNoAlloc`, `requireFused`,
+//! `requireTail`, with positive and negative tests for each (DECISIONS
 //! D106). An accepted program is also run, compiled and interpreted.
 
 mod common;
@@ -26,7 +26,7 @@ fn accepted(src: &str, name: &str) {
 fn require_tail() {
     // the example of the specification
     accepted(
-        "@require_tail
+        "@requireTail
 function gcd(a: u64, b: u64): u64 {
     if (b == 0) {
         return a;
@@ -35,7 +35,7 @@ function gcd(a: u64, b: u64): u64 {
     }
 }
 
-@require_tail
+@requireTail
 function steps(x: f64[n], k: i64): f64 {
     if (k == 0) {
         return sum(x);
@@ -53,7 +53,7 @@ action main(args: string[k]): i32 {
         "req_tail_ok",
     );
     rejected(
-        "@require_tail
+        "@requireTail
 function fact(n: i64): i64 {
     if (n <= 1) {
         return 1;
@@ -67,12 +67,12 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ",
-        &["require_tail not satisfied (line 2)", "the call of `fact` at line 6 is not in tail position"],
+        &["requireTail not satisfied (line 2)", "the call of `fact` at line 6 is not in tail position"],
     );
     // a mutual recursion in tail position reuses the frame (D113); not in
     // tail position, it is refused
     rejected(
-        "@require_tail
+        "@requireTail
 function even(n: i64): boolean {
     if (n == 0) {
         return true;
@@ -99,7 +99,7 @@ action main(args: string[k]): i32 {
         &["the call of `odd` at line 5 (a mutual recursion) is not in tail position"],
     );
     rejected(
-        "@require_tail
+        "@requireTail
 function swap(x: f64[n], y: f64[n], k: i64): f64 {
     if (k == 0) {
         return sum(x);
@@ -120,18 +120,18 @@ action main(args: string[k]): i32 {
 #[test]
 fn require_fused() {
     accepted(
-        "@require_fused
+        "@requireFused
 function scale(x: f64[n]): f64[n] {
     return map(x, (v) => v * 2.0) + 1.0;
 }
 
-@require_fused
+@requireFused
 function shared(x: f64[n]): f64 {
     const y = map(x, (v) => v * 2.0);
     return sum(y) + max(y);
 }
 
-@require_fused
+@requireFused
 function positive_sum(x: f64[n]): f64 {
     return sum(filter(x, (v) => v > 0.0));
 }
@@ -148,7 +148,7 @@ action main(args: string[k]): i32 {
     );
     // the example of the specification
     rejected(
-        "@require_fused
+        "@requireFused
 function center(x: f64[n]): f64[n] {
     const y = x * 2.0;
     return y - mean(y);
@@ -159,10 +159,10 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ",
-        &["require_fused not satisfied (line 2)", "line 3: f64[] shared result (rule M1): `y` is used 2 times, at line 4"],
+        &["requireFused not satisfied (line 2)", "line 3: f64[] shared result (rule M1): `y` is used 2 times, at line 4"],
     );
     rejected(
-        "@require_fused
+        "@requireFused
 function running(x: i64[n]): i64 {
     return sum(scan(x, (+), 0));
 }
@@ -179,22 +179,22 @@ action main(args: string[k]): i32 {
 #[test]
 fn require_no_alloc() {
     accepted(
-        "@require_no_alloc
+        "@requireNoAlloc
 function norm2(x: f64[n]): f64 {
     return sqrt(sum(x * x));
 }
 
-@require_no_alloc
+@requireNoAlloc
 function counts(x: u8[n]): u32[256] {
-    return fold(x, zeros(), (c, v) => require_unique(c.with(v, c[v] + 1)));
+    return fold(x, zeros(), (c, v) => requireUnique(c.with(v, c[v] + 1)));
 }
 
-@require_no_alloc
+@requireNoAlloc
 function set0(x: f64[n]): f64[n] {
     return x.with(0, 1.0);
 }
 
-@require_no_alloc
+@requireNoAlloc
 function sum_of<T extends Num>(x: T[n]): T {
     return sum(x);
 }
@@ -210,7 +210,7 @@ action main(args: string[k]): i32 {
         "req_no_alloc_ok",
     );
     rejected(
-        "@require_no_alloc
+        "@requireNoAlloc
 function lit(x: f64[n]): f64 {
     return sum(x) + sum([1.0, 2.0]);
 }
@@ -220,11 +220,11 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ",
-        &["require_no_alloc not satisfied (line 2)", "line 3: 16 bytes an array literal"],
+        &["requireNoAlloc not satisfied (line 2)", "line 3: 16 bytes an array literal"],
     );
     // a copy that is not the result
     rejected(
-        "@require_no_alloc
+        "@requireNoAlloc
 function bumped(x: f64[n]): f64 {
     return sum(x.with(0, 1.0));
 }
@@ -240,7 +240,7 @@ action main(args: string[k]): i32 {
     rejected(
         "type List = Nil | Cons(i64, List);
 
-@require_no_alloc
+@requireNoAlloc
 function one(x: i64): i64 {
     return match (Cons(x, Nil)) {
         Nil => 0,
@@ -264,7 +264,7 @@ action main(args: string[k]): i32 {
     }
 }
 
-@require_no_alloc
+@requireNoAlloc
 function total(x: f64[n]): f64 {
     return sum(up(x, 2));
 }
@@ -281,7 +281,7 @@ action main(args: string[k]): i32 {
 #[test]
 fn requirements_are_for_functions() {
     rejected(
-        "@require_fused
+        "@requireFused
 action main(args: string[k]): i32 {
     return 0;
 }
@@ -290,13 +290,13 @@ action main(args: string[k]): i32 {
     );
 }
 
-/// `allow_reassoc` (SPEC section 10, D109): the floating-point operations of
+/// `allowReassoc` (SPEC section 10, D109): the floating-point operations of
 /// the function (and of what it inlines) carry the flags of
 /// `-fassociative-math` (`reassoc nsz contract`), the others none; the
 /// result is close to the strict one; the memory report lists the function.
 #[test]
 fn allow_reassoc() {
-    let src = "@allow_reassoc
+    let src = "@allowReassoc
 function fast_dot(a: f64[n], b: f64[n]): f64 {
     return sum(a * b);
 }
@@ -306,9 +306,9 @@ function strict_dot(a: f64[n], b: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
+    const a = readF64(args[0]);
     const b = map(a, (v) => 1.0 - v);
-    write_f64(args[1], [fast_dot(a, b), strict_dot(a, b)]);
+    writeF64(args[1], [fast_dot(a, b), strict_dot(a, b)]);
     return 0;
 }
 ";
@@ -330,12 +330,12 @@ action main(args: string[k]): i32 {
     assert!(((c[0] - i[0]) / i[0]).abs() < 1e-12, "{} {}", c[0], i[0]);
 }
 
-/// Under `allow_reassoc`, a `+` of floats over a filter is a masked
+/// Under `allowReassoc`, a `+` of floats over a filter is a masked
 /// reduction: a rejected element counts as 0.0, no compaction (D123); the
 /// result is close to the strict one, which keeps its stream.
 #[test]
 fn reassociated_filters_are_masked() {
-    let src = "@allow_reassoc
+    let src = "@allowReassoc
 function fast(x: f64[n]): f64 {
     return sum(filter(x, (v) => v > 0.0)) + reduce(map(filter(x, (v) => v < -0.5), (v) => 1.0 + v * 1e-6), (*), 1.0);
 }
@@ -345,8 +345,8 @@ function strict(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    write_f64(args[1], [fast(x), strict(x)]);
+    const x = readF64(args[0]);
+    writeF64(args[1], [fast(x), strict(x)]);
     return 0;
 }
 ";

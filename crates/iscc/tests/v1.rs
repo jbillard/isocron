@@ -26,13 +26,13 @@ fn same_everywhere(src: &str, name: &str, inputs: &[&str]) {
 #[test]
 fn scatter() {
     let src = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const h = scatter(fill(4, 0), [1, 3, 1, 0, 3, 3], [1, 1, 1, 1, 1, 1], (+));
     print(h);
     const firsts = scatter(fill(4, -1.0), [2, 0, 2], [5.0, 6.0, 7.0], (a, b) => a < 0.0 ? b : a);
     print(firsts);
     const buckets = scatter(fill(16, 0.0), map(x, (v) => i64(v * 1000.0) % 16 + 15 - 15), map(x, (v) => v * v), (+));
-    write_f64(args[1], buckets);
+    writeF64(args[1], buckets);
     return 0;
 }
 ";
@@ -52,11 +52,11 @@ fn scatter() {
 #[test]
 fn float_scan_in_its_fixed_form() {
     let src = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const s = scan(x, (+), 0.0);
     const m = scan(x, (a, b) => a * 0.5 + b, 3.0);
     const f = scan(map(x, (v) => f32(v)), (+), f32(0.0));
-    write_f64(args[1], s);
+    writeF64(args[1], s);
     print(sum(m) + f64(sum(f)));
     return 0;
 }
@@ -71,7 +71,7 @@ fn float_scan_in_its_fixed_form() {
 /// frame, compiled (`tailcc`) and interpreted, for 3 000 000 calls.
 #[test]
 fn mutual_tail_recursion() {
-    let src = "@require_tail
+    let src = "@requireTail
 function even(n: i64): boolean {
     if (n == 0) {
         return true;
@@ -105,10 +105,10 @@ function pong(x: f64[n], k: i64, acc: f64): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const m = parse_i64(args[0]);
+    const m = parseI64(args[0]);
     print(even(m));
     print(odd(m + 1));
-    write_f64(args[1], [ping([1.0, 2.0, 3.0], m, 0.0)]);
+    writeF64(args[1], [ping([1.0, 2.0, 3.0], m, 0.0)]);
     return 0;
 }
 ";
@@ -140,9 +140,9 @@ action main(args: string[k]): i32 {
     const r = { up: double, sq: square };
     print(r.sq(5.0));
     const fs = [double, square, (v) => v + 1.0];
-    const i = parse_i64(args[0]);
+    const i = parseI64(args[0]);
     print(fs[i](10.0));
-    write_f64(args[1], map([1.0, 2.0], fs[i]));
+    writeF64(args[1], map([1.0, 2.0], fs[i]));
     return 0;
 }
 ";

@@ -2479,3 +2479,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     its own `to_string`). `to_string` of a string is the string itself
     (as `String(s)`); an array is a compile error ("expected a scalar
     type"), not JavaScript's `1,2`, since `print` writes `[1, 2]`.
+- **D151 — The names of TypeScript (2026-11-02).** The author asked whether
+  `to_string` exists in TypeScript: it does not (`String(x)`,
+  `x.toString()`). The standard library takes TypeScript's conventions:
+  camelCase for every name of several words (`readF64`, `writeBytes`,
+  `parseI64`, `stringOf`, `readText`, `parseCsvF64`, `printBytes`, the
+  `try` actions `tryReadText`..., the fallible forms `...OrError`, the
+  decorators `@requireFused`, `@requireNoAlloc`, `@requireTail`,
+  `@allowReassoc`, and `requireUnique(...)`), and TypeScript's own names
+  where the meaning is the same: `String(x)` and `x.toString()`,
+  `Math.sqrt`, `Math.exp`, `Math.log`, `Math.sin`, `Math.cos`,
+  `Math.pow`, `Math.min`, `Math.max`, `Math.PI`, `Math.E` (`Math.f` is
+  always the namespace, as an imported module's prefix is; the functions
+  keep their bare names too). A TypeScript name whose meaning differs is
+  not taken: `parseFloat("1,5")` is 1 in JavaScript (a prefix), so
+  `parseF64`, which refuses that text, keeps its own name. The examples,
+  the guide and SPEC name their own functions in camelCase too
+  (`stdDev`, `movingAverage`); the file names do not change. The earlier
+  entries of this file keep the names of their time.

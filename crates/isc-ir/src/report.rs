@@ -112,7 +112,7 @@ pub fn entries_of(p: &Program, with_fns: bool) -> Vec<Entry> {
             kind: "reassoc",
             what: format!("`{}`", name),
             bytes: None,
-            why: "allow_reassoc: its floating-point operations may be reassociated and contracted into fma; the result may vary with the target".into(),
+            why: "allowReassoc: its floating-point operations may be reassociated and contracted into fma; the result may vary with the target".into(),
             rule: None,
         });
     }

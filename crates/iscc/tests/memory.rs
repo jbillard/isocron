@@ -139,8 +139,8 @@ const ZIPS: &str = "function prod(p: [f64, f64]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const b = read_f64(args[1]);
+    const a = readF64(args[0]);
+    const b = readF64(args[1]);
     const z = zip(a, b);
     const s1 = sum(map(z, prod));
     const s2 = sum(map(iota(3), (i) => prod(z[i])));
@@ -151,7 +151,7 @@ action main(args: string[k]): i32 {
     const zz = zip(z, c);
     print(zz[1]);
     print(z[2]);
-    write_f64(args[2], [s1, s2, s3, s4]);
+    writeF64(args[2], [s1, s2, s3, s4]);
     return 0;
 }
 ";
@@ -198,11 +198,11 @@ function third(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const y = map(x, (v) => i64(v * 1000.0));
     const b = big(x);
     const t = count(x, (v) => v > 0.5) > 2 ? third(x) : 0.0;
-    write_f64(args[1], [pos(x), pos_sq(x), sum(b), f64(cnt(x)), f64(mx(y)), odd(x), lo(x), t]);
+    writeF64(args[1], [pos(x), pos_sq(x), sum(b), f64(cnt(x)), f64(mx(y)), odd(x), lo(x), t]);
     return 0;
 }
 ";
@@ -237,10 +237,10 @@ function ints(y: i64[n]): i64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const y = map(x, (v) => i64(v * 1000.0));
     const [s, q, hi, lo] = stats(x);
-    write_f64(args[1], [s, q, hi, lo, spread(x), dep(x), f64(ints(y)), sum(x) + max(x)]);
+    writeF64(args[1], [s, q, hi, lo, spread(x), dep(x), f64(ints(y)), sum(x) + max(x)]);
     return 0;
 }
 ";
@@ -274,10 +274,10 @@ function wsum(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const p = part(x, 1, 4);
     const sq = map(iota(10), (i) => i * i).slice(3, 6);
-    write_f64(args[1], [mid(x), sum(p), pairs(x), wsum(x), f64(sum(sq))]);
+    writeF64(args[1], [mid(x), sum(p), pairs(x), wsum(x), f64(sum(sq))]);
     return 0;
 }
 ";
@@ -397,7 +397,7 @@ function tail_of(l: List): List {
 }
 
 action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
+    const n = parseI64(args[0]);
     const l = build(n, Nil);
     print(length(l));
     print(total(l, 0));
@@ -533,7 +533,7 @@ function total(x: List[n], i: i64): i64 {
 }
 
 action main(args: string[k]): i32 {
-    const m = parse_i64(args[0]);
+    const m = parseI64(args[0]);
     const a = [Nil, Cons(1, Nil), Cons(2, Cons(3, Nil))];
     print(a);
     print(map(a, (l) => len(l, 0)));
@@ -549,7 +549,7 @@ action main(args: string[k]): i32 {
     print([a == a, a == [Nil, Cons(1, Nil), Cons(2, Nil)]]);
     const pairs = map(iota(3), (i) => [i, build(i, Nil)] as const);
     print(pairs);
-    write_f64(args[1], map(b, (l) => f64(len(l, 0))));
+    writeF64(args[1], map(b, (l) => f64(len(l, 0))));
     return 0;
 }
 ";

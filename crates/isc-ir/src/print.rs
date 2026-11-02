@@ -79,7 +79,7 @@ pub fn expr(e: &Expr, p: &Program, ind: usize, s: &mut String) {
         Index(..) => "index".into(),
         Slice(..) => "slice".into(),
         Window(..) => "window".into(),
-        Update { require_unique, .. } => format!("update{}", if *require_unique { " require_unique" } else { "" }),
+        Update { require_unique, .. } => format!("update{}", if *require_unique { " requireUnique" } else { "" }),
         Map(ins, _) => format!("map/{} -> {}", ins.len(), type_str(&e.ty)),
         Reduce(..) => format!("reduce -> {}", type_str(&e.ty)),
         Scan(..) => format!("scan -> {}", type_str(&e.ty)),

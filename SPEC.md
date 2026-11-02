@@ -54,10 +54,10 @@ Les choix ci-dessous sont pris ; ceux marqués « recommandation » restent à c
 | Paradigme | Fonctionnel pur, seul | 5 |
 | Évaluation | Stricte (appel par valeur) | 5 |
 | Données | Tableaux contigus par défaut, valeurs à plat, monomorphisation | 4 |
-| Mémoire | Unicité inférée, `require_unique`, comptage de références en secours, aucun ramasse-miettes | 8 |
-| Exigences v0 | `require_unique`, `require_no_alloc`, `require_fused`, `require_tail` | 9 |
+| Mémoire | Unicité inférée, `requireUnique`, comptage de références en secours, aucun ramasse-miettes | 8 |
+| Exigences v0 | `requireUnique`, `requireNoAlloc`, `requireFused`, `requireTail` | 9 |
 | Exigence reportée | `require_vectorized` | 16 |
-| Flottants | IEEE 754, reproductibles par défaut ; mode `allow_reassoc` optionnel | 10 |
+| Flottants | IEEE 754, reproductibles par défaut ; mode `allowReassoc` optionnel | 10 |
 | Fonctions d'ordre supérieur | Résolues à la compilation, aucune fermeture allouée | 11 |
 | Effets | Isolés dans les `action`, aux bords du programme | 12 |
 | Cible | CPU x86-64, puis ARM64 ; GPU non exclu par la conception | 1 |
@@ -75,7 +75,7 @@ La syntaxe reprend celle de TypeScript (D148) : accolades, `;` obligatoires, `co
 - Suffixes de type facultatifs : `42u8`, `1.0f32`.
 - Un opérateur entre parenthèses est une fonction : `(+)`, `(*)`, `(&&)`.
 - Mots réservés : `function`, `action`, `declare`, `type`, `const`, `return`, `if`, `else`, `match`, `import`, `export`, `true`, `false`, `size`, `with`. `let`, `var` et `fn` sont réservés pour donner un message clair.
-- Décorateurs : `@require_no_alloc`, `@require_fused`, `@require_tail`, `@allow_reassoc`, placés avant `function`.
+- Décorateurs : `@requireNoAlloc`, `@requireFused`, `@requireTail`, `@allowReassoc`, placés avant `function`.
 
 ### Grammaire (EBNF)
 
@@ -86,8 +86,8 @@ import       = "import" ( "*" "as" IDENT
                "from" STRING ";" ;
 declaration  = { decorator } [ "export" ] ( function | action )
              | type_decl | declare ;
-decorator    = "@" ( "require_no_alloc" | "require_fused"
-                   | "require_tail" | "allow_reassoc" ) ;
+decorator    = "@" ( "requireNoAlloc" | "requireFused"
+                   | "requireTail" | "allowReassoc" ) ;
 function     = "function" IDENT [ generics ] "(" [ params ] ")" ":" type block ;
 action       = "action" IDENT "(" [ params ] ")" ":" type block ;
 declare      = "declare" "function" IDENT "(" [ params ] ")" ":" type ";" ;
@@ -135,7 +135,7 @@ postfix      = primary { "(" [ args ] ")" | "[" expr "]" | "." IDENT
                        | "as" "const" } ;
 primary      = LITERAL | STRING | template | IDENT | "(" ")" | "(" BINOP ")"
              | "(" expr ")" | "[" [ args ] "]" | record | match
-             | "require_unique" "(" expr ")" ;
+             | "requireUnique" "(" expr ")" ;
 template     = "`" TEXT { "${" expr "}" TEXT } "`" ;
 record       = "{" field { "," field } [ "," ] "}"
              | "{" "..." expr "," field { "," field } [ "," ] "}" ;
@@ -156,6 +156,7 @@ pattern      = "_" | IDENT [ "." IDENT ] | LITERAL | "-" NUMBER | "(" ")"
 - **Tableaux à deux dimensions** : `T[r][c]` est un tableau de `r` lignes de `c` éléments ; `x[i]` est une ligne.
 - **Motifs** : un `IDENT` suivi de `(` est un constructeur de type somme ; seul, c'est une variable, sauf s'il nomme un constructeur sans argument.
 - **Modules** (D139, D150) : `import * as m from "./m";` donne accès à ce que le module exporte sous les noms `m.f`, `m.T`, `m.C` ; `import { f, g as h } from "./m";` rend ces noms utilisables sans préfixe, après les variables locales. Un chemin commençant par `./` ou `../` est relatif au fichier qui importe ; un nom nu est cherché dans `$ISC_PATH`. Seul ce qui est déclaré avec `export` est visible d'un autre fichier ; un module est un fichier, lu une seule fois.
+- **Noms** (D151) : la bibliothèque suit les conventions de TypeScript, en camelCase (`readF64`, `parseCsvF64`, `printBytes`, `@requireFused`), et reprend ses noms là où le sens est le même (`String(x)`, `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`) ; un nom de TypeScript au sens différent n'est pas repris (`parseFloat("1,5")` vaut 1 en JavaScript ; `parseF64` refuse ce texte).
 - **Gabarits** : `` `a${e}b` `` est la concaténation des textes et des insertions, chacune écrite comme `print` l'écrit (scalaire ou chaîne).
 
 ### Priorité des opérateurs
@@ -189,23 +190,23 @@ Décisions :
 
 ```
 // Simple statistics on a file of floats
-@require_no_alloc
+@requireNoAlloc
 function average(x: f64[n]): f64 {
     return sum(x) / f64(n);
 }
 
-function std_dev(x: f64[n]): f64 {
+function stdDev(x: f64[n]): f64 {
     const m = average(x);
     return sqrt(sum((x - m) ** 2) / f64(n));
 }
 
 function histogram(values: u8[n]): u32[256] {
-    return fold(values, zeros(), (c, v) => require_unique(c.with(v, c[v] + 1)));
+    return fold(values, zeros(), (c, v) => requireUnique(c.with(v, c[v] + 1)));
 }
 
 action main(args: string[k]): i32 {
-    const data = read_f64(args[0]);
-    print(std_dev(data));
+    const data = readF64(args[0]);
+    print(stdDev(data));
     return 0;
 }
 ```
@@ -239,7 +240,7 @@ Chaque valeur a un type connu à la compilation, et aucune conversion entre vale
 - **Indices** : tout type entier est accepté comme indice. Un indice négatif ou trop grand est une panne.
 - **Variables de taille** : une variable de taille apparaissant dans le type d'un paramètre est liée par l'argument reçu, et utilisable comme valeur `i64`.
 - **Paramètres de taille** : un paramètre déclaré `k: size` est une valeur `i64` positive ou nulle utilisable dans les types : `function window<T>(x: T[n], k: size): T[n - k + 1][k]`.
-- **Tailles existentielles** : une variable de taille qui n'apparaît que dans le type du résultat est fixée à l'exécution par la fonction : `read_f64(path)` est de type `f64[k]`. La forme bornée `T[k <= n]` (résultat de `filter`) précise en plus que `k` ne dépasse pas `n`.
+- **Tailles existentielles** : une variable de taille qui n'apparaît que dans le type du résultat est fixée à l'exécution par la fonction : `readF64(path)` est de type `f64[k]`. La forme bornée `T[k <= n]` (résultat de `filter`) précise en plus que `k` ne dépasse pas `n`.
 - **Expressions de taille** : sommes et produits de constantes et de variables de taille (`T[n - k + 1]`, `T[2 * n]`). Deux tailles sont égales à la compilation si leurs formes polynomiales normalisées sont identiques ; sinon, un test est inséré à l'entrée de la fonction. Un échec est une panne (section 5) ; chaque test restant figure dans le memory report.
 - **Tableaux multidimensionnels** `T[n][m]` (`n` lignes de `m` éléments) : réguliers, stockés ligne par ligne dans un seul bloc.
 - Un tableau de tuples ou de records doit être stocké en colonnes, une colonne par champ (structure of arrays). Le choix automatique de la disposition est reporté (section 16).
@@ -277,7 +278,7 @@ type Result<T, E> = Ok(T) | Err(E);
 Le langage est strict et pur : chaque argument est entièrement calculé avant l'appel, et une fonction ne fait rien d'autre que produire son résultat.
 
 - **Strict** : appel par valeur. Aucune évaluation différée, aucun thunk.
-- **Pur** : une `function` ne lit ni n'écrit aucun état extérieur. Mêmes entrées, même résultat au bit près (hors `allow_reassoc`, section 10).
+- **Pur** : une `function` ne lit ni n'écrit aucun état extérieur. Mêmes entrées, même résultat au bit près (hors `allowReassoc`, section 10).
 - **Ordre libre** : dans une `function`, l'ordre d'évaluation des sous-expressions indépendantes n'est pas spécifié. Il n'est pas observable, sauf pour le choix de la panne signalée. Dans une `action`, l'ordre est imposé (section 12).
 - **Pannes (panic)** : accès hors bornes, division entière par zéro, exposant entier négatif, tailles incompatibles, dépassement de pile, erreur d'entrée/sortie. Une panne arrête le programme avec un message et la position dans le source. Si plusieurs pannes sont possibles, celle qui est signalée n'est pas spécifiée ; l'arrêt est garanti.
 - **Bornes** : chaque indexation est vérifiée. Le compilateur doit supprimer les vérifications qu'il prouve inutiles ; celles qui restent figurent dans le memory report.
@@ -322,7 +323,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 ## 7. Règles de fusion
 
-Une fusion évite de créer un tableau intermédiaire en mémoire ; les règles ci-dessous sont garanties, et ce sont les seules sur lesquelles `require_fused` s'appuie.
+Une fusion évite de créer un tableau intermédiaire en mémoire ; les règles ci-dessous sont garanties, et ce sont les seules sur lesquelles `requireFused` s'appuie.
 
 Préalable : avant la fusion, **toute** fonction non récursive est intégrée à son point d'appel (inlining), sans seuil, et toute fonction d'ordre supérieur est spécialisée (section 11). Un seuil d'inlining rendrait la fusion dépendante de l'implémentation ; la croissance du code qui en résulte est une limite connue (section 16).
 
@@ -347,7 +348,7 @@ Un tableau intermédiaire est stocké en mémoire si et seulement si une de ces 
 
 ### Exemple
 
-`std_dev` (section 3) fait deux parcours de `x`. Le premier calcule `average(x)`. Le second fusionne `(x - m) ** 2` et `sum` par F1 ; aucun tableau n'est créé. Deux parcours sont nécessaires, car `m` doit être connu avant le second.
+`stdDev` (section 3) fait deux parcours de `x`. Le premier calcule `average(x)`. Le second fusionne `(x - m) ** 2` et `sum` par F1 ; aucun tableau n'est créé. Deux parcours sont nécessaires, car `m` doit être connu avant le second.
 
 Chaque matérialisation figure dans le memory report, avec la règle qui l'a causée.
 
@@ -370,13 +371,13 @@ Une valeur est **unique** à un point du programme si aucune utilisation ultéri
 2. Dans `e.with(i, v)`, `i` et `v` sont évalués avant que `e` soit consommé. Une lecture scalaire de `e` dans `i` ou `v` (comme `c[v] + 1`) ne casse pas l'unicité.
 3. Si `e` est unique : mise à jour en place, aucune allocation.
 4. Sinon : copie de `e`, puis mise à jour. La copie apparaît dans le memory report.
-5. `require_unique(e.with(i, v))` : si `e` n'est pas unique, erreur de compilation citant la ligne de l'autre utilisation.
+5. `requireUnique(e.with(i, v))` : si `e` n'est pas unique, erreur de compilation citant la ligne de l'autre utilisation.
 6. L'accumulateur de `fold` est unique s'il n'est utilisé nulle part ailleurs. Dans `histogram`, le tableau `zeros()` est donc mis à jour en place à chaque étape.
 7. Une vue (`window`, `x.slice(a, b)`, `zip`) partage la mémoire de sa source : tant qu'elle est vivante, la source n'est pas unique.
 
 ### Résultats et destination-passing
 
-Quand une fonction produit un nouveau tableau, l'appelant fournit la mémoire du résultat (destination-passing). L'allocation n'est pas supprimée : elle est déplacée chez l'appelant, qui peut la réutiliser d'un appel à l'autre. C'est ce qui rend `require_no_alloc` utilisable sur des fonctions qui retournent des tableaux.
+Quand une fonction produit un nouveau tableau, l'appelant fournit la mémoire du résultat (destination-passing). L'allocation n'est pas supprimée : elle est déplacée chez l'appelant, qui peut la réutiliser d'un appel à l'autre. C'est ce qui rend `requireNoAlloc` utilisable sur des fonctions qui retournent des tableaux.
 
 ### Libération
 
@@ -402,21 +403,21 @@ Une exigence est une garantie écrite par le programmeur ; si le compilateur ne 
 
 | Exigence | Portée | Garantie | Vérifiée sur |
 | --- | --- | --- | --- |
-| `require_unique(...)` | une mise à jour `x.with(i, v)` | mise à jour en place, aucune copie | analyse d'unicité (section 8) |
-| `@require_no_alloc` | une `function` et tout ce qu'elle appelle | aucune création de tableau ni allocation, ni sur la pile ni sur le tas, hors la destination fournie par l'appelant (section 8) | IR après fusion et unicité |
-| `@require_fused` | une `function` | aucun tableau intermédiaire matérialisé à l'intérieur | règles F1 à F4 et M1 à M3 (section 7) |
-| `@require_tail` | une `function` récursive | chaque appel récursif est terminal ; compilé en boucle | IR après inlining |
+| `requireUnique(...)` | une mise à jour `x.with(i, v)` | mise à jour en place, aucune copie | analyse d'unicité (section 8) |
+| `@requireNoAlloc` | une `function` et tout ce qu'elle appelle | aucune création de tableau ni allocation, ni sur la pile ni sur le tas, hors la destination fournie par l'appelant (section 8) | IR après fusion et unicité |
+| `@requireFused` | une `function` | aucun tableau intermédiaire matérialisé à l'intérieur | règles F1 à F4 et M1 à M3 (section 7) |
+| `@requireTail` | une `function` récursive | chaque appel récursif est terminal ; compilé en boucle | IR après inlining |
 
 ### Portabilité des verdicts
 
 - Une exigence se vérifie uniquement à partir des règles de cette spécification, jamais des optimisations propres à une implémentation.
-- Elle donne donc le même verdict sur toute cible et avec tout compilateur conforme. C'est pourquoi `require_no_alloc` interdit aussi les tableaux sur la pile : le seuil de placement sur la pile ne peut pas changer le verdict.
+- Elle donne donc le même verdict sur toute cible et avec tout compilateur conforme. C'est pourquoi `requireNoAlloc` interdit aussi les tableaux sur la pile : le seuil de placement sur la pile ne peut pas changer le verdict.
 - Conséquence : l'algorithme d'analyse d'unicité devra être spécifié pas à pas (section 16).
 
 ### Exemples
 
 ```
-@require_tail
+@requireTail
 function gcd(a: u64, b: u64): u64 {
     if (b == 0) {
         return a;
@@ -425,7 +426,7 @@ function gcd(a: u64, b: u64): u64 {
     }
 }
 
-@require_fused
+@requireFused
 function center(x: f64[n]): f64[n] {
     const y = x * 2.0;
     return y - mean(y);
@@ -435,7 +436,7 @@ function center(x: f64[n]): f64[n] {
 `gcd` est accepté. `center` est refusé :
 
 ```
-error: require_fused not satisfied (line 11)
+error: requireFused not satisfied (line 11)
   `y` (line 12) is used twice (line 13): it is materialized (rule M1)
 ```
 
@@ -454,7 +455,7 @@ Par défaut, un calcul flottant donne le même résultat au bit près, quels que
 ### NaN
 
 - Les processeurs ne produisent pas les mêmes bits de NaN : quand une opération crée un NaN sans opérande NaN, x86 met le bit de signe à 1 et ARM à 0 ([WebAssembly design, issue 619](https://www.github.com/WebAssembly/design/issues/619)).
-- Règle : en v0, aucune opération du langage ne permet de lire les bits d'un flottant, et `print` affiche `NaN` sans signe. Tout flottant converti en octets (`write_f64`, `write_f32`) voit ses NaN remplacés par le NaN canonique : signe 0, bit « quiet » à 1, charge utile nulle.
+- Règle : en v0, aucune opération du langage ne permet de lire les bits d'un flottant, et `print` affiche `NaN` sans signe. Tout flottant converti en octets (`writeF64`, `writeF32`) voit ses NaN remplacés par le NaN canonique : signe 0, bit « quiet » à 1, charge utile nulle.
 - Conséquence : les bits des NaN ne sont jamais observables, et la garantie « au bit près » tient sans coût dans les calculs.
 
 ### `min` et `max`
@@ -499,9 +500,9 @@ Pourquoi cette forme :
 
 En v0, `scan` sur des flottants est séquentiel, de gauche à droite. Une forme parallèle fixe est envisageable plus tard (section 16).
 
-### Mode `allow_reassoc`
+### Mode `allowReassoc`
 
-- Décorateur `@allow_reassoc` d'une `function` : le compilateur peut réassocier, contracter en FMA et choisir librement la forme de réduction.
+- Décorateur `@allowReassoc` d'une `function` : le compilateur peut réassocier, contracter en FMA et choisir librement la forme de réduction.
 - Le résultat peut alors varier selon la cible et le nombre de cœurs. Le memory report liste les fonctions concernées.
 - Il n'équivaut pas à `-ffast-math`, qui active aussi d'autres options, dont `-ffinite-math-only`. La comparaison équitable se fait avec `-fassociative-math`, qui exige `-fno-signed-zeros` et `-fno-trapping-math` (section 14).
 
@@ -541,15 +542,15 @@ Les instructions d'une `action` s'exécutent dans l'ordre écrit, **calculs purs
 
 | Action | Type | Rôle |
 | --- | --- | --- |
-| `read_bytes(path)` | `(string) => u8[k]` | lit un fichier entier |
-| `write_bytes(path, x)` | `(string, u8[n]) => void` | écrit un fichier |
-| `read_f64(path)` | `(string) => f64[k]` | lit un fichier binaire de flottants 64 bits, petit-boutiste |
-| `read_f32(path)` | `(string) => f32[k]` | idem en 32 bits |
-| `write_f64(path, x)`, `write_f32` | `(string, f64[n]) => void`, `(string, f32[n]) => void` | écrit un fichier binaire petit-boutiste ; NaN canoniques (section 10) |
+| `readBytes(path)` | `(string) => u8[k]` | lit un fichier entier |
+| `writeBytes(path, x)` | `(string, u8[n]) => void` | écrit un fichier |
+| `readF64(path)` | `(string) => f64[k]` | lit un fichier binaire de flottants 64 bits, petit-boutiste |
+| `readF32(path)` | `(string) => f32[k]` | idem en 32 bits |
+| `writeF64(path, x)`, `writeF32` | `(string, f64[n]) => void`, `(string, f32[n]) => void` | écrit un fichier binaire petit-boutiste ; NaN canoniques (section 10) |
 | `print(v)` | `(T) => void` | écrit `v` sur la sortie standard ; un flottant est écrit sous la forme décimale la plus courte qui se relit en la même valeur (décision) |
 | `clock()` | `() => u64` | horloge monotone, en nanosecondes |
 | `bench(r, f)` | `(i64, () => U) => [U, u64]` | appelle `f` `r` fois et retourne le dernier résultat et la durée totale en nanosecondes |
-| `parse_i64(s)` | `(string) => i64` | convertit un argument texte en entier ; panne si le texte n'est pas un entier valide |
+| `parseI64(s)` | `(string) => i64` | convertit un argument texte en entier ; panne si le texte n'est pas un entier valide |
 
 ### Règle de `bench`
 
@@ -557,10 +558,10 @@ Chacun des `r` appels de `f` doit être évalué entièrement. Le compilateur ne
 
 ```
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const [r, ns] = bench(1000, () => sum(x));
     print(ns);
-    write_f64(args[1], [r]);
+    writeF64(args[1], [r]);
     return 0;
 }
 ```
@@ -594,7 +595,7 @@ Isocron « bat » un langage sur un noyau si sa médiane est plus basse que la m
 
 ### Langages et options
 
-| Langage | Variante stricte (comparée au mode par défaut d'Isocron) | Variante réassociée (comparée à `allow_reassoc`) | Parallélisme |
+| Langage | Variante stricte (comparée au mode par défaut d'Isocron) | Variante réassociée (comparée à `allowReassoc`) | Parallélisme |
 | --- | --- | --- | --- |
 | C (GCC et Clang) | `-O3 -march=native -ffp-contract=off` | `-O3 -march=native -fassociative-math -fno-signed-zeros -fno-trapping-math` | OpenMP |
 | Rust | `cargo build --release`, `-C target-cpu=native` | — | rayon |
@@ -603,7 +604,7 @@ Isocron « bat » un langage sur un noyau si sa médiane est plus basse que la m
 | C++, Fortran (optionnels) | `g++` / `gfortran`, `-O3 -march=native` | — | OpenMP |
 
 - **FMA** : selon la documentation GCC, le défaut est `-ffp-contract=off` en mode C conforme (`-std=c11` ou similaire), et `-ffp-contract=fast` sinon. Sans `-ffp-contract=off`, GCC peut donc utiliser des FMA qu'Isocron s'interdit. Pour les autres langages, vérifier et documenter si le compilateur contracte en FMA par défaut.
-- `-ffast-math` n'est pas utilisé : il active aussi `-ffinite-math-only` et d'autres options sans équivalent dans `allow_reassoc`.
+- `-ffast-math` n'est pas utilisé : il active aussi `-ffinite-math-only` et d'autres options sans équivalent dans `allowReassoc`.
 
 ### Noyaux
 
@@ -636,7 +637,7 @@ Deux tailles par noyau :
 - Seul le noyau est chronométré, chargement des données exclu. Dans Isocron, la mesure passe par `bench` (section 12).
 - Le noyau est répété `r` fois par mesure, `r` étant choisi pour que chaque mesure dure au moins 100 ms (décision). Dans les autres langages, chaque résultat est protégé contre l'élimination par l'outil prévu (par exemple `std::hint::black_box` en Rust).
 - 5 mesures de chauffe, puis 30 mesures ; on rapporte la médiane et l'écart interquartile du temps par appel.
-- Les résultats sont écrits en binaire (`write_f64`) et comparés : en mode reproductible, Isocron doit être identique au bit près à son interpréteur de référence.
+- Les résultats sont écrits en binaire (`writeF64`) et comparés : en mode reproductible, Isocron doit être identique au bit près à son interpréteur de référence.
 
 ## 15. Feuille de route
 
@@ -650,7 +651,7 @@ Sous-ensemble du langage implémenté :
 - Expressions : `function`, `const` (avec motifs de tuple), `if`/`else` et `? :`, opérateurs dont `**` à exposant entier, lambdas avec capture, conversions `f64(…)`, littéraux de tableau `[…]`.
 - Primitives : `map`, `reduce`, `fold`, opérateurs élément par élément, `x[i]`, `x.with(i, v)`, `zeros`, et dans la bibliothèque standard `sum`, `mean`, `dot`, `sqrt`.
 - Garanties : fusion F1 seulement ; forme de réduction de la section 10, vectorisée ; mise à jour en place quand l'unicité est évidente (accumulateur de `fold`).
-- Effets : `action main`, `read_f64`, `read_bytes`, `write_f64`, `print`, `bench`, `parse_i64`, avec l'ordre d'exécution de la section 12.
+- Effets : `action main`, `readF64`, `readBytes`, `writeF64`, `print`, `bench`, `parseI64`, avec l'ordre d'exécution de la section 12.
 - Monothread uniquement.
 
 ### Programmes du POC
@@ -660,10 +661,10 @@ Ces 4 programmes sont la référence des tâches P1 à P6. Chacun lit ses donné
 ```
 // sum.isc        usage: sum <input.f64> <output.f64> <reps>
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    const [r, ns] = bench(parse_i64(args[2]), () => sum(x));
+    const x = readF64(args[0]);
+    const [r, ns] = bench(parseI64(args[2]), () => sum(x));
     print(ns);
-    write_f64(args[1], [r]);
+    writeF64(args[1], [r]);
     return 0;
 }
 ```
@@ -671,11 +672,11 @@ action main(args: string[k]): i32 {
 ```
 // dot.isc        usage: dot <a.f64> <b.f64> <output.f64> <reps>
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const b = read_f64(args[1]);
-    const [r, ns] = bench(parse_i64(args[3]), () => dot(a, b));
+    const a = readF64(args[0]);
+    const b = readF64(args[1]);
+    const [r, ns] = bench(parseI64(args[3]), () => dot(a, b));
     print(ns);
-    write_f64(args[2], [r]);
+    writeF64(args[2], [r]);
     return 0;
 }
 ```
@@ -683,30 +684,30 @@ action main(args: string[k]): i32 {
 ```
 // histogram.isc  usage: histogram <input.u8> <output.f64> <reps>
 function histogram(values: u8[n]): u32[256] {
-    return fold(values, zeros(), (c, v) => require_unique(c.with(v, c[v] + 1)));
+    return fold(values, zeros(), (c, v) => requireUnique(c.with(v, c[v] + 1)));
 }
 
 action main(args: string[k]): i32 {
-    const x = read_bytes(args[0]);
-    const [h, ns] = bench(parse_i64(args[2]), () => histogram(x));
+    const x = readBytes(args[0]);
+    const [h, ns] = bench(parseI64(args[2]), () => histogram(x));
     print(ns);
-    write_f64(args[1], map(h, (c) => f64(c)));
+    writeF64(args[1], map(h, (c) => f64(c)));
     return 0;
 }
 ```
 
 ```
 // std_dev.isc    usage: std_dev <input.f64> <output.f64> <reps>
-function std_dev(x: f64[n]): f64 {
+function stdDev(x: f64[n]): f64 {
     const m = mean(x);
     return sqrt(sum((x - m) ** 2) / f64(n));
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    const [r, ns] = bench(parse_i64(args[2]), () => std_dev(x));
+    const x = readF64(args[0]);
+    const [r, ns] = bench(parseI64(args[2]), () => stdDev(x));
     print(ns);
-    write_f64(args[1], [r]);
+    writeF64(args[1], [r]);
     return 0;
 }
 ```
@@ -733,8 +734,8 @@ Dans `dot`, `a` et `b` ont des tailles existentielles différentes : l'égalité
 | --- | --- | --- |
 | 1 | records (en colonnes), types somme, génériques, classes `Num/Ord/Eq`, paramètres `size` | exemples des sections 3 et 4 typés |
 | 2 | fusion F2 à F4, règles M1 à M3, memory report | aucun tableau intermédiaire hors règles M |
-| 3 | analyse d'unicité complète, comptage de références de secours, `require_unique` | histogramme sans allocation ; aucune fuite (Valgrind ou AddressSanitizer) |
-| 4 | `require_no_alloc`, `require_fused`, `require_tail` | tests positifs et négatifs pour chacune |
+| 3 | analyse d'unicité complète, comptage de références de secours, `requireUnique` | histogramme sans allocation ; aucune fuite (Valgrind ou AddressSanitizer) |
+| 4 | `requireNoAlloc`, `requireFused`, `requireTail` | tests positifs et négatifs pour chacune |
 | 5 | `filter`, `scan`, `window`, `zip`, tranches, `min`/`max` IEEE 754-2019, NaN canoniques | sémantique conforme aux sections 6 et 10 |
 | 6 | parallélisme par blocs, pool de threads | résultats identiques avec 1, 2, 4… cœurs |
 | 7 | suite complète de benchmarks (section 14), comparaisons A et B | tableau médiane et IQR contre tous les langages |
@@ -744,7 +745,7 @@ Dans `dot`, `a` et `b` ont des tailles existentielles différentes : l'égalité
 - Cette spécification est la source de vérité. Toute ambiguïté rencontrée est ajoutée à la section 16, jamais tranchée en silence dans le code.
 - Tests d'abord : chaque règle (fusion, unicité, réduction) a ses tests positifs et négatifs.
 - Test différentiel : générer des programmes aléatoires bien typés et comparer compilateur et interpréteur au bit près.
-- Ne jamais activer de drapeau fast-math dans LLVM hors `allow_reassoc`.
+- Ne jamais activer de drapeau fast-math dans LLVM hors `allowReassoc`.
 - Tout le code, les identifiants, les messages et la documentation du dépôt sont en anglais.
 
 ## 16. Questions ouvertes et limites connues
@@ -755,7 +756,7 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 | --- | --- | --- |
 | Valeur de B (4 096) ; V = 32 est tranché (section 10) | grain du parallélisme et coût des niveaux supérieurs de l'arbre, pas encore mesurés | étape 2 |
 | Coût réel du mode reproductible face aux variantes réassociées | conditionne l'intérêt du mode par défaut | fin du POC |
-| Algorithme d'unicité spécifié pas à pas | sans lui, `require_unique` n'est pas portable | étape 2, phase 3 |
+| Algorithme d'unicité spécifié pas à pas | sans lui, `requireUnique` n'est pas portable | étape 2, phase 3 |
 | `require_vectorized` et cibles multiples | une même fonction peut passer sur une cible et échouer sur une autre | après la phase 7 |
 | Débordement entier modulaire | peut bloquer des optimisations que C obtient par comportement indéfini | après mesures |
 | Croissance du code due à l'inlining total | l'inlining sans seuil garantit la fusion mais peut gonfler les binaires ; toute limite devra être une règle de la spécification, pas une heuristique | étape 2, phase 2 |
@@ -767,7 +768,7 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 | `scan` flottant parallèle à forme fixe | aujourd'hui séquentiel | v1 |
 | `scatter` et règle de collision | histogrammes parallèles au-delà de la règle P (section 6) | v1 |
 | Passage des valeurs aux fonctions `extern` (section 12) : un tableau de scalaires en pointeur suivi de sa longueur `int64_t`, une `string` en copie terminée par un octet nul, au plus 6 paramètres entiers et 8 flottants, pas de fonction variadique ; décidé provisoirement (DECISIONS D125) | interopérabilité avec les bibliothèques C | avant la v1 |
-| Partie 3, intégrée à la grammaire de la section 3 avec la syntaxe 2 (D148), décidée provisoirement : chaînes (littéraux, `+`, ordre par octets, D134), texte et CSV (D135), opérateurs bit à bit `&` `\|` `^` `<<` `>>` aux niveaux de JavaScript (décalage modulo le nombre de bits), `concat` des tableaux, `print_bytes` (D136), `Result` et actions `try_` (D138), modules `import * as m from "./m";` et noms `m.x` (D139) | programmes idiomatiques du Benchmarks Game, entrées-sorties texte, erreurs sans panne, programmes en plusieurs fichiers | avant la v1 |
+| Partie 3, intégrée à la grammaire de la section 3 avec la syntaxe 2 (D148), décidée provisoirement : chaînes (littéraux, `+`, ordre par octets, D134), texte et CSV (D135), opérateurs bit à bit `&` `\|` `^` `<<` `>>` aux niveaux de JavaScript (décalage modulo le nombre de bits), `concat` des tableaux, `printBytes` (D136), `Result` et actions `try_` (D138), modules `import * as m from "./m";` et noms `m.x` (D139) | programmes idiomatiques du Benchmarks Game, entrées-sorties texte, erreurs sans panne, programmes en plusieurs fichiers | avant la v1 |
 | Comportement FMA par défaut de Rust, Go, Zig, Fortran | équité de la variante stricte | P5 du POC |
 | Unicité du nom « Isocron » | deux recherches web n'ont trouvé aucun langage de ce nom ; pas une preuve | avant publication |
 

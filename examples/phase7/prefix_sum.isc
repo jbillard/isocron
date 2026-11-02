@@ -1,16 +1,16 @@
 // prefix_sum.isc  usage: prefix_sum <input.f64> <output.f64> <reps>
 // the inclusive prefix sums of i64 (the input: integers stored as f64)
-function prefix_sum(x: i64[n]): i64[n] {
+function prefixSum(x: i64[n]): i64[n] {
     return scan(x, (+), 0);
 }
 
 action main(args: string[k]): i32 {
-    const x = map(read_f64(args[0]), (v) => i64(v));
+    const x = map(readF64(args[0]), (v) => i64(v));
     // one call before the timer: the pages of its result are touched, as
     // the other languages touch their output buffers (DECISIONS D117)
-    const [_, _] = bench(1, () => prefix_sum(x));
-    const [r, ns] = bench(parse_i64(args[2]), () => prefix_sum(x));
+    const [_, _] = bench(1, () => prefixSum(x));
+    const [r, ns] = bench(parseI64(args[2]), () => prefixSum(x));
     print(ns);
-    write_f64(args[1], map(r, (v) => f64(v)));
+    writeF64(args[1], map(r, (v) => f64(v)));
     return 0;
 }

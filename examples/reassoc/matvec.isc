@@ -1,24 +1,24 @@
 // matvec.isc (reassociated)  usage: matvec <matrix.f64> <vector.f64> <output.f64> <reps>
-// `allow_reassoc` (SPEC section 10): compared with the reassociated variants
+// `allowReassoc` (SPEC section 10): compared with the reassociated variants
 // of the other languages (section 14, DECISIONS D123)
-function rows_of(a: f64[k], v: f64[m]): i64 {
+function rowsOf(a: f64[k], v: f64[m]): i64 {
     return k / m;
 }
 
-@allow_reassoc
+@allowReassoc
 function matvec(a: f64[k], v: f64[m], rows: size): f64[rows] {
     return map(iota(rows), (i) => dot(a.slice(i * m, i * m + m), v));
 }
 
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const v = read_f64(args[1]);
-    const rows = rows_of(a, v);
+    const a = readF64(args[0]);
+    const v = readF64(args[1]);
+    const rows = rowsOf(a, v);
     // one call before the timer: the pages of its result are touched, as
     // the other languages touch their output buffers (DECISIONS D117)
     const [_, _] = bench(1, () => matvec(a, v, rows));
-    const [r, ns] = bench(parse_i64(args[3]), () => matvec(a, v, rows));
+    const [r, ns] = bench(parseI64(args[3]), () => matvec(a, v, rows));
     print(ns);
-    write_f64(args[2], r);
+    writeF64(args[2], r);
     return 0;
 }

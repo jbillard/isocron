@@ -1,5 +1,5 @@
 //! Strings (DECISIONS D134): literals and their escapes, `++`, the order by
-//! bytes, `len`, `bytes`, `string_of`, `to_string`, `parse_f64`; strings in
+//! bytes, `len`, `bytes`, `stringOf`, `toString`, `parseF64`; strings in
 //! arrays, tuples, sum and recursive types, in `fold`, `reduce` and `scan`.
 //! The interpreter and the compiled program print the same text, and the
 //! compiled program frees every string (Valgrind, when installed).
@@ -43,7 +43,7 @@ const OPS: &str = r#"function greet(name: string): string {
 }
 
 function label(x: f64): string {
-    return "x = " + to_string(x);
+    return "x = " + toString(x);
 }
 
 // `+` of strings is the primitive whatever the functions of the program
@@ -61,11 +61,11 @@ action main(args: string[k]): i32 {
     print("Z" < "a");
     print("" < "a");
     print(bytes("AZ"));
-    print(string_of(bytes("ok\tfin")));
-    print(to_string(42) + "/" + to_string(-7i8) + "/" + to_string(true) + "/" + to_string(255u8) + "/" + to_string(0.1f32));
+    print(stringOf(bytes("ok\tfin")));
+    print(toString(42) + "/" + toString(-7i8) + "/" + toString(true) + "/" + toString(255u8) + "/" + toString(0.1f32));
     print("" + "");
     print(len(""));
-    print(parse_f64("2.5e-3"));
+    print(parseF64("2.5e-3"));
     print("☺ \"citation\" \\ 😀");
     print(map(args, (a) => len(a)));
     print(map(args, (a) => a + "!"));
@@ -140,8 +140,8 @@ action main(args: string[k]): i32 {
     const p = [xs[2], 3] as const;
     print(p);
     const [s, n] = p;
-    print(concat(s, to_string(n)));
-    print(map(iota(5), (i) => to_string(i * i)));
+    print(concat(s, toString(n)));
+    print(map(iota(5), (i) => toString(i * i)));
     print(xs == ["pomme", "kiwi", "abricot"]);
     print(xs == ys);
     print(t == insert(insert(insert(Leaf, "pomme"), "kiwi"), "abricot"));
@@ -175,7 +175,7 @@ function second(a: List, b: List): List {
 }
 
 action main(args: string[k]): i32 {
-    const big = map(iota(10000), (i) => to_string(i * 7919 % 10007));
+    const big = map(iota(10000), (i) => toString(i * 7919 % 10007));
     const z = "~";
     print(reduce(big, smaller, z));
     print(reduce(big, (a, b) => len(a) >= len(b) ? a : b, ""));
@@ -211,19 +211,19 @@ fn reductions_of_strings() {
 
 #[test]
 fn string_panics() {
-    let bad = "action main(args: string[k]): i32 {\n    print(string_of(map(bytes(args[0]), (b) => b == 65u8 ? 255u8 : b)));\n    return 0;\n}\n";
+    let bad = "action main(args: string[k]): i32 {\n    print(stringOf(map(bytes(args[0]), (b) => b == 65u8 ? 255u8 : b)));\n    return 0;\n}\n";
     let m = interp_panic(bad, &["xxA"]);
-    assert!(m.contains("string_of: the bytes are not UTF-8 (invalid from byte 2)"), "{}", m);
+    assert!(m.contains("stringOf: the bytes are not UTF-8 (invalid from byte 2)"), "{}", m);
     let bin = compile(bad, "str_utf8");
     let r = run_bin(&bin, &["xxA"]);
     assert_ne!(r.code, 0);
-    assert!(r.stderr.contains("string_of: the bytes are not UTF-8 (invalid from byte 2)"), "{}", r.stderr);
-    let nan = "action main(args: string[k]): i32 {\n    print(parse_f64(args[0]));\n    return 0;\n}\n";
+    assert!(r.stderr.contains("stringOf: the bytes are not UTF-8 (invalid from byte 2)"), "{}", r.stderr);
+    let nan = "action main(args: string[k]): i32 {\n    print(parseF64(args[0]));\n    return 0;\n}\n";
     let m = interp_panic(nan, &["1,5"]);
-    assert!(m.contains("parse_f64: `1,5` is not a valid number"), "{}", m);
+    assert!(m.contains("parseF64: `1,5` is not a valid number"), "{}", m);
     let bin = compile(nan, "str_parse");
     let r = run_bin(&bin, &["1,5"]);
-    assert!(r.stderr.contains("parse_f64: `1,5` is not a valid number"), "{}", r.stderr);
+    assert!(r.stderr.contains("parseF64: `1,5` is not a valid number"), "{}", r.stderr);
 }
 
 fn error(src: &str) -> String {
@@ -247,9 +247,9 @@ fn string_errors() {
     assert!(e.contains("string"), "{}", e);
     let e = error("action main(args: string[k]): i32 {\n    print(concat(1, 2));\n    return 0;\n}\n");
     assert!(e.contains("string"), "{}", e);
-    // a `fn` cannot parse (an action, as `parse_i64`)
-    let e = error("function f(s: string): f64 {\n    return parse_f64(s);\n}\n\naction main(args: string[k]): i32 {\n    print(f(\"1\"));\n    return 0;\n}\n");
-    assert!(e.contains("parse_f64"), "{}", e);
+    // a `fn` cannot parse (an action, as `parseI64`)
+    let e = error("function f(s: string): f64 {\n    return parseF64(s);\n}\n\naction main(args: string[k]): i32 {\n    print(f(\"1\"));\n    return 0;\n}\n");
+    assert!(e.contains("parseF64"), "{}", e);
 }
 
 const TEMPLATES: &str = r#"function label(name: string, x: f64): string {

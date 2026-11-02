@@ -10,7 +10,7 @@
 //!    elements inside the consumer's loop. `let` and size tests that wrap a
 //!    producer are floated out of the consumer.
 //! 3. `bind_temporaries`: a freshly allocated array consumed by a borrowing
-//!    operation (`print`, `write_f64`, an index into a literal, ...) is bound
+//!    operation (`print`, `writeF64`, an index into a literal, ...) is bound
 //!    to a `let`, so that it is freed after use.
 //! 4. `ownership`: uniqueness analysis restricted to what the POC needs.
 //!    An owned variable (bound to a freshly allocated value, or the
@@ -19,7 +19,7 @@
 //!    its definition) and the use consumes the value (target of `with`,
 //!    initial value of `fold`, result of a `let`, `fold` or `bench` body,
 //!    tuple component). Any other consuming use gets an explicit `Copy`.
-//!    `require_unique` fails when a copy would be needed. Owned variables that
+//!    `requireUnique` fails when a copy would be needed. Owned variables that
 //!    are not moved are freed at the end of their scope.
 
 use std::collections::{HashMap, HashSet};
@@ -224,7 +224,7 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
 }
 
 // ---------------------------------------------------------------------
-// `require_tail` (SPEC section 9, D106)
+// `requireTail` (SPEC section 9, D106)
 
 /// The calls of recursive functions in `e`, with whether each one is in tail
 /// position of the body (through `let` bodies, `if` branches, size tests,
@@ -266,7 +266,7 @@ fn reachable(p: &Program, fi: u32) -> HashSet<u32> {
     seen
 }
 
-/// `require_tail`: every recursive call of the function is a direct tail
+/// `requireTail`: every recursive call of the function is a direct tail
 /// call compiled as a loop.
 fn check_require_tail(p: &Program) -> R<()> {
     for (i, f) in p.fns.iter().enumerate() {
@@ -300,7 +300,7 @@ fn check_require_tail(p: &Program) -> R<()> {
             }
         }
         if !notes.is_empty() {
-            let mut d = Diagnostic::new(at, format!("require_tail not satisfied (line {})", f.span.line));
+            let mut d = Diagnostic::new(at, format!("requireTail not satisfied (line {})", f.span.line));
             d.notes = notes;
             return Err(d);
         }
@@ -791,7 +791,7 @@ fn masked_reductions(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     for c in e.children_mut() {
         masked_reductions(c, vars);
     }
-    // under `allow_reassoc` (D109), `+` and `*` of floats too: the form of
+    // under `allowReassoc` (D109), `+` and `*` of floats too: the form of
     // the reduction is free and the sign of a zero ignored (`nsz`), so a
     // rejected element may count as 0.0 (or 1.0) (D123)
     let reassoc = e.reassoc;
@@ -1655,7 +1655,7 @@ impl<'a> Rewriter<'a> {
         if require_unique {
             let span = e.span;
             let why = self.copy_reason(e, &o);
-            return Err(Diagnostic::new(span, format!("require_unique not satisfied (line {}): {}", span.line, why)));
+            return Err(Diagnostic::new(span, format!("requireUnique not satisfied (line {}): {}", span.line, why)));
         }
         let why = self.copy_reason(e, &o);
         self.copy_reasons.push((e.span, why));
@@ -1667,7 +1667,7 @@ impl<'a> Rewriter<'a> {
     }
 
     /// Why a borrowed value must be copied (the memory report, the error of
-    /// `require_unique`).
+    /// `requireUnique`).
     fn copy_reason(&self, e: &mut Expr, o: &Own) -> String {
         let (vars, idx) = match o {
             Own::Borrowed(v, i) => (v.clone(), *i),

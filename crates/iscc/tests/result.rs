@@ -41,27 +41,27 @@ function done(r: Result<void, string>): string {
 
 action main(args: string[k]): i32 {
     const dir = args[0];
-    print(show(try_parse_i64("42"), to_string));
-    print(show(try_parse_i64("4x2"), to_string));
-    print(show(try_parse_f64("2.5e1"), to_string));
-    print(show(try_parse_f64("virgule,5"), to_string));
-    print(show(try_read_f64(concat(dir, "/x.f64")), (v) => to_string(sum(v))));
-    print(show(try_read_f64(concat(dir, "/odd.f64")), (v) => to_string(sum(v))));
-    print(show(try_read_bytes(concat(dir, "/absent")), (v) => to_string(len(v))));
-    print(show(try_read_text(concat(dir, "/ok.csv")), (t) => to_string(len(lines(t)))));
-    print(show(try_read_text(concat(dir, "/x.f64")), (t) => t));
-    match (try_read_csv_f64(concat(dir, "/ok.csv"), 0)) {
+    print(show(tryParseI64("42"), toString));
+    print(show(tryParseI64("4x2"), toString));
+    print(show(tryParseF64("2.5e1"), toString));
+    print(show(tryParseF64("virgule,5"), toString));
+    print(show(tryReadF64(concat(dir, "/x.f64")), (v) => toString(sum(v))));
+    print(show(tryReadF64(concat(dir, "/odd.f64")), (v) => toString(sum(v))));
+    print(show(tryReadBytes(concat(dir, "/absent")), (v) => toString(len(v))));
+    print(show(tryReadText(concat(dir, "/ok.csv")), (t) => toString(len(lines(t)))));
+    print(show(tryReadText(concat(dir, "/x.f64")), (t) => t));
+    match (tryReadCsvF64(concat(dir, "/ok.csv"), 0)) {
         Ok(m) => print(m),
         Err(e) => print(e),
     };
-    match (try_read_csv_f64(concat(dir, "/bad.csv"), 0)) {
+    match (tryReadCsvF64(concat(dir, "/bad.csv"), 0)) {
         Ok(m) => print(m),
         Err(e) => print(e),
     };
-    print(done(try_write_text(concat(dir, "/written.txt"), "bonjour\n")));
-    print(done(try_write_text(concat(dir, "/no/such/dir.txt"), "x")));
-    print(done(try_write_bytes(concat(dir, "/written.bin"), bytes("AB"))));
-    print(concat(read_text(concat(dir, "/written.txt")), to_string(len(read_bytes(concat(dir, "/written.bin"))))));
+    print(done(tryWriteText(concat(dir, "/written.txt"), "bonjour\n")));
+    print(done(tryWriteText(concat(dir, "/no/such/dir.txt"), "x")));
+    print(done(tryWriteBytes(concat(dir, "/written.bin"), bytes("AB"))));
+    print(concat(readText(concat(dir, "/written.txt")), toString(len(readBytes(concat(dir, "/written.bin"))))));
     return 0;
 }
 "#;
@@ -78,10 +78,10 @@ fn fallible_actions() {
     std::fs::write(dir.join("odd.f64"), "abc").unwrap();
     let d = dir.to_string_lossy().to_string();
     let expected = format!(
-        "Ok(42)\nErr(parse_i64: `4x2` is not a valid integer)\nOk(25)\nErr(parse_f64: `virgule,5` is not a valid number)\nOk(3)\n\
+        "Ok(42)\nErr(parseI64: `4x2` is not a valid integer)\nOk(25)\nErr(parseF64: `virgule,5` is not a valid number)\nOk(3)\n\
          Err(cannot read `{d}/odd.f64`: its size (3 bytes) is not a multiple of 8)\n\
          Err(cannot read `{d}/absent`: No such file or directory (os error 2))\nOk(2)\n\
-         Err(read_text: `{d}/x.f64` is not UTF-8 text (invalid from byte 6))\n[[1, 2], [3, 4]]\n\
+         Err(readText: `{d}/x.f64` is not UTF-8 text (invalid from byte 6))\n[[1, 2], [3, 4]]\n\
          csv: line 2 has 1 field, the first row has 2\nOk\n\
          Err(cannot write `{d}/no/such/dir.txt`: No such file or directory (os error 2))\nOk\nbonjour\n2\n"
     );
@@ -99,18 +99,18 @@ fn the_program_result_takes_precedence() {
     // are left out
     let a = "type Result = Ok(i64) | Err;\n\naction main(args: string[k]): i32 {\n    print(Ok(3));\n    return 0;\n}\n";
     assert_eq!(interp_ok(a, &[]), "Ok(3)\n");
-    // a constructor `Ok` and a function `try_read_text` of the program
-    let b = "type Answer = Ok | No;\n\nfunction try_read_text(p: string): i64 {\n    return 7;\n}\n\naction main(args: string[k]): i32 {\n    print([Ok, try_read_text(\"x\")] as const);\n    return 0;\n}\n";
+    // a constructor `Ok` and a function `tryReadText` of the program
+    let b = "type Answer = Ok | No;\n\nfunction tryReadText(p: string): i64 {\n    return 7;\n}\n\naction main(args: string[k]): i32 {\n    print([Ok, tryReadText(\"x\")] as const);\n    return 0;\n}\n";
     assert_eq!(interp_ok(b, &[]), "(Ok, 7)\n");
     // a function `len` of the program does not break the prelude
-    let c = "function len(a: i64, b: i64): i64 {\n    return a + b;\n}\n\naction main(args: string[k]): i32 {\n    match (try_parse_i64(\"5\")) {\n        Ok(v) => print(len(v, 1)),\n        Err(e) => print(e),\n    };\n    return 0;\n}\n";
+    let c = "function len(a: i64, b: i64): i64 {\n    return a + b;\n}\n\naction main(args: string[k]): i32 {\n    match (tryParseI64(\"5\")) {\n        Ok(v) => print(len(v, 1)),\n        Err(e) => print(e),\n    };\n    return 0;\n}\n";
     assert_eq!(interp_ok(c, &[]), "6\n");
 }
 
 #[test]
 fn no_copy_of_what_is_read() {
     // the array read is moved into `Ok`, never copied
-    let src = "action main(args: string[k]): i32 {\n    match (try_read_f64(args[0])) {\n        Ok(v) => print(sum(v)),\n        Err(e) => print(e),\n    };\n    return 0;\n}\n";
+    let src = "action main(args: string[k]): i32 {\n    match (tryReadF64(args[0])) {\n        Ok(v) => print(sum(v)),\n        Err(e) => print(e),\n    };\n    return 0;\n}\n";
     let p = iscc::frontend("t.isc", src).unwrap();
     assert!(p.copy_reasons.is_empty(), "{:?}", p.copy_reasons);
     // the parts of a new tuple, destructured: moved, not copied

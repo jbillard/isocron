@@ -1,12 +1,12 @@
 // histogram.isc  usage: histogram <input.u8> <output.f64> <reps>
 function histogram(values: u8[n]): u32[256] {
-    return fold(values, zeros(), (c, v) => require_unique(c.with(v, c[v] + 1)));
+    return fold(values, zeros(), (c, v) => requireUnique(c.with(v, c[v] + 1)));
 }
 
 action main(args: string[k]): i32 {
-    const x = read_bytes(args[0]);
-    const [h, ns] = bench(parse_i64(args[2]), () => histogram(x));
+    const x = readBytes(args[0]);
+    const [h, ns] = bench(parseI64(args[2]), () => histogram(x));
     print(ns);
-    write_f64(args[1], map(h, (c) => f64(c)));
+    writeF64(args[1], map(h, (c) => f64(c)));
     return 0;
 }

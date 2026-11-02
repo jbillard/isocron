@@ -33,13 +33,13 @@ changing the result.
 
 ```isc
 // mean of the squares of 0, 0.5, 1, ..., 4.5
-function mean_square(x: f64[n]): f64 {
+function meanSquare(x: f64[n]): f64 {
     return sum(x * x) / f64(n);
 }
 
 action main(args: string[k]): i32 {
     const x = map(iota(10), (i) => f64(i) / 2.0);
-    print(mean_square(x));
+    print(meanSquare(x));
     return 0;
 }
 ```
@@ -233,13 +233,13 @@ function square(v: f64): f64 {
     return v * v;
 }
 
-function apply_both(ops: [(f64) => f64, (f64) => f64], x: f64): f64 {
+function applyBoth(ops: [(f64) => f64, (f64) => f64], x: f64): f64 {
     const [f, g] = ops;
     return f(x) + g(x);
 }
 
 action main(args: string[k]): i32 {
-    print(apply_both([double, square] as const, 3.0));
+    print(applyBoth([double, square] as const, 3.0));
     const r = { up: double, sq: square };
     print(r.sq(5.0));
     const fs = [double, square, (v) => v + 1.0];
@@ -296,27 +296,27 @@ function odd(n: i64): boolean {
     }
 }
 
-function halve_sum(x: f64[n]): f64 {
+function halveSum(x: f64[n]): f64 {
     if (n <= 4) {
         return sum(x);
     } else {
-        return halve_sum(x.slice(0, n / 2)) + halve_sum(x.slice(n / 2, n));
+        return halveSum(x.slice(0, n / 2)) + halveSum(x.slice(n / 2, n));
     }
 }
 
-function count_down(n: i64, acc: i64): i64 {
+function countDown(n: i64, acc: i64): i64 {
     if (n == 0) {
         return acc;
     } else {
-        return count_down(n - 1, acc + n);
+        return countDown(n - 1, acc + n);
     }
 }
 
 action main(args: string[k]): i32 {
     print(fib(20));
     print(even(1001));
-    print(halve_sum(map(iota(100), (i) => f64(i))));
-    print(count_down(1000000, 0));
+    print(halveSum(map(iota(100), (i) => f64(i))));
+    print(countDown(1000000, 0));
     return 0;
 }
 ```
@@ -331,7 +331,7 @@ false
 A tail call to another function reuses the frame too, so that functions
 that call each other in tail position (`even` and `odd` above) do not use
 more stack either, as long as the arrays they pass are their own
-parameters. `require_tail` accepts such calls.
+parameters. `requireTail` accepts such calls.
 
 ## Types
 
@@ -415,9 +415,9 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 | `trim(s)` | `(string) => string` | without the white space at both ends |
 | `join(xs, sep)` | `(string[n], string) => string` | the strings with `sep` between them |
 | `bytes(s)` | `(string) => u8[k]` | the bytes |
-| `string_of(b)` | `(u8[n]) => string` | the text of these bytes; a panic if they are not UTF-8 |
-| `to_string(x)` | `(scalar) => string` | the text `print` writes |
-| `parse_f64(s)` | `(string) => f64` (an action) | a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic |
+| `stringOf(b)` | `(u8[n]) => string` | the text of these bytes; a panic if they are not UTF-8 |
+| `String(x)`, `x.toString()` | `(scalar) => string` | the text `print` writes (a string is itself) |
+| `parseF64(s)` | `(string) => f64` (an action) | a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic |
 
 Each of these functions can also be called as a method: `s.trim()`,
 `words.join(", ")`.
@@ -440,7 +440,7 @@ action main(args: string[k]): i32 {
     print(words.filter((w) => w < "l"));
     print(words.fold("", (acc, w) => acc + w + ";"));
     print(bytes("AZ"));
-    print(string_of([79u8, 75u8]));
+    print(stringOf([79u8, 75u8]));
     print("quote: \"x\", ☺");
     return 0;
 }
@@ -466,13 +466,13 @@ left-to-right concatenation: use `fold` for that.
 
 ```isc-panic
 action main(args: string[k]): i32 {
-    print(string_of([104u8, 255u8]));
+    print(stringOf([104u8, 255u8]));
     return 0;
 }
 ```
 
 ```output
-panic at line 2, column 20: string_of: the bytes are not UTF-8 (invalid from byte 1)
+panic at line 2, column 19: stringOf: the bytes are not UTF-8 (invalid from byte 1)
 ```
 
 ```isc
@@ -514,7 +514,7 @@ signature: the size of the result can depend on it. Its argument is a size
 any other expression with `const` first); a negative value is a panic.
 
 ```isc
-function first_k(x: f64[n], k: size): f64[k] {
+function firstK(x: f64[n], k: size): f64[k] {
     return map(iota(k), (i) => x[i]);
 }
 
@@ -523,7 +523,7 @@ function repeat(v: f64, k: size): f64[k] {
 }
 
 action main(args: string[k]): i32 {
-    print(first_k([1.0, 2.0, 3.0], 2));
+    print(firstK([1.0, 2.0, 3.0], 2));
     const m = 3;
     print(repeat(0.5, m));
     return 0;
@@ -659,6 +659,12 @@ action main(args: string[k]): i32 {
 * `x.f(a, b)` is `f(x, a, b)` when `x` is neither a record nor a module:
   `xs.map((v) => v + 1.0)`, `x.sum()`, `words.join(", ")`. `x.length` is
   `len(x)`.
+* Names follow TypeScript's conventions: camelCase for the functions of
+  the standard library (`readF64`, `parseCsvF64`, `printBytes`), and
+  TypeScript's own names where the meaning is the same (`String(x)`,
+  `x.toString()`, `Math.sqrt`, `Math.min`, `Math.PI`). `Math.f` is always
+  the mathematical function, even where a variable is named `Math`; the
+  same functions can be called without `Math.` (`sqrt(x)`).
 * The predefined operators can be passed as functions: `(+)`, `(-)`, `(*)`,
   `(/)`, `(%)`, `(==)`, `(!=)`, `(<)`, `(<=)`, `(>)`, `(>=)`, `(&&)`, `(||)`.
 
@@ -741,7 +747,7 @@ function area(s: Shape): f64 {
     };
 }
 
-function safe_div(a: f64, b: f64): Option<f64> {
+function safeDiv(a: f64, b: f64): Option<f64> {
     if (b == 0.0) {
         return None;
     } else {
@@ -762,7 +768,7 @@ action main(args: string[k]): i32 {
     const shapes = [Circle(1.0), Rect(2.0, 3.0), Empty];
     print(shapes);
     print(sum(map(shapes, area)));
-    print([safe_div(1.0, 4.0), safe_div(1.0, 0.0)] as const);
+    print([safeDiv(1.0, 4.0), safeDiv(1.0, 0.0)] as const);
     print([classify([0, None] as const), classify([5, Some(true)] as const), classify([5, None] as const)] as const);
     return 0;
 }
@@ -964,14 +970,14 @@ copy, and `k > n` is a panic. A row is read with `w[i]`, and `map`, `reduce`
 and `fold` take the rows one by one.
 
 ```isc
-function moving_average(x: f64[n], k: size): f64[n - k + 1] {
+function movingAverage(x: f64[n], k: size): f64[n - k + 1] {
     return map(window(x, k), (w) => sum(w) / f64(k));
 }
 
 action main(args: string[k]): i32 {
     const x = [1.0, 2.0, 3.0, 4.0, 5.0];
     print(window(x, 3));
-    print(moving_average(x, 2));
+    print(movingAverage(x, 2));
     print([[1, 2], [3, 4]][1]);
     return 0;
 }
@@ -1017,19 +1023,19 @@ The elements of an array of arrays are scalars.
 * `x.with(i, v)` is a new array equal to `x` except at `i` (as JavaScript's
   `Array.prototype.with`). If `x` is not used anywhere else, the compiler
   updates it in place; otherwise it copies it. Write
-  `require_unique(x.with(i, v))` to make the in-place update a requirement:
+  `requireUnique(x.with(i, v))` to make the in-place update a requirement:
   the program does not compile if `x` is used elsewhere. "Elsewhere" means
   on the same path: in `c ? x.with(i, v) : x`, each branch is the last use
   of `x` on its path, so the update is in place.
 
 ```isc
-function set_first(x: i64[n], v: i64): i64[n] {
+function setFirst(x: i64[n], v: i64): i64[n] {
     return x.with(0, v);
 }
 
 action main(args: string[k]): i32 {
     const a = iota(4);
-    const b = set_first(a, 100); // `a` is used again below: copied
+    const b = setFirst(a, 100); // `a` is used again below: copied
     print(a);
     print(b);
     print(fill(3, true));
@@ -1283,7 +1289,7 @@ which is then updated in place:
 
 ```isc
 function histogram(values: u8[n]): u32[4] {
-    return fold(values, zeros(), (c, v) => require_unique(c.with(v % 4, c[v % 4] + 1)));
+    return fold(values, zeros(), (c, v) => requireUnique(c.with(v % 4, c[v % 4] + 1)));
 }
 
 action main(args: string[k]): i32 {
@@ -1363,19 +1369,19 @@ action.
 
 | Action | Type | Effect |
 | --- | --- | --- |
-| `read_f64(path)` | `(string) => f64[k]` | reads a file of little-endian doubles (its size must be a multiple of 8) |
-| `read_bytes(path)` | `(string) => u8[k]` | reads a file as bytes |
-| `write_f64(path, x)` | `(string, f64[n]) => void` | writes little-endian doubles; every NaN is written as the canonical NaN `0x7FF8000000000000` |
-| `write_bytes(path, x)` | `(string, u8[n]) => void` | writes bytes |
-| `read_f32(path)`, `write_f32(path, x)` | as for `f64` | little-endian binary32 values (canonical NaN `0x7FC00000`) |
+| `readF64(path)` | `(string) => f64[k]` | reads a file of little-endian doubles (its size must be a multiple of 8) |
+| `readBytes(path)` | `(string) => u8[k]` | reads a file as bytes |
+| `writeF64(path, x)` | `(string, f64[n]) => void` | writes little-endian doubles; every NaN is written as the canonical NaN `0x7FF8000000000000` |
+| `writeBytes(path, x)` | `(string, u8[n]) => void` | writes bytes |
+| `readF32(path)`, `writeF32(path, x)` | as for `f64` | little-endian binary32 values (canonical NaN `0x7FC00000`) |
 | `print(x)` | `(T) => void` | prints a value and a newline |
-| `print_bytes(x)` | `(u8[n]) => void` | writes the bytes to the standard output, as they are (binary output) |
-| `parse_i64(s)` | `(string) => i64` | `+5`, `-12`, `007`; anything else is a panic |
-| `parse_f64(s)` | `(string) => f64` | `2.5`, `-1e-3`, `inf`, `NaN`; anything else is a panic |
-| `read_text(path)` | `(string) => string` | reads a UTF-8 text file (anything else is a panic) |
-| `write_text(path, s)` | `(string, string) => void` | writes a text file |
-| `read_csv_f64(path, skip)` | `(string, i64) => f64[r][c]` | reads a CSV file of numbers, after `skip` header lines |
-| `parse_csv_f64(text, skip)` | `(string, i64) => f64[r][c]` | the same from a text |
+| `printBytes(x)` | `(u8[n]) => void` | writes the bytes to the standard output, as they are (binary output) |
+| `parseI64(s)` | `(string) => i64` | `+5`, `-12`, `007`; anything else is a panic |
+| `parseF64(s)` | `(string) => f64` | `2.5`, `-1e-3`, `inf`, `NaN`; anything else is a panic |
+| `readText(path)` | `(string) => string` | reads a UTF-8 text file (anything else is a panic) |
+| `writeText(path, s)` | `(string, string) => void` | writes a text file |
+| `readCsvF64(path, skip)` | `(string, i64) => f64[r][c]` | reads a CSV file of numbers, after `skip` header lines |
+| `parseCsvF64(text, skip)` | `(string, i64) => f64[r][c]` | the same from a text |
 | `clock()` | `() => u64` | a monotonic time in nanoseconds |
 | `bench(r, f)` | `(i64, () => T) => [T, u64]` | calls `f` `r` times (`r >= 1`), returns the last result and the total time in nanoseconds |
 
@@ -1388,7 +1394,7 @@ The header lines are read as text:
 action main(args: string[k]): i32 {
     const text = "mass, size\n1.5, 2\n3, 4.25\n";
     const header = lines(text)[0].split(",").map(trim);
-    const m = parse_csv_f64(text, 1);
+    const m = parseCsvF64(text, 1);
     print(header);
     print(m);
     print(iota(2).map((j) => m.map((r) => r[j]).sum() / f64(m.length)));
@@ -1410,16 +1416,16 @@ The programs of `examples/poc/` show the usual shape of a measured kernel:
 
 ```isc-check
 // std_dev.isc    usage: std_dev <input.f64> <output.f64> <reps>
-function std_dev(x: f64[n]): f64 {
+function stdDev(x: f64[n]): f64 {
     const m = mean(x);
     return sqrt(sum((x - m) ** 2) / f64(n));
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    const [r, ns] = bench(parse_i64(args[2]), () => std_dev(x));
+    const x = readF64(args[0]);
+    const [r, ns] = bench(parseI64(args[2]), () => stdDev(x));
     print(ns);
-    write_f64(args[1], [r]);
+    writeF64(args[1], [r]);
     return 0;
 }
 ```
@@ -1485,7 +1491,7 @@ its reason, and the tests that remain at run time:
 
 ```isc-check
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
+    const a = readF64(args[0]);
     const x = map(a, (v) => v * 2.0);
     print(sum(x));
     print(max(x));
@@ -1525,18 +1531,18 @@ A requirement, written as a decorator before `function`, is a guarantee: if
 the compiler cannot keep it, the program does not compile, and the error
 says why.
 
-* `require_tail`: every recursive call of the function is a tail call,
+* `requireTail`: every recursive call of the function is a tail call,
   compiled as a loop (a call whose result is used, a call through another
   function, or an array passed that is neither the same parameter nor a
   new one is refused).
-* `require_fused`: no intermediate array is built inside the function; its
+* `requireFused`: no intermediate array is built inside the function; its
   result, written where its caller wants it, is not intermediate.
-* `require_no_alloc`: the function, and every function it calls, builds no
+* `requireNoAlloc`: the function, and every function it calls, builds no
   array, copies none, and creates no node of a recursive type, beyond its
   result.
 
 ```isc
-@require_tail
+@requireTail
 function gcd(a: u64, b: u64): u64 {
     if (b == 0) {
         return a;
@@ -1545,12 +1551,12 @@ function gcd(a: u64, b: u64): u64 {
     }
 }
 
-@require_no_alloc
+@requireNoAlloc
 function norm2(x: f64[n]): f64 {
     return sqrt(sum(x * x));
 }
 
-@require_fused
+@requireFused
 function spread(x: f64[n]): f64 {
     const y = map(x, (v) => v * 2.0);
     return max(y) - min(y);
@@ -1571,7 +1577,7 @@ action main(args: string[k]): i32 {
 ```
 
 ```isc-error
-@require_fused
+@requireFused
 function center(x: f64[n]): f64[n] {
     const y = x * 2.0;
     return y - mean(y);
@@ -1584,13 +1590,13 @@ action main(args: string[k]): i32 {
 ```
 
 ```output
-require_fused not satisfied (line 2)
+requireFused not satisfied (line 2)
 ```
 
 The explanation names each array: here `y` (line 3) is used twice (line 4),
 so it is built once and kept (rule M1).
 
-`@allow_reassoc`, written at the same place, is a permission rather than a
+`@allowReassoc`, written at the same place, is a permission rather than a
 requirement: inside the function (and the functions it calls), the
 compiler may reassociate floating-point operations and contract `a * b +
 c` into one fused multiply-add, as C's `-fassociative-math` does, not
@@ -1602,13 +1608,13 @@ differ in its last bits from one target to another; the memory report
 lists each such function.
 
 ```isc
-@allow_reassoc
-function fast_dot(a: f64[n], b: f64[n]): f64 {
+@allowReassoc
+function fastDot(a: f64[n], b: f64[n]): f64 {
     return sum(a * b);
 }
 
 action main(args: string[k]): i32 {
-    print(fast_dot([1.0, 2.0], [3.0, 4.0]));
+    print(fastDot([1.0, 2.0], [3.0, 4.0]));
     return 0;
 }
 ```
@@ -1641,8 +1647,8 @@ A *panic* stops the program with a message and the position of the failing
 operation in the source, on the standard error, and the exit code 101. The
 panics are: an index out of bounds, an integer division by zero, a negative
 integer exponent, a size mismatch found at run time, `bench` with fewer than
-one repetition, an invalid `parse_i64` or `parse_f64` argument, bytes that
-are not UTF-8 given to `string_of`, an input/output error, and running out of
+one repetition, an invalid `parseI64` or `parseF64` argument, bytes that
+are not UTF-8 given to `stringOf`, an input/output error, and running out of
 memory.
 
 ```isc-panic
@@ -1667,11 +1673,11 @@ panicking. The prelude declares `type Result<T, E> = Ok(T) | Err(E)` and:
 
 | Action | Result |
 | --- | --- |
-| `try_parse_i64(s)`, `try_parse_f64(s)` | `Result<i64, string>`, `Result<f64, string>` |
-| `try_read_bytes(path)`, `try_read_f64(path)` | `Result<u8[k], string>`, `Result<f64[k], string>` |
-| `try_read_text(path)` | `Result<string, string>` |
-| `try_read_csv_f64(path, skip)` | `Result<f64[r][c], string>` |
-| `try_write_text(path, s)`, `try_write_bytes(path, x)` | `Result<void, string>` |
+| `tryParseI64(s)`, `tryParseF64(s)` | `Result<i64, string>`, `Result<f64, string>` |
+| `tryReadBytes(path)`, `tryReadF64(path)` | `Result<u8[k], string>`, `Result<f64[k], string>` |
+| `tryReadText(path)` | `Result<string, string>` |
+| `tryReadCsvF64(path, skip)` | `Result<f64[r][c], string>` |
+| `tryWriteText(path, s)`, `tryWriteBytes(path, x)` | `Result<void, string>` |
 
 The message of `Err` is the text the panic would print. What is read is
 moved into `Ok`, never copied. A program that declares its own `Result`,
@@ -1679,11 +1685,11 @@ moved into `Ok`, never copied. A program that declares its own `Result`,
 
 ```isc
 action main(args: string[k]): i32 {
-    match (try_parse_i64("12x")) {
+    match (tryParseI64("12x")) {
         Ok(v) => print(v),
         Err(e) => print(concat("not a number: ", e)),
     };
-    match (try_read_f64("/no/such/file")) {
+    match (tryReadF64("/no/such/file")) {
         Ok(x) => print(sum(x)),
         Err(e) => print("no data"),
     };
@@ -1692,7 +1698,7 @@ action main(args: string[k]): i32 {
 ```
 
 ```output
-not a number: parse_i64: `12x` is not a valid integer
+not a number: parseI64: `12x` is not a valid integer
 no data
 ```
 

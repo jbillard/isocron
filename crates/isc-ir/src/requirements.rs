@@ -1,11 +1,11 @@
-//! `require_fused` and `require_no_alloc` (SPEC section 9, DECISIONS
+//! `requireFused` and `requireNoAlloc` (SPEC section 9, DECISIONS
 //! D106), checked on the IR after fusion and uniqueness. Each function with
 //! one of them is lowered alone, once per type arguments it is used with
 //! (`lower::probe`): its parameters are inputs it borrows and its result is
 //! the destination its caller gives (section 8). Its memory report then
 //! lists what it allocates: any array other than its result breaks
-//! `require_fused` (an intermediate array); any array, copy or node of a
-//! recursive type breaks `require_no_alloc`, in the function and in the
+//! `requireFused` (an intermediate array); any array, copy or node of a
+//! recursive type breaks `requireNoAlloc`, in the function and in the
 //! recursive functions it calls.
 
 use crate::report::{entries_of, Entry};
@@ -46,8 +46,8 @@ pub fn check(t: &TProgram, required: &[(usize, Vec<Ty>)]) -> R<()> {
         let f = &t.fns[*id];
         for (m, at) in &f.requires {
             let (name, with_callees) = match m {
-                Modifier::RequireFused => ("require_fused", false),
-                Modifier::RequireNoAlloc => ("require_no_alloc", true),
+                Modifier::RequireFused => ("requireFused", false),
+                Modifier::RequireNoAlloc => ("requireNoAlloc", true),
                 _ => continue,
             };
             let mut p = crate::lower::probe(t, *id, type_args.clone())?;

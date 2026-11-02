@@ -398,7 +398,7 @@ pub struct Gen<'p> {
     rec_prints: BTreeSet<u32>,
     /// The equality functions of recursive types to emit (D129).
     rec_eqs: BTreeSet<u32>,
-    /// The operation being emitted is inside `allow_reassoc` (D109).
+    /// The operation being emitted is inside `allowReassoc` (D109).
     fast_math: bool,
     /// The tail calls of the function being emitted to other functions,
     /// with the temporaries to free before them (D113).
@@ -1947,14 +1947,14 @@ impl<'p> Gen<'p> {
             Binary(op, a, b) => {
                 let av = self.ex(a, w)?;
                 let bv = self.ex(b, w)?;
-                // inside `allow_reassoc` (D109)
+                // inside `allowReassoc` (D109)
                 let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
                 let r = self.binop(*op, av, bv, &a.ty, w, span);
                 self.fast_math = saved;
                 r
             }
             Pow(b, k) => {
-                // inside `allow_reassoc`, its multiplications too (D109,
+                // inside `allowReassoc`, its multiplications too (D109,
                 // D123: `(x - m) ^ 2` contracted with the sum into an FMA)
                 let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
                 let r = self.pow(b, k, w, span);
@@ -2365,7 +2365,7 @@ impl<'p> Gen<'p> {
                     Ge => ("fcmp oge", true),
                     And | Or | Min | Max | BitAnd | BitOr | BitXor | Shl | Shr => return Err("codegen: logic on floats".into()),
                 };
-                // `allow_reassoc`: what `-fassociative-math` allows (SPEC
+                // `allowReassoc`: what `-fassociative-math` allows (SPEC
                 // section 10), not `-ffast-math`
                 let flags = if self.fast_math && !cmp { " reassoc nsz contract" } else { "" };
                 let r = self.ins(format!("{}{} {} {}, {}", ins, flags, t, a.r, b.r));
@@ -5900,7 +5900,7 @@ impl<'p> Gen<'p> {
                         let b = self.ins(format!("zext i1 {} to i32", x.r));
                         format!("call void @isc_to_string_bool(ptr OUT, i32 {})", b)
                     }
-                    t => return Err(format!("codegen: to_string of {:?}", t)),
+                    t => return Err(format!("codegen: toString of {:?}", t)),
                 };
                 new_str(self, call)
             }

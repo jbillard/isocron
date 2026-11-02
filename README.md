@@ -63,7 +63,7 @@ cargo test
 
 The suite covers the lexer and parser (all examples of the specification),
 positive and negative typing cases, the IR passes (fusion, in-place update,
-`require_unique`), the interpreter against an independent implementation of the
+`requireUnique`), the interpreter against an independent implementation of the
 fixed reduction form, compiled programs against the interpreter bit for bit
 (several sizes, a three-level reduction, panics, printing), SIMD and the
 absence of fast-math flags in the generated code, and differential testing on

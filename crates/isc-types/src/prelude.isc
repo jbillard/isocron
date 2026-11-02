@@ -39,45 +39,45 @@ type Result<T, E> = Ok(T) | Err(E);
 
 // the functions of a program take precedence over the primitives, even
 // here: the prelude compares with `""` rather than calling `len`
-function result_of<T>(r: [T, string]): Result<T, string> {
+function resultOf<T>(r: [T, string]): Result<T, string> {
     const [v, e] = r;
     return e == "" ? Ok(v) : Err(e);
 }
 
-function done_or(e: string): Result<void, string> {
+function doneOr(e: string): Result<void, string> {
     return e == "" ? Ok(()) : Err(e);
 }
 
-action try_parse_i64(s: string): Result<i64, string> {
-    return result_of(parse_i64_or_error(s));
+action tryParseI64(s: string): Result<i64, string> {
+    return resultOf(parseI64OrError(s));
 }
 
-action try_parse_f64(s: string): Result<f64, string> {
-    return result_of(parse_f64_or_error(s));
+action tryParseF64(s: string): Result<f64, string> {
+    return resultOf(parseF64OrError(s));
 }
 
-action try_read_bytes(path: string): Result<u8[k], string> {
-    return result_of(read_bytes_or_error(path));
+action tryReadBytes(path: string): Result<u8[k], string> {
+    return resultOf(readBytesOrError(path));
 }
 
-action try_read_f64(path: string): Result<f64[k], string> {
-    return result_of(read_f64_or_error(path));
+action tryReadF64(path: string): Result<f64[k], string> {
+    return resultOf(readF64OrError(path));
 }
 
-action try_read_text(path: string): Result<string, string> {
-    return result_of(read_text_or_error(path));
+action tryReadText(path: string): Result<string, string> {
+    return resultOf(readTextOrError(path));
 }
 
-// an array of arrays is not a value of a type parameter: no `result_of`
-action try_read_csv_f64(path: string, skip: i64): Result<f64[r][c], string> {
-    const [m, e] = read_csv_f64_or_error(path, skip);
+// an array of arrays is not a value of a type parameter: no `resultOf`
+action tryReadCsvF64(path: string, skip: i64): Result<f64[r][c], string> {
+    const [m, e] = readCsvF64OrError(path, skip);
     return e == "" ? Ok(m) : Err(e);
 }
 
-action try_write_bytes(path: string, x: u8[n]): Result<void, string> {
-    return done_or(write_bytes_or_error(path, x));
+action tryWriteBytes(path: string, x: u8[n]): Result<void, string> {
+    return doneOr(writeBytesOrError(path, x));
 }
 
-action try_write_text(path: string, s: string): Result<void, string> {
-    return done_or(write_text_or_error(path, s));
+action tryWriteText(path: string, s: string): Result<void, string> {
+    return doneOr(writeTextOrError(path, s));
 }

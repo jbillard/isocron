@@ -205,7 +205,7 @@ fn a_slice_of_new_memory_is_rejected() {
 fn a_filter_read_by_index_is_rejected() {
     // `let filtered = filter(...) in filtered[0]` back to `filter(...)[0]`
     let mut p = ir("action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(filter(x, (v) => v > 0.5)[0]);
     return 0;
 }
@@ -314,7 +314,7 @@ fn a_variable_consumed_in_one_branch_only_is_rejected() {
 }
 
 action main(args: string[k]): i32 {
-    print(half([1.0, 2.0], parse_i64(args[0]) > 0));
+    print(half([1.0, 2.0], parseI64(args[0]) > 0));
     return 0;
 }
 ");

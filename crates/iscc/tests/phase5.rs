@@ -42,8 +42,8 @@ function larger(p: [f64, f64]): [f64, f64] {
 }
 
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const b = read_f64(args[1]);
+    const a = readF64(args[0]);
+    const b = readF64(args[1]);
     const z = zip(a, b);
     const s = reduce(map(z, weighted), (x, y) => x + y, 0.0);
     const m = map(z, larger);
@@ -51,7 +51,7 @@ action main(args: string[k]): i32 {
         const [v, w] = p;
         return v;
     });
-    write_f64(args[2], firsts);
+    writeF64(args[2], firsts);
     print(s);
     print(z[0]);
     return 0;
@@ -91,9 +91,9 @@ fn zip_sizes_are_checked() {
 }
 
 const MINMAX: &str = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    const y = read_f64(args[1]);
-    write_f64(args[2], [min(x), max(x), reduce(x, min, 1e300), reduce(y, max, -1e300), min(y), max(y)]);
+    const x = readF64(args[0]);
+    const y = readF64(args[1]);
+    writeF64(args[2], [min(x), max(x), reduce(x, min, 1e300), reduce(y, max, -1e300), min(y), max(y)]);
     print(map(zip(x, y), (p) => {
         const [a, b] = p;
         return [min(a, b), max(a, b)] as const;
@@ -152,10 +152,10 @@ const COUNT: &str = "function positive(v: f64): boolean {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const c = count(x, positive);
     const d = count(map(x, (v) => v * v), (v) => v < 0.25);
-    write_f64(args[1], [f64(c), f64(d)]);
+    writeF64(args[1], [f64(c), f64(d)]);
     print(c + d);
     return 0;
 }
@@ -170,8 +170,8 @@ fn count_matches_the_interpreter() {
 }
 
 const SLICE: &str = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
-    const n = parse_i64(args[1]);
+    const x = readF64(args[0]);
+    const n = parseI64(args[1]);
     const a = n / 3;
     const b = n - n / 4;
     const s = x.slice(a, b);
@@ -181,7 +181,7 @@ const SLICE: &str = "action main(args: string[k]): i32 {
         const [u, v] = p;
         return v - u;
     });
-    write_f64(args[2], s);
+    writeF64(args[2], s);
     print(sum(x.slice(a, b)));
     print(sum(second));
     print(x.slice(b, b));
@@ -200,7 +200,7 @@ fn slices_match_the_interpreter() {
 
 #[test]
 fn slice_bounds_are_checked() {
-    let src = "action main(args: string[k]): i32 {\n    const x = [1.0, 2.0, 3.0, 4.0];\n    print(x.slice(parse_i64(args[0]), parse_i64(args[1])));\n    return 0;\n}\n";
+    let src = "action main(args: string[k]): i32 {\n    const x = [1.0, 2.0, 3.0, 4.0];\n    print(x.slice(parseI64(args[0]), parseI64(args[1])));\n    return 0;\n}\n";
     let bin = compile(src, "slice_panic");
     for (a, b, ok) in [("0", "4", true), ("4", "4", true), ("-1", "2", false), ("3", "2", false), ("1", "5", false)] {
         let r = run_bin(&bin, &[a, b]);
@@ -217,8 +217,8 @@ fn slice_bounds_are_checked() {
 }
 
 const SCAN: &str = "action main(args: string[k]): i32 {
-    const n = parse_i64(args[0]);
-    const x = read_f64(args[1]);
+    const n = parseI64(args[0]);
+    const x = readF64(args[1]);
     const v = map(x, (f) => i64(f * 1000.0));
     const s1 = scan(v, (+), 7);
     const s2 = scan(v, (a, b) => b * a, 3);
@@ -232,7 +232,7 @@ const SCAN: &str = "action main(args: string[k]): i32 {
     print([count(s5, (t) => t), count(s6, (t) => t)]);
     print(sum(s1) + sum(s2));
     print(s7[n - 1]);
-    write_f64(args[2], map(s1, (i) => f64(i)));
+    writeF64(args[2], map(s1, (i) => f64(i)));
     return 0;
 }
 ";
@@ -256,7 +256,7 @@ const FILTER: &str = "function positive(v: f64): boolean {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const p = filter(x, positive);
     const q = filter(zip(x, map(x, (v) => v * v)), (t) => {
         const [v, w] = t;
@@ -266,7 +266,7 @@ action main(args: string[k]): i32 {
         const [v, w] = t;
         return w;
     });
-    write_f64(args[1], p);
+    writeF64(args[1], p);
     print(sum(p));
     print(sum(squares));
     print(sum(filter(map(x, (v) => v * 3.0), (v) => v < -1.0)));
@@ -295,9 +295,9 @@ function inner(x: f64[n]): f64[k] {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const p = positives(x);
-    write_f64(args[1], p);
+    writeF64(args[1], p);
     print(mean(p));
     print(sum(kept(iota(1000), (i) => i % 7 == 3)));
     print(sum(positives(inner(x))));
@@ -328,9 +328,9 @@ const WINDOW: &str = "function moving_average(x: f64[n], k: size): f64[n - k + 1
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const m = moving_average(x, 64);
-    write_f64(args[1], m);
+    writeF64(args[1], m);
     const w = window(x, 3);
     print(w[0]);
     print(sum(map(w, (r) => r[2] - r[0])));
@@ -365,7 +365,7 @@ fn rows_given_to_a_literal() {
     const b = map(iota(3), (i) => i * 10);
     const n = [[7, 8, 9], b];
     print(n);
-    write_f64(args[0], map(n[1], (v) => f64(v)));
+    writeF64(args[0], map(n[1], (v) => f64(v)));
     return 0;
 }
 ";
@@ -388,7 +388,7 @@ fn slices_as_views() {
     const y = x.with(5, -1.0);
     print(y.slice(4, 7));
     print(map(iota(6), (i) => [i, f64(i)] as const).slice(1, 3));
-    write_f64(args[0], map(s, (v) => v * 2.0));
+    writeF64(args[0], map(s, (v) => v * 2.0));
     return 0;
 }
 ";
@@ -403,8 +403,8 @@ const SHARED_ZIP: &str = "function prod(p: [f64, f64]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const b = read_f64(args[1]);
+    const a = readF64(args[0]);
+    const b = readF64(args[1]);
     const z = zip(a, b);
     const s1 = sum(map(z, prod));
     const s2 = sum(map(iota(3), (i) => prod(z[i])));
@@ -415,7 +415,7 @@ action main(args: string[k]): i32 {
     const zz = zip(z, c);
     print(zz[1]);
     print(z[2]);
-    write_f64(args[2], [s1, s2, s3, s4]);
+    writeF64(args[2], [s1, s2, s3, s4]);
     return 0;
 }
 ";
@@ -475,11 +475,11 @@ function third(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const y = map(x, (v) => i64(v * 1000.0));
     const b = big(x);
     const t = count(x, (v) => v > 0.5) > 2 ? third(x) : 0.0;
-    write_f64(args[1], [pos(x), pos_sq(x), sum(b), f64(cnt(x)), f64(mx(y)), odd(x), lo(x), t]);
+    writeF64(args[1], [pos(x), pos_sq(x), sum(b), f64(cnt(x)), f64(mx(y)), odd(x), lo(x), t]);
     return 0;
 }
 ";
@@ -517,10 +517,10 @@ function ints(y: i64[n]): i64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const y = map(x, (v) => i64(v * 1000.0));
     const [s, q, hi, lo] = stats(x);
-    write_f64(args[1], [s, q, hi, lo, spread(x), dep(x), f64(ints(y)), sum(x) + max(x)]);
+    writeF64(args[1], [s, q, hi, lo, spread(x), dep(x), f64(ints(y)), sum(x) + max(x)]);
     return 0;
 }
 ";
@@ -556,10 +556,10 @@ function wsum(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const p = part(x, 1, 4);
     const sq = map(iota(10), (i) => i * i).slice(3, 6);
-    write_f64(args[1], [mid(x), sum(p), pairs(x), wsum(x), f64(sum(sq))]);
+    writeF64(args[1], [mid(x), sum(p), pairs(x), wsum(x), f64(sum(sq))]);
     return 0;
 }
 ";
@@ -582,7 +582,7 @@ fn slices_of_producers() {
 /// The mathematical functions of the runtime (SPEC section 10, D108): the
 /// same bits compiled (natively and as WebAssembly) and interpreted.
 pub const MATH: &str = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const y = map(x, (v) => v * 10.0 - 5.0);
     const a = map(y, exp);
     const b = map(y, (v) => log(v * v + 1.0));
@@ -591,7 +591,7 @@ pub const MATH: &str = "action main(args: string[k]): i32 {
     const e = map(y, (v) => fma(v, v, 1.0));
     const f = map(y, (v) => (v * v) ** 1.5);
     const g = map(y, (v) => f64(exp(f32(v)) + sin(f32(v)) * pow(f32(2.0), f32(v))));
-    write_f64(args[1], [sum(a), sum(b), sum(c), sum(d), sum(e), sum(f), sum(g), exp(1.0), log(0.0), pow(-8.0, 1.0 / 3.0), sin(1e300)]);
+    writeF64(args[1], [sum(a), sum(b), sum(c), sum(d), sum(e), sum(f), sum(g), exp(1.0), log(0.0), pow(-8.0, 1.0 / 3.0), sin(1e300)]);
     print(exp(1.0));
     print(log(-1.0));
     print(fma(0.1, 10.0, -1.0));
@@ -625,7 +625,7 @@ fn math_functions() {
 /// per element (160, 256), a non-associative operator, and widths that do
 /// not (40, 16), with 1 and 4 threads, around the blocks of 1024 windows.
 pub const WINDOWS: &str = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const a = map(window(x, 64), (w) => sum(w) / 64.0);
     const b = map(window(x, 96), (w) => max(w) - 1.0);
     const c = map(window(x, 40), (w) => sum(w));
@@ -634,7 +634,7 @@ pub const WINDOWS: &str = "action main(args: string[k]): i32 {
     const g = map(window(x, 128), (w) => min(w));
     const h = map(window(x, 160), (w) => sum(w) * 0.5);
     const u = map(window(x, 256), (w) => reduce(w, (p, q) => p * 0.5 + q, 1.0));
-    write_f64(args[1], [sum(a), sum(b), sum(c), sum(d), sum(f), sum(g), sum(h), sum(u)]);
+    writeF64(args[1], [sum(a), sum(b), sum(c), sum(d), sum(f), sum(g), sum(h), sum(u)]);
     return 0;
 }
 ";
@@ -651,7 +651,7 @@ fn window_reductions() {
 /// (64, 32, 16 and 8 lanes), the four operators, wrapping, lengths around
 /// the multiples of the lanes; the same values as the interpreter.
 const INT_SCANS: &str = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const v = map(x, (f) => i64(f * 1000.0));
     const a = scan(map(v, (i) => i8(i % 100)), (+), 5i8);
     const b = scan(map(v, (i) => u8((i % 200 + 200) % 200 + 50)), max, 0u8);
@@ -662,7 +662,7 @@ const INT_SCANS: &str = "action main(args: string[k]): i32 {
     print([sum(map(a, (t) => i64(t))), sum(map(b, (t) => i64(t))), sum(map(c, (t) => i64(t)))]);
     print([sum(map(d, (t) => i64(t))), i64(sum(map(e, (t) => t % 1000000))), sum(f)]);
     print(a);
-    write_f64(args[1], map(d, (t) => f64(t)));
+    writeF64(args[1], map(d, (t) => f64(t)));
     return 0;
 }
 ";
@@ -681,7 +681,7 @@ fn integer_scans_in_vectors() {
 /// kept elements, a non-associative operator, a map after the filter,
 /// negative zeros, and numbers of kept elements around the blocks.
 const PARALLEL_STREAMS: &str = "action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const a = sum(filter(x, (v) => v > 0.25));
     const b = sum(filter(x, (v) => v > 100000.0));
     const c = sum(filter(x, (v) => v > -1000000000.0));
@@ -690,7 +690,7 @@ const PARALLEL_STREAMS: &str = "action main(args: string[k]): i32 {
     const f = sum(map(filter(x, (v) => v > 0.0), (v) => v * 3.0));
     const g = max(filter(x, (v) => v < 0.5));
     const h = sum(filter(map(x, (v) => v * 0.0 - 0.0), (v) => v < 0.5));
-    write_f64(args[1], [a, b, c, d, e, f, g, h]);
+    writeF64(args[1], [a, b, c, d, e, f, g, h]);
     return 0;
 }
 ";
@@ -720,7 +720,7 @@ const ROWS: &str = "function outer(a: f64[n], b: f64[m]): f64[n][m] {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const s = map(iota(7), (i) => x.slice(i, i + 4));
     print(map(s, (r) => sum(r)));
     const y = map(x, (v) => v + 1.0);
@@ -742,7 +742,7 @@ action main(args: string[k]): i32 {
         return r;
     });
     print(named);
-    write_f64(args[2], map(t, (r) => r[1]));
+    writeF64(args[2], map(t, (r) => r[1]));
     return 0;
 }
 ";

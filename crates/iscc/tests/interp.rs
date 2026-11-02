@@ -142,16 +142,16 @@ fn panics_report_position() {
     let src = "action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[3]);\n    return 0;\n}\n";
     let m = interp_panic(src, &[]);
     assert_eq!(m, "panic at line 3, column 12: index out of bounds: the index is 3 but the length is 3");
-    let src = "function f(x: i64): i64 {\n    return 10 / x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parse_i64(args[0])));\n    return 0;\n}\n";
+    let src = "function f(x: i64): i64 {\n    return 10 / x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parseI64(args[0])));\n    return 0;\n}\n";
     assert!(interp_panic(src, &["0"]).contains("integer division by zero"));
     assert!(interp_panic(src, &["zero"]).contains("`zero` is not a valid integer"));
-    let src = "function f(x: i64): i64 {\n    return 2 ** x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parse_i64(args[0])));\n    return 0;\n}\n";
+    let src = "function f(x: i64): i64 {\n    return 2 ** x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parseI64(args[0])));\n    return 0;\n}\n";
     assert!(interp_panic(src, &["-1"]).contains("negative integer exponent: -1"));
     let src = "function f(x: f64[n], y: f64[m]): f64[n] {\n    return x + y;\n}\n\naction main(args: string[k]): i32 {\n    print(f([1.0], [1.0, 2.0]));\n    return 0;\n}\n";
     assert!(interp_panic(src, &[]).contains("size mismatch: 1 != 2"));
     let src = "action main(args: string[k]): i32 {\n    const [r, ns] = bench(0, () => 1);\n    return 0;\n}\n";
     assert!(interp_panic(src, &[]).contains("at least 1"));
-    let src = "action main(args: string[k]): i32 {\n    const x = read_f64(args[0]);\n    return 0;\n}\n";
+    let src = "action main(args: string[k]): i32 {\n    const x = readF64(args[0]);\n    return 0;\n}\n";
     assert!(interp_panic(src, &["/nonexistent/file"]).contains("cannot read"));
 }
 

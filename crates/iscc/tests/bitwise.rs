@@ -1,5 +1,5 @@
 //! DECISIONS D136: bitwise operators on integers, `++` on arrays,
-//! `print_bytes`, and the program `mandelbrot` of the Benchmarks Game
+//! `printBytes`, and the program `mandelbrot` of the Benchmarks Game
 //! written with them (examples/benchmarks_game), checked against an
 //! independent implementation of the classic algorithm.
 
@@ -99,9 +99,9 @@ action main(args: string[k]): i32 {
     print(concat(filter(iota(10), (i) => i % 3 == 0), iota(2)));
     print(len(concat(iota(0), iota(0))));
     print(sum(concat(iota(1000), iota(1000))));
-    print_bytes(concat(bytes("abc"), [10u8]));
+    printBytes(concat(bytes("abc"), [10u8]));
     print("after");
-    print_bytes(bytes("x\n"));
+    printBytes(bytes("x\n"));
     return 0;
 }
 "#;

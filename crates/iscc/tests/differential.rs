@@ -128,7 +128,7 @@ impl G {
 
     fn program(&mut self) -> String {
         let mut s = String::from(
-            "action main(args: string[k]): i32 {\n    const a = read_f64(args[0]);\n    const b = read_f64(args[1]);\n    const u = read_bytes(args[2]);\n",
+            "action main(args: string[k]): i32 {\n    const a = readF64(args[0]);\n    const b = readF64(args[1]);\n    const u = readBytes(args[2]);\n",
         );
         for _ in 0..8 {
             let d = 1 + self.pick(3) as u32;

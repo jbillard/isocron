@@ -74,13 +74,13 @@ pub fn msg_split_empty() -> String {
     text(&Panic::SplitEmpty)
 }
 
-/// `read_text` (D135): the file, checked to be UTF-8.
+/// `readText` (D135): the file, checked to be UTF-8.
 pub fn read_text_file(path: &str) -> Result<String, String> {
     let b = read_bytes_file(path)?;
     String::from_utf8(b).map_err(|e| text(&Panic::TextNotUtf8 { path, at: e.utf8_error().valid_up_to() as i64 }))
 }
 
-/// `parse_csv_f64` (D135): the rows.
+/// `parseCsvF64` (D135): the rows.
 pub fn parse_csv(t: &str, skip: i64) -> Result<Vec<Vec<f64>>, String> {
     let mut vals = Vec::new();
     let (rows, cols) = sem::parse_csv_f64(t, skip, &mut |_, v| vals.push(v)).map_err(|p| text(&p))?;

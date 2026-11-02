@@ -26,7 +26,7 @@ function add3(a: [i64, f64, boolean], b: [i64, f64, boolean]): [i64, f64, boolea
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     const pairs = indexed(x);
     print(reduce(pairs, pick, [1e308, -1] as const));
     const mixed = map(x, (v) => [u8(v * 100.0), v, v > 0.0] as const);

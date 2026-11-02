@@ -29,7 +29,7 @@ fn poc_programs_parse() {
 }
 
 const SPEC_EXAMPLES: &str = r#"// Simple statistics on a file of floats
-@require_no_alloc
+@requireNoAlloc
 function average(x: f64[n]): f64 {
     return sum(x) / f64(n);
 }
@@ -40,16 +40,16 @@ function std_dev(x: f64[n]): f64 {
 }
 
 function histogram(values: u8[n]): u32[256] {
-    return fold(values, zeros(), (c, v) => require_unique(c.with(v, c[v] + 1)));
+    return fold(values, zeros(), (c, v) => requireUnique(c.with(v, c[v] + 1)));
 }
 
 action main(args: string[k]): i32 {
-    const data = read_f64(args[0]);
+    const data = readF64(args[0]);
     print(std_dev(data));
     return 0;
 }
 
-@require_tail
+@requireTail
 function gcd(a: u64, b: u64): u64 {
     if (b == 0) {
         return a;
@@ -58,7 +58,7 @@ function gcd(a: u64, b: u64): u64 {
     }
 }
 
-@require_fused
+@requireFused
 function center(x: f64[n]): f64[n] {
     const y = x * 2.0;
     return y - mean(y);
@@ -156,7 +156,7 @@ fn precedence() {
         ("a | b ^ c & d", "(a | (b ^ (c & d)))"),
         ("a << 1 + 2", "(a << (1 + 2))"),
         ("c.with(v, c[v] + 1)", "(c with [v] = (c[v] + 1))"),
-        ("require_unique(c.with(v, 1))", "(!c with [v] = 1)"),
+        ("requireUnique(c.with(v, 1))", "(!c with [v] = 1)"),
         ("{ ...r, a: 1 }", "(r with .a = 1)"),
         ("(a, b) => a + b", "(\\a,b -> (a + b))"),
         ("() => 1", "(\\ -> 1)"),

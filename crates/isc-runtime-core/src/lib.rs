@@ -14,10 +14,10 @@ pub const PANIC_EXIT_CODE: i32 = 101;
 /// Alignment of every array (one cache line, SPEC section 8).
 pub const ARRAY_ALIGN: usize = 64;
 
-/// Canonical NaN written by `write_f64` (SPEC section 10).
+/// Canonical NaN written by `writeF64` (SPEC section 10).
 pub const CANONICAL_NAN_BITS: u64 = 0x7FF8_0000_0000_0000;
 
-/// Canonical NaN written by `write_f32`: sign 0, quiet bit 1, payload 0.
+/// Canonical NaN written by `writeF32`: sign 0, quiet bit 1, payload 0.
 pub const CANONICAL_NAN32_BITS: u32 = 0x7FC0_0000;
 
 /// `minimum` of IEEE 754-2019 (SPEC section 10, `min`): a NaN operand gives
@@ -59,7 +59,7 @@ pub fn maximum_f32(a: f32, b: f32) -> f32 {
     maximum_f64(a as f64, b as f64) as f32
 }
 
-/// The bits written for `x` by `write_f32`: NaNs are canonical.
+/// The bits written for `x` by `writeF32`: NaNs are canonical.
 pub fn canonical_bits32(x: f32) -> u32 {
     if x.is_nan() {
         CANONICAL_NAN32_BITS
@@ -68,7 +68,7 @@ pub fn canonical_bits32(x: f32) -> u32 {
     }
 }
 
-/// `write_f64` for binary32: the shortest decimal form that reads back to
+/// `writeF64` for binary32: the shortest decimal form that reads back to
 /// the same `f32`.
 pub fn write_f32(w: &mut dyn Write, v: f32) -> fmt::Result {
     if v.is_nan() {
@@ -80,7 +80,7 @@ pub fn write_f32(w: &mut dyn Write, v: f32) -> fmt::Result {
     }
 }
 
-/// The bits written for `x` by `write_f64`: NaNs are canonical.
+/// The bits written for `x` by `writeF64`: NaNs are canonical.
 pub fn canonical_bits(x: f64) -> u64 {
     if x.is_nan() {
         CANONICAL_NAN_BITS
@@ -135,12 +135,12 @@ pub enum Panic<'a> {
     /// A `string` given to an `extern` function contains a NUL byte: it
     /// cannot be passed as a C string (D125).
     ExternNul(&'a str),
-    /// `parse_f64` of a text that is not a number (D134).
+    /// `parseF64` of a text that is not a number (D134).
     ParseF64(&'a str),
-    /// `string_of` of bytes that are not UTF-8: the index of the first
+    /// `stringOf` of bytes that are not UTF-8: the index of the first
     /// invalid byte (D134).
     NotUtf8(i64),
-    /// `read_text` of a file that is not UTF-8 (D135).
+    /// `readText` of a file that is not UTF-8 (D135).
     TextNotUtf8 { path: &'a str, at: i64 },
     /// `split(s, "")` (D135).
     SplitEmpty,
@@ -163,9 +163,9 @@ impl fmt::Display for Panic<'_> {
             Panic::Window { k, len } => write!(f, "window of {} elements over an array of length {}", k, len),
             Panic::StackOverflow(name) => write!(f, "stack overflow: too many nested calls of `{}`", name),
             Panic::ExternNul(name) => write!(f, "a string passed to the extern function `{}` contains a NUL byte", name),
-            Panic::ParseF64(s) => write!(f, "parse_f64: `{}` is not a valid number", s),
-            Panic::NotUtf8(i) => write!(f, "string_of: the bytes are not UTF-8 (invalid from byte {})", i),
-            Panic::TextNotUtf8 { path, at } => write!(f, "read_text: `{}` is not UTF-8 text (invalid from byte {})", path, at),
+            Panic::ParseF64(s) => write!(f, "parseF64: `{}` is not a valid number", s),
+            Panic::NotUtf8(i) => write!(f, "stringOf: the bytes are not UTF-8 (invalid from byte {})", i),
+            Panic::TextNotUtf8 { path, at } => write!(f, "readText: `{}` is not UTF-8 text (invalid from byte {})", path, at),
             Panic::SplitEmpty => write!(f, "split: the separator is empty"),
             Panic::CsvField { line, field, text } => write!(f, "csv: line {}, field {}: `{}` is not a number", line, field, text),
             Panic::CsvRagged { line, fields, expected } => {
@@ -177,7 +177,7 @@ impl fmt::Display for Panic<'_> {
             Panic::NegativeExponent(k) => write!(f, "negative integer exponent: {}", k),
             Panic::NegativeSize(k) => write!(f, "negative size: {}", k),
             Panic::BenchReps(r) => write!(f, "bench: the number of repetitions must be at least 1, got {}", r),
-            Panic::ParseI64(s) => write!(f, "parse_i64: `{}` is not a valid integer", s),
+            Panic::ParseI64(s) => write!(f, "parseI64: `{}` is not a valid integer", s),
             // same text as the `Display` of `std::io::Error` for OS errors
             Panic::Read { path, detail, code } => write!(f, "cannot read `{}`: {} (os error {})", path, detail, code),
             Panic::Write { path, detail, code } => write!(f, "cannot write `{}`: {} (os error {})", path, detail, code),
@@ -190,12 +190,12 @@ impl fmt::Display for Panic<'_> {
     }
 }
 
-/// `parse_i64` (SPEC section 12): decimal, optional sign.
+/// `parseI64` (SPEC section 12): decimal, optional sign.
 pub fn parse_i64(s: &str) -> Option<i64> {
     s.parse::<i64>().ok()
 }
 
-/// `parse_f64` (D134): the decimal forms of Rust's `f64::from_str`
+/// `parseF64` (D134): the decimal forms of Rust's `f64::from_str`
 /// (`1.5`, `-2e-3`, `inf`, `NaN`), correctly rounded.
 pub fn parse_f64(s: &str) -> Option<f64> {
     s.parse::<f64>().ok()
@@ -211,7 +211,7 @@ pub fn text_lines(s: &str) -> impl Iterator<Item = &str> {
 
 /// Reads a CSV text of numbers (D135): one row per line after the first
 /// `skip` lines, fields separated by `,` and trimmed, every field a number
-/// of `parse_f64`; blank lines are ignored; every row has the number of
+/// of `parseF64`; blank lines are ignored; every row has the number of
 /// fields of the first. `emit(i, v)` receives the values in row order.
 /// Returns the numbers of rows and of columns.
 pub fn parse_csv_f64<'a>(text: &'a str, skip: i64, emit: &mut dyn FnMut(usize, f64)) -> Result<(i64, i64), Panic<'a>> {
@@ -243,7 +243,7 @@ pub fn parse_csv_f64<'a>(text: &'a str, skip: i64, emit: &mut dyn FnMut(usize, f
     Ok((rows, cols.max(0)))
 }
 
-/// The text of a scalar for `to_string` (D134): that of `print`.
+/// The text of a scalar for `toString` (D134): that of `print`.
 pub fn write_scalar_i64(w: &mut dyn Write, v: i64) -> fmt::Result {
     write!(w, "{}", v)
 }

@@ -118,12 +118,12 @@ pub struct Lower<'p> {
     /// its layout is computed (it refers to itself).
     rec_ids: RefCell<HashMap<(u32, Vec<Ty>), u32>>,
     recs: RefCell<Vec<Option<RecType>>>,
-    /// The functions with `require_fused` or `require_no_alloc` met, with
+    /// The functions with `requireFused` or `requireNoAlloc` met, with
     /// their type arguments (D106).
     required: Vec<(FnId, Vec<Ty>)>,
     /// Where a function is chosen at run time (D107).
     choices: Vec<Span>,
-    /// The functions with `allow_reassoc` met (D109).
+    /// The functions with `allowReassoc` met (D109).
     reassoc_fns: Vec<(String, Span)>,
 }
 
@@ -155,7 +155,7 @@ impl<'p> Lower<'p> {
         }
     }
 
-    /// The body of `f` with `allow_reassoc`: marked, and `f` listed.
+    /// The body of `f` with `allowReassoc`: marked, and `f` listed.
     fn reassoc_body(&mut self, f: &tast::TFn, body: &mut Expr) {
         if allows_reassoc(f) {
             body.mark_reassoc();

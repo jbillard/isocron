@@ -137,14 +137,14 @@ fn multi_level_reduction_matches_fixed_form() {
 #[test]
 fn panics_match_interpreter() {
     let cases: Vec<(&str, Vec<&str>)> = vec![
-        ("action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[parse_i64(args[0])]);\n    return 0;\n}\n", vec!["3"]),
-        ("action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[parse_i64(args[0])]);\n    return 0;\n}\n", vec!["-1"]),
-        ("function f(x: i64): i64 {\n    return 10 / x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parse_i64(args[0])));\n    return 0;\n}\n", vec!["0"]),
-        ("function f(x: i64): i64 {\n    return 2 ** x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parse_i64(args[0])));\n    return 0;\n}\n", vec!["-3"]),
-        ("action main(args: string[k]): i32 {\n    print(parse_i64(args[0]));\n    return 0;\n}\n", vec!["x1"]),
-        ("action main(args: string[k]): i32 {\n    const [r, ns] = bench(parse_i64(args[0]), () => 1);\n    return 0;\n}\n", vec!["0"]),
-        ("action main(args: string[k]): i32 {\n    const x = read_f64(args[0]);\n    print(1);\n    return 0;\n}\n", vec!["/nonexistent"]),
-        ("action main(args: string[k]): i32 {\n    const a = read_f64(args[0]);\n    print(sum(a * read_f64(args[1])));\n    return 0;\n}\n", vec!["@three", "/dev/null"]),
+        ("action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[parseI64(args[0])]);\n    return 0;\n}\n", vec!["3"]),
+        ("action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[parseI64(args[0])]);\n    return 0;\n}\n", vec!["-1"]),
+        ("function f(x: i64): i64 {\n    return 10 / x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parseI64(args[0])));\n    return 0;\n}\n", vec!["0"]),
+        ("function f(x: i64): i64 {\n    return 2 ** x;\n}\n\naction main(args: string[k]): i32 {\n    print(f(parseI64(args[0])));\n    return 0;\n}\n", vec!["-3"]),
+        ("action main(args: string[k]): i32 {\n    print(parseI64(args[0]));\n    return 0;\n}\n", vec!["x1"]),
+        ("action main(args: string[k]): i32 {\n    const [r, ns] = bench(parseI64(args[0]), () => 1);\n    return 0;\n}\n", vec!["0"]),
+        ("action main(args: string[k]): i32 {\n    const x = readF64(args[0]);\n    print(1);\n    return 0;\n}\n", vec!["/nonexistent"]),
+        ("action main(args: string[k]): i32 {\n    const a = readF64(args[0]);\n    print(sum(a * readF64(args[1])));\n    return 0;\n}\n", vec!["@three", "/dev/null"]),
     ];
     let three = write_f64s("c_three.f64", &[1.0, 2.0, 3.0]);
     for (i, (src, args)) in cases.iter().enumerate() {
@@ -173,7 +173,7 @@ function arrs(n: i64): f64[3] {
 }
 
 action main(args: string[k]): i32 {
-    const x = parse_i64(args[0]);
+    const x = parseI64(args[0]);
     print(ints(x));
     print(floats(f64(x) / 7.0));
     print(arrs(x));
@@ -235,7 +235,7 @@ fn webassembly_matches_interpreter() {
         }
     }
     // a panic: same message and exit code
-    let src = "action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[parse_i64(args[0])]);\n    return 0;\n}\n";
+    let src = "action main(args: string[k]): i32 {\n    const x = iota(3);\n    print(x[parseI64(args[0])]);\n    return 0;\n}\n";
     let w = compile_wasm(src, "w_panic");
     let r = run_wasm(&runner, &w, &["7"]);
     assert_eq!(r.code, 101);

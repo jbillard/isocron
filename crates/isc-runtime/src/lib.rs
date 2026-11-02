@@ -551,13 +551,13 @@ pub unsafe extern "C" fn isc_print_str(p: *const u8, len: i64) {
     }
 }
 
-/// The end of `main`: what `print_bytes` left in the buffer (D136).
+/// The end of `main`: what `printBytes` left in the buffer (D136).
 #[no_mangle]
 pub extern "C" fn isc_flush() {
     flush_stdout();
 }
 
-/// `print_bytes(x)` (D136): the bytes, in the buffer of `print`.
+/// `printBytes(x)` (D136): the bytes, in the buffer of `print`.
 #[no_mangle]
 pub unsafe extern "C" fn isc_print_bytes(p: *const u8, n: i64) {
     out(bytes_of(p, n));
@@ -642,7 +642,7 @@ pub unsafe extern "C" fn isc_str_cmp(p: *const u8, n: i64, q: *const u8, m: i64)
     }
 }
 
-/// `string_of(b)`: a copy of the bytes, a panic if they are not UTF-8.
+/// `stringOf(b)`: a copy of the bytes, a panic if they are not UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn isc_str_from_bytes(out: *mut IscStr, p: *const u8, n: i64, line: i32, col: i32) {
     let b = bytes_of(p, n);
@@ -706,7 +706,7 @@ pub unsafe extern "C" fn isc_to_string_bool(out: *mut IscStr, b: i32) {
 // ---------------------------------------------------------------------
 // text (D135)
 
-/// `read_text(path)`: the file, checked to be UTF-8.
+/// `readText(path)`: the file, checked to be UTF-8.
 #[no_mangle]
 pub unsafe extern "C" fn isc_read_text(out: *mut IscStr, path: *const u8, plen: i64, line: i32, col: i32) {
     let p = str_of(path, plen);
@@ -790,7 +790,7 @@ pub struct IscNested {
     pub stride: i64,
 }
 
-/// `parse_csv_f64(text, skip)`: checked and counted, then read into one
+/// `parseCsvF64(text, skip)`: checked and counted, then read into one
 /// block, rows contiguous.
 #[no_mangle]
 pub unsafe extern "C" fn isc_parse_csv_f64(out: *mut IscNested, p: *const u8, n: i64, skip: i64, line: i32, col: i32) {
@@ -804,7 +804,7 @@ pub unsafe extern "C" fn isc_parse_csv_f64(out: *mut IscNested, p: *const u8, n:
     *out = IscNested { ptr: q as *mut u8, rows, cols, stride: cols };
 }
 
-/// `read_csv_f64(path, skip)`.
+/// `readCsvF64(path, skip)`.
 #[no_mangle]
 pub unsafe extern "C" fn isc_read_csv_f64(out: *mut IscNested, path: *const u8, plen: i64, skip: i64, line: i32, col: i32) {
     let mut t = IscStr { ptr: core::ptr::null(), len: 0 };

@@ -71,19 +71,19 @@ fn histogram_updates_in_place() {
 
 #[test]
 fn require_unique_fails_when_shared() {
-    let src = "function f(c: u32[n]): u32[n] {\n    const d = require_unique(c.with(0, 1));\n    return d;\n}\n\naction main(args: string[k]): i32 {\n    return 0;\n}\n";
+    let src = "function f(c: u32[n]): u32[n] {\n    const d = requireUnique(c.with(0, 1));\n    return d;\n}\n\naction main(args: string[k]): i32 {\n    return 0;\n}\n";
     let t = isc_types::check_source(src).unwrap();
     // `f` is never called: nothing to analyze, accepted
     let mut p = lower(&t).unwrap();
     optimize(&mut p).unwrap();
-    let src = "action main(args: string[k]): i32 {\n    const c = read_bytes(args[0]);\n    const d = require_unique(c.with(0, 1));\n    print(c[0]);\n    return 0;\n}\n";
+    let src = "action main(args: string[k]): i32 {\n    const c = readBytes(args[0]);\n    const d = requireUnique(c.with(0, 1));\n    print(c[0]);\n    return 0;\n}\n";
     let t = isc_types::check_source(src).unwrap();
     let mut p = lower(&t).unwrap();
     let e = optimize(&mut p).unwrap_err();
-    assert!(e.message.contains("require_unique not satisfied"), "{}", e);
+    assert!(e.message.contains("requireUnique not satisfied"), "{}", e);
     assert!(e.message.contains("used again at line 4"), "{}", e);
     // last use: in place
-    let src = "action main(args: string[k]): i32 {\n    const c = read_bytes(args[0]);\n    const d = require_unique(c.with(0, 1));\n    print(d[0]);\n    return 0;\n}\n";
+    let src = "action main(args: string[k]): i32 {\n    const c = readBytes(args[0]);\n    const d = requireUnique(c.with(0, 1));\n    print(d[0]);\n    return 0;\n}\n";
     let t = isc_types::check_source(src).unwrap();
     let mut p = lower(&t).unwrap();
     optimize(&mut p).unwrap();
@@ -165,7 +165,7 @@ action main(args: string[k]): i32 {
 fn require_unique_names_the_line_of_the_program() {
     let src = "action main(args: string[k]): i32 {
     const y = map(iota(5), (i) => f64(i));
-    const t = require_unique(y.with(0, 5.0));
+    const t = requireUnique(y.with(0, 5.0));
     print(t);
     print(sum(y));
     return 0;
@@ -196,7 +196,7 @@ function t(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(s(x) + m(x) + t(x));
     return 0;
 }
@@ -228,7 +228,7 @@ function dep(x: f64[n]): f64 {
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(stats(x));
     print(dep(x));
     const a = sum(x);
@@ -313,14 +313,14 @@ action main(args: string[k]): i32 {
 
 /// Uniqueness in the branches of an `if` (D105): the last use of a variable
 /// on each path moves it; a branch that does not use it frees it; nothing
-/// is copied; `require_unique` holds in a branch.
+/// is copied; `requireUnique` holds in a branch.
 #[test]
 fn moves_in_branches() {
     let p = build(
         "function pick(x: f64[n], c: boolean): f64[n] {
     const a = map(x, (v) => v + 1.0);
     if (c) {
-        return require_unique(a.with(0, 100.0));
+        return requireUnique(a.with(0, 100.0));
     } else {
         return a;
     }
@@ -329,14 +329,14 @@ fn moves_in_branches() {
 function half(x: f64[n], c: boolean): f64 {
     const a = map(x, (v) => v * 2.0);
     if (c) {
-        return sum(require_unique(a.with(1, 5.0)));
+        return sum(requireUnique(a.with(1, 5.0)));
     } else {
         return sum(x);
     }
 }
 
 action main(args: string[k]): i32 {
-    const x = read_f64(args[0]);
+    const x = readF64(args[0]);
     print(pick(x, true));
     print(half(x, false));
     return 0;
@@ -348,8 +348,8 @@ action main(args: string[k]): i32 {
     // a use after the `if`: the branches cannot move
     let t = isc_types::check_source(
         "action main(args: string[k]): i32 {
-    const a = read_f64(args[0]);
-    const b = parse_i64(args[1]) > 0 ? require_unique(a.with(0, 1.0)) : a;
+    const a = readF64(args[0]);
+    const b = parseI64(args[1]) > 0 ? requireUnique(a.with(0, 1.0)) : a;
     print(a);
     print(b);
     return 0;

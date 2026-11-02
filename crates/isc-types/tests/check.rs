@@ -233,11 +233,11 @@ fn main_shape_and_actions() {
 }
 
 /// Stage 2, phase 1 (SPEC section 15): the examples of sections 3 and 4
-/// type-check, except those that need later phases (`require_no_alloc`:
+/// type-check, except those that need later phases (`requireNoAlloc`:
 /// phase 4; `[k <= n]T` and `window` with `[n][m]T`: phase 5).
 #[test]
 fn examples_of_sections_3_and_4() {
-    // section 3, without its `require_no_alloc` (phase 4)
+    // section 3, without its `requireNoAlloc` (phase 4)
     ok("function average(x: f64[n]): f64 {
     return sum(x) / f64(n);
 }
@@ -248,7 +248,7 @@ function std_dev(x: f64[n]): f64 {
 }
 
 function histogram(values: u8[n]): u32[256] {
-    return fold(values, zeros(), (c, v) => require_unique(c.with(v, c[v] + 1)));
+    return fold(values, zeros(), (c, v) => requireUnique(c.with(v, c[v] + 1)));
 }
 ");
     // section 4

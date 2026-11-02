@@ -63,7 +63,16 @@ fn scalar_ty(s: Scalar, _span: Span) -> Result<Ty> {
     })
 }
 
+/// The functions of TypeScript's `Math` that Isocron has (D151): `Math.f`
+/// is the primitive `f`.
+const MATH: &[&str] = &["sqrt", "exp", "log", "sin", "cos", "pow", "min", "max"];
+
 fn prim_by_name(name: &str) -> Option<Prim> {
+    let name = match name.strip_prefix("Math.") {
+        Some(f) if MATH.contains(&f) => f,
+        Some(_) => return None,
+        None => name,
+    };
     Some(match name {
         "map" => Prim::Map,
         "zip" => Prim::Zip,
@@ -84,32 +93,34 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "cos" => Prim::Math(MathFn::Cos),
         "pow" => Prim::Math(MathFn::Pow),
         "fma" => Prim::Math(MathFn::Fma),
-        "read_f64" => Prim::ReadF64,
-        "read_f32" => Prim::ReadF32,
-        "read_bytes" => Prim::ReadBytes,
-        "write_f64" => Prim::WriteF64,
-        "write_f32" => Prim::WriteF32,
-        "write_bytes" => Prim::WriteBytes,
+        "readF64" => Prim::ReadF64,
+        "readF32" => Prim::ReadF32,
+        "readBytes" => Prim::ReadBytes,
+        "writeF64" => Prim::WriteF64,
+        "writeF32" => Prim::WriteF32,
+        "writeBytes" => Prim::WriteBytes,
         "print" => Prim::Print,
         "clock" => Prim::Clock,
         "bench" => Prim::Bench,
-        "parse_i64" => Prim::ParseI64,
-        "parse_f64" => Prim::ParseF64,
+        "parseI64" => Prim::ParseI64,
+        "parseF64" => Prim::ParseF64,
         "concat" | "++" => Prim::Concat,
         "len" => Prim::StrLen,
         "bytes" => Prim::Bytes,
-        "string_of" => Prim::StringOf,
+        "stringOf" => Prim::StringOf,
         // `$text`: an insertion of a template literal (D150)
-        "to_string" | "$text" => Prim::ToString,
-        "read_text" => Prim::ReadText,
-        "write_text" => Prim::WriteText,
-        "parse_csv_f64" => Prim::ParseCsvF64,
-        "read_csv_f64" => Prim::ReadCsvF64,
+        // `String(x)`, `x.toString()`, and `$text`, an insertion of a
+        // template literal (D150, D151)
+        "toString" | "String" | "$text" => Prim::ToString,
+        "readText" => Prim::ReadText,
+        "writeText" => Prim::WriteText,
+        "parseCsvF64" => Prim::ParseCsvF64,
+        "readCsvF64" => Prim::ReadCsvF64,
         "lines" => Prim::Lines,
         "split" => Prim::Split,
         "trim" => Prim::Trim,
         "join" => Prim::Join,
-        "print_bytes" => Prim::PrintBytes,
+        "printBytes" => Prim::PrintBytes,
         _ if Fallible::from_name(name).is_some() => Prim::OrError(Fallible::from_name(name).unwrap()),
         "i8" => Prim::Convert(ScalarTy::Int(IntKind::I8)),
         "i16" => Prim::Convert(ScalarTy::Int(IntKind::I16)),
@@ -924,7 +935,7 @@ impl<'g> FnCx<'g> {
             }
             ExprKind::Slice(x, a, b) => {
                 // `[b - a]T`: a size known at run time, like the result of
-                // `read_f64`; the bounds are tested then (a panic outside)
+                // `readF64`; the bounds are tested then (a panic outside)
                 let x = self.check(x, None)?;
                 let elem = self.expect_array(&x.ty, x.span, "a sliced value")?;
                 let a = self.check(a, None)?;
@@ -967,7 +978,7 @@ impl<'g> FnCx<'g> {
                     ast::Access::Index(i) => i,
                     ast::Access::Field(name) => {
                         if *require_unique {
-                            return err(span, "`require_unique` applies to an array update `e.with(i, v)`");
+                            return err(span, "`requireUnique` applies to an array update `e.with(i, v)`");
                         }
                         let t = self.check(target, None)?;
                         let (i, fty) = self.field_of(&t.ty, name, t.span)?;

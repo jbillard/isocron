@@ -26,7 +26,7 @@ impl ScalarTy {
     }
 }
 
-/// The actions with a fallible form `<name>_or_error` (D138): the value
+/// The actions with a fallible form `<name>OrError` (D138, D151): the value
 /// and an error message, `""` when the action succeeds, instead of a panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fallible {
@@ -42,15 +42,15 @@ pub enum Fallible {
 
 impl Fallible {
     pub fn from_name(name: &str) -> Option<Fallible> {
-        Some(match name.strip_suffix("_or_error")? {
-            "parse_i64" => Fallible::ParseI64,
-            "parse_f64" => Fallible::ParseF64,
-            "read_bytes" => Fallible::ReadBytes,
-            "read_f64" => Fallible::ReadF64,
-            "read_text" => Fallible::ReadText,
-            "read_csv_f64" => Fallible::ReadCsvF64,
-            "write_bytes" => Fallible::WriteBytes,
-            "write_text" => Fallible::WriteText,
+        Some(match name.strip_suffix("OrError")? {
+            "parseI64" => Fallible::ParseI64,
+            "parseF64" => Fallible::ParseF64,
+            "readBytes" => Fallible::ReadBytes,
+            "readF64" => Fallible::ReadF64,
+            "readText" => Fallible::ReadText,
+            "readCsvF64" => Fallible::ReadCsvF64,
+            "writeBytes" => Fallible::WriteBytes,
+            "writeText" => Fallible::WriteText,
             _ => return None,
         })
     }
@@ -91,16 +91,16 @@ pub enum Prim {
     Bench,
     ParseI64,
     /// Strings (D134): `concat(a, b)` (also `a ++ b`), `len(s)` (bytes),
-    /// `bytes(s)`, `string_of(b)` (UTF-8 checked), `to_string(v)` of a
-    /// scalar, and the action `parse_f64(s)`.
+    /// `bytes(s)`, `stringOf(b)` (UTF-8 checked), `toString(v)` of a
+    /// scalar, and the action `parseF64(s)`.
     Concat,
     StrLen,
     Bytes,
     StringOf,
     ToString,
     ParseF64,
-    /// Text (D135): the actions `read_text`, `write_text`,
-    /// `parse_csv_f64(text, skip)`, `read_csv_f64(path, skip)`; the
+    /// Text (D135): the actions `readText`, `writeText`,
+    /// `parseCsvF64(text, skip)`, `readCsvF64(path, skip)`; the
     /// functions `lines`, `split`, `trim`, `join`.
     ReadText,
     WriteText,
@@ -110,7 +110,7 @@ pub enum Prim {
     Split,
     Trim,
     Join,
-    /// `print_bytes(x)`: the bytes of `x` to the standard output (D136).
+    /// `printBytes(x)`: the bytes of `x` to the standard output (D136).
     PrintBytes,
     /// A fallible form of an action (D138).
     OrError(Fallible),
