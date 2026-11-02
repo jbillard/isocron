@@ -211,10 +211,39 @@ impl Interp<'_> {
             S::EndsWith => Value::Bool(s(&vs[0]).ends_with(&*s(&vs[1]))),
             S::TrimStart => Value::Str(Rc::from(s(&vs[0]).trim_start())),
             S::TrimEnd => Value::Str(Rc::from(s(&vs[0]).trim_end())),
-            S::ReplaceAll => {
+            // through the engine of regular expressions: `$` patterns (D157)
+            S::ReplaceAll | S::ReplaceFirst => {
                 let mut out = String::new();
-                let _ = isc_runtime_core::replace_all(&mut out, &s(&vs[0]), &s(&vs[1]), &s(&vs[2]));
+                let _ = isc_runtime_core::replace_text(&mut out, &s(&vs[0]), &s(&vs[1]), &s(&vs[2]), op == S::ReplaceAll);
                 Value::Str(Rc::from(out))
+            }
+            S::Rx(r) => {
+                use isc_ir::RxOp as X;
+                use isc_runtime_core::rx;
+                match r {
+                    X::New => {
+                        let mut out = String::new();
+                        let (src, flags) = (s(&vs[0]), s(&vs[1]));
+                        if let Err(p) = rx::value(&src, &flags, &mut out) {
+                            return panic_at(e, std::format!("{}", p));
+                        }
+                        Value::Str(Rc::from(out))
+                    }
+                    X::Test => Value::Bool(rx::test(&s(&vs[0]), &s(&vs[1]))),
+                    X::Search => Value::Int(rx::search(&s(&vs[1]), &s(&vs[0]))),
+                    X::Count => Value::Int(rx::count(&s(&vs[1]), &s(&vs[0]))),
+                    X::Matches => {
+                        let t = s(&vs[0]);
+                        Value::Array(Rc::new(Array::Str(rx::matches(&s(&vs[1]), &t).into_iter().map(Rc::from).collect())))
+                    }
+                    X::Replace | X::ReplaceAll => {
+                        let mut out = String::new();
+                        if let Err(p) = rx::replace(&mut out, &s(&vs[1]), &s(&vs[0]), &s(&vs[2]), r == X::ReplaceAll) {
+                            return panic_at(e, std::format!("{}", p));
+                        }
+                        Value::Str(Rc::from(out))
+                    }
+                }
             }
             S::ToUpper | S::ToLower => {
                 let mut out = String::new();

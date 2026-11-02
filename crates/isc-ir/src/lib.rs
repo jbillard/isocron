@@ -179,6 +179,10 @@ pub enum StrOp {
     ArgSort,
     /// An operation of `bigint` (D156).
     Big(BigOp),
+    /// A regular expression (D157); a `RegExp` is the string `flags/source`.
+    Rx(RxOp),
+    /// `s.replace(a, b)` of a text: its first `a` (D157).
+    ReplaceFirst,
     /// ECMAScript's `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` (D156).
     JsNumber,
     JsParseFloat,
@@ -208,6 +212,20 @@ pub enum BigOp {
     ToString,
     /// `argsort` of an array of `bigint`.
     ArgSort,
+}
+
+/// The operations of regular expressions (D157).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RxOp {
+    /// `RegExp(source, flags)`: checked (a panic when it cannot compile).
+    New,
+    Test,
+    Search,
+    Count,
+    Matches,
+    /// `s.replace(re, to)`, `s.replaceAll(re, to)`.
+    Replace,
+    ReplaceAll,
 }
 
 /// A C function declared with `extern` (D125): its parameters (scalars,

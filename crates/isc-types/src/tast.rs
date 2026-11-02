@@ -145,6 +145,15 @@ pub enum Prim {
     ParseInt,
     /// `BigInt(x)` of an integer or of a text (D156).
     ToBigInt,
+    /// Regular expressions (D157): `RegExp(source, flags)`, `re.test(s)`,
+    /// `s.search(re)`, `countMatches(s, re)`, `matches(s, re)`, and
+    /// `s.replace(p, to)` of a text or a `RegExp`.
+    RegExpNew,
+    RxTest,
+    RxSearch,
+    RxCount,
+    RxMatches,
+    Replace,
 }
 
 /// The mathematical functions of the runtime (SPEC section 10): one

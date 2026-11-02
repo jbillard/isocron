@@ -623,7 +623,11 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_trim(ptr, ptr, i64)",
     "declare i64 @isc_index_of(ptr, i64, ptr, i64)",
     "declare i32 @isc_str_test(ptr, i64, ptr, i64, i32)",
-    "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64)",
+    "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64, i32)",
+    "declare void @isc_rx_new(ptr, ptr, i64, ptr, i64, i32, i32)",
+    "declare i64 @isc_rx_int(ptr, i64, ptr, i64, i32)",
+    "declare void @isc_rx_matches(ptr, ptr, i64, ptr, i64)",
+    "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32)",
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
@@ -6041,11 +6045,48 @@ impl<'p> Gen<'p> {
                 let r = self.ins(format!("call i32 @isc_str_test(ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, q, m, which));
                 v(self.ins(format!("icmp ne i32 {}, 0", r)), "i1")
             }
-            S::ReplaceAll => {
+            S::ReplaceAll | S::ReplaceFirst => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 let (r, k) = self.str_parts(&vals[2]);
-                new_str(self, format!("call void @isc_replace_all(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m, r, k))
+                let all = (op == S::ReplaceAll) as i32;
+                new_str(self, format!("call void @isc_replace_all(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, q, m, r, k, all))
+            }
+            // regular expressions (D157)
+            S::Rx(x) => {
+                use isc_ir::RxOp as X;
+                let pos = Self::pos(e.span);
+                match x {
+                    X::New => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        let (q, m) = self.str_parts(&vals[1]);
+                        new_str(self, format!("call void @isc_rx_new(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, q, m, pos))
+                    }
+                    X::Test => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        let (q, m) = self.str_parts(&vals[1]);
+                        let r = self.ins(format!("call i64 @isc_rx_int(ptr {}, i64 {}, ptr {}, i64 {}, i32 0)", p, n, q, m));
+                        v(self.ins(format!("icmp ne i64 {}, 0", r)), "i1")
+                    }
+                    X::Search | X::Count => {
+                        let (p, n) = self.str_parts(&vals[1]);
+                        let (q, m) = self.str_parts(&vals[0]);
+                        let which = if x == X::Search { 1 } else { 2 };
+                        v(self.ins(format!("call i64 @isc_rx_int(ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, q, m, which)), "i64")
+                    }
+                    X::Matches => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        let (q, m) = self.str_parts(&vals[1]);
+                        new_str(self, format!("call void @isc_rx_matches(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+                    }
+                    X::Replace | X::ReplaceAll => {
+                        let (p, n) = self.str_parts(&vals[0]);
+                        let (q, m) = self.str_parts(&vals[1]);
+                        let (r, k) = self.str_parts(&vals[2]);
+                        let all = (x == X::ReplaceAll) as i32;
+                        new_str(self, format!("call void @isc_rx_replace(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, {})", p, n, q, m, r, k, all, pos))
+                    }
+                }
             }
             S::ToUpper | S::ToLower => {
                 let (p, n) = self.str_parts(&vals[0]);

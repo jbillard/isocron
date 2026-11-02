@@ -869,10 +869,58 @@ pub unsafe extern "C" fn isc_str_test(p: *const u8, n: i64, q: *const u8, m: i64
     }) as i32
 }
 
+/// `s.replace(from, to)` (`all` 0) and `s.replaceAll(from, to)` of a text,
+/// with the `$` patterns of `to` (D157).
 #[no_mangle]
-pub unsafe extern "C" fn isc_replace_all(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, r: *const u8, k: i64) {
+pub unsafe extern "C" fn isc_replace_all(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, r: *const u8, k: i64, all: i32) {
     let (s, from, to) = (text(p, n), text(q, m), text(r, k));
-    *out = written(&|w| sem::replace_all(w, s, from, to));
+    *out = written(&|w| sem::replace_text(w, s, from, to, all != 0));
+}
+
+// regular expressions (D157): the code of isc-runtime-core
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_rx_new(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, line: i32, col: i32) {
+    let (src, flags) = (text(p, n), text(q, m));
+    if let Err(e) = sem::rx::compile(src, flags) {
+        die(line, col, &e)
+    }
+    *out = written(&|w| {
+        let _ = sem::rx::value(src, flags, w);
+        Ok(())
+    });
+}
+
+/// 0 `re.test(s)` (1 or 0), 1 `s.search(re)`, 2 `countMatches(s, re)`.
+#[no_mangle]
+pub unsafe extern "C" fn isc_rx_int(v: *const u8, n: i64, s: *const u8, m: i64, which: i32) -> i64 {
+    let (re, t) = (text(v, n), text(s, m));
+    match which {
+        0 => sem::rx::test(re, t) as i64,
+        1 => sem::rx::search(re, t),
+        _ => sem::rx::count(re, t),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_rx_matches(out: *mut IscArray, s: *const u8, n: i64, v: *const u8, m: i64) {
+    let (t, re) = (text(s, n), text(v, m));
+    let found = sem::rx::matches(re, t);
+    let count = found.len();
+    *out = str_array(&mut found.into_iter(), count);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, v: *const u8, m: i64, q: *const u8, k: i64, all: i32, line: i32, col: i32) {
+    let (t, re, to) = (text(s, n), text(v, m), text(q, k));
+    let (flags, _) = sem::rx::parts(re);
+    if all != 0 && !flags.contains('g') {
+        die(line, col, &Panic::ReplaceAllNotGlobal)
+    }
+    *out = written(&|w| {
+        let _ = sem::rx::replace(w, re, t, to, all != 0);
+        Ok(())
+    });
 }
 
 #[no_mangle]

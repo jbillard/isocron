@@ -264,7 +264,7 @@ fn extern_fns(p: &TProgram) -> Vec<ExternFn> {
             Ty::F64 => Type::F64,
             Ty::F32 => Type::F32,
             Ty::Bool => Type::Bool,
-            Ty::Str => Type::Str,
+            Ty::Str | Ty::RegExp => Type::Str,
             Ty::BigInt => Type::Big,
             Ty::Array(_, e) => Type::Array(Box::new(ty(e))),
             _ => Type::Unit,
@@ -716,7 +716,7 @@ impl<'p> Lower<'p> {
             Ty::F32 => Type::F32,
             Ty::Bool => Type::Bool,
             Ty::Unit => Type::Unit,
-            Ty::Str => Type::Str,
+            Ty::Str | Ty::RegExp => Type::Str,
             Ty::BigInt => Type::Big,
             Ty::Sum { id, args, .. } if self.p.sums[id as usize].recursive => Type::Rec(self.rec_index(env, id, &args, span)?),
             Ty::Sum { id, args, .. } => Type::Tuple(self.sum_layout(env, id, &args, span)?.0),
@@ -2304,6 +2304,7 @@ impl<'p> Lower<'p> {
                     Prim::ArgSort => StrOp::ArgSort,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
+                    Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),
                     Prim::IndexOf => StrOp::IndexOf,
                     Prim::Includes => StrOp::Includes,
                     Prim::StartsWith => StrOp::StartsWith,
@@ -2592,6 +2593,33 @@ impl<'p> Lower<'p> {
                 ExprKind::Convert(Box::new(y))
             }
             Prim::Convert(_) => ExprKind::Convert(Box::new(self.expr(env, &args[0])?)),
+            // regular expressions (D157)
+            Prim::RegExpNew | Prim::RxTest | Prim::RxSearch | Prim::RxCount | Prim::RxMatches | Prim::Replace => {
+                // a literal `/source/flags`, or texts known here: checked at
+                // compilation (D157)
+                if p == Prim::RegExpNew {
+                    if let (TExprKind::Lit(tast::Lit::Str(src)), TExprKind::Lit(tast::Lit::Str(flags))) = (&args[0].kind, &args[1].kind) {
+                        let mut sink = String::new();
+                        if let Err(e) = isc_runtime_core::rx::value(src, flags, &mut sink) {
+                            return Err(Diagnostic::new(span, format!("{}", e)));
+                        }
+                    }
+                }
+                let op = match p {
+                    Prim::RegExpNew => StrOp::Rx(RxOp::New),
+                    Prim::RxTest => StrOp::Rx(RxOp::Test),
+                    Prim::RxSearch => StrOp::Rx(RxOp::Search),
+                    Prim::RxCount => StrOp::Rx(RxOp::Count),
+                    Prim::RxMatches => StrOp::Rx(RxOp::Matches),
+                    _ if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::Replace),
+                    _ => StrOp::ReplaceFirst,
+                };
+                let mut out = Vec::new();
+                for a in args {
+                    out.push(self.expr(env, a)?);
+                }
+                ExprKind::StrOp(op, out)
+            }
             // `BigInt(x)` (D156)
             Prim::ToBigInt => {
                 let x = self.expr(env, &args[0])?;

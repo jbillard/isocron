@@ -132,7 +132,7 @@
   - [x] `Math` functions, string functions of TypeScript, `toFixed`, standard input, `random`, `sort`, `sortBy`, `toReversed`, `iota(n)` of any integer (D155)
   - [x] `bigint`; pure parsing; `Number`, `parseFloat`, `parseInt` (D156)
   - [ ] `Map<K, V>`
-  - [ ] Regular expressions
+  - [x] Regular expressions (D157)
 - [ ] (4) The ten Benchmarks Game programs, outputs identical to the references in our Docker image
 - [ ] (5) SPEC section 16 "avant la v1" decided and written; grammar = parser; every feature in the guide with a tested example
 - [ ] (6) Interpreter and compiled tests, Valgrind, compile-time checks, `cargo test` with both allocators

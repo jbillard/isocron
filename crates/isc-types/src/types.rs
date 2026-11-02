@@ -186,6 +186,9 @@ pub enum Size {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
+    /// A regular expression (D157): built by `RegExp(source, flags)` or
+    /// `/source/flags`.
+    RegExp,
     /// An integer of any size (D156): owned, as a string.
     BigInt,
     Int(IntKind),
@@ -260,6 +263,7 @@ impl fmt::Display for TyDisplay<'_> {
             Ty::Unit => write!(f, "void"),
             Ty::Str => write!(f, "string"),
             Ty::BigInt => write!(f, "bigint"),
+            Ty::RegExp => write!(f, "RegExp"),
             // the syntax of the programs (D148): `[A, B]`
             Ty::Tuple(ts) => {
                 write!(f, "[")?;

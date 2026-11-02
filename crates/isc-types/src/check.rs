@@ -154,6 +154,12 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "parseFloat" => Prim::ParseFloat,
         "parseInt" => Prim::ParseInt,
         "BigInt" => Prim::ToBigInt,
+        "RegExp" | "$RegExp" => Prim::RegExpNew,
+        "test" => Prim::RxTest,
+        "search" => Prim::RxSearch,
+        "countMatches" => Prim::RxCount,
+        "matches" => Prim::RxMatches,
+        "replace" => Prim::Replace,
         "join" => Prim::Join,
         "printBytes" => Prim::PrintBytes,
         _ if Fallible::from_name(name).is_some() => Prim::OrError(Fallible::from_name(name).unwrap()),
@@ -243,6 +249,8 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
         TypeKind::Str => Ty::Str,
         TypeKind::BigInt => Ty::BigInt,
         TypeKind::Unit => Ty::Unit,
+        // the built-in `RegExp` (D157), unless the program declares its own
+        TypeKind::Named(name, args) if name == "RegExp" && args.is_empty() && !cx.sums.iter().any(|(n, _)| n == "RegExp") => Ty::RegExp,
         TypeKind::Named(name, args) => {
             if let Some(i) = cx.generics.iter().position(|g| &g.0 == name) {
                 if !args.is_empty() {
@@ -643,6 +651,14 @@ impl<'g> FnCx<'g> {
                 }
                 Ok(())
             }
+            // a regular expression (D157): an element of an array, nothing
+            // more (no equality, no order)
+            Ty::RegExp => {
+                if lit != LitKind::None || classes & !class::ELEM != 0 {
+                    return fail(&t, self);
+                }
+                Ok(())
+            }
             // an integer of any size (D156): every class of the integers
             Ty::BigInt => {
                 if lit == LitKind::Float || classes & class::FLOAT != 0 {
@@ -767,7 +783,7 @@ impl<'g> FnCx<'g> {
             (Ty::Var(x), _) => self.bind(*x, &b),
             (_, Ty::Var(y)) => self.bind(*y, &a),
             (Ty::Int(k1), Ty::Int(k2)) if k1 == k2 => Ok(()),
-            (Ty::F64, Ty::F64) | (Ty::F32, Ty::F32) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Str, Ty::Str) | (Ty::BigInt, Ty::BigInt) => Ok(()),
+            (Ty::F64, Ty::F64) | (Ty::F32, Ty::F32) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Str, Ty::Str) | (Ty::BigInt, Ty::BigInt) | (Ty::RegExp, Ty::RegExp) => Ok(()),
             (Ty::Param(p), Ty::Param(q)) if p == q => Ok(()),
             (Ty::Tuple(x), Ty::Tuple(y)) if x.len() == y.len() => {
                 for (s, t) in x.iter().zip(y.iter()) {
@@ -1896,7 +1912,15 @@ impl<'g> FnCx<'g> {
                 }
             }
             Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
-            Prim::ReplaceAll | Prim::StrSlice => 3,
+            Prim::ReplaceAll | Prim::StrSlice | Prim::Replace => 3,
+            Prim::RxTest | Prim::RxSearch | Prim::RxCount | Prim::RxMatches => 2,
+            Prim::RegExpNew => {
+                if args.len() == 1 {
+                    1
+                } else {
+                    2
+                }
+            }
             // `padStart(s, n)` pads with spaces, as TypeScript
             Prim::PadStart | Prim::PadEnd => {
                 if args.len() == 2 {
@@ -2291,6 +2315,54 @@ impl<'g> FnCx<'g> {
                 let a = self.check(&args[0], Some(&Ty::Str))?;
                 self.unify(&Ty::Str, &a.ty, a.span)?;
                 Ok(mk(vec![a], Ty::Str, self))
+            }
+            // regular expressions (D157)
+            Prim::RegExpNew => {
+                let a = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &a.ty, a.span)?;
+                let f = match args.get(1) {
+                    Some(f) => {
+                        let f = self.check(f, Some(&Ty::Str))?;
+                        self.unify(&Ty::Str, &f.ty, f.span)?;
+                        f
+                    }
+                    None => self.mk(TExprKind::Lit(Lit::Str(String::new())), Ty::Str, span),
+                };
+                Ok(mk(vec![a, f], Ty::RegExp, self))
+            }
+            Prim::RxTest => {
+                let r = self.check(&args[0], Some(&Ty::RegExp))?;
+                self.unify(&Ty::RegExp, &r.ty, r.span)?;
+                let x = self.check(&args[1], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &x.ty, x.span)?;
+                Ok(mk(vec![r, x], Ty::Bool, self))
+            }
+            Prim::RxSearch | Prim::RxCount | Prim::RxMatches => {
+                let x = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &x.ty, x.span)?;
+                let r = self.check(&args[1], Some(&Ty::RegExp))?;
+                self.unify(&Ty::RegExp, &r.ty, r.span)?;
+                let t = if p == Prim::RxMatches {
+                    let s = self.syms.len() as SymId;
+                    self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                    Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Str))
+                } else {
+                    Ty::Int(IntKind::I64)
+                };
+                Ok(mk(vec![x, r], t, self))
+            }
+            // `s.replace(p, to)`, `s.replaceAll(p, to)`: `p` a text or a
+            // `RegExp`
+            Prim::Replace | Prim::ReplaceAll => {
+                let x = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &x.ty, x.span)?;
+                let pat = self.check(&args[1], None)?;
+                if self.shallow(&pat.ty) != Ty::RegExp {
+                    self.unify(&Ty::Str, &pat.ty, pat.span)?;
+                }
+                let to = self.check(&args[2], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &to.ty, to.span)?;
+                Ok(mk(vec![x, pat, to], Ty::Str, self))
             }
             Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::ReplaceAll => {
                 let mut xs = Vec::new();
@@ -3069,6 +3141,9 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         let t = cx.zonk(&t)?;
         if holds_function(g, &t, &mut Vec::new()) {
             return err(sp, "a function cannot be printed (here, inside this value)");
+        }
+        if t == Ty::RegExp {
+            return err(sp, "a RegExp cannot be printed");
         }
     }
     Ok(TFn {

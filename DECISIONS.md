@@ -2621,3 +2621,22 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     runtime gives `alloc` a global allocator over `isc_alloc`. Each
     operation decodes and encodes its operands (linear, below the cost of
     a multiplication or a division).
+- **D157 — Regular expressions (2026-11-03).** A type `RegExp`, written
+  `/source/flags` where an expression starts (the lexer's rule of
+  JavaScript: after an operator, an opening bracket, a comma or `return`;
+  else a division) or `RegExp(source, flags)`; flags `g i m s u`. As
+  TypeScript: `re.test(s)`, `s.search(re)`, `s.replace(re, to)` (every match
+  with `g`, else the first), `s.replaceAll(re, to)` (`g` required: a panic
+  otherwise, as ECMAScript's TypeError), and the patterns `$$ $& $` $' $1`
+  to `$99` in `to`; `s.replace(text, to)` replaces the first occurrence and
+  a text pattern takes the `$` patterns too (ECMAScript's GetSubstitution:
+  `replaceAll` of texts goes through the same engine, the pattern escaped).
+  `countMatches(s, re)` and `matches(s, re)` (the texts of the matches)
+  replace `(s.match(re) || []).length`, which needs `null`. The engine is
+  that of the crate `regex` (`regex-automata`, `alloc`, no `std`), in
+  `isc-runtime-core`: leftmost first as ECMAScript, linear time, so a
+  backreference or a look-around is refused with its reason; `\d`, `\w`,
+  `\s` are those of Unicode (ECMAScript's are ASCII but `\s`). A literal is
+  compiled when the program is (an invalid one is a compile error); a
+  `RegExp` value is the text `flags/source`, compiled again at each use
+  (a cache is later work). Not printed, not compared.

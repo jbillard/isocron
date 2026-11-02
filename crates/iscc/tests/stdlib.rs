@@ -202,3 +202,52 @@ fn big_integers() {
         Err(e) => assert!(e.contains("found `bigint`"), "{}", e),
     }
 }
+
+const REGEX: &str = r##"function isWord(s: string): boolean {
+    return /^[a-z]+$/i.test(s);
+}
+
+action main(args: string[k]): i32 {
+    const dna = "GGCCaggGTAAAtttACCCTtaggGTAAA";
+    print(countMatches(dna, /agggtaaa|tttaccct/gi));
+    print(countMatches(dna, RegExp("[cgt]gggtaaa|tttaccc[acg]", "i")));
+    print(dna.replace(/a/gi, "<$&>"));
+    print(dna.replace(/a/i, "-"));
+    print("2024-11-03".replace(/(\d+)-(\d+)-(\d+)/, "$3/$2/$1"));
+    print("x1y22z".replaceAll(/\d+/g, "#"));
+    print(matches("a1b22c333", /\d+/g));
+    print(["abc", "a1", "Zed"].map(isWord));
+    print("hello world".search(/o w/));
+    print("a.b.c".replaceAll(".", "$$"));
+    print("abc".replace("b", "[$&]"));
+    print(10 / 2 / 5);
+    const rs = [/a/, /b+/];
+    print(rs.map((r) => r.test("bbb")));
+    return 0;
+}
+"##;
+
+/// Regular expressions (D157): literals `/source/flags` and `RegExp(s, f)`,
+/// `test`, `search`, `countMatches`, `matches`, `replace` and `replaceAll`
+/// of a `RegExp` or a text (the `$` patterns of ECMAScript); an invalid
+/// literal is a compile error, a text a panic.
+#[test]
+fn regular_expressions() {
+    agree(REGEX, "std_regex", &[], "3\n0\nGGCC<a>ggGT<A><A><A>ttt<A>CCCTt<a>ggGT<A><A><A>\nGGCC-ggGTAAAtttACCCTtaggGTAAA\n03/11/2024\nx#y#z\n[1, 22, 333]\n[true, false, true]\n4\na$b$c\na[b]c\n1\n[false, true]\n");
+    match iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(/a(?=b)/.test(\"ab\"));\n    return 0;\n}\n") {
+        Ok(_) => panic!("accepted"),
+        Err(e) => assert!(e.contains("t.isc:2:11: error: RegExp: invalid regular expression `a(?=b)`: look-around, including look-ahead and look-behind, is not supported"), "{}", e),
+    }
+    match iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(/a/);\n    return 0;\n}\n") {
+        Ok(_) => panic!("accepted"),
+        Err(e) => assert!(e.contains("a RegExp cannot be printed"), "{}", e),
+    }
+    let src = "action main(args: string[k]): i32 {\n    print(RegExp(args[0]).test(\"ab\"));\n    print(\"ab\".replaceAll(/a/, \"x\"));\n    return 0;\n}\n";
+    for (arg, want) in [("(", "panic at line 2, column 17: RegExp: invalid regular expression `(`: unclosed group"), ("a", "panic at line 3, column 26: replaceAll: the RegExp must have the flag g")] {
+        assert_eq!(interp_panic(src, &[arg]), want);
+        let bin = compile(src, "std_regex_panic");
+        let r = run_bin(&bin, &[arg]);
+        assert_eq!(r.code, 101);
+        assert!(r.stderr.contains(want), "{}", r.stderr);
+    }
+}

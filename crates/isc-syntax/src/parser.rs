@@ -980,6 +980,13 @@ impl P {
                 self.bump();
                 ExprKind::BigInt { digits, radix, neg: false }
             }
+            // `/source/flags`: `RegExp(source, flags)` (D157)
+            T::Regex(src, flags) => {
+                self.bump();
+                let callee = Expr { kind: ExprKind::Var("$RegExp".into()), span };
+                let args = vec![Expr { kind: ExprKind::Str(src), span }, Expr { kind: ExprKind::Str(flags), span }];
+                ExprKind::Call(Box::new(callee), args)
+            }
             T::Ident(w) if w == "true" || w == "false" => {
                 self.bump();
                 ExprKind::Bool(w == "true")

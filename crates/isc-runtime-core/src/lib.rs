@@ -165,6 +165,11 @@ pub enum Panic<'a> {
     ParseBigInt(&'a str),
     /// `a ** b` of a `bigint` with `b` past 2^32 - 1.
     BigExponent,
+    /// A regular expression that cannot be compiled (D157): its source and
+    /// the first line of the reason.
+    RegExp { source: &'a str, reason: alloc::string::String },
+    /// `s.replaceAll(re, to)` with a `RegExp` without the flag `g`.
+    ReplaceAllNotGlobal,
 }
 
 impl fmt::Display for Panic<'_> {
@@ -193,6 +198,8 @@ impl fmt::Display for Panic<'_> {
             Panic::RepeatNegative(n) => write!(f, "repeat: the count is negative: {}", n),
             Panic::FixedDigits(d) => write!(f, "toFixed: the number of digits must be between 0 and 100, got {}", d),
             Panic::ParseBigInt(t) => write!(f, "BigInt: `{}` is not an integer", t),
+            Panic::RegExp { source, reason } => write!(f, "RegExp: invalid regular expression `{}`: {}", source, reason),
+            Panic::ReplaceAllNotGlobal => write!(f, "replaceAll: the RegExp must have the flag g"),
             Panic::BigExponent => write!(f, "the exponent of a bigint is too large (above 4294967295)"),
             Panic::StdinNotUtf8(at) => write!(f, "readStdinText: the standard input is not UTF-8 text (invalid from byte {})", at),
             Panic::Size { a, b } => write!(f, "size mismatch: {} != {}", a, b),
@@ -511,9 +518,24 @@ pub fn index_of(s: &str, t: &str) -> i64 {
     s.find(t).map(|i| i as i64).unwrap_or(-1)
 }
 
-/// `s.replaceAll(from, to)`: every `from`, left to right, replaced; an
-/// empty `from` puts `to` before each character and at the end (as
-/// JavaScript).
+/// `s.replace(from, to)` (the first `from`) and `s.replaceAll(from, to)`
+/// of a text (D157): through the engine of regular expressions, `from`
+/// escaped, so that `to` has ECMAScript's patterns `$&`, `$$`, ...
+pub fn replace_text(w: &mut dyn Write, s: &str, from: &str, to: &str, all: bool) -> fmt::Result {
+    let mut src = alloc::string::String::new();
+    for c in from.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(c) {
+            src.push('\\');
+        }
+        src.push(c);
+    }
+    let v = if all { alloc::format!("g/{}", src) } else { alloc::format!("/{}", src) };
+    let _ = rx::replace(w, &v, s, to, false);
+    Ok(())
+}
+
+/// The replacement of every `from` without patterns (unused: kept for the
+/// tests of the engine).
 pub fn replace_all(w: &mut dyn Write, s: &str, from: &str, to: &str) -> fmt::Result {
     if from.is_empty() {
         for c in s.chars() {
@@ -992,5 +1014,162 @@ pub fn js_parse_int(s: &str, radix: i64) -> f64 {
         -v
     } else {
         v
+    }
+}
+
+// ---------------------------------------------------------------------
+// regular expressions (D157): a `RegExp` is the text `flags/source`; the
+// engine of the crate `regex` (leftmost first, as ECMAScript; linear time:
+// no backreference, no look-around)
+
+pub mod rx {
+    use super::Panic;
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+    use core::fmt::{self, Write};
+    use regex_automata::meta::Regex;
+    use regex_automata::util::syntax;
+
+    /// The value of `RegExp(source, flags)`, its flags checked.
+    pub fn value<'a>(source: &'a str, flags: &'a str, w: &mut dyn Write) -> Result<(), Panic<'a>> {
+        for c in flags.chars() {
+            if !"gimsu".contains(c) {
+                return Err(Panic::RegExp { source, reason: alloc::format!("the flag `{}` is not supported (g, i, m, s, u)", c) });
+            }
+        }
+        compile(source, flags)?;
+        let _ = write!(w, "{}/{}", flags, source);
+        Ok(())
+    }
+
+    pub fn parts(v: &str) -> (&str, &str) {
+        v.split_once('/').unwrap_or(("", v))
+    }
+
+    pub fn compile<'a>(source: &'a str, flags: &str) -> Result<Regex, Panic<'a>> {
+        let cfg = syntax::Config::new()
+            .case_insensitive(flags.contains('i'))
+            .multi_line(flags.contains('m'))
+            .dot_matches_new_line(flags.contains('s'));
+        Regex::builder().syntax(cfg).build(source).map_err(|e| {
+            // the reason: the last line of the error of syntax (`error:
+            // look-around ... is not supported`)
+            let text = match e.syntax_error() {
+                Some(se) => se.to_string(),
+                None => e.to_string(),
+            };
+            let last = text.lines().last().unwrap_or("").trim();
+            let reason = last.strip_prefix("error: ").unwrap_or(last).to_string();
+            Panic::RegExp { source, reason }
+        })
+    }
+
+    fn of(v: &str) -> Regex {
+        let (flags, source) = parts(v);
+        // the value was checked when it was made
+        compile(source, flags).unwrap_or_else(|_| Regex::new("[^\\s\\S]").unwrap())
+    }
+
+    /// `re.test(s)`.
+    pub fn test(v: &str, s: &str) -> bool {
+        of(v).is_match(s)
+    }
+
+    /// `s.search(re)`: the byte index of the first match, -1 if none.
+    pub fn search(v: &str, s: &str) -> i64 {
+        of(v).find(s).map(|m| m.start() as i64).unwrap_or(-1)
+    }
+
+    /// `countMatches(s, re)`: the matches, left to right, without overlap.
+    pub fn count(v: &str, s: &str) -> i64 {
+        of(v).find_iter(s).count() as i64
+    }
+
+    /// `matches(s, re)`: their texts.
+    pub fn matches<'s>(v: &str, s: &'s str) -> Vec<&'s str> {
+        of(v).find_iter(s).map(|m| &s[m.range()]).collect()
+    }
+
+    /// `s.replace(re, to)` (every match with the flag `g`, else the first)
+    /// and `s.replaceAll(re, to)`: `to` with ECMAScript's patterns `$$`,
+    /// `$&`, `` $` ``, `$'`, `$1` to `$99`.
+    pub fn replace<'a>(w: &mut dyn Write, v: &str, s: &str, to: &str, all: bool) -> Result<(), Panic<'a>> {
+        let (flags, _) = parts(v);
+        if all && !flags.contains('g') {
+            return Err(Panic::ReplaceAllNotGlobal);
+        }
+        let re = of(v);
+        let global = flags.contains('g');
+        let mut last = 0;
+        let mut caps = re.create_captures();
+        let mut at = 0;
+        while at <= s.len() {
+            re.search_captures(&regex_automata::Input::new(s).range(at..), &mut caps);
+            let Some(m) = caps.get_match() else { break };
+            let _ = w.write_str(&s[last..m.start()]);
+            let _ = substitute(w, to, s, &caps);
+            last = m.end();
+            if !global {
+                break;
+            }
+            // an empty match: the next search starts after a character
+            at = if m.end() > m.start() { m.end() } else { s[m.end()..].chars().next().map(|c| m.end() + c.len_utf8()).unwrap_or(s.len() + 1) };
+        }
+        let _ = w.write_str(&s[last..]);
+        Ok(())
+    }
+
+    fn substitute(w: &mut dyn Write, to: &str, s: &str, caps: &regex_automata::util::captures::Captures) -> fmt::Result {
+        let m = caps.get_match().unwrap();
+        let b = to.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'$' && i + 1 < b.len() {
+                match b[i + 1] {
+                    b'$' => {
+                        w.write_char('$')?;
+                        i += 2;
+                        continue;
+                    }
+                    b'&' => {
+                        w.write_str(&s[m.range()])?;
+                        i += 2;
+                        continue;
+                    }
+                    b'`' => {
+                        w.write_str(&s[..m.start()])?;
+                        i += 2;
+                        continue;
+                    }
+                    b'\'' => {
+                        w.write_str(&s[m.end()..])?;
+                        i += 2;
+                        continue;
+                    }
+                    d if d.is_ascii_digit() => {
+                        // two digits when that group exists, else one
+                        let groups = caps.group_len();
+                        let one = (d - b'0') as usize;
+                        let two = if i + 2 < b.len() && b[i + 2].is_ascii_digit() { Some(one * 10 + (b[i + 2] - b'0') as usize) } else { None };
+                        let (n, len) = match two {
+                            Some(t) if t >= 1 && t < groups => (t, 3),
+                            _ => (one, 2),
+                        };
+                        if n >= 1 && n < groups {
+                            if let Some(g) = caps.get_group(n) {
+                                w.write_str(&s[g.range()])?;
+                            }
+                            i += len;
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let c = to[i..].chars().next().unwrap();
+            w.write_char(c)?;
+            i += c.len_utf8();
+        }
+        Ok(())
     }
 }

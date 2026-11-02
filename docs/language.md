@@ -523,7 +523,7 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 | `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` | `(string) => f64` | as ECMAScript: `Number` of the whole text (`""` is 0, `"0x1F"` is 31), `parseFloat` and `parseInt` of its longest prefix; NaN when there is no number |
 | `s.indexOf(t)` | `(string, string) => i64` | the byte index of the first `t`, -1 if none |
 | `s.includes(t)`, `s.startsWith(t)`, `s.endsWith(t)` | `(string, string) => boolean` | |
-| `s.replaceAll(a, b)` | `(string, string, string) => string` | every `a` replaced by `b`, left to right (`a` empty: `b` around each character) |
+| `s.replace(a, b)`, `s.replaceAll(a, b)` | `(string, string, string) => string` | the first `a`, every `a`, replaced by `b` (`a` empty: `b` around each character; `b` has the `$` patterns of [Regular expressions](#regular-expressions)) |
 | `s.toUpperCase()`, `s.toLowerCase()` | `(string) => string` | the case mappings of Unicode, without a locale (`"straße".toUpperCase()` is `"STRASSE"`) |
 | `s.padStart(n, fill)`, `s.padEnd(n, fill)` | `(string, i64, string) => string` | padded to `n` bytes with copies of `fill` (a space when omitted) |
 | `s.repeat(n)` | `(string, i64) => string` | `n` copies (`n < 0`: a panic) |
@@ -825,6 +825,39 @@ The length given to `iota` and `fill` is a size (an integer literal, a size
 variable, a sum or product of these: the type of the result knows it) or any
 `i64` (`iota(n)` of a `const n`, `fill(args.length, "")`): the size is then
 known at run time, and a negative length is a panic.
+
+### Regular expressions
+
+A `RegExp` is written `/source/flags` (where an expression starts) or
+`RegExp(source, flags)`; the flags are `g`, `i`, `m`, `s` and `u`.
+`re.test(s)`, `s.search(re)` (a byte index, -1 if none), `s.replace(re,
+to)` (every match with `g`, else the first), `s.replaceAll(re, to)` (`g`
+required, as in TypeScript), `countMatches(s, re)` and `matches(s, re)`
+(the texts of the matches, left to right, without overlap). In `to`, `$&`
+is the match, `$1` to `$99` its groups, `` $` `` and `$'` the text before
+and after, `$$` a `$`; with a text as the pattern, `s.replace(a, b)`
+replaces the first `a` and the patterns of `b` hold too. The engine runs in
+linear time (that of the crate `regex`): a backreference or a look-around
+is refused, at compilation for a literal. `\d`, `\w` and `\s` are those of
+Unicode. A `RegExp` is neither printed nor compared.
+
+```isc
+action main(args: string[k]): i32 {
+    const dna = "GGCCaggGTAAAtttACCCTtaggGTAAA";
+    print(countMatches(dna, /agggtaaa|tttaccct/gi));
+    print("2024-11-03".replace(/(\d+)-(\d+)-(\d+)/, "$3/$2/$1"));
+    print(matches("a1b22c333", /\d+/g));
+    print(["abc", "a1"].map((w) => /^[a-z]+$/.test(w)));
+    return 0;
+}
+```
+
+```output
+3
+03/11/2024
+[1, 22, 333]
+[true, false]
+```
 
 ### Sorting and random numbers
 

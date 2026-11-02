@@ -12,3 +12,6 @@ libm = { version = "0.2", default-features = false }
 # interpreter and every target (the runtime gives `alloc` its allocator)
 num-bigint = { version = "0.4", default-features = false }
 num-traits = { version = "0.2", default-features = false }
+# regular expressions in linear time (D157): the engine of the crate `regex`,
+# without std
+regex-automata = { version = "0.4", default-features = false, features = ["alloc", "syntax", "meta", "nfa-pikevm", "nfa-backtrack", "hybrid", "dfa-onepass", "unicode", "perf-literal-substring", "perf-literal-multisubstring"] }

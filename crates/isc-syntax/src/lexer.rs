@@ -146,6 +146,8 @@ impl S {
 pub(crate) enum T {
     /// A `bigint` literal `123n`, `0xffn` (D156): its digits and radix.
     BigInt(String, u32),
+    /// A regular expression `/source/flags` (D157).
+    Regex(String, String),
     Int { value: u128, suffix: Option<Scalar> },
     Float { value: f64, value32: f32, suffix: Option<Scalar> },
     Str(String),
@@ -165,6 +167,7 @@ pub(crate) fn describe(t: &T) -> String {
         T::Int { value, .. } => format!("integer `{}`", value),
         T::Float { value, .. } => format!("float `{}`", value),
         T::BigInt(d, _) => format!("bigint `{}n`", d),
+        T::Regex(s, f) => format!("regular expression `/{}/{}`", s, f),
         T::Str(s) => format!("string {:?}", s),
         T::Ident(s) => format!("`{}`", s),
         T::Sym(s) => format!("`{}`", s.text()),
@@ -249,6 +252,50 @@ pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
         }
         let span = Span::new(file, line, col);
         let start = i;
+        // `/source/flags` where an expression starts (D157): after an
+        // operator, an opening bracket, a comma, `return`; else a division
+        let regex_here = c == '/'
+            && match toks.last().map(|t: &Tok| &t.t) {
+                None => true,
+                Some(T::Sym(S::RParen | S::RBracket | S::RBrace | S::TplClose)) => false,
+                Some(T::Sym(_)) => true,
+                Some(T::Ident(w)) => w == "return",
+                _ => false,
+            };
+        if regex_here {
+            let mut j = i + 1;
+            let mut class = false;
+            let mut src = String::new();
+            loop {
+                match chars.get(j) {
+                    None | Some('\n') => return Err(Diagnostic::new(span, "unterminated regular expression")),
+                    Some('\\') => {
+                        src.push('\\');
+                        if let Some(&d) = chars.get(j + 1) {
+                            src.push(d);
+                        }
+                        j += 2;
+                        continue;
+                    }
+                    Some('[') => class = true,
+                    Some(']') => class = false,
+                    Some('/') if !class => break,
+                    _ => {}
+                }
+                src.push(chars[j]);
+                j += 1;
+            }
+            j += 1;
+            let mut flags = String::new();
+            while j < chars.len() && chars[j].is_ascii_alphabetic() {
+                flags.push(chars[j]);
+                j += 1;
+            }
+            i = j;
+            col += (i - start) as u32;
+            toks.push(Tok { t: T::Regex(src, flags), span });
+            continue;
+        }
         let t = if c.is_ascii_digit() {
             lex_number(&chars, &mut i, span)?
         } else if c == '"' || c == '\'' {
