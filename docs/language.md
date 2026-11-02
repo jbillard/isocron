@@ -110,6 +110,50 @@ action main(args: string[k]): i32 {
 function name(param: Type, ...): Type { ... }
 function name<T extends Num, U>(param: Type, ...): Type { ... } // generic
 action name(param: Type, ...): Type { ... }
+type Name = A | B(Type, ...);              // a sum type (see "Sum types")
+type Name<T> = Type;                       // an alias
+const NAME = literal;                      // a constant
+const NAME: Type = value;
+```
+
+As in TypeScript, `type Name = Type;` gives a name to a type that is not a
+sum: a record, a tuple, an array, a function type, `Map<K, V>`, a scalar.
+The alias is the type itself, written out wherever its name is used; a size
+variable in it (`type Row = f64[n];`) becomes a size variable of the
+signature that uses it. A `const` of the top level is a value that any
+function can read; without a type it is a literal (or an array of literals)
+whose type is that of TypeScript's `number`, `i64` or `f64` (`const N = 3;`,
+`const DT = 0.01;`, `const NAMES = ["a", "b"];`), otherwise it takes one
+(`const ROOT2: f64 = Math.sqrt(2.0);`). A local variable of the same name
+hides it; a constant that depends on itself is an error. Both are exported
+and imported as functions are.
+
+```isc
+type Point = { x: f64, y: f64 };
+type Pair<T> = [T, T];
+
+const ORIGIN: Point = { x: 0.0, y: 0.0 };
+const STEPS = 3;
+
+function swap<T>(p: Pair<T>): Pair<T> {
+    const [a, b] = p;
+    return [b, a] as const;
+}
+
+function walk(p: Point, n: i64): Point {
+    return n == 0 ? p : walk({ x: p.x + 1.0, y: p.y * 2.0 + 1.0 }, n - 1);
+}
+
+action main(args: string[k]): i32 {
+    print(walk(ORIGIN, STEPS));
+    print(swap([1, 2] as const));
+    return 0;
+}
+```
+
+```output
+{x: 3, y: 7}
+(2, 1)
 ```
 
 Functions can call each other in any order. A call of a function that is not

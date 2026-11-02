@@ -2670,3 +2670,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   not a function exists (`const keys = ...; m.keys()`), as in TypeScript.
   Found on the way: reading a scalar part of a tuple after its parts that
   own memory were taken was refused by the memory check (D138); allowed.
+- **D159 — Type aliases and constants of the top level (2026-11-03).** Two
+  declarations of TypeScript that the programs of the Benchmarks Game
+  wanted. `type X<T> = <type>;`, where the type starts with `{`, `[`, `(`,
+  a built-in type, or a name followed by `<` or `[`, is an alias (else the
+  declaration is a sum type, as before: `type A = B;` is a sum with one
+  constructor). An alias is the type itself (TypeScript's structural
+  typing): it is replaced by its type everywhere before the checking, its
+  own names first resolved in its module (so an exported alias works
+  through `import`), and a size variable in it becomes one of the
+  signature that uses it; an alias that contains itself is an error
+  (a recursive type is a sum). `const X = v;` at the top level is a
+  function without parameters, called where `X` is read (inlined like any
+  non-recursive function; a local of the same name hides it). Its type is
+  written, or is that of its literal (`i64` and `f64` for TypeScript's
+  `number`, `string`, `boolean`, `bigint`, or an array of these): no
+  inference across declarations, which keeps the signatures independent of
+  the bodies. A constant that depends on itself is refused (it would never
+  end). The visitor of names now meets whole types too (`Visit::Type`).

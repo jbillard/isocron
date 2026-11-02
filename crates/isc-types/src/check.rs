@@ -208,6 +208,8 @@ struct Sig {
     name: String,
     span: Span,
     is_action: bool,
+    /// a constant of the top level (D159)
+    is_const: bool,
     generics: Vec<(String, Classes)>,
     syms: Vec<SymInfo>,
     param_names: Vec<(String, Span)>,
@@ -430,7 +432,7 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
             );
         }
     }
-    Ok(Sig { name: d.name.clone(), span: d.span, is_action: d.is_action, generics, syms, param_names, param_tys, ret })
+    Ok(Sig { name: d.name.clone(), span: d.span, is_action: d.is_action, is_const: d.is_const, generics, syms, param_names, param_tys, ret })
 }
 
 // ---------------------------------------------------------------------
@@ -1480,6 +1482,10 @@ impl<'g> FnCx<'g> {
         }
         if let Some(&id) = self.g.names.get(name) {
             let sig = &self.g.sigs[id];
+            // a constant: its value
+            if sig.is_const {
+                return self.check_call_fn(id, &[], span);
+            }
             if id >= self.g.first_extern {
                 return err(span, format!("the extern function `{}` cannot be used as a value", name));
             }
@@ -2928,6 +2934,14 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
             ast::Decl::Import(..) => {}
         }
     }
+    let mut imports: Imports = HashMap::new();
+    for (file, local, q) in &user.imported {
+        imports.entry(*file).or_default().insert(local.clone(), q.clone());
+    }
+    // the type aliases replaced (D159)
+    let mut expanded = user.clone();
+    expand_aliases(&mut expanded, &imports)?;
+    let user = &expanded;
     let mut merged = user.clone();
     let mut dropped: Vec<String> = Vec::new();
     for d in &prelude.decls {
@@ -2949,10 +2963,6 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
             K::Fn(ps, r) => ps.iter().any(|a| mentions(a, names)) || mentions(r, names),
             K::Scalar(_) | K::Str | K::BigInt | K::Unit => false,
         }
-    }
-    let mut imports: Imports = HashMap::new();
-    for (file, local, q) in &user.imported {
-        imports.entry(*file).or_default().insert(local.clone(), q.clone());
     }
     let (sums, heads, ctors) = check_type_decls(&merged, &imports)?;
     let mut decls: Vec<(&ast::FnDecl, bool)> = Vec::new();
@@ -3015,6 +3025,7 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
                 ret: e.ret.clone(),
                 modifiers: Vec::new(),
                 body: ast::Expr { kind: ast::ExprKind::Unit, span: e.span },
+                is_const: false,
             };
             let sig = sig_of(&decl, &heads, &imports)?;
             check_extern_sig(e, &sig)?;
@@ -3040,6 +3051,12 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
         return err(m.span, "`main` must be declared `action main(args: string[k]): i32`");
     }
     let recursive = recursive_fns(&fns);
+    // a constant computed from itself would never end (D159)
+    for (id, f) in fns.iter().enumerate() {
+        if recursive[id] && globals.sigs[id].is_const {
+            return err(f.span, format!("the constant `{}` depends on itself", f.name));
+        }
+    }
     Ok(TProgram { fns, main, sums: globals.sums, externs, recursive })
 }
 
@@ -3084,6 +3101,152 @@ fn check_extern_sig(e: &ast::ExternDecl, sig: &Sig) -> Result<()> {
                 e.name
             ),
         );
+    }
+    Ok(())
+}
+
+/// The type aliases `type X<T> = <type>;` (D159), replaced by their types
+/// everywhere, then removed: an alias is not a new type, as in TypeScript.
+/// The names in the body of an alias are first resolved in its own module;
+/// a size variable in it becomes one of the signature that uses it.
+fn expand_aliases(p: &mut ast::Program, imports: &Imports) -> Result<()> {
+    use ast::{TypeExpr, TypeKind as K, Visit};
+    struct Alias {
+        name: String,
+        generics: Vec<String>,
+        body: TypeExpr,
+    }
+    let mut aliases: Vec<Alias> = Vec::new();
+    let types: HashSet<String> = p.decls.iter().filter_map(|d| if let ast::Decl::Type(t) = d { Some(t.name.clone()) } else { None }).collect();
+    // the declared name a name `n` stands for in the decl `owner`
+    let resolve = |n: &str, owner: &str, file: u32, known: &dyn Fn(&str) -> bool| -> Option<String> {
+        if let Some(m) = module_of(owner).filter(|_| !n.contains('.')) {
+            let q = format!("{}.{}", m, n);
+            if known(&q) {
+                return Some(q);
+            }
+        }
+        if let Some(q) = imports.get(&file).and_then(|i| i.get(n)) {
+            if known(q) {
+                return Some(q.clone());
+            }
+        }
+        known(n).then(|| n.to_string())
+    };
+    for d in &p.decls {
+        if let ast::Decl::Type(t) = d {
+            if let Some(body) = &t.alias {
+                if !t.generics.iter().all(|g| g.class.is_none()) {
+                    return err(t.span, "the parameters of a `type` take no class");
+                }
+                let generics: Vec<String> = t.generics.iter().map(|g| g.name.clone()).collect();
+                let mut body = body.clone();
+                // the names of its body, resolved in its module
+                let mut prog = ast::Program { decls: vec![ast::Decl::Type(ast::TypeDecl { alias: None, variants: vec![ast::Variant { name: String::new(), fields: vec![body.clone()], span: t.span }], ..t.clone() })], exports: Vec::new(), imported: Vec::new() };
+                let owner = t.name.clone();
+                ast::visit_names(&mut prog, &mut |v, sp| {
+                    if let Visit::Type(TypeExpr { kind: K::Named(n, _), .. }) = v {
+                        if !generics.contains(n) {
+                            if let Some(q) = resolve(n, &owner, sp.file, &|x| types.contains(x)) {
+                                *n = q;
+                            }
+                        }
+                    }
+                    Ok(())
+                })?;
+                if let ast::Decl::Type(td) = prog.decls.pop().unwrap() {
+                    body = td.variants.into_iter().next().unwrap().fields.pop().unwrap();
+                }
+                aliases.push(Alias { name: t.name.clone(), generics, body });
+            }
+        }
+    }
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    // an alias that contains itself, used or not
+    fn contains(t: &TypeExpr, target: &str, aliases: &[Alias], depth: usize) -> bool {
+        match &t.kind {
+            K::Named(n, args) => {
+                if n == target {
+                    return true;
+                }
+                if depth < 64 {
+                    if let Some(a) = aliases.iter().find(|a| &a.name == n) {
+                        if contains(&a.body, target, aliases, depth + 1) {
+                            return true;
+                        }
+                    }
+                }
+                args.iter().any(|x| contains(x, target, aliases, depth))
+            }
+            K::Array(_, e) | K::BoundedArray(_, _, e) => contains(e, target, aliases, depth),
+            K::Tuple(ts) => ts.iter().any(|x| contains(x, target, aliases, depth)),
+            K::Record(fs) => fs.iter().any(|(_, x)| contains(x, target, aliases, depth)),
+            K::Fn(ps, r) => ps.iter().any(|x| contains(x, target, aliases, depth)) || contains(r, target, aliases, depth),
+            _ => false,
+        }
+    }
+    for a in &aliases {
+        if contains(&a.body, &a.name, &aliases, 0) {
+            return err(a.body.span, format!("the type alias `{}` contains itself: a recursive type is a sum type (`type List = Nil | Cons(i64, List);`)", a.name));
+        }
+    }
+    fn subst(t: &TypeExpr, gs: &[String], args: &[TypeExpr]) -> TypeExpr {
+        let kind = match &t.kind {
+            K::Named(n, a) if a.is_empty() && gs.contains(n) => return args[gs.iter().position(|g| g == n).unwrap()].clone(),
+            K::Named(n, a) => K::Named(n.clone(), a.iter().map(|x| subst(x, gs, args)).collect()),
+            K::Array(sz, e) => K::Array(sz.clone(), Box::new(subst(e, gs, args))),
+            K::BoundedArray(k, sz, e) => K::BoundedArray(k.clone(), sz.clone(), Box::new(subst(e, gs, args))),
+            K::Tuple(ts) => K::Tuple(ts.iter().map(|x| subst(x, gs, args)).collect()),
+            K::Record(fs) => K::Record(fs.iter().map(|(n, x)| (n.clone(), subst(x, gs, args))).collect()),
+            K::Fn(ps, r) => K::Fn(ps.iter().map(|x| subst(x, gs, args)).collect(), Box::new(subst(r, gs, args))),
+            k => k.clone(),
+        };
+        TypeExpr { kind, span: t.span }
+    }
+    let alias_names: HashSet<String> = aliases.iter().map(|a| a.name.clone()).collect();
+    let decls = std::mem::take(&mut p.decls);
+    for d in decls {
+        if matches!(&d, ast::Decl::Type(t) if t.alias.is_some()) {
+            continue;
+        }
+        let (owner, generics): (String, Vec<String>) = match &d {
+            ast::Decl::Fn(f) => (f.name.clone(), f.generics.iter().map(|g| g.name.clone()).collect()),
+            ast::Decl::Type(t) => (t.name.clone(), t.generics.iter().map(|g| g.name.clone()).collect()),
+            ast::Decl::Extern(e) => (e.name.clone(), Vec::new()),
+            ast::Decl::Import(..) => (String::new(), Vec::new()),
+        };
+        let mut prog = ast::Program { decls: vec![d], exports: Vec::new(), imported: Vec::new() };
+        let mut steps = 0usize;
+        ast::visit_names(&mut prog, &mut |v, sp| {
+            let Visit::Type(t) = v else {
+                return Ok(());
+            };
+            loop {
+                let K::Named(n, args) = &t.kind else {
+                    return Ok(());
+                };
+                if generics.contains(n) {
+                    return Ok(());
+                }
+                let Some(q) = resolve(n, &owner, sp.file, &|x| alias_names.contains(x)) else {
+                    return Ok(());
+                };
+                let a = aliases.iter().find(|a| a.name == q).unwrap();
+                if args.len() != a.generics.len() {
+                    return err(sp, format!("the type `{}` takes {} type argument(s), but {} were given", n, a.generics.len(), args.len()));
+                }
+                steps += 1;
+                if steps > 10_000 {
+                    return err(sp, format!("the type alias `{}` contains itself", n));
+                }
+                let mut x = subst(&a.body, &a.generics, args);
+                x.span = sp;
+                *t = x;
+            }
+        })?;
+        p.decls.push(prog.decls.pop().unwrap());
     }
     Ok(())
 }

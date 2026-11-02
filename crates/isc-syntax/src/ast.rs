@@ -96,6 +96,9 @@ pub struct FnDecl {
     pub ret: TypeExpr,
     pub modifiers: Vec<(Modifier, Span)>,
     pub body: Expr,
+    /// `const NAME = value;` at the top level (D159): a function without
+    /// parameters, called where its name is used
+    pub is_const: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +122,8 @@ pub struct TypeDecl {
     pub span: Span,
     pub generics: Vec<Generic>,
     pub variants: Vec<Variant>,
+    /// `type X<T> = <type>;`: an alias (no variants, D159)
+    pub alias: Option<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -301,7 +306,14 @@ pub enum PatternKind {
 /// A visit of the names that can refer to a declaration: variables and
 /// functions (`Var`), types (`Named`), constructors in patterns. The
 /// modules use it to resolve the qualified names `m.x` (D150).
-pub type NameVisitor<'a> = dyn FnMut(&mut String, Span) -> crate::Result<()> + 'a;
+pub type NameVisitor<'a> = dyn FnMut(Visit, Span) -> crate::Result<()> + 'a;
+
+/// What `visit_names` meets: a name, or a whole type before its parts (to
+/// replace a type alias, D159).
+pub enum Visit<'v> {
+    Name(&'v mut String),
+    Type(&'v mut TypeExpr),
+}
 
 pub fn visit_names(p: &mut Program, f: &mut NameVisitor) -> crate::Result<()> {
     for d in p.decls.iter_mut() {
@@ -329,6 +341,9 @@ pub fn visit_names(p: &mut Program, f: &mut NameVisitor) -> crate::Result<()> {
                         visit_type(x, f)?;
                     }
                 }
+                if let Some(a) = &mut t.alias {
+                    visit_type(a, f)?;
+                }
             }
             Decl::Import(_) => {}
         }
@@ -337,9 +352,11 @@ pub fn visit_names(p: &mut Program, f: &mut NameVisitor) -> crate::Result<()> {
 }
 
 fn visit_type(t: &mut TypeExpr, f: &mut NameVisitor) -> crate::Result<()> {
+    let sp = t.span;
+    f(Visit::Type(t), sp)?;
     match &mut t.kind {
         TypeKind::Named(n, args) => {
-            f(n, t.span)?;
+            f(Visit::Name(n), t.span)?;
             for a in args.iter_mut() {
                 visit_type(a, f)?;
             }
@@ -368,9 +385,9 @@ fn visit_type(t: &mut TypeExpr, f: &mut NameVisitor) -> crate::Result<()> {
 
 fn visit_pattern(p: &mut Pattern, f: &mut NameVisitor) -> crate::Result<()> {
     match &mut p.kind {
-        PatternKind::Var(n) => f(n, p.span)?,
+        PatternKind::Var(n) => f(Visit::Name(n), p.span)?,
         PatternKind::Ctor(n, ps) => {
-            f(n, p.span)?;
+            f(Visit::Name(n), p.span)?;
             for x in ps.iter_mut() {
                 visit_pattern(x, f)?;
             }
@@ -392,7 +409,7 @@ fn visit_pattern(p: &mut Pattern, f: &mut NameVisitor) -> crate::Result<()> {
 
 fn visit_expr(e: &mut Expr, f: &mut NameVisitor) -> crate::Result<()> {
     match &mut e.kind {
-        ExprKind::Var(n) => f(n, e.span)?,
+        ExprKind::Var(n) => f(Visit::Name(n), e.span)?,
         ExprKind::Int { .. } | ExprKind::Float { .. } | ExprKind::BigInt { .. } | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Unit | ExprKind::OpFn(_) => {}
         ExprKind::Tuple(es) | ExprKind::Array(es) => {
             for x in es.iter_mut() {

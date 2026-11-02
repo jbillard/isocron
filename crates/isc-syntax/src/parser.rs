@@ -13,6 +13,11 @@ const RESERVED: &[&str] = &[
     "true", "false", "size", "with", "fn",
 ];
 
+/// Is `w` the name of a scalar type (`f64`, `u8`, ...)?
+fn isc_scalar(w: &str) -> bool {
+    crate::lexer::Scalar::from_name(w).is_some()
+}
+
 /// One statement of a body, before its lowering to the AST.
 enum Stm {
     Const(Pattern, Option<TypeExpr>, Expr, Span),
@@ -158,8 +163,10 @@ impl P {
                 Decl::Type(self.type_decl()?)
             } else if self.is_word("declare") {
                 Decl::Extern(self.declare()?)
-            } else if self.is_word("let") || self.is_word("const") {
-                return self.error("a program declares functions, actions and types; `const` goes inside a body");
+            } else if self.is_word("const") {
+                Decl::Fn(self.top_const()?)
+            } else if self.is_word("let") {
+                return self.error("a program declares functions, actions, types and constants (`const`); `let` goes inside a body");
             } else {
                 return self.error(format!(
                     "expected a declaration (`function`, `action`, `type`, `declare function` or `import`), found {}",
@@ -292,7 +299,7 @@ impl P {
         }
         let body = self.lower(&stmts, is_action, lb);
         self.in_action = saved;
-        Ok(FnDecl { is_action, name, span, generics, params, ret, modifiers, body: body? })
+        Ok(FnDecl { is_action, name, span, generics, params, ret, modifiers, body: body?, is_const: false })
     }
 
     fn type_decl(&mut self) -> Result<TypeDecl> {
@@ -300,6 +307,22 @@ impl P {
         let (name, span) = self.ident("a type name")?;
         let generics = self.generics()?;
         self.expect(S::Assign)?;
+        // `type X = { ... }`, `[A, B]`, `f64[n]`, `(x: T) => U`, `Map<K, V>`:
+        // an alias, as in TypeScript (D159); else the constructors of a sum
+        let alias = match self.peek().clone() {
+            T::Sym(S::LBrace | S::LBracket | S::LParen) => true,
+            T::Ident(w) => {
+                matches!(w.as_str(), "string" | "boolean" | "void" | "bigint")
+                    || isc_scalar(&w)
+                    || matches!(self.peek_at(1), T::Sym(S::Lt | S::LBracket))
+            }
+            _ => false,
+        };
+        if alias {
+            let ty = self.ty()?;
+            self.expect(S::Semi)?;
+            return Ok(TypeDecl { name, span, generics, variants: Vec::new(), alias: Some(ty) });
+        }
         self.eat(S::Bar);
         let mut variants = Vec::new();
         loop {
@@ -320,7 +343,48 @@ impl P {
             }
         }
         self.expect(S::Semi)?;
-        Ok(TypeDecl { name, span, generics, variants })
+        Ok(TypeDecl { name, span, generics, variants, alias: None })
+    }
+
+    /// `const NAME: T = value;` at the top level (D159). Without a type, the
+    /// value is a literal (or an array of literals), whose type is that of
+    /// TypeScript's number for `i64` and `f64`.
+    fn top_const(&mut self) -> Result<FnDecl> {
+        self.expect_word("const")?;
+        let (name, span) = self.ident("a constant name")?;
+        let ty = if self.eat(S::Colon) { Some(self.ty()?) } else { None };
+        self.expect(S::Assign)?;
+        let value = self.expr()?;
+        self.expect(S::Semi)?;
+        fn lit_ty(e: &Expr) -> Option<TypeKind> {
+            Some(match &e.kind {
+                ExprKind::Int { suffix: Some(s), .. } | ExprKind::Float { suffix: Some(s), .. } => TypeKind::Scalar(*s),
+                ExprKind::Int { .. } => TypeKind::Scalar(crate::lexer::Scalar::I64),
+                ExprKind::Float { .. } => TypeKind::Scalar(crate::lexer::Scalar::F64),
+                ExprKind::Str(_) => TypeKind::Str,
+                ExprKind::BigInt { .. } => TypeKind::BigInt,
+                ExprKind::Bool(_) => TypeKind::Scalar(crate::lexer::Scalar::Bool),
+                ExprKind::Unary(_, x) => return lit_ty(x),
+                _ => return None,
+            })
+        }
+        let ret = match ty {
+            Some(t) => t,
+            None => {
+                let kind = match &value.kind {
+                    ExprKind::Array(es) if !es.is_empty() => match lit_ty(&es[0]) {
+                        Some(k) => TypeKind::Array(SizeExpr::Lit(es.len() as u64, span), Box::new(TypeExpr { kind: k, span })),
+                        None => return Err(Diagnostic::new(span, format!("give `{}` its type: `const {}: T = ...` (only a literal, or an array of literals, has a type of its own)", name, name))),
+                    },
+                    _ => match lit_ty(&value) {
+                        Some(k) => k,
+                        None => return Err(Diagnostic::new(span, format!("give `{}` its type: `const {}: T = ...` (only a literal, or an array of literals, has a type of its own)", name, name))),
+                    },
+                };
+                TypeExpr { kind, span }
+            }
+        };
+        Ok(FnDecl { is_action: false, name, span, generics: Vec::new(), params: Vec::new(), ret, modifiers: Vec::new(), body: value, is_const: true })
     }
 
     fn declare(&mut self) -> Result<ExternDecl> {

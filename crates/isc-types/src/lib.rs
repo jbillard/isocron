@@ -42,6 +42,7 @@ pub fn check_parsed(user: &isc_syntax::ast::Program) -> Result<tast::TProgram, D
             span: sp,
             generics: vec![g("K"), g("V")],
             variants: vec![Variant { name: MAP_CTOR.into(), fields: Vec::new(), span: sp }],
+            alias: None,
         }),
     );
     check::check_program(user, &prelude)

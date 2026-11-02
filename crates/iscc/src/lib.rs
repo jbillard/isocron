@@ -170,7 +170,10 @@ fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mut is
         }
         // `alias.x`: the declaration `x` of the module, if it exports it
         let modules = &st.modules;
-        isc_syntax::ast::visit_names(prog, &mut |n: &mut String, sp: Span| {
+        isc_syntax::ast::visit_names(prog, &mut |v: isc_syntax::ast::Visit, sp: Span| {
+            let isc_syntax::ast::Visit::Name(n) = v else {
+                return Ok(());
+            };
             if let Some((a, x)) = n.split_once('.') {
                 if let Some((_, m, spec)) = aliases.iter().find(|(al, _, _)| al == a) {
                     let md = &modules[*m];
