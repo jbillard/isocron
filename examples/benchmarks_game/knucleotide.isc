@@ -1,0 +1,65 @@
+// k-nucleotide (The Computer Language Benchmarks Game): the sequence THREE
+// of a FASTA file on the standard input; the frequencies of its 1-mers and
+// 2-mers (by decreasing frequency, then by name), then the number of
+// occurrences of 5 given k-mers. A k-mer is a number, 2 bits per base, so
+// that its counting is a sort of integers (countBy, a Map).
+// usage: knucleotide < input.fasta
+const BASES = "ACGT";
+const QUERIES = ["GGT", "GGTA", "GGTATT", "GGTATTTTAATT", "GGTATTTTAATTTATAGT"];
+
+// A, C, G, T (either case) as 0, 1, 2, 3
+function code(b: u8): i64 {
+    const c = b | 32u8;
+    return c == 97u8 ? 0 : (c == 99u8 ? 1 : (c == 103u8 ? 2 : 3));
+}
+
+// the k-mer at position i
+function kmer(codes: i64[n], i: i64, k: i64): i64 {
+    return fold(iota(k), 0, (c, j) => c * 4 + codes[i + j]);
+}
+
+function name(c: i64, k: i64): string {
+    const bases = bytes(BASES);
+    return stringOf(map(iota(k), (j) => bases[(c >> (2 * (k - 1 - j))) & 3]));
+}
+
+function frequencies(codes: i64[n], k: i64): string {
+    const counts = countBy(iota(n - k + 1), (i) => kmer(codes, i, k));
+    // by name (the order of the numbers), then by decreasing count, stably
+    const sorted = sortBy(sortBy(counts.entries(), (e) => {
+        const [c, m] = e;
+        return c;
+    }), (e) => {
+        const [c, m] = e;
+        return -m;
+    });
+    const total = f64(n - k + 1);
+    return sorted.map((e) => {
+        const [c, m] = e;
+        return `${name(c, k)} ${(100.0 * f64(m) / total).toFixed(3)}`;
+    }).join("\n");
+}
+
+function occurrences(codes: i64[n], query: string): string {
+    const q = map(bytes(query), code);
+    const k = q.length;
+    const target = kmer(q, 0, k);
+    const m = count(iota(n - k + 1), (i) => kmer(codes, i, k) == target);
+    return `${m}\t${query}`;
+}
+
+action main(args: string[k]): i32 {
+    const lines = readStdinLines();
+    const heads = filter(iota(lines.length), (i) => lines[i].startsWith(">"));
+    const three = filter(heads, (i) => lines[i].startsWith(">THREE"))[0];
+    const after = filter(heads, (i) => i > three);
+    const end = after.length > 0 ? after[0] : lines.length;
+    const sequence = lines.slice(three + 1, end).join("");
+    const codes = map(bytes(sequence), code);
+    print(frequencies(codes, 1));
+    print("");
+    print(frequencies(codes, 2));
+    print("");
+    print(QUERIES.map((q) => occurrences(codes, q)).join("\n"));
+    return 0;
+}

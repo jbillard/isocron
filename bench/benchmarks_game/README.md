@@ -1,17 +1,19 @@
 # The Benchmarks Game, in a Docker image of ours
 
-The fastest programs of [The Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/)
-in C, C++, Rust and Go, against the Isocron programs of
-`examples/benchmarks_game/` (DECISIONS D142). Their code is built and run
+The ten programs of [The Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/)
+written in Isocron (`examples/benchmarks_game/`, DECISIONS D160), checked
+byte for byte against the reference outputs of the Benchmarks Game, and the
+fastest programs of mandelbrot in C, C++, Rust and Go against them
+(DECISIONS D142). Their code is built and run
 only inside the image `isocron-bg`, without network; nothing is installed on
 the host.
 
 | Step | Command |
 | --- | --- |
-| download their sources (`programs.txt`) into `upstream/` | `./fetch.sh` |
+| download their sources (`programs.txt`) and the reference outputs and inputs of the ten programs (`references.txt`) into `upstream/` | `./fetch.sh` (`--offline`: the archive already in `build/`) |
 | build the image (Debian trixie, gcc/g++ 14.2, Rust 1.84.1, Go 1.24, iscc of the host) | `./image.sh` |
 | build every program in both modes into `bin/<mode>/` | `./run.sh build` |
-| check the outputs (N = 200 against their reference, N = 16000 against Isocron) | `./run.sh check` |
+| check the outputs: the ten Isocron programs against the references (`references.txt`: the argument and the input of each), the others at N = 200 against their reference and N = 16000 against Isocron | `./run.sh check` |
 | rough timing (lowest of 3, not the protocol of SPEC section 14) | `docker run --rm --network none --cpuset-cpus=0-3 --user "$(id -u):$(id -g)" -v "$PWD:/work" isocron-bg bash /work/quick_time.sh 4` |
 
 `./image.sh` must run again after each `cargo build --release` of iscc.
@@ -32,7 +34,8 @@ the host.
 * C++ #4 rounds its number of rows up to a multiple of the number of CPUs:
   at N = 200 its output differs on a machine of more than 8 CPUs.
   N = 16000, their size, is the check: there every program gives the same
-  bytes as Isocron in both modes.
+  bytes as Isocron in both modes (`check_programs.sh` prints the
+  difference at N = 200 and does not count it).
 * Threads: C (OpenMP) reads `OMP_NUM_THREADS`, Rust (rayon)
   `RAYON_NUM_THREADS`, Go `GOMAXPROCS`, Isocron `ISC_THREADS`; C++ #4
   starts one thread per CPU of the machine whatever the cpuset.
@@ -41,5 +44,5 @@ the host.
 
 The measurement with the protocol of SPEC section 14 (`bench/machine.sh
 apply parallel`, the container in the slice `isc-bench.slice` with
-`--cgroup-parent` and `--cpuset-cpus=$ISC_BENCH_CPUS`), and the other
-programs (spectral-norm, n-body, fannkuch-redux, binary-trees).
+`--cgroup-parent` and `--cpuset-cpus=$ISC_BENCH_CPUS`), and the programs of
+the other languages for the nine benchmarks other than mandelbrot.

@@ -1,0 +1,62 @@
+// fasta (The Computer Language Benchmarks Game): three DNA sequences in the
+// FASTA format, 60 bases per line: 2N bases repeating the ALU sequence, 3N
+// and 5N bases drawn at random (a linear congruential generator, seed 42)
+// with given frequencies. The generator has the full period IM, so the
+// whole sequence of its values is computed once and the t-th draw is read
+// from it: every base, and every byte of the output, is computed in
+// parallel.
+// usage: fasta <N>
+const IM = 139968;
+const IA = 3877;
+const IC = 29573;
+
+const ALU = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA";
+
+const IUB = "acgtBDHKMNRSVWY";
+const IUB_P = [0.27, 0.12, 0.12, 0.27, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02];
+
+const HOMO = "acgt";
+const HOMO_P = [0.3029549426680, 0.1979883004921, 0.1975473066391, 0.3015094502008];
+
+// the values of the generator: values[t] after t draws from 42
+function generator(): i64[k] {
+    return fold(iota(IM - 1), fill(IM, 42), (v, t) => v.with(t + 1, (v[t] * IA + IC) % IM));
+}
+
+// the sums of the probabilities, in order, as the reference adds them
+function cumulative(p: f64[n]): f64[n] {
+    return map(iota(n), (i) => fold(iota(i + 1), 0.0, (c, j) => c + p[j]));
+}
+
+// the bytes of m bases in lines of 60, `base(i)` the base i
+function lines(m: i64, base: (i: i64) => u8): u8[k] {
+    const length = m + (m + 59) / 60;
+    return map(iota(length), (q) => q % 61 == 60 || q == length - 1 ? 10u8 : base(q / 61 * 60 + q % 61));
+}
+
+// the base of the draw t: the first whose cumulative probability exceeds it
+function pick(values: i64[v], cp: f64[n], codes: u8[n], t: i64): u8 {
+    const r = f64(values[t % IM]) / f64(IM);
+    return codes[Math.min(count(cp, (c) => c <= r), n - 1)];
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: fasta <N>");
+        return 2;
+    }
+    const n = parseI64(args[0]);
+    const alu = bytes(ALU);
+    print(">ONE Homo sapiens alu");
+    printBytes(lines(2 * n, (i) => alu[i % alu.length]));
+    const values = generator();
+    const iub = cumulative(IUB_P);
+    const iubCodes = bytes(IUB);
+    print(">TWO IUB ambiguity codes");
+    printBytes(lines(3 * n, (i) => pick(values, iub, iubCodes, 1 + i)));
+    const homo = cumulative(HOMO_P);
+    const homoCodes = bytes(HOMO);
+    print(">THREE Homo sapiens frequency");
+    printBytes(lines(5 * n, (i) => pick(values, homo, homoCodes, 1 + 3 * n + i)));
+    return 0;
+}

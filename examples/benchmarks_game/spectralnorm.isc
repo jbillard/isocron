@@ -1,0 +1,40 @@
+// spectral-norm (The Computer Language Benchmarks Game): the spectral norm
+// of the infinite matrix A, a(i, j) = 1 / ((i + j)(i + j + 1) / 2 + i + 1),
+// on its first N rows and columns, by 10 steps of the power method on
+// A^T A, printed with 9 decimals.
+// usage: spectralnorm <N>
+function a(i: i64, j: i64): f64 {
+    return 1.0 / f64((i + j) * (i + j + 1) / 2 + i + 1);
+}
+
+// A u and A^T u: each row in parallel, each sum in a fixed order
+function times(u: f64[n]): f64[n] {
+    return map(iota(n), (i) => sum(map(iota(n), (j) => a(i, j) * u[j])));
+}
+
+function timesTransposed(u: f64[n]): f64[n] {
+    return map(iota(n), (i) => sum(map(iota(n), (j) => a(j, i) * u[j])));
+}
+
+function timesAtA(u: f64[n]): f64[n] {
+    return timesTransposed(times(u));
+}
+
+// u, then v = A^T A u and u = A^T A v, 10 times
+function power(u: f64[n], steps: i64): [f64[n], f64[n]] {
+    const v = timesAtA(u);
+    const next = timesAtA(v);
+    if (steps == 1) return [next, v] as const;
+    return power(next, steps - 1);
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: spectralnorm <N>");
+        return 2;
+    }
+    const n = parseI64(args[0]);
+    const [u, v] = power(fill(n, 1.0), 10);
+    print(Math.sqrt(dot(u, v) / dot(v, v)).toFixed(9));
+    return 0;
+}

@@ -1,0 +1,31 @@
+// regex-redux (The Computer Language Benchmarks Game): a FASTA file on the
+// standard input; its headers and newlines removed, the number of matches
+// of 9 patterns (with their reverse complements), then 5 replacements in a
+// row; the lengths of the input, of the cleaned text, of the result. The
+// program of the reference written in TypeScript, nearly word for word.
+// usage: regexredux < input.fasta
+const VARIANTS = [
+    "agggtaaa|tttaccct",
+    "[cgt]gggtaaa|tttaccc[acg]",
+    "a[act]ggtaaa|tttacc[agt]t",
+    "ag[act]gtaaa|tttac[agt]ct",
+    "agg[act]taaa|ttta[agt]cct",
+    "aggg[acg]aaa|ttt[cgt]ccct",
+    "agggt[cgt]aa|tt[acg]accct",
+    "agggta[cgt]a|t[acg]taccct",
+    "agggtaa[cgt]|[acg]ttaccct",
+];
+
+action main(args: string[k]): i32 {
+    const data = readStdinText();
+    const cleaned = data.replace(/^>.*\n|\n/mg, "");
+    print(VARIANTS.map((v) => `${v} ${countMatches(cleaned, RegExp(v, "ig"))}`).join("\n"));
+    const result = cleaned
+        .replace(/tHa[Nt]/g, "<4>")
+        .replace(/aND|caN|Ha[DS]|WaS/g, "<3>")
+        .replace(/a[NSt]|BY/g, "<2>")
+        .replace(/<[^>]*>/g, "|")
+        .replace(/\|[^|][^|]*\|/g, "-");
+    print(`\n${data.length}\n${cleaned.length}\n${result.length}`);
+    return 0;
+}

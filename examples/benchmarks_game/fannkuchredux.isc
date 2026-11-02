@@ -1,0 +1,62 @@
+// fannkuch-redux (The Computer Language Benchmarks Game): for every
+// permutation of 1..N, the number of flips (reversals of the first p[0] + 1
+// elements) until 1 comes first; the checksum (the counts summed with
+// alternating signs, in the order of the reference programs) and the
+// largest count. A permutation is a u64 of 4-bit digits, the element i in
+// bits 4i to 4i + 3; the permutation of rank r is computed from r (its
+// factorial digits), so that every permutation is counted in parallel.
+// usage: fannkuchredux <N>
+function digit(p: u64, i: i64): u64 {
+    return (p >> u64(4 * i)) & 15u64;
+}
+
+// the first k + 1 digits of p rotated left by d
+function rotate(p: u64, k: i64, d: i64): u64 {
+    const width = u64(4 * (k + 1));
+    const mask = (1u64 << width) - 1u64;
+    const low = p & mask;
+    const rotated = ((low >> u64(4 * d)) | (low << (width - u64(4 * d)))) & mask;
+    return d == 0 ? p : (p ^ low) | rotated;
+}
+
+// the permutation of rank r, in the order of the reference programs: for
+// i from n - 1 down to 1, the first i + 1 elements rotated left by the
+// digit r / i! (`fact` is i!), r then taken modulo i!
+function permutation(n: i64, r: i64, i: i64, fact: i64, p: u64): u64 {
+    if (i == 0) return p;
+    const f = fact / i;
+    return permutation(n, r % fact, i - 1, f, rotate(p, i, r / fact));
+}
+
+// the first k + 1 digits of p reversed
+function reverse(p: u64, a: i64, b: i64): u64 {
+    if (a >= b) return p;
+    const x = digit(p, a) ^ digit(p, b);
+    return reverse(p ^ (x << u64(4 * a)) ^ (x << u64(4 * b)), a + 1, b - 1);
+}
+
+function flips(p: u64, count: i64): i64 {
+    const first = i64(digit(p, 0));
+    if (first == 0) return count;
+    return flips(reverse(p, 0, first), count + 1);
+}
+
+function factorial(n: i64): i64 {
+    return n <= 1 ? 1 : n * factorial(n - 1);
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: fannkuchredux <N>");
+        return 2;
+    }
+    const n = parseI64(args[0]);
+    const identity = fold(iota(n), 0u64, (p, i) => p | (u64(i) << u64(4 * i)));
+    const total = factorial(n);
+    const counts = (r: i64) => flips(permutation(n, r, n - 1, factorial(n - 1), identity), 0);
+    const checksum = sum(map(iota(total), (r) => r % 2 == 0 ? counts(r) : -counts(r)));
+    const most = max(map(iota(total), counts));
+    print(checksum);
+    print(`Pfannkuchen(${n}) = ${most}`);
+    return 0;
+}

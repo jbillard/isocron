@@ -1,0 +1,45 @@
+// pidigits (The Computer Language Benchmarks Game): the first N digits of
+// pi by the unbounded spigot algorithm of Gibbons, on integers of any size
+// (bigint), 10 digits per line followed by a tab and their count.
+// usage: pidigits <N>
+type State = { num: bigint, acc: bigint, den: bigint };
+
+function nextTerm(s: State, k: i64): State {
+    const k2 = BigInt(2 * k + 1);
+    return { num: s.num * BigInt(k), acc: (s.acc + s.num * 2n) * k2, den: s.den * k2 };
+}
+
+function digitAt(s: State, nth: bigint): bigint {
+    return (s.num * nth + s.acc) / s.den;
+}
+
+function eliminate(s: State, d: bigint): State {
+    return { num: s.num * 10n, acc: (s.acc - s.den * d) * 10n, den: s.den };
+}
+
+// the digits from the count i, `line` the digits of the current line
+action digits(n: i64, i: i64, k: i64, s: State, line: string): void {
+    if (i == n) {
+        if (line.length > 0) print(`${line.padEnd(10)}\t:${n}`);
+        return;
+    }
+    const t = nextTerm(s, k);
+    if (t.num > t.acc) return digits(n, i, k + 1, t, line);
+    const d = digitAt(t, 3n);
+    if (d != digitAt(t, 4n)) return digits(n, i, k + 1, t, line);
+    const full = line + String(d);
+    if (full.length == 10) {
+        print(`${full}\t:${i + 1}`);
+        return digits(n, i + 1, k + 1, eliminate(t, d), "");
+    }
+    return digits(n, i + 1, k + 1, eliminate(t, d), full);
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: pidigits <N>");
+        return 2;
+    }
+    digits(parseI64(args[0]), 0, 1, { num: 1n, acc: 0n, den: 1n }, "");
+    return 0;
+}

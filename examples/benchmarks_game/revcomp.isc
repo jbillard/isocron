@@ -1,0 +1,46 @@
+// reverse-complement (The Computer Language Benchmarks Game): a FASTA file
+// on the standard input; each sequence written back with its header, its
+// bases reversed and complemented (A and T, C and G, and the IUB codes),
+// in lines of 60. Every byte of the output is computed in parallel.
+// usage: revcomp < input.fasta
+const FROM = "ACGTUMRWSYKVHDBNacgtumrwsykvhdbn";
+const TO = "TGCAAKYWSRMBDHVNTGCAAKYWSRMBDHVN";
+
+// the complement of each byte
+function complements(): u8[256] {
+    const from = bytes(FROM);
+    const to = bytes(TO);
+    return fold(iota(32), map(iota(256), (c) => u8(c)), (t, i) => t.with(i64(from[i]), to[i]));
+}
+
+// the bytes of m bases in lines of 60, `base(i)` the base i
+function lines(m: i64, base: (i: i64) => u8): u8[k] {
+    const length = m + (m + 59) / 60;
+    return map(iota(length), (q) => q % 61 == 60 || q == length - 1 ? 10u8 : base(q / 61 * 60 + q % 61));
+}
+
+// the position of the first newline from i
+function lineEnd(data: u8[n], i: i64): i64 {
+    if (data[i] == 10u8) return i;
+    return lineEnd(data, i + 1);
+}
+
+// the record r: its header line, then its bases reverse-complemented
+action records(data: u8[n], heads: i64[h], table: u8[256], r: i64): void {
+    if (r == h) return;
+    const start = heads[r];
+    const end = r + 1 < h ? heads[r + 1] : n;
+    const eol = lineEnd(data, start);
+    printBytes(data.slice(start, eol + 1));
+    const bases = data.slice(eol + 1, end).filter((b) => b != 10u8);
+    const m = bases.length;
+    printBytes(lines(m, (i) => table[i64(bases[m - 1 - i])]));
+    return records(data, heads, table, r + 1);
+}
+
+action main(args: string[k]): i32 {
+    const data = readStdin();
+    const heads = filter(iota(data.length), (i) => data[i] == 62u8);
+    records(data, heads, complements(), 0);
+    return 0;
+}

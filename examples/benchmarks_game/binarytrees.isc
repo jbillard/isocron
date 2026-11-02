@@ -1,0 +1,42 @@
+// binary-trees (The Computer Language Benchmarks Game): complete binary
+// trees built bottom-up and checked by counting their nodes; a tree of
+// depth N + 1 (the "stretch" tree), then for each depth d = 4, 6, ..., N
+// 2^(N - d + 4) trees of depth d, while a tree of depth N lives on.
+// usage: binarytrees <N>
+type Tree = Leaf | Node(Tree, Tree);
+
+const MIN_DEPTH = 4;
+
+function bottomUp(depth: i64): Tree {
+    if (depth == 0) return Leaf;
+    return Node(bottomUp(depth - 1), bottomUp(depth - 1));
+}
+
+function check(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Node(l, r) => 1 + check(l) + check(r),
+    };
+}
+
+// the trees of one depth, built and checked in parallel
+function line(maxDepth: i64, depth: i64): string {
+    const iterations = 1 << (maxDepth - depth + MIN_DEPTH);
+    const total = sum(map(iota(iterations), (i) => check(bottomUp(depth))));
+    return `${iterations}\t trees of depth ${depth}\t check: ${total}`;
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: binarytrees <N>");
+        return 2;
+    }
+    const maxDepth = Math.max(MIN_DEPTH + 2, parseI64(args[0]));
+    const stretch = maxDepth + 1;
+    print(`stretch tree of depth ${stretch}\t check: ${check(bottomUp(stretch))}`);
+    const longLived = bottomUp(maxDepth);
+    const depths = map(iota((maxDepth - MIN_DEPTH) / 2 + 1), (k) => MIN_DEPTH + 2 * k);
+    print(map(depths, (d) => line(maxDepth, d)).join("\n"));
+    print(`long lived tree of depth ${maxDepth}\t check: ${check(longLived)}`);
+    return 0;
+}

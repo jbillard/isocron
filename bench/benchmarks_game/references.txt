@@ -1,0 +1,14 @@
+# The ten programs of the Benchmarks Game: the argument and the input of
+# their reference output (upstream/<benchmark>/<N>_out, fetch.sh), which the
+# Isocron program of examples/benchmarks_game/<benchmark>.isc must print
+# byte for byte (check_programs.sh).
+binarytrees     10
+fannkuchredux   7
+fasta           1000
+knucleotide     1000  knucleotide-input1000.txt
+mandelbrot      200
+nbody           1000
+pidigits        27
+regexredux      1000  regexredux-input1000.txt
+revcomp         1000  revcomp-input1000.txt
+spectralnorm    100

@@ -2688,3 +2688,23 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   inference across declarations, which keeps the signatures independent of
   the bodies. A constant that depends on itself is refused (it would never
   end). The visitor of names now meets whole types too (`Visit::Type`).
+- **D160 — The ten programs of the Benchmarks Game (2026-11-03).**
+  `examples/benchmarks_game/` holds binarytrees, fannkuchredux, fasta,
+  knucleotide, mandelbrot, nbody, pidigits, regexredux, revcomp and
+  spectralnorm, written as a TypeScript programmer would, in the
+  functional style of the language, each in parallel where the problem
+  allows: fasta reads the t-th draw of its generator from the table of its
+  full period (IM values), so every byte is computed independently;
+  fannkuch-redux computes the permutation of each rank (4-bit digits of a
+  `u64`); k-nucleotide counts k-mers coded 2 bits per base with `countBy`;
+  regexredux is the TypeScript program of the reference nearly word for
+  word; revcomp and fasta compute every byte of their output by its
+  position. `bench/benchmarks_game/references.txt` gives the argument and
+  the input of the reference output of each (`fetch.sh` extracts them);
+  `check_programs.sh` compares, in the Docker image and in both modes, the
+  output of each Isocron program to the reference byte for byte: all ten
+  are the same. `tests/benchmarks_game.rs` checks them in `cargo test`
+  against implementations written in the test (their reference outputs
+  stay outside the repository), interpreted, compiled and under Valgrind,
+  the three readers of FASTA on the output of our fasta. Their measurement
+  and the programs of the other languages for nine of them are later work.
