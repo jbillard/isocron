@@ -190,8 +190,8 @@ runs: `const f = c ? g : h;`. No closure is built: the condition is
 computed once, where `f` is bound, and each call of `f` becomes a branch
 between `g` and `h`. A `match` can choose a function too, one per arm
 (the first arm that matches); the function may read the variables of its
-pattern when they are at its first level (`Scale(c) => (v) => v * c`).
-The memory report lists each such choice.
+pattern, at any depth (`Scale(c) => (v) => v * c`, `Cons(a, Cons(b, _)) =>
+(v) => v * a + b`). The memory report lists each such choice.
 
 ```isc
 function double(v: f64): f64 {
@@ -257,7 +257,76 @@ action main(args: string[k]): i32 {
 [1, 4]
 ```
 
-A function stored in a value of a sum type is not compiled yet.
+A value of a sum type can hold a function in a field of its own
+(`Apply((x: f64) => f64)`, `Option<(x: f64) => f64>`, a recursive type).
+The value holds a small code: the index of its function among those the
+program stores in that field, and a call is a branch on the code, as for
+an array of functions. Such a function cannot read a variable or a size of
+its context (a compile error says so: store that value in another field);
+a value that holds a function is neither printed nor compared.
+
+```isc
+type Op = Apply((x: f64) => f64) | Const(f64);
+
+type Pipe = End | Step((x: f64) => f64, Pipe);
+
+function run(op: Op, x: f64): f64 {
+    return match (op) {
+        Apply(f) => f(x),
+        Const(c) => c,
+    };
+}
+
+function through(p: Pipe, x: f64): f64 {
+    return match (p) {
+        End => x,
+        Step(f, rest) => through(rest, f(x)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const ops = [Apply((v) => v + 1.0), Const(7.0), Apply(Math.sqrt)];
+    print(ops.map((o) => run(o, 16.0)));
+    print(through(Step((v) => v * 2.0, Step(Math.sqrt, End)), 8.0));
+    return 0;
+}
+```
+
+```output
+[17, 7, 4]
+4
+```
+
+### Functions returned by functions
+
+A function can return a function. The function that returns it is inlined
+where it is called, like any function that is not recursive; the values
+the returned function reads (the arguments, the `const`s) are computed
+once, where it is made, not at each call:
+
+```isc
+function adder(k: f64): (x: f64) => f64 {
+    return (x) => x + k;
+}
+
+function compose(f: (x: f64) => f64, g: (x: f64) => f64): (x: f64) => f64 {
+    return (x) => g(f(x));
+}
+
+action main(args: string[k]): i32 {
+    const add3 = adder(3.0);
+    print(add3(1.5));
+    print([1.0, 2.0, 3.0].map(compose(adder(1.0), (x) => x * 2.0)));
+    return 0;
+}
+```
+
+```output
+4.5
+[4, 6, 8]
+```
+
+A recursive function cannot return a function: it is not inlined.
 
 ### Recursion
 
@@ -268,8 +337,9 @@ uses the stack; a recursion deeper than the stack can hold is a panic,
 `stack overflow: too many nested calls of ...`. The memory report lists each
 call and says which ones are loops. A recursive function may take a
 function: it is compiled once for each function it is given (a function of
-the program, an operator, a primitive or a lambda); the values a lambda
-reads from its context become parameters of that compiled function.
+the program, an operator, a primitive or a lambda); the values and the
+sizes a lambda reads from its context become parameters of that compiled
+function.
 
 ```isc
 function fib(n: i64): i64 {
@@ -1014,7 +1084,10 @@ action main(args: string[k]): i32 {
 [[3, 9], [4, 16]]
 ```
 
-The elements of an array of arrays are scalars.
+The elements of an array of arrays are scalars or strings, and its rows have
+the same length: a `map` whose function returns rows of different lengths
+(`lines(t).map((l) => l.split(","))` on lines with different numbers of
+fields) is a panic, `size mismatch`.
 
 ### Reading and updating
 
@@ -1814,14 +1887,14 @@ action main(args: string[k]): i32 {
 The specification describes more than the current compiler implements. Not
 available yet (the compiler reports `... is not supported in the POC`):
 
-* a recursive function given a lambda that reads a size of its context, a
-  function chosen by a `match` that reads a variable bound below the first
-  level of its pattern, a function in a sum type, a function that returns
-  a function;
-* arrays of arrays of strings (an array of arrays holds scalars);
-* private declarations in modules, and modules in subdirectories.
+* a recursive function that returns a function (D152);
+* a function stored in a value of a sum type that reads a variable or a
+  size of its context, and a lambda given to a recursive function that
+  reads a function of its context (D153);
+* arrays of arrays whose rows have different lengths, and arrays of arrays
+  of arrays (D154).
 
-`require_vectorized` is outside the scope of the specification.
+`@requireVectorized` is outside the scope of the specification.
 
 ## The `iscc` command
 

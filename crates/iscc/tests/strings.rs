@@ -285,3 +285,48 @@ fn template_literals() {
     let e = error("action main(args: string[k]): i32 {\n    print(`a ${1 + 2`);\n    return 0;\n}\n");
     assert!(e.contains("unterminated template literal"), "{}", e);
 }
+
+const ROWS: &str = r#"function shout(r: string[n]): string[n] {
+    return r.map((s) => s + "!");
+}
+
+action main(args: string[k]): i32 {
+    const rows = lines(args[0]).map((l) => l.split(","));
+    print(rows);
+    print(rows[1][2]);
+    print(rows.map((r) => r.join("-")));
+    const lit = [["a", "b"], ["c", args[1]]];
+    print(lit);
+    print(lit == [["a", "b"], ["c", "x"]]);
+    const loud = lit.map((r) => shout(r));
+    print(loud);
+    const same = rows.map((r) => r);
+    print(same[0]);
+    const firsts = rows.map((r) => r[0]);
+    print(firsts);
+    print(map(iota(2), (i) => fill(3, toString(i))));
+    const z = "z";
+    print(fill(2, z));
+    print(z);
+    return 0;
+}
+"#;
+
+/// Arrays of arrays of strings (D154): rows in one block, each string owned
+/// by the array; a row of another length is a panic (an array of arrays is
+/// regular); `fill` of a string copies it into each element.
+#[test]
+fn arrays_of_arrays_of_strings() {
+    agree(
+        ROWS,
+        "str_rows",
+        &["a,b,c\nd,e,f", "x"],
+        "[[a, b, c], [d, e, f]]\nf\n[a-b-c, d-e-f]\n[[a, b], [c, x]]\ntrue\n[[a!, b!], [c!, x!]]\n[a, b, c]\n[a, d]\n[[0, 0, 0], [1, 1, 1]]\n[z, z]\nz\n",
+    );
+    let m = interp_panic(ROWS, &["a,b,c\nd,e", "x"]);
+    assert_eq!(m, "panic at line 6, column 51: size mismatch: 2 != 3");
+    let bin = compile(ROWS, "str_rows_ragged");
+    let r = run_bin(&bin, &["a,b,c\nd,e", "x"]);
+    assert_eq!(r.code, 101);
+    assert!(r.stderr.contains("panic at line 6, column 51: size mismatch: 2 != 3"), "{}", r.stderr);
+}

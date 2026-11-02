@@ -125,7 +125,24 @@ pub struct Lower<'p> {
     choices: Vec<Span>,
     /// The functions with `allowReassoc` met (D109).
     reassoc_fns: Vec<(String, Span)>,
+    /// The values a function returned by a function reads (its arguments,
+    /// its `const`s), computed once into these variables around the
+    /// expression being lowered (D152).
+    hoisted: Vec<(VarId, Expr)>,
+    /// The functions stored in each slot of a function of a sum type
+    /// (D153): a value holds the code of its function, its index here.
+    /// `stored` grows as the constructors are lowered; `known` is the
+    /// table of the previous pass, which the calls branch on.
+    stored: Vec<(SlotKey, Vec<(StoredKey, FuncVal<'p>)>)>,
+    known: Vec<(SlotKey, Vec<(StoredKey, FuncVal<'p>)>)>,
+    stored_grew: bool,
 }
+
+/// A slot of a function in a sum type: (type, its arguments, variant,
+/// field) (D153).
+type SlotKey = (u32, Vec<Ty>, u32, u32);
+/// A function stored in a sum type, which reads nothing of its context.
+type StoredKey = (FnKey, Vec<Ty>);
 
 fn allows_reassoc(f: &tast::TFn) -> bool {
     f.requires.iter().any(|(m, _)| *m == isc_syntax::ast::Modifier::AllowReassoc)
@@ -152,6 +169,79 @@ impl<'p> Lower<'p> {
             required: Vec::new(),
             choices: Vec::new(),
             reassoc_fns: Vec::new(),
+            hoisted: Vec::new(),
+            stored: Vec::new(),
+            known: Vec::new(),
+            stored_grew: false,
+        }
+    }
+
+    /// The code of a function stored in the slot `key` of a value (D153):
+    /// a literal, or a choice of codes for a function chosen at run time.
+    fn stored_code(&mut self, key: &SlotKey, fv: FuncVal<'p>, span: Span) -> R<Expr> {
+        let u32t = Type::Int(IntKind::U32);
+        match fv {
+            FuncVal::Choice { cond, then, other } => {
+                let a = self.stored_code(key, *then, span)?;
+                let b = self.stored_code(key, *other, span)?;
+                Ok(Expr::new(ExprKind::If(cond, Box::new(a), Box::new(b)), u32t, span))
+            }
+            fv => {
+                let sk = match &fv {
+                    FuncVal::Lambda { env, .. } if captured_vars(&fv).is_empty() && captured_sizes(&fv).is_empty() => {
+                        fn_key(&fv).map(|k| (k, (*env.type_args).clone()))
+                    }
+                    FuncVal::Lambda { .. } => None,
+                    _ => fn_key(&fv).map(|k| (k, Vec::new())),
+                };
+                let Some(sk) = sk else {
+                    return Err(Diagnostic::new(
+                        span,
+                        "a function stored in a value of a sum type cannot read a variable or a size of its context (D153): store that value in another field",
+                    ));
+                };
+                let pos = match self.stored.iter().position(|(k, _)| k == key) {
+                    Some(p) => p,
+                    None => {
+                        self.stored.push((key.clone(), Vec::new()));
+                        self.stored.len() - 1
+                    }
+                };
+                let table = &mut self.stored[pos].1;
+                let code = match table.iter().position(|(k, _)| *k == sk) {
+                    Some(c) => c,
+                    None => {
+                        table.push((sk, fv));
+                        self.stored_grew = true;
+                        table.len() - 1
+                    }
+                };
+                Ok(Expr::lit(Lit::Int(code as i64), u32t, span))
+            }
+        }
+    }
+
+    /// The function held by a value whose code is `code` (D153): a branch
+    /// on the code among the functions stored in that slot.
+    fn stored_fn(&mut self, key: &SlotKey, code: Expr, span: Span) -> FuncVal<'p> {
+        let fns = self.known.iter().find(|(k, _)| k == key).map(|(_, t)| t.iter().map(|(_, f)| f.clone()).collect()).unwrap_or_default();
+        self.choices.push(span);
+        FuncVal::Table { fns, index: Box::new(code) }
+    }
+
+    /// The slot key and the type of each field of a variant whose type is
+    /// a function (D153).
+    fn fn_fields(&self, env: &Env, ty: &Ty, variant: u32) -> Vec<Option<SlotKey>> {
+        match self.conc(env, ty) {
+            Ty::Sum { id, args, .. } => {
+                let def = &self.p.sums[id as usize];
+                def.payload(variant as usize, &args)
+                    .iter()
+                    .enumerate()
+                    .map(|(k, t)| is_fn_ty(&self.conc(env, t)).then(|| (id, args.clone(), variant, k as u32)))
+                    .collect()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -198,7 +288,24 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
-    let mut l = Lower::new(p);
+    // the functions stored in values of sum types (D153): their tables are
+    // complete when a pass stores no function the previous one did not
+    let mut known = Vec::new();
+    for _ in 0..16 {
+        let mut l = Lower::new(p);
+        l.known = std::mem::take(&mut known);
+        let start = l.known.clone();
+        l.stored = start;
+        let out = lower_pass(p, &mut l)?;
+        if !l.stored_grew {
+            return Ok(out);
+        }
+        known = std::mem::take(&mut l.stored);
+    }
+    Err(Diagnostic::new(p.fns[p.main].span, "the functions stored in values do not reach a fixed set (an internal limit of 16 passes)"))
+}
+
+fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
     let main = &p.fns[p.main];
     let args = l.new_var("args", Type::Array(Box::new(Type::Str)));
     let mut env = Env {
@@ -221,9 +328,21 @@ pub fn lower(p: &TProgram) -> R<Program> {
         }
     }
     crate::requirements::check(p, &required)?;
-    let fns = l.fns.into_iter().map(|f| f.expect("a recursive function lowered")).collect();
-    let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p) })
+    let fns = std::mem::take(&mut l.fns).into_iter().map(|f| f.expect("a recursive function lowered")).collect();
+    let recs = std::mem::take(&mut *l.recs.borrow_mut()).into_iter().map(|r| r.expect("a recursive type laid out")).collect();
+    Ok(Program {
+        args,
+        drop_args: false,
+        copy_reasons: std::mem::take(&mut l.copy_reasons),
+        fns,
+        recs,
+        body,
+        vars: std::mem::take(&mut l.vars),
+        shapes: std::mem::take(&mut l.shapes),
+        choices: std::mem::take(&mut l.choices),
+        reassoc_fns: std::mem::take(&mut l.reassoc_fns),
+        externs: extern_fns(p),
+    })
 }
 
 /// The positions in the prelude replaced by `at`.
@@ -261,24 +380,51 @@ fn fn_key(f: &FuncVal) -> Option<FnKey> {
         FuncVal::Prim(p) => Some(FnKey::Prim(*p)),
         FuncVal::Op(o) => Some(FnKey::Op(*o)),
         FuncVal::Lambda { params, body, env } => {
-            // its captured locals become parameters of the specialization
-            // (D131): it needs only values of the caller, no size
+            // its captured locals and the sizes it reads become parameters
+            // of the specialization (D131, D152): values of the caller
             let mut bound: HashSet<LocalId> = params.iter().copied().collect();
             let mut free = Vec::new();
-            let mut sizes = false;
+            let mut sizes = Vec::new();
             free_locals(body, &mut bound, &mut free, &mut sizes);
             let all_values = free.iter().all(|l| matches!(env.locals.get(l), Some(Binding::Var(_))));
-            (!sizes && all_values).then_some(FnKey::Lambda(*body as *const TExpr))
+            let all_sizes = sizes.iter().all(|s| env.sizes.contains_key(s));
+            (all_sizes && all_values).then_some(FnKey::Lambda(*body as *const TExpr))
         }
         _ => None,
     }
 }
 
+/// The size variables of a type.
+fn ty_syms(t: &Ty, out: &mut Vec<SymId>) {
+    match t {
+        Ty::Array(sz, e) => {
+            if let Size::Poly(p) = sz {
+                for s in p.syms() {
+                    if !out.contains(&s) {
+                        out.push(s);
+                    }
+                }
+            }
+            ty_syms(e, out);
+        }
+        Ty::Tuple(ts) => ts.iter().for_each(|x| ty_syms(x, out)),
+        Ty::Record(fs) => fs.iter().for_each(|(_, x)| ty_syms(x, out)),
+        Ty::Fn(ps, r) => {
+            ps.iter().for_each(|x| ty_syms(x, out));
+            ty_syms(r, out);
+        }
+        Ty::Sum { args, .. } => args.iter().for_each(|x| ty_syms(x, out)),
+        _ => {}
+    }
+}
+
 /// The locals of enclosing scopes an expression reads, in their order of
-/// first reading; `sizes` set if it reads a size of an enclosing scope.
-fn free_locals(e: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, sizes: &mut bool) {
+/// first reading; `sizes`: the size variables it reads (in a value or in a
+/// type), all of an enclosing scope (a lambda declares none).
+fn free_locals(e: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, sizes: &mut Vec<SymId>) {
     use TExprKind as K;
-    let go = |x: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, sizes: &mut bool| free_locals(x, bound, out, sizes);
+    let go = |x: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, sizes: &mut Vec<SymId>| free_locals(x, bound, out, sizes);
+    ty_syms(&e.ty, sizes);
     match &e.kind {
         K::Lit(_) | K::FnRef { .. } | K::PrimRef(_) | K::OpRef(_) => {}
         K::Local(l) => {
@@ -286,7 +432,13 @@ fn free_locals(e: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, 
                 out.push(*l);
             }
         }
-        K::SizeVal(_) => *sizes = true,
+        K::SizeVal(p) => {
+            for s in p.syms() {
+                if !sizes.contains(&s) {
+                    sizes.push(s);
+                }
+            }
+        }
         K::Tuple(es) | K::Array(es) => es.iter().for_each(|x| go(x, bound, out, sizes)),
         K::Construct { args, .. } => args.iter().for_each(|x| go(x, bound, out, sizes)),
         K::Field(x, _) | K::Unary(_, x) => go(x, bound, out, sizes),
@@ -350,7 +502,7 @@ fn captured_vars(f: &FuncVal) -> Vec<(LocalId, VarId)> {
     let FuncVal::Lambda { params, body, env } = f else { return Vec::new() };
     let mut bound: HashSet<LocalId> = params.iter().copied().collect();
     let mut free = Vec::new();
-    let mut sizes = false;
+    let mut sizes = Vec::new();
     free_locals(body, &mut bound, &mut free, &mut sizes);
     free.into_iter()
         .filter_map(|l| match env.locals.get(&l) {
@@ -358,6 +510,17 @@ fn captured_vars(f: &FuncVal) -> Vec<(LocalId, VarId)> {
             _ => None,
         })
         .collect()
+}
+
+/// The sizes of its context a function given to a recursive function reads
+/// (D152), with their values in the caller.
+fn captured_sizes(f: &FuncVal) -> Vec<(SymId, Expr)> {
+    let FuncVal::Lambda { params, body, env } = f else { return Vec::new() };
+    let mut bound: HashSet<LocalId> = params.iter().copied().collect();
+    let mut free = Vec::new();
+    let mut sizes = Vec::new();
+    free_locals(body, &mut bound, &mut free, &mut sizes);
+    sizes.into_iter().filter_map(|s| env.sizes.get(&s).map(|x| (s, x.clone()))).collect()
 }
 
 fn pat_locals(p: &TPat, out: &mut HashSet<LocalId>) {
@@ -383,7 +546,12 @@ impl<'p> Lower<'p> {
             let mut mine = Vec::new();
             for t in def.payload(k, args) {
                 mine.push(comps.len() as u32);
-                comps.push(self.ty(env, &t, span)?);
+                // a function: its code (D153)
+                if is_fn_ty(&self.conc(env, &t)) {
+                    comps.push(Type::Int(IntKind::U32));
+                } else {
+                    comps.push(self.ty(env, &t, span)?);
+                }
             }
             slots.push(mine);
         }
@@ -682,6 +850,19 @@ impl<'p> Lower<'p> {
     }
 
     fn expr(&mut self, env: &mut Env<'p>, e: &'p TExpr) -> R<Expr> {
+        let mark = self.hoisted.len();
+        let mut out = self.expr_here(env, e)?;
+        // the values read by the functions returned by functions met in `e`
+        // (D152): computed once, around `e`
+        while self.hoisted.len() > mark {
+            let (v, x) = self.hoisted.pop().unwrap();
+            let sp = x.span;
+            out = self.let_(v, x, out, false, sp);
+        }
+        Ok(out)
+    }
+
+    fn expr_here(&mut self, env: &mut Env<'p>, e: &'p TExpr) -> R<Expr> {
         let span = e.span;
         match &e.kind {
             TExprKind::Lit(l) => self.lit(env, l, &e.ty, span),
@@ -771,8 +952,15 @@ impl<'p> Lower<'p> {
                 let (comps, slots) = self.sum_of(env, &e.ty, span)?;
                 let mut out: Vec<Expr> = comps.iter().map(|t| Expr::new(ExprKind::Zero, t.clone(), span)).collect();
                 out[0] = Expr::lit(Lit::Int(*variant as i64), Type::Int(IntKind::U32), span);
-                for (a, &slot) in args.iter().zip(slots[*variant as usize].iter()) {
-                    out[slot as usize] = self.expr(env, a)?;
+                let fields = self.fn_fields(env, &e.ty, *variant);
+                for (k, (a, &slot)) in args.iter().zip(slots[*variant as usize].iter()).enumerate() {
+                    out[slot as usize] = match fields.get(k).cloned().flatten() {
+                        Some(key) => {
+                            let fv = self.fn_value(env, a)?;
+                            self.stored_code(&key, fv, a.span)?
+                        }
+                        None => self.expr(env, a)?,
+                    };
                 }
                 if self.is_rec(env, &e.ty) {
                     // a new node on the heap (D103)
@@ -1225,12 +1413,27 @@ impl<'p> Lower<'p> {
                 let (comps, slots) = self.sum_of(env, ty, span)?;
                 let rec = self.is_rec(env, ty);
                 let t = self.new_var("sum", val.ty.clone());
-                for (p, &slot) in subs.iter().zip(slots[*variant as usize].iter()).rev() {
+                let fields = self.fn_fields(env, ty, *variant);
+                for (k, (p, &slot)) in subs.iter().zip(slots[*variant as usize].iter()).enumerate().rev() {
                     let mut base = Expr::var(t, val.ty.clone(), span);
                     if rec {
                         base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone()), span);
                     }
                     let pr = Expr::new(ExprKind::Proj(Box::new(base), slot), comps[slot as usize].clone(), span);
+                    // a function: a branch on its code at each call (D153)
+                    if let Some(key) = fields.get(k).cloned().flatten() {
+                        match p {
+                            TPat::Bind(l) => {
+                                // its code: a field of the value, read at
+                                // each call
+                                let fv = self.stored_fn(&key, pr, span);
+                                env.locals.insert(*l, Binding::Func(fv));
+                            }
+                            TPat::Wild(_) => {}
+                            _ => return poc(span, "a pattern on a function stored in a value"),
+                        }
+                        continue;
+                    }
                     q.push_front((p, pr));
                 }
                 let body = self.bind_list(env, q, stmt, k)?;
@@ -1337,49 +1540,37 @@ impl<'p> Lower<'p> {
                         fvs.push(self.fn_value(env, body)?);
                         continue;
                     }
-                    // the variables of the pattern (one level: the value, or
-                    // the components of a tuple or of a variant, each a
-                    // variable or `_`), read from the value whatever its
-                    // variant (the slots of the others are zero), bound where
-                    // the function is bound (D132)
+                    // the variables of the pattern, at any depth, read from
+                    // the value whatever its variant (the slots of the
+                    // others are zero), bound where the function is bound
+                    // (D132, D152)
                     let mut env2 = env.clone();
                     let mut bvals: Vec<(VarId, Expr)> = Vec::new();
-                    let mut bind = |me: &mut Self, env2: &mut Env<'p>, l: LocalId, x: Expr| {
-                        let name = me.tfn(env2).locals[l as usize].name.clone();
-                        let v = me.new_var(&name, x.ty.clone());
+                    let mut found = Vec::new();
+                    self.pattern_values(env, pat, val.clone(), e.span, false, &mut found)?;
+                    let test = tests.last().cloned().flatten();
+                    for (l, x, below, slot) in found {
+                        // a part read through a node of a recursive type
+                        // below the first level exists only when the arm
+                        // matches: read it then, else its zero
+                        let x = match (&test, below) {
+                            (Some(c), true) => {
+                                let t = x.ty.clone();
+                                let sp = x.span;
+                                Expr::new(ExprKind::If(Box::new(c.clone()), Box::new(x), Box::new(Expr::new(ExprKind::Zero, t.clone(), sp))), t, sp)
+                            }
+                            _ => x,
+                        };
+                        // a function stored in the value (D153)
+                        if let Some(key) = slot {
+                            let fv = self.stored_fn(&key, x, e.span);
+                            env2.locals.insert(l, Binding::Func(fv));
+                            continue;
+                        }
+                        let name = self.tfn(&env2).locals[l as usize].name.clone();
+                        let v = self.new_var(&name, x.ty.clone());
                         env2.locals.insert(l, Binding::Var(v));
                         bvals.push((v, x));
-                    };
-                    let flat = |ps: &[TPat]| ps.iter().all(|q| matches!(q, TPat::Bind(_) | TPat::Wild(_) | TPat::Lit(..)));
-                    match pat {
-                        TPat::Bind(l) => bind(self, &mut env2, *l, val.clone()),
-                        TPat::Tuple(ps, _) if flat(ps) => {
-                            let ts = match &val.ty {
-                                Type::Tuple(ts) => ts.clone(),
-                                _ => return internal(e.span, "a tuple pattern on a value that is not a tuple"),
-                            };
-                            for (k, q) in ps.iter().enumerate() {
-                                if let TPat::Bind(l) = q {
-                                    let pr = Expr::new(ExprKind::Proj(Box::new(val.clone()), k as u32), ts[k].clone(), e.span);
-                                    bind(self, &mut env2, *l, pr);
-                                }
-                            }
-                        }
-                        TPat::Ctor { variant, subs, ty, .. } if flat(subs) => {
-                            let (comps, slots) = self.sum_of(env, ty, e.span)?;
-                            let rec = self.is_rec(env, ty);
-                            for (q, &slot) in subs.iter().zip(slots[*variant as usize].iter()) {
-                                if let TPat::Bind(l) = q {
-                                    let mut base = val.clone();
-                                    if rec {
-                                        base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone()), e.span);
-                                    }
-                                    let pr = Expr::new(ExprKind::Proj(Box::new(base), slot), comps[slot as usize].clone(), e.span);
-                                    bind(self, &mut env2, *l, pr);
-                                }
-                            }
-                        }
-                        _ => return poc(body.span, "a function chosen by `match` in an arm whose pattern binds variables below its first level"),
                     }
                     let inner = self.fn_value(&mut env2, body)?;
                     fvs.push(FuncVal::Bound { binds: bvals, inner: Box::new(inner) });
@@ -1397,7 +1588,132 @@ impl<'p> Lower<'p> {
                 self.choices.push(e.span);
                 Ok(acc)
             }
+            // a function returned by a function (D152): the callee is
+            // inlined, its arguments and its `const`s computed once
+            TExprKind::Call { callee: Callee::Fn { id, type_args }, args, size_checks } if !self.p.recursive[*id] && size_checks.is_empty() => {
+                let ta: Vec<Ty> = type_args.iter().map(|t| self.conc(env, t)).collect();
+                let a = self.args(env, args)?;
+                let (mut env2, lets, _, size_params) = self.callee_env_full(*id, ta, a, e.span);
+                self.hoisted.extend(lets);
+                // a size is positive or zero (SPEC section 4)
+                for k in size_params {
+                    let unit = Expr::lit(Lit::Unit, Type::Unit, e.span);
+                    let check = Expr::new(ExprKind::CheckNonNegative(Box::new(k), Box::new(unit)), Type::Unit, e.span);
+                    let v = self.new_var("_", Type::Unit);
+                    self.hoisted.push((v, check));
+                }
+                let f = &self.p.fns[*id];
+                self.fn_value(&mut env2, &f.body)
+            }
+            TExprKind::Call { callee: Callee::Fn { id, .. }, .. } if self.p.recursive[*id] => {
+                poc(e.span, "a function returned by a recursive function (SPEC section 11)")
+            }
+            TExprKind::Block(stmts, last) => {
+                let mut env2 = env.clone();
+                for st in stmts.iter() {
+                    match st {
+                        TStmt::Let(pat, v) if holds_fn(&v.ty) => match pat {
+                            TPat::Bind(l) => {
+                                let fv = self.fn_value(&mut env2, v)?;
+                                env2.locals.insert(*l, Binding::Func(fv));
+                            }
+                            TPat::Wild(_) => {}
+                            _ => return poc(v.span, "destructuring a structure of functions in a function that returns a function"),
+                        },
+                        TStmt::Let(pat, v) => {
+                            let init = self.expr(&mut env2, v)?;
+                            self.hoist_pattern(&mut env2, pat, init, v.span)?;
+                        }
+                        TStmt::Expr(v) => return poc(v.span, "a statement in a function that returns a function"),
+                    }
+                }
+                self.fn_value(&mut env2, last)
+            }
             _ => poc(e.span, "a function computed by an expression"),
+        }
+    }
+
+    /// The variables of a pattern and the parts of `val` they name, at any
+    /// depth (D152): projections of tuples and of the slots of variants.
+    /// `below`: the value is read through a node of a recursive type that
+    /// may be absent (a part of a part).
+    #[allow(clippy::type_complexity)]
+    fn pattern_values(&mut self, env: &Env<'p>, pat: &'p TPat, val: Expr, span: Span, below: bool, out: &mut Vec<(LocalId, Expr, bool, Option<SlotKey>)>) -> R<()> {
+        self.pattern_values_in(env, pat, val, span, below, None, out)
+    }
+
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    fn pattern_values_in(
+        &mut self,
+        env: &Env<'p>,
+        pat: &'p TPat,
+        val: Expr,
+        span: Span,
+        below: bool,
+        slot: Option<SlotKey>,
+        out: &mut Vec<(LocalId, Expr, bool, Option<SlotKey>)>,
+    ) -> R<()> {
+        match pat {
+            TPat::Bind(l) => out.push((*l, val, below, slot)),
+            TPat::Wild(_) | TPat::Lit(..) => {}
+            TPat::Tuple(ps, _) => {
+                let ts = match &val.ty {
+                    Type::Tuple(ts) => ts.clone(),
+                    _ => return internal(span, "a tuple pattern on a value that is not a tuple"),
+                };
+                for (k, q) in ps.iter().enumerate() {
+                    let pr = Expr::new(ExprKind::Proj(Box::new(val.clone()), k as u32), ts[k].clone(), span);
+                    self.pattern_values_in(env, q, pr, span, below, None, out)?;
+                }
+            }
+            TPat::Ctor { variant, subs, ty, .. } => {
+                let (comps, slots) = self.sum_of(env, ty, span)?;
+                let fields = self.fn_fields(env, ty, *variant);
+                let mut base = val;
+                let mut below = below;
+                if self.is_rec(env, ty) {
+                    // the matched value itself is a node; a part of it may
+                    // be the zero of another variant
+                    below = below || !matches!(base.kind, ExprKind::Var(..));
+                    base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone()), span);
+                }
+                for (k, (q, &slot)) in subs.iter().zip(slots[*variant as usize].iter()).enumerate() {
+                    let pr = Expr::new(ExprKind::Proj(Box::new(base.clone()), slot), comps[slot as usize].clone(), span);
+                    let key = fields.get(k).cloned().flatten();
+                    self.pattern_values_in(env, q, pr, span, below, key, out)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The variables of a `const` of a function that returns a function
+    /// (D152): computed once, hoisted; a variable or a tuple of variables.
+    fn hoist_pattern(&mut self, env: &mut Env<'p>, pat: &'p TPat, init: Expr, span: Span) -> R<()> {
+        match pat {
+            TPat::Wild(_) => Ok(()),
+            TPat::Bind(l) => {
+                let name = self.tfn(env).locals[*l as usize].name.clone();
+                let v = self.new_var(&name, init.ty.clone());
+                env.locals.insert(*l, Binding::Var(v));
+                self.hoisted.push((v, init));
+                Ok(())
+            }
+            TPat::Tuple(ps, _) => {
+                let ts = match &init.ty {
+                    Type::Tuple(ts) => ts.clone(),
+                    _ => return internal(span, "a tuple pattern on a value that is not a tuple"),
+                };
+                let t = self.new_var("t", init.ty.clone());
+                let tty = init.ty.clone();
+                self.hoisted.push((t, init));
+                for (k, q) in ps.iter().enumerate() {
+                    let pr = Expr::new(ExprKind::Proj(Box::new(Expr::var(t, tty.clone(), span)), k as u32), ts[k].clone(), span);
+                    self.hoist_pattern(env, q, pr, span)?;
+                }
+                Ok(())
+            }
+            TPat::Lit(..) | TPat::Ctor { .. } => poc(span, "this pattern in a function that returns a function"),
         }
     }
 
@@ -1452,6 +1768,8 @@ impl<'p> Lower<'p> {
             // the function at a run-time index: the index checked (the
             // bounds of the array: `iota(n)[index]`, fused, no array), then a
             // branch per function (D114)
+            // no function stored in this slot (yet, or ever): unreachable
+            FuncVal::Table { fns, .. } if fns.is_empty() => Ok(Expr::new(ExprKind::Zero, ret.clone(), span)),
             FuncVal::Table { fns, index } => {
                 let n = fns.len() as i64;
                 let i64t = Type::Int(IntKind::I64);
@@ -1588,6 +1906,48 @@ impl<'p> Lower<'p> {
             return self.call_recursive(id, type_args, args, span);
         }
         let f = &self.p.fns[id];
+        let (env, lets, pvars, size_params) = self.callee_env_full(id, type_args, args, span);
+        let mut env = env;
+        let mut body = self.expr(&mut env, &f.body)?;
+        // a size is positive or zero (SPEC section 4)
+        for k in size_params.into_iter().rev() {
+            let ty = body.ty.clone();
+            body = Expr::new(ExprKind::CheckNonNegative(Box::new(k), Box::new(body)), ty, span);
+        }
+        for &i in checks.iter().rev() {
+            if let (Ty::Array(Size::Poly(p), _), Some((v, t))) = (&f.param_tys[i], &pvars[i]) {
+                let d = self.size(&env, p, span)?;
+                let actual =
+                    Expr::new(ExprKind::Len(Box::new(Expr::var(*v, t.clone(), span))), Type::Int(IntKind::I64), span);
+                let ty = body.ty.clone();
+                body = Expr::new(ExprKind::CheckSize(Box::new(d), Box::new(actual), Box::new(body)), ty, span);
+            }
+        }
+        for (v, x) in lets.into_iter().rev() {
+            body = self.let_(v, x, body, false, span);
+        }
+        let f = &self.p.fns[id];
+        self.reassoc_body(f, &mut body);
+        // a function of the prelude has no place in the program's file: its
+        // positions (a panic inside it, D111) are those of the call
+        if f.from_prelude {
+            relocate_prelude(&mut body, span);
+        }
+        Ok(body)
+    }
+
+    /// The environment of an inlined call: its parameters bound to the
+    /// arguments, the values in new variables (to bind around the body),
+    /// the variables of the parameters, the `size` parameters.
+    #[allow(clippy::type_complexity)]
+    fn callee_env_full(
+        &mut self,
+        id: FnId,
+        type_args: Vec<Ty>,
+        args: Vec<Arg<'p>>,
+        span: Span,
+    ) -> (Env<'p>, Vec<(VarId, Expr)>, Vec<Option<(VarId, Type)>>, Vec<Expr>) {
+        let f = &self.p.fns[id];
         let mut env = Env {
             fn_id: id,
             type_args: Rc::new(type_args),
@@ -1627,32 +1987,7 @@ impl<'p> Lower<'p> {
                 }
             }
         }
-        let mut body = self.expr(&mut env, &f.body)?;
-        // a size is positive or zero (SPEC section 4)
-        for k in size_params.into_iter().rev() {
-            let ty = body.ty.clone();
-            body = Expr::new(ExprKind::CheckNonNegative(Box::new(k), Box::new(body)), ty, span);
-        }
-        for &i in checks.iter().rev() {
-            if let (Ty::Array(Size::Poly(p), _), Some((v, t))) = (&f.param_tys[i], &pvars[i]) {
-                let d = self.size(&env, p, span)?;
-                let actual =
-                    Expr::new(ExprKind::Len(Box::new(Expr::var(*v, t.clone(), span))), Type::Int(IntKind::I64), span);
-                let ty = body.ty.clone();
-                body = Expr::new(ExprKind::CheckSize(Box::new(d), Box::new(actual), Box::new(body)), ty, span);
-            }
-        }
-        for (v, x) in lets.into_iter().rev() {
-            body = self.let_(v, x, body, false, span);
-        }
-        let f = &self.p.fns[id];
-        self.reassoc_body(f, &mut body);
-        // a function of the prelude has no place in the program's file: its
-        // positions (a panic inside it, D111) are those of the call
-        if f.from_prelude {
-            relocate_prelude(&mut body, span);
-        }
-        Ok(body)
+        (env, lets, pvars, size_params)
     }
 
     fn call(
@@ -1706,12 +2041,16 @@ impl<'p> Lower<'p> {
                 }
                 Arg::Func(f) => {
                     let Some(k) = fn_key(&f) else {
-                        return poc(span, "a recursive function given a function that reads a size or a function of its context (SPEC section 11)");
+                        return poc(span, "a recursive function given a function that reads a function of its context (SPEC section 11)");
                     };
-                    // the values it captures: arguments after the others
+                    // the values it captures, then the sizes it reads:
+                    // arguments after the others
                     for (_, v) in captured_vars(&f) {
                         let t = self.vars[v as usize].ty.clone();
                         captured.push(Expr::var(v, t, span));
+                    }
+                    for (_, x) in captured_sizes(&f) {
+                        captured.push(x);
                     }
                     keys.push(Some(k));
                     funcs.push(Some(f));
@@ -1766,7 +2105,8 @@ impl<'p> Lower<'p> {
         for (i, &l) in f.params.iter().enumerate() {
             let Some(Some(fv)) = funcs.get(i) else { continue };
             let caps = captured_vars(fv);
-            if caps.is_empty() {
+            let sizes = captured_sizes(fv);
+            if caps.is_empty() && sizes.is_empty() {
                 continue;
             }
             let FuncVal::Lambda { params: lp, body: lb, env: le } = fv else { continue };
@@ -1776,6 +2116,12 @@ impl<'p> Lower<'p> {
                 let name = self.vars[cv as usize].name.clone();
                 let p = self.new_var(&name, t);
                 inner.locals.insert(cl, Binding::Var(p));
+                params.push(p);
+                pvars.push(None);
+            }
+            for (s, _) in sizes {
+                let p = self.new_var("size", Type::Int(IntKind::I64));
+                inner.sizes.insert(s, Expr::var(p, Type::Int(IntKind::I64), span));
                 params.push(p);
                 pvars.push(None);
             }
@@ -2024,6 +2370,14 @@ impl<'p> Lower<'p> {
             Prim::Fill => {
                 let n = self.expr(env, &args[0])?;
                 let v = self.expr(env, &args[1])?;
+                // a new value that owns memory (a string, a node): bound,
+                // copied into each element, then freed (D154)
+                if v.ty.has_heap() && !matches!(v.kind, ExprKind::Var(..)) {
+                    let t = self.new_var("filled", v.ty.clone());
+                    let (vt, sp) = (v.ty.clone(), v.span);
+                    let inner = Expr::new(ExprKind::Fill(Box::new(n), Box::new(Expr::var(t, vt, sp))), ty, span);
+                    return Ok(self.let_(t, v, inner, false, span));
+                }
                 ExprKind::Fill(Box::new(n), Box::new(v))
             }
             Prim::Sqrt => ExprKind::Sqrt(Box::new(self.expr(env, &args[0])?)),

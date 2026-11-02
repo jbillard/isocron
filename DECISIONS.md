@@ -2497,3 +2497,55 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   the guide and SPEC name their own functions in camelCase too
   (`stdDev`, `movingAverage`); the file names do not change. The earlier
   entries of this file keep the names of their time.
+- **D152 — Functions returned by functions; deeper patterns; sizes read
+  by a lambda given to a recursive function (2026-11-02).**
+  - A function that is not recursive may return a function: its call is
+    inlined as a function value (the callee's parameters bound, its
+    `const`s and `if` guards evaluated as values of functions). The values
+    the returned function reads are computed once into variables bound
+    around the expression being lowered (`Lower::hoisted`), so that
+    `map(x, adder(sum(x)))` computes `sum(x)` once, before the loop (checked
+    in the IR by a test). A `size` parameter of such a function is checked
+    (negative: a panic). A recursive function that returns a function is
+    refused: it is not inlined, and a function is not a run-time value.
+  - A function chosen by `match` may read variables bound at any depth of
+    its pattern (D132 allowed one level). A part read through a node of a
+    recursive type below the first level exists only when the arm matches
+    (`Cons(a, Cons(b, _))` on a list of one element): it is read under the
+    test of its arm, else it is the zero of its type (before, both the
+    interpreter and the compiled program read a missing node).
+  - A lambda given to a recursive function may read sizes of its context:
+    like the values it captures (D131), they are parameters of the
+    specialization (`i64`), and its key exists. A lambda that reads a
+    function of its context still has no key (after v1).
+- **D153 — Functions in sum types, by defunctionalization (2026-11-02).** A
+  field of a constructor may be a function (`Apply((x: f64) => f64)`,
+  `Option<(x: f64) => f64>`, recursive types; a structure of functions in
+  one field is refused: one field per function). The value holds a `u32`
+  code: the index of its function among the functions the program stores
+  in that field (type, type arguments, variant, field); a call is the
+  branch of an array of functions (D114) on the code. The set is known only
+  once the whole program is lowered, so the lowering is repeated until a
+  pass stores no new function (a pass uses the set of the previous one;
+  the codes of a pass are those of the previous pass, new functions after
+  them; at most 16 passes). A function chosen at run time is stored as a
+  choice of codes. Such a function cannot read a variable or a size of its
+  context (a compile error: closures in data are after v1). A value that
+  holds a function is neither printed (the check of printable values now
+  looks into the payloads of sum types: it printed the code before) nor
+  compared (class Eq).
+- **D154 — Arrays of arrays of strings; regular rows; `fill` of owned
+  values (2026-11-02).** The rows of an array of arrays may hold strings
+  (an internal class `ROW`: a scalar or a string); the block owns them:
+  freed and copied one by one. A row is written into the block: a view
+  (a variable, a slice, a row) copies its strings, a new array (any other
+  expression: `split`, `filter`, ...) is moved and only its block freed.
+  An array of arrays is regular: each row is checked against the length of
+  the first, a difference is a panic `size mismatch: <row> != <first>` at
+  the function of the `map`, in the interpreter too (it built ragged
+  arrays the type did not describe; the compiled program refused such
+  maps). Two defects found on the way: `fill(n, s)` of a string stored the
+  same string in every element (freed n times: Valgrind), now each
+  element is a copy; and `fill(n, toString(i))` (a new string) failed the
+  memory check (never freed), now bound, copied, then freed. Ragged arrays
+  and arrays of arrays of arrays are after v1.

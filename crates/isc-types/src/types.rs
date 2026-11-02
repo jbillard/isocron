@@ -236,6 +236,9 @@ pub mod class {
     /// Internal: can be an array element: a scalar, a string, or a tuple of
     /// these (arrays of tuples are stored in columns, SPEC section 4).
     pub const ELEM: u8 = 64;
+    /// Internal: can be an element of a row of an array of arrays: a scalar
+    /// or a string (D154).
+    pub const ROW: u8 = 128;
 }
 
 pub struct TyDisplay<'a> {

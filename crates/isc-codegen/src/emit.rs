@@ -1485,6 +1485,19 @@ impl<'p> Gen<'p> {
             }
             Type::Array(e) if e.is_array() => {
                 let p = self.ins(format!("extractvalue {} {}, 0", NESTED, x.r));
+                // each string of the rows (D154): an owned array of arrays
+                // is contiguous (its stride is its columns)
+                let inner = e.elem().clone();
+                if holds_owned(&inner) {
+                    let (_, rows, cols, _) = self.nested_parts(x);
+                    let total = self.ins(format!("mul i64 {}, {}", rows, cols));
+                    self.for_range_scalar("0", &total, 1, &mut |g, i| {
+                        let el = g.load_elem(&p, &total, i, &inner, 1);
+                        g.drop_value(&el, &inner);
+                        Ok(())
+                    })
+                    .expect("the drop of the elements of the rows");
+                }
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
             // a string: its bytes (D134)
@@ -1533,8 +1546,18 @@ impl<'p> Gen<'p> {
                     let from = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&inner), p, so));
                     let dof = g.ins(format!("mul i64 {}, {}", i, cols));
                     let to = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&inner), q, dof));
-                    let bytes = g.ins(format!("mul i64 {}, {}", cols, es_sz));
-                    g.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", to, from, bytes));
+                    if holds_owned(&inner) {
+                        // each string: a copy of its own (D154)
+                        g.for_range_scalar("0", &cols, 1, &mut |g, j| {
+                            let el = g.load_elem(&from, &cols, j, &inner, 1);
+                            let c = g.copy_value(&el, &inner);
+                            g.store_elem(&to, &cols, j, &inner, &c, 1);
+                            Ok(())
+                        })?;
+                    } else {
+                        let bytes = g.ins(format!("mul i64 {}, {}", cols, es_sz));
+                        g.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", to, from, bytes));
+                    }
                     Ok(())
                 })
                 .expect("copy of rows");
@@ -3033,7 +3056,7 @@ impl<'p> Gen<'p> {
         let ExprKind::Map(ins, l) = &e.kind else { unreachable!() };
         let row_ty = e.ty.elem().clone();
         let et = row_ty.elem().clone();
-        if !et.is_scalar() {
+        if !et.is_scalar() && et != Type::Str {
             return Err(format!("{}:{}: a `map` building an array of arrays of `{:?}` is not supported in the POC", e.span.line, e.span.col, et));
         }
         let mut srcs = Vec::new();
@@ -3055,7 +3078,7 @@ impl<'p> Gen<'p> {
             let x = self.elem(s, "0", 1)?;
             self.bind(*p, x);
         }
-        let m0 = self.row_into(&l.body, None, &et)?;
+        let m0 = self.row_into(&l.body, None, &et, None)?;
         self.emit(format!("store i64 {}, ptr {}", m0, mslot));
         self.br(&ljoin);
         self.block(&ljoin);
@@ -3074,7 +3097,7 @@ impl<'p> Gen<'p> {
                 let off = g.ins(format!("mul i64 {}, {}", i, mm));
                 let off = g.ins(format!("mul i64 {}, {}", off, esz));
                 let dest = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, off));
-                g.row_into(&l.body, Some(&dest), &et)?;
+                g.row_into(&l.body, Some(&dest), &et, Some(&mm))?;
                 Ok(())
             })?;
         } else {
@@ -3109,7 +3132,7 @@ impl<'p> Gen<'p> {
                     let off = g.ins(format!("mul i64 {}, {}", i, mm));
                     let off = g.ins(format!("mul i64 {}, {}", off, esz));
                     let dest = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, off));
-                    g.row_into(&l.body, Some(&dest), &et)?;
+                    g.row_into(&l.body, Some(&dest), &et, Some(&mm))?;
                     Ok(())
                 })
             })?;
@@ -3118,19 +3141,28 @@ impl<'p> Gen<'p> {
         Ok(self.nested(&block, &n, &m, &m))
     }
 
-    /// The row `body` (an array of scalars of type `et`) written at `dest`
-    /// without a temporary array: a literal element by element, a producer
-    /// filled in place, a view (a variable, a slice, a row of another array
-    /// of arrays) copied; returns its length. With no `dest`, only the
-    /// length (a producer, a literal or a view: computed without writing
-    /// the elements).
-    fn row_into(&mut self, body: &Expr, dest: Option<&str>, et: &Type) -> R<String> {
+    /// The row `body` (an array of scalars or strings of type `et`) written
+    /// at `dest` without a temporary array when it can be: a literal element
+    /// by element, a producer filled in place, a view (a variable, a slice, a
+    /// row of another array of arrays) copied, any other array computed then
+    /// moved; returns its length, checked against `expect`, the length of
+    /// the rows (D154: an array of arrays is regular). With no `dest`, only
+    /// the length (computed without writing the elements when it can be).
+    fn row_into(&mut self, body: &Expr, dest: Option<&str>, et: &Type, expect: Option<&str>) -> R<String> {
         use ExprKind::*;
+        let span = body.span;
+        let check = |g: &mut Self, n: &str| {
+            if let (Some(m), Some(_)) = (expect, dest) {
+                let same = g.ins(format!("icmp eq i64 {}, {}", n, m));
+                g.guard(&same, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", n, m, Self::pos(span)));
+            }
+        };
+        let owned = holds_owned(et);
         match &body.kind {
             Let { var, init, body: b, drop, .. } => {
                 let iv = self.ex(init, 1)?;
                 self.bind(*var, iv.clone());
-                let len = self.row_into(b, dest, et)?;
+                let len = self.row_into(b, dest, et, expect)?;
                 if *drop {
                     let t = self.var_ty(*var).clone();
                     self.drop_value(&iv, &t);
@@ -3138,47 +3170,98 @@ impl<'p> Gen<'p> {
                 Ok(len)
             }
             ArrayLit(es) => {
+                let n = es.len().to_string();
+                check(self, &n);
                 if let Some(d) = dest {
                     for (k, x) in es.iter().enumerate() {
                         let xv = self.ex(x, 1)?;
                         self.store_scalar(d, &k.to_string(), et, &xv, 1);
                     }
                 }
-                Ok(es.len().to_string())
+                Ok(n)
             }
-            Map(..) | Iota(_) | Fill(..) | Zeros(_) => {
+            Map(..) | Iota(_) | Fill(..) | Zeros(_) if !owned => {
                 let (src, n) = self.prepare_src(body)?;
+                check(self, &n);
                 if let Some(d) = dest {
                     let w = if src_vec_ok(body) { MAP_WIDTH } else { 1 };
                     self.fill_range(&src, d, &n, et, "0", &n, w)?;
                 }
                 Ok(n)
             }
-            Var(..) | Slice(..) | Index(..) => {
+            Var(..) | Index(..) | Slice(..) => {
+                let moved = matches!(&body.kind, Var(_, Use::Move));
                 let xv = self.ex(body, 1)?;
                 let (p, n) = self.str_parts(&xv);
+                check(self, &n);
                 if let Some(d) = dest {
-                    let bytes = self.ins(format!("mul i64 {}, {}", n, esize(et)));
-                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, p, bytes));
+                    if owned && !moved {
+                        // a view of strings: each one copied (D154)
+                        self.for_range_scalar("0", &n, 1, &mut |g, j| {
+                            let el = g.load_elem(&p, &n, j, et, 1);
+                            let c = g.copy_value(&el, et);
+                            g.store_elem(d, &n, j, et, &c, 1);
+                            Ok(())
+                        })?;
+                    } else {
+                        let bytes = self.ins(format!("mul i64 {}, {}", n, esize(et)));
+                        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, p, bytes));
+                    }
                 }
                 // a variable moved here (a row computed by a `let` of the
-                // function): copied, then freed
+                // function): copied, then freed (its block only when its
+                // elements moved into the rows)
                 if let Var(var, Use::Move) = &body.kind {
-                    let t = self.var_ty(*var).clone();
-                    self.drop_value(&xv, &t);
+                    if owned && dest.is_some() {
+                        self.emit(format!("call void @isc_free(ptr {})", p));
+                    } else {
+                        let t = self.var_ty(*var).clone();
+                        self.drop_value(&xv, &t);
+                    }
                 }
                 Ok(n)
             }
-            _ => Err(format!(
-                "{}:{}: a `map` whose function returns this kind of array is not supported in the POC (a literal, a `map`, `iota`, `fill`, `zeros`, a variable or a slice)",
-                body.span.line, body.span.col
-            )),
+            // any other array: computed (new), then moved into the rows
+            _ => {
+                let xv = self.ex(body, 1)?;
+                let (p, n) = self.str_parts(&xv);
+                check(self, &n);
+                match dest {
+                    Some(d) => {
+                        let bytes = self.ins(format!("mul i64 {}, {}", n, esize(et)));
+                        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, p, bytes));
+                        self.emit(format!("call void @isc_free(ptr {})", p));
+                    }
+                    None => {
+                        let t = body.ty.clone();
+                        self.drop_value(&xv, &t);
+                    }
+                }
+                Ok(n)
+            }
         }
     }
 
     /// Stores the elements `start .. end` of a source into `p`.
     #[allow(clippy::too_many_arguments)]
     fn fill_range(&mut self, src: &Src, p: &str, n: &str, et: &Type, start: &str, end: &str, w: u32) -> R<()> {
+        // elements that own memory, lent by the source (the value of
+        // `fill`, an array): each one copied (D154)
+        fn lends(s: &Src) -> bool {
+            match s {
+                Src::Map(..) | Src::Iota => false,
+                Src::Offset { inner, .. } => lends(inner),
+                Src::Mat { .. } | Src::Uniform(_) | Src::Rows { .. } => true,
+            }
+        }
+        if holds_owned(et) && lends(src) {
+            return self.for_range(start, end, 1, &mut |g, i| {
+                let x = g.elem(src, i, 1)?;
+                let c = g.copy_value(&x, et);
+                g.store_elem(p, n, i, et, &c, 1);
+                Ok(())
+            });
+        }
         let mut tail_start = start.to_string();
         if w > 1 {
             let len = self.ins(format!("sub i64 {}, {}", end, start));

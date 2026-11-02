@@ -654,9 +654,24 @@ impl<'a> Interp<'a> {
                 }
                 let n = arrs[0].len();
                 let mut out = Array::with_capacity(e.ty.elem(), n);
+                // an array of arrays is regular (D154): every row has the
+                // length of the first
+                let rows = e.ty.elem().is_array();
+                let mut first = None;
                 for i in 0..n {
                     let args = arrs.iter().map(|a| a.get(i)).collect();
                     let v = self.call(l, args)?;
+                    if rows {
+                        let len = match &v {
+                            Value::Array(a) => a.len() as i64,
+                            _ => 0,
+                        };
+                        match first {
+                            None => first = Some(len),
+                            Some(m) if m != len => return panic_at(&l.body, rt::msg_size(len, m)),
+                            _ => {}
+                        }
+                    }
                     out.push(v);
                 }
                 Value::Array(Rc::new(out))

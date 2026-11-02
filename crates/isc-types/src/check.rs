@@ -546,7 +546,10 @@ impl<'g> FnCx<'g> {
                 v.push("a scalar type");
             }
             if classes & class::ELEM != 0 && v.is_empty() {
-                v.push("an array element type (a scalar, a string, a tuple of these or an array of scalars)");
+                v.push("an array element type (a scalar, a string, a tuple of these or an array of scalars or strings)");
+            }
+            if classes & class::ROW != 0 && v.is_empty() {
+                v.push("an element of a row of an array of arrays (a scalar or a string)");
             }
             v.join(" and ")
         };
@@ -606,7 +609,7 @@ impl<'g> FnCx<'g> {
             }
             // ordered by bytes, lexicographic (D134)
             Ty::Str => {
-                if lit != LitKind::None || classes & !(class::EQ | class::ORD | class::ELEM) != 0 {
+                if lit != LitKind::None || classes & !(class::EQ | class::ORD | class::ELEM | class::ROW) != 0 {
                     return fail(&t, self);
                 }
                 Ok(())
@@ -652,12 +655,12 @@ impl<'g> FnCx<'g> {
             }
             Ty::Array(_, e) => {
                 // an array is an element of an array when its own elements are
-                // scalars (arrays of arrays, D95)
+                // scalars or strings (arrays of arrays, D95, D154)
                 if lit != LitKind::None || classes & !(class::EQ | class::ELEM) != 0 {
                     return fail(&t, self);
                 }
                 let e = (**e).clone();
-                let inner = if classes & class::ELEM != 0 { (classes & class::EQ) | class::SCALAR } else { classes };
+                let inner = if classes & class::ELEM != 0 { (classes & class::EQ) | class::ROW } else { classes };
                 self.constrain(&e, inner, LitKind::None)
             }
             // a function can be an element of an array (section 16, v1:
@@ -2463,6 +2466,29 @@ fn subst_value(t: &Ty, type_args: &[Ty], sizes: &[Size]) -> Ty {
     }
 }
 
+/// Whether a value of type `t` holds a function, in the payload of a sum
+/// type too (D153).
+fn holds_function(g: &Globals, t: &Ty, seen: &mut Vec<u32>) -> bool {
+    match t {
+        Ty::Fn(..) => true,
+        Ty::Tuple(ts) => ts.iter().any(|x| holds_function(g, x, seen)),
+        Ty::Record(fs) => fs.iter().any(|(_, x)| holds_function(g, x, seen)),
+        Ty::Array(_, e) => holds_function(g, e, seen),
+        Ty::Sum { id, args, .. } => {
+            if args.iter().any(|x| holds_function(g, x, seen)) {
+                return true;
+            }
+            if seen.contains(id) {
+                return false;
+            }
+            seen.push(*id);
+            let def = &g.sums[*id as usize];
+            (0..def.variants.len()).any(|k| def.payload(k, args).iter().any(|x| holds_function(g, x, seen)))
+        }
+        _ => false,
+    }
+}
+
 fn contains_fn(t: &Ty) -> bool {
     match t {
         Ty::Fn(..) => true,
@@ -2705,8 +2731,10 @@ fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>,
             let mut payload = Vec::new();
             for f in &v.fields {
                 let ty = type_from_ast(f, &mut SigCtx { generics: &generics, sums: &heads, syms: &mut syms, allow_new: false, result: false, module: module_of(&t.name), imports: imports.get(&t.span.file) })?;
-                if contains_fn(&ty) {
-                    return err(f.span, "a function stored in a constructor (SPEC section 11)");
+                // a function is stored as its code (D153), alone in its
+                // field
+                if !matches!(ty, Ty::Fn(..)) && contains_fn(&ty) {
+                    return err(f.span, "a structure of functions stored in a constructor (SPEC section 11): give each function its own field");
                 }
                 payload.push(ty);
             }
@@ -2808,8 +2836,8 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
     }
     for (t, sp) in cx.deferred_printable.clone() {
         let t = cx.zonk(&t)?;
-        if contains_fn(&t) {
-            return err(sp, "a function cannot be printed");
+        if holds_function(g, &t, &mut Vec::new()) {
+            return err(sp, "a function cannot be printed (here, inside this value)");
         }
     }
     Ok(TFn {

@@ -127,7 +127,7 @@
 ## v1 — the language finalized (goal of 2026-11-02)
 
 - [x] (1) Syntax: named imports `import { f, T } from "./m";`, `export` (what is not exported is private), modules in subdirectories, template literals `${...}` (D150)
-- [ ] (2) Known holes: functions in sum types, functions returning functions, a recursive function given a lambda that reads a size, arrays of arrays of strings; "Not implemented yet" of the guide holds only what DECISIONS defers after v1
+- [x] (2) Known holes: functions in sum types, functions returning functions, a recursive function given a lambda that reads a size, arrays of arrays of strings; "Not implemented yet" of the guide holds only what DECISIONS defers after v1 (D152, D153, D154)
 - [ ] (3) Standard library: `sort`, `sort_by`, `abs`, `floor`, `ceil`, `round`, `trunc`, `tan`, `atan`, `atan2`, `asin`, `acos`, seeded random numbers, standard input, `to_fixed`, `pad_start`, string functions, `Map<K, V>`, `bigint`, regular expressions
 - [ ] (4) The ten Benchmarks Game programs, outputs identical to the references in our Docker image
 - [ ] (5) SPEC section 16 "avant la v1" decided and written; grammar = parser; every feature in the guide with a tested example

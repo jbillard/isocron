@@ -27,7 +27,7 @@ Nom : **Isocron** (« de durée égale »). C'est un nom d'intention : le langag
 - Paradigme : fonctionnel pur, évaluation stricte.
 - Données : scalaires, tableaux contigus à taille typée, tuples, records, types somme.
 - Cible : CPU x86-64, puis ARM64.
-- Hors périmètre : GPU, `require_vectorized`, concurrence écrite par le programmeur, fonctions stockées dans des structures de données.
+- Hors périmètre : GPU, `@requireVectorized`, concurrence écrite par le programmeur, fonctions stockées dans des structures de données.
 
 ### Principes directeurs
 
@@ -56,7 +56,7 @@ Les choix ci-dessous sont pris ; ceux marqués « recommandation » restent à c
 | Données | Tableaux contigus par défaut, valeurs à plat, monomorphisation | 4 |
 | Mémoire | Unicité inférée, `requireUnique`, comptage de références en secours, aucun ramasse-miettes | 8 |
 | Exigences v0 | `requireUnique`, `requireNoAlloc`, `requireFused`, `requireTail` | 9 |
-| Exigence reportée | `require_vectorized` | 16 |
+| Exigence reportée | `@requireVectorized` | 16 |
 | Flottants | IEEE 754, reproductibles par défaut ; mode `allowReassoc` optionnel | 10 |
 | Fonctions d'ordre supérieur | Résolues à la compilation, aucune fermeture allouée | 11 |
 | Effets | Isolés dans les `action`, aux bords du programme | 12 |
@@ -512,8 +512,8 @@ Les fonctions passées en argument sont résolues à la compilation : aucune fer
 
 ### Fonctions comme valeurs (v0)
 
-- Une fonction peut être passée en argument, retournée, ou liée par `const`.
-- Elle ne peut pas être stockée dans un tableau, un tuple, un record ou un type somme (v0 ; section 16).
+- Une fonction peut être passée en argument, retournée par une fonction non récursive (développée en ligne, D152), ou liée par `const`.
+- Elle peut être rangée dans un tuple, un record ou un tableau, connus à la compilation (D114), et dans un champ d'un type somme : la valeur y tient le code de la fonction parmi celles que le programme range dans ce champ, et l'appel est un aiguillage sur ce code (D153). Une fonction rangée dans un type somme ne lit ni variable ni taille de son contexte.
 - Une lambda peut capturer des variables : elles deviennent des arguments supplémentaires après spécialisation (lambda lifting).
 - Chaque appel d'une fonction d'ordre supérieur est spécialisé pour la fonction reçue : `map(x, f)` devient une boucle dédiée à `f`.
 - Si la fonction dépend d'une condition connue seulement à l'exécution (`const f = c ? g : h;`), elle est compilée en branchement : chaque fonction possible reçoit une étiquette, et l'appel devient un aiguillage sur cette étiquette (defunctionalization, Reynolds 1972). Aucune allocation ; le cas est signalé dans le memory report.
@@ -757,7 +757,7 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 | Valeur de B (4 096) ; V = 32 est tranché (section 10) | grain du parallélisme et coût des niveaux supérieurs de l'arbre, pas encore mesurés | étape 2 |
 | Coût réel du mode reproductible face aux variantes réassociées | conditionne l'intérêt du mode par défaut | fin du POC |
 | Algorithme d'unicité spécifié pas à pas | sans lui, `requireUnique` n'est pas portable | étape 2, phase 3 |
-| `require_vectorized` et cibles multiples | une même fonction peut passer sur une cible et échouer sur une autre | après la phase 7 |
+| `@requireVectorized` et cibles multiples | une même fonction peut passer sur une cible et échouer sur une autre | après la phase 7 |
 | Débordement entier modulaire | peut bloquer des optimisations que C obtient par comportement indéfini | après mesures |
 | Croissance du code due à l'inlining total | l'inlining sans seuil garantit la fusion mais peut gonfler les binaires ; toute limite devra être une règle de la spécification, pas une heuristique | étape 2, phase 2 |
 | Seuil de placement sur la pile | performances des petits tableaux (n'affecte aucun verdict) | étape 2, phase 3 |
