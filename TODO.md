@@ -136,5 +136,5 @@
   - [x] Regular expressions (D157)
 - [x] (4) The ten Benchmarks Game programs, outputs identical to the references in our Docker image (D160)
 - [x] (5) SPEC section 16 "avant la v1" decided and written; grammar = parser; every feature in the guide with a tested example (D161)
-- [ ] (6) Interpreter and compiled tests, Valgrind, compile-time checks, `cargo test` with both allocators
-- [ ] (7) One commit per part, without any reference to the assistant
+- [x] (6) Interpreter and compiled tests, Valgrind, compile-time checks, `cargo test` with both allocators (D162; 90 suites, 0 failures with both allocators on 2026-11-03)
+- [x] (7) One commit per part, without any reference to the assistant
