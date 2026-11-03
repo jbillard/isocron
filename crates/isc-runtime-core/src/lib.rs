@@ -394,6 +394,57 @@ mod split_searches {
 }
 
 #[cfg(test)]
+mod quotients_of_one_word {
+    extern crate std;
+    use num_bigint::BigInt;
+    use std::vec::Vec;
+
+    /// The division whose quotient is one word (D196) as num-bigint's:
+    /// `b * q + r` for random `q` of 64 bits and `r < b`, divisors whose top
+    /// word is small, quotients at 2^64 and around, signs mixed.
+    #[test]
+    fn small_quotients_as_num_bigint() {
+        let mut seed: u64 = 3;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed
+        };
+        let word = |w: u64| BigInt::from(w);
+        let mut cases: Vec<(BigInt, BigInt)> = Vec::new();
+        for words in 2..9 {
+            for top_bits in [1u32, 7, 33, 64] {
+                for _ in 0..40 {
+                    let mut b = BigInt::from(0);
+                    for _ in 0..words - 1 {
+                        b = (b << 64) + word(rnd());
+                    }
+                    b = (b << top_bits) + word(rnd() >> (64 - top_bits));
+                    if b == BigInt::from(0) {
+                        continue;
+                    }
+                    let q = match rnd() % 4 {
+                        0 => word(rnd() >> (rnd() % 64)),
+                        1 => word(u64::MAX),
+                        2 => BigInt::from(1u128 << 64),
+                        _ => word(rnd() % 10),
+                    };
+                    let r = (word(rnd()) * word(rnd())) % &b;
+                    let a = &b * &q + r;
+                    cases.push((a.clone(), b.clone()));
+                    cases.push((-a.clone(), b.clone()));
+                    cases.push((a - 1, -b));
+                }
+            }
+        }
+        for (a, b) in &cases {
+            let got = super::big256::op(3, &super::big256::encode(a), &super::big256::encode(b)).ok().unwrap();
+            let want = super::big256::encode(&(a / b));
+            assert_eq!(got, want, "{} / {}", a, b);
+        }
+    }
+}
+
+#[cfg(test)]
 mod big_divisions {
     extern crate std;
     use num_bigint::BigUint;
@@ -1183,7 +1234,8 @@ mod limbs {
     fn add(neg: bool, a: &[u8], b: &[u8]) -> Vec<u8> {
         let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
         let n = a.len().div_ceil(8);
-        let mut v: Vec<u8> = alloc::vec![0u8; 1 + 8 * (n + 1)];
+        // every byte written below: not zeroed first (D196)
+        let mut v: Vec<u8> = unwritten(1 + 8 * (n + 1));
         v[0] = if neg { b'-' } else { b'+' };
         let mut carry = false;
         // the whole words of both, without a test of bounds (D171)
@@ -1205,16 +1257,25 @@ mod limbs {
             v[1 + 8 * i..9 + 8 * i].copy_from_slice(&s.to_le_bytes());
             carry = c1 | c2;
         }
-        if carry {
-            v[1 + 8 * n] = 1;
-        }
+        v[1 + 8 * n..9 + 8 * n].copy_from_slice(&(carry as u64).to_le_bytes());
         Out(v).done()
+    }
+
+    /// A buffer of `n` bytes for a result that writes each of them (not
+    /// zeroed: `memset` was 7 % of pidigits, D196).
+    fn unwritten(n: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(n);
+        // SAFETY: u8 has no invalid value; the callers write every byte
+        // before reading any
+        unsafe { v.set_len(n) };
+        v
     }
 
     /// a - b, |a| >= |b|
     fn sub(neg: bool, a: &[u8], b: &[u8]) -> Vec<u8> {
         let n = a.len().div_ceil(8);
-        let mut v: Vec<u8> = alloc::vec![0u8; 1 + 8 * n];
+        // every byte written below: not zeroed first (D196)
+        let mut v: Vec<u8> = unwritten(1 + 8 * n);
         v[0] = if neg { b'-' } else { b'+' };
         let mut borrow = false;
         let both = b.len() / 8;
@@ -1242,7 +1303,8 @@ mod limbs {
     /// bounds, written in place in the result (D171).
     fn mul_word(neg: bool, a: &[u8], w: u64) -> Vec<u8> {
         let n = a.len().div_ceil(8);
-        let mut v: Vec<u8> = alloc::vec![0u8; 1 + 8 * (n + 1)];
+        // every byte written below: not zeroed first (D196)
+        let mut v: Vec<u8> = unwritten(1 + 8 * (n + 1));
         v[0] = if neg { b'-' } else { b'+' };
         let mut c: u128 = 0;
         let full = a.len() / 8;
@@ -1371,6 +1433,77 @@ mod limbs {
         (q, r)
     }
 
+    /// The quotient of magnitudes `a / b` when it is less than 2^64 (`a <
+    /// b * 2^64`: `a` of at most as many words as `b`, or of one more and
+    /// `a / 2^64 < b`; `b` of at least two words), None otherwise (D196).
+    /// Then `a << s` fits in the words of `b` and one more, the places read
+    /// below. Knuth's estimate from the top two words of `a`
+    /// shifted as `b` is normalized (its top bit set), refined by the second
+    /// word of `b`: at most 2 above the quotient; then the sign of
+    /// `a - q * b` in one pass over the words, nothing stored, `q` lowered
+    /// while it is negative. No copy, no shift of the operands.
+    fn quotient_word(a: &[u8], b: &[u8]) -> Option<u64> {
+        let (na, nb) = (a.len().div_ceil(8), b.len().div_ceil(8));
+        if nb < 2 || na > nb + 1 {
+            return None;
+        }
+        if cmp_mag(a, b) == Ordering::Less {
+            return Some(0);
+        }
+        // one word more: the quotient has one word only if a / 2^64 < b
+        if na == nb + 1 && cmp_mag(&a[8..], b) != Ordering::Less {
+            return None;
+        }
+        let s = word(b, nb - 1).leading_zeros();
+        let sh = |hi: u64, lo: u64| if s == 0 { hi } else { (hi << s) | (lo >> (64 - s)) };
+        let v1 = sh(word(b, nb - 1), word(b, nb - 2));
+        let v2 = sh(word(b, nb - 2), if nb >= 3 { word(b, nb - 3) } else { 0 });
+        // the words of `a << s` at the places nb, nb - 1, nb - 2
+        let aw = |i: usize| if i < na { word(a, i) } else { 0 };
+        let u2 = if s == 0 { aw(nb) } else { (aw(nb) << s) | (aw(nb - 1) >> (64 - s)) };
+        let u1 = sh(aw(nb - 1), aw(nb - 2));
+        let u0 = sh(aw(nb - 2), if nb >= 3 { aw(nb - 3) } else { 0 });
+        let num = ((u2 as u128) << 64) | u1 as u128;
+        let mut qhat = num / v1 as u128;
+        let mut rhat = num % v1 as u128;
+        while qhat >> 64 != 0 || qhat * v2 as u128 > ((rhat << 64) | u0 as u128) {
+            qhat -= 1;
+            rhat += v1 as u128;
+            if rhat >> 64 != 0 {
+                break;
+            }
+        }
+        let mut q = qhat as u64;
+        // a - q * b >= 0 ? the whole words of both without a test of
+        // bounds, then the others
+        let below = |q: u64| -> bool {
+            let mut carry: u128 = 0;
+            let mut borrow = false;
+            let full = a.len().min(b.len()) / 8;
+            for (x, y) in a[..full * 8].chunks_exact(8).zip(b[..full * 8].chunks_exact(8)) {
+                let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
+                let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
+                let p = (q as u128) * yb as u128 + carry;
+                carry = p >> 64;
+                let (d, b1) = xa.overflowing_sub(p as u64);
+                let (_, b2) = d.overflowing_sub(borrow as u64);
+                borrow = b1 | b2;
+            }
+            for i in full..na.max(nb) {
+                let p = (q as u128) * (if i < nb { word(b, i) } else { 0 }) as u128 + carry;
+                carry = p >> 64;
+                let (d, b1) = aw(i).overflowing_sub(p as u64);
+                let (_, b2) = d.overflowing_sub(borrow as u64);
+                borrow = b1 | b2;
+            }
+            carry != 0 || borrow
+        };
+        while below(q) {
+            q -= 1;
+        }
+        Some(q)
+    }
+
     /// `+ - * / %` and the negation (`op` 0 to 4, 6) of two values of
     /// `big256`; None for the others (num-bigint does them). `/` truncates
     /// toward zero and `%` has the sign of the dividend, as ECMAScript; a
@@ -1410,6 +1543,13 @@ mod limbs {
             3 | 4 => {
                 if mb.is_empty() {
                     return None;
+                }
+                // a quotient of one word: estimated from the top words, one
+                // pass to check it (D196)
+                if op == 3 {
+                    if let Some(q) = quotient_word(ma, mb) {
+                        return Some(if q == 0 { Vec::new() } else { signed(na != nb, &[q]) });
+                    }
                 }
                 let (q, r) = divrem(&words(ma), &words(mb));
                 Some(if op == 3 { signed(na != nb, &q) } else { signed(na, &r) })

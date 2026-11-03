@@ -3348,3 +3348,26 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   k-nucleotide's filter compressed too (unchanged: not where its time
   goes), the other programs unchanged. Test `filters_compress_their_vectors`
   (bytes, 32 and 64 bits, none, all and some kept, one block and several).
+- **D196 — The division of big integers whose quotient is one word, their
+  results built once (2026-11-04).** pidigits was 3.3 times its floor:
+  21.3e9 instructions for its 9.09e8 passes over a word, 23 per word (4 to
+  6 for a loop of `mulx` and `adc`). The profile: the conversions of the
+  division (`words`, 13 %), the copies (`memmove`, 11 %: the result of
+  each operation copied into a new string), the zeroing of each result
+  (`memset`, 4 %). Its divisions, `(num * 3 + acc) / den` with a quotient
+  of one digit, took Knuth's algorithm D whole: both operands converted to
+  words and copied, shifted to normalize them, the result converted back.
+  Now a quotient below 2^64 (`a < b * 2^64`: as many words, or one more and
+  `a / 2^64 < b`) is Knuth's estimate from the top two words of `a`
+  shifted as `b` would be, refined by the second word of `b` (at most 2
+  too large), then checked by the sign of `a - q * b` in one pass over the
+  bytes, nothing stored, `q` lowered while negative (`quotient_word`); the
+  result of `isc_big_op` is its own buffer (`adopt`, D190); a result whose
+  every byte is written is not zeroed first (`unwritten`). A first form
+  took `a` of one word more than `b` without the second condition (the
+  test of the two forms found a quotient of 2^118). pidigits at fixed
+  frequency, one thread: 2.232 s -> 0.888 s (1.33 times its floor, 1.22
+  times the C program with GMP); the same output; Valgrind clean (no byte
+  read before written). Test `small_quotients_as_num_bigint` (3360
+  divisions: random quotients of 64 bits, at 2^64, divisors whose top word
+  is small, signs mixed).

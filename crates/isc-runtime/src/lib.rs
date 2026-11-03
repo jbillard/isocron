@@ -1100,7 +1100,8 @@ pub unsafe extern "C" fn isc_print_big(p: *const u8, n: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_op(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, op: i32, line: i32, col: i32) {
     match sem::big256::op(op as u8, bytes_of(p, n), bytes_of(q, m)) {
-        Ok(v) => *out = new_str(&v),
+        // its buffer is the value (a block of the runtime's heap, D196)
+        Ok(v) => *out = adopt(alloc::string::String::from_utf8_unchecked(v)),
         Err(e) => die(line, col, &e),
     }
 }

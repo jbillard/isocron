@@ -161,6 +161,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 - [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
   - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)
   - [x] The common operations (add, subtract, multiply, divide, compare) on the bytes themselves: pidigits 10000 11.6 s -> 2.5 s (D171)
+  - [x] The division whose quotient is one word, results built once: pidigits 2.232 s -> 0.888 s (D196)
 - [ ] (4) Code of scalar recursions (fannkuchredux)
   - [x] The program by chunks, without divisions, one pass: 41.7 s -> 4.3 s on 4 threads (D170)
 - [ ] (5) Copies of strings, cache of regular expressions (regexredux)
