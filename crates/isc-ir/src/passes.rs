@@ -205,6 +205,117 @@ fn replace_var(e: &mut Expr, v: VarId, with: &mut Option<Expr>) {
     }
 }
 
+// ---------------------------------------------------------------------
+// arrays stored in a narrower type (D218)
+
+/// `let v = map(.., (x) => f)` whose values all fit a narrower integer type
+/// (`int_range` of `f`: the leaves of an `if`, `x & c`, a byte or a
+/// boolean converted), every use of `v` an element `v[i]` or the length:
+/// `v` is stored in that type, `f` converted to it, each `v[i]` converted
+/// back. The same values for the program, fewer bytes written and read
+/// (k-nucleotide: the codes 0 to 3 of 125 million bases, 125 MB of bytes
+/// instead of 1 GB of `i64`).
+fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
+    for c in e.children_mut() {
+        narrow_arrays(c, vars);
+    }
+    let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
+    let v = *var;
+    let Type::Array(et, fixed) = init.ty.clone() else { return };
+    let Type::Int(k) = *et else { return };
+    let ExprKind::Map(_, l) = &init.kind else { return };
+    let Some((lo, hi)) = int_range(&l.body) else { return };
+    let narrow = if lo >= 0 && hi <= 255 {
+        IntKind::U8
+    } else if lo >= 0 && hi <= 65535 {
+        IntKind::U16
+    } else if lo >= -128 && hi <= 127 {
+        IntKind::I8
+    } else {
+        return;
+    };
+    if narrow.bits() >= k.bits() {
+        return;
+    }
+    let (mut index, mut other) = (0, 0);
+    uses_by_element(body, v, &mut index, &mut other);
+    if other > 0 || index == 0 {
+        return;
+    }
+    let nt = Type::Array(Box::new(Type::Int(narrow)), fixed);
+    let ExprKind::Map(_, l) = &mut init.kind else { return };
+    let lb = take(&mut l.body);
+    let sp = lb.span;
+    *l.body = Expr::new(ExprKind::Convert(Box::new(lb)), Type::Int(narrow), sp);
+    init.ty = nt.clone();
+    vars[v as usize].ty = nt.clone();
+    widen_reads(body, v, &nt, &Type::Int(k));
+}
+
+/// The values an integer expression can take, when it is one of the simple
+/// forms of `narrow_arrays`.
+fn int_range(e: &Expr) -> Option<(i64, i64)> {
+    match &e.kind {
+        ExprKind::Lit(Lit::Int(c)) => Some((*c, *c)),
+        ExprKind::If(_, t, f) => {
+            let (a, b) = (int_range(t)?, int_range(f)?);
+            Some((a.0.min(b.0), a.1.max(b.1)))
+        }
+        ExprKind::Let { body, .. } => int_range(body),
+        ExprKind::Binary(BinOp::BitAnd, _, m) => match m.kind {
+            ExprKind::Lit(Lit::Int(c)) if c >= 0 => Some((0, c)),
+            _ => None,
+        },
+        ExprKind::Convert(x) => match x.ty {
+            Type::Int(IntKind::U8) => Some((0, 255)),
+            Type::Bool => Some((0, 1)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `narrow_arrays`: each `v[i]` read as the narrow type and converted back
+/// to `wide`; `v` of type `nt` where it is named.
+fn widen_reads(e: &mut Expr, v: VarId, nt: &Type, wide: &Type) {
+    match &mut e.kind {
+        ExprKind::Index(a, i) if matches!(a.kind, ExprKind::Var(w, _) if w == v) => {
+            widen_reads(i, v, nt, wide);
+            a.ty = nt.clone();
+            let mut read = take(e);
+            read.ty = nt.elem().clone();
+            let sp = read.span;
+            *e = Expr::new(ExprKind::Convert(Box::new(read)), wide.clone(), sp);
+        }
+        ExprKind::Len(a) if matches!(a.kind, ExprKind::Var(w, _) if w == v) => {
+            a.ty = nt.clone();
+        }
+        _ => {
+            for c in e.children_mut() {
+                widen_reads(c, v, nt, wide);
+            }
+        }
+    }
+}
+
+/// The uses of `v` in `e`: as `v[i]` or `v.length` (`index`), and the
+/// others.
+fn uses_by_element(e: &Expr, v: VarId, index: &mut u32, other: &mut u32) {
+    match &e.kind {
+        ExprKind::Index(a, i) if matches!(a.kind, ExprKind::Var(w, _) if w == v) => {
+            *index += 1;
+            uses_by_element(i, v, index, other);
+        }
+        ExprKind::Len(a) if matches!(a.kind, ExprKind::Var(w, _) if w == v) => *index += 1,
+        ExprKind::Var(w, _) if *w == v => *other += 1,
+        _ => {
+            for c in e.children() {
+                uses_by_element(c, v, index, other);
+            }
+        }
+    }
+}
+
 /// The passes before the ownership pass, on one body (`main` or a recursive
 /// function).
 pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
@@ -214,6 +325,9 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     fuse_fixpoint(body);
     bind_temporaries(body, vars);
     fuse_fixpoint(body);
+    // (the source of a map a variable, the `let`s floated out of the value
+    // by the fusion just before)
+    narrow_arrays(body, vars);
     horizontal(body, vars);
     masked_reductions(body, vars);
     // a value read by several `reduce`s now grouped (F3) is read once: it

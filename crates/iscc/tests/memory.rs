@@ -890,3 +890,46 @@ action main(args: string[k]): i32 {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+#[test]
+fn arrays_stored_in_a_narrower_type() {
+    // D218: a `map` whose values fit a narrower integer type (the leaves of
+    // an `if`, `x & c`), read only by element and length, is stored in that
+    // type and read back converted: the same values for the program. Left
+    // as it is: values not bounded, an array read whole. The results of the
+    // interpreter, nothing lost or freed twice.
+    let src = "function code(b: u8): i64 {
+    const c = b | 32u8;
+    return c == 97u8 ? 0 : (c == 99u8 ? 1 : (c == 103u8 ? 2 : 3));
+}
+action main(args: string[k]): i32 {
+    const text = bytes(\"GATTACAgattacaCCGGTTAAggccttaa\");
+    const codes = map(text, code);
+    const n = codes.length;
+    print(map(iota(n - 3), (i) => fold(iota(4), 0, (c, j) => c * 4 + codes[i + j])));
+    const wide = map(iota(40), (i) => i % 3 == 0 ? 300 : 7);
+    print(sum(map(iota(40), (i) => wide[39 - i] * i)));
+    const small = map(iota(40), (i) => i % 2 == 0 ? -5 : 5);
+    print(sum(map(iota(40), (i) => small[i] * i)));
+    const masked = map(iota(40), (i) => (i * 37) & 15);
+    print(masked[3] + masked[39] + masked.length);
+    const free = map(iota(40), (i) => i * i);
+    print(free[39]);
+    const whole = map(iota(40), (i) => i % 2 == 0 ? 1 : 2);
+    print(sum(whole));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "narrow");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    let p = iscc::frontend("narrow.isc", src).unwrap();
+    let ty = |name: &str| p.vars.iter().find(|v| v.name == name).map(|v| isc_ir::print::type_str(&v.ty)).unwrap_or_default();
+    assert_eq!(ty("codes"), "u8[]");
+    assert_eq!(ty("wide"), "u16[]");
+    assert_eq!(ty("small"), "i8[]");
+    assert_eq!(ty("masked"), "u8[]");
+    assert_eq!(ty("free"), "i64[]");
+    clean(src, "narrow_vg", &[]);
+}

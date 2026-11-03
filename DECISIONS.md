@@ -3735,3 +3735,15 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   0.174 s, k-nucleotide 1.433 s -> 1.382 s, fasta, fannkuch-redux and
   spectral-norm unchanged (their code changes), the others the same code;
   the same outputs.
+- **D218 — An array stored in a narrower type (2026-11-04).** The codes
+  of k-nucleotide (`map(bytes(sequence), code)`, values 0 to 3) were 1 GB
+  of `i64` written into new pages and read by 7 passes; recomputing them
+  where they are read was slower with one thread (rejected above). A `let`
+  of a `map` whose values all fit a narrower integer type (`int_range`:
+  the leaves of an `if`, `x & c` with `c >= 0`, a byte or a boolean
+  converted) and that is read only by element and length is now stored in
+  that type (`u8`, `u16` or `i8`, when narrower), its body converted to
+  it, each element converted back where it is read (`narrow_arrays`): the
+  same values for the program, here 125 MB of bytes. At fixed frequency:
+  k-nucleotide, 4 threads 1.387 s -> 1.178 s, one thread 1.965 s -> 1.778
+  s; the nine others compile to the same code; the same outputs.
