@@ -2987,3 +2987,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   reverse-complement at fixed frequency, 4 threads: 0.531 s -> 0.415 s;
   one thread: 1.014 s -> 1.018 s (the same two passes). Test
   `filters_and_divisions_of_the_index_do_not_depend_on_threads`.
+- **D179 — The standard input read in a buffer of its size when it is a
+  file (2026-11-03).** After D178, `readStdin` alone takes 0.104 s for
+  the 254 MB of reverse-complement, `cat` 0.026 s. Model: the buffer
+  started at 64 KiB and doubled, so that the bytes were copied once more
+  (254 MB) and 512 MB of new pages were zeroed by the kernel, against 254
+  MB read once into 254 MB of new pages. When the standard input is a
+  regular file (`< file`, as the Benchmarks Game runs them), `lseek` gives
+  the bytes left after its offset (put back after), the size of the
+  buffer, as `readFile` already did; a pipe keeps the doubling buffer. The
+  loop is one function (`read_fd`) for both, with its probe for end of
+  file before growing. `readStdin` 0.104 s -> 0.056 s (about the copy of
+  `cat` and the zeroing of 254 MB); reverse-complement 0.414 s -> 0.365 s
+  on 4 threads. Test `standard_input_from_a_file` (offsets 0, 1000 and the
+  end of the file).

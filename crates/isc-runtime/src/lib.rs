@@ -95,6 +95,7 @@ mod sys {
 
 use sys::{O_CLOEXEC, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 const SEEK_SET: c_int = 0;
+const SEEK_CUR: c_int = 1;
 const SEEK_END: c_int = 2;
 const EINTR: c_int = 4;
 
@@ -415,32 +416,69 @@ fn os_error<'a>(code: c_int) -> (&'a str, c_int) {
 /// the file closed.
 /// The whole standard input (D155), read until end of file.
 unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
-    let mut cap: usize = 1 << 16;
+    // a regular file (`< file`): the bytes left in it, the size of the
+    // buffer, read without copies (D179); a pipe: a guess that grows
+    let cur = lseek(0, 0, SEEK_CUR);
+    let end = if cur >= 0 { lseek(0, 0, SEEK_END) } else { -1 };
+    if cur >= 0 {
+        lseek(0, cur, SEEK_SET);
+    }
+    let hint = if cur >= 0 && end > cur && end - cur < (1i64 << 44) { (end - cur) as usize } else { 1 << 16 };
+    match read_fd(0, hint) {
+        Ok(a) => a,
+        Err(e) => {
+            let (detail, code) = os_error(e);
+            die(line, col, &Panic::Read { path: "<standard input>", detail, code })
+        }
+    }
+}
+
+/// Every byte of `fd` until end of file, in a buffer of `hint` bytes first
+/// (the size of a file): at the end of the buffer, a probe for end of file
+/// before it grows (doubled, copied); the error code of `read` otherwise.
+unsafe fn read_fd(fd: c_int, hint: usize) -> Result<IscArray, c_int> {
+    let mut cap: usize = hint.max(1);
     let mut buf = isc_alloc(cap as i64);
     let mut len: usize = 0;
     loop {
         if len == cap {
+            let mut probe = [0u8; 64];
+            let r = read(fd, probe.as_mut_ptr() as *mut c_void, probe.len());
+            if r < 0 {
+                let e = errno();
+                if e == EINTR {
+                    continue;
+                }
+                isc_free(buf);
+                return Err(e);
+            }
+            if r == 0 {
+                break;
+            }
             let nb = isc_alloc((cap * 2) as i64);
             core::ptr::copy_nonoverlapping(buf, nb, len);
             isc_free(buf);
             buf = nb;
             cap *= 2;
+            core::ptr::copy_nonoverlapping(probe.as_ptr(), buf.add(len), r as usize);
+            len += r as usize;
+            continue;
         }
-        let r = read(0, buf.add(len) as *mut c_void, cap - len);
+        let r = read(fd, buf.add(len) as *mut c_void, cap - len);
         if r < 0 {
             let e = errno();
             if e == EINTR {
                 continue;
             }
-            let (detail, code) = os_error(e);
-            die(line, col, &Panic::Read { path: "<standard input>", detail, code })
+            isc_free(buf);
+            return Err(e);
         }
         if r == 0 {
             break;
         }
         len += r as usize;
     }
-    IscArray { ptr: buf, len: len as i64 }
+    Ok(IscArray { ptr: buf, len: len as i64 })
 }
 
 #[no_mangle]
@@ -475,52 +513,10 @@ unsafe fn try_read_file(path: &str) -> Result<IscArray, Panic<'_>> {
     // the size is a hint; the file is read until end of file
     let end = lseek(fd, 0, SEEK_END);
     lseek(fd, 0, SEEK_SET);
-    let mut cap: usize = if end > 0 && end < (1i64 << 44) { end as usize } else { 1 << 16 };
-    let mut buf = isc_alloc(cap as i64);
-    let mut len: usize = 0;
-    loop {
-        if len == cap {
-            // probe for end of file before growing
-            let mut probe = [0u8; 64];
-            let r = read(fd, probe.as_mut_ptr() as *mut c_void, probe.len());
-            if r < 0 {
-                let e = errno();
-                if e == EINTR {
-                    continue;
-                }
-                isc_free(buf);
-                close(fd);
-                return Err(read_error(e));
-            }
-            if r == 0 {
-                break;
-            }
-            let nb = isc_alloc((cap * 2) as i64);
-            core::ptr::copy_nonoverlapping(buf, nb, len);
-            isc_free(buf);
-            buf = nb;
-            cap *= 2;
-            core::ptr::copy_nonoverlapping(probe.as_ptr(), buf.add(len), r as usize);
-            len += r as usize;
-            continue;
-        }
-        let r = read(fd, buf.add(len) as *mut c_void, cap - len);
-        if r < 0 {
-            let e = errno();
-            if e == EINTR {
-                continue;
-            }
-            isc_free(buf);
-            close(fd);
-            return Err(read_error(e));
-        }
-        if r == 0 {
-            break;
-        }
-        len += r as usize;
-    }
+    let hint = if end > 0 && end < (1i64 << 44) { end as usize } else { 1 << 16 };
+    let r = read_fd(fd, hint);
     close(fd);
-    Ok(IscArray { ptr: buf, len: len as i64 })
+    r.map_err(read_error)
 }
 
 unsafe fn read_file(path: &str, line: i32, col: i32) -> IscArray {

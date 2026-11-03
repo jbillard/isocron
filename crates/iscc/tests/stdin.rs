@@ -71,3 +71,22 @@ fn standard_input() {
     assert_eq!(code, 101);
     assert!(err.contains(want), "{}", err);
 }
+
+#[test]
+fn standard_input_from_a_file() {
+    // a file: the bytes left from its offset, read in a buffer of their size
+    // (D179); a file larger than the first guess for a pipe (64 KiB)
+    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let path = tmp("stdin_file.bin");
+    std::fs::write(&path, &big).unwrap();
+    let bin = compile(BYTES, "stdin_file");
+    for skip in [0usize, 1000, 300_000] {
+        let rest = &big[skip..];
+        let total: u64 = rest.iter().map(|&b| b as u64).sum();
+        let want = format!("({}, {})\n0\n", rest.len(), total);
+        let mut f = std::fs::File::open(&path).unwrap();
+        std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(skip as u64)).unwrap();
+        let o = std::process::Command::new(&bin).stdin(f).output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "from byte {}", skip);
+    }
+}
