@@ -3115,3 +3115,44 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   exact operator, and `z` its identity or the operator `min` or `max`);
   fasta keeps its gain (its `count` starts from 0). The test adds the
   example of the guide, a product from 2 and `min`, `max` from any `z`.
+- **D185 — Branches under a mask and checks replayed in vector code;
+  bytes permuted, indices downwards (2026-11-04).** fasta was still 19.5
+  times its floor: its `map` of lines stayed one element at a time, since
+  vector code allowed an `if` only with branches that cannot panic, and
+  `base(i)` indexes arrays. Now, in the vector loops of `fill_range` and
+  `reduce_block`:
+  * a check that fails (an index out of bounds, a size) jumps to a replay
+    of the vector (`elem_replayed`): its elements computed again one at a
+    time, in order, so that the panic is the one of the scalar loop, its
+    element and its site, whatever the number of sites (D181 allowed one);
+  * the branches of an `if` are computed under the mask of their lanes:
+    an index checked, loaded (`llvm.masked.load`) or gathered only for
+    them, a check of a value of every lane (`uniform_check`) failing only
+    when a lane is active, the load of a value of every lane only when it
+    is in bounds; the sites of a branch must be indexings (`maskable`);
+  * `len` of an array of the context, two sizes of every lane compared
+    (the inlined signature of `pick`) and the `reduce` of an array of the
+    context with an operator whose order is free (`count` over the
+    probabilities: a scalar loop, the accumulator a vector) are vector
+    code;
+  * elements of fewer than 32 bits have no gather instruction on x86
+    (LLVM emulates one load per lane, slower than the scalar loop:
+    reverse-complement went from 0.356 s to 0.422 s): they are vector code
+    only when their index is consecutive (the index of the loop, a
+    parameter bound to an `iota`, plus or minus values of every lane: one
+    load; downwards, `m - 1 - i`: one load and its lanes reversed), or,
+    with AVX-512 VBMI and in `fill_range`, when the array is a table of at
+    most 256 bytes: its 8 parts of 32 bytes in registers (masked loads,
+    nothing read past its end), 4 `vpermi2b` of 64 entries and the choice
+    by bits 6 and 7. The loop tests the size of each table first and runs
+    all its elements one at a time when one is larger (the same values:
+    the 250 MB of bases of reverse-complement).
+  At fixed frequency, 4 threads: fasta 0.391 s -> 0.327 s (one thread
+  1.519 s -> 1.260 s), reverse-complement 0.359 s -> 0.348 s, the
+  other programs unchanged (their binaries identical, or within 1 %).
+  The remaining cost of the vector code of fasta: the divisions by
+  constants of its 64-bit indices, one lane at a time (x86 has no 64-bit
+  vector `mulhi`). Tests `vector_index.rs`: masked branches with indices
+  past the end in the lanes not taken, a size checked in a branch no lane
+  takes, two sites failing in one vector (the order of the scalar loop),
+  tables of 4, 256 and 300 bytes.

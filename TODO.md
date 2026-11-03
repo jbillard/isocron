@@ -169,6 +169,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] A microbenchmark and a floor for each primitive of the library
   - [x] fasta (57.8 times its floor): the reduction of an exact operator over fewer elements than lanes in one loop, 1.135 s -> 0.391 s (D183)
   - [x] knucleotide (8.1 times its floor): a size of every lane and shifted indices in vector code, 3.199 s -> 2.098 s (D184)
+  - [x] Branches under a mask, checks replayed, bytes permuted (VBMI), indices downwards in vector code: fasta 0.391 s -> 0.327 s (D185)
+  - [ ] Divisions of 64-bit indices by constants in vector code (one lane at a time on x86): carried by the vector loop as in D180
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

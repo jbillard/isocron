@@ -38,7 +38,7 @@ fn indexed_lambdas_are_vectorized_with_the_results_of_the_interpreter() {
     let bin = compile(OK, "vector_index_ok");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     assert!(ll.contains("@llvm.masked.gather.v"), "no gather");
-    assert!(ll.contains("@llvm.cttz.i"), "no vector check of the bounds");
+    assert!(ll.contains("icmp uge <"), "no vector check of the bounds");
     for t in [1, 3, 4] {
         let run = run_bin_threads(&bin, &[], Some(t));
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
@@ -109,7 +109,7 @@ fn folds_over_a_size_of_every_lane_and_shifted_indices_are_vector_code() {
     let bin = compile(KMERS, "vector_kmers");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     assert!(!ll.contains("@llvm.masked.gather"), "a gather where the indices are consecutive");
-    assert!(ll.contains("@llvm.cttz.i"), "the k-mers are not vector code");
+    assert!(ll.contains("icmp uge <"), "the k-mers are not vector code");
     for t in [1, 4] {
         let run = run_bin_threads(&bin, &[], Some(t));
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
@@ -127,5 +127,97 @@ fn folds_over_a_size_of_every_lane_and_shifted_indices_are_vector_code() {
         let bin = compile(&src, &format!("vector_kmers_{}", name));
         let run = run_bin_threads(&bin, &[], Some(1));
         assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", name);
+    }
+}
+
+const MASKED: &str = "function pick(p: f64[n], codes: u8[n], r: f64): u8 {
+    return codes[Math.min(count(p, (c) => c <= r), n - 1)];
+}
+action main(args: string[k]): i32 {
+    const n = 2 * 4096 + 21;
+    const u = map(iota(n), (i) => f64(i) * 0.5);
+    const p = [0.1, 0.35, 0.6, 0.9];
+    const codes = [65u8, 67u8, 71u8, 84u8];
+    // indices past the end in the lanes a branch does not take: neither a
+    // panic nor a read outside the array (consecutive, then a gather)
+    print(sum(map(iota(n), (i) => i < 10 ? u[i + n - 10] : -1.0)));
+    print(sum(map(iota(n), (i) => i < 10 ? u[i * 7 + n - 70] : -1.0)));
+    // a size of every lane checked in a branch no lane takes
+    const one = filter(codes, (c) => c == 65u8);
+    print(sum(map(iota(n), (i) => i < 0 ? f64(pick(p, one, 0.5)) : 2.0)));
+    // a count of an array of the context in each lane, a branch with a
+    // gather and an index computed from another index
+    const t = map(iota(n), (i) => i % 61 == 60 ? 10u8 : pick(p, codes, f64(i % 1000) / 1000.0));
+    print(sum(map(t, (x) => u64(x))));
+    const table = map(iota(256), (b) => u8(255 - b));
+    print(sum(map(iota(n), (i) => i % 7 == 0 ? 0u64 : u64(table[i64(t[n - 1 - i])]))));
+    // an order that is not free: the fixed form in each lane (not vector)
+    print(sum(map(iota(100), (i) => reduce(p, (a, b) => a + b, f64(i)))));
+    return 0;
+}
+";
+
+#[test]
+fn masked_branches_and_replayed_checks_give_the_interpreter() {
+    // `if` with branches that index arrays, under the mask of their lanes,
+    // and checks that fail replayed one element at a time (D185)
+    let want = interp_ok(MASKED, &[]);
+    let bin = compile(MASKED, "vector_masked");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("@llvm.masked.load.v"), "no masked load");
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+    // two sites that fail in the same vector: the scalar order decides
+    // (element 4 reads b[4] before element 5 reads a[10]); a site under a
+    // mask; the size of `pick` checked in a branch some lanes take
+    for (name, src) in [
+        ("two_sites", "action main(args: string[k]): i32 {\n    const a = map(iota(9), (i) => f64(i));\n    const b = map(iota(4), (i) => f64(i));\n    print(sum(map(iota(40), (j) => a[j * 2] + b[j])));\n    return 0;\n}\n"),
+        ("masked_site", "action main(args: string[k]): i32 {\n    const a = map(iota(50), (i) => f64(i));\n    print(sum(map(iota(4100), (j) => j % 5 == 3 ? a[j / 5] : a[j % 50 + 1])));\n    return 0;\n}\n"),
+        ("size_in_branch", &MASKED.replace("i < 0 ? f64(pick(p, one, 0.5))", "i > 77 ? f64(pick(p, one, 0.5))")),
+    ] {
+        let want = match interp(src, &[]) {
+            Outcome::Panic(m, _) => m,
+            Outcome::Exit(c, out) => panic!("{}: no panic ({} {})", name, c, out),
+        };
+        let bin = compile(src, &format!("vector_masked_{}", name));
+        let run = run_bin_threads(&bin, &[], Some(1));
+        assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", name);
+    }
+}
+
+#[test]
+fn tables_of_bytes_are_permuted_when_small_and_read_one_by_one_otherwise() {
+    // an index into an array of bytes that is not consecutive (D185): with
+    // AVX-512 VBMI, permutations in registers when the array has at most
+    // 256 bytes (masked loads: nothing read past its end), the scalar loop
+    // when it is larger; the values of the interpreter in every case
+    let src = "action main(args: string[k]): i32 {
+    const n = 3 * 4096 + 29;
+    const t256 = map(iota(256), (b) => u8((b * 7 + 3) % 256));
+    const t4 = [11u8, 22u8, 33u8, 44u8];
+    const t300 = map(iota(300), (b) => u8(b % 251));
+    const k = map(iota(n), (i) => (i * 31 + i / 7) % 256);
+    // materialized (each used twice): the loops of `fill_range`
+    const a = map(iota(n), (i) => i % 9 == 8 ? 0u8 : t256[k[i]]);
+    const b = map(iota(n), (i) => t4[k[i] % 4]);
+    const c = map(iota(n), (i) => t300[(k[i] * 3) % 300]);
+    print([a[100], b[100], c[100]] as const);
+    print(sum(map(a, (x) => u64(x))));
+    print(sum(map(b, (x) => u64(x))));
+    print(sum(map(c, (x) => u64(x))));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "vector_bytes");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    if isc_codegen::backend::host_features().split(',').any(|f| f == "+avx512vbmi") {
+        assert!(ll.contains("vpermi2var.qi.256"), "no permutation of bytes");
+    }
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }

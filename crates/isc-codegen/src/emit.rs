@@ -388,8 +388,8 @@ struct Func {
     body: Vec<String>,
     tmp: u32,
     /// Vectors of consecutive indices (the index of a loop, by lanes): each
-    /// one's first index, a scalar (D181).
-    contig: HashMap<String, String>,
+    /// one's first index, a scalar, and its step, 1 or -1 (D181, D185).
+    contig: HashMap<String, (String, i64)>,
 }
 
 pub struct Gen<'p> {
@@ -408,6 +408,10 @@ pub struct Gen<'p> {
     /// The quotients and remainders of the index of the loop being emitted
     /// by constants, carried from one iteration to the next (D180).
     divmod: Vec<DivMod>,
+    /// In vector code read by `elem_replayed`: the block that computes the
+    /// elements of the vector again one at a time, where a failed check
+    /// jumps, so that the panic is the one of the scalar loop (D185).
+    vec_fail: Option<String>,
     /// In a task: the recursive types whose nodes may be shared with other
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
@@ -482,6 +486,18 @@ fn inner_loop(e: &Expr) -> bool {
 thread_local! {
     /// The functions of the program computed lane by lane in vector code.
     static SPMD: std::cell::RefCell<HashSet<u32>> = std::cell::RefCell::new(HashSet::new());
+    /// While `lam_ok_replay` runs: the rules of vector code read by
+    /// `elem_replayed` (D185).
+    static REPLAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The target permutes bytes (AVX-512 VBMI): an index into a table of
+    /// bytes is vector code (D185).
+    static BYTE_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The parameters of the lambdas being checked bound to an `iota`: the
+    /// index of the loop, consecutive in the lanes (D185).
+    static INDEX_VARS: std::cell::RefCell<HashSet<VarId>> = std::cell::RefCell::new(HashSet::new());
+    /// While `src_vec_ok_lookup` runs: an index into an array of bytes is
+    /// vector code, its loop choosing at run time (`lookup_tables`, D185).
+    static LOOKUP_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The largest number of parameters of the SPMD functions called in `e`,
@@ -721,6 +737,9 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         return Err(format!("--lanes {}: V must be a power of two dividing {}", opts.lanes, BLOCK));
     }
     SPMD.with(|s| *s.borrow_mut() = spmd_fns(p));
+    BYTE_LOOKUP.with(|b| {
+        b.set(matches!(opts.isa, Isa::Native | Isa::Avx512) && crate::backend::host_features().split(',').any(|f| f == "+avx512vbmi"))
+    });
     let mut g = Gen {
         p,
         opts: *opts,
@@ -740,6 +759,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         f: Func::default(),
         env: HashMap::new(),
         divmod: Vec::new(),
+        vec_fail: None,
         tail: None,
         rec_drops: BTreeSet::new(),
         rec_prints: BTreeSet::new(),
@@ -909,9 +929,97 @@ fn has_index(e: &Expr) -> bool {
 
 /// Vector code of a body with an index (D181): its only site that can
 /// panic, so that the first lane out of bounds is the element at which the
-/// scalar loop panics.
+/// scalar loop panics; any number when a failed check is replayed one
+/// element at a time (D185).
 fn index_vec_ok(e: &Expr) -> bool {
-    !has_index(e) || panic_sites(e) == 1
+    !has_index(e) || panic_sites(e) == 1 || REPLAY.with(|r| r.get())
+}
+
+/// The sites of `e` that can panic are indexings, whose checks and loads
+/// are restricted to the lanes of a mask (D185).
+fn maskable(e: &Expr) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) => {
+            matches!(b.kind, Lit(isc_ir::Lit::Int(d)) if d != 0) && maskable(a)
+        }
+        // (a size check of vector code is of every lane: `uniform_check`)
+        Update { .. } | Slice(..) | Window(..) | Action(..) | Bench(..) => false,
+        Pow(..) => isc_ir::passes::cannot_panic(e),
+        _ => e.children().into_iter().all(maskable),
+    }
+}
+
+/// `i` is the index of the loop (a parameter bound to an `iota`) plus or
+/// minus values of every lane, or a value of every lane minus it:
+/// consecutive indices (D185).
+fn affine_index(i: &Expr, varying: &HashSet<VarId>) -> bool {
+    match &i.kind {
+        ExprKind::Var(v, _) => INDEX_VARS.with(|s| s.borrow().contains(v)),
+        ExprKind::Binary(BinOp::Add, a, b) => {
+            (affine_index(a, varying) && !mentions(b, varying)) || (affine_index(b, varying) && !mentions(a, varying))
+        }
+        ExprKind::Binary(BinOp::Sub, a, b) => {
+            (affine_index(a, varying) && !mentions(b, varying)) || (!mentions(a, varying) && affine_index(b, varying))
+        }
+        _ => false,
+    }
+}
+
+/// The elements of `s` are computed by a lambda that can panic (D185).
+fn src_checks(s: &Src) -> bool {
+    match s {
+        Src::Map(srcs, l) => !isc_ir::passes::cannot_panic(&l.body) || srcs.iter().any(src_checks),
+        Src::Offset { inner, .. } => src_checks(inner),
+        _ => false,
+    }
+}
+
+/// `lam_ok` for vector code read by `elem_replayed` (D185).
+fn lam_ok_replay(l: &Lambda) -> bool {
+    let before = REPLAY.with(|r| r.replace(true));
+    let ok = lam_ok(l);
+    REPLAY.with(|r| r.set(before));
+    ok
+}
+
+/// `src_vec_ok_replay`, an index into an array of bytes allowed: for
+/// `fill_range`, whose loop is vector code only when each such array has at
+/// most 256 bytes (D185).
+fn src_vec_ok_lookup(e: &Expr) -> bool {
+    let before = LOOKUP_OK.with(|b| b.replace(true));
+    let ok = src_vec_ok_replay(e);
+    LOOKUP_OK.with(|b| b.set(before));
+    ok
+}
+
+/// The arrays of bytes that the body of `l` indexes by an index that is not
+/// consecutive: permuted in registers by vector code (D185).
+fn lookup_tables(l: &Lambda) -> Vec<VarId> {
+    fn walk(e: &Expr, out: &mut Vec<VarId>) {
+        if let ExprKind::Index(x, i) = &e.kind {
+            if let ExprKind::Var(v, _) = x.kind {
+                let none = HashSet::new();
+                if esize(x.ty.elem()) == 1 && !affine_index(i, &none) && !out.contains(&v) {
+                    out.push(v);
+                }
+            }
+        }
+        for c in e.children() {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&l.body, &mut out);
+    out
+}
+
+/// `src_vec_ok` for vector code read by `elem_replayed` (D185).
+fn src_vec_ok_replay(e: &Expr) -> bool {
+    let before = REPLAY.with(|r| r.replace(true));
+    let ok = src_vec_ok(e);
+    REPLAY.with(|r| r.set(before));
+    ok
 }
 
 /// `vec_ok`, the expression `given` (a `reduce` whose value is computed
@@ -948,15 +1056,43 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
         ExprKind::Pow(b, k) => {
             vec_ok_given(b, varying, given) && !mentions(k, varying) && !has_given(k) && vec_ok_given(k, varying, given)
         }
+        // both branches computed; under the mask of its lanes, a branch may
+        // index arrays or divide integers when a failed check is replayed
+        // one element at a time (D185)
         ExprKind::If(c, t, f) => {
             vec_ok_given(c, varying, given)
                 && vec_ok_given(t, varying, given)
                 && vec_ok_given(f, varying, given)
-                && safe(t)
-                && safe(f)
+                && ((safe(t) && safe(f)) || (REPLAY.with(|r| r.get()) && maskable(t) && maskable(f)))
         }
         // a SPMD call (D140)
         ExprKind::Call(f, args) => SPMD.with(|s| s.borrow().contains(f)) && args.iter().all(|a| vec_ok_given(a, varying, given)),
+        // the length of an array of the context, two sizes of every lane
+        // compared, the reduction (order free) of an array of the context
+        // (D185)
+        ExprKind::Len(x) => !mentions(x, varying) && !has_given(x),
+        ExprKind::CheckSize(a, b, body) => {
+            !mentions(a, varying)
+                && !mentions(b, varying)
+                && !has_given(a)
+                && !has_given(b)
+                && vec_ok_given(a, varying, given)
+                && vec_ok_given(b, varying, given)
+                && vec_ok_given(body, varying, given)
+        }
+        ExprKind::Reduce(x, op, z) => {
+            isc_ir::passes::order_free(op, z)
+                && match &x.kind {
+                    ExprKind::Var(..) => !mentions(x, varying) && x.ty.elem().is_scalar(),
+                    ExprKind::Map(ins, m) if ins.len() == 1 && matches!(ins[0].kind, ExprKind::Var(..)) => {
+                        !mentions(&ins[0], varying) && ins[0].ty.elem().is_scalar() && {
+                            varying.remove(&m.params[0]);
+                            vec_ok_given(&m.body, varying, given)
+                        }
+                    }
+                    _ => false,
+                }
+        }
         // a size checked once for every lane (`iota(k)` in a `fold`, D183)
         ExprKind::CheckNonNegative(k, b) => {
             !mentions(k, varying) && !has_given(k) && vec_ok_given(k, varying, given) && vec_ok_given(b, varying, given)
@@ -968,8 +1104,13 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
                 && !mentions(x, varying)
                 && !has_given(x)
                 && matches!(x.ty.elem(), Type::Int(_) | Type::F64 | Type::F32)
-                && isc_ir::passes::cannot_panic(i)
+                && (isc_ir::passes::cannot_panic(i) || REPLAY.with(|r| r.get()))
                 && vec_ok_given(i, varying, given)
+                // elements of fewer than 32 bits: no gather instruction; their
+                // index consecutive (a load), or bytes permuted (D185)
+                && (esize(x.ty.elem()) >= 4
+                    || affine_index(i, varying)
+                    || (esize(x.ty.elem()) == 1 && BYTE_LOOKUP.with(|b| b.get()) && LOOKUP_OK.with(|b| b.get())))
         }
         // a `fold` over the same elements in every lane (`iota(8)`, an
         // array of the context): a scalar loop of a vector accumulator
@@ -996,7 +1137,18 @@ fn lam_ok(l: &Lambda) -> bool {
 
 fn src_vec_ok(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Map(ins, l) => ins.iter().all(src_vec_ok) && lam_ok(l),
+        ExprKind::Map(ins, l) => {
+            // the parameters bound to an `iota` are the index of the loop
+            INDEX_VARS.with(|s| {
+                let mut s = s.borrow_mut();
+                for (x, p) in ins.iter().zip(&l.params) {
+                    if matches!(x.kind, ExprKind::Iota(_)) {
+                        s.insert(*p);
+                    }
+                }
+            });
+            ins.iter().all(src_vec_ok) && lam_ok(l)
+        }
         ExprKind::Slice(x, _, _) if isc_ir::passes::is_producer(x) => src_vec_ok(x),
         _ => e.ty.is_array() && e.ty.elem().is_scalar(),
     }
@@ -1133,6 +1285,7 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let mut ps = Vec::new();
         for (k, var) in f.params.iter().enumerate() {
@@ -1210,6 +1363,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         r?;
         self.funcs.push(text);
@@ -1928,6 +2082,7 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, atomic);
         // inside an atomic drop, every count is atomic (D175)
         let saved_shared = self.task_shared.take();
@@ -1983,6 +2138,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
         self.funcs.push(text);
@@ -1998,6 +2154,7 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let nt = self.rec_node_ty(i);
         let layout = self.p.recs[i as usize].layout.clone();
@@ -2054,6 +2211,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         res?;
         self.funcs.push(text);
@@ -2115,6 +2273,7 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let nt = self.rec_node_ty(i);
         let r = self.p.recs[i as usize].clone();
@@ -2127,6 +2286,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         res?;
         self.funcs.push(text);
@@ -2257,12 +2417,13 @@ impl<'p> Gen<'p> {
             Binary(op, a, b) => {
                 let av = self.ex(a, w)?;
                 let bv = self.ex(b, w)?;
-                // consecutive indices plus a value of every lane are
-                // consecutive indices (D183)
-                let base = if *op == BinOp::Add && a.ty == Type::Int(IntKind::I64) && w > 1 {
+                // consecutive indices plus or minus a value of every lane are
+                // consecutive indices (D184, D185)
+                // (a value of every lane minus them: consecutive downwards)
+                let base = if matches!(op, BinOp::Add | BinOp::Sub) && a.ty == Type::Int(IntKind::I64) && w > 1 {
                     match (self.f.contig.get(&av.r).cloned(), self.f.contig.get(&bv.r).cloned()) {
-                        (Some(x), None) if uni(&bv) => Some((x, bv.r.clone())),
-                        (None, Some(y)) if uni(&av) => Some((y, av.r.clone())),
+                        (Some((x, d)), None) if uni(&bv) => Some((x, d, bv.r.clone(), false)),
+                        (None, Some((y, d))) if uni(&av) => Some((y, d, av.r.clone(), *op == BinOp::Sub)),
                         _ => None,
                     }
                 } else {
@@ -2272,9 +2433,15 @@ impl<'p> Gen<'p> {
                 let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
                 let r = self.binop(*op, av, bv, &a.ty, w, span);
                 self.fast_math = saved;
-                if let (Some((x, u)), Ok(rv)) = (base, &r) {
-                    let first = self.ins(format!("add i64 {}, {}", x, u));
-                    self.f.contig.insert(rv.r.clone(), first);
+                if let (Some((x, d, u, flip)), Ok(rv)) = (base, &r) {
+                    let (first, d) = if flip {
+                        (self.ins(format!("sub i64 {}, {}", u, x)), -d)
+                    } else if *op == BinOp::Add {
+                        (self.ins(format!("add i64 {}, {}", x, u)), d)
+                    } else {
+                        (self.ins(format!("sub i64 {}, {}", x, u)), d)
+                    };
+                    self.f.contig.insert(rv.r.clone(), (first, d));
                 }
                 r
             }
@@ -2527,6 +2694,7 @@ impl<'p> Gen<'p> {
             Map(..) if e.ty.elem().is_array() => self.materialize_rows(e),
             Map(..) | Iota(_) | Fill(..) | Zeros(_) => self.materialize(e),
             // values that own memory (strings, nodes, D134)
+            Reduce(x, l, z) if w > 1 => self.reduce_vec(x, l, z, w),
             Reduce(x, l, z) if holds_owned(&e.ty) => self.reduce_owned(x, l, z),
             Scan(x, l, z) if holds_owned(e.ty.elem()) => self.scan_owned(x, l, z),
             Reduce(x, l, z) if isc_ir::passes::is_stream(x) => self.reduce_stream(x, l, z),
@@ -2547,13 +2715,13 @@ impl<'p> Gen<'p> {
                 let av = self.ex(a, 1)?;
                 let bv = self.ex(b, 1)?;
                 let ok = self.ins(format!("icmp eq i64 {}, {}", av.r, bv.r));
-                self.guard(&ok, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", av.r, bv.r, Self::pos(span)));
+                self.uniform_check(&ok, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", av.r, bv.r, Self::pos(span)), w);
                 self.ex(body, w)
             }
             CheckNonNegative(k, body) => {
                 let kv = self.ex(k, 1)?;
                 let ok = self.ins(format!("icmp sge i64 {}, 0", kv.r));
-                self.guard(&ok, format!("call void @isc_panic_negsize(i64 {}, {})", kv.r, Self::pos(span)));
+                self.uniform_check(&ok, format!("call void @isc_panic_negsize(i64 {}, {})", kv.r, Self::pos(span)), w);
                 self.ex(body, w)
             }
             Zero => Ok(v(Self::zero(&e.ty), lt(&e.ty))),
@@ -2656,6 +2824,41 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// A check of a value of every lane: in vector code under a mask, a
+    /// failure only when a lane is active (a branch of an `if`); a jump to
+    /// the replay of the vector when there is one (D185).
+    fn uniform_check(&mut self, ok: &str, panic_call: String, w: u32) {
+        let fine = match self.mask.clone() {
+            Some(m) if w > 1 => {
+                let name = format!("llvm.vector.reduce.or.v{}i1", w);
+                self.decls.insert(format!("declare i1 @{}(<{} x i1>)", name, w));
+                let active = self.ins(format!("call i1 @{}(<{} x i1> {})", name, w, m));
+                let out = self.ins(format!("xor i1 {}, true", ok));
+                let fails = self.ins(format!("and i1 {}, {}", out, active));
+                self.ins(format!("xor i1 {}, true", fails))
+            }
+            _ => ok.to_string(),
+        };
+        if w > 1 {
+            self.vec_check(&fine, panic_call);
+        } else {
+            self.guard(&fine, panic_call);
+        }
+    }
+
+    /// A check in vector code: a jump to the replay of the vector when there
+    /// is one (D185), the panic otherwise.
+    fn vec_check(&mut self, ok: &str, panic_call: String) {
+        match self.vec_fail.clone() {
+            Some(lf) => {
+                let lok = self.label();
+                self.cbr(ok, &lok, &lf);
+                self.block(&lok);
+            }
+            None => self.guard(ok, panic_call),
+        }
+    }
+
     /// `a[i]` in vector code (D181): `a` an array of the context, `i` a
     /// vector of indices. Every lane checked at once; the first lane out of
     /// bounds gives the panic of the scalar loop (the body has no other site
@@ -2664,10 +2867,37 @@ impl<'p> Gen<'p> {
     fn index_vec(&mut self, a: &Expr, i: &Expr, w: u32, span: Span) -> R<V> {
         let (src, n) = self.prepare_src(a)?;
         let iv = self.ex(i, w)?;
+        let unsigned = if is_signed(&i.ty) { 0 } else { 1 };
         if uni(&iv) {
             let idx = self.index64(&iv, &i.ty);
-            self.bounds(&idx, &n, &i.ty, span);
-            return self.elem(&src, &idx, 1);
+            let ok = self.ins(format!("icmp ult i64 {}, {}", idx, n));
+            let Some(m) = self.mask.clone() else {
+                self.vec_check(&ok, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", idx, n, unsigned, Self::pos(span)));
+                return self.elem(&src, &idx, 1);
+            };
+            // under a mask (a branch of an `if`, D185): a failure only when a
+            // lane is active, the load only when in bounds
+            let name = format!("llvm.vector.reduce.or.v{}i1", w);
+            self.decls.insert(format!("declare i1 @{}(<{} x i1>)", name, w));
+            let active = self.ins(format!("call i1 @{}(<{} x i1> {})", name, w, m));
+            let out = self.ins(format!("xor i1 {}, true", ok));
+            let fails = self.ins(format!("and i1 {}, {}", out, active));
+            let fine = self.ins(format!("xor i1 {}, true", fails));
+            self.vec_check(&fine, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", idx, n, unsigned, Self::pos(span)));
+            let lload = self.label();
+            let lskip = self.label();
+            let ljoin = self.label();
+            self.cbr(&ok, &lload, &lskip);
+            self.block(&lload);
+            let x = self.elem(&src, &idx, 1)?;
+            let lend = self.current_label(&lload);
+            self.br(&ljoin);
+            self.block(&lskip);
+            self.br(&ljoin);
+            self.block(&ljoin);
+            let et = a.ty.elem().clone();
+            let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", x.t, x.r, lend, Self::zero(&et), lskip));
+            return Ok(V { r, t: x.t, uni: true });
         }
         let Src::Mat { ptr, elem, .. } = &src else {
             return Err("internal error: an index of vector code into a computed array".into());
@@ -2688,33 +2918,132 @@ impl<'p> Gen<'p> {
         };
         let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, bad, w));
         let ok = self.ins(format!("icmp eq i{} {}, 0", w, bits));
-        let lfail = self.label();
         let lok = self.label();
-        self.cbr(&ok, &lok, &lfail);
-        self.block(&lfail);
-        let first = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {bits}, i1 true)", w = w, bits = bits));
-        self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
-        let at = self.ins(format!("extractelement <{} x i64> {}, i{} {}", w, idx, w, first));
-        let unsigned = if is_signed(&i.ty) { 0 } else { 1 };
-        self.emit(format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", at, n, unsigned, Self::pos(span)));
-        self.emit("unreachable");
-        self.block(&lok);
-        if let Some(base) = self.f.contig.get(&iv.r).cloned() {
-            return Ok(self.load_scalar(&ptr, &base, &elem, w));
+        if let Some(lf) = self.vec_fail.clone() {
+            // the elements of the vector again, one at a time (D185)
+            self.cbr(&ok, &lok, &lf);
+        } else {
+            let lfail = self.label();
+            self.cbr(&ok, &lok, &lfail);
+            self.block(&lfail);
+            let first = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {bits}, i1 true)", w = w, bits = bits));
+            self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+            let at = self.ins(format!("extractelement <{} x i64> {}, i{} {}", w, idx, w, first));
+            self.emit(format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", at, n, unsigned, Self::pos(span)));
+            self.emit("unreachable");
         }
+        self.block(&lok);
         let m = mt(&elem);
-        let ptrs = self.ins(format!("getelementptr inbounds {}, ptr {}, <{} x i64> {}", m, ptr, w, idx));
+        let vm = format!("<{} x {}>", w, m);
         let suffix = match m.as_str() {
             "double" => "f64".to_string(),
             "float" => "f32".to_string(),
             t => t.to_string(),
         };
-        let name = format!("llvm.masked.gather.v{}{}.v{}p0", w, suffix, w);
-        let vm = format!("<{} x {}>", w, m);
-        self.decls.insert(format!("declare {} @{}(<{} x ptr>, i32, <{} x i1>, {})", vm, name, w, w, vm));
-        let all = format!("<{}>", (0..w).map(|_| "i1 true").collect::<Vec<_>>().join(", "));
-        let x = self.ins(format!("call {} @{}(<{} x ptr> {}, i32 {}, <{} x i1> {}, {} poison)", vm, name, w, ptrs, esize(&elem), w, all, vm));
+        if let Some((base, dir)) = self.f.contig.get(&iv.r).cloned() {
+            // downwards: the same load from the lowest index, its lanes
+            // reversed (D185)
+            let rev = format!("<{}>", (0..w).rev().map(|j| format!("i32 {}", j)).collect::<Vec<_>>().join(", "));
+            let low = if dir == 1 { base } else { self.ins(format!("sub i64 {}, {}", base, w - 1)) };
+            let x = match self.mask.clone() {
+                None => self.load_scalar(&ptr, &low, &elem, w).r,
+                Some(mask) => {
+                    // the lanes of a mask only: the others may be past the end
+                    let mask = if dir == 1 { mask } else { self.ins(format!("shufflevector <{} x i1> {}, <{} x i1> poison, <{} x i32> {}", w, mask, w, w, rev)) };
+                    let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, low));
+                    let name = format!("llvm.masked.load.v{}{}.p0", w, suffix);
+                    self.decls.insert(format!("declare {} @{}(ptr, i32, <{} x i1>, {})", vm, name, w, vm));
+                    self.ins(format!("call {} @{}(ptr {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, g, esize(&elem), w, mask, vm))
+                }
+            };
+            let x = if dir == 1 { x } else { self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> {}", vm, x, vm, w, rev)) };
+            return Ok(V { r: x, t: vm, uni: false });
+        }
+        if esize(&elem) == 1 && matches!(elem, Type::Int(_)) && w <= 32 && BYTE_LOOKUP.with(|b| b.get()) {
+            // a table of at most 256 bytes: permutations of its bytes in
+            // registers (AVX-512 VBMI), a gather beyond (D185)
+            let small = self.ins(format!("icmp ule i64 {}, 256", n));
+            let llook = self.label();
+            let lgather = self.label();
+            let ljoin = self.label();
+            self.cbr(&small, &llook, &lgather);
+            self.block(&llook);
+            let r1 = self.byte_lookup(&ptr, &n, &idx, w);
+            let l1 = self.current_label(&llook);
+            self.br(&ljoin);
+            self.block(&lgather);
+            let r2 = self.gather(&ptr, &idx, &elem, w);
+            let l2 = self.current_label(&lgather);
+            self.br(&ljoin);
+            self.block(&ljoin);
+            let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", vm, r1, l1, r2, l2));
+            return Ok(V { r, t: vm, uni: false });
+        }
+        let x = self.gather(&ptr, &idx, &elem, w);
         Ok(V { r: x, t: vm, uni: false })
+    }
+
+    /// The elements of `ptr` at the lanes of `idx` (`<w x i64>`), those of
+    /// the lanes of the mask.
+    fn gather(&mut self, ptr: &str, idx: &str, elem: &Type, w: u32) -> String {
+        let m = mt(elem);
+        let vm = format!("<{} x {}>", w, m);
+        let suffix = match m.as_str() {
+            "double" => "f64".to_string(),
+            "float" => "f32".to_string(),
+            t => t.to_string(),
+        };
+        let ptrs = self.ins(format!("getelementptr inbounds {}, ptr {}, <{} x i64> {}", m, ptr, w, idx));
+        let name = format!("llvm.masked.gather.v{}{}.v{}p0", w, suffix, w);
+        self.decls.insert(format!("declare {} @{}(<{} x ptr>, i32, <{} x i1>, {})", vm, name, w, w, vm));
+        let lanes = self.mask.clone().unwrap_or_else(|| format!("<{}>", (0..w).map(|_| "i1 true").collect::<Vec<_>>().join(", ")));
+        self.ins(format!("call {} @{}(<{} x ptr> {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, w, ptrs, esize(elem), w, lanes, vm))
+    }
+
+    /// The bytes of a table of `n` <= 256 bytes at the lanes of `idx` (in
+    /// bounds): its 8 parts of 32 bytes in registers (masked loads: nothing
+    /// read past its end), 4 permutations of 64 of them (`vpermi2b`, bits 0
+    /// to 5 of each index), the one of bits 6 and 7 (D185).
+    fn byte_lookup(&mut self, ptr: &str, n: &str, idx: &str, w: u32) -> String {
+        self.decls.insert("declare <32 x i8> @llvm.masked.load.v32i8.p0(ptr, i32, <32 x i1>, <32 x i8>)".into());
+        self.decls.insert("declare <32 x i8> @llvm.x86.avx512.vpermi2var.qi.256(<32 x i8>, <32 x i8>, <32 x i8>)".into());
+        let mut parts = Vec::new();
+        for k in 0..8 {
+            let left = self.ins(format!("sub i64 {}, {}", n, 32 * k));
+            let neg = self.ins(format!("icmp slt i64 {}, 0", left));
+            let l0 = self.ins(format!("select i1 {}, i64 0, i64 {}", neg, left));
+            let big = self.ins(format!("icmp sgt i64 {}, 32", l0));
+            let bits = self.ins(format!("select i1 {}, i64 32, i64 {}", big, l0));
+            let one = self.ins(format!("shl i64 1, {}", bits));
+            let m64 = self.ins(format!("sub i64 {}, 1", one));
+            let m32 = self.ins(format!("trunc i64 {} to i32", m64));
+            let mv = self.ins(format!("bitcast i32 {} to <32 x i1>", m32));
+            let p = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", ptr, 32 * k));
+            parts.push(self.ins(format!("call <32 x i8> @llvm.masked.load.v32i8.p0(ptr {}, i32 1, <32 x i1> {}, <32 x i8> zeroinitializer)", p, mv)));
+        }
+        let i8v = self.ins(format!("trunc <{} x i64> {} to <{} x i8>", w, idx, w));
+        let iv = if w == 32 {
+            i8v
+        } else {
+            let lanes = (0..32).map(|j| if j < w { format!("i32 {}", j) } else { "i32 poison".to_string() }).collect::<Vec<_>>().join(", ");
+            self.ins(format!("shufflevector <{} x i8> {}, <{} x i8> poison, <32 x i32> <{}>", w, i8v, w, lanes))
+        };
+        let mut q = Vec::new();
+        for j in 0..4 {
+            q.push(self.ins(format!("call <32 x i8> @llvm.x86.avx512.vpermi2var.qi.256(<32 x i8> {}, <32 x i8> {}, <32 x i8> {})", parts[2 * j], iv, parts[2 * j + 1])));
+        }
+        let splat64 = format!("<{}>", (0..32).map(|_| "i8 64").collect::<Vec<_>>().join(", "));
+        let b6 = self.ins(format!("and <32 x i8> {}, {}", iv, splat64));
+        let s6 = self.ins(format!("icmp ne <32 x i8> {}, zeroinitializer", b6));
+        let s7 = self.ins(format!("icmp slt <32 x i8> {}, zeroinitializer", iv));
+        let lo = self.ins(format!("select <32 x i1> {}, <32 x i8> {}, <32 x i8> {}", s6, q[1], q[0]));
+        let hi = self.ins(format!("select <32 x i1> {}, <32 x i8> {}, <32 x i8> {}", s6, q[3], q[2]));
+        let r = self.ins(format!("select <32 x i1> {}, <32 x i8> {}, <32 x i8> {}", s7, hi, lo));
+        if w == 32 {
+            return r;
+        }
+        let lanes = (0..w).map(|j| format!("i32 {}", j)).collect::<Vec<_>>().join(", ");
+        self.ins(format!("shufflevector <32 x i8> {}, <32 x i8> poison, <{} x i32> <{}>", r, w, lanes))
     }
 
     /// 0 <= a <= b <= n, or the panic of a slice.
@@ -3088,7 +3417,7 @@ impl<'p> Gen<'p> {
                 let base = self.widen(&v(idx, "i64"), w);
                 let steps: Vec<String> = (0..w).map(|i| format!("i64 {}", i)).collect();
                 let r = self.ins(format!("add <{} x i64> {}, <{}>", w, base.r, steps.join(", ")));
-                self.f.contig.insert(r.clone(), idx.to_string());
+                self.f.contig.insert(r.clone(), (idx.to_string(), 1));
                 Ok(V { r, t: format!("<{} x i64>", w), uni: false })
             }
             Src::Uniform(x) => Ok(x.clone()),
@@ -3122,7 +3451,9 @@ impl<'p> Gen<'p> {
             ExprKind::Map(_, l) => spmd_state(self.p, &l.body),
             _ => None,
         };
-        let w = match (src_vec_ok(e), spmd) {
+        // read by `fill_range`, whose vector loop replays a failed check and
+        // permutes small tables of bytes (D185)
+        let w = match (src_vec_ok_lookup(e), spmd) {
             (false, _) => 1,
             (true, Some(state)) => self.spmd_width(state),
             (true, None) => MAP_WIDTH,
@@ -3655,6 +3986,41 @@ impl<'p> Gen<'p> {
 
     /// Stores the elements `start .. end` of a source into `p`.
     #[allow(clippy::too_many_arguments)]
+    /// Elements `idx .. idx + w` of a source in vector code whose failed
+    /// checks jump to a replay (D185): the elements computed again one at a
+    /// time, in order, so that the panic is the one of the scalar loop (its
+    /// element and its site); if none panics (a check of a lane that the
+    /// scalar code would not have made), their values make the vector.
+    fn elem_replayed(&mut self, src: &Src, idx: &str, w: u32) -> R<V> {
+        if w == 1 || !src_checks(src) {
+            return self.elem(src, idx, w);
+        }
+        let lfail = self.label();
+        let lcont = self.label();
+        let saved = std::mem::replace(&mut self.vec_fail, Some(lfail.clone()));
+        let xv = self.elem(src, idx, w);
+        self.vec_fail = saved;
+        let xv = self.widen(&xv?, w);
+        let lvec = self.current_label(&lfail);
+        self.br(&lcont);
+        self.block(&lfail);
+        let slot = self.alloca(&xv.t);
+        self.for_range_scalar("0", &w.to_string(), 1, &mut |g, j| {
+            let k = g.ins(format!("add i64 {}, {}", idx, j));
+            let x = g.elem(src, &k, 1)?;
+            let cur = g.ins(format!("load {}, ptr {}", xv.t, slot));
+            let nv = g.ins(format!("insertelement {} {}, {} {}, i64 {}", xv.t, cur, x.t, x.r, j));
+            g.emit(format!("store {} {}, ptr {}", xv.t, nv, slot));
+            Ok(())
+        })?;
+        let rv = self.ins(format!("load {}, ptr {}", xv.t, slot));
+        let lrep = self.current_label(&lfail);
+        self.br(&lcont);
+        self.block(&lcont);
+        let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", xv.t, xv.r, lvec, rv, lrep));
+        Ok(V { r, t: xv.t, uni: false })
+    }
+
     fn fill_range(&mut self, src: &Src, p: &str, n: &str, et: &Type, start: &str, end: &str, w: u32) -> R<()> {
         // elements that own memory, lent by the source (the value of
         // `fill`, an array): each one copied (D154)
@@ -3674,19 +4040,54 @@ impl<'p> Gen<'p> {
             });
         }
         let mut tail_start = start.to_string();
+        // arrays of bytes permuted in registers: the vector loop only when
+        // each has at most 256 bytes, every element by the scalar loop
+        // otherwise (the same values, D185)
+        let tables = match src {
+            Src::Map(_, l) if w > 1 && BYTE_LOOKUP.with(|b| b.get()) => lookup_tables(l),
+            _ => Vec::new(),
+        };
+        let mut lscalar = None;
+        if !tables.is_empty() {
+            let mut all = "true".to_string();
+            for t in &tables {
+                let tv = self.env.get(t).cloned().ok_or("codegen: a table of bytes unbound")?;
+                let tn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", tv.r));
+                let small = self.ins(format!("icmp ule i64 {}, 256", tn));
+                all = self.ins(format!("and i1 {}, {}", all, small));
+            }
+            let lvec = self.label();
+            let lsc = self.label();
+            self.cbr(&all, &lvec, &lsc);
+            self.block(&lvec);
+            lscalar = Some(lsc);
+        }
         if w > 1 {
             let len = self.ins(format!("sub i64 {}, {}", end, start));
             let full = self.ins(format!("and i64 {}, -{}", len, w));
             let vend = self.ins(format!("add i64 {}, {}", start, full));
             self.for_range(start, &vend, w as i64, &mut |g, i| {
-                let x = g.elem(src, i, w)?;
+                let x = g.elem_replayed(src, i, w)?;
                 g.store_elem(p, n, i, et, &x, w);
                 Ok(())
             })?;
             tail_start = vend;
         }
-        let dm = self.divmod_start(src, &tail_start);
-        self.for_range(&tail_start, end, 1, &mut |g, i| {
+        let ljoin = lscalar.as_ref().map(|_| self.label());
+        let tail = match (&lscalar, &ljoin) {
+            (Some(lsc), Some(lj)) => {
+                // after the vector loop, its last elements; or all of them
+                let lfrom = self.current_label(lsc);
+                self.br(lj);
+                self.block(lsc);
+                self.br(lj);
+                self.block(lj);
+                self.ins(format!("phi i64 [ {}, %{} ], [ {}, %{} ]", tail_start, lfrom, start, lsc))
+            }
+            _ => tail_start,
+        };
+        let dm = self.divmod_start(src, &tail);
+        self.for_range(&tail, end, 1, &mut |g, i| {
             let x = g.elem(src, i, 1)?;
             g.store_elem(p, n, i, et, &x, 1);
             g.divmod_step(&dm);
@@ -3790,6 +4191,7 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, true);
         // the recursive types the task may share with other threads (D175)
         let mut shared = HashSet::new();
@@ -3825,6 +4227,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
         r?;
@@ -3853,7 +4256,7 @@ impl<'p> Gen<'p> {
             if passes == 1 {
                 let row = |g: &mut Self, i: &str| -> R<()> {
                     let idx = g.ins(format!("add i64 {}, {}", start, i));
-                    let x = g.elem(src, &idx, w)?;
+                    let x = g.elem_replayed(src, &idx, w)?;
                     let x = g.widen(&x, w);
                     let a = g.ins(format!("load {}, ptr {}", vty, acc));
                     let r = g.apply2(l, V { r: a, t: vty.clone(), uni: false }, x, w)?;
@@ -3913,7 +4316,7 @@ impl<'p> Gen<'p> {
                         g.for_range(&lo, &hi, w as i64, &mut |g, i| {
                             let row = g.ins(format!("add i64 {}, {}", start, i));
                             let idx = g.ins(format!("add i64 {}, {}", row, p * pw));
-                            let x = g.elem(src, &idx, pw)?;
+                            let x = g.elem_replayed(src, &idx, pw)?;
                             let x = g.widen(&x, pw);
                             let a = g.ins(format!("load {}, ptr {}", pty, pacc));
                             let r = g.apply2(l, V { r: a, t: pty.clone(), uni: false }, x, pw)?;
@@ -4038,7 +4441,9 @@ impl<'p> Gen<'p> {
         let t = x.ty.elem().clone();
         let zv = self.ex(z, 1)?;
         let lanes = self.opts.lanes;
-        let w = if src_vec_ok(x) && lam_ok(l) { lanes } else { 1 };
+        // read by `reduce_block`, whose vector loops replay a failed check
+        // (D185)
+        let w = if src_vec_ok_replay(x) && lam_ok(l) { lanes } else { 1 };
         let wm = if lam_ok(l) { lanes } else { 1 };
         let (src, n) = self.prepare_src(x)?;
         // An exact operator whose `z` is its identity, or `min` and `max`
@@ -4978,6 +5383,38 @@ impl<'p> Gen<'p> {
             g.bind(l.params[1], el);
             let r = g.ex(&l.body, w)?;
             let r = g.widen(&r, w);
+            g.emit(format!("store {} {}, ptr {}", at, r.r, acc));
+            Ok(())
+        })?;
+        Ok(V { r: self.ins(format!("load {}, ptr {}", at, acc)), t: at, uni: false })
+    }
+
+    /// A `reduce` in vector code (D185): its operator order free, over an
+    /// array of the context, maybe through a `map` whose lambda reads the
+    /// lanes: a scalar loop over the elements, the accumulator a vector.
+    fn reduce_vec(&mut self, x: &Expr, op: &Lambda, z: &Expr, w: u32) -> R<V> {
+        let (arr, lam) = match &x.kind {
+            ExprKind::Map(ins, m) => (&ins[0], Some(m)),
+            _ => (x, None),
+        };
+        let (src, n) = self.prepare_src(arr)?;
+        let zv = self.ex(z, 1)?;
+        let zv = self.widen(&zv, w);
+        let at = zv.t.clone();
+        let acc = self.alloca(&at);
+        self.emit(format!("store {} {}, ptr {}", at, zv.r, acc));
+        self.for_range_scalar("0", &n, 1, &mut |g, i| {
+            let el = g.elem(&src, i, 1)?;
+            let xv = match lam {
+                Some(m) => {
+                    g.bind(m.params[0], el);
+                    g.ex(&m.body, w)?
+                }
+                None => el,
+            };
+            let xv = g.widen(&xv, w);
+            let a = V { r: g.ins(format!("load {}, ptr {}", at, acc)), t: at.clone(), uni: false };
+            let r = g.apply2(op, a, xv, w)?;
             g.emit(format!("store {} {}, ptr {}", at, r.r, acc));
             Ok(())
         })?;
@@ -7196,6 +7633,7 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_vec_fail = self.vec_fail.take();
         for (i, c) in caps.iter().enumerate() {
             let t = cap_vals[i].t.clone();
             let g = self.ins(format!("getelementptr inbounds {}, ptr %env, i32 0, i32 {}", env_ty, i));
@@ -7210,6 +7648,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.vec_fail = saved_vec_fail;
         // the loop
         let t0 = self.ins("call i64 @isc_clock_ns()".into());
         let ia = self.alloca("i64");
