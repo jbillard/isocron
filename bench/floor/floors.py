@@ -98,21 +98,25 @@ def knucleotide():
     return read + (small + large) * ns / T, "read %.3f s (4 threads), 8.75e8 counts: %.3f ns (tables of 4096), %.3f ns (%d and %d keys for 12, 18)" % (read, c4("count_table_4096"), c4("random_increment_2048KiB"), K["kmers_12"][1], K["kmers_18"][1]), "measured"
 rows.append(("knucleotide", knucleotide()))
 
-# mandelbrot 16000: 4 operations per iteration of a pixel (zr' = fma(zr, zr,
-# cr - zi zi), zi' = fma(zr + zr, zi, ci)), the test |z| > 2 (2 more) every
-# 8 iterations (after an escape |z| stays finite for more than 8)
+# mandelbrot 16000: the 7 operations of an iteration as written (zr zr, zi
+# zi, their difference, + cr, 2 zr, its product by zi, + ci: a fused
+# multiply-add rounds once, other bits, D227), the test |z| > 2 every 8
+# iterations (one addition: the squares are those of the next iteration;
+# after an escape |z| stays finite for more than 8)
 def mandelbrot():
-    ops = 4 + 2 / 8
+    ops = 7 + 1 / 8
     return K["iterations"] * ops * c4("fma_f64") * ns / T, "%.2e iterations x %.2f operations, 8 lanes per cycle" % (K["iterations"], ops), "measured"
 rows.append(("mandelbrot", mandelbrot()))
 
-# n-body 50e6 steps, one thread: the chain of a step (difference 1, square
-# of the distance 3, root, product 1, division of dt m by it, the 4
-# contributions to a velocity 4, the position 1); 10 roots and divisions
-# per step if the divider is the bound instead
+# n-body 50e6 steps, one thread: the chain of a step as written (difference
+# 1, square of the distance 3, root, its cube 2, dt divided by it, the
+# product by m dx 1, the 4 contributions to a velocity in their order 4,
+# the position 2; the latencies of the root and of the division were
+# measured with an addition each); 10 roots and divisions per step if the
+# divider is the bound instead
 def nbody():
     a = c1("add_latency")
-    chain = 10 * a + c1("sqrt_latency") + c1("divide_latency")
+    chain = 11 * a + c1("sqrt_latency") + c1("divide_latency")
     through = 10 * (c1("sqrt_f64") + c1("divide_f64"))
     return 50e6 * max(chain, through) * ns, "latency of a step %.1f ns (10 roots and divisions: %.1f ns)" % (chain, through), "estimate"
 rows.append(("nbody", nbody()))
