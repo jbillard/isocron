@@ -321,3 +321,43 @@ fn divisions_of_64_bit_lanes_by_constants_are_exact() {
     let run = run_bin(&bin, &[]);
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
 }
+
+#[test]
+fn filters_compress_their_vectors() {
+    // D195: `filter` w elements at a time, its mask counted, the kept
+    // elements stored as a vector (all kept), compressed (some), or not at
+    // all (none); bytes, 32 and 64 bits, integers and floats, an `iota`
+    // and a predicate reading an array, one block and several, against the
+    // interpreter
+    let src = "action main(args: string[k]): i32 {
+    const n = 5 * 4096 + 37;
+    const b = map(iota(n), (i) => u8((i * 7 + i / 61) % 256));
+    const x = map(iota(n), (i) => f64(i % 1000) - 500.25);
+    const y = map(iota(n), (i) => i32((i * 13) % 997) - 400i32);
+    const f = map(iota(n), (i) => f32(i % 77) * 0.5f32);
+    const nl = b.slice(3, n - 2).filter((v) => v != 10u8);
+    const few = filter(iota(n), (i) => b[i] == 62u8);
+    const none = filter(iota(n), (i) => b[i] == 255u8 && i < 0);
+    const all = filter(iota(n), (i) => i >= 0);
+    const xs = filter(x, (v) => v > 100.5 || v < -400.0);
+    const ys = filter(y, (v) => v % 3i32 == 1i32);
+    const fs = filter(f, (v) => v >= 10.0f32);
+    const small = filter(iota(100), (i) => i % 3 == 0);
+    print([nl.length, i64(sum(map(nl, (v) => u64(v)))), few.length, few.length > 0 ? few[few.length - 1] : -1, none.length, all.length, sum(all)] as const);
+    print([xs.length, sum(xs), ys.length, sum(map(ys, (v) => i64(v))), fs.length, f64(sum(fs))] as const);
+    print(small);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "vector_filters");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let f = isc_codegen::backend::host_features();
+    if ["+avx512f", "+avx512vl", "+avx512vbmi2", "+avx512bw"].iter().all(|x| f.split(',').any(|y| y == *x)) {
+        assert!(ll.contains("masked.compressstore.v32i8") && ll.contains("masked.compressstore.v16i64"), "the filters are not compressed");
+    }
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

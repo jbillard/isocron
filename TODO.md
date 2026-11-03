@@ -178,6 +178,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Divisions of the index by constants carried by the vector loop: fasta 0.326 s -> 0.255 s (D186)
   - [x] Bytes close together read through a window of 64 bytes: revcomp 0.350 s -> 0.291 s (D187)
   - [x] Divisions of 64-bit lanes by constants with IFMA: fasta 0.257 s -> 0.207 s (D192)
+  - [x] `filter` in vector code, its vectors compressed: revcomp 0.294 s -> 0.258 s (D195)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

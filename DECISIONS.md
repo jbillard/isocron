@@ -3330,3 +3330,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   frequency: 2.108 s -> 1.591 s on 4 threads, 2.710 s -> 2.200 s on one;
   the same output. Test `dense_groups_as_hashed_ones` (isc-runtime-core:
   small and negative ranges, a range too large, one key, none).
+- **D195 — `filter` in vector code, its vectors compressed (2026-11-04).**
+  reverse-complement filters 254 MB twice, one element at a time (its
+  headers: `filter(iota(n), (i) => data[i] == 62)`; its bases: the bytes
+  but the newlines). AVX-512 compresses the lanes of a mask into
+  consecutive places (`vpcompressb` with VBMI2, `vpcompressd` and `q`):
+  when the source and the predicate are vector code and the elements are
+  of 32 or 64 bits, or bytes with VBMI2 (32 bytes or 16 lanes per vector),
+  the count adds the bits of each mask, and the write tests it: none kept,
+  nothing written; all kept, the vector stored; some, compressed into
+  memory (`llvm.masked.compressstore`). A first form compressed every
+  vector: the headers (3 kept of 254 million) took 0.697 s on one thread
+  instead of 0.625 s, the instruction into memory being slow; and a
+  parameter of a `filter` bound to an `iota` is now the index of the loop
+  (D185), so that `data[i]` is a load. reverse-complement at fixed
+  frequency: 0.294 s -> 0.258 s on 4 threads, 0.664 s -> 0.561 s on one;
+  k-nucleotide's filter compressed too (unchanged: not where its time
+  goes), the other programs unchanged. Test `filters_compress_their_vectors`
+  (bytes, 32 and 64 bits, none, all and some kept, one block and several).

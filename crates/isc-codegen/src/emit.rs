@@ -498,6 +498,9 @@ thread_local! {
     static BYTE_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The target has the 52-bit products of AVX-512 IFMA (D192).
     static IFMA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The target compresses vectors of 32 and 64 bits (AVX-512 F and VL),
+    /// and of bytes (VBMI2): the elements a `filter` keeps (D195).
+    static COMPRESS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
     /// The parameters of the lambdas being checked bound to an `iota`: the
     /// index of the loop, consecutive in the lanes (D185).
     static INDEX_VARS: std::cell::RefCell<HashSet<VarId>> = std::cell::RefCell::new(HashSet::new());
@@ -749,6 +752,12 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     IFMA.with(|b| {
         let f = crate::backend::host_features();
         b.set(matches!(opts.isa, Isa::Native | Isa::Avx512) && ["+avx512ifma", "+avx512vl"].iter().all(|x| f.split(',').any(|y| y == *x)))
+    });
+    COMPRESS.with(|b| {
+        let f = crate::backend::host_features();
+        let has = |x: &str| f.split(',').any(|y| y == x);
+        let wide = matches!(opts.isa, Isa::Native | Isa::Avx512) && has("+avx512f") && has("+avx512vl");
+        b.set((wide, wide && has("+avx512vbmi2") && has("+avx512bw")))
     });
     let mut g = Gen {
         p,
@@ -5198,8 +5207,9 @@ impl<'p> Gen<'p> {
     fn filter(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
         let elem_ty = x.ty.elem().clone();
         let (src, n) = self.prepare_src(x)?;
+        let w = self.filter_width(x, l, &elem_ty);
         if self.in_task {
-            return self.filter_range(&src, &n, l, &elem_ty);
+            return self.filter_range(&src, &n, l, &elem_ty, w);
         }
         let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
         let threads = self.ins("call i64 @isc_thread_count()".to_string());
@@ -5211,11 +5221,11 @@ impl<'p> Gen<'p> {
         let ljoin = self.label();
         self.cbr(&big, &lpar, &lseq);
         self.block(&lpar);
-        let r = self.filter_parallel(e, x, l, &n)?;
+        let r = self.filter_parallel(e, x, l, &n, w)?;
         self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
         self.br(&ljoin);
         self.block(&lseq);
-        let r = self.filter_range(&src, &n, l, &elem_ty)?;
+        let r = self.filter_range(&src, &n, l, &elem_ty, w)?;
         self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
         self.br(&ljoin);
         self.block(&ljoin);
@@ -5223,11 +5233,58 @@ impl<'p> Gen<'p> {
         Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
     }
 
-    /// The sequential `filter` of the `n` elements of `src`.
-    fn filter_range(&mut self, src: &Src, n: &str, l: &Lambda, elem_ty: &Type) -> R<V> {
+    /// The lanes of a `filter` in vector code (D195): its source and its
+    /// predicate vector code, elements of 32 or 64 bits (or bytes with
+    /// VBMI2) that the target compresses; 1 otherwise.
+    fn filter_width(&self, x: &Expr, l: &Lambda, elem_ty: &Type) -> u32 {
+        let (wide, bytes) = COMPRESS.with(|c| c.get());
+        let size_ok = match elem_ty {
+            Type::Int(_) | Type::F64 | Type::F32 => match esize(elem_ty) {
+                4 | 8 => wide,
+                1 => bytes,
+                _ => false,
+            },
+            _ => false,
+        };
+        // a parameter bound to an `iota`: the index of the loop (D185)
+        if matches!(x.kind, ExprKind::Iota(_)) {
+            INDEX_VARS.with(|s| s.borrow_mut().insert(l.params[0]));
+        }
+        if size_ok && src_vec_ok(x) && lam_ok(l) {
+            // bytes: 32 per vector (a `ymm` register); wider: 16 lanes
+            if esize(elem_ty) == 1 { 32 } else { 16 }
+        } else {
+            1
+        }
+    }
+
+    /// The elements of `lo .. hi` of `src` that `l` keeps, counted: `w` at
+    /// a time (the bits of the mask counted, D195), then one at a time.
+    fn count_kept(&mut self, src: &Src, l: &Lambda, lo: &str, hi: &str, w: u32) -> R<String> {
         let cnt = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", cnt));
-        self.for_range("0", n, 1, &mut |g, i| {
+        let mut from = lo.to_string();
+        if w > 1 {
+            let span = self.ins(format!("sub i64 {}, {}", hi, lo));
+            let full = self.ins(format!("and i64 {}, -{}", span, w));
+            let vend = self.ins(format!("add i64 {}, {}", lo, full));
+            self.decls.insert(format!("declare i{w} @llvm.ctpop.i{w}(i{w})", w = w));
+            self.for_range(lo, &vend, w as i64, &mut |g, i| {
+                let el = g.elem(src, i, w)?;
+                g.bind(l.params[0], el);
+                let keep = g.ex(&l.body, w)?;
+                let keep = g.widen(&keep, w);
+                let bits = g.ins(format!("bitcast <{} x i1> {} to i{}", w, keep.r, w));
+                let k = g.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
+                let k64 = g.ins(format!("zext i{} {} to i64", w, k));
+                let c = g.ins(format!("load i64, ptr {}", cnt));
+                let c2 = g.ins(format!("add i64 {}, {}", c, k64));
+                g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+                Ok(())
+            })?;
+            from = vend;
+        }
+        self.for_range(&from, hi, 1, &mut |g, i| {
             let el = g.elem(src, i, 1)?;
             g.bind(l.params[0], el);
             let keep = g.ex(&l.body, 1)?;
@@ -5237,10 +5294,68 @@ impl<'p> Gen<'p> {
             g.emit(format!("store i64 {}, ptr {}", c2, cnt));
             Ok(())
         })?;
-        let k = self.ins(format!("load i64, ptr {}", cnt));
-        let out = self.alloc_elems(&k, elem_ty);
-        self.emit(format!("store i64 0, ptr {}", cnt));
-        self.for_range("0", n, 1, &mut |g, i| {
+        Ok(self.ins(format!("load i64, ptr {}", cnt)))
+    }
+
+    /// The elements of `lo .. hi` of `src` that `l` keeps, written into
+    /// `out` (of `k` elements) from the place in the slot `pos`: `w` at a
+    /// time, compressed (`llvm.masked.compressstore`: `vpcompress`, D195),
+    /// then one at a time.
+    #[allow(clippy::too_many_arguments)]
+    fn write_kept(&mut self, src: &Src, l: &Lambda, lo: &str, hi: &str, out: &str, k: &str, pos: &str, elem_ty: &Type, w: u32) -> R<()> {
+        let mut from = lo.to_string();
+        if w > 1 {
+            let span = self.ins(format!("sub i64 {}, {}", hi, lo));
+            let full = self.ins(format!("and i64 {}, -{}", span, w));
+            let vend = self.ins(format!("add i64 {}, {}", lo, full));
+            let m = mt(elem_ty);
+            let suffix = match m.as_str() {
+                "double" => "f64".to_string(),
+                "float" => "f32".to_string(),
+                t => t.to_string(),
+            };
+            let name = format!("llvm.masked.compressstore.v{}{}", w, suffix);
+            self.decls.insert(format!("declare void @{}(<{} x {}>, ptr, <{} x i1>)", name, w, m, w));
+            self.decls.insert(format!("declare i{w} @llvm.ctpop.i{w}(i{w})", w = w));
+            self.for_range(lo, &vend, w as i64, &mut |g, i| {
+                let el = g.elem(src, i, w)?;
+                let el = g.widen(&el, w);
+                g.bind(l.params[0], el.clone());
+                let keep = g.ex(&l.body, w)?;
+                let keep = g.widen(&keep, w);
+                // none kept: nothing written; all kept: the vector stored;
+                // some: compressed into memory (the instruction is slow:
+                // only when it is needed)
+                let bits = g.ins(format!("bitcast <{} x i1> {} to i{}", w, keep.r, w));
+                let none = g.ins(format!("icmp eq i{} {}, 0", w, bits));
+                let lsome = g.label();
+                let lall = g.label();
+                let lpart = g.label();
+                let ldone = g.label();
+                g.cbr(&none, &ldone, &lsome);
+                g.block(&lsome);
+                let c = g.ins(format!("load i64, ptr {}", pos));
+                let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, out, c));
+                let all = g.ins(format!("icmp eq i{} {}, -1", w, bits));
+                g.cbr(&all, &lall, &lpart);
+                g.block(&lall);
+                g.emit(format!("store <{} x {}> {}, ptr {}, align {}", w, m, el.r, at, esize(elem_ty)));
+                let c_all = g.ins(format!("add i64 {}, {}", c, w));
+                g.emit(format!("store i64 {}, ptr {}", c_all, pos));
+                g.br(&ldone);
+                g.block(&lpart);
+                g.emit(format!("call void @{}(<{} x {}> {}, ptr {}, <{} x i1> {})", name, w, m, el.r, at, w, keep.r));
+                let kk = g.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
+                let k64 = g.ins(format!("zext i{} {} to i64", w, kk));
+                let c2 = g.ins(format!("add i64 {}, {}", c, k64));
+                g.emit(format!("store i64 {}, ptr {}", c2, pos));
+                g.br(&ldone);
+                g.block(&ldone);
+                Ok(())
+            })?;
+            from = vend;
+        }
+        self.for_range(&from, hi, 1, &mut |g, i| {
             let el = g.elem(src, i, 1)?;
             g.bind(l.params[0], el.clone());
             let keep = g.ex(&l.body, 1)?;
@@ -5248,16 +5363,26 @@ impl<'p> Gen<'p> {
             let lnext = g.label();
             g.cbr(&keep.r, &lyes, &lnext);
             g.block(&lyes);
-            let c = g.ins(format!("load i64, ptr {}", cnt));
+            let c = g.ins(format!("load i64, ptr {}", pos));
             // a node kept: one owner more, the new array (D130)
             let el = if holds_owned(elem_ty) { g.copy_value(&el, elem_ty) } else { el };
-            g.store_elem(&out, &k, &c, elem_ty, &el, 1);
+            g.store_elem(out, k, &c, elem_ty, &el, 1);
             let c2 = g.ins(format!("add i64 {}, 1", c));
-            g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+            g.emit(format!("store i64 {}, ptr {}", c2, pos));
             g.br(&lnext);
             g.block(&lnext);
             Ok(())
-        })?;
+        })
+    }
+
+    /// The sequential `filter` of the `n` elements of `src`, `w` at a time
+    /// when its lanes are compressed (D195).
+    fn filter_range(&mut self, src: &Src, n: &str, l: &Lambda, elem_ty: &Type, w: u32) -> R<V> {
+        let k = self.count_kept(src, l, "0", n, w)?;
+        let out = self.alloc_elems(&k, elem_ty);
+        let pos = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", pos));
+        self.write_kept(src, l, "0", n, &out, &k, &pos, elem_ty, w)?;
         Ok(self.arr(&out, &k))
     }
 
@@ -5266,7 +5391,7 @@ impl<'p> Gen<'p> {
     /// sum of the counts before it (the caller, in order); then the
     /// elements of each block written from its place (task j). The result
     /// is the sequential one, whatever the number of threads.
-    fn filter_parallel(&mut self, e: &Expr, x: &Expr, l: &Lambda, n: &str) -> R<V> {
+    fn filter_parallel(&mut self, e: &Expr, x: &Expr, l: &Lambda, n: &str, w: u32) -> R<V> {
         let elem_ty = x.ty.elem().clone();
         let bl = BLOCK.to_string();
         let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
@@ -5287,19 +5412,7 @@ impl<'p> Gen<'p> {
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
             let (src, n) = g.prepare_src(x)?;
             let (start, end) = range(g, &n, j);
-            let cnt = g.alloca("i64");
-            g.emit(format!("store i64 0, ptr {}", cnt));
-            g.for_range(&start, &end, 1, &mut |g, i| {
-                let el = g.elem(&src, i, 1)?;
-                g.bind(l.params[0], el);
-                let keep = g.ex(&l.body, 1)?;
-                let c = g.ins(format!("load i64, ptr {}", cnt));
-                let k = g.ins(format!("zext i1 {} to i64", keep.r));
-                let c2 = g.ins(format!("add i64 {}, {}", c, k));
-                g.emit(format!("store i64 {}, ptr {}", c2, cnt));
-                Ok(())
-            })?;
-            let c = g.ins(format!("load i64, ptr {}", cnt));
+            let c = g.count_kept(&src, l, &start, &end, w)?;
             let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, j));
             g.emit(format!("store i64 {}, ptr {}", c, slot));
             Ok(())
@@ -5329,25 +5442,7 @@ impl<'p> Gen<'p> {
             let pos = g.alloca("i64");
             g.emit(format!("store i64 {}, ptr {}", first, pos));
             let (out, k) = (extra[1].r.clone(), extra[2].r.clone());
-            g.for_range(&start, &end, 1, &mut |g, i| {
-                let el = g.elem(&src, i, 1)?;
-                g.bind(l.params[0], el.clone());
-                let keep = g.ex(&l.body, 1)?;
-                let lyes = g.label();
-                let lnext = g.label();
-                g.cbr(&keep.r, &lyes, &lnext);
-                g.block(&lyes);
-                let c = g.ins(format!("load i64, ptr {}", pos));
-                // a node kept: one owner more, the new array (D130)
-                let el = if holds_owned(&elem_ty) { g.copy_value(&el, &elem_ty) } else { el };
-                g.store_elem(&out, &k, &c, &elem_ty, &el, 1);
-                let c2 = g.ins(format!("add i64 {}, 1", c));
-                g.emit(format!("store i64 {}, ptr {}", c2, pos));
-                g.br(&lnext);
-                g.block(&lnext);
-                Ok(())
-            })?;
-            Ok(())
+            g.write_kept(&src, l, &start, &end, &out, &k, &pos, &elem_ty, w)
         })?;
         self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
         self.emit(format!("call void @isc_free(ptr {})", counts));
