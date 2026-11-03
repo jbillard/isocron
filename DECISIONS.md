@@ -3613,3 +3613,15 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   read nothing; it gave 12.7 ms for reading and is not kept.) The floor
   of reverse-complement (0.067 s, of which 0.056 s for reading) agrees
   with the 55.5 ms measured here.
+- **Rejected after measurement (2026-11-04): the kept elements of a
+  `filter` compressed into a register.** In `write_kept`, a vector of at
+  most 512 bits keeping some of its elements compressed into a register
+  (`llvm.x86.avx512.mask.compress`) and stored by a mask of its first
+  lanes, instead of `llvm.masked.compressstore` (the compression into
+  memory, slow on Intel's cores). At fixed frequency, 4 threads:
+  reverse-complement 0.231 s -> 0.230 s, k-nucleotide 1.442 s -> 1.443 s,
+  the same outputs: no gain. The vectors that keep some of their elements
+  are not what the filter of reverse-complement pays (60 ms of its 0.23 s,
+  measured by phases); an estimate of what it pays, to be measured: two
+  passes over its 247 MB (counting, then writing) and the 247 MB it
+  writes into new pages, which the system first clears.
