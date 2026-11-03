@@ -207,6 +207,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The length of an array known before running a constant of the IR: fasta 0.167 s -> 0.142 s (D228)
   - [x] Consecutive indices through a remainder by a constant read by one load: fasta 0.142 s -> 0.135 s (D229)
   - [x] A function of an element of a small table computed once per element of the table: fasta 0.135 s -> 0.047 s (D230)
+  - [x] The bytes written by blocks through the choice of a table and the test of a length: fasta 0.048 s -> 0.017 s (D234)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

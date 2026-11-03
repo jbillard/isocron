@@ -1319,6 +1319,23 @@ fn lam_ok_replay(l: &Lambda) -> bool {
 /// written, by `materialize` (not a stream, not rows), its elements without
 /// a loop of their own (D225).
 fn print_stream_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
+    streamable(init) && matches!(&body.kind, ExprKind::Action(ActionOp::PrintBytes, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
+}
+
+/// The array of bytes `e` can be made by blocks (`print_stream`): a `map` of
+/// the shape `materialize` makes, or such a `map` behind the choice of a
+/// table (D230: `if ... then (let H = ... in map) else map`, one branch
+/// enough: the other made whole) and the `let`s of scalars or tables
+/// before them (D234).
+fn streamable(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::If(_, a, b) => e.ty.is_array() && (streamable(a) || streamable(b)),
+        ExprKind::Let { body, stmt: false, .. } | ExprKind::CheckNonNegative(_, body) => streamable(body),
+        _ => stream_map_ok(e),
+    }
+}
+
+fn stream_map_ok(init: &Expr) -> bool {
     matches!(&init.kind, ExprKind::Map(..))
         && init.ty.is_array()
         && *init.ty.elem() == Type::Int(IntKind::U8)
@@ -1326,7 +1343,6 @@ fn print_stream_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
         && !matches!(&init.kind, ExprKind::Map(_, l) if inner_loop(&l.body))
         // an input moved into it would no longer be freed with the result
         && !matches!(&init.kind, ExprKind::Map(ins, _) if ins.iter().any(|i| matches!(i.kind, ExprKind::Var(_, Use::Move))))
-        && matches!(&body.kind, ExprKind::Action(ActionOp::PrintBytes, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
 }
 
 fn src_vec_ok_lookup(e: &Expr) -> bool {
@@ -2838,7 +2854,7 @@ impl<'p> Gen<'p> {
             // made and written by blocks that stay in the caches, never whole
             // (D225)
             Let { var, init, body, .. } if w == 1 && print_stream_ok(*var, init, body) => {
-                self.print_stream(init)?;
+                self.print_stream_any(init)?;
                 Ok(v("false", "i1"))
             }
             // a literal array of scalars that its body only reads: on the
@@ -4438,6 +4454,55 @@ impl<'p> Gen<'p> {
     /// new pages. The element `i` of the block from `lo` is stored at
     /// `buffer - lo + i`: the code of the elements does not change. The
     /// same bytes, written in the same order.
+    /// `print_stream` through the choice of a table and the `let`s before
+    /// the `map` (`streamable`): each branch its `map` by blocks, each `let`
+    /// bound, then freed as the `let` frees it (D234).
+    fn print_stream_any(&mut self, e: &Expr) -> R<()> {
+        match &e.kind {
+            ExprKind::If(c, a, b) => {
+                let cv = self.ex(c, 1)?;
+                let la = self.label();
+                let lb = self.label();
+                let lj = self.label();
+                self.cbr(&cv.r, &la, &lb);
+                self.block(&la);
+                self.print_stream_any(a)?;
+                self.br(&lj);
+                self.block(&lb);
+                self.print_stream_any(b)?;
+                self.br(&lj);
+                self.block(&lj);
+                Ok(())
+            }
+            // the test of a size, then the rest
+            ExprKind::CheckNonNegative(k, body) => {
+                let kv = self.ex(k, 1)?;
+                let ok = self.ins(format!("icmp sge i64 {}, 0", kv.r));
+                self.uniform_check(&ok, format!("call void @isc_panic_negsize(i64 {}, {})", kv.r, Self::pos(e.span)), 1);
+                self.print_stream_any(body)
+            }
+            ExprKind::Let { var, init, body, drop, .. } => {
+                let iv = self.ex(init, 1)?;
+                self.bind(*var, iv.clone());
+                self.print_stream_any(body)?;
+                if *drop {
+                    let t = self.var_ty(*var).clone();
+                    self.drop_value(&iv, &t);
+                }
+                Ok(())
+            }
+            _ if stream_map_ok(e) => self.print_stream(e),
+            // the other branch: made whole, written, freed
+            _ => {
+                let x = self.ex(e, 1)?;
+                let (p, n) = self.str_parts(&x);
+                self.emit(format!("call void @isc_print_bytes(ptr {}, i64 {})", p, n));
+                self.drop_value(&x, &e.ty);
+                Ok(())
+            }
+        }
+    }
+
     fn print_stream(&mut self, e: &Expr) -> R<()> {
         const STREAM: i64 = 1 << 20;
         let et = e.ty.elem().clone();

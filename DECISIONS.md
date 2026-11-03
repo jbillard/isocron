@@ -4018,3 +4018,18 @@ bash on 7 cases).
   `table_rows`: 0.0347 ns a byte per core on 4 threads): 0.002 s. The
   measured programs: Isocron 0.049 s in Docker (20 times its floor), Rust
   0.755 s (326 times).
+- **D234 — The bytes written by blocks through the choice of a table
+  (2026-11-04).** After D230, half of the processor time of fasta on 4
+  threads was the clearing of new pages by the kernel (`clear_page_erms`),
+  in the tasks that fill the lines of the two random sequences: D230 put
+  their `map` inside `if length >= 2 * len(t) then (let H = ... in map)
+  else map`, under the `let`s of the length and its test
+  (`check_non_negative`), and D225 recognized only `let x = map(...) in
+  printBytes(x)`: the lines (about 200 MB) were made whole again, into new
+  pages. The code generator now looks through the choice (one branch of
+  the shape is enough: the other is made whole, written, freed), the
+  `let`s (bound, then freed as they free) and the test of a length
+  (`print_stream_any`). Of the ten programs only fasta changes. At fixed
+  frequency, best of 7: fasta 0.048 s -> 0.017 s on 4 threads, 0.085 s ->
+  0.061 s on one; the same output (N = 1, 7, 1000, 25e6). Test
+  `bytes_written_by_blocks_through_a_table`.

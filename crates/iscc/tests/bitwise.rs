@@ -212,3 +212,39 @@ fn bytes_written_by_blocks() {
     }
     valgrind_clean(src, "bytes_by_blocks", &["1048639"]);
 }
+
+/// D234: the bytes written by blocks (D225) through the choice of a table
+/// (D230: `if ... then (let H = ... in map) else map`), the test of the
+/// length and the `let`s before the `map`: the branch with the table by
+/// blocks, the other made whole; the same bytes as the interpreter, above
+/// and below the size of the table, 1 and 4 threads; the code by blocks is
+/// there (a buffer of 1 MiB).
+#[test]
+fn bytes_written_by_blocks_through_a_table() {
+    let src = "const P = [0.27, 0.12, 0.12, 0.27, 0.22];
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const values = map(iota(1000), (i) => (i * 7919) % 1000);
+    const cp = map(iota(5), (i) => fold(iota(i + 1), 0.0, (c, j) => c + P[j]));
+    const codes = bytes(\"acgtN\");
+    const m = n * 3;
+    const length = m + (m + 59) / 60;
+    printBytes(map(iota(length), (q) => q % 61 == 60 || q == length - 1 ? 10u8 : codes[Math.min(count(cp, (c) => c <= f64(values[(q / 61 * 60 + q % 61) % 1000]) / 1000.0), 4)]));
+    print(\"end\");
+    return 0;
+}
+";
+    let bin = compile(src, "blocks_table");
+    for n in ["0", "100", "700", "400000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+    let p = iscc::frontend("blocks_table.isc", src).unwrap();
+    let ll = tmp("blocks_table.ll");
+    iscc::build(&p, &iscc::BuildOptions { output: tmp("blocks_table_ll"), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    assert!(text.contains("i64 1048576"), "no buffer of 1 MiB: the bytes are not written by blocks");
+}
