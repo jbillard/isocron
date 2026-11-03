@@ -173,7 +173,7 @@ fn precedence() {
         ("a ? b : c + 1", "(if a b (c + 1))"),
         ("a ? b : c ? d : e", "(if a b (if c d e))"),
         ("f(x)(y)", "f(x)(y)"),
-        ("x.length", "len(x)"),
+        ("x.length", "$length(x)"),
         ("x.slice(1, 2)", "x[1..2]"),
         ("xs.map(f)", "xs.map(f)"),
     ];
