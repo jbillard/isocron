@@ -532,7 +532,10 @@ action main(args: string[k]): i32 {
                 Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, t, r.stderr),
                 Outcome::Panic(m, _) => {
                     assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
-                    assert!(r.stderr.contains(m.as_str()), "{:?} {} threads: {} / {}", args, t, r.stderr, m);
+                    // several elements fail: on several threads which one is
+                    // reported is not specified (SPEC section 5), its site is
+                    let site = if t == 1 { m.as_str() } else { m.split(": the index is").next().unwrap() };
+                    assert!(r.stderr.contains(site), "{:?} {} threads: {} / {}", args, t, r.stderr, m);
                 }
             }
         }
