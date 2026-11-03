@@ -2764,3 +2764,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   at a fixed frequency: 27.619 s before, 9.929 s after; 3 copies and 3
   allocations remain per step (the parameter of the recursive `steps` is
   borrowed, D102). Test: `tests/report.rs`.
+- **D165 — The common case of the allocator is a leaf (2026-11-03).** The
+  model of cost of an allocation served by the cache of the thread is a
+  few loads and stores; callgrind counted 63 instructions per allocation
+  and 43 per free in n-body: the function that held the fast path also
+  held every slow one, so each call saved and restored six registers, then
+  read the mode of the allocator and computed the class through the
+  general path. `isc_alloc` now takes a block of at most 1 KiB from the
+  cache of the thread itself (`heap::alloc_cached`), and `isc_free` gives
+  one back (`heap::free_cached`); anything else, a block in an unexpected
+  state included, is one tail call to the complete path (cold), which keeps
+  every check. 25 instructions per allocation and 28 per free, no saved
+  register. n-body, 50 000 000 steps, one core at a fixed frequency: 9.930 s
+  before, 8.351 s after; binary-trees at depth 18: 2.571 s, 2.377 s (its
+  cost is elsewhere: the refills of the cache, the header of 64 bytes of
+  each node, D166).

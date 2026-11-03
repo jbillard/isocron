@@ -240,21 +240,29 @@ unsafe fn str_of<'a>(p: *const u8, len: i64) -> &'a str {
 /// `ISC_ALLOC=glibc` asks for glibc's (DECISIONS D81). Read once, at the
 /// first allocation, before the thread pool exists.
 #[cfg(not(target_os = "wasi"))]
+static HEAP_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+#[cfg(not(target_os = "wasi"))]
+#[inline(always)]
 fn isc_heap() -> bool {
-    use core::sync::atomic::AtomicU8;
-    static MODE: AtomicU8 = AtomicU8::new(0);
-    match MODE.load(Ordering::Relaxed) {
+    match HEAP_MODE.load(Ordering::Relaxed) {
         1 => false,
         2 => true,
-        _ => {
-            let v = unsafe { getenv(b"ISC_ALLOC\0".as_ptr() as *const c_char) };
-            let isc = v.is_null() || unsafe { c_str(v) } != "glibc";
-            MODE.store(if isc { 2 } else { 1 }, Ordering::Relaxed);
-            isc
-        }
+        _ => heap_mode(),
     }
 }
 
+#[cfg(not(target_os = "wasi"))]
+#[cold]
+#[inline(never)]
+fn heap_mode() -> bool {
+    let v = unsafe { getenv(b"ISC_ALLOC\0".as_ptr() as *const c_char) };
+    let isc = v.is_null() || unsafe { c_str(v) } != "glibc";
+    HEAP_MODE.store(if isc { 2 } else { 1 }, Ordering::Relaxed);
+    isc
+}
+
+#[inline(always)]
 fn alloc_bytes(bytes: i64, zero: bool) -> *mut u8 {
     let b = (bytes.max(1) as usize).div_ceil(ARRAY_ALIGN) * ARRAY_ALIGN;
     #[cfg(not(target_os = "wasi"))]
@@ -275,9 +283,25 @@ fn alloc_bytes(bytes: i64, zero: bool) -> *mut u8 {
     p
 }
 
-/// Allocates `bytes` bytes aligned on 64 bytes. Never returns null.
+/// Allocates `bytes` bytes aligned on 64 bytes. Never returns null. The
+/// common case is a leaf (D165): a block of at most 1 KiB from the cache
+/// of the thread; everything else is one tail call, so that the common
+/// case saves no register.
 #[no_mangle]
 pub extern "C" fn isc_alloc(bytes: i64) -> *mut u8 {
+    #[cfg(not(target_os = "wasi"))]
+    if HEAP_MODE.load(Ordering::Relaxed) == 2 && bytes <= 1024 {
+        let p = unsafe { heap::alloc_cached((bytes.max(1) as usize).div_ceil(ARRAY_ALIGN) * ARRAY_ALIGN) };
+        if !p.is_null() {
+            return p;
+        }
+    }
+    alloc_cold(bytes)
+}
+
+#[cold]
+#[inline(never)]
+fn alloc_cold(bytes: i64) -> *mut u8 {
     alloc_bytes(bytes, false)
 }
 
@@ -288,6 +312,16 @@ pub extern "C" fn isc_alloc_zeroed(bytes: i64) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn isc_free(p: *mut u8) {
+    #[cfg(not(target_os = "wasi"))]
+    if HEAP_MODE.load(Ordering::Relaxed) == 2 && unsafe { heap::free_cached(p) } {
+        return;
+    }
+    free_cold(p)
+}
+
+#[cold]
+#[inline(never)]
+fn free_cold(p: *mut u8) {
     #[cfg(not(target_os = "wasi"))]
     if isc_heap() {
         unsafe { heap::free(p) };

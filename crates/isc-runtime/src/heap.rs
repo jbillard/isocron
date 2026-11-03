@@ -984,6 +984,47 @@ unsafe fn free_large(h: *mut Header) {
 /// `bytes` bytes (>= 1) aligned on 64 bytes, zeroed if `zero`; null if the
 /// size is too large or the system has no memory left.
 #[inline]
+/// The common case (D165): a block of `bytes` (a multiple of 64, at most
+/// 1 KiB), not cleared, found in the cache of the thread; null otherwise
+/// (the caller then takes the complete path, which also checks the block).
+#[inline(always)]
+pub unsafe fn alloc_cached(bytes: usize) -> *mut u8 {
+    let class = bytes / 64 - 1;
+    let tc = thread_cache();
+    let h = (*tc).heads[class];
+    if !h.is_null() && (*tc).registered != 0 && (*h).state == FREE {
+        (*tc).heads[class] = (*h).next;
+        (*tc).counts[class] -= 1;
+        (*h).state = IN_USE;
+        (*h).contents = DIRTY;
+        return (h as *mut u8).add(HEADER);
+    }
+    null_mut()
+}
+
+/// The common case of `free` (D165): a small block in use, its class not
+/// full in the cache of the thread; false otherwise.
+#[inline(always)]
+pub unsafe fn free_cached(p: *mut u8) -> bool {
+    if !p.is_null() && p as usize % 64 == 0 {
+        let h = p.sub(HEADER) as *mut Header;
+        let class = (*h).class as usize;
+        if class < SMALL_CLASSES && (*h).state == IN_USE {
+            let tc = thread_cache();
+            if (*tc).registered != 0 && (*tc).counts[class] < THREAD_LIMIT[class] {
+                (*h).state = FREE;
+                (*h).next = (*tc).heads[class];
+                (*tc).heads[class] = h;
+                (*tc).counts[class] += 1;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cold]
+#[inline(never)]
 pub unsafe fn alloc(bytes: usize, zero: bool) -> *mut u8 {
     let h = if bytes <= SMALL_MAX {
         let Some((class, size)) = alloc_class(bytes) else {
@@ -1062,7 +1103,8 @@ pub unsafe fn alloc(bytes: usize, zero: bool) -> *mut u8 {
     user
 }
 
-#[inline]
+#[cold]
+#[inline(never)]
 pub unsafe fn free(p: *mut u8) {
     if p.is_null() {
         return;
