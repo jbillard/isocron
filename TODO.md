@@ -219,7 +219,9 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] k-nucleotide by the rules: every k-mer of 3, 4, 6, 12, 18 counted in a table (it counted only the 5 asked: less work than the others), 1.141 s -> 3.061 s (D242)
   - [x] Groups of integer keys with the key in its slot, by parts in parallel, prefetched: k-nucleotide 3.057 s -> 2.563 s (D243)
   - [x] `countBy` groups its keys as they are made, by blocks; an `iota` read in place never made: k-nucleotide 2.563 s -> 1.659 s (D244)
-  - [ ] The tables of `countBy` split by key between the threads (4 tables of 140 000 keys overflow the L3 on 4 threads)
+  - [x] The keys of a block hashed once, the table in registers: k-nucleotide 1.666 s -> 1.601 s (D245; the tables split by key and a load of 3/4 measured, not kept)
+  - [ ] The 4 tables of 8 MiB of the large frames of k-nucleotide overflow the L3 on 4 threads (15.3e6 misses): a shared table, or denser slots
+  - [ ] Windows: target `x86_64-pc-windows-gnu` (MinGW-w64), the runtime ported, tested under Wine in Docker
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

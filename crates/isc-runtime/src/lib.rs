@@ -1606,26 +1606,34 @@ pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const
     let t = &mut tables[part as usize];
     let len = len.max(0) as usize;
     let start = start as usize;
-    macro_rules! add {
-        ($t:ty) => {{
-            let q = p as *const $t;
-            for i in 0..len {
-                if i + GROUP_AHEAD < len {
-                    t.prefetch(*q.add(i + GROUP_AHEAD) as u64);
-                }
-                t.add(*q.add(i) as u64, start + i);
-            }
-        }};
+    // keys of 64 bits added where they are; narrower ones as their 64 bits
+    // (sign extended), by chunks
+    if matches!(kind, 3 | 7) {
+        t.add_block(core::slice::from_raw_parts(p as *const u64, len), start);
+        return;
     }
-    match kind {
-        0 => add!(i8),
-        1 => add!(i16),
-        2 => add!(i32),
-        3 => add!(i64),
-        4 | 10 => add!(u8),
-        5 => add!(u16),
-        6 => add!(u32),
-        _ => add!(u64),
+    let mut wide = [0u64; 256];
+    let mut done = 0;
+    while done < len {
+        let m = (len - done).min(wide.len());
+        macro_rules! widen {
+            ($t:ty) => {{
+                let q = (p as *const $t).add(done);
+                for i in 0..m {
+                    wide[i] = *q.add(i) as u64;
+                }
+            }};
+        }
+        match kind {
+            0 => widen!(i8),
+            1 => widen!(i16),
+            2 => widen!(i32),
+            4 | 10 => widen!(u8),
+            5 => widen!(u16),
+            _ => widen!(u32),
+        }
+        t.add_block(&wide[..m], start + done);
+        done += m;
     }
 }
 

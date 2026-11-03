@@ -3156,6 +3156,69 @@ impl WordGroups {
         self.add_count(k, i as u32, i as u32, 1)
     }
 
+    /// The keys `keys` at the indices `start ..` (after every index added
+    /// before), in order (D245): by chunks of 1024, the hashes of a chunk
+    /// computed first (once per key), then each key added while the slot of
+    /// the key AHEAD places later is prefetched; the table, its mask and the
+    /// table of small keys held in registers between two growths.
+    pub fn add_block(&mut self, keys: &[u64], start: usize) {
+        const CHUNK: usize = 1024;
+        const AHEAD: usize = 16;
+        let mut h = [0u64; CHUNK];
+        let direct = self.direct;
+        for (c, chunk) in keys.chunks(CHUNK).enumerate() {
+            let base = start + c * CHUNK;
+            let m = chunk.len();
+            for j in 0..m {
+                h[j] = hash_word(chunk[j]);
+            }
+            let mut sp = self.slots.as_mut_ptr();
+            let mut mask = self.slots.len() - 1;
+            for j in 0..m {
+                if j + AHEAD < m {
+                    let a = (h[j + AHEAD] as usize) & mask;
+                    #[cfg(target_arch = "x86_64")]
+                    // SAFETY: a prefetch reads nothing; `a` is a slot
+                    unsafe {
+                        core::arch::x86_64::_mm_prefetch(sp.add(a) as *const i8, core::arch::x86_64::_MM_HINT_T0)
+                    };
+                    #[cfg(not(target_arch = "x86_64"))]
+                    let _ = a;
+                }
+                let k = chunk[j];
+                let i = (base + j) as u32;
+                if direct && k < Self::DIRECT_MAX {
+                    self.add_count(k, i, i, 1);
+                    continue;
+                }
+                let mut s = (h[j] as usize) & mask;
+                loop {
+                    // SAFETY: `s` is masked by the length of the table less
+                    // one (a power of two), `sp` its start
+                    let e = unsafe { &mut *sp.add(s) };
+                    if e.2 == 0 {
+                        *e = (k, i, 1);
+                        self.first.push(i);
+                        self.keys.push(k);
+                        self.hashed += 1;
+                        if self.hashed * 2 > self.slots.len() {
+                            self.grow_slots();
+                            sp = self.slots.as_mut_ptr();
+                            mask = self.slots.len() - 1;
+                        }
+                        break;
+                    }
+                    if e.0 == k {
+                        e.1 = i;
+                        e.2 += 1;
+                        break;
+                    }
+                    s = (s + 1) & mask;
+                }
+            }
+        }
+    }
+
     /// The line of the slot of `k` brought into the caches, for a key added
     /// a few keys later (the loads of several keys then overlap, where each
     /// probe waits for its line, D243).

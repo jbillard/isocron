@@ -4216,3 +4216,33 @@ one); a load of 3/4 halves it (k=12 alone: 0.981 s -> 0.856 s on 4
 threads) but costs one thread 0.437 s in branches mispredicted (25 to 64
 million): left at 1/2 here, the tables to be split by key next. Test
 `keys_grouped_as_they_are_made`.
+- **D245 — The keys of a block hashed once, the table in registers
+(2026-11-04).** Counters of k=12 alone (`countBy` of 125 million keys
+into 138 127 groups) after D244, one thread: 21 cycles and 71
+instructions per key over reading the input; on 4 threads, 50 cycles.
+`isc_groups_add` hashed each key twice (its prefetch, then its probe)
+and read the table, its mask and the flag of small keys from memory at
+every key (the pushes of a new group might change them). `add_block`
+hashes the keys of a chunk of 1024 first, then adds each one while the
+slot of the key 16 places later is prefetched, the table and its mask
+in registers between two growths; keys of 64 bits are added where they
+are, narrower ones widened by chunks of 256. k=12 alone, one thread:
+4.82e9 -> 4.31e9 cycles, 12.99e9 -> 10.52e9 instructions. k-nucleotide
+at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
+3.538 s; the same output. Two other ways, measured and not kept:
+  - the tables split by key once a part finds more than 2^15 distinct
+    keys in the first eighth of its range (every part making every key
+    and keeping those of its class): the misses of the L3 halved on 4
+    threads (11.1e6 -> 6.0e6) but the instructions doubled (13.4e9 ->
+    29.0e9), the cycles the same (9.41e9 -> 9.22e9); k-nucleotide 1.654 s
+    -> 2.126 s (its local arrays zeroed at every block cost one thread
+    0.29 s too).
+  - a load of 3/4 instead of 1/2 (4 MiB per part instead of 8): 4
+    threads 1.624 s -> 1.590 s, one thread 3.538 s -> 4.534 s, branches
+    mispredicted 25e6 -> 65e6 (k=12: the probes of more than one slot,
+    1.18 -> 1.55 per key, measured by `probe.c` of the session on the
+    keys themselves).
+  On 4 threads the excess over one thread (8.79e9 against 4.31e9 cycles
+  for k=12) is mostly the misses of the L3 of the 4 tables of 8 MiB
+  (15.3e6, the memory): one table shared by the parts, or slots that fit
+  more keys per line, are next.
