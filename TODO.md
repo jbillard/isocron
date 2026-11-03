@@ -196,6 +196,9 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] A cached large block grown instead of new memory: revcomp 0.230 s -> 0.210 s (D211)
   - [x] The recursive functions on 64 bytes: binarytrees 0.700 s -> 0.667 s (D213)
   - [x] A map by rows of the constant that divides its index: revcomp 0.214 s -> 0.182 s (D214)
+  - [ ] An array stored in the narrowest type its values fit (k-nucleotide: its codes 0 to 3 as bytes, 125 MB instead of 1 GB), the type of the program unchanged
+  - [ ] Comparisons and bounds checks of vectors of consecutive indices from their first and last lanes (the formatting of revcomp: 16 `vpcmpneqq`, 8 `vpcmpnltuq` and 18 `kunpck` per line of 61)
+  - [ ] The prefilter of a regular expression left out when its candidates are dense (regex-redux without it: 1.140 s -> 1.093 s)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

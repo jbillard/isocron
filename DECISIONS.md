@@ -3706,3 +3706,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `adc`, `results/machine_floor.txt`): pidigits loses its time elsewhere
   than in this loop, to be measured (`big256::op`, 38 % of its cycles,
   and the work around the loops).
+- **Rejected after measurement (2026-11-04): an array recomputed instead
+  of stored.** k-nucleotide makes the codes of its 125 million bases with
+  `map(bytes(sequence), code)`: 1 GB of `i64` written into new pages
+  (`clear_page_erms`, 24.7 % of its cycles with 4 threads, which use 2.25
+  processors) and read by 7 passes. A pass (`rematerialize`): a `let` of a
+  `map` whose body is a few operations on scalars that cannot panic, its
+  elements wider than those of its source, and every use an element or
+  the length, each element computed again where it is read; the same
+  outputs. At fixed frequency: 4 threads 1.438 s -> 1.390 s, but one
+  thread 2.169 s -> 2.640 s. The rule does not bound the reads of an
+  element: a window of a k-mer reads each base k times, about 5.4e9
+  computations of `code` for the 5 queries; with one thread they cost more
+  than the memory saved. Kept in TODO instead: an array stored in the
+  narrowest type its values fit (here a byte for 0 to 3), the same type
+  for the program.
