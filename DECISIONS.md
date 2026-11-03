@@ -3690,3 +3690,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   0.182 s; the nine others compile to the same code (fasta's lines call
   `pick`: a first version without that rule took it 0.174 s -> 0.178 s,
   each row computing 3 of its 61 elements twice); the same outputs.
+- **Rejected after measurement (2026-11-04): the product of a big integer
+  by a word in assembly.** pidigits spends 54 % of its cycles in
+  `limbs::mul_word`, whose loop (LLVM) reloaded its pointers and the
+  multiplier at each word (`mulx` writes into `rdx`, the register of the
+  multiplier). Written in assembly for the CPUs with BMI2 (groups of 4
+  words: 4 `mulx`, then `add` and 4 `adc` in one chain): the same output,
+  21 % fewer instructions for the program (8.68e9 -> 6.83e9), but 2.6 %
+  more cycles (2.83e9 -> 2.90e9; at fixed frequency, one thread, 0.888 s
+  -> 0.901 s). A micro-benchmark of the loop alone over 520 words (the
+  size pidigits reaches), the operands aligned or one byte off (the
+  magnitudes start after the sign byte): assembly 0.786 and 0.792 ns per
+  word, Rust 0.848 and 0.855 ns. The alignment changes nothing, and the
+  loop is at the floor of the machine (0.739 ns per word, `mulx` and
+  `adc`, `results/machine_floor.txt`): pidigits loses its time elsewhere
+  than in this loop, to be measured (`big256::op`, 38 % of its cycles,
+  and the work around the loops).
