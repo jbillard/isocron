@@ -3766,3 +3766,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   forwards only (no gain: for these patterns the engine finds an inner
   literal and searches backwards from it anyway, `find_rev` still 4 % of
   the cycles).
+- **D220 — The cached large blocks smaller than a request stay cached
+  (2026-11-04).** reverse-complement makes two large arrays per record
+  (its bases without newlines, then its lines), records of 50, 75 and 125
+  MB. A request that found no cached block of its size grew the largest
+  smaller one (D211) and unmapped all the other smaller ones, on the idea
+  that an array that grows makes them useless: the second array of each
+  record then took new memory, which the system clears (strace: 669 MB of
+  new pages for the large blocks, 270 of them the input). The smaller
+  blocks now stay cached: the next request grows the largest of them in
+  turn, and `trim_large` still bounds the cache to max(64 MiB, the bytes
+  in use) and unmaps the stale blocks. New pages 669 -> 537 MB, mremap 2
+  -> 4. The cost of new pages on xeon (a C program, 254 MiB written by
+  stores of 64 bytes): huge pages, 4 threads, 20.6 ms fresh against 12.8
+  ms on pages already written, one thread 38.7 against 18.0 ms; pages of 4
+  KiB, 4 threads, 22.2 ms fresh. At fixed frequency, best of 7:
+  reverse-complement 0.175 s -> 0.157 s on 4 threads, 0.259 s -> 0.245 s
+  on one; the nine others unchanged (n-body 2.026 / 2.089 s, then 2.066 /
+  2.113 and 2.099 / 2.050 s alternated: noise, the same generated code).
+  Test `every_array_of_a_phase_grows_from_the_cache` (three arrays per
+  phase, one of zeros, while a large array stays in use: 4 grown blocks
+  against 2 before).

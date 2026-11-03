@@ -892,6 +892,41 @@ action main(args: string[k]): i32 {
 }
 
 #[test]
+fn every_array_of_a_phase_grows_from_the_cache() {
+    // D220: phases one after the other, of increasing sizes, with three
+    // large arrays each (of
+    // f64: not stored narrower, above the medium blocks), freed at the end
+    // of the phase while a large array stays in use (the cache may then
+    // hold as much): each array of the next phase grows one of the cached
+    // blocks, the smaller ones stay cached for the next requests. The pages
+    // of a grown block are not zero: a new array of zeros on them is
+    // cleared, the contents of the others are theirs. The results of the
+    // interpreter, on one thread and four.
+    let src = "function phase(keep: f64[m], k: i64): f64 {
+    const n = 4300000 + k * 900000;
+    const a = map(iota(n), (i) => f64(i % 253) + keep[i % m]);
+    const b = map(iota(n + 3), (i) => a[n - 1 - i % n] + 1.0);
+    const z = fill(n + 5, 0.0);
+    return sum(a) + sum(b) * 3.0 + sum(z) + b[n + 2] + z[n + 4] + a[n / 2];
+}
+action main(args: string[k]): i32 {
+    const keep = map(iota(11000000), (i) => f64(i % 7));
+    print(phase(keep, 0));
+    print(phase(keep, 1));
+    print(phase(keep, 2));
+    print(phase(keep, 0));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "grow_phases");
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}
+
+#[test]
 fn arrays_stored_in_a_narrower_type() {
     // D218: a `map` whose values fit a narrower integer type (the leaves of
     // an `if`, `x & c`), read only by element and length, is stored in that

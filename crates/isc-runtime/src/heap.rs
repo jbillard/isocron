@@ -25,8 +25,9 @@
 //!   where glibc maps and unmaps every block above 32 MiB and each call pays
 //!   all its page faults again. The cache holds at most max(64 MiB, the
 //!   bytes of the large blocks in use): beyond, the blocks freed the longest
-//!   ago are unmapped, and so are blocks gone stale (see `trim_large`) and,
-//!   when a request finds no cached block, the cached blocks smaller than it.
+//!   ago are unmapped, and so are blocks gone stale (see `trim_large`). A
+//!   request that finds no cached block of its size grows the largest
+//!   cached block smaller than it (`grow_cached`).
 //!
 //! Memory given back: the free medium blocks that still have written pages
 //! are "idle". When the idle bytes exceed 64 MiB plus the medium and large
@@ -996,19 +997,10 @@ unsafe fn alloc_large(class: usize, size: usize, bytes: usize) -> *mut Header {
         // that the system clears. Arrays that grow from one phase to the
         // next (reverse-complement: 50, 74, then 123 MB) then reuse the
         // pages of the phase before.
+        // The other cached blocks smaller than the request stay: the next
+        // request of the phase grows the largest of them in turn (two
+        // arrays per phase, D220); `trim_large` bounds what the cache holds.
         h = grow_cached(st, class, size);
-        // The program asks for a size the cache cannot serve: the cached
-        // blocks smaller than it cannot serve it either (an array that grows,
-        // phases of increasing sizes) and go back before new memory is mapped.
-        let mut b = st.large_oldest;
-        while !b.is_null() {
-            let newer = (*b).newer;
-            if alloc_class_size((*b).class as usize) < size {
-                take_cached(st, b);
-                munmap((*b).base as *mut c_void, (*b).len);
-            }
-            b = newer;
-        }
         if h.is_null() {
             h = new_large(st, class, size);
             st.grown += size;
