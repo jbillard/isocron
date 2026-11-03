@@ -3477,3 +3477,14 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   2.55). A first `reduce_heavy` with a scalar loop per chunk made
   k-nucleotide slower (1.597 s -> 2.136 s): its `count` of k-mers is
   vector code in `reduce_block`.
+- **D200, D201 corrected: the runtime of WebAssembly (2026-11-04).** The
+  full suite after D201 failed the tests of WebAssembly (5 of them: "no
+  runtime for wasm32-wasip1"): the regions of D200 call `isc_heap`, which
+  WASI has not, and the hash of the first slot of D201 multiplied a
+  `usize` (32 bits there) by a 64-bit constant; `build.rs` then left an
+  empty runtime, as for a target not installed. The regions are now for
+  the native targets only (the compiler makes none for WebAssembly), the
+  hash is computed in `u64`, and `build.rs` stops when a WASI target is
+  installed but its runtime does not build (checked by adding an error for
+  WASI only: "building crates/isc-runtime for wasm32-wasip1 failed (the
+  target is installed)").

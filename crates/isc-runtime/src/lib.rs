@@ -329,7 +329,9 @@ pub extern "C" fn isc_node_alloc(bytes: i64) -> *mut u8 {
 /// once, cut from chunks by a bump (`bump`, `end`: the compiled code bumps
 /// itself, `isc_region_refill` when the chunk is full), all freed at once.
 /// With `ISC_ALLOC=glibc` each node is a block of its own (`nodes`), so
-/// that Valgrind sees each.
+/// that Valgrind sees each. Native targets only: the compiler makes no
+/// region for WebAssembly.
+#[cfg(not(target_os = "wasi"))]
 #[repr(C)]
 pub struct Region {
     bump: *mut u8,
@@ -339,9 +341,12 @@ pub struct Region {
     nodes: *mut alloc::vec::Vec<*mut u8>,
 }
 
+#[cfg(not(target_os = "wasi"))]
 const REGION_FIRST: usize = 4 << 10;
+#[cfg(not(target_os = "wasi"))]
 const REGION_CHUNK: usize = 64 << 10;
 
+#[cfg(not(target_os = "wasi"))]
 #[no_mangle]
 pub extern "C" fn isc_region_new() -> *mut Region {
     let r = isc_alloc(core::mem::size_of::<Region>() as i64) as *mut Region;
@@ -351,6 +356,7 @@ pub extern "C" fn isc_region_new() -> *mut Region {
 
 /// A cell of `bytes` bytes from a new chunk of the region (the first of 4
 /// KiB, then 64 KiB); with glibc, a block of its own.
+#[cfg(not(target_os = "wasi"))]
 #[no_mangle]
 pub unsafe extern "C" fn isc_region_refill(r: *mut Region, bytes: i64) -> *mut u8 {
     let n = bytes.max(1) as usize;
@@ -374,6 +380,7 @@ pub unsafe extern "C" fn isc_region_refill(r: *mut Region, bytes: i64) -> *mut u
     start
 }
 
+#[cfg(not(target_os = "wasi"))]
 #[no_mangle]
 pub unsafe extern "C" fn isc_region_free(r: *mut Region) {
     if !(*r).nodes.is_null() {
@@ -1912,7 +1919,9 @@ fn nested_for(n: i64, task: Task, ctx: *mut c_void) {
     let addr = &j as *const Nested as usize;
     // the first slot tried depends on the stack (of the thread, then the
     // depth): the threads do not all try the same slots in turn
-    let first = ((addr >> 12) ^ (addr >> 30)).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58;
+    // (in 64 bits: `usize` has 32 on WebAssembly)
+    let a = addr as u64;
+    let first = (((a >> 12) ^ (a >> 30)).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58) as usize;
     let mut slot = None;
     for d in 0..NESTED_SLOTS {
         let k = (first + d) % NESTED_SLOTS;

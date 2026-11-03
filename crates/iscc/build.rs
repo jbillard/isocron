@@ -61,9 +61,21 @@ fn main() {
     // `wasm32-wasi-threads`, when the Rust targets are installed (`rustup
     // target add wasm32-wasip1 wasm32-wasip1-threads`); otherwise an empty
     // file, and `iscc` says what is missing
+    // A target that is installed must build: a runtime that no longer
+    // compiles for it stops the build here, rather than leaving an empty
+    // file that only the tests of WebAssembly would notice.
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let sysroot = Command::new(&rustc)
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_string()));
     for (triple, var) in [("wasm32-wasip1", "ISC_RUNTIME_WASM_LIB"), ("wasm32-wasip1-threads", "ISC_RUNTIME_WASM_THREADS_LIB")] {
         let lib = target.join(triple).join("release").join("libisc_runtime.a");
-        if !build(Some(triple)) || !lib.exists() {
+        let installed = sysroot.as_ref().map(|r| r.join("lib").join("rustlib").join(triple).exists()).unwrap_or(false);
+        let built = build(Some(triple)) && lib.exists();
+        assert!(built || !installed, "building crates/isc-runtime for {} failed (the target is installed)", triple);
+        if !built {
             let empty = PathBuf::from(env::var("OUT_DIR").unwrap()).join(format!("no-runtime-{}.a", triple));
             std::fs::write(&empty, b"").unwrap();
             println!("cargo:warning=no {} runtime: rustup target add {}", triple, triple);
