@@ -44,9 +44,15 @@ struct Timespec {
 }
 
 extern "C" {
+    fn strlen(s: *const c_char) -> usize;
+    fn exit(code: c_int) -> !;
+    fn abort() -> !;
+}
+
+#[cfg(not(windows))]
+extern "C" {
     fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
     fn free(p: *mut c_void);
-    fn strlen(s: *const c_char) -> usize;
     fn strerror(code: c_int) -> *const c_char;
     fn __errno_location() -> *mut c_int;
     fn open(path: *const c_char, flags: c_int, ...) -> c_int;
@@ -56,12 +62,22 @@ extern "C" {
     fn lseek(fd: c_int, off: i64, whence: c_int) -> i64;
     #[cfg(not(target_os = "wasi"))]
     fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize;
-    fn exit(code: c_int) -> !;
-    fn abort() -> !;
 }
 
-// The constants of the C library: Linux (glibc, musl) or WASI (wasi-libc).
-#[cfg(not(target_os = "wasi"))]
+// Windows (D246): the same functions over the Win32 API
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::{aligned_alloc, close, free, lseek, open, pread, read, strerror, write};
+
+// The constants of the C library: Linux (glibc, musl) or WASI (wasi-libc);
+// those of `windows` under Windows.
+#[cfg(windows)]
+mod sys {
+    pub use super::windows::{monotonic, O_CLOEXEC, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
+}
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 mod sys {
     use core::ffi::c_int;
     pub const O_RDONLY: c_int = 0;
@@ -217,11 +233,26 @@ fn die(line: i32, col: i32, msg: &dyn fmt::Display) -> ! {
     flush_stdout();
     let _ = sem::write_panic(&mut Stderr, line as u32, col as u32, msg);
     let _ = Stderr.write_str("\n");
-    unsafe { exit(PANIC_EXIT_CODE) }
+    // under Windows, `exit` would run the end of the thread (the cache of
+    // the heap given back) after the other threads were stopped, one of
+    // them perhaps holding the lock of the heap: the process ends at once
+    // (D246)
+    #[cfg(windows)]
+    windows::terminate(PANIC_EXIT_CODE);
+    #[cfg(not(windows))]
+    unsafe {
+        exit(PANIC_EXIT_CODE)
+    }
 }
 
+#[cfg(not(windows))]
 fn errno() -> c_int {
     unsafe { *__errno_location() }
+}
+
+#[cfg(windows)]
+fn errno() -> c_int {
+    windows::errno()
 }
 
 unsafe fn c_str<'a>(p: *const c_char) -> &'a str {
@@ -663,7 +694,7 @@ pub unsafe extern "C" fn isc_read_stdin_text(out: *mut IscStr, line: i32, col: i
 
 unsafe fn try_read_file(path: &str) -> Result<IscArray, Panic<'_>> {
     let cp = c_path(path);
-    let fd = open(cp, O_RDONLY | O_CLOEXEC);
+    let fd = open(cp, O_RDONLY | O_CLOEXEC, 0);
     isc_free(cp as *mut u8);
     let open_error = |code: c_int| {
         let (detail, code) = os_error(code);
@@ -1927,12 +1958,12 @@ extern "C" {
 
 // `pthread_t` is an `unsigned long` on Linux, a pointer in wasi-libc: one
 // machine word in both cases.
-#[cfg(any(not(target_os = "wasi"), isc_wasm_threads))]
+#[cfg(all(any(not(target_os = "wasi"), isc_wasm_threads), not(windows)))]
 extern "C" {
     fn pthread_create(tid: *mut usize, attr: *const c_void, f: extern "C" fn(*mut c_void) -> *mut c_void, arg: *mut c_void) -> c_int;
 }
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 extern "C" {
     fn syscall(n: i64, ...) -> i64;
     fn sched_getaffinity(pid: c_int, size: usize, mask: *mut u8) -> c_int;
@@ -1950,7 +1981,15 @@ const BIG_STACK: usize = 1 << 30;
 
 /// Starts a worker of the pool on a stack of BIG_STACK bytes, or of the
 /// default size if that cannot be had.
-#[cfg(not(target_os = "wasi"))]
+#[cfg(windows)]
+fn start_worker(k: usize) {
+    match windows::spawn(BIG_STACK, worker, k as *mut c_void).or_else(|| windows::spawn(0, worker, k as *mut c_void)) {
+        Some(h) => windows::detach(h),
+        None => {}
+    }
+}
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn start_worker(k: usize) {
     let mut attr = [0u64; 16];
     let a = attr.as_mut_ptr() as *mut c_void;
@@ -1972,14 +2011,24 @@ fn start_worker(k: usize) {
     unsafe { pthread_create(&mut tid, core::ptr::null(), worker, k as *mut c_void) };
 }
 
+#[cfg(windows)]
+fn wait_gen(seen: u32) {
+    windows::wait_word(GEN.gen.as_ptr(), seen)
+}
+
+#[cfg(windows)]
+fn wake_all() {
+    windows::wake_word(GEN.gen.as_ptr())
+}
+
 /// Sleeps while `GEN` is `seen` (spurious wake-ups are allowed).
-#[cfg(not(target_os = "wasi"))]
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn wait_gen(seen: u32) {
     unsafe { syscall(SYS_FUTEX, GEN.gen.as_ptr(), FUTEX_WAIT_PRIVATE, seen, core::ptr::null::<c_void>()) };
 }
 
 /// Wakes every thread sleeping in `wait_gen`.
-#[cfg(not(target_os = "wasi"))]
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn wake_all() {
     unsafe { syscall(SYS_FUTEX, GEN.gen.as_ptr(), FUTEX_WAKE_PRIVATE, i32::MAX) };
 }
@@ -2006,7 +2055,12 @@ fn wake_all() {
 
 /// Number of CPUs when `$ISC_THREADS` is not set: the CPUs the process may
 /// run on (Linux); WASI has no way to know it, so 4 there (DECISIONS D68).
-#[cfg(not(target_os = "wasi"))]
+#[cfg(windows)]
+fn default_threads() -> usize {
+    windows::cpus()
+}
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn default_threads() -> usize {
     let mut mask = [0u8; 128];
     if unsafe { sched_getaffinity(0, mask.len(), mask.as_mut_ptr()) } == 0 {
@@ -2028,8 +2082,11 @@ fn thread_count() -> usize {
     1
 }
 
+#[cfg(not(windows))]
 const SYS_FUTEX: i64 = 202;
+#[cfg(not(windows))]
 const FUTEX_WAIT_PRIVATE: c_int = 128;
+#[cfg(not(windows))]
 const FUTEX_WAKE_PRIVATE: c_int = 129;
 const SPIN: u32 = 1 << 16;
 
@@ -2286,7 +2343,12 @@ fn help_until_done(gen: u32, threads: usize, sleep: bool) {
     }
 }
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(windows)]
+fn pause_briefly() {
+    windows::pause_briefly()
+}
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn pause_briefly() {
     let t = [0i64, 50_000];
     unsafe { nanosleep(&t, core::ptr::null_mut()) };
@@ -2410,7 +2472,18 @@ static BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::ne
 /// (the scratch of a `reduce`, the runtime, the panic itself); 0 when it is
 /// not known (no test). The generated code keeps it in a thread-local
 /// variable and stops on `isc_panic_stack` below it (D102).
-#[cfg(not(target_os = "wasi"))]
+#[cfg(windows)]
+#[no_mangle]
+pub extern "C" fn isc_stack_floor() -> i64 {
+    const MARGIN: usize = 256 << 10;
+    let (low, high) = windows::stack_limits();
+    if high <= low + 2 * MARGIN {
+        return 0;
+    }
+    (low + MARGIN) as i64
+}
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 #[no_mangle]
 pub extern "C" fn isc_stack_floor() -> i64 {
     extern "C" {
@@ -2443,7 +2516,31 @@ pub extern "C" fn isc_stack_floor() -> i64 {
 /// functions (D102), whose depth is then limited by this stack rather than
 /// by the 8 MiB of the main thread. Runs it here if the thread cannot be
 /// created.
-#[cfg(not(target_os = "wasi"))]
+#[cfg(windows)]
+#[no_mangle]
+pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_int, argc: c_int, argv: *mut c_void) -> c_int {
+    struct Start {
+        f: extern "C" fn(c_int, *mut c_void) -> c_int,
+        argc: c_int,
+        argv: *mut c_void,
+        ret: c_int,
+    }
+    extern "C" fn run(arg: *mut c_void) -> *mut c_void {
+        let s = unsafe { &mut *(arg as *mut Start) };
+        s.ret = (s.f)(s.argc, s.argv);
+        core::ptr::null_mut()
+    }
+    let mut s = Start { f, argc, argv, ret: 0 };
+    match windows::spawn(BIG_STACK, run, &mut s as *mut Start as *mut c_void) {
+        Some(h) => {
+            windows::join(h);
+            s.ret
+        }
+        None => f(argc, argv),
+    }
+}
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 #[no_mangle]
 pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_int, argc: c_int, argv: *mut c_void) -> c_int {
     extern "C" {

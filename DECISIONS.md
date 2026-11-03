@@ -4246,3 +4246,62 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   for k=12) is mostly the misses of the L3 of the 4 tables of 8 MiB
   (15.3e6, the memory): one table shared by the parts, or slots that fit
   more keys per line, are next.
+- **D246 — A target for Windows, tested on a real Windows (2026-11-04).**
+  `iscc build --target x86_64-windows` (also `x86_64-pc-windows-gnu`,
+  `windows`) writes a console executable for Windows, the code generated
+  for the same instruction set as native code (`--isa`), LLVM's triple
+  `x86_64-pc-windows-gnu`. Of the two ABIs of Windows, GNU (MinGW-w64) and
+  MSVC, the code of the program is the same (LLVM, the convention of
+  Win64); MinGW-w64 is free and builds from Linux (Debian packages), MSVC
+  needs the SDK of Microsoft: MinGW-w64 first, MSVC when `iscc` runs on
+  Windows itself.
+  - The runtime (`crates/isc-runtime/src/windows.rs`) keeps the functions
+    of Linux it calls, with the same names and meanings, over the Win32
+    API: files, standard streams and `pread` by handles (`CreateFileW` of
+    the UTF-8 path, `ReadFile` with an offset, `WriteFile`: bytes as they
+    are, no text mode), the futex of the pool by `WaitOnAddress` and
+    `WakeByAddressAll`, threads by `CreateThread` (the stack of 1 GiB of
+    D102 reserved), the CPUs by the affinity of the process, the clock by
+    `QueryPerformanceCounter`, the stack floor by
+    `GetCurrentThreadStackLimits`, the end of a thread by a fiber local
+    slot (`FlsAlloc`). The memory of the heap: `VirtualAlloc` reserved and
+    committed (Windows does not commit on first touch), a part given back
+    decommitted and the address space released once nothing of it is
+    committed, MADV_DONTNEED as decommit and commit (zeros, as on Linux),
+    `mremap` as a copy (Windows cannot move pages), the advice on huge
+    pages ignored. The thread caches of the heap and of the nodes are in
+    the section `.tls$`, read through `gs:[0x58]`, `_tls_index` and
+    `@SECREL32` (the generated code reads `isc_node_thread` the way LLVM
+    reads any thread-local variable of COFF). Errors: the last Win32 error
+    mapped to its POSIX code, with the text of glibc, so that the messages
+    are those of Linux. The C library of MinGW (`msvcrt`) gives only
+    `strlen`, `getenv`, `exit`, `abort`, `_aligned_malloc`, `memcpy`.
+  - Linking: `rust-lld` as the linker of MinGW (`-m i386pep`), `crt2.o`,
+    `crtbegin.o`, `crtend.o`, `libgcc` and the import libraries of
+    MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`); a stack of 8 MiB for the
+    main thread, as on Linux. The program imports `KERNEL32.dll`,
+    `msvcrt.dll` and `api-ms-win-core-synch-l1-2-0.dll`, nothing else.
+  - Tests (`crates/iscc/tests/windows.rs`): each program built for Linux
+    and for Windows and run on both, on 1 and 4 threads, with the same
+    standard output, error and exit code: printing, threads, floats,
+    UTF-8, maps, sorting, regular expressions, big integers, a recursion
+    a million deep, files (one of 9 MiB: the reads in parallel), the
+    standard input, a missing file, a panic, a stack overflow, and the ten
+    programs of the Benchmarks Game. The Windows machine is a real
+    Windows 11 Enterprise (evaluation) in a virtual machine (QEMU/KVM in
+    the container `dockurr/windows`, 4 of the CPUs 8 to 15, its disk
+    outside the repository, SSH and its screen on the loopback only),
+    reached by `tools/windows/run.py` (`$ISC_WINDOWS_RUNNER`, its key
+    `$ISC_WINDOWS_KEY`); without it, the tests are skipped with a message.
+    Wine was considered and not kept: it checks the format, the ABI and
+    the logic, not Windows itself. A program still running after
+    `$ISC_WINDOWS_TIMEOUT` seconds (300) is stopped there (code 124).
+  - On the Windows machine (build 26100, 4 virtual CPUs) both tests pass
+    (17.57 s): every output, error and exit code the same as on Linux, on
+    1 and 4 threads. A first program of the test, `1 + down(n + 1)`,
+    never overflowed on either system: LLVM makes that recursion a loop
+    (an accumulator), which is allowed (the program never ends either
+    way); the test recurses twice (`down(n + 1) + down(n + 2)`).
+  - Not yet: the runtimes for x86-64-v3 and v4 (AVX2 and AVX-512 searches,
+    D188, D241) for Windows, the console in UTF-8 (`SetConsoleOutputCP`),
+    `iscc` itself on Windows, the MSVC ABI, timings on Windows.

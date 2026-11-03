@@ -225,10 +225,13 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     let isa = opts.codegen.isa;
     let wasm = matches!(isa, isc_codegen::Isa::Wasm32 | isc_codegen::Isa::Wasm32Threads);
     let threads = isa == isc_codegen::Isa::Wasm32Threads;
+    let windows = opts.codegen.windows;
     let obj = opts.output.with_extension("o");
-    isc_codegen::backend::compile_with(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa)?;
+    isc_codegen::backend::compile_for(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows)?;
     // the embedded runtime, written next to the object file for the linker
-    let (var, bytes, triple) = if threads {
+    let (var, bytes, triple) = if windows {
+        ("ISC_RUNTIME_WINDOWS", RUNTIME_WINDOWS, "x86_64-pc-windows-gnu")
+    } else if threads {
         ("ISC_RUNTIME_WASM_THREADS", RUNTIME_WASM_THREADS, "wasm32-wasip1-threads")
     } else if wasm {
         ("ISC_RUNTIME_WASM", RUNTIME_WASM, "wasm32-wasip1")
@@ -254,7 +257,9 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
             (f, true)
         }
     };
-    let linked = if wasm {
+    let linked = if windows {
+        link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link)
+    } else if wasm {
         link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link)
     } else {
         link(&obj, &rt, &opts.output, opts.debug, &opts.link)
@@ -311,6 +316,73 @@ const RUNTIME_WASM: &[u8] = include_bytes!(env!("ISC_RUNTIME_WASM_LIB"));
 
 /// The same runtime with threads (`wasm32-wasip1-threads`).
 const RUNTIME_WASM_THREADS: &[u8] = include_bytes!(env!("ISC_RUNTIME_WASM_THREADS_LIB"));
+
+/// The same runtime for Windows (`x86_64-pc-windows-gnu`, D246); empty when
+/// the Rust target was not installed when `iscc` was built.
+const RUNTIME_WINDOWS: &[u8] = include_bytes!(env!("ISC_RUNTIME_WINDOWS_LIB"));
+
+/// The files of MinGW-w64 the linker needs for Windows (D246), under a
+/// prefix like `/usr` (`x86_64-w64-mingw32/lib` and
+/// `lib/gcc/x86_64-w64-mingw32/<version>`): `$ISC_MINGW_DIR`, else `/usr`.
+fn mingw_dirs() -> Result<(PathBuf, PathBuf), String> {
+    let root = PathBuf::from(std::env::var("ISC_MINGW_DIR").unwrap_or_else(|_| "/usr".into()));
+    let lib = root.join("x86_64-w64-mingw32/lib");
+    if !lib.join("crt2.o").is_file() {
+        return Err(format!("no MinGW-w64 in `{}` (crt2.o): install it (Debian: mingw-w64-x86-64-dev, gcc-mingw-w64-x86-64-posix) or set ISC_MINGW_DIR", lib.display()));
+    }
+    let gcc_root = root.join("lib/gcc/x86_64-w64-mingw32");
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(&gcc_root)
+        .map_err(|e| format!("cannot read `{}`: {}", gcc_root.display(), e))?
+        .filter_map(|d| d.ok())
+        .map(|d| d.path())
+        .filter(|p| p.join("libgcc.a").is_file())
+        .collect();
+    // the threads of POSIX or of Win32: the runtime uses neither, the
+    // POSIX one first
+    versions.sort_by_key(|p| (!p.to_string_lossy().ends_with("posix"), p.clone()));
+    let gcc = versions.into_iter().next().ok_or_else(|| format!("no libgcc.a under `{}`", gcc_root.display()))?;
+    Ok((lib, gcc))
+}
+
+/// Links a program for Windows with `rust-lld` as the linker of MinGW
+/// (`-m i386pep`): the start files and the libraries of MinGW-w64
+/// (`msvcrt`, `kernel32`, `synchronization` for `WaitOnAddress`), a console
+/// executable whose main thread has a stack of 8 MiB, as on Linux.
+fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+    let sysroot = rust_sysroot()?;
+    let rustlib = sysroot.join("lib/rustlib");
+    let lld = std::fs::read_dir(&rustlib)
+        .map_err(|e| format!("cannot read `{}`: {}", rustlib.display(), e))?
+        .filter_map(|d| d.ok())
+        .map(|d| d.path().join("bin/rust-lld"))
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("no `rust-lld` under `{}`", rustlib.display()))?;
+    let (lib, gcc) = mingw_dirs()?;
+    let mut cmd = std::process::Command::new(&lld);
+    cmd.args(["-flavor", "gnu", "-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-o"]).arg(out);
+    cmd.arg(lib.join("crt2.o")).arg(gcc.join("crtbegin.o")).arg(obj);
+    for l in libs {
+        if l.contains('/') || l.ends_with(".a") || l.ends_with(".o") || l.ends_with(".lib") {
+            cmd.arg(l);
+        } else {
+            cmd.arg(format!("-l{}", l));
+        }
+    }
+    cmd.arg(rt).arg("-L").arg(&lib).arg("-L").arg(&gcc);
+    cmd.arg("--start-group");
+    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "kernel32", "synchronization", "advapi32", "shell32", "user32"] {
+        cmd.arg(format!("-l{}", l));
+    }
+    cmd.arg("--end-group").arg(gcc.join("crtend.o"));
+    if !debug {
+        cmd.arg("-s");
+    }
+    let status = cmd.status().map_err(|e| format!("cannot run the linker `{}`: {}", lld.display(), e))?;
+    if !status.success() {
+        return Err(format!("the linker `{}` failed ({})", lld.display(), status));
+    }
+    Ok(())
+}
 
 /// The Rust sysroot, which holds the WebAssembly linker (`rust-lld`) and the
 /// WASI C library of each target (`lib/rustlib/<target>/lib/self-contained`):

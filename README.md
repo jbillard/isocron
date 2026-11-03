@@ -72,7 +72,7 @@ ISC_THREADS=4 ./sum in.f64 out.f64 100   # on 4 threads: the same result for any
 ```
 
 <details>
-<summary><b>More options</b>: assembly and LLVM IR, allocators, lanes, instruction sets, WebAssembly</summary>
+<summary><b>More options</b>: assembly and LLVM IR, allocators, lanes, instruction sets, WebAssembly, Windows</summary>
 
 ```sh
 target/release/iscc build examples/poc/sum.isc -o sum --emit-asm sum.s --emit-llvm sum.ll   # --debug keeps symbols
@@ -83,6 +83,7 @@ target/release/iscc build examples/poc/sum.isc --target wasm32-wasi   # sum.wasm
 wasmtime run --dir=/::/ sum.wasm $PWD/in.f64 $PWD/out.f64 100
 target/release/iscc build examples/poc/sum.isc --target wasm32-wasi-threads   # with threads (wasi-threads)
 wasmtime run -W threads=y -S threads=y --env ISC_THREADS=8 --dir=/::/ sum.wasm $PWD/in.f64 $PWD/out.f64 100
+ISC_MINGW_DIR=/usr target/release/iscc build examples/poc/sum.isc --target x86_64-windows   # sum.exe, for Windows (MinGW-w64)
 ```
 
 </details>

@@ -82,7 +82,12 @@ fn main() {
         .output()
         .ok()
         .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_string()));
-    for (triple, var) in [("wasm32-wasip1", "ISC_RUNTIME_WASM_LIB"), ("wasm32-wasip1-threads", "ISC_RUNTIME_WASM_THREADS_LIB")] {
+    // and the runtime for `--target x86_64-windows` (D246)
+    for (triple, var) in [
+        ("wasm32-wasip1", "ISC_RUNTIME_WASM_LIB"),
+        ("wasm32-wasip1-threads", "ISC_RUNTIME_WASM_THREADS_LIB"),
+        ("x86_64-pc-windows-gnu", "ISC_RUNTIME_WINDOWS_LIB"),
+    ] {
         let lib = target.join(triple).join("release").join("libisc_runtime.a");
         let installed = sysroot.as_ref().map(|r| r.join("lib").join("rustlib").join(triple).exists()).unwrap_or(false);
         let built = build(Some(triple)) && lib.exists();

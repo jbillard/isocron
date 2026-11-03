@@ -51,6 +51,10 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use isc_runtime_core::{alloc_class, alloc_class_size, Panic, ALLOC_CLASSES as CLASSES};
 
+#[cfg(windows)]
+use super::windows::{madvise, mmap, mremap, munmap, pthread_key_create, pthread_setspecific};
+
+#[cfg(not(windows))]
 extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> c_int;
@@ -199,7 +203,21 @@ const _: () = assert!(core::mem::size_of::<ThreadCache>() <= 1024);
 
 // 1024 bytes of zeros in the static TLS block of every thread. The runtime
 // is linked into the executable: the local-exec model applies, and the
-// address of the cache is the thread pointer plus a constant.
+// address of the cache is the thread pointer plus a constant. Under Windows
+// (D246), the TLS section `.tls$` of the image, at an offset (`@SECREL32`)
+// of the block of the thread (`gs:[0x58]` holds the blocks of the modules,
+// `_tls_index` the one of the executable).
+#[cfg(windows)]
+core::arch::global_asm!(
+    ".section .tls$,\"dw\"",
+    ".p2align 6",
+    ".globl isc_heap_thread",
+    "isc_heap_thread:",
+    ".skip 1024",
+    ".text",
+);
+
+#[cfg(not(windows))]
 core::arch::global_asm!(
     ".section .tbss,\"awT\",@nobits",
     ".p2align 6",
@@ -234,6 +252,17 @@ struct NodeCache {
 
 const _: () = assert!(core::mem::size_of::<NodeCache>() <= 256);
 
+#[cfg(windows)]
+core::arch::global_asm!(
+    ".section .tls$,\"dw\"",
+    ".p2align 6",
+    ".globl isc_node_thread",
+    "isc_node_thread:",
+    ".skip 256",
+    ".text",
+);
+
+#[cfg(not(windows))]
 core::arch::global_asm!(
     ".section .tbss,\"awT\",@nobits",
     ".p2align 6",
@@ -246,6 +275,23 @@ core::arch::global_asm!(
     ".text",
 );
 
+#[cfg(windows)]
+#[inline(always)]
+unsafe fn node_cache() -> *mut NodeCache {
+    let p: *mut NodeCache;
+    core::arch::asm!(
+        "movq %gs:0x58, {0}",
+        "movl _tls_index(%rip), {1:e}",
+        "movq ({0},{1},8), {0}",
+        "leaq isc_node_thread@SECREL32({0}), {0}",
+        out(reg) p,
+        out(reg) _,
+        options(att_syntax, nostack, preserves_flags, pure, readonly)
+    );
+    p
+}
+
+#[cfg(not(windows))]
 #[inline(always)]
 unsafe fn node_cache() -> *mut NodeCache {
     let p: *mut NodeCache;
@@ -297,6 +343,23 @@ pub unsafe fn node_free(p: *mut u8, bytes: usize) {
     (*nc).heads[class] = p;
 }
 
+#[cfg(windows)]
+#[inline(always)]
+unsafe fn thread_cache() -> *mut ThreadCache {
+    let p: *mut ThreadCache;
+    core::arch::asm!(
+        "movq %gs:0x58, {0}",
+        "movl _tls_index(%rip), {1:e}",
+        "movq ({0},{1},8), {0}",
+        "leaq isc_heap_thread@SECREL32({0}), {0}",
+        out(reg) p,
+        out(reg) _,
+        options(att_syntax, nostack, preserves_flags, pure, readonly)
+    );
+    p
+}
+
+#[cfg(not(windows))]
 #[inline(always)]
 unsafe fn thread_cache() -> *mut ThreadCache {
     let p: *mut ThreadCache;

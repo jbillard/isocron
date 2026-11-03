@@ -2322,7 +2322,7 @@ iscc check <file.isc> [--report]            type-check (and print the memory rep
 iscc ir    <file.isc>                       print the optimized IR
 iscc run   <file.isc> [args...]             run with the reference interpreter
 iscc build <file.isc> [-o out] [--emit-llvm f.ll] [--emit-asm f.s] [--debug]
-           [--target native|wasm32-wasi|wasm32-wasi-threads]
+           [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows]
 iscc completions bash|zsh|fish              the completion of the shell
 ```
 
@@ -2347,8 +2347,19 @@ iscc completions bash|zsh|fish              the completion of the shell
   threads=y --env ISC_THREADS=8 --dir=/::/ prog.wasm args...`; the number
   of threads is `ISC_THREADS`, 4 by default (WASI cannot tell the number of
   CPUs).
-* Native, WebAssembly with or without threads, and the interpreter give the
-  same results to the bit, and the same panic messages. Linking WebAssembly
+* `build --target x86_64-windows` writes a Windows executable (default
+  name: `<file>.exe`) for the same instruction set as native code (the host
+  CPU, or `--isa`): a console program with threads, reading and writing its
+  files and standard streams as bytes (no `\r\n` added), its errors and
+  panics with the messages of Linux. Its stack, and that of the threads, as
+  on Linux. Linking uses `rust-lld` (the Rust target `x86_64-pc-windows-gnu`,
+  `rustup target add x86_64-pc-windows-gnu`) and the start files and
+  import libraries of MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian
+  packages `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the
+  program needs no DLL beyond those of Windows.
+* Native (Linux and Windows), WebAssembly with or without threads, and the
+  interpreter give the same results to the bit, and the same panic
+  messages. Linking WebAssembly
   uses `rust-lld` and the WASI C library of the Rust targets `wasm32-wasip1`
   and `wasm32-wasip1-threads` (`rustup target add ...`).
 * The interpreter is the reference: a compiled program prints the same output,

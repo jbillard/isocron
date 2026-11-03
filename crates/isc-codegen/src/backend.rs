@@ -155,6 +155,15 @@ fn init_llvm() {
 }
 
 pub fn compile_with(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa) -> Result<(), String> {
+    compile_for(ir, obj, asm, isa, false)
+}
+
+/// The triple of the Windows target (D246).
+pub const WINDOWS_TRIPLE: &str = "x86_64-pc-windows-gnu";
+
+/// `compile_with` for Windows too (`windows`: the object of
+/// `x86_64-pc-windows-gnu`, for the CPU that `isa` names).
+pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool) -> Result<(), String> {
     init_llvm();
     unsafe {
         let wasm = isa.is_wasm();
@@ -175,7 +184,13 @@ pub fn compile_with(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::
             return Err(format!("the generated IR is invalid: {}", e));
         }
         take_msg(msg);
-        let triple = if wasm { cstr(WASM_TRIPLE) } else { cstr(&take_msg(LLVMGetDefaultTargetTriple())) };
+        let triple = if wasm {
+            cstr(WASM_TRIPLE)
+        } else if windows {
+            cstr(WINDOWS_TRIPLE)
+        } else {
+            cstr(&take_msg(LLVMGetDefaultTargetTriple()))
+        };
         let mut target: Ref = std::ptr::null_mut();
         if LLVMGetTargetFromTriple(triple.as_ptr(), &mut target, &mut msg) != 0 {
             return Err(format!("unknown target: {}", take_msg(msg)));

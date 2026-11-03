@@ -272,11 +272,14 @@ pub struct Options {
     /// Largest scratch array of a `reduce` on the stack (STACK_SCRATCH; the
     /// tests lower it to run the heap path).
     pub stack_scratch: i64,
+    /// An executable for Windows (`x86_64-pc-windows-gnu`, D246): the same
+    /// code for the same instruction set, another object format and ABI.
+    pub windows: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH }
+        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: false }
     }
 }
 
