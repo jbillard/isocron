@@ -3721,3 +3721,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   than the memory saved. Kept in TODO instead: an array stored in the
   narrowest type its values fit (here a byte for 0 to 3), the same type
   for the program.
+- **D217 — Consecutive indices compared and checked from their ends
+  (2026-11-04).** After D214 the loop of a line of reverse-complement (249
+  instructions for 61 bytes) compared vectors of 32 consecutive 64-bit
+  indices with a value of every lane (`q % 61 == 60`, `q == length - 1`:
+  16 `vpcmpneqq` and 18 `kunpck` to put their 8-lane masks together) and
+  checked their bounds lane by lane (8 `vpcmpnltuq`). A vector of
+  consecutive indices (D181) compared with a value of every lane, `==` or
+  `!=`, is now a mask of at most one bit, the lane found from the first
+  index (a subtraction, a shift); its bounds are checked on its first and
+  last lanes, every lane only when they fail (the first lane out, for the
+  message). At fixed frequency, 4 threads: reverse-complement 0.184 s ->
+  0.174 s, k-nucleotide 1.433 s -> 1.382 s, fasta, fannkuch-redux and
+  spectral-norm unchanged (their code changes), the others the same code;
+  the same outputs.

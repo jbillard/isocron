@@ -2936,6 +2936,29 @@ impl<'p> Gen<'p> {
                 } else {
                     None
                 };
+                // consecutive indices against a value of every lane: at most
+                // one lane equal, found from the first one (D217): a mask of
+                // one bit instead of comparing the lanes
+                if matches!(op, BinOp::Eq | BinOp::Ne) && a.ty == Type::Int(IntKind::I64) && w > 1 {
+                    let one_side = match (self.f.contig.get(&av.r).cloned(), self.f.contig.get(&bv.r).cloned()) {
+                        (Some((x, d)), None) if uni(&bv) => Some((x, d, bv.r.clone())),
+                        (None, Some((y, d))) if uni(&av) => Some((y, d, av.r.clone())),
+                        _ => None,
+                    };
+                    if let Some((first, d, u)) = one_side {
+                        let diff = self.ins(format!("sub i64 {}, {}", u, first));
+                        let k = if d == 1 { diff } else { self.ins(format!("sub i64 0, {}", diff)) };
+                        let inside = self.ins(format!("icmp ult i64 {}, {}", k, w));
+                        let kk = if w < 64 { self.ins(format!("trunc i64 {} to i{}", k, w)) } else { k };
+                        let bit = self.ins(format!("shl i{} 1, {}", w, kk));
+                        let mut bits = self.ins(format!("select i1 {}, i{} {}, i{} 0", inside, w, bit, w));
+                        if *op == BinOp::Ne {
+                            bits = self.ins(format!("xor i{} {}, -1", w, bits));
+                        }
+                        let m = self.ins(format!("bitcast i{} {} to <{} x i1>", w, bits, w));
+                        return Ok(V { r: m, t: format!("<{} x i1>", w), uni: false });
+                    }
+                }
                 // inside `allowReassoc` (D109)
                 let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
                 let r = self.binop(*op, av, bv, &a.ty, w, span);
@@ -3599,6 +3622,19 @@ impl<'p> Gen<'p> {
             }
             _ => iv.r.clone(),
         };
+        let lok = self.label();
+        // consecutive indices: all in bounds when the first and the last are
+        // (D217); the test of every lane only when they are not (the first
+        // lane out, for the message)
+        if let (Some((first, d)), None, true) = (self.f.contig.get(&iv.r).cloned(), &self.mask, idx == iv.r) {
+            let last = self.ins(format!("add i64 {}, {}", first, d * (w as i64 - 1)));
+            let a1 = self.ins(format!("icmp ult i64 {}, {}", first, n));
+            let a2 = self.ins(format!("icmp ult i64 {}, {}", last, n));
+            let fine = self.ins(format!("and i1 {}, {}", a1, a2));
+            let lslow = self.label();
+            self.cbr(&fine, &lok, &lslow);
+            self.block(&lslow);
+        }
         let nv = self.widen(&v(n.clone(), "i64"), w);
         let bad0 = self.ins(format!("icmp uge <{} x i64> {}, {}", w, idx, nv.r));
         let bad = match self.mask.clone() {
@@ -3607,7 +3643,6 @@ impl<'p> Gen<'p> {
         };
         let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, bad, w));
         let ok = self.ins(format!("icmp eq i{} {}, 0", w, bits));
-        let lok = self.label();
         if let Some(lf) = self.vec_fail.clone() {
             // the elements of the vector again, one at a time (D185)
             self.cbr(&ok, &lok, &lf);

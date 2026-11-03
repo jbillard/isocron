@@ -415,3 +415,41 @@ action main(args: string[k]): i32 {
         assert!(r.stderr.contains(&m), "{} threads: {} / {}", t, r.stderr, m);
     }
 }
+
+/// D217: vectors of consecutive indices compared with a value of every lane
+/// (a mask of at most one bit from the first index), and their bounds
+/// checked from their first and last lanes (every lane only when those
+/// fail, for the message): values inside, outside and below the range,
+/// indices up and down, past each end (the panic of the same element as the
+/// interpreter). Any number of threads.
+#[test]
+fn consecutive_indices_compared_and_checked_from_their_ends() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const c = parseI64(args[1]);
+    const xs = map(iota(n), (i) => (i * 13) % 101);
+    print(sum(map(iota(n), (q) => q == c ? 1 : 0)));
+    print(sum(map(iota(n), (q) => q != c - 3 ? q : 0)));
+    print(sum(map(iota(n), (q) => n - 1 - q == c ? 5 : 1)));
+    print(sum(map(iota(n), (q) => xs[q] + xs[n - 1 - q])));
+    const k = parseI64(args[2]);
+    print(sum(map(iota(n), (q) => xs[q + k])));
+    print(sum(map(iota(n), (q) => xs[n - 1 - q - k])));
+    return 0;
+}
+";
+    let bin = compile(src, "consecutive_checks");
+    for args in [["1000", "17", "0"], ["1000", "-4", "0"], ["1000", "5000", "0"], ["40", "39", "0"], ["1000", "17", "1"], ["1000", "17", "-1"]] {
+        let want = interp(src, &args);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(t));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, t, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    assert!(r.stderr.contains(m.as_str()), "{:?} {} threads: {} / {}", args, t, r.stderr, m);
+                }
+            }
+        }
+    }
+}
