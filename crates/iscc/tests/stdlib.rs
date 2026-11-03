@@ -417,3 +417,56 @@ fn map_groups_by_hashes() {
     );
     agree(MAP_GROUPS, "std_map_groups", &[], &want);
 }
+
+const TAGGED: &str = r##"type List = Nil | Cons(i64, List);
+type Tree = Leaf | Empty | Node(Tree, i64, Tree);
+
+function range(a: i64, b: i64): List {
+    if (a >= b) return Nil;
+    return Cons(a, range(a + 1, b));
+}
+
+function total(l: List): i64 {
+    return match (l) {
+        Nil => 0,
+        Cons(x, r) => x + total(r),
+    };
+}
+
+function build(d: i64): Tree {
+    if (d == 0) return d % 2 == 0 ? Leaf : Empty;
+    return Node(build(d - 1), d, d == 2 ? Empty : build(d - 1));
+}
+
+function count(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Empty => 10,
+        Node(l, v, r) => v + count(l) + count(r),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const l = range(0, 5);
+    print(total(l));
+    print(l);
+    print([Nil, Cons(1, Nil), Nil]);
+    print(Nil == Nil);
+    print(range(0, 3) == Cons(0, Cons(1, Cons(2, Nil))));
+    print(range(0, 3) == range(0, 2));
+    const t = build(3);
+    print(count(t));
+    const shared = [t, t, Leaf, Empty];
+    print(map(shared, count));
+    print(Leaf == Empty);
+    return 0;
+}
+"##;
+
+/// A constructor without payload of a recursive type is no node: the odd
+/// value 2 * tag + 1 (D169), read, compared, printed, shared and dropped
+/// like any node.
+#[test]
+fn constructors_without_payload_are_not_allocated() {
+    agree(TAGGED, "std_tagged", &[], "10\nCons(0, Cons(1, Cons(2, Cons(3, Cons(4, Nil)))))\n[Nil, Cons(1, Nil), Nil]\ntrue\ntrue\nfalse\n33\n[33, 33, 1, 10]\nfalse\n");
+}

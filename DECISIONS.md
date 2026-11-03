@@ -2836,3 +2836,16 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   42.649 s before, 11.574 s after. The conversions are still 73 % of the
   instructions (num-bigint takes words of 32 bits only): the next step is
   the common operations done on the bytes themselves (TODO).
+- **D169 — A constructor without payload of a recursive type is not
+  allocated (2026-11-03).** After D166, binary-trees spent a third of its
+  time allocating, freeing and dropping its nodes, and half of them are
+  `Leaf`s, which hold nothing. A value of a recursive type whose
+  constructor has no payload (the tuple of its tag and zeros) is now the
+  odd value 2 * tag + 1 instead of a node (a node is aligned on 16 bytes):
+  its tuple is read back as its tag and zeros (`node_tuple`), and the
+  increment and the drop of its count, its equality and its printing skip
+  it (`is_node`). The point of TODO "a constructor without payload (`Nil`)
+  without an allocation" is done this way. binary-trees, fixed frequency:
+  depth 18 on one core 1.077 s before, 0.679 s after; depth 21 on 4
+  threads 4.323 s, 2.542 s. Test: `tests/stdlib.rs`
+  (`constructors_without_payload_are_not_allocated`).

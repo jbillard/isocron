@@ -149,7 +149,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Fast path of the allocator: 63 -> 25 instructions per allocation, 43 -> 28 per free; nbody 9.9 s -> 8.4 s (D165)
   - [ ] Small arrays of a fixed size without the heap
   - [x] Nodes in cells of their size without a header, a free list per thread: binarytrees 21 on 4 threads 43.3 s -> 4.3 s (D166)
-  - [ ] A constructor without payload without allocation; non-atomic reference counts in a task none of whose nodes can leave it; allocation by regions (binarytrees)
+  - [x] A constructor without payload of a recursive type without allocation: binarytrees 21 on 4 threads 4.3 s -> 2.5 s (D169)
+  - [ ] Non-atomic reference counts in a task none of whose nodes can leave it; the allocation of nodes inlined in the compiled code; allocation by regions (binarytrees)
 - [x] (2) `Map` and `countBy` by a table of hashes: knucleotide 36.9 s -> 3.4 s on 4 threads (D167)
 - [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
   - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)

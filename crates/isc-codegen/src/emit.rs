@@ -1656,9 +1656,51 @@ impl<'p> Gen<'p> {
         format!("{{ i64, {} }}", lt(&self.p.recs[i as usize].layout))
     }
 
+    /// `i1`: the value of a recursive type is a node in memory (not null,
+    /// not a constructor without payload, D169).
+    fn is_node(&mut self, p: &str) -> String {
+        let pi = self.ins(format!("ptrtoint ptr {} to i64", p));
+        let low = self.ins(format!("and i64 {}, 1", pi));
+        let even = self.ins(format!("icmp eq i64 {}, 0", low));
+        let some = self.ins(format!("icmp ne i64 {}, 0", pi));
+        self.ins(format!("and i1 {}, {}", even, some))
+    }
+
+    /// The tuple of a value of the recursive type `i`: loaded from its node,
+    /// or, for a constructor without payload (an odd value, D169), its tag
+    /// and zeros.
+    fn node_tuple(&mut self, p: &str, i: u32) -> String {
+        let nt = self.rec_node_ty(i);
+        let lay = lt(&self.p.recs[i as usize].layout);
+        let pi = self.ins(format!("ptrtoint ptr {} to i64", p));
+        let low = self.ins(format!("and i64 {}, 1", pi));
+        let odd = self.ins(format!("icmp ne i64 {}, 0", low));
+        let ltag = self.label();
+        let lload = self.label();
+        let lj = self.label();
+        self.cbr(&odd, &ltag, &lload);
+        self.block(&ltag);
+        let t = self.ins(format!("lshr i64 {}, 1", pi));
+        let t32 = self.ins(format!("trunc i64 {} to i32", t));
+        let tagged = self.ins(format!("insertvalue {} zeroinitializer, i32 {}, 0", lay, t32));
+        self.br(&lj);
+        self.block(&lload);
+        let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
+        let loaded = self.ins(format!("load {}, ptr {}", lay, pt));
+        self.br(&lj);
+        self.block(&lj);
+        self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", lay, tagged, ltag, loaded, lload))
+    }
+
     /// Adds one owner to a node: atomic in a task (other threads may hold
-    /// it), a plain increment otherwise (SPEC section 8).
+    /// it), a plain increment otherwise (SPEC section 8); nothing for a
+    /// constructor without payload (D169).
     fn rec_incref(&mut self, p: &str) {
+        let node = self.is_node(p);
+        let linc = self.label();
+        let lj = self.label();
+        self.cbr(&node, &linc, &lj);
+        self.block(&linc);
         if self.in_task {
             self.emit(format!("atomicrmw add ptr {}, i64 1 monotonic", p));
         } else {
@@ -1666,6 +1708,8 @@ impl<'p> Gen<'p> {
             let c1 = self.ins(format!("add i64 {}, 1", c));
             self.emit(format!("store i64 {}, ptr {}", c1, p));
         }
+        self.br(&lj);
+        self.block(&lj);
     }
 
     /// The frees and prints of nodes asked for so far (each may ask for
@@ -1707,8 +1751,9 @@ impl<'p> Gen<'p> {
         let lay = lt(&layout);
         let lnull = self.label();
         let lgo = self.label();
-        let isnull = self.ins("icmp eq ptr %p, null".to_string());
-        self.cbr(&isnull, &lnull, &lgo);
+        // null, or a constructor without payload (D169): nothing to free
+        let node = self.is_node("%p");
+        self.cbr(&node, &lgo, &lnull);
         self.block(&lnull);
         self.emit("ret void");
         self.block(&lgo);
@@ -1779,10 +1824,9 @@ impl<'p> Gen<'p> {
         let both = self.ins(format!("and i1 {}, {}", pn, qn));
         self.emit(format!("ret i1 {}", both));
         self.block(&lgo);
-        let pp = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", nt));
-        let qq = self.ins(format!("getelementptr inbounds {}, ptr %q, i32 0, i32 1", nt));
-        let tp = self.ins(format!("load {}, ptr {}", lay, pp));
-        let tq = self.ins(format!("load {}, ptr {}", lay, qq));
+        let _ = &nt;
+        let tp = self.node_tuple("%p", i);
+        let tq = self.node_tuple("%q", i);
         let comps = match &layout {
             Type::Tuple(ts) => ts.clone(),
             other => vec![other.clone()],
@@ -1885,8 +1929,8 @@ impl<'p> Gen<'p> {
         let nt = self.rec_node_ty(i);
         let r = self.p.recs[i as usize].clone();
         let lay = lt(&r.layout);
-        let pt = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", nt));
-        let t = self.ins(format!("load {}, ptr {}", lay, pt));
+        let _ = &nt;
+        let t = self.node_tuple("%p", i);
         let res = self.print_value(&v(t, lay), &r.layout, &r.shape);
         self.emit("ret void");
         let text = self.finish(&format!("define internal void @isc_rec_print_{}(ptr %p)", i));
@@ -2300,6 +2344,16 @@ impl<'p> Gen<'p> {
             // a new node: one owner, its tuple (D103)
             Box(x) => {
                 let Type::Rec(i) = e.ty else { return Err("internal error: box of a non-recursive type".into()) };
+                // a constructor without payload (its tag, zeros): no node,
+                // the odd value 2 * tag + 1 (D169)
+                if let ExprKind::Tuple(es) = &x.kind {
+                    if let (Some(ExprKind::Lit(isc_ir::Lit::Int(tag))), true) =
+                        (es.first().map(|t| &t.kind), es.iter().skip(1).all(|c| matches!(c.kind, ExprKind::Zero)))
+                    {
+                        let p = self.ins(format!("inttoptr i64 {} to ptr", 2 * *tag + 1));
+                        return Ok(v(p, "ptr"));
+                    }
+                }
                 let t = self.ex(x, 1)?;
                 let nt = self.rec_node_ty(i);
                 let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
@@ -2314,10 +2368,8 @@ impl<'p> Gen<'p> {
             Unbox(x) => {
                 let Type::Rec(i) = x.ty else { return Err("internal error: unbox of a non-recursive type".into()) };
                 let p = self.ex(x, 1)?;
-                let nt = self.rec_node_ty(i);
-                let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p.r));
                 let lay = lt(&e.ty);
-                let t = self.ins(format!("load {}, ptr {}", lay, pt));
+                let t = self.node_tuple(&p.r, i);
                 Ok(v(t, lay))
             }
             // a recursive function (D102)
