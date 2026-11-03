@@ -232,6 +232,8 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
         ("ISC_RUNTIME_WASM_THREADS", RUNTIME_WASM_THREADS, "wasm32-wasip1-threads")
     } else if wasm {
         ("ISC_RUNTIME_WASM", RUNTIME_WASM, "wasm32-wasip1")
+    } else if runtime_v3(isa) {
+        ("ISC_RUNTIME", RUNTIME_V3, "")
     } else {
         ("ISC_RUNTIME", RUNTIME, "")
     };
@@ -266,6 +268,22 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
 /// `build.rs` and embedded in `iscc`. `$ISC_RUNTIME` may name another
 /// `libisc_runtime.a`.
 const RUNTIME: &[u8] = include_bytes!(env!("ISC_RUNTIME_LIB"));
+
+/// The same runtime built for x86-64-v3 (AVX2, BMI2, FMA, D188); the one
+/// above when the host is not an x86-64.
+const RUNTIME_V3: &[u8] = include_bytes!(env!("ISC_RUNTIME_V3_LIB"));
+
+/// The runtime for x86-64-v3 when the target has its instructions: `avx2`
+/// and `avx512` are the host's CPU, and so is `native` (D188).
+pub fn runtime_v3(isa: isc_codegen::Isa) -> bool {
+    use isc_codegen::Isa;
+    if !matches!(isa, Isa::Native | Isa::Avx2 | Isa::Avx512) || !cfg!(target_arch = "x86_64") {
+        return false;
+    }
+    let host = isc_codegen::backend::host_features();
+    let has = |f: &str| host.split(',').any(|x| x == f);
+    ["+avx", "+avx2", "+bmi", "+bmi2", "+fma", "+lzcnt", "+movbe", "+f16c", "+popcnt", "+sse4.2", "+ssse3"].iter().all(|f| has(f))
+}
 
 /// The same runtime for WebAssembly (`wasm32-wasip1`); empty when the Rust
 /// target was not installed when `iscc` was built. `$ISC_RUNTIME_WASM` may

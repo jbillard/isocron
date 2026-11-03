@@ -15,9 +15,9 @@ fn main() {
         println!("cargo:rerun-if-changed={}", p);
     }
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let build = |triple: Option<&str>| -> bool {
+    let build_in = |triple: Option<&str>, dir: &PathBuf, flags: Option<&str>| -> bool {
         let mut cmd = Command::new(&cargo);
-        cmd.args(["build", "--release", "--quiet", "--manifest-path"]).arg(&manifest).arg("--target-dir").arg(&target);
+        cmd.args(["build", "--release", "--quiet", "--manifest-path"]).arg(&manifest).arg("--target-dir").arg(dir);
         if let Some(t) = triple {
             cmd.args(["--target", t]);
         }
@@ -29,6 +29,9 @@ fn main() {
         if triple == Some("wasm32-wasip1-threads") {
             cmd.env("CARGO_ENCODED_RUSTFLAGS", "--cfg=isc_wasm_threads");
         }
+        if let Some(f) = flags {
+            cmd.env("CARGO_ENCODED_RUSTFLAGS", f);
+        }
         cmd
             .env_remove("RUSTFLAGS")
             .env_remove("CARGO_TARGET_DIR")
@@ -37,10 +40,23 @@ fn main() {
             .expect("cannot run cargo to build the runtime")
             .success()
     };
+    let build = |triple: Option<&str>| build_in(triple, &target, None);
     assert!(build(None), "building crates/isc-runtime failed");
     let lib = target.join("release").join("libisc_runtime.a");
     assert!(lib.exists(), "{} was not produced", lib.display());
     println!("cargo:rustc-env=ISC_RUNTIME_LIB={}", lib.display());
+    // the same runtime for x86-64-v3 (AVX2, BMI2, FMA): the searches of
+    // `memchr` and of the literals of regular expressions (Teddy) in AVX2,
+    // which the runtime cannot detect at run time without the standard
+    // library (D188); linked for the targets that have them
+    let v3_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("runtime-v3");
+    let v3 = v3_dir.join("release").join("libisc_runtime.a");
+    let x86 = env::var("CARGO_CFG_TARGET_ARCH").map(|a| a == "x86_64").unwrap_or(false);
+    if x86 && build_in(None, &v3_dir, Some("-Ctarget-cpu=x86-64-v3")) && v3.exists() {
+        println!("cargo:rustc-env=ISC_RUNTIME_V3_LIB={}", v3.display());
+    } else {
+        println!("cargo:rustc-env=ISC_RUNTIME_V3_LIB={}", lib.display());
+    }
     // the runtimes for `iscc build --target wasm32-wasi` and
     // `wasm32-wasi-threads`, when the Rust targets are installed (`rustup
     // target add wasm32-wasip1 wasm32-wasip1-threads`); otherwise an empty

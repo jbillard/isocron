@@ -301,3 +301,20 @@ fn o1_path() -> String {
     tmp("w_o1_err.f64").to_string_lossy().to_string()
 }
 
+
+#[test]
+fn the_runtime_for_x86_64_v3_is_linked_only_for_targets_that_have_it() {
+    // D188: `sse` and `avx` (the Celeron of the POC, the i5-3330 of the
+    // Benchmarks Game) keep the runtime of the x86-64 baseline; `native`,
+    // `avx2` and `avx512` are the host, x86-64-v3 when it has AVX2, BMI2, FMA
+    use isc_codegen::Isa;
+    assert!(!iscc::runtime_v3(Isa::Sse));
+    assert!(!iscc::runtime_v3(Isa::Avx));
+    assert!(!iscc::runtime_v3(Isa::Wasm32));
+    let f = isc_codegen::backend::host_features();
+    let v3 = cfg!(target_arch = "x86_64") && ["+avx2", "+bmi2", "+fma"].iter().all(|x| f.split(',').any(|y| y == *x));
+    if !v3 {
+        assert!(!iscc::runtime_v3(Isa::Native));
+    }
+    assert_eq!(iscc::runtime_v3(Isa::Native), iscc::runtime_v3(Isa::Avx2));
+}

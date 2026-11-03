@@ -3191,3 +3191,22 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   k-nucleotide unchanged (their outputs the same), the other binaries
   identical. Test `bytes_close_together_are_read_through_a_window` (lines
   of 60 downwards, indices 80 apart, a window at the end of the array).
+- **D188 — A runtime for x86-64-v3 (2026-11-04).** regex-redux was 10.1
+  times its floor. Profile (5 MB, callgrind): 43 % of the instructions in
+  the automaton of Aho-Corasick, the prefilter of the 9 counts, about 33
+  instructions per byte and pass, and `memchr` in SSE2. The runtime is
+  built without the standard library (`no_std`, embedded in `iscc`), for
+  the x86-64 baseline: `aho-corasick` and `memchr` choose their SIMD code
+  by `cfg(target_feature)` when they cannot detect it at run time, so that
+  Teddy (the packed search of literals) never existed in it. `build.rs`
+  now also builds the runtime with `-Ctarget-cpu=x86-64-v3`, linked for
+  `native`, `avx2` and `avx512` when the host has AVX2, BMI2 and FMA
+  (`runtime_v3`); `sse` and `avx` (the Celeron of the POC, the i5-3330 of
+  the Benchmarks Game) keep the baseline. The results do not depend on it
+  (Rust does not contract floating-point operations; the same code, other
+  instructions); Valgrind decodes it (the runs under it are `avx2`). The
+  prefilter of the counts is now Teddy in AVX2 (`FatAVX2<4>`: the flag `i`
+  of the program makes 2^8 cases of each literal). regex-redux at fixed
+  frequency, 4 threads: 3.013 s -> 2.684 s; the same output; the other
+  programs unchanged. Test
+  `the_runtime_for_x86_64_v3_is_linked_only_for_targets_that_have_it`.
