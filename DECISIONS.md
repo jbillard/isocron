@@ -3238,3 +3238,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (isc-runtime-core: 11 patterns, random texts and cuts) and
   `global_searches_split_among_threads_find_the_matches_of_one_search`
   (1 to 4 threads against the interpreter).
+- **D190 — The strings of the runtime written once (2026-11-04).** Found
+  with D189: `written`, through which the runtime builds the results of
+  `replace` and `replaceAll` of a text, `toUpperCase` and `toLowerCase`,
+  `padStart` and `padEnd`, `repeat`, `toFixed` and the decimal text of a
+  `bigint`, called its function twice: once to count the bytes, once to
+  write them into a block of that size. Every one of these did its work
+  twice. It now writes once into a `String` that grows (the global
+  allocator of the runtime: blocks of its heap) and gives its buffer as
+  the string (`adopt`, no copy). Micro-benchmark `bench/micro/strings.isc`
+  (the start of the audit of the primitives against their cost, point 6),
+  one thread at fixed frequency: `replaceAll` of 50 MB 341 ms -> 171 ms,
+  `toUpperCase` of 50 MB 412 ms -> 119 ms, the text of a `bigint` of 9135
+  digits 397 us -> 208 us, `padEnd` 24 ms -> 24 ms (a copy either way);
+  the same results.

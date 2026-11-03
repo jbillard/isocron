@@ -169,6 +169,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
   - [x] The costs of the machine measured, the floor of each program (`results/floors.md`, D182): Isocron over its floor fasta 57.8, regexredux 10.1, knucleotide 8.1, revcomp 5.4, nbody 4.9, pidigits 3.7, binarytrees 3.0, fannkuchredux 2.9, mandelbrot 1.5, spectralnorm 1.0
   - [ ] A microbenchmark and a floor for each primitive of the library
+    - [x] The functions of strings written by the runtime, once: replaceAll 341 -> 171 ms, toUpperCase 412 -> 119 ms (D190, `bench/micro/strings.isc`)
   - [x] fasta (57.8 times its floor): the reduction of an exact operator over fewer elements than lanes in one loop, 1.135 s -> 0.391 s (D183)
   - [x] knucleotide (8.1 times its floor): a size of every lane and shifted indices in vector code, 3.199 s -> 2.098 s (D184)
   - [x] Branches under a mask, checks replayed, bytes permuted (VBMI), indices downwards in vector code: fasta 0.391 s -> 0.327 s (D185)

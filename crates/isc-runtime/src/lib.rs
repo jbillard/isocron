@@ -882,28 +882,14 @@ pub unsafe extern "C" fn isc_trim(out: *mut IscStr, p: *const u8, n: i64) {
 
 /// A new string of the text that `f` writes (two passes: counted, then
 /// written into a block of that size).
+/// The text `f` writes, as a string of the program: written once into a
+/// `String` that grows (a block of the runtime's heap), whose buffer is the
+/// string (`adopt`). It wrote twice, to count the bytes then to fill an
+/// exact block: every function through it did its work twice (D190).
 unsafe fn written(f: &dyn Fn(&mut dyn Write) -> fmt::Result) -> IscStr {
-    struct Count(usize);
-    impl Write for Count {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            self.0 += s.len();
-            Ok(())
-        }
-    }
-    struct Fill(*mut u8, usize);
-    impl Write for Fill {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            unsafe { core::ptr::copy_nonoverlapping(s.as_ptr(), self.0.add(self.1), s.len()) };
-            self.1 += s.len();
-            Ok(())
-        }
-    }
-    let mut c = Count(0);
-    let _ = f(&mut c);
-    let q = isc_alloc(c.0 as i64);
-    let mut w = Fill(q, 0);
-    let _ = f(&mut w);
-    IscStr { ptr: q, len: c.0 as i64 }
+    let mut out = alloc::string::String::new();
+    let _ = f(&mut out);
+    adopt(out)
 }
 
 unsafe fn text<'a>(p: *const u8, n: i64) -> &'a str {

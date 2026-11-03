@@ -1,0 +1,16 @@
+// A micro-benchmark of the functions of strings whose result is written by
+// the runtime (D190): the mean of 3 runs of each (`bench`), single-threaded.
+// usage: strings
+action main(args: string[k]): i32 {
+    const s = "abcdefghij".repeat(5000000);
+    const [a, t1] = bench(3, () => s.replaceAll("cd", "X"));
+    const [b, t2] = bench(3, () => s.toUpperCase());
+    const [c, t3] = bench(3, () => s.padEnd(60000000, "-"));
+    const big = reduce(map(iota(3000), (i) => BigInt(i + 2)), (x, y) => x * y, 1n);
+    const [d, t4] = bench(3, () => String(big));
+    print(`replaceAll ${t1 / 3000000u64} ms ${a.length}`);
+    print(`toUpperCase ${t2 / 3000000u64} ms ${b.length}`);
+    print(`padEnd ${t3 / 3000000u64} ms ${c.length}`);
+    print(`String(bigint) ${t4 / 3000u64} us ${d.length}`);
+    return 0;
+}
