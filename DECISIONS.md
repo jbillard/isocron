@@ -2816,3 +2816,23 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   O(n log n). k-nucleotide on 25 000 000 bases, 4 threads, fixed frequency
   (`machine.sh apply parallel`): 36.935 s before, 3.384 s after. Test:
   `tests/stdlib.rs` (`map_groups_by_hashes`).
+- **D168 — `bigint` stored in bytes in the compiled programs (2026-11-03).**
+  pidigits spent 78 % of its instructions converting (callgrind): each
+  operation decoded its operands from digits of 7 bits (D156) into the
+  words of num-bigint and encoded its result back, on numbers of thousands
+  of digits, for operations (a product by a small integer) far cheaper
+  than that. The digits of 7 bits were valid UTF-8 for the interpreter,
+  whose `bigint` is a string, and the IR, whose literals are strings: both
+  keep them (`isc_runtime_core::big`). The compiled programs store the
+  magnitude in bytes, least significant first (`big256`, the same code by a
+  macro, also canonical, so that equality, hashing and order are those of
+  the bytes and of the values as before); a literal is converted when the
+  code is generated (`big_to_256`). num-bigint's own conversions of bytes
+  take them one by one (still 83 % of the instructions): the bytes go to
+  and from its words by words of 32 and 64 bits instead. An experiment in
+  assembly on the conversion of 7 bits (pext and pdep of BMI2, outside the
+  repository) gave 1.487 s on 4000 digits; this, without assembly, 1.046 s
+  (4.237 s before). pidigits 10 000 digits, one core at a fixed frequency:
+  42.649 s before, 11.574 s after. The conversions are still 73 % of the
+  instructions (num-bigint takes words of 32 bits only): the next step is
+  the common operations done on the bytes themselves (TODO).

@@ -311,6 +311,51 @@ pub const fn alloc_class_size(i: usize) -> usize {
 }
 
 #[cfg(test)]
+mod big_forms {
+    extern crate std;
+    use num_bigint::BigInt;
+
+    /// The two stored forms of `bigint` (D168): the same values, canonical,
+    /// zero empty, the conversion of the literals exact.
+    #[test]
+    fn the_two_forms_hold_the_same_values() {
+        let mut s = 0x1234_5678_9abc_def0u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut values: std::vec::Vec<BigInt> = std::vec![BigInt::from(0), BigInt::from(1), BigInt::from(-1), BigInt::from(255), BigInt::from(256), BigInt::from(u64::MAX), -BigInt::from(u64::MAX)];
+        for len in 0..40 {
+            let mut v = BigInt::from(next() % 1000);
+            for _ in 0..len {
+                v = v * BigInt::from(next()) + BigInt::from(next() >> (next() % 64));
+            }
+            values.push(if next() % 2 == 0 { v.clone() } else { -v });
+        }
+        for v in &values {
+            let e128 = super::big::encode(v);
+            let e256 = super::big256::encode(v);
+            assert_eq!(&super::big::decode(&e128), v);
+            assert_eq!(&super::big256::decode(&e256), v);
+            assert_eq!(super::big_to_256(&e128), e256);
+            assert_eq!(e256.last() == Some(&0), false, "{} has a zero at the top", v);
+            assert_eq!(e256.is_empty(), *v == BigInt::from(0));
+        }
+        for a in &values {
+            for b in values.iter().take(12) {
+                for op in 0..3u8 {
+                    let r128 = super::big::op(op, &super::big::encode(a), &super::big::encode(b)).ok().unwrap();
+                    let r256 = super::big256::op(op, &super::big256::encode(a), &super::big256::encode(b)).ok().unwrap();
+                    assert_eq!(super::big_to_256(&r128), r256);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
@@ -713,7 +758,16 @@ fn fixed(w: &mut dyn Write, x: f64, d: usize) -> fmt::Result {
 // is no byte (the zero of every value of the IR): canonical (equal values,
 // equal bytes), and ASCII (the interpreter holds it as a string)
 
-pub mod big {
+/// The functions of `bigint` (D156) for one stored form: a sign (`+` or
+/// `-`) then the digits of the magnitude, least significant first, without
+/// a zero at the top; zero is empty. `big` stores digits of 7 bits, valid
+/// UTF-8, for the interpreter (whose `bigint` is a string) and the IR;
+/// `big256` stores bytes, for the compiled programs, so that a value goes
+/// to and from num-bigint by whole bytes (D168). Both are canonical: equal
+/// values have equal bytes.
+macro_rules! big_module {
+    ($name:ident, $radix:expr) => {
+        pub mod $name {
     use super::Panic;
     use alloc::vec::Vec;
     use core::cmp::Ordering;
@@ -724,7 +778,13 @@ pub mod big {
     pub fn decode(e: &[u8]) -> BigInt {
         let neg = e.first() == Some(&b'-');
         let digits = if e.is_empty() { e } else { &e[1..] };
-        let mag = if digits.is_empty() { BigUint::zero() } else { BigUint::from_radix_le(digits, 128).unwrap_or_default() };
+        let mag = if digits.is_empty() {
+            BigUint::zero()
+        } else if $radix == 256 {
+            super::mag_from_bytes(digits)
+        } else {
+            BigUint::from_radix_le(digits, $radix).unwrap_or_default()
+        };
         BigInt::from_biguint(if neg { Sign::Minus } else { Sign::Plus }, mag)
     }
 
@@ -732,7 +792,7 @@ pub mod big {
         let mut out = Vec::new();
         if !b.is_zero() {
             out.push(if b.is_negative() { b'-' } else { b'+' });
-            let mut d = b.magnitude().to_radix_le(128);
+            let mut d = if $radix == 256 { super::mag_to_bytes(b.magnitude()) } else { b.magnitude().to_radix_le($radix) };
             while d.last() == Some(&0) {
                 d.pop();
             }
@@ -853,6 +913,47 @@ pub mod big {
         }
         Some(literal(digits, neg))
     }
+        }
+    };
+}
+
+/// The magnitude of bytes, least significant first, by words of 32 bits
+/// (num-bigint's `from_bytes_le` takes them one by one, D168).
+fn mag_from_bytes(d: &[u8]) -> num_bigint::BigUint {
+    let mut v: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(d.len().div_ceil(4));
+    let mut c = d.chunks_exact(4);
+    for w in &mut c {
+        v.push(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+    }
+    let r = c.remainder();
+    if !r.is_empty() {
+        let mut w = [0u8; 4];
+        w[..r.len()].copy_from_slice(r);
+        v.push(u32::from_le_bytes(w));
+    }
+    num_bigint::BigUint::new(v)
+}
+
+/// The bytes of a magnitude, least significant first, without a zero at
+/// the top: its words of 64 bits copied.
+fn mag_to_bytes(m: &num_bigint::BigUint) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(m.bits().div_ceil(8) as usize + 8);
+    for w in m.iter_u64_digits() {
+        out.extend_from_slice(&w.to_le_bytes());
+    }
+    while out.last() == Some(&0) {
+        out.pop();
+    }
+    out
+}
+
+big_module!(big, 128);
+big_module!(big256, 256);
+
+/// A value of `big` in the form of `big256` (the literals of the compiled
+/// code, D168).
+pub fn big_to_256(e: &[u8]) -> alloc::vec::Vec<u8> {
+    big256::encode(&big::decode(e))
 }
 
 // ---------------------------------------------------------------------

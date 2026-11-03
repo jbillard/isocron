@@ -22,6 +22,7 @@ name = "isc-codegen"
 version = "0.1.0"
 dependencies = [
  "isc-ir",
+ "isc-runtime-core",
  "isc-syntax",
 ]
 

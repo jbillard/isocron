@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 isc-syntax = { path = "../isc-syntax" }
 isc-ir = { path = "../isc-ir" }
+isc-runtime-core = { path = "../isc-runtime-core" }

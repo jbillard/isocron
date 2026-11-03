@@ -1231,6 +1231,20 @@ impl<'p> Gen<'p> {
         self.block(&lok);
     }
 
+    /// A constant of any bytes (a `bigint`, D168).
+    fn bytes_const(&mut self, b: &[u8]) -> (String, usize) {
+        let key = format!("\u{0}bytes:{}", b.iter().map(|x| format!("{:02x}", x)).collect::<String>());
+        if let Some(x) = self.strs.get(&key) {
+            return x.clone();
+        }
+        let name = format!("@.str.{}", self.strs.len());
+        let n = b.len();
+        let text = if n == 0 { "\\00".to_string() } else { b.iter().map(|x| format!("\\{:02X}", x)).collect::<String>() };
+        self.globals.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\"", name, n.max(1), text));
+        self.strs.insert(key, (name.clone(), n));
+        (name, n)
+    }
+
     fn str_const(&mut self, s: &str) -> (String, usize) {
         if let Some(x) = self.strs.get(s) {
             return x.clone();
@@ -1918,7 +1932,9 @@ impl<'p> Gen<'p> {
         match &e.kind {
             // a new string of the bytes of a constant (D134)
             StrLit(s) => {
-                let (g, n) = self.str_const(s);
+                // a `bigint`: its bytes in the form of the compiled code
+                // (base 256, D168), from the form of the IR (base 128)
+                let (g, n) = if e.ty == Type::Big { self.bytes_const(&isc_runtime_core::big_to_256(s.as_bytes())) } else { self.str_const(s) };
                 let out = self.alloca("{ ptr, i64 }");
                 self.emit(format!("call void @isc_str_new(ptr {}, ptr {}, i64 {})", out, g, n));
                 Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))

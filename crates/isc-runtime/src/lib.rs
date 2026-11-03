@@ -1037,13 +1037,13 @@ pub unsafe extern "C" fn isc_to_fixed(out: *mut IscStr, x: f64, d: i64, line: i3
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_print_big(p: *const u8, n: i64) {
-    let _ = sem::big::write_decimal(&mut Stdout, bytes_of(p, n));
+    let _ = sem::big256::write_decimal(&mut Stdout, bytes_of(p, n));
 }
 
 /// `+ - * / % **` and the negation (0 to 6).
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_op(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, op: i32, line: i32, col: i32) {
-    match sem::big::op(op as u8, bytes_of(p, n), bytes_of(q, m)) {
+    match sem::big256::op(op as u8, bytes_of(p, n), bytes_of(q, m)) {
         Ok(v) => *out = new_str(&v),
         Err(e) => die(line, col, &e),
     }
@@ -1051,23 +1051,23 @@ pub unsafe extern "C" fn isc_big_op(out: *mut IscStr, p: *const u8, n: i64, q: *
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_cmp(p: *const u8, n: i64, q: *const u8, m: i64) -> i32 {
-    sem::big::cmp(bytes_of(p, n), bytes_of(q, m)) as i32
+    sem::big256::cmp(bytes_of(p, n), bytes_of(q, m)) as i32
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_from_i64(out: *mut IscStr, x: i64) {
-    *out = new_str(&sem::big::from_i64(x));
+    *out = new_str(&sem::big256::from_i64(x));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_from_u64(out: *mut IscStr, x: u64) {
-    *out = new_str(&sem::big::from_u64(x));
+    *out = new_str(&sem::big256::from_u64(x));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_parse(out: *mut IscStr, p: *const u8, n: i64, line: i32, col: i32) {
     let s = text(p, n);
-    match sem::big::parse(s) {
+    match sem::big256::parse(s) {
         Some(v) => *out = new_str(&v),
         None => die(line, col, &Panic::ParseBigInt(s)),
     }
@@ -1075,18 +1075,18 @@ pub unsafe extern "C" fn isc_big_parse(out: *mut IscStr, p: *const u8, n: i64, l
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_to_i64(p: *const u8, n: i64) -> i64 {
-    sem::big::to_i64(bytes_of(p, n))
+    sem::big256::to_i64(bytes_of(p, n))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_to_f64(p: *const u8, n: i64) -> f64 {
-    sem::big::to_f64(bytes_of(p, n))
+    sem::big256::to_f64(bytes_of(p, n))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_to_string(out: *mut IscStr, p: *const u8, n: i64) {
     let b = bytes_of(p, n);
-    *out = written(&|w| sem::big::write_decimal(w, b));
+    *out = written(&|w| sem::big256::write_decimal(w, b));
 }
 
 /// ECMAScript's `Number(s)` (0), `parseFloat(s)` (1), `parseInt(s, radix)`
@@ -1130,7 +1130,7 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
             9 => sem::order_f64(at::<f64>(p, i), at::<f64>(p, j)),
             12 => {
                 let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
-                sem::big::cmp(bytes_of(a.ptr, a.len), bytes_of(b.ptr, b.len))
+                sem::big256::cmp(bytes_of(a.ptr, a.len), bytes_of(b.ptr, b.len))
             }
             _ => {
                 let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));

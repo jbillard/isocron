@@ -152,6 +152,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] A constructor without payload without allocation; non-atomic reference counts in a task none of whose nodes can leave it; allocation by regions (binarytrees)
 - [x] (2) `Map` and `countBy` by a table of hashes: knucleotide 36.9 s -> 3.4 s on 4 threads (D167)
 - [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
+  - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)
+  - [ ] The common operations (add, subtract, multiply by a word, compare, divide) on the bytes themselves, without num-bigint (still 73 % in conversions)
 - [ ] (4) Code of scalar recursions (fannkuchredux)
 - [ ] (5) Copies of strings, cache of regular expressions (regexredux)
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
