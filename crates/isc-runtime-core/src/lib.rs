@@ -1938,18 +1938,23 @@ pub mod rx {
         out
     }
 
-    /// Two simple shapes of patterns, searched by masks of 64 bytes instead
-    /// of an automaton walked byte by byte (D224):
+    /// Simple shapes of patterns, searched by masks of 64 bytes instead of
+    /// an automaton walked byte by byte (D224, D237). A pattern is an
+    /// alternation of alternatives, each one:
     ///
-    /// - fixed: an alternation of sequences of classes of ASCII bytes, all
-    ///   of the same length L (1 to 64): `agggtaaa|tttaccct` with `i`,
-    ///   `a[NSt]|BY`. In 64 bytes, the mask of each class (a comparison per
-    ///   distinct byte), then the starts of each sequence: the and of the
-    ///   masks of its classes, each shifted by its place. Whatever sequence
-    ///   matches at a place, the match is the same L bytes.
+    /// - fixed: a sequence of classes of ASCII bytes, of a length L from 1
+    ///   to 64 (`agggtaaa|tttaccct` with `i`, `a[NSt]|BY`). In 64 bytes, the
+    ///   mask of each class (a comparison per distinct byte), then the
+    ///   starts of the sequence: the and of the masks of its classes, each
+    ///   shifted by its place;
     /// - delimited: such a head, then `[^c]*` (or `[^c]+`), then the ASCII
-    ///   byte c: `<[^>]*>`, `\|[^|][^|]*\|`. After a head at p, the match
-    ///   ends at the first c from p + L (none: no match from p on).
+    ///   byte c (`<[^>]*>`, `\|[^|][^|]*\|`, `.*\n`): after a head at p, the
+    ///   match ends at the first c from p + L (none: no match of it from p
+    ///   on);
+    ///
+    /// either at the start of a line (`^` with `m`) or anywhere. At a place
+    /// the first alternative that matches there is the match (the order of
+    /// a backtracking engine: `a|ab` matches `a`), as `^>.*\n|\n`.
     ///
     /// The classes must have no member outside ASCII (a member dropped
     /// would change the matches): ASCII bytes are whole characters in UTF-8,
@@ -1964,15 +1969,23 @@ pub mod rx {
         const CLASSES: usize = 16;
         const BYTES: usize = 32;
 
+        /// One alternative: its classes, at the start of a line or not, and
+        /// for a delimited one its stop byte and the least number of bytes
+        /// between its head and it.
+        struct Alt {
+            seq: Vec<u8>,
+            line: bool,
+            stop: Option<(u8, usize)>,
+        }
+
         pub struct Simple {
             /// each distinct byte of the classes, and its classes (a bit each)
             bytes: Vec<(u8, u16)>,
-            /// the sequences, as indices of classes, all of length `len`
-            alts: Vec<Vec<u8>>,
-            len: usize,
-            /// delimited: the stop byte, and the least number of bytes
-            /// between the head and it
-            stop: Option<(u8, usize)>,
+            /// the alternatives, in their order
+            alts: Vec<Alt>,
+            /// the class `\n` (for the starts of lines), when an alternative
+            /// is at the start of a line
+            nl: Option<usize>,
         }
 
         /// The ASCII bytes of a class or literal of one character (a bit
@@ -2100,6 +2113,72 @@ pub mod rx {
 
         /// The shape of the pattern of the value `v` (`flags/source`), if it
         /// is one of the two.
+        /// The alternatives of one branch of the pattern: `^` with `m` (the
+        /// start of a line), then a delimited or a fixed shape.
+        fn branch(h: &Hir, out: &mut Vec<(Vec<u128>, bool, Option<(u8, usize)>)>) -> Option<()> {
+            let mut h = h;
+            while let HirKind::Capture(c) = h.kind() {
+                h = &c.sub;
+            }
+            let parts: &[Hir] = match h.kind() {
+                HirKind::Concat(hs) => hs,
+                _ => core::slice::from_ref(h),
+            };
+            let (line, parts) = match parts.first().map(|x| x.kind()) {
+                Some(HirKind::Look(regex_syntax::hir::Look::StartLF)) => (true, &parts[1..]),
+                Some(HirKind::Look(_)) => return None,
+                _ => (false, parts),
+            };
+            // delimited: head, [^c] (optional), [^c]* or [^c]+, c
+            let n = parts.len();
+            if n >= 3 {
+                let last = ascii_set(&parts[n - 1]).filter(|m| m.count_ones() == 1).map(|m| m.trailing_zeros() as u8);
+                if let (Some(c), HirKind::Repetition(r)) = (last, parts[n - 2].kind()) {
+                    if r.max.is_none() && r.min <= 1 && all_but(&r.sub) == Some(c) {
+                        let mut k = n - 2;
+                        let mut mid = r.min as usize;
+                        if mid == 0 && k >= 2 && all_but(&parts[k - 1]) == Some(c) {
+                            k -= 1;
+                            mid = 1;
+                        }
+                        let head = seqs_of(&parts[..k])?;
+                        for q in head {
+                            out.push((q, line, Some((c, mid))));
+                        }
+                        return Some(());
+                    }
+                }
+            }
+            for q in seqs_of(parts)? {
+                out.push((q, line, None));
+            }
+            Some(())
+        }
+
+        /// The sequences of classes of a concatenation, in the order of a
+        /// backtracking engine.
+        fn seqs_of(parts: &[Hir]) -> Option<Vec<Vec<u128>>> {
+            let mut acc: Vec<Vec<u128>> = alloc::vec![Vec::new()];
+            for x in parts {
+                let e = expand(x)?;
+                if acc.len() * e.len() > ALTS {
+                    return None;
+                }
+                let mut next = Vec::with_capacity(acc.len() * e.len());
+                for a in &acc {
+                    for b in &e {
+                        let mut v = a.clone();
+                        v.extend_from_slice(b);
+                        next.push(v);
+                    }
+                }
+                acc = next;
+            }
+            Some(acc)
+        }
+
+        /// The shape of the pattern of the value `v` (`flags/source`), if it
+        /// is an alternation of the shapes above.
         pub fn of(v: &str) -> Option<Simple> {
             // the masks need SIMD (SSE2 at least)
             if !cfg!(target_arch = "x86_64") {
@@ -2115,78 +2194,43 @@ pub mod rx {
             while let HirKind::Capture(c) = h.kind() {
                 h = &c.sub;
             }
-            // delimited: head, [^c] (optional), [^c]* or [^c]+, c
-            let mut stop = None;
-            let mut head: Vec<Vec<u128>> = Vec::new();
-            if let HirKind::Concat(hs) = h.kind() {
-                let n = hs.len();
-                if n >= 3 {
-                    let last = ascii_set(&hs[n - 1]).filter(|m| m.count_ones() == 1).map(|m| m.trailing_zeros() as u8);
-                    if let (Some(c), HirKind::Repetition(r)) = (last, hs[n - 2].kind()) {
-                        if r.max.is_none() && r.min <= 1 && all_but(&r.sub) == Some(c) {
-                            let mut k = n - 2;
-                            let mut mid = r.min as usize;
-                            if mid == 0 && k >= 2 && all_but(&hs[k - 1]) == Some(c) {
-                                k -= 1;
-                                mid = 1;
-                            }
-                            let mut acc: Vec<Vec<u128>> = alloc::vec![Vec::new()];
-                            let mut ok = true;
-                            for x in &hs[..k] {
-                                let Some(e) = expand(x) else {
-                                    ok = false;
-                                    break;
-                                };
-                                if acc.len() * e.len() > ALTS {
-                                    ok = false;
-                                    break;
-                                }
-                                let mut next = Vec::new();
-                                for a in &acc {
-                                    for b in &e {
-                                        let mut v = a.clone();
-                                        v.extend_from_slice(b);
-                                        next.push(v);
-                                    }
-                                }
-                                acc = next;
-                            }
-                            if ok {
-                                stop = Some((c, mid));
-                                head = acc;
-                            }
-                        }
+            let mut raw = Vec::new();
+            match h.kind() {
+                HirKind::Alternation(hs) => {
+                    for x in hs {
+                        branch(x, &mut raw)?;
                     }
                 }
+                _ => branch(h, &mut raw)?,
             }
-            let seqs = if stop.is_some() { head } else { expand(h)? };
-            let len = seqs.first()?.len();
-            if len == 0 || len > 64 || seqs.iter().any(|q| q.len() != len) {
+            if raw.is_empty() || raw.len() > ALTS || raw.iter().any(|(q, _, _)| q.is_empty() || q.len() > 64) {
                 return None;
             }
-            // distinct classes, distinct bytes
+            // distinct classes (the newline last, for the starts of lines),
+            // distinct bytes
             let mut classes: Vec<u128> = Vec::new();
-            let mut alts: Vec<Vec<u8>> = Vec::new();
-            for q in &seqs {
-                let mut a = Vec::with_capacity(len);
+            let mut alts = Vec::new();
+            let index = |classes: &mut Vec<u128>, m: u128| -> Option<u8> {
+                let k = match classes.iter().position(|&c| c == m) {
+                    Some(k) => k,
+                    None => {
+                        classes.push(m);
+                        classes.len() - 1
+                    }
+                };
+                (k < CLASSES).then_some(k as u8)
+            };
+            for (q, line, stop) in &raw {
+                let mut seq = Vec::with_capacity(q.len());
                 for &m in q {
                     if m == 0 {
                         return None;
                     }
-                    let k = match classes.iter().position(|&c| c == m) {
-                        Some(k) => k,
-                        None => {
-                            classes.push(m);
-                            classes.len() - 1
-                        }
-                    };
-                    if k >= CLASSES {
-                        return None;
-                    }
-                    a.push(k as u8);
+                    seq.push(index(&mut classes, m)?);
                 }
-                alts.push(a);
+                alts.push(Alt { seq, line: *line, stop: *stop });
             }
+            let nl = if alts.iter().any(|a| a.line) { Some(index(&mut classes, 1u128 << b'\n')? as usize) } else { None };
             let mut bytes = Vec::new();
             for b in 0..128u8 {
                 let mut cl = 0u16;
@@ -2202,7 +2246,7 @@ pub mod rx {
             if bytes.len() > BYTES {
                 return None;
             }
-            Some(Simple { bytes, alts, len, stop })
+            Some(Simple { bytes, alts, nl })
         }
 
         /// The masks of the classes over the 64 bytes from `at` (bytes past
@@ -2295,23 +2339,19 @@ pub mod rx {
             }
         }
 
-        /// The places in the 64 bytes of `cur` where a sequence starts (its
-        /// bytes past them in `next`).
+        /// The places in the 64 bytes of `cur` where the sequence `seq`
+        /// starts (its bytes past them in `next`).
         #[inline(always)]
-        fn starts(sm: &Simple, cur: &[u64; CLASSES], next: &[u64; CLASSES]) -> u64 {
-            let mut st = 0u64;
-            for a in &sm.alts {
-                let mut m = cur[a[0] as usize];
-                for (j, &k) in a.iter().enumerate().skip(1) {
-                    if m == 0 {
-                        break;
-                    }
-                    let k = k as usize;
-                    m &= (cur[k] >> j) | (next[k] << (64 - j));
+        fn starts(seq: &[u8], cur: &[u64; CLASSES], next: &[u64; CLASSES]) -> u64 {
+            let mut m = cur[seq[0] as usize];
+            for (j, &k) in seq.iter().enumerate().skip(1) {
+                if m == 0 {
+                    break;
                 }
-                st |= m;
+                let k = k as usize;
+                m &= (cur[k] >> j) | (next[k] << (64 - j));
             }
-            st
+            m
         }
 
         impl Simple {
@@ -2321,45 +2361,85 @@ pub mod rx {
             pub fn bounds_from(&self, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
                 let b = s.as_bytes();
                 let n = b.len();
+                let na = self.alts.len();
                 let mut out = Vec::new();
                 let mut base = from;
-                let (mut cur, mut next) = ([0u64; CLASSES], [0u64; CLASSES]);
-                masks(self, b, base, &mut cur);
-                // no match starts before `allowed` (the end of the last one)
+                let mut blocks = [[0u64; CLASSES]; 2];
+                let mut cur = 0usize;
+                masks(self, b, base, &mut blocks[cur]);
+                // the start of a line before the block: the place 0, or a
+                // newline just before
+                let line_before = |at: usize| at == 0 || b[at - 1] == b'\n';
+                let mut carry = line_before(base) as u64;
+                // no match starts before `allowed` (the end of the last one);
+                // a delimited alternative without its stop byte left is dead
                 let mut allowed = from;
+                let mut dead = 0u64;
+                let mut st = [0u64; ALTS];
                 while base < n {
-                    masks(self, b, base + 64, &mut next);
-                    let mut st = starts(self, &cur, &next);
-                    while st != 0 {
-                        let p = base + st.trailing_zeros() as usize;
-                        st &= st - 1;
+                    let nx = 1 - cur;
+                    masks(self, b, base + 64, &mut blocks[nx]);
+                    let (c, x) = (&blocks[cur], &blocks[nx]);
+                    let lines = match self.nl {
+                        Some(k) => (c[k] << 1) | carry,
+                        None => 0,
+                    };
+                    let mut any = 0u64;
+                    for (a, alt) in self.alts.iter().enumerate() {
+                        let mut m = if dead >> a & 1 == 1 { 0 } else { starts(&alt.seq, c, x) };
+                        if alt.line {
+                            m &= lines;
+                        }
+                        st[a] = m;
+                        any |= m;
+                    }
+                    while any != 0 {
+                        let j = any.trailing_zeros();
+                        any &= any - 1;
+                        let p = base + j as usize;
                         if p < allowed {
                             continue;
                         }
-                        let e = match self.stop {
-                            None => p + self.len,
-                            Some((c, mid)) => {
-                                let h = p + self.len;
-                                // no stop byte left: no match from here on
-                                let Some(q) = memchr::memchr(c, &b[h..]) else { return out };
-                                if q < mid {
-                                    continue;
-                                }
-                                h + q + 1
+                        // the first alternative that matches at p
+                        let mut found = None;
+                        for (a, alt) in self.alts.iter().enumerate().take(na) {
+                            if st[a] >> j & 1 == 0 || dead >> a & 1 == 1 {
+                                continue;
                             }
-                        };
+                            let h = p + alt.seq.len();
+                            match alt.stop {
+                                None => {
+                                    found = Some(h);
+                                    break;
+                                }
+                                Some((stop, mid)) => match memchr::memchr(stop, &b[h..]) {
+                                    None => dead |= 1 << a,
+                                    Some(q) if q < mid => {}
+                                    Some(q) => {
+                                        found = Some(h + q + 1);
+                                        break;
+                                    }
+                                },
+                            }
+                        }
+                        let Some(e) = found else { continue };
                         out.push((p, e));
                         allowed = e;
                         if p >= until {
                             return out;
                         }
                     }
+                    if dead.count_ones() as usize == na {
+                        return out;
+                    }
+                    carry = self.nl.map(|k| blocks[cur][k] >> 63).unwrap_or(0);
                     base += 64;
-                    core::mem::swap(&mut cur, &mut next);
+                    cur = nx;
                     // inside a long match: on from its end
                     if allowed > base + 64 {
                         base = allowed;
-                        masks(self, b, base, &mut cur);
+                        masks(self, b, base, &mut blocks[cur]);
+                        carry = line_before(base) as u64;
                     }
                 }
                 out
@@ -2368,6 +2448,12 @@ pub mod rx {
             /// The first match of a search from `at`.
             pub fn find_at(&self, s: &str, at: usize) -> Option<(usize, usize)> {
                 self.bounds_from(s, at, at).first().copied()
+            }
+
+            /// The stop of each alternative (for the tests).
+            #[cfg(test)]
+            fn stops(&self) -> Vec<Option<(u8, usize)>> {
+                self.alts.iter().map(|a| a.stop).collect()
             }
         }
 
@@ -2380,15 +2466,19 @@ pub mod rx {
             fn shapes_of_patterns() {
                 for v in ["ig/agggtaaa|tttaccct", "ig/[cgt]gggtaaa|tttaccc[acg]", "g/tHa[Nt]", "g/aND|caN|Ha[DS]|WaS", "g/a[NSt]|BY", "g/a{3}", "g/(ab|ba)x"] {
                     let sm = of(v).unwrap_or_else(|| panic!("{} has no shape", v));
-                    assert!(sm.stop.is_none(), "{}", v);
+                    assert!(sm.stops().iter().all(|s| s.is_none()), "{}", v);
                 }
                 for (v, c, mid) in [("g/<[^>]*>", b'>', 0), ("g/\\|[^|][^|]*\\|", b'|', 1), ("g/<[^>]+>", b'>', 1), ("g/x[^y]*y", b'y', 0)] {
                     let sm = of(v).unwrap_or_else(|| panic!("{} has no shape", v));
-                    assert_eq!(sm.stop, Some((c, mid)), "{}", v);
+                    assert_eq!(sm.stops(), alloc::vec![Some((c, mid))], "{}", v);
                 }
                 // classes beyond ASCII ignoring case (the Kelvin sign, the
                 // long s), lengths that differ, repetitions, anchors, empty
-                for v in ["ig/k", "ig/ks", "g/a*", "g/ab|c", "mg/^>.*\n|\n", "g/é", "g/", "g/[^a]", "g/.b"] {
+                // alternatives of other lengths, kinds, at the start of a line (D237)
+                for v in ["g/ab|c", "g/a|ab", "mg/^>.*\\n|\\n", "g/x[^y]*y|q", "mg/^ab"] {
+                    assert!(of(v).is_some(), "{} has no shape", v);
+                }
+                for v in ["ig/k", "ig/ks", "g/a*", "g/^ab", "g/ab$", "g/é", "g/", "g/[^a]", "g/.b"] {
                     assert!(of(v).is_none(), "{} has a shape", v);
                 }
             }
@@ -2396,8 +2486,8 @@ pub mod rx {
             /// The matches of the masks are those of the automaton.
             #[test]
             fn masks_find_the_matches_of_the_automaton() {
-                let text: alloc::string::String = "aaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNHaSWaSBY|q<<k>tail <open|".repeat(37);
-                for v in ["ig/agggtaaa|tttaccct", "g/aa", "g/a{3}", "g/a[NSt]|BY", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/<[^>]+>", "ig/tHa[Nt]"] {
+                let text: alloc::string::String = ">head one\naaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNHaSWaSBY|q<<k>tail <open|\nab\n>x\n".repeat(37);
+                for v in ["ig/agggtaaa|tttaccct", "g/aa", "g/a{3}", "g/a[NSt]|BY", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/<[^>]+>", "ig/tHa[Nt]", "g/ab|c", "g/a|ab", "g/aB|a", "mg/^>.*\\n|\\n", "mg/^a|t", "g/<[^>]*>|a", "g/x[^y]*y|q|<[^>]+>"] {
                     let sm = of(v).unwrap();
                     let re = super::super::of(v);
                     for from in [0usize, 1, 63, 64, 65, 500] {

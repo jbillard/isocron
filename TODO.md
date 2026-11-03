@@ -209,6 +209,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] A function of an element of a small table computed once per element of the table: fasta 0.135 s -> 0.047 s (D230)
   - [x] The bytes written by blocks through the choice of a table and the test of a length: fasta 0.048 s -> 0.017 s (D234)
   - [x] A replacement without `$` of many matches written by every thread: regexredux 0.475 s -> 0.336 s (D236)
+  - [x] Alternations of simple shapes of other lengths and kinds, at the start of a line: the cleaning of regexredux 0.066 s -> 0.030 s, regexredux 0.336 s -> 0.322 s (D237)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

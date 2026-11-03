@@ -4070,3 +4070,20 @@ At fixed frequency, 4 threads, best of 5: regex-redux 0.475 s -> 0.336 s;
 by step: the cleaning 66 ms, the 9 counts about 91 ms, the 5 replacements
 about 184 ms. Test `replacements_written_in_parallel` (the whole texts of
 the interpreter, 1, 4 and 16 threads, with `$&` the path before).
+- **D237 — Alternations of simple shapes (2026-11-04).** The cleaning of
+regex-redux, `/^>.*\n|\n/mg` replaced by nothing, went through the
+automaton (66 ms with the reading on 4 threads): two alternatives of
+other kinds, the first at the start of a line. The engine of masks (D224)
+now takes an alternation of alternatives each fixed or delimited, of any
+length from 1 to 64, at the start of a line (`^` with `m`) or anywhere: a
+mask of starts per alternative (the starts of lines from the mask of `\n`
+shifted by one, the byte before the block for its first place), and at a
+place the first alternative that matches there is the match (the order of
+a backtracking engine: `a|ab` matches `a`); a delimited alternative with no
+stop byte left is dead for the rest of the search. Its order is the order
+of the cross products of `expand`, the one of the automaton. At fixed
+frequency: the cleaning 0.066 s -> 0.030 s; regex-redux 0.336 s -> 0.322 s
+on 4 threads, 0.791 s -> 0.714 s on one; the same outputs, with the
+runtime without AVX2 too. Tests: the shapes and the matches of the
+automaton (isc-runtime-core) on such alternations,
+`alternations_of_shapes_found_by_masks` (strings).

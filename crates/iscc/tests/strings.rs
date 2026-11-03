@@ -499,3 +499,29 @@ fn replacements_written_in_parallel() {
         }
     }
 }
+
+/// D237: an alternation of simple shapes of other lengths and kinds, at
+/// the start of a line or anywhere, searched by masks: at a place the first
+/// alternative that matches (`a|ab` matches `a`), as the automaton of the
+/// interpreter. Counts, lists and replacements, short and long texts, 1 and
+/// 4 threads.
+#[test]
+fn alternations_of_shapes_found_by_masks() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const s = \">ONE head\\naaXbbaa>ab\\n>x y\\nagg<1>tt|q|ab\\nabc\\n\".repeat(n) + \">tail\";
+    const pats = [\"^>.*\\\\n|\\\\n\", \"a|ab\", \"ab|a\", \"ab|c|>\", \"^a|t\", \"<[^>]*>|a\", \"x[^y]*y|q|<[^>]+>\", \"^>[^\\\\n]*\"];
+    print(pats.map((p) => `${p} ${countMatches(s, RegExp(p, \"mg\"))} ${matches(s, RegExp(p, \"mg\")).join(\",\").length} ${s.replace(RegExp(p, \"mg\"), \"\").length} ${s.replace(RegExp(p, \"mg\"), \"[$&]\").length}`).join(\"\\n\"));
+    print(s.replace(/^>.*\\n|\\n/mg, \"\").length);
+    return 0;
+}
+";
+    let bin = compile(src, "shape_alternations");
+    for n in ["1", "3", "40000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+}
