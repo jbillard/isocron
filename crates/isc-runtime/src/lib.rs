@@ -325,6 +325,72 @@ pub extern "C" fn isc_node_alloc(bytes: i64) -> *mut u8 {
     alloc_cold(bytes)
 }
 
+/// A region of nodes (D200): the nodes made by a call whose tree dies at
+/// once, cut from chunks by a bump (`bump`, `end`: the compiled code bumps
+/// itself, `isc_region_refill` when the chunk is full), all freed at once.
+/// With `ISC_ALLOC=glibc` each node is a block of its own (`nodes`), so
+/// that Valgrind sees each.
+#[repr(C)]
+pub struct Region {
+    bump: *mut u8,
+    end: *mut u8,
+    /// The chunks, each one's first word the next one, its second its size.
+    chunks: *mut u8,
+    nodes: *mut alloc::vec::Vec<*mut u8>,
+}
+
+const REGION_FIRST: usize = 4 << 10;
+const REGION_CHUNK: usize = 64 << 10;
+
+#[no_mangle]
+pub extern "C" fn isc_region_new() -> *mut Region {
+    let r = isc_alloc(core::mem::size_of::<Region>() as i64) as *mut Region;
+    unsafe { *r = Region { bump: core::ptr::null_mut(), end: core::ptr::null_mut(), chunks: core::ptr::null_mut(), nodes: core::ptr::null_mut() } };
+    r
+}
+
+/// A cell of `bytes` bytes from a new chunk of the region (the first of 4
+/// KiB, then 64 KiB); with glibc, a block of its own.
+#[no_mangle]
+pub unsafe extern "C" fn isc_region_refill(r: *mut Region, bytes: i64) -> *mut u8 {
+    let n = bytes.max(1) as usize;
+    if !isc_heap() {
+        let p = isc_alloc(n as i64);
+        if (*r).nodes.is_null() {
+            (*r).nodes = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(alloc::vec::Vec::new()));
+        }
+        (*(*r).nodes).push(p);
+        return p;
+    }
+    let base = if (*r).chunks.is_null() { REGION_FIRST } else { REGION_CHUNK };
+    let size = base.max(n + 16);
+    let c = isc_alloc(size as i64);
+    *(c as *mut *mut u8) = (*r).chunks;
+    *(c as *mut usize).add(1) = size;
+    (*r).chunks = c;
+    let start = c.add(16);
+    (*r).bump = start.add(n);
+    (*r).end = c.add(size);
+    start
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn isc_region_free(r: *mut Region) {
+    if !(*r).nodes.is_null() {
+        let v = alloc::boxed::Box::from_raw((*r).nodes);
+        for &p in v.iter() {
+            isc_free(p);
+        }
+    }
+    let mut c = (*r).chunks;
+    while !c.is_null() {
+        let next = *(c as *mut *mut u8);
+        isc_free(c);
+        c = next;
+    }
+    isc_free(r as *mut u8);
+}
+
 /// Frees a node of `isc_node_alloc` of the same `bytes`.
 #[no_mangle]
 pub extern "C" fn isc_node_free(p: *mut u8, bytes: i64) {

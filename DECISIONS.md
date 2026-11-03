@@ -3419,3 +3419,25 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   0.242 s, fasta 0.207 s -> 0.174 s, mandelbrot unchanged; 64 lanes were
   worse (0.436 s and 0.249 s: registers spilled, the permutations of
   bytes made for 32 lanes at most). The same outputs.
+- **D200 — Regions for the trees that die whole (2026-11-04).** binary-
+  trees allocated each node from the allocator of nodes (D166) and freed
+  each one by a walk of its tree, though every tree it builds dies whole:
+  built by a function that only builds, lent to `check`, dropped. The
+  compiler now finds the *builders* (`builders`: recursive functions with
+  no parameter holding a recursive value, whose result is a node made from
+  scalars, constructors without payload and results of builders, nothing
+  read, shared or freed) and the `let`s of their results whose body only
+  lends the tree to functions returning no recursive value
+  (`region_use_ok`: no node of it can outlive the `let`). Such a tree is
+  made in a *region* (`isc_region_new`): a variant of each builder
+  (`isc_fn_N_rg`, its region as first parameter) cuts its nodes by a bump
+  in the compiled code, the runtime adding a chunk when one is full (4 KiB,
+  then 64 KiB); at the end of the `let`, or before a tail call, the region
+  is freed whole (`isc_region_free`), without a walk. A moved, returned or
+  stored tree, or one given to a function returning a tree, stays on the
+  heap. With `ISC_ALLOC=glibc` each node is a block of its own, for
+  Valgrind. binary-trees 21 at fixed frequency: 4 threads 2.030 s -> 1.317
+  s, 1 thread 5.060 s -> 3.603 s; the same output. Profile after (1
+  thread): 36.96 G instructions for about 1.23 G calls (builds and checks),
+  154 page faults: the cost is now the calls (prologue, stack test, one
+  call for each leaf), not the memory.

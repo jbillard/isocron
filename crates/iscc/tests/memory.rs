@@ -659,3 +659,77 @@ fn slices_of_arrays_of_arrays_and_rows_of_constants() {
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
     clean(src, "nested_slices_vg", &[]);
 }
+
+#[test]
+fn trees_that_die_whole_are_made_in_a_region() {
+    // D200: a tree of new nodes (the result of a function that builds only)
+    // whose scope only lends it to functions returning no tree is made in a
+    // region, freed at once; moved into a node, or given to a function that
+    // returns a part of it, it stays on the heap. The results of the
+    // interpreter, nothing lost or freed twice under Valgrind.
+    let src = "type Tree = Leaf | Node(Tree, Tree);
+type List = Nil | Cons(i64, List);
+function bottomUp(depth: i64): Tree {
+    if (depth == 0) return Leaf;
+    return Node(bottomUp(depth - 1), bottomUp(depth - 1));
+}
+function check(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Node(l, r) => 1 + check(l) + check(r),
+    };
+}
+function upTo(k: i64): List {
+    if (k == 0) return Nil;
+    return Cons(k * k, upTo(k - 1));
+}
+function total(l: List): i64 {
+    return match (l) {
+        Nil => 0,
+        Cons(x, rest) => x + total(rest),
+    };
+}
+function even(d: i64): Tree {
+    if (d == 0) return Leaf;
+    return Node(odd(d - 1), Leaf);
+}
+function odd(d: i64): Tree {
+    if (d == 0) return Leaf;
+    return Node(even(d - 1), even(d - 1));
+}
+function leftOf(t: Tree): Tree {
+    return match (t) {
+        Leaf => Leaf,
+        Node(l, r) => l,
+    };
+}
+function steps(k: i64, acc: i64): i64 {
+    if (k == 0) return acc;
+    const t = bottomUp(k % 6);
+    return steps(k - 1, acc + check(t));
+}
+action main(args: string[k]): i32 {
+    print(check(bottomUp(10)));
+    const t = bottomUp(8);
+    print(check(t) + check(t));
+    print(total(upTo(1000)));
+    print(check(odd(9)));
+    print(steps(200, 0));
+    const kept = Node(bottomUp(4), Leaf);
+    print(check(kept));
+    const big = bottomUp(6);
+    const part = leftOf(big);
+    print(check(part));
+    print(sum(map(iota(64), (i) => check(bottomUp(i % 7)))));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "regions");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("@isc_region_new()"), "no region");
+    assert!(ll.contains("@isc_fn_0_rg(") && ll.contains("@isc_fn_2_rg("), "no variant of the builders");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    clean(src, "regions_vg", &[]);
+}

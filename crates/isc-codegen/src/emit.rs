@@ -419,6 +419,14 @@ pub struct Gen<'p> {
     vec_fail: Option<String>,
     /// The array literals put on the stack (D191): never freed.
     stack_vars: HashSet<VarId>,
+    /// The recursive functions that build trees of new nodes only (D200).
+    builders: HashSet<u32>,
+    /// In a variant of a builder: the register of its region.
+    region: Option<String>,
+    /// The trees built in a region: their region, freed at their drop.
+    region_vars: HashMap<VarId, String>,
+    /// The variants of builders to emit.
+    rg_needed: BTreeSet<u32>,
     /// In a task: the recursive types whose nodes may be shared with other
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
@@ -783,6 +791,10 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         divmod: Vec::new(),
         vec_fail: None,
         stack_vars: HashSet::new(),
+        builders: if opts.isa.is_wasm() { HashSet::new() } else { builders(p) },
+        region: None,
+        region_vars: HashMap::new(),
+        rg_needed: BTreeSet::new(),
         tail: None,
         rec_drops: BTreeSet::new(),
         rec_prints: BTreeSet::new(),
@@ -795,7 +807,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     };
     // the recursive functions (D102)
     for i in 0..p.fns.len() {
-        g.emit_fn(i)?;
+        g.emit_fn(i, false)?;
     }
     let slot = g.alloca("{ ptr, i64 }");
     g.emit(format!("call void @isc_args(ptr {}, i32 %argc, ptr %argv)", slot));
@@ -819,6 +831,13 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     let big_stack = !p.fns.is_empty() && !opts.isa.is_wasm();
     let body_name = if big_stack { "isc_main_body" } else { main_name };
     let mut main = g.finish(&format!("define i32 @{}(i32 %argc, ptr %argv){}", body_name, attrs));
+    // the variants of the builders whose trees are made in a region (D200),
+    // each of which may ask for others
+    let mut done: HashSet<u32> = HashSet::new();
+    while let Some(f) = g.rg_needed.iter().copied().find(|f| !done.contains(f)) {
+        done.insert(f);
+        g.emit_fn(f as usize, true)?;
+    }
     g.emit_rec_helpers()?;
     if big_stack {
         g.decls.insert("declare i32 @isc_run_big_stack(ptr, i32, ptr)".into());
@@ -909,6 +928,86 @@ fn mentions(e: &Expr, vars: &HashSet<VarId>) -> bool {
         return vars.contains(&v);
     }
     e.children().into_iter().any(|c| mentions(c, vars))
+}
+
+/// The recursive functions that build trees of new nodes only (D200): no
+/// parameter holds a recursive type, the result is one, and the body
+/// (`builds`) makes its nodes from scalars, constructors without payload
+/// and the results of builders, never reading, sharing or freeing a node.
+fn builders(p: &Program) -> HashSet<u32> {
+    fn holds_rec(t: &Type) -> bool {
+        match t {
+            Type::Rec(_) => true,
+            Type::Array(e) => holds_rec(e),
+            Type::Tuple(ts) => ts.iter().any(holds_rec),
+            _ => false,
+        }
+    }
+    // no value of a recursive type anywhere in `e`
+    fn plain(e: &Expr) -> bool {
+        !holds_rec(&e.ty) && e.children().into_iter().all(plain)
+    }
+    fn builds(e: &Expr, set: &HashSet<u32>) -> bool {
+        match &e.kind {
+            ExprKind::Box(x) => match &x.kind {
+                ExprKind::Tuple(es) => es.iter().all(|c| matches!(c.kind, ExprKind::Zero) || plain(c) || builds(c, set)),
+                _ => false,
+            },
+            ExprKind::Call(g, args) => set.contains(g) && args.iter().all(plain),
+            ExprKind::If(c, t, f) => plain(c) && result(t, set) && result(f, set),
+            _ => false,
+        }
+    }
+    // the result: a node made here (not a call: a tail call would be a loop)
+    fn result(e: &Expr, set: &HashSet<u32>) -> bool {
+        match &e.kind {
+            ExprKind::Box(_) => builds(e, set),
+            ExprKind::If(c, t, f) => plain(c) && result(t, set) && result(f, set),
+            ExprKind::Let { init, body, .. } => plain(init) && result(body, set),
+            ExprKind::CheckSize(a, b, body) => plain(a) && plain(b) && result(body, set),
+            ExprKind::CheckNonNegative(k, body) => plain(k) && result(body, set),
+            _ => false,
+        }
+    }
+    let mut set: HashSet<u32> = (0..p.fns.len() as u32)
+        .filter(|&i| {
+            let f = &p.fns[i as usize];
+            matches!(f.body.ty, Type::Rec(_)) && f.params.iter().all(|v| !holds_rec(&p.vars[*v as usize].ty))
+        })
+        .collect();
+    loop {
+        let keep: HashSet<u32> = set.iter().copied().filter(|&i| result(&p.fns[i as usize].body, &set)).collect();
+        if keep.len() == set.len() {
+            return set;
+        }
+        set = keep;
+    }
+}
+
+/// Every use of the tree `t` in `e` lends it, borrowed, to a function whose
+/// result holds no recursive value (it can keep no node of it): the tree
+/// dies whole at the end of its `let` (D200).
+fn region_use_ok(t: VarId, e: &Expr) -> bool {
+    fn holds_rec(ty: &Type) -> bool {
+        match ty {
+            Type::Rec(_) => true,
+            Type::Array(e) => holds_rec(e),
+            Type::Tuple(ts) => ts.iter().any(holds_rec),
+            _ => false,
+        }
+    }
+    fn ok(e: &Expr, t: VarId) -> bool {
+        use ExprKind::*;
+        match &e.kind {
+            Var(x, _) => *x != t,
+            Free(x, b) => *x != t && ok(b, t),
+            Call(_, args) if !holds_rec(&e.ty) => {
+                args.iter().all(|a| matches!(a.kind, Var(x, Use::Borrow) if x == t) || ok(a, t))
+            }
+            _ => e.children().into_iter().all(|c| ok(c, t)),
+        }
+    }
+    ok(e, t)
 }
 
 /// The elements of an array literal `e` ends in, through `let`s of scalars
@@ -1344,14 +1443,20 @@ impl<'p> Gen<'p> {
 
     /// A recursive function: `define internal <result> @isc_fn_<i>(<params>)`
     /// (D102). Its parameters are borrowed, its result is new.
-    fn emit_fn(&mut self, i: usize) -> R<()> {
+    fn emit_fn(&mut self, i: usize, in_region: bool) -> R<()> {
         let f = &self.p.fns[i];
+        // the variant of a builder (D200): its nodes cut from the region of
+        // its first parameter
+        let saved_region = std::mem::replace(&mut self.region, if in_region { Some("%rg".to_string()) } else { None });
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let mut ps = Vec::new();
+        if in_region {
+            ps.push("ptr %rg".to_string());
+        }
         for (k, var) in f.params.iter().enumerate() {
             let t = lt(&self.p.vars[*var as usize].ty);
             ps.push(format!("{} %a{}", t, k));
@@ -1422,7 +1527,9 @@ impl<'p> Gen<'p> {
         // `tailcc`: a call marked `tail` and followed by `ret` reuses the frame
         // (mutual tail recursion, D113)
         let cc = self.fn_cc();
-        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}", cc, ret, i, ps.join(", "), attrs));
+        let name = if in_region { format!("{}_rg", i) } else { i.to_string() };
+        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}", cc, ret, name, ps.join(", "), attrs));
+        self.region = saved_region;
         self.other_tails = saved_others;
         self.f = saved_f;
         self.env = saved_env;
@@ -1446,6 +1553,10 @@ impl<'p> Gen<'p> {
         let tc = &tl.calls[&(e as *const Expr)];
         for var in &tc.free_first {
             if self.stack_vars.contains(var) {
+                continue;
+            }
+            if let Some(rg) = self.region_vars.get(var).cloned() {
+                self.emit(format!("call void @isc_region_free(ptr {})", rg));
                 continue;
             }
             let ty = self.p.vars[*var as usize].ty.clone();
@@ -1987,6 +2098,29 @@ impl<'p> Gen<'p> {
         self.ins(format!("getelementptr inbounds [32 x ptr], ptr @isc_node_thread, i64 0, i64 {}", c))
     }
 
+    /// A cell of `bytes` bytes of the region `rg` (D200): its bump, the
+    /// runtime when the chunk is full (or with glibc: no chunk).
+    fn region_alloc(&mut self, rg: &str, bytes: &str) -> String {
+        self.decls.insert("declare ptr @isc_region_refill(ptr, i64)".into());
+        let b = self.ins(format!("load ptr, ptr {}", rg));
+        let ep = self.ins(format!("getelementptr inbounds ptr, ptr {}, i64 1", rg));
+        let e = self.ins(format!("load ptr, ptr {}", ep));
+        let n = self.ins(format!("getelementptr i8, ptr {}, i64 {}", b, bytes));
+        let fits = self.ins(format!("icmp ule ptr {}, {}", n, e));
+        let nonnull = self.ins(format!("icmp ne ptr {}, null", b));
+        let ok = self.ins(format!("and i1 {}, {}", fits, nonnull));
+        let (lfast, lslow, lj) = (self.label(), self.label(), self.label());
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        self.emit(format!("store ptr {}, ptr {}", n, rg));
+        self.br(&lj);
+        self.block(&lslow);
+        let q = self.ins(format!("call ptr @isc_region_refill(ptr {}, i64 {})", rg, bytes));
+        self.br(&lj);
+        self.block(&lj);
+        self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", b, lfast, q, lslow))
+    }
+
     fn node_alloc(&mut self, bytes: &str) -> String {
         if self.opts.isa.is_wasm() {
             return self.ins(format!("call ptr @isc_node_alloc(i64 {})", bytes));
@@ -2410,6 +2544,38 @@ impl<'p> Gen<'p> {
                 isc_ir::Lit::Unit => v("false", "i1"),
             }),
             Var(x, _) => self.env.get(x).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", x)),
+            // a tree of new nodes (a builder's) that its body only lends to
+            // functions whose results hold no tree: made in a region, freed
+            // at once (D200)
+            Let { var, init, body, drop: true, stmt }
+                if w == 1
+                    && matches!(init.kind, Call(f, _) if self.builders.contains(&f))
+                    && region_use_ok(*var, body)
+                    && !self.opts.isa.is_wasm() =>
+            {
+                self.decls.insert("declare ptr @isc_region_new()".into());
+                self.decls.insert("declare void @isc_region_free(ptr)".into());
+                let rg = self.ins("call ptr @isc_region_new()".to_string());
+                let saved = std::mem::replace(&mut self.region, Some(rg.clone()));
+                let iv = self.ex(init, 1);
+                self.region = saved;
+                let iv = iv?;
+                self.bind(*var, iv.clone());
+                if *stmt {
+                    self.black_box(&iv);
+                }
+                // never read: freed at once, as in D117
+                if !mentions(body, &HashSet::from([*var])) {
+                    self.emit(format!("call void @isc_region_free(ptr {})", rg));
+                    return self.ex(body, w);
+                }
+                self.region_vars.insert(*var, rg.clone());
+                let r = self.ex(body, w);
+                self.region_vars.remove(var);
+                let r = r?;
+                self.emit(format!("call void @isc_region_free(ptr {})", rg));
+                Ok(r)
+            }
             // a literal array of scalars that its body only reads: on the
             // stack, never freed (D191)
             Let { var, init, body, .. } if literal_tail(init).is_some() && init.ty.elem().is_scalar() && stack_array(*var, body) => {
@@ -2885,8 +3051,12 @@ impl<'p> Gen<'p> {
                 let nt = self.rec_node_ty(i);
                 let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
                 let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
-                // a cell of the allocator of nodes (D166, D176)
-                let p = self.node_alloc(&bytes);
+                // a cell of the region of a builder (D200), else of the
+                // allocator of nodes (D166, D176)
+                let p = match self.region.clone() {
+                    Some(rg) => self.region_alloc(&rg, &bytes),
+                    None => self.node_alloc(&bytes),
+                };
                 self.emit(format!("store i64 1, ptr {}", p));
                 let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
                 self.emit(format!("store {} {}, ptr {}", t.t, t.r, pt));
@@ -2916,8 +3086,13 @@ impl<'p> Gen<'p> {
                 // one (D113)
                 if let Some(first) = self.other_tails.get(&key).cloned() {
                     for var in &first {
-                        // (an array on the stack is never freed, D191)
+                        // (an array on the stack is never freed, D191; a tree
+                        // of a region with its region, D200)
                         if self.stack_vars.contains(var) {
+                            continue;
+                        }
+                        if let Some(rg) = self.region_vars.get(var).cloned() {
+                            self.emit(format!("call void @isc_region_free(ptr {})", rg));
                             continue;
                         }
                         let ty = self.p.vars[*var as usize].ty.clone();
@@ -2931,6 +3106,12 @@ impl<'p> Gen<'p> {
                     return Ok(V { r: "poison".into(), t: ret, uni: true });
                 }
                 let cc = self.fn_cc();
+                // a builder called while a region is made: its variant
+                if let (Some(rg), true) = (self.region.clone(), self.builders.contains(f)) {
+                    self.rg_needed.insert(*f);
+                    let r = self.ins(format!("call {}{} @isc_fn_{}_rg(ptr {}, {})", cc, ret, f, rg, vals.join(", ")));
+                    return Ok(V { r, t: ret, uni: true });
+                }
                 let r = self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")));
                 Ok(V { r, t: ret, uni: true })
             }

@@ -183,6 +183,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] `filter` in vector code, its vectors compressed: revcomp 0.294 s -> 0.258 s (D195)
   - [x] Tables of bytes in registers before the vector loop: revcomp 0.263 s -> 0.253 s (D198)
   - [x] 32 lanes for the maps that make bytes: fasta 0.207 s -> 0.174 s, revcomp 0.254 s -> 0.242 s (D199)
+  - [x] Regions for the trees that die whole: binarytrees 2.030 s -> 1.317 s (D200)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)
