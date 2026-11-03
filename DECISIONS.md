@@ -2971,3 +2971,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   fastest on mandelbrot only; fasta, reverse-complement and spectral-norm,
   thought at the level of the fastest, are 1.54, 7.47 and 2.61 times
   slower.
+- **D178 — `filter` by blocks, in parallel (2026-11-03).** Profile of
+  reverse-complement (4 threads, 254 MB of input): 0.875 CPUs used, the
+  `filter`s sequential, two passes each (count, then write) over the
+  254 MB of the input (the headers) and the 250 MB of the bases, 12
+  instructions per byte. Model: each pass reads its input once; on 4
+  cores, a quarter of the time. A `filter` of more than one block, outside
+  a task, with more than one thread: the elements each block of B keeps,
+  counted (a task per block), the place of each block in the result (the
+  sum of the counts before it, in order, by the caller), then each block
+  writes its elements from its place (a task per block). The predicate is
+  pure and evaluated twice, as in the sequential form; the result is the
+  sequential one for any number of threads; a node kept gets one owner
+  more in its task, atomic when its type may be shared (D175).
+  reverse-complement at fixed frequency, 4 threads: 0.531 s -> 0.415 s;
+  one thread: 1.014 s -> 1.018 s (the same two passes). Test
+  `filters_and_divisions_of_the_index_do_not_depend_on_threads`.

@@ -111,3 +111,54 @@ fn privatized_folds_match_the_interpreter() {
         }
     }
 }
+
+#[test]
+fn filters_and_divisions_of_the_index_do_not_depend_on_threads() {
+    // filters of more than one block (by blocks in parallel, D178):
+    // integers, the bytes of a slice, tuples (columns), strings (owned); a
+    // map whose index is divided by constants
+    let src = r#"function strs(n: i64): string[k] {
+    return filter(map(iota(n), (i) => String(i)), (s) => s.length == 2 || s.length == 5);
+}
+function firsts(t: [i64, f64][k]): i64[k] {
+    return map(t, (p) => {
+        const [i, x] = p;
+        return i;
+    });
+}
+function seconds(t: [i64, f64][k]): f64[k] {
+    return map(t, (p) => {
+        const [i, x] = p;
+        return x;
+    });
+}
+action main(args: string[k]): i32 {
+    const n = 3 * 4096 + 17;
+    const a = filter(iota(5 * n), (i) => i % 7 == 3 || i == 5 * n - 1);
+    print([a.length, sum(a), a[0], a[a.length - 1]] as const);
+    const b = map(iota(4 * n), (i) => u8(i * 37 % 251));
+    const c = b.slice(5, 4 * n - 3).filter((x) => x != 10u8 && x < 200u8);
+    print([c.length, i64(sum(map(c, (x) => u64(x))))] as const);
+    const t = filter(map(iota(n), (i) => [i, f64(i) * 0.5] as const), (p) => {
+        const [i, x] = p;
+        return i % 3 == 1;
+    });
+    print([t.length, sum(firsts(t)), sum(seconds(t))] as const);
+    const s = strs(n);
+    print([s.length, sum(map(s, (x) => x.length))] as const);
+    print(s[s.length - 1]);
+    const d = map(iota(5 * n), (q) => q % 61 == 60 ? i64(b[q % 4096]) : q / 61 * 1000 + q % 61 + q % 7 * 100000 + q / 4096);
+    print(sum(d));
+    print([d[4095], d[4096], d[5 * n - 1]] as const);
+    print(filter(iota(10), (i) => i % 2 == 0));
+    return 0;
+}
+"#;
+    let want = "(8790, 270419953, 3, 61524)\n(39016, 3899678)\n(4102, 25237555, 12618777.5)\n(2395, 11705)\n12304\n48645906552\n(67008, 167010, 1108051)\n[0, 2, 4, 6, 8]\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "p_filters");
+    for t in THREADS {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want), "{} threads: {}", t, run.stderr);
+    }
+}

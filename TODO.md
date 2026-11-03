@@ -167,3 +167,4 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
+  - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

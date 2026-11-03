@@ -27,6 +27,7 @@ use isc_syntax::Span;
 pub const LANES: u32 = 32;
 pub const BLOCK: i64 = 4096;
 
+
 /// Levels of the reduction of a stream (`reduce_stream`): B^5 = 2^60
 /// elements kept.
 const STREAM_LEVELS: i64 = 5;
@@ -2433,7 +2434,7 @@ impl<'p> Gen<'p> {
             }
             Reduce(x, l, z) => self.reduce(e, x, l, z),
             Scan(x, l, z) => self.scan(e, x, l, z),
-            Filter(x, l) => self.filter(x, l),
+            Filter(x, l) => self.filter(e, x, l),
             Fold(x, init, l) if w > 1 => self.fold_vec(x, init, l, w),
             Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
             Fold(x, init, l) => match additive_update(l) {
@@ -4181,13 +4182,43 @@ impl<'p> Gen<'p> {
     /// `filter` (SPEC section 6): the elements counted, an array of exactly
     /// that size (its columns are laid out for it), then the elements
     /// written; the predicate is pure, so that it can be evaluated twice.
-    fn filter(&mut self, x: &Expr, l: &Lambda) -> R<V> {
+    /// More than one block and more than one thread: by blocks, in
+    /// parallel (`filter_parallel`); the same array for any number of
+    /// threads (D178).
+    fn filter(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
         let elem_ty = x.ty.elem().clone();
         let (src, n) = self.prepare_src(x)?;
+        if self.in_task {
+            return self.filter_range(&src, &n, l, &elem_ty);
+        }
+        let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
+        let threads = self.ins("call i64 @isc_thread_count()".to_string());
+        let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
+        let big = self.ins(format!("and i1 {}, {}", several, multi));
+        let res = self.alloca("{ ptr, i64 }");
+        let lpar = self.label();
+        let lseq = self.label();
+        let ljoin = self.label();
+        self.cbr(&big, &lpar, &lseq);
+        self.block(&lpar);
+        let r = self.filter_parallel(e, x, l, &n)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
+        self.br(&ljoin);
+        self.block(&lseq);
+        let r = self.filter_range(&src, &n, l, &elem_ty)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("load {{ ptr, i64 }}, ptr {}", res));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+    }
+
+    /// The sequential `filter` of the `n` elements of `src`.
+    fn filter_range(&mut self, src: &Src, n: &str, l: &Lambda, elem_ty: &Type) -> R<V> {
         let cnt = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", cnt));
-        self.for_range("0", &n, 1, &mut |g, i| {
-            let el = g.elem(&src, i, 1)?;
+        self.for_range("0", n, 1, &mut |g, i| {
+            let el = g.elem(src, i, 1)?;
             g.bind(l.params[0], el);
             let keep = g.ex(&l.body, 1)?;
             let c = g.ins(format!("load i64, ptr {}", cnt));
@@ -4197,10 +4228,10 @@ impl<'p> Gen<'p> {
             Ok(())
         })?;
         let k = self.ins(format!("load i64, ptr {}", cnt));
-        let out = self.alloc_elems(&k, &elem_ty);
+        let out = self.alloc_elems(&k, elem_ty);
         self.emit(format!("store i64 0, ptr {}", cnt));
-        self.for_range("0", &n, 1, &mut |g, i| {
-            let el = g.elem(&src, i, 1)?;
+        self.for_range("0", n, 1, &mut |g, i| {
+            let el = g.elem(src, i, 1)?;
             g.bind(l.params[0], el.clone());
             let keep = g.ex(&l.body, 1)?;
             let lyes = g.label();
@@ -4209,17 +4240,108 @@ impl<'p> Gen<'p> {
             g.block(&lyes);
             let c = g.ins(format!("load i64, ptr {}", cnt));
             // a node kept: one owner more, the new array (D130)
-            let el = if holds_owned(&elem_ty) { g.copy_value(&el, &elem_ty) } else { el };
-            g.store_elem(&out, &k, &c, &elem_ty, &el, 1);
+            let el = if holds_owned(elem_ty) { g.copy_value(&el, elem_ty) } else { el };
+            g.store_elem(&out, &k, &c, elem_ty, &el, 1);
             let c2 = g.ins(format!("add i64 {}, 1", c));
             g.emit(format!("store i64 {}, ptr {}", c2, cnt));
             g.br(&lnext);
             g.block(&lnext);
             Ok(())
         })?;
-        let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", out));
-        let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, k));
-        Ok(V { r, t: "{ ptr, i64 }".into(), uni: true })
+        Ok(self.arr(&out, &k))
+    }
+
+    /// `filter` by blocks of B elements (D178): the elements each block
+    /// keeps, counted (task j); the place of each block in the result, the
+    /// sum of the counts before it (the caller, in order); then the
+    /// elements of each block written from its place (task j). The result
+    /// is the sequential one, whatever the number of threads.
+    fn filter_parallel(&mut self, e: &Expr, x: &Expr, l: &Lambda, n: &str) -> R<V> {
+        let elem_ty = x.ty.elem().clone();
+        let bl = BLOCK.to_string();
+        let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
+        let c0 = self.ins(format!("sdiv i64 {}, {}", n1, BLOCK));
+        let bytes = self.ins(format!("mul i64 {}, 8", c0));
+        let counts = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+        // the elements of block j: start .. end
+        let range = |g: &mut Self, n: &str, j: &str| -> (String, String) {
+            let start = g.ins(format!("mul i64 {}, {}", j, BLOCK));
+            let rem = g.ins(format!("sub i64 {}, {}", n, start));
+            let short = g.ins(format!("icmp slt i64 {}, {}", rem, bl));
+            let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
+            let end = g.ins(format!("add i64 {}, {}", start, m));
+            (start, end)
+        };
+        // 1. the elements each block keeps
+        let extra = [v(counts.clone(), "ptr")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let (start, end) = range(g, &n, j);
+            let cnt = g.alloca("i64");
+            g.emit(format!("store i64 0, ptr {}", cnt));
+            g.for_range(&start, &end, 1, &mut |g, i| {
+                let el = g.elem(&src, i, 1)?;
+                g.bind(l.params[0], el);
+                let keep = g.ex(&l.body, 1)?;
+                let c = g.ins(format!("load i64, ptr {}", cnt));
+                let k = g.ins(format!("zext i1 {} to i64", keep.r));
+                let c2 = g.ins(format!("add i64 {}, {}", c, k));
+                g.emit(format!("store i64 {}, ptr {}", c2, cnt));
+                Ok(())
+            })?;
+            let c = g.ins(format!("load i64, ptr {}", cnt));
+            let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, j));
+            g.emit(format!("store i64 {}, ptr {}", c, slot));
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        // 2. the place of each block: the sum of the counts before it
+        let run = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", run));
+        self.for_range("0", &c0, 1, &mut |g, j| {
+            let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", counts, j));
+            let cj = g.ins(format!("load i64, ptr {}", slot));
+            let before = g.ins(format!("load i64, ptr {}", run));
+            g.emit(format!("store i64 {}, ptr {}", before, slot));
+            let after = g.ins(format!("add i64 {}, {}", before, cj));
+            g.emit(format!("store i64 {}, ptr {}", after, run));
+            Ok(())
+        })?;
+        let k = self.ins(format!("load i64, ptr {}", run));
+        let out = self.alloc_elems(&k, &elem_ty);
+        // 3. the elements of each block, from its place
+        let extra = [v(counts.clone(), "ptr"), v(out.clone(), "ptr"), v(k.clone(), "i64")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let (start, end) = range(g, &n, j);
+            let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, j));
+            let first = g.ins(format!("load i64, ptr {}", slot));
+            let pos = g.alloca("i64");
+            g.emit(format!("store i64 {}, ptr {}", first, pos));
+            let (out, k) = (extra[1].r.clone(), extra[2].r.clone());
+            g.for_range(&start, &end, 1, &mut |g, i| {
+                let el = g.elem(&src, i, 1)?;
+                g.bind(l.params[0], el.clone());
+                let keep = g.ex(&l.body, 1)?;
+                let lyes = g.label();
+                let lnext = g.label();
+                g.cbr(&keep.r, &lyes, &lnext);
+                g.block(&lyes);
+                let c = g.ins(format!("load i64, ptr {}", pos));
+                // a node kept: one owner more, the new array (D130)
+                let el = if holds_owned(&elem_ty) { g.copy_value(&el, &elem_ty) } else { el };
+                g.store_elem(&out, &k, &c, &elem_ty, &el, 1);
+                let c2 = g.ins(format!("add i64 {}, 1", c));
+                g.emit(format!("store i64 {}, ptr {}", c2, pos));
+                g.br(&lnext);
+                g.block(&lnext);
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.emit(format!("call void @isc_free(ptr {})", counts));
+        Ok(self.arr(&out, &k))
     }
 
     /// out[i] = op(out[i - 1], x[i]) for i in lo .. hi, out[lo - 1] = `z`;
