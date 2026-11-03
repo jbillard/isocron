@@ -175,3 +175,40 @@ fn mandelbrot_program(file: &str) {
     assert!(out == mandelbrot_reference(57));
     valgrind_clean(&src, &name, &["64"]);
 }
+
+/// D225: `printBytes(map(...))` of bytes made only to be written: made and
+/// written by blocks of 1 MiB in one buffer, never whole. Lengths around the
+/// blocks (none, one byte, one block less one, one, one more, several),
+/// rows of 61 (the code by rows of D214), between `print`s (the order of
+/// the output), on 1 and 4 threads, against the bytes computed here;
+/// nothing lost or freed twice (valgrind).
+#[test]
+fn bytes_written_by_blocks() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const t = bytes(\"ACGT\");
+    print(\"before\");
+    printBytes(map(iota(n), (q) => q % 61 == 60 || q == n - 1 ? 10u8 : t[(q / 61 * 60 + q % 61) % 4]));
+    printBytes(map(iota(n % 1000), (q) => u8(65 + q % 26)));
+    print(\"after\");
+    return 0;
+}
+";
+    let want = |n: usize| -> Vec<u8> {
+        let t = b"ACGT";
+        let mut out = b"before\n".to_vec();
+        out.extend((0..n).map(|q| if q % 61 == 60 || q + 1 == n { 10u8 } else { t[(q / 61 * 60 + q % 61) % 4] }));
+        out.extend((0..n % 1000).map(|q| 65 + (q % 26) as u8));
+        out.extend_from_slice(b"after\n");
+        out
+    };
+    let bin = compile(src, "bytes_by_blocks");
+    for n in [0usize, 1, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, (3 << 20) + 61 * 7 + 5] {
+        for t in ["1", "4"] {
+            let o = std::process::Command::new(&bin).arg(n.to_string()).env("ISC_THREADS", t).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "n {}: {}", n, String::from_utf8_lossy(&o.stderr));
+            assert!(o.stdout == want(n), "n {}, {} threads: {} bytes, {} expected", n, t, o.stdout.len(), want(n).len());
+        }
+    }
+    valgrind_clean(src, "bytes_by_blocks", &["1048639"]);
+}

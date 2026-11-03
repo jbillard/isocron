@@ -202,6 +202,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Every cached large block smaller than a request kept for the next ones: revcomp 0.174 s -> 0.156 s (D220)
   - [x] A large file read by every thread (`pread` by parts): readStdin 0.056 s -> 0.029 s, revcomp 0.155 s -> 0.128 s, knucleotide 1.179 s -> 1.148 s (D221)
   - [x] Two simple shapes of regular expressions searched by masks of 64 bytes: regexredux 0.857 s -> 0.479 s (D224)
+  - [x] An array of bytes made only to be written made and written by blocks of 1 MiB: revcomp 0.128 s -> 0.107 s (D225)
+  - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)

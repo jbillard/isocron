@@ -3884,3 +3884,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   the same outputs. Tests: `shapes_of_patterns` and
   `masks_find_the_matches_of_the_automaton` (isc-runtime-core),
   `simple_shapes_found_by_masks` (strings).
+- **D225 — An array of bytes made only to be written, by blocks
+  (2026-11-04).** In reverse-complement each record makes its lines (a
+  `map` of about 250 MB in all) only to give them to `printBytes`: written
+  into pages, new or taken again from the cache of large blocks (D220),
+  then read back by `write`. The code generator now recognizes `let x =
+  map(...) in printBytes(x)` (bytes, made by `materialize`: not a stream,
+  not rows, its elements without a loop of their own, no input moved into
+  it) and makes the array by blocks of 1 MiB into one buffer: each block in
+  parallel as `materialize` makes the whole array (tasks of BLOCK
+  elements, the same `fill_range`, the element `i` of the block from `lo`
+  stored at `buffer - lo + i`, so the code of the elements does not
+  change), then written. A quarter of a MiB per thread: the bytes stay in
+  the caches, never go to memory nor to new pages. The same bytes in the
+  same order. A first version lost the last block, shorter than the others
+  (`for_range` takes whole steps only): the loop now counts the blocks.
+  At fixed frequency, best of 7, 4 threads: reverse-complement 0.128 s ->
+  0.107 s (one thread 0.246 -> 0.228 s), fasta 0.173 s -> 0.168 s,
+  mandelbrot unchanged (0.638 s); the same outputs. Test
+  `bytes_written_by_blocks` (lengths around the blocks, rows of 61,
+  between `print`s, 1 and 4 threads, against bytes computed in the test,
+  valgrind).

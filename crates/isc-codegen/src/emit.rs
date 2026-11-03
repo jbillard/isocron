@@ -1315,6 +1315,20 @@ fn lam_ok_replay(l: &Lambda) -> bool {
 /// `src_vec_ok_replay`, an index into an array of bytes allowed: for
 /// `fill_range`, whose loop is vector code only when each such array has at
 /// most 256 bytes (D185).
+/// `let x = map(...) in printBytes(x)`: an array of bytes made only to be
+/// written, by `materialize` (not a stream, not rows), its elements without
+/// a loop of their own (D225).
+fn print_stream_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
+    matches!(&init.kind, ExprKind::Map(..))
+        && init.ty.is_array()
+        && *init.ty.elem() == Type::Int(IntKind::U8)
+        && !isc_ir::passes::is_stream(init)
+        && !matches!(&init.kind, ExprKind::Map(_, l) if inner_loop(&l.body))
+        // an input moved into it would no longer be freed with the result
+        && !matches!(&init.kind, ExprKind::Map(ins, _) if ins.iter().any(|i| matches!(i.kind, ExprKind::Var(_, Use::Move))))
+        && matches!(&body.kind, ExprKind::Action(ActionOp::PrintBytes, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
+}
+
 fn src_vec_ok_lookup(e: &Expr) -> bool {
     let before = LOOKUP_OK.with(|b| b.replace(true));
     let ok = src_vec_ok_replay(e);
@@ -2819,6 +2833,13 @@ impl<'p> Gen<'p> {
                 let r = r?;
                 self.emit(format!("call void @isc_region_free(ptr {})", rg));
                 Ok(r)
+            }
+            // an array of bytes made only to be written (`printBytes(map(...))`):
+            // made and written by blocks that stay in the caches, never whole
+            // (D225)
+            Let { var, init, body, .. } if w == 1 && print_stream_ok(*var, init, body) => {
+                self.print_stream(init)?;
+                Ok(v("false", "i1"))
             }
             // a literal array of scalars that its body only reads: on the
             // stack, never freed (D191)
@@ -4361,6 +4382,68 @@ impl<'p> Gen<'p> {
             self.block(&l);
         }
         Ok(self.arr(&p, &n))
+    }
+
+    /// `printBytes` of a `map` of bytes made only for it (D225): by blocks of
+    /// STREAM bytes, each made in parallel as `materialize` makes the whole
+    /// array (tasks of BLOCK elements, the same `fill_range`), into one
+    /// buffer of STREAM bytes, then written; the buffer stays in the caches
+    /// (a quarter of a MiB per thread), the bytes never go to memory nor to
+    /// new pages. The element `i` of the block from `lo` is stored at
+    /// `buffer - lo + i`: the code of the elements does not change. The
+    /// same bytes, written in the same order.
+    fn print_stream(&mut self, e: &Expr) -> R<()> {
+        const STREAM: i64 = 1 << 20;
+        let et = e.ty.elem().clone();
+        let spmd = match &e.kind {
+            ExprKind::Map(_, l) => spmd_state(self.p, &l.body),
+            _ => None,
+        };
+        let w = match (src_vec_ok_lookup(e), spmd) {
+            (false, _) => 1,
+            (true, Some(state)) => self.spmd_width(state),
+            (true, None) => 2 * MAP_WIDTH,
+        };
+        let (src, n) = self.prepare_src(e)?;
+        let small = self.ins(format!("icmp slt i64 {}, {}", n, STREAM));
+        let size = self.ins(format!("select i1 {}, i64 {}, i64 {}", small, n, STREAM));
+        let buf = self.ins(format!("call ptr @isc_alloc(i64 {})", size));
+        let in_task = self.in_task;
+        // by the number of the block (`for_range` takes whole steps only)
+        let nb0 = self.ins(format!("add i64 {}, {}", n, STREAM - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", nb0, STREAM));
+        self.for_range_scalar("0", &nb, 1, &mut |g, k| {
+            let lo = &g.ins(format!("mul i64 {}, {}", k, STREAM));
+            let lim = g.ins(format!("add i64 {}, {}", lo, STREAM));
+            let short = g.ins(format!("icmp slt i64 {}, {}", n, lim));
+            let hi = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, n, lim));
+            let neg = g.ins(format!("sub i64 0, {}", lo));
+            let dst = g.ins(format!("getelementptr i8, ptr {}, i64 {}", buf, neg));
+            if in_task {
+                g.fill_range(&src, &dst, &n, &et, lo, &hi, w)?;
+            } else {
+                let len = g.ins(format!("sub i64 {}, {}", hi, lo));
+                let c0 = g.ins(format!("add i64 {}, {}", len, BLOCK - 1));
+                let c = g.ins(format!("sdiv i64 {}, {}", c0, BLOCK));
+                let extra = [v(dst.clone(), "ptr"), v(lo.to_string(), "i64"), v(hi.clone(), "i64")];
+                let et2 = et.clone();
+                let (task, ctx, ctx_bytes) = g.outline_task(&[e], &extra, &mut |t, x, i| {
+                    let (src, n) = t.prepare_src(e)?;
+                    let off = t.ins(format!("mul i64 {}, {}", i, BLOCK));
+                    let start = t.ins(format!("add i64 {}, {}", x[1].r, off));
+                    let lim = t.ins(format!("add i64 {}, {}", start, BLOCK));
+                    let short = t.ins(format!("icmp slt i64 {}, {}", x[2].r, lim));
+                    let end = t.ins(format!("select i1 {}, i64 {}, i64 {}", short, x[2].r, lim));
+                    t.fill_range(&src, &x[0].r, &n, &et2, &start, &end, w)
+                })?;
+                g.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+            }
+            let len = g.ins(format!("sub i64 {}, {}", hi, lo));
+            g.emit(format!("call void @isc_print_bytes(ptr {}, i64 {})", buf, len));
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_free(ptr {})", buf));
+        Ok(())
     }
 
     /// `map(rows, (w) -> ... reduce(w, op, z) ...)` over windows (a view of
