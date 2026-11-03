@@ -359,3 +359,55 @@ action main(args: string[k]): i32 {
 ";
     agree(src, "own_len", &["a", "b"], "[3, 42, 2, 3]\n");
 }
+
+/// D204: the lengths fixed by the types (`f64[3]`) are constants of the
+/// generated code, and every test of a size still reads the real one: an
+/// array of a size known at run time given to a function or to a recursive
+/// function (tested on entry) that expects `f64[3]` panics as before; an
+/// index out of a fixed array too. A record of fixed arrays through a tail
+/// loop, an array of arrays. The interpreter's outputs and panics.
+#[test]
+fn fixed_lengths_keep_every_test_of_a_size() {
+    let src = "type Pair = { a: f64[3], b: f64[3] };
+function norm3(x: f64[3]): f64 {
+    return Math.sqrt(sum(x * x));
+}
+function spin(p: Pair, k: i64): Pair {
+    if (k == 0) return p;
+    return spin({ a: p.b, b: p.a + p.b * 0.5 }, k - 1);
+}
+function last(x: f64[3], k: i64): f64 {
+    if (k == 0) return x[2];
+    return last(x, k - 1);
+}
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const dyn = fill(n, 1.5);
+    const p = spin({ a: [1.0, 2.0, 3.0], b: [0.5, 0.25, 0.125] }, 20);
+    print(p.a);
+    print(norm3(p.b));
+    const m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+    print(map(m, (r) => sum(r)));
+    print(m[1][2]);
+    const i = parseI64(args[1]);
+    print([1, 2, 3, 4, 5][i]);
+    print(parseI64(args[2]) == 0 ? norm3(dyn) : last(dyn, 3));
+    return 0;
+}
+";
+    let bin = compile(src, "fixed_lengths");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains(", i64 3, 1"), "no length fixed in the generated code");
+    let want = interp_ok(src, &["3", "1", "0"]);
+    let r = run_bin(&bin, &["3", "1", "0"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    let want = interp_ok(src, &["3", "1", "1"]);
+    let r = run_bin(&bin, &["3", "1", "1"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    for args in [["4", "1", "0"], ["4", "1", "1"], ["2", "1", "1"], ["3", "5", "0"]] {
+        let m = interp_panic(src, &args);
+        let r = run_bin(&bin, &args);
+        assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+        assert!(r.stderr.contains(&m), "{:?}: {} / {}", args, r.stderr, m);
+    }
+}

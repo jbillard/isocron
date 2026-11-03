@@ -662,7 +662,7 @@ fn combine(e: &mut Expr, vars: &mut Vec<VarInfo>, base: VarId, sites: &[(usize, 
     let map_body = Expr::new(ExprKind::Tuple(cols), tt.clone(), sp);
     let src = Expr::new(
         ExprKind::Map(vec![Expr::var(base, base_ty, sp)], Lambda { params: vec![v], body: Box::new(map_body), drop_params: vec![false] }),
-        Type::Array(Box::new(tt.clone())),
+        Type::Array(Box::new(tt.clone()), crate::Fixed::ANY),
         sp,
     );
     let op = Lambda { params: vec![a, b], body: Box::new(Expr::new(ExprKind::Tuple(ops), tt.clone(), sp)), drop_params: vec![false, false] };
@@ -845,7 +845,7 @@ fn masked_reductions(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let rt = l.body.ty.clone();
     let body = Expr::new(ExprKind::If(Box::new(cond), Box::new(kept), Box::new((**z).clone())), rt.clone(), sp);
     let lam = Lambda { params: vec![p], body: Box::new(body), drop_params: vec![false] };
-    **x = Expr::new(ExprKind::Map(vec![src], lam), Type::Array(Box::new(rt)), sp);
+    **x = Expr::new(ExprKind::Map(vec![src], lam), Type::Array(Box::new(rt), crate::Fixed::ANY), sp);
 }
 
 /// How the parent of an expression reads it.

@@ -13,7 +13,9 @@ pub fn type_str(t: &Type) -> String {
         Type::Str => "string".into(),
         Type::Big => "bigint".into(),
         Type::Tuple(ts) => format!("[{}]", ts.iter().map(type_str).collect::<Vec<_>>().join(", ")),
-        Type::Array(e) => format!("{}[]", type_str(e)),
+        // (the length fixed by the program, D204, is not shown: the messages
+        // and the memory report speak of the array)
+        Type::Array(e, _) => format!("{}[]", type_str(e)),
         Type::Rec(i) => format!("rec#{}", i),
     }
 }

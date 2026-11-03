@@ -101,7 +101,7 @@ impl Array {
             Type::Bool => Array::Bool(Vec::with_capacity(n)),
             Type::Str | Type::Big => Array::Str(Vec::with_capacity(n)),
             Type::Tuple(ts) => Array::Tuple(ts.iter().map(|t| Array::with_capacity(t, n)).collect()),
-            Type::Array(_) => Array::Rows(Vec::with_capacity(n)),
+            Type::Array(_, _) => Array::Rows(Vec::with_capacity(n)),
             Type::Rec(_) => Array::Nodes(Vec::with_capacity(n)),
             t => panic!("arrays of {:?} are not supported", t),
         }
@@ -1413,7 +1413,7 @@ impl<'a> Interp<'a> {
                     }
                     Err(_) => return panic_at(e, isc_runtime_core::Panic::ExternNul(&f.name).to_string()),
                 },
-                (Type::Array(el), Value::Array(arr)) => {
+                (Type::Array(el, _), Value::Array(arr)) => {
                     let (ptr, len) = match (&**el, &*arr) {
                         (Type::F64, Array::F64(x)) => (x.as_ptr() as i64, x.len()),
                         (Type::F32, Array::F32(x)) => (x.as_ptr() as i64, x.len()),
@@ -1531,7 +1531,7 @@ fn print_value(v: &Value, t: &Type, shape: &isc_ir::Shape, recs: &[RecType], s: 
             }
             s.push(close);
         }
-        (Value::Array(a), Type::Array(et)) => {
+        (Value::Array(a), Type::Array(et, _)) => {
             let sub = match shape {
                 Shape::Array(e) => &**e,
                 _ => &Shape::Plain,
@@ -1560,7 +1560,7 @@ fn zero_value(t: &Type) -> Value {
         // the zero `bigint` has no byte (D156)
         Type::Str | Type::Big => Value::Str(Rc::from("")),
         Type::Tuple(ts) => Value::Tuple(Rc::new(ts.iter().map(zero_value).collect())),
-        Type::Array(e) => Value::Array(Rc::new(Array::with_capacity(e, 0))),
+        Type::Array(e, _) => Value::Array(Rc::new(Array::with_capacity(e, 0))),
         // the slot of a variant not taken: never read
         Type::Rec(_) => Value::Unit,
     }

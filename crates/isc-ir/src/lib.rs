@@ -38,19 +38,43 @@ pub enum Type {
     /// string (its bytes: `isc_runtime_core::big`).
     Big,
     Tuple(Vec<Type>),
-    Array(Box<Type>),
+    /// An array; its length when the program fixes it (D204).
+    Array(Box<Type>, Fixed),
     /// A value of the recursive type `Program::recs[i]`: a pointer to a
     /// node on the heap, with a reference count (D103).
     Rec(u32),
 }
 
+/// The length of an array known when the program is compiled (`f64[5]`,
+/// D204), or not (`f64[n]`): read by the generated code only. Two array
+/// types are the same type whatever it says: it takes no part in equality
+/// or hashing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Fixed(pub Option<u32>);
+
+impl Fixed {
+    pub const ANY: Fixed = Fixed(None);
+}
+
+impl PartialEq for Fixed {
+    fn eq(&self, _: &Fixed) -> bool {
+        true
+    }
+}
+
+impl Eq for Fixed {}
+
+impl std::hash::Hash for Fixed {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
 impl Type {
     pub fn is_array(&self) -> bool {
-        matches!(self, Type::Array(_))
+        matches!(self, Type::Array(_, _))
     }
     pub fn elem(&self) -> &Type {
         match self {
-            Type::Array(e) => e,
+            Type::Array(e, _) => e,
             _ => panic!("elem of non-array type {:?}", self),
         }
     }
@@ -65,13 +89,13 @@ impl Type {
     /// D97): its elements are contiguous. The columns of an array of tuples
     /// are placed according to its length, so a slice of one is a copy.
     pub fn slice_is_view(&self) -> bool {
-        matches!(self, Type::Array(e) if !matches!(**e, Type::Tuple(_) | Type::Array(_)))
+        matches!(self, Type::Array(e, _) if !matches!(**e, Type::Tuple(_) | Type::Array(_, _)))
     }
 
     pub fn has_heap(&self) -> bool {
         match self {
             // a string is owned and freed as an array of bytes (D134)
-            Type::Array(_) | Type::Rec(_) | Type::Str | Type::Big => true,
+            Type::Array(_, _) | Type::Rec(_) | Type::Str | Type::Big => true,
             Type::Tuple(ts) => ts.iter().any(|t| t.has_heap()),
             _ => false,
         }

@@ -3516,3 +3516,26 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (its `factorial`, called once; the base case of `next` is a tuple)
   1.661 s -> 1.663 s, the eight others
   compile to the same code; the same outputs at 1 and 4 threads.
+- **D204 — Lengths fixed by the types (2026-11-04).** The checker knows
+  that `x: f64[5]` holds 5 elements, but the IR typed every array `f64[]`:
+  n-body's pair loop compared each index with a length read at run time
+  (13 comparisons out of about 75 instructions per pair), and `b.x + DT *
+  vx` was compiled as for any length (a loop of 512-bit vectors, a scalar
+  end, a parallel path above 4096 elements). `Type::Array` now carries
+  `Fixed`, the length when the type is a constant (`Poly::as_const`),
+  which takes no part in the equality or the hash of types (an `f64[5]`
+  and an `f64[n]` are the same type to every pass) and is not shown in
+  messages. The generated code puts it as a constant into the aggregate of
+  every value of such a type (`fix_len`, an `insertvalue` that LLVM folds
+  into every read of the length), on the results of expressions only: a
+  binding is not fixed, and the two sizes of a `CheckSize` are computed
+  without it (`no_fix`), so that a parameter whose size is tested at run
+  time (a call, the entry of a recursive function) is tested on its real
+  length. At fixed frequency, 4 threads: n-body 5.960 s -> 5.552 s (23
+  calls of `isc_panic_bounds` in its loop -> 2), reverse-complement 0.240
+  s -> 0.228 s, k-nucleotide, regex-redux and fasta unchanged, the others
+  compile to the same code; the same outputs at 1 and 4 threads. Profile
+  of n-body after (1 thread): 996 instructions and 365 cycles per step,
+  25 % in `isc_alloc` and `isc_free`; its pair loop is still a loop, each
+  pair a chain root, division, products (the hottest instruction the
+  division).

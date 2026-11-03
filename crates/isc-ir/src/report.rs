@@ -152,7 +152,7 @@ fn elem_bytes(t: &Type) -> u64 {
         Type::Bool | Type::Unit => 1,
         Type::Str | Type::Big => 16,
         Type::Tuple(ts) => ts.iter().map(elem_bytes).sum(),
-        Type::Array(_) => 16,
+        Type::Array(_, _) => 16,
         Type::Rec(_) => 8,
     }
 }
@@ -216,7 +216,7 @@ impl<'p> Walk<'p> {
 
     fn size(&self, e: &Expr) -> (String, Option<u64>) {
         match (self.len_of(e), &e.ty) {
-            (Some(n), Type::Array(t)) => {
+            (Some(n), Type::Array(t, _)) => {
                 let b = n * elem_bytes(t);
                 (format!("{} bytes", thousands(b)), Some(b))
             }

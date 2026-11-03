@@ -268,8 +268,8 @@ pub fn lt(t: &Type) -> String {
         Type::Bool | Type::Unit => "i1".into(),
         // an array of arrays: its block, rows, columns, and the distance in
         // elements from a row to the next (the columns, or 1 for `window`)
-        Type::Array(e) if e.is_array() => NESTED.into(),
-        Type::Str | Type::Big | Type::Array(_) => "{ ptr, i64 }".into(),
+        Type::Array(e, _) if e.is_array() => NESTED.into(),
+        Type::Str | Type::Big | Type::Array(_, _) => "{ ptr, i64 }".into(),
         // a node of a recursive type (D103)
         Type::Rec(_) => "ptr".into(),
         Type::Tuple(ts) => {
@@ -296,7 +296,7 @@ fn esize(t: &Type) -> i64 {
         Type::F64 => 8,
         Type::F32 => 4,
         Type::Bool | Type::Unit => 1,
-        Type::Str | Type::Big | Type::Array(_) => 16,
+        Type::Str | Type::Big | Type::Array(_, _) => 16,
         Type::Rec(_) => 8,
         Type::Tuple(ts) => ts.iter().map(esize).sum::<i64>().max(1),
     }
@@ -419,6 +419,9 @@ pub struct Gen<'p> {
     vec_fail: Option<String>,
     /// The array literals put on the stack (D191): never freed.
     stack_vars: HashSet<VarId>,
+    /// While the sizes of a `CheckSize` are computed: no length fixed by a
+    /// type is put into a value (D204), the test reads the real ones.
+    no_fix: bool,
     /// The recursive functions that build trees of new nodes only (D200).
     builders: HashSet<u32>,
     /// In a variant of a builder: the register of its region.
@@ -478,7 +481,7 @@ fn holds_owned(t: &Type) -> bool {
     match t {
         Type::Rec(_) | Type::Str | Type::Big => true,
         Type::Tuple(ts) => ts.iter().any(holds_owned),
-        Type::Array(e) => holds_owned(e),
+        Type::Array(e, _) => holds_owned(e),
         _ => false,
     }
 }
@@ -794,6 +797,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         divmod: Vec::new(),
         vec_fail: None,
         stack_vars: HashSet::new(),
+        no_fix: false,
         builders: if opts.isa.is_wasm() { HashSet::new() } else { builders(p) },
         region: None,
         region_vars: HashMap::new(),
@@ -821,7 +825,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     // the array of the arguments and their strings (copies, D134), owned
     // by `main` unless it gave it away (D96)
     if p.drop_args {
-        let t = Type::Array(Box::new(Type::Str));
+        let t = Type::Array(Box::new(Type::Str), isc_ir::Fixed::ANY);
         g.drop_value(&v(args.clone(), "{ ptr, i64 }"), &t);
     }
     g.emit("call void @isc_flush()");
@@ -934,6 +938,45 @@ fn mentions(e: &Expr, vars: &HashSet<VarId>) -> bool {
     e.children().into_iter().any(|c| mentions(c, vars))
 }
 
+/// A length of an array fixed by the type `t` (D204).
+fn has_fixed(t: &Type) -> bool {
+    match t {
+        Type::Array(e, f) => f.0.is_some() || matches!(&**e, Type::Array(_, g) if g.0.is_some()),
+        Type::Tuple(ts) => ts.iter().any(has_fixed),
+        _ => false,
+    }
+}
+
+/// The lengths fixed by `t` (D204): the path of each in the aggregate of a
+/// value of `t` (`lt`), and the length. An array: its length at 1; an
+/// array of arrays (`NESTED`): its rows at 1, its columns at 2.
+fn fixed_lengths(t: &Type, path: &mut Vec<u32>, out: &mut Vec<(Vec<u32>, u32)>) {
+    match t {
+        Type::Array(e, f) => {
+            if let Some(n) = f.0 {
+                path.push(1);
+                out.push((path.clone(), n));
+                path.pop();
+            }
+            if let Type::Array(_, g) = &**e {
+                if let Some(m) = g.0 {
+                    path.push(2);
+                    out.push((path.clone(), m));
+                    path.pop();
+                }
+            }
+        }
+        Type::Tuple(ts) => {
+            for (k, c) in ts.iter().enumerate() {
+                path.push(k as u32);
+                fixed_lengths(c, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The recursive functions whose body is `if (c) a else b` with `c` and one
 /// branch simple (D202): no call, no allocation, no panic, a scalar or a
 /// constructor without payload as result. A caller computes `c` and that
@@ -1000,7 +1043,7 @@ fn builders(p: &Program) -> HashSet<u32> {
     fn holds_rec(t: &Type) -> bool {
         match t {
             Type::Rec(_) => true,
-            Type::Array(e) => holds_rec(e),
+            Type::Array(e, _) => holds_rec(e),
             Type::Tuple(ts) => ts.iter().any(holds_rec),
             _ => false,
         }
@@ -1053,7 +1096,7 @@ fn region_use_ok(t: VarId, e: &Expr) -> bool {
     fn holds_rec(ty: &Type) -> bool {
         match ty {
             Type::Rec(_) => true,
-            Type::Array(e) => holds_rec(e),
+            Type::Array(e, _) => holds_rec(e),
             Type::Tuple(ts) => ts.iter().any(holds_rec),
             _ => false,
         }
@@ -1410,7 +1453,7 @@ fn additive_update(l: &Lambda) -> Option<(&Expr, &Expr, Span)> {
         return None;
     }
     let c = l.params[0];
-    if !matches!(&l.body.ty, Type::Array(e) if matches!(**e, Type::Int(_))) {
+    if !matches!(&l.body.ty, Type::Array(e, _) if matches!(**e, Type::Int(_))) {
         return None;
     }
     let (target, index, value) = match &l.body.kind {
@@ -2004,7 +2047,7 @@ impl<'p> Gen<'p> {
                 self.rec_drops.insert((*i, atomic));
                 self.emit(format!("call void @{}(ptr {})", rec_drop_name(*i, atomic), x.r));
             }
-            Type::Array(e) if e.is_array() => {
+            Type::Array(e, _) if e.is_array() => {
                 let p = self.ins(format!("extractvalue {} {}, 0", NESTED, x.r));
                 // each string of the rows (D154): an owned array of arrays
                 // is contiguous (its stride is its columns)
@@ -2026,7 +2069,7 @@ impl<'p> Gen<'p> {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
-            Type::Array(e) => {
+            Type::Array(e, _) => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
                 // each node of the elements: one owner less (D130)
                 if holds_owned(e) {
@@ -2055,7 +2098,7 @@ impl<'p> Gen<'p> {
 
     fn copy_value(&mut self, x: &V, t: &Type) -> V {
         match t {
-            Type::Array(e) if e.is_array() => {
+            Type::Array(e, _) if e.is_array() => {
                 // into one block, rows contiguous (a window becomes a matrix)
                 let inner = e.elem().clone();
                 let (p, rows, cols, stride) = self.nested_parts(x);
@@ -2084,7 +2127,7 @@ impl<'p> Gen<'p> {
                 .expect("copy of rows");
                 self.nested(&q, &rows, &cols, &cols)
             }
-            Type::Array(e) => {
+            Type::Array(e, _) => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
                 let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", x.r));
                 let bytes = self.array_bytes(&n, e);
@@ -2273,7 +2316,7 @@ impl<'p> Gen<'p> {
                 }
             }
             Type::Tuple(ts) => ts.iter().for_each(|x| self.rec_types_in(x, out)),
-            Type::Array(e) => self.rec_types_in(e, out),
+            Type::Array(e, _) => self.rec_types_in(e, out),
             _ => {}
         }
     }
@@ -2508,7 +2551,7 @@ impl<'p> Gen<'p> {
                 }
                 acc
             }
-            Type::Array(et) if !et.is_array() => {
+            Type::Array(et, _) if !et.is_array() => {
                 let (pa, na) = self.str_parts(a);
                 let (pb, nb) = self.str_parts(b);
                 let same = self.ins(format!("icmp eq i64 {}, {}", na, nb));
@@ -2578,8 +2621,37 @@ impl<'p> Gen<'p> {
     }
 
     /// Compiles an expression; `w > 1` only for element computations
-    /// accepted by `vec_ok`.
+    /// accepted by `vec_ok`. A value whose type fixes the length of its
+    /// arrays (`f64[5]`, D204) gets that length as a constant in its
+    /// aggregate: LLVM folds every read of it (bounds checks against a
+    /// constant, loops of a known count). Only results, never bindings: a
+    /// parameter whose size is tested on entry is not fixed before its test.
     fn ex(&mut self, e: &Expr, w: u32) -> R<V> {
+        let x = self.ex_any(e, w)?;
+        if w == 1 && !self.no_fix && has_fixed(&e.ty) {
+            return Ok(self.fix_len(x, &e.ty));
+        }
+        Ok(x)
+    }
+
+    /// `x` with the lengths its type `t` fixes (D204), when it has the
+    /// layout of `t` (not the lanes of vector code).
+    fn fix_len(&mut self, x: V, t: &Type) -> V {
+        let lay = lt(t);
+        if x.t != lay {
+            return x;
+        }
+        let mut ls = Vec::new();
+        fixed_lengths(t, &mut Vec::new(), &mut ls);
+        let mut r = x.r.clone();
+        for (path, n) in ls {
+            let idx = path.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
+            r = self.ins(format!("insertvalue {} {}, i64 {}, {}", lay, r, n, idx));
+        }
+        V { r, ..x }
+    }
+
+    fn ex_any(&mut self, e: &Expr, w: u32) -> R<V> {
         use ExprKind::*;
         let span = e.span;
         if !self.pre.is_empty() {
@@ -3069,8 +3141,12 @@ impl<'p> Gen<'p> {
                 _ => self.fold(x, init, l),
             },
             CheckSize(a, b, body) => {
-                let av = self.ex(a, 1)?;
-                let bv = self.ex(b, 1)?;
+                // the real sizes, not those the types expect (D204)
+                let saved = std::mem::replace(&mut self.no_fix, true);
+                let av = self.ex(a, 1);
+                let bv = self.ex(b, 1);
+                self.no_fix = saved;
+                let (av, bv) = (av?, bv?);
                 let ok = self.ins(format!("icmp eq i64 {}, {}", av.r, bv.r));
                 self.uniform_check(&ok, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", av.r, bv.r, Self::pos(span)), w);
                 self.ex(body, w)
@@ -5463,7 +5539,7 @@ impl<'p> Gen<'p> {
     /// same way, level by level; each level frees the one before.
     fn reduce_owned(&mut self, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
         let t = l.body.ty.clone();
-        let at = Type::Array(Box::new(t.clone()));
+        let at = Type::Array(Box::new(t.clone()), isc_ir::Fixed::ANY);
         let zv = self.ex(z, 1)?;
         let (av, p, n, fresh) = self.owned_src(x)?;
         let curp = self.alloca("ptr");
@@ -5545,7 +5621,7 @@ impl<'p> Gen<'p> {
         })?;
         self.drop_value(&zv, &t);
         if fresh {
-            self.drop_value(&av, &Type::Array(Box::new(t.clone())));
+            self.drop_value(&av, &Type::Array(Box::new(t.clone()), isc_ir::Fixed::ANY));
         }
         Ok(self.arr(&out, &n))
     }
@@ -6499,7 +6575,7 @@ impl<'p> Gen<'p> {
                 ExprKind::Var(w, _) if ins.len() == 1 && *w == m.params[0] => ins[0].clone(),
                 _ => Expr::new(
                     ExprKind::Map(ins.clone(), Lambda { params: m.params.clone(), body: Box::new(fs[i].clone()), drop_params: vec![false; m.params.len()] }),
-                    Type::Array(Box::new(ts[i].clone())),
+                    Type::Array(Box::new(ts[i].clone()), isc_ir::Fixed::ANY),
                     x.span,
                 ),
             };
@@ -8214,7 +8290,7 @@ impl<'p> Gen<'p> {
                 }
                 self.print_lit(close);
             }
-            Type::Array(et) if et.is_array() => {
+            Type::Array(et, _) if et.is_array() => {
                 let inner = et.elem().clone();
                 let (p, rows, cols, stride) = self.nested_parts(x);
                 let sub = match shape {
@@ -8237,7 +8313,7 @@ impl<'p> Gen<'p> {
                 })?;
                 self.print_lit("]");
             }
-            Type::Array(et) => {
+            Type::Array(et, _) => {
                 let (p, n) = self.str_parts(x);
                 self.print_lit("[");
                 let et = (**et).clone();
@@ -8406,7 +8482,7 @@ impl<'p> Gen<'p> {
                     call_args.push(format!("ptr {}", c));
                     copies.push(c);
                 }
-                Type::Array(_) => {
+                Type::Array(_, _) => {
                     let (p, n) = self.str_parts(x);
                     decl_params.push("ptr".to_string());
                     decl_params.push("i64".to_string());
