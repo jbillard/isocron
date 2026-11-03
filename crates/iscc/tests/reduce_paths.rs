@@ -68,6 +68,11 @@ fn exact_reductions_in_one_loop_give_the_results_of_the_interpreter() {
     print([reduce(xs, (a, b) => Math.min(a, b), 1e308), reduce(xs.slice(0, 3), (a, b) => Math.max(a, b), -1e308)] as const);
     const zs = [0.0, -0.0, 0.0];
     print([1.0 / reduce(zs, (a, b) => Math.min(a, b), 1.0), 1.0 / reduce(zs, (a, b) => Math.max(a, b), -1.0)] as const);
+    // a `z` that is not the identity: added in each of the 32 lanes of the
+    // fixed form (35, docs/language.md); `min` and `max` from any `z`
+    print(reduce(iota(3), (a, b) => a + b, 1));
+    print(reduce(iota(20), (a, b) => a * b + 0 * a, 2));
+    print([reduce(iota(5), (a, b) => Math.min(a, b), -3), reduce(iota(5), (a, b) => Math.max(a, b), 2)] as const);
     // in the tasks of a map: a count per row
     const rows = map(iota(5000), (r) => count(iota(r % 37), (j) => (j * r) % 3 == 1));
     print(sum(rows));

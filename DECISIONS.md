@@ -3106,3 +3106,12 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   output; the other programs unchanged. Test
   `folds_over_a_size_of_every_lane_and_shifted_indices_are_vector_code`
   (no gather, the results and the panics of the interpreter).
+- **D183, corrected (2026-11-04).** The one loop of D183 starts from `z`
+  once, the fixed form once per lane: they agree only when `z` is the
+  identity of the operator (`0` for `+`, `1` for `*`) or when the operator
+  is idempotent (`min`, `max`). The full suite found it:
+  `reduce(iota(3), (+), 1)` of the guide gave 4, not 35 (`z` added in each
+  of the 32 lanes, docs/language.md). The rule is now `order_free` (an
+  exact operator, and `z` its identity or the operator `min` or `max`);
+  fasta keeps its gain (its `count` starts from 0). The test adds the
+  example of the guide, a product from 2 and `min`, `max` from any `z`.

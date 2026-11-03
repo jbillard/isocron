@@ -4041,15 +4041,18 @@ impl<'p> Gen<'p> {
         let w = if src_vec_ok(x) && lam_ok(l) { lanes } else { 1 };
         let wm = if lam_ok(l) { lanes } else { 1 };
         let (src, n) = self.prepare_src(x)?;
-        // An exact operator (D183): its result does not depend on the order
-        // of the elements, so that the fixed form is not needed for the
-        // bits. Fewer elements than lanes: one loop instead of the blocks,
+        // An exact operator whose `z` is its identity, or `min` and `max`
+        // (D183): the result depends neither on the order of the elements
+        // nor on the lanes starting from `z` (the fixed form adds a `z` that
+        // is not 0 in each of them, docs/language.md), so that the fixed
+        // form is not needed for the bits. Fewer elements than lanes: one
+        // loop instead of the blocks,
         // the lanes and their tree, whose setup cost a hundred instructions
         // per call (`count` over 4 probabilities per byte in fasta). More:
         // the fixed form (within a block of B, LLVM removes checks of
         // bounds that it keeps in one loop over the whole range: k-nucleotide
         // 12 % slower with one loop).
-        let exact = isc_ir::passes::exact_op(l).is_some() && t.is_scalar();
+        let exact = isc_ir::passes::order_free(l, z) && t.is_scalar();
         let exact_res = if exact {
             let limit = lanes as i64 - 1;
             let slot = self.alloca(&lt(&t));

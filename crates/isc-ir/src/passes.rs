@@ -712,7 +712,7 @@ pub fn cannot_panic(e: &Expr) -> bool {
 /// does not depend on the order of the operands nor on their grouping,
 /// exactly: integer `+`, `*` (modulo 2^bits), `min`, `max` of integers and
 /// floats (IEEE 754-2019 `minimum`, `maximum`).
-pub fn exact_op(l: &Lambda) -> Option<BinOp> {
+fn exact_op(l: &Lambda) -> Option<BinOp> {
     let ExprKind::Binary(op, a, b) = &l.body.kind else { return None };
     let var = |e: &Expr| match e.kind {
         ExprKind::Var(v, _) => Some(v),
@@ -757,6 +757,18 @@ fn is_float_identity(op: BinOp, z: &Expr) -> bool {
         _ => return false,
     };
     (op == BinOp::Add && v == 0.0) || (op == BinOp::Mul && v == 1.0)
+}
+
+/// The value of `reduce(x, l, z)` does not depend on the order of the
+/// elements nor on how many times the form of section 10 starts from `z`
+/// (D183): an exact operator, and `z` its identity or the operator
+/// idempotent (`min`, `max`: `z` repeated changes nothing).
+pub fn order_free(l: &Lambda, z: &Expr) -> bool {
+    match exact_op(l) {
+        Some(BinOp::Min | BinOp::Max) => true,
+        Some(op) => is_identity(op, z),
+        None => false,
+    }
 }
 
 /// `z` is exactly the identity of `op`: op(z, v) = v for every v.
