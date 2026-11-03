@@ -221,3 +221,29 @@ fn tables_of_bytes_are_permuted_when_small_and_read_one_by_one_otherwise() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+#[test]
+fn divisions_of_the_index_are_carried_by_the_vector_loop() {
+    // `q / c` and `q % c` of the index of a vector loop (D186): divisors
+    // larger and smaller than the lanes, 1 and 16, from the starts of the
+    // blocks (not multiples of them), the values of the interpreter
+    let src = r#"action main(args: string[k]): i32 {
+    const n = 3 * 4096 + 77;
+    const a = map(iota(n), (q) => q / 61 * 1000 + q % 61 + q % 7 * 100000 + q / 7 + q % 1 + q / 16 * 3 + q % 16);
+    print([a[0], a[60], a[61], a[4095], a[4096], a[n - 1]] as const);
+    print(sum(a));
+    const b = map(iota(n), (q) => q % 61 == 60 ? 10u8 : u8(q / 61 % 200));
+    print(sum(map(b, (x) => u64(x))));
+    print(b[n - 1]);
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "vector_divmod");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("icmp sge <"), "the remainders are not carried by the vector loop");
+    for t in [1, 3, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

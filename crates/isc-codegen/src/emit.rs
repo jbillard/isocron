@@ -35,6 +35,8 @@ struct DivMod {
     c: i64,
     q: String,
     r: String,
+    /// The lanes of the slots: 1, or the width of a vector loop (D186).
+    w: u32,
 }
 
 /// The pairs (x, c) of the divisions `x / c` and `x % c` of `e`, `x` one
@@ -2409,10 +2411,11 @@ impl<'p> Gen<'p> {
                 let r = self.ins(format!("call i1 @isc_rec_eq_{}(ptr {}, ptr {})", j, av.r, bv.r));
                 Ok(v(r, "i1"))
             }
-            Binary(op, a, b) if w == 1 && self.divmod_slot(*op, a, b).is_some() => {
-                let slot = self.divmod_slot(*op, a, b).unwrap();
-                let r = self.ins(format!("load i64, ptr {}", slot));
-                Ok(v(r, "i64"))
+            Binary(op, a, b) if self.divmod_slot(*op, a, b, w).is_some() => {
+                let slot = self.divmod_slot(*op, a, b, w).unwrap();
+                let t = if w == 1 { "i64".to_string() } else { format!("<{} x i64>", w) };
+                let r = self.ins(format!("load {}, ptr {}", t, slot));
+                Ok(V { r, t, uni: false })
             }
             Binary(op, a, b) => {
                 let av = self.ex(a, w)?;
@@ -4066,11 +4069,15 @@ impl<'p> Gen<'p> {
             let len = self.ins(format!("sub i64 {}, {}", end, start));
             let full = self.ins(format!("and i64 {}, -{}", len, w));
             let vend = self.ins(format!("add i64 {}, {}", start, full));
+            let dmv = self.divmod_start_vec(src, start, w);
             self.for_range(start, &vend, w as i64, &mut |g, i| {
                 let x = g.elem_replayed(src, i, w)?;
                 g.store_elem(p, n, i, et, &x, w);
+                g.divmod_step_vec(&dmv);
                 Ok(())
             })?;
+            let kept = self.divmod.len() - dmv.len();
+            self.divmod.truncate(kept);
             tail_start = vend;
         }
         let ljoin = lscalar.as_ref().map(|_| self.label());
@@ -4119,10 +4126,61 @@ impl<'p> Gen<'p> {
             let r0 = self.ins(format!("srem i64 {}, {}", start, c));
             self.emit(format!("store i64 {}, ptr {}", q0, q));
             self.emit(format!("store i64 {}, ptr {}", r0, r));
-            dm.push(DivMod { var, c, q, r });
+            dm.push(DivMod { var, c, q, r, w: 1 });
         }
         self.divmod.extend(dm.iter().cloned());
         dm
+    }
+
+    /// `divmod_start` for a vector loop of `w` lanes from `start` (D186): the
+    /// quotients and remainders of the indices `start .. start + w`, each
+    /// step adding `w % c` to the remainders and `w / c` to the quotients,
+    /// one more where a remainder reaches `c` (`divmod_step_vec`).
+    fn divmod_start_vec(&mut self, src: &Src, start: &str, w: u32) -> Vec<DivMod> {
+        let Src::Map(srcs, l) = src else { return Vec::new() };
+        let vars: Vec<VarId> = srcs.iter().zip(&l.params).filter(|(s, _)| matches!(s, Src::Iota)).map(|(_, x)| *x).collect();
+        let mut pairs = Vec::new();
+        if !vars.is_empty() {
+            index_divisions(&l.body, &vars, &mut pairs);
+        }
+        let vt = format!("<{} x i64>", w);
+        let mut dm = Vec::new();
+        for (var, c) in pairs {
+            let base = self.widen(&v(start, "i64"), w);
+            let steps: Vec<String> = (0..w).map(|i| format!("i64 {}", i)).collect();
+            let idx = self.ins(format!("add {} {}, <{}>", vt, base.r, steps.join(", ")));
+            let cv = self.cst("i64", &c.to_string(), w);
+            let q0 = self.ins(format!("sdiv {} {}, {}", vt, idx, cv));
+            let r0 = self.ins(format!("srem {} {}, {}", vt, idx, cv));
+            let q = self.alloca(&vt);
+            let r = self.alloca(&vt);
+            self.emit(format!("store {} {}, ptr {}", vt, q0, q));
+            self.emit(format!("store {} {}, ptr {}", vt, r0, r));
+            dm.push(DivMod { var, c, q, r, w });
+        }
+        self.divmod.extend(dm.iter().cloned());
+        dm
+    }
+
+    fn divmod_step_vec(&mut self, dm: &[DivMod]) {
+        for d in dm {
+            let w = d.w;
+            let vt = format!("<{} x i64>", w);
+            let bt = format!("<{} x i1>", w);
+            let (dq, dr) = ((w as i64) / d.c, (w as i64) % d.c);
+            let r = self.ins(format!("load {}, ptr {}", vt, d.r));
+            let q = self.ins(format!("load {}, ptr {}", vt, d.q));
+            let r1 = self.ins(format!("add {} {}, {}", vt, r, self.cst("i64", &dr.to_string(), w)));
+            let q1 = self.ins(format!("add {} {}, {}", vt, q, self.cst("i64", &dq.to_string(), w)));
+            let cv = self.cst("i64", &d.c.to_string(), w);
+            let wrap = self.ins(format!("icmp sge {} {}, {}", vt, r1, cv));
+            let r2 = self.ins(format!("sub {} {}, {}", vt, r1, cv));
+            let r3 = self.ins(format!("select {} {}, {} {}, {} {}", bt, wrap, vt, r2, vt, r1));
+            let k = self.ins(format!("zext {} {} to {}", bt, wrap, vt));
+            let q2 = self.ins(format!("add {} {}, {}", vt, q1, k));
+            self.emit(format!("store {} {}, ptr {}", vt, r3, d.r));
+            self.emit(format!("store {} {}, ptr {}", vt, q2, d.q));
+        }
     }
 
     /// The next index: the remainder plus one, back to 0 at `c`, which
@@ -4142,9 +4200,9 @@ impl<'p> Gen<'p> {
     }
 
     /// The slot of `a / b` or `a % b` carried by the loop (`divmod_start`).
-    fn divmod_slot(&self, op: BinOp, a: &Expr, b: &Expr) -> Option<String> {
+    fn divmod_slot(&self, op: BinOp, a: &Expr, b: &Expr, w: u32) -> Option<String> {
         let (ExprKind::Var(x, _), ExprKind::Lit(Lit::Int(c))) = (&a.kind, &b.kind) else { return None };
-        let d = self.divmod.iter().find(|d| d.var == *x && d.c == *c)?;
+        let d = self.divmod.iter().find(|d| d.var == *x && d.c == *c && d.w == w)?;
         match op {
             BinOp::Div => Some(d.q.clone()),
             BinOp::Rem => Some(d.r.clone()),

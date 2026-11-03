@@ -3156,3 +3156,20 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   past the end in the lanes not taken, a size checked in a branch no lane
   takes, two sites failing in one vector (the order of the scalar loop),
   tables of 4, 256 and 300 bytes.
+- **D186 — The quotient and the remainder of the index by a constant,
+  carried by the vector loop (2026-11-04).** After D185 the vector code of
+  fasta divides its 64-bit indices by constants (`q / 61`, `q % 61`) one
+  lane at a time: x86 has no 64-bit vector `mulhi`, LLVM extracts each
+  lane, multiplies it by the inverse and inserts it back, about ten
+  instructions per lane. As D180 does for the scalar loop, the vector loop
+  of `fill_range` computes the quotients and remainders of its first `w`
+  indices once (the divisions of one vector), then each step adds `w % c`
+  to the remainders and `w / c` to the quotients, and where a remainder
+  reaches `c` (at most once: it was below `c`) subtracts `c` and adds one
+  to its quotient: a comparison, two additions, a subtraction and two
+  selections per vector. fasta at fixed frequency: 0.326 s -> 0.255 s on 4
+  threads, 1.267 s -> 0.985 s on one; the other binaries are those of D185
+  but reverse-complement's (its vector loop, not taken: its table of
+  bases is larger than 256 bytes). Test
+  `divisions_of_the_index_are_carried_by_the_vector_loop` (divisors 61, 7,
+  16 and 1, from the starts of the blocks).
