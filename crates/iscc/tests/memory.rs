@@ -733,3 +733,31 @@ action main(args: string[k]): i32 {
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
     clean(src, "regions_vg", &[]);
 }
+
+#[test]
+fn loops_shared_from_tasks_free_everything() {
+    // D201: the loops of tasks taken by other threads (2 under Valgrind),
+    // their trees in regions (D200): nothing lost or freed twice.
+    let src = "type Tree = Leaf | Node(Tree, Tree);
+function bottomUp(depth: i64): Tree {
+    if (depth == 0) return Leaf;
+    return Node(bottomUp(depth - 1), bottomUp(depth - 1));
+}
+function check(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Node(l, r) => 1 + check(l) + check(r),
+    };
+}
+action main(args: string[k]): i32 {
+    print(map(iota(5), (d) => sum(map(iota(1 << (8 - d)), (i) => check(bottomUp(d))))));
+    print(map(iota(3), (d) => map(iota(4), (i) => check(bottomUp(d + i)))));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "nested_tasks");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    clean(src, "nested_tasks_vg", &[]);
+}

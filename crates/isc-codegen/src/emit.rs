@@ -3945,14 +3945,16 @@ impl<'p> Gen<'p> {
         };
         let (src, n) = self.prepare_src(e)?;
         let p = self.alloc_elems(&n, &et);
+        // when each element is a loop of its own (a `reduce` per row, a
+        // call), chunks taken in turn (D121, D143)
+        let heavy = matches!(&e.kind, ExprKind::Map(_, l) if inner_loop(&l.body));
         if self.in_task {
             self.fill_range(&src, &p, &n, &et, "0", &n, w)?;
             return Ok(self.arr(&p, &n));
         }
-        // in parallel, by blocks of B elements; when each element is a loop
-        // of its own (a `reduce` per row), one chunk per thread: the
-        // elements do not depend on the cut (D121)
-        let heavy = matches!(&e.kind, ExprKind::Map(_, l) if inner_loop(&l.body));
+        // in parallel, by blocks of B elements; when each element is a loop,
+        // HEAVY_CHUNKS chunks per thread: the elements do not depend on the
+        // cut (D121)
         // at most one block: filled here, without a task (D172)
         let ldone = if heavy {
             None
@@ -4746,6 +4748,9 @@ impl<'p> Gen<'p> {
         let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, true);
+        // the regions of the caller are not the task's (D200)
+        let saved_region = self.region.take();
+        let saved_region_vars = std::mem::take(&mut self.region_vars);
         // the recursive types the task may share with other threads (D175)
         let mut shared = HashSet::new();
         for c in &caps {
@@ -4783,6 +4788,8 @@ impl<'p> Gen<'p> {
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
+        self.region = saved_region;
+        self.region_vars = saved_region_vars;
         r?;
         self.funcs.push(text);
         Ok((name, ctxp, ctx_bytes))
@@ -5011,6 +5018,11 @@ impl<'p> Gen<'p> {
         // bounds that it keeps in one loop over the whole range: k-nucleotide
         // 12 % slower with one loop).
         let exact = isc_ir::passes::order_free(l, z) && t.is_scalar();
+        // the elements are loops (calls, reductions): shared by chunks, in
+        // a task too (D201)
+        if exact && matches!(&x.kind, ExprKind::Map(_, ml) if inner_loop(&ml.body)) {
+            return self.reduce_heavy(e, x, l, z, &zv, &n, &t, w);
+        }
         let exact_res = if exact {
             let limit = lanes as i64 - 1;
             let slot = self.alloca(&lt(&t));
@@ -5172,6 +5184,82 @@ impl<'p> Gen<'p> {
     }
 
     /// The `reduce` of an exact operator in one loop, from `z` (D183).
+    /// An exact `reduce` (D183) of a `map` whose elements are loops (D201):
+    /// any grouping gives the same bits, so HEAVY_CHUNKS chunks per thread
+    /// taken in turn (`isc_parallel_for_dynamic`, in a task too), each
+    /// chunk's result in its own 128 bytes (D81), then reduced here in order.
+    /// The blocks of B elements of the fixed form would compute 32 calls of
+    /// binary-trees on one thread.
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_heavy(&mut self, e: &Expr, x: &Expr, l: &Lambda, z: &Expr, zv: &V, n: &str, t: &Type, w: u32) -> R<V> {
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        let t0 = self.ins("call i64 @isc_thread_count()".to_string());
+        let tc = self.ins(format!("mul i64 {}, {}", t0, HEAVY_CHUNKS));
+        let k0 = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, tc));
+        let k = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 1)", k0));
+        let b0 = self.ins(format!("add i64 {}, {}", n, k));
+        let b1 = self.ins(format!("sub i64 {}, 1", b0));
+        let b2 = self.ins(format!("sdiv i64 {}, {}", b1, k));
+        let bs = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 1)", b2));
+        let c0 = self.ins(format!("add i64 {}, {}", n, bs));
+        let c1 = self.ins(format!("sub i64 {}, 1", c0));
+        let c2 = self.ins(format!("sdiv i64 {}, {}", c1, bs));
+        let c = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 1)", c2));
+        let cell = (128 / esize(t).max(1)).max(1);
+        let cn = self.ins(format!("mul i64 {}, {}", c, cell));
+        let dst = self.alloc_elems(&cn, t);
+        let extra = [v(dst.clone(), "ptr"), v(cn.clone(), "i64"), v(bs.clone(), "i64")];
+        let et = t.clone();
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
+            let (src, n) = g.prepare_src(x)?;
+            let zv = g.ex(z, 1)?;
+            let start = g.ins(format!("mul i64 {}, {}", j, extra[2].r));
+            let lim = g.ins(format!("add i64 {}, {}", start, extra[2].r));
+            let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, lim));
+            // by blocks of B, in vector code like the fixed form
+            let st = lt(&et);
+            let acc = g.alloca(&st);
+            g.emit(format!("store {} {}, ptr {}", st, zv.r, acc));
+            // (`for_range` with a step takes whole steps only: the blocks by
+            // their number)
+            let len = g.ins(format!("sub i64 {}, {}", end, start));
+            let nb0 = g.ins(format!("add i64 {}, {}", len, BLOCK - 1));
+            let nb = g.ins(format!("sdiv i64 {}, {}", nb0, BLOCK));
+            g.for_range("0", &nb, 1, &mut |g, q| {
+                let off = g.ins(format!("mul i64 {}, {}", q, BLOCK));
+                let b = &g.ins(format!("add i64 {}, {}", start, off));
+                let lim = g.ins(format!("add i64 {}, {}", b, BLOCK));
+                let bend = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, lim));
+                let m = g.ins(format!("sub i64 {}, {}", bend, b));
+                let el = g.reduce_block(&src, b, &m, l, &zv, &et, w)?;
+                let a = g.ins(format!("load {}, ptr {}", st, acc));
+                let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, el, 1)?;
+                g.emit(format!("store {} {}, ptr {}", st, r.r, acc));
+                Ok(())
+            })?;
+            let r = g.ins(format!("load {}, ptr {}", st, acc));
+            let jj = g.ins(format!("mul i64 {}, {}", j, cell));
+            g.store_elem(&extra[0].r, &extra[1].r, &jj, &et, &V { r, t: st, uni: true }, 1);
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_for_dynamic(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+        let st = lt(t);
+        let acc = self.alloca(&st);
+        self.emit(format!("store {} {}, ptr {}", st, zv.r, acc));
+        self.for_range("0", &c, 1, &mut |g, j| {
+            let jj = g.ins(format!("mul i64 {}, {}", j, cell));
+            let el = g.load_elem(&dst, &cn, &jj, t, 1);
+            let a = g.ins(format!("load {}, ptr {}", st, acc));
+            let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, el, 1)?;
+            g.emit(format!("store {} {}, ptr {}", st, r.r, acc));
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_free(ptr {})", dst));
+        let r = self.ins(format!("load {}, ptr {}", st, acc));
+        Ok(V { r, t: st, uni: true })
+    }
+
     fn reduce_loop(&mut self, src: &Src, n: &str, l: &Lambda, z: &V, t: &Type) -> R<V> {
         let st = lt(t);
         let acc = self.alloca(&st);

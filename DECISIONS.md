@@ -3441,3 +3441,39 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   thread): 36.96 G instructions for about 1.23 G calls (builds and checks),
   154 page faults: the cost is now the calls (prologue, stack test, one
   call for each leaf), not the memory.
+- **D201 — Loops of tasks shared with the idle threads (2026-11-04).**
+  After D200, binary-trees 21 on 4 threads used 3.08 processors
+  (`perf stat`): its 9 depths (each about 33.5 M nodes) are the tasks of
+  the outer `map`, 3 rounds on 4 threads, and the trees of a depth were
+  reduced on one thread, for two reasons: a loop called from a task ran in
+  place (`BUSY`, D102), and an exact `reduce` cuts its elements into blocks
+  of B = 4096 (the fixed form), so 32 trees of depth 20 are one block even
+  outside a task. Two changes. (1) The runtime: `isc_parallel_for` called
+  while a job runs puts its tasks in a slot (`NestedSlot`, 64 of them, the
+  first tried depending on the stack of the caller); the caller takes them
+  in turn, and so do the threads that have finished their share
+  (`help_until_done`), until every share is done; the caller then closes
+  the slot (1) and waits until no helper counts itself in it (a helper
+  counts itself before it reads the slot, sequentially consistent on both
+  sides: the frame of the loop is never read once gone). A worker spins
+  SPIN times without work, then sleeps by 50 us; `main` only spins. The
+  workers run on stacks of 1 GiB like the body of `main` (`start_worker`),
+  so that a recursion in a task reaches the same depth on any thread. (2)
+  The compiler: an exact `reduce` (D183) of a `map` whose elements are
+  loops (`inner_loop`) takes HEAVY_CHUNKS chunks per thread, taken in turn,
+  each reduced by blocks of B in vector code (`reduce_block`), each result
+  in its own 128 bytes, then reduced in order (`reduce_heavy`), in a task
+  too: any grouping gives the same bits. At fixed frequency, 4 threads:
+  binary-trees 1.316 s -> 0.989 s (3.683 processors used), k-nucleotide
+  1.591 s -> 1.443 s (its 5 counts of k-mers, a `map` of 5 tasks on 4
+  threads, now shared), the eight others unchanged; the same outputs at 1
+  and 4 threads. Rejected after measurement: sharing also the `map`s of
+  loops inside tasks (into arrays). fannkuch-redux 1.663 s -> 1.803 s:
+  56.28 G -> 58.80 G instructions, 21.13 G -> 23.08 G cycles; the 2.52 G
+  more instructions over its 11880 `map`s of 40320 permutations are about
+  6.6 k per chunk of 1260, the scalar ends of its two ranges (D121 rotates
+  each chunk) of SPMD code, 7 or 8 permutations each flipped one by one,
+  whose branches the masked SPMD code does not mispredict (IPC 2.66 ->
+  2.55). A first `reduce_heavy` with a scalar loop per chunk made
+  k-nucleotide slower (1.597 s -> 2.136 s): its `count` of k-mers is
+  vector code in `reduce_block`.

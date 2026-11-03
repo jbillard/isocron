@@ -165,3 +165,56 @@ action main(args: string[k]): i32 {
         assert_eq!((run.code, run.stdout.as_str()), (0, want), "{} threads: {}", t, run.stderr);
     }
 }
+
+const NESTED_SRC: &str = r#"type Tree = Leaf | Node(Tree, Tree);
+function bottomUp(depth: i64): Tree {
+    if (depth == 0) return Leaf;
+    return Node(bottomUp(depth - 1), bottomUp(depth - 1));
+}
+function check(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Node(l, r) => 1 + check(l) + check(r),
+    };
+}
+function steps(x: i64, k: i64): i64 {
+    if (x <= 1) return k;
+    return steps(x % 2 == 0 ? x / 2 : 3 * x + 1, k + 1);
+}
+action main(args: string[k]): i32 {
+    print(map(iota(9), (d) => sum(map(iota(1 << (12 - d)), (i) => check(bottomUp(d))))));
+    print(sum(map(iota(5), (a) => sum(map(iota(40), (b) => sum(map(iota(30), (c) => steps(a * 1200 + b * 30 + c + 1, 0))))))));
+    print(map(iota(4), (a) => reduce(map(iota(5000), (i) => steps(a * 5000 + i + 1, 0)), (x, y) => Math.max(x, y), 0)));
+    print(map(iota(3), (a) => reduce(map(iota(3000), (i) => steps(a * 3000 + i + 1, 0)), (x, y) => Math.min(x, y), 1000000)));
+    print(map(iota(3), (n) => sum(map(iota(n), (i) => steps(i + 7, 0)))));
+    print(map(iota(3), (a) => reduce(map(iota(5000), (i) => steps(i + a + 1, 0)), (x, y) => x + y, 5)));
+    return 0;
+}
+"#;
+
+#[test]
+fn loops_in_tasks_are_shared_and_do_not_depend_on_threads() {
+    // D201: an exact reduce (D183) of a map whose elements are loops is
+    // shared by chunks, in a task too, where the threads that have finished
+    // their share take them: three levels, `min` and `max`, ranges of 0, 1
+    // and 2 elements; a reduce whose z is not neutral keeps the fixed form.
+    // The results of the interpreter for any number of threads.
+    let want = interp_ok(NESTED_SRC, &[]);
+    let bin = compile(NESTED_SRC, "p_nested");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let mut in_task = false;
+    let mut nested = 0;
+    for line in ll.lines() {
+        if line.starts_with("define") {
+            in_task = line.contains("@isc_task_");
+        }
+        if in_task && line.contains("call void @isc_parallel_for_dynamic") {
+            nested += 1;
+        }
+    }
+    assert!(nested >= 2, "no loop shared from inside a task");
+    for t in THREADS {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

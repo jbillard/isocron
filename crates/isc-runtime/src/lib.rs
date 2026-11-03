@@ -1543,6 +1543,40 @@ extern "C" {
 extern "C" {
     fn syscall(n: i64, ...) -> i64;
     fn sched_getaffinity(pid: c_int, size: usize, mask: *mut u8) -> c_int;
+    fn nanosleep(req: *const [i64; 2], rem: *mut [i64; 2]) -> c_int;
+    fn pthread_attr_init(attr: *mut c_void) -> c_int;
+    fn pthread_attr_setstacksize(attr: *mut c_void, size: usize) -> c_int;
+    fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
+}
+
+/// The stack of the threads that run the body of `main` and the tasks: a
+/// recursion inside a task reaches the same depth on any thread (D102,
+/// D201). Reserved, not committed: only the pages touched are memory.
+#[cfg(not(target_os = "wasi"))]
+const BIG_STACK: usize = 1 << 30;
+
+/// Starts a worker of the pool on a stack of BIG_STACK bytes, or of the
+/// default size if that cannot be had.
+#[cfg(not(target_os = "wasi"))]
+fn start_worker(k: usize) {
+    let mut attr = [0u64; 16];
+    let a = attr.as_mut_ptr() as *mut c_void;
+    let mut tid = 0usize;
+    unsafe {
+        let big = pthread_attr_init(a) == 0
+            && pthread_attr_setstacksize(a, BIG_STACK) == 0
+            && pthread_create(&mut tid, a, worker, k as *mut c_void) == 0;
+        pthread_attr_destroy(a);
+        if !big {
+            pthread_create(&mut tid, core::ptr::null(), worker, k as *mut c_void);
+        }
+    }
+}
+
+#[cfg(all(target_os = "wasi", isc_wasm_threads))]
+fn start_worker(k: usize) {
+    let mut tid = 0usize;
+    unsafe { pthread_create(&mut tid, core::ptr::null(), worker, k as *mut c_void) };
 }
 
 /// Sleeps while `GEN` is `seen` (spurious wake-ups are allowed).
@@ -1704,8 +1738,7 @@ fn thread_count() -> usize {
     let n = n.clamp(1, 256);
     SLEEP.start_gen.store(GEN.gen.load(Ordering::Acquire), Ordering::Release);
     for k in 1..n {
-        let mut tid = 0usize;
-        unsafe { pthread_create(&mut tid, core::ptr::null(), worker, k as *mut c_void) };
+        start_worker(k);
     }
     JOB.threads.store(n, Ordering::Release);
     n
@@ -1757,9 +1790,153 @@ extern "C" fn worker(arg: *mut c_void) -> *mut c_void {
             }
         }
         seen = seen.wrapping_add(1);
-        run_share(k, JOB.threads.load(Ordering::Acquire));
+        let threads = JOB.threads.load(Ordering::Acquire);
+        run_share(k, threads);
         JOB.finished.fetch_add(1, Ordering::AcqRel);
+        help_until_done(seen, threads, true);
     }
+}
+
+// Parallel loops inside tasks (D201). A loop called by a task, while the
+// pool runs a job, puts its tasks in a slot; its caller takes them in turn,
+// and so do the threads that have finished their share of the job, until
+// the job is done. Each task writes only its own results (as for
+// `isc_parallel_for_dynamic`): they do not depend on which thread runs it.
+
+/// The tasks of a loop called by a task, on the stack of its caller.
+#[repr(C)]
+struct Nested {
+    task: Task,
+    ctx: *mut c_void,
+    n: i64,
+    next: AtomicI64,
+}
+
+/// `job`: 0 free, 1 being closed, else a `*const Nested`. `users`: the
+/// helpers that may read it. The caller closes it (1), then waits for no
+/// user: a helper counts itself before it reads `job` (sequentially
+/// consistent on both sides), so either it sees 1 or the caller sees it,
+/// and the `Nested` is never read once its frame is gone.
+#[repr(C, align(128))]
+pub struct NestedSlot {
+    job: AtomicUsize,
+    users: AtomicUsize,
+}
+
+const NESTED_SLOTS: usize = 64;
+
+#[export_name = "isc_pool_nested"]
+static NESTED: [NestedSlot; NESTED_SLOTS] = [const { NestedSlot { job: AtomicUsize::new(0), users: AtomicUsize::new(0) } }; NESTED_SLOTS];
+
+/// The number of slots in use, and one more than the highest one ever used,
+/// in a line of their own.
+#[repr(C, align(128))]
+pub struct NestedCount {
+    open: AtomicUsize,
+    high: AtomicUsize,
+}
+
+#[export_name = "isc_pool_nested_count"]
+static NESTED_COUNT: NestedCount = NestedCount { open: AtomicUsize::new(0), high: AtomicUsize::new(0) };
+
+/// Runs the tasks of `j` not taken yet; true if it ran one.
+unsafe fn run_nested(j: &Nested) -> bool {
+    let mut ran = false;
+    loop {
+        let i = j.next.fetch_add(1, Ordering::Relaxed);
+        if i >= j.n {
+            return ran;
+        }
+        (j.task)(j.ctx, i);
+        ran = true;
+    }
+}
+
+/// Runs tasks of the loops open in the slots; true if it ran one.
+fn help_nested() -> bool {
+    if NESTED_COUNT.open.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    let high = NESTED_COUNT.high.load(Ordering::Acquire).min(NESTED_SLOTS);
+    let mut ran = false;
+    for s in &NESTED[..high] {
+        if s.job.load(Ordering::Acquire) <= 1 {
+            continue;
+        }
+        s.users.fetch_add(1, Ordering::SeqCst);
+        let j = s.job.load(Ordering::SeqCst);
+        if j > 1 {
+            ran |= unsafe { run_nested(&*(j as *const Nested)) };
+        }
+        s.users.fetch_sub(1, Ordering::Release);
+    }
+    ran
+}
+
+/// After its share: the tasks of the loops opened by the tasks still
+/// running, until every thread has finished its share of the job of
+/// generation `gen`. A worker spins SPIN times without work, then sleeps by
+/// 50 µs; the caller of the job (`main`, which waits for it) only spins.
+fn help_until_done(gen: u32, threads: usize, sleep: bool) {
+    let mut idle = 0u32;
+    while JOB.finished.load(Ordering::Acquire) < threads && GEN.gen.load(Ordering::Acquire) == gen {
+        if help_nested() {
+            idle = 0;
+            continue;
+        }
+        if idle < SPIN || !sleep {
+            idle = idle.saturating_add(1);
+            core::hint::spin_loop();
+        } else {
+            pause_briefly();
+        }
+    }
+}
+
+#[cfg(not(target_os = "wasi"))]
+fn pause_briefly() {
+    let t = [0i64, 50_000];
+    unsafe { nanosleep(&t, core::ptr::null_mut()) };
+}
+
+#[cfg(target_os = "wasi")]
+fn pause_briefly() {
+    core::hint::spin_loop();
+}
+
+/// A loop called by a task while the pool runs a job: its tasks in a slot,
+/// taken by its caller and by the threads with nothing left to do; returns
+/// when all are done. In place, in order, when no slot is free.
+fn nested_for(n: i64, task: Task, ctx: *mut c_void) {
+    let j = Nested { task, ctx, n, next: AtomicI64::new(0) };
+    let addr = &j as *const Nested as usize;
+    // the first slot tried depends on the stack (of the thread, then the
+    // depth): the threads do not all try the same slots in turn
+    let first = ((addr >> 12) ^ (addr >> 30)).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58;
+    let mut slot = None;
+    for d in 0..NESTED_SLOTS {
+        let k = (first + d) % NESTED_SLOTS;
+        let s = &NESTED[k];
+        if s.job.load(Ordering::Relaxed) == 0 && s.job.compare_exchange(0, addr, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+            NESTED_COUNT.high.fetch_max(k + 1, Ordering::AcqRel);
+            slot = Some(s);
+            break;
+        }
+    }
+    let Some(s) = slot else {
+        for i in 0..n {
+            task(ctx, i);
+        }
+        return;
+    };
+    NESTED_COUNT.open.fetch_add(1, Ordering::SeqCst);
+    unsafe { run_nested(&j) };
+    s.job.store(1, Ordering::SeqCst);
+    while s.users.load(Ordering::SeqCst) != 0 {
+        core::hint::spin_loop();
+    }
+    NESTED_COUNT.open.fetch_sub(1, Ordering::Release);
+    s.job.store(0, Ordering::Release);
 }
 
 /// `isc_parallel_for` whose tasks are taken in turn by the threads as they
@@ -1772,8 +1949,8 @@ pub extern "C" fn isc_parallel_for_dynamic(n: i64, task: Task, ctx: *mut c_void,
 }
 
 /// Runs `task(ctx, i)` for `i` in `0..n` on the thread pool; returns when all
-/// tasks are done. `ctx_bytes` is the size of the context. Must not be called
-/// from inside a task.
+/// tasks are done. `ctx_bytes` is the size of the context. Called from
+/// inside a task, its tasks are shared with the idle threads (D201).
 #[no_mangle]
 pub extern "C" fn isc_parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64) {
     parallel_for(n, task, ctx, ctx_bytes, false)
@@ -1784,13 +1961,17 @@ fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: b
         return;
     }
     let threads = if n == 1 { 1 } else { thread_count() };
-    // a parallel loop inside a task (a recursive function called by a
-    // task): the job line is taken, so its tasks run here, in order; the
-    // results do not depend on the number of threads (D102)
-    if threads == 1 || BUSY.swap(true, Ordering::Acquire) {
+    if threads == 1 {
         for i in 0..n {
             task(ctx, i);
         }
+        return;
+    }
+    // a parallel loop inside a task: the job line is taken, its tasks are
+    // shared with the threads that have finished their share (D201); the
+    // results do not depend on the number of threads (D102)
+    if BUSY.swap(true, Ordering::Acquire) {
+        nested_for(n, task, ctx);
         return;
     }
     // the context in the job line when it fits (see JobLine); the workers
@@ -1820,9 +2001,9 @@ fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: b
         wake_all();
     }
     run_share(0, threads);
-    while JOB.finished.load(Ordering::Acquire) != threads - 1 {
-        core::hint::spin_loop();
-    }
+    JOB.finished.fetch_add(1, Ordering::AcqRel);
+    let gen = GEN.gen.load(Ordering::Relaxed);
+    help_until_done(gen, threads, false);
     BUSY.store(false, Ordering::Release);
 }
 
@@ -1870,11 +2051,7 @@ pub extern "C" fn isc_stack_floor() -> i64 {
 #[cfg(not(target_os = "wasi"))]
 #[no_mangle]
 pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_int, argc: c_int, argv: *mut c_void) -> c_int {
-    const BIG_STACK: usize = 1 << 30;
     extern "C" {
-        fn pthread_attr_init(attr: *mut c_void) -> c_int;
-        fn pthread_attr_setstacksize(attr: *mut c_void, size: usize) -> c_int;
-        fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
         fn pthread_join(t: usize, ret: *mut *mut c_void) -> c_int;
     }
     struct Start {
