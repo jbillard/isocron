@@ -4387,3 +4387,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `iscc run`, WebAssembly.
   - Most of the size: the embedded runtimes (six, 5.2 to 7.8 MB each),
     then LLVM and LLD. Compressing the runtimes is left for later.
+- **D249 — The first release, 0.1.0 (2026-11-04).** The license of the
+  workspace (MIT, `Cargo.toml`) now has its file, `LICENSE`, its holder
+  "The Isocron authors" (those of the history). `tools/release/package.sh`
+  makes the two archives of a release, `isocron-VERSION-x86_64-linux.tar.gz`
+  and `isocron-VERSION-x86_64-windows.zip` (the compiler of D248, `LICENSE`,
+  `THIRD_PARTY_LICENSES.md` and the texts of the licenses of what the
+  compilers contain: LLVM and LLD, the Rust standard library and the crates,
+  MinGW-w64, the GCC runtime, the start files of glibc, wasi-libc;
+  `README.md`, `CHANGELOG.md`, `docs/language.md`, the examples) and their
+  `SHA256SUMS`. The measurements of the Benchmarks Game published again
+  for it, at commit `5d0d2b0` (D248): the table of the README dated from
+  D240, whose k-nucleotide (1.148 s) was the program that did less work
+  than the rules ask (D242). Now: Isocron the fastest on 7 of the 10
+  programs, k-nucleotide 1.603 s against 1.182 s for C++ (1.36), n-body
+  1.04 times C, reverse-complement 1.58 times Rust; binary-trees 0.678 s
+  -> 0.669 s, pidigits 0.503 s -> 0.490 s, regex-redux 0.305 s -> 0.295 s
+  (D241), the others within their noise. The C++ program mandelbrot gpp-4
+  still gives another image than the reference at N = 200 (D227), the
+  same as Isocron at N = 16000.
