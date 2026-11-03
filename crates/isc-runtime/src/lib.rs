@@ -54,6 +54,8 @@ extern "C" {
     fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
     fn close(fd: c_int) -> c_int;
     fn lseek(fd: c_int, off: i64, whence: c_int) -> i64;
+    #[cfg(not(target_os = "wasi"))]
+    fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize;
     fn exit(code: c_int) -> !;
     fn abort() -> !;
 }
@@ -497,7 +499,7 @@ unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
         lseek(0, cur, SEEK_SET);
     }
     let hint = if cur >= 0 && end > cur && end - cur < (1i64 << 44) { (end - cur) as usize } else { 1 << 16 };
-    match read_fd(0, hint) {
+    match read_fd(0, hint, if hint > 1 << 16 || end > cur { cur } else { -1 }) {
         Ok(a) => a,
         Err(e) => {
             let (detail, code) = os_error(e);
@@ -506,13 +508,104 @@ unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
     }
 }
 
+/// From this size on, a file is read by several threads (D221).
+#[cfg(not(target_os = "wasi"))]
+const READ_PARALLEL_MIN: usize = 8 << 20;
+
+/// The first `n` bytes of `fd` from its offset `at` into `buf`, read by
+/// every thread of the pool, each its part with `pread` (D221): the copies
+/// out of the page cache, and the clearing of the new pages they fill, are
+/// shared by the cores, where one `read` makes them on one. The number of
+/// bytes read without a gap from `at` (fewer than `n` when the file got
+/// shorter); the error code of `pread` otherwise. The offset of `fd` is
+/// left as it was. Nothing read when the pool is busy or has one thread.
+#[cfg(not(target_os = "wasi"))]
+unsafe fn read_parallel(fd: c_int, buf: *mut u8, n: usize, at: i64) -> Result<usize, c_int> {
+    let threads = thread_count();
+    if threads <= 1 || n < READ_PARALLEL_MIN || BUSY.load(Ordering::Relaxed) {
+        return Ok(0);
+    }
+    const PARTS_MAX: usize = 64;
+    let parts = threads.min(PARTS_MAX);
+    #[repr(C)]
+    struct Ctx {
+        fd: c_int,
+        buf: *mut u8,
+        n: usize,
+        at: i64,
+        parts: usize,
+        got: *mut usize,
+        err: *mut c_int,
+    }
+    extern "C" fn part(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let k = k as usize;
+            let (lo, hi) = (c.n * k / c.parts, c.n * (k + 1) / c.parts);
+            let mut done = lo;
+            while done < hi {
+                let r = pread(c.fd, c.buf.add(done) as *mut c_void, hi - done, c.at + done as i64);
+                if r < 0 {
+                    let e = errno();
+                    if e == EINTR {
+                        continue;
+                    }
+                    *c.err.add(k) = e;
+                    break;
+                }
+                if r == 0 {
+                    break;
+                }
+                done += r as usize;
+            }
+            *c.got.add(k) = done - lo;
+        }
+    }
+    let mut got = [0usize; PARTS_MAX];
+    let mut err = [0 as c_int; PARTS_MAX];
+    let mut ctx = Ctx { fd, buf, n, at, parts, got: got.as_mut_ptr(), err: err.as_mut_ptr() };
+    isc_parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64);
+    // the bytes without a gap: up to the first part that stopped short
+    let mut len = 0usize;
+    for k in 0..parts {
+        if err[k] != 0 {
+            return Err(err[k]);
+        }
+        let size = n * (k + 1) / parts - n * k / parts;
+        len += got[k];
+        if got[k] < size {
+            break;
+        }
+    }
+    Ok(len)
+}
+
 /// Every byte of `fd` until end of file, in a buffer of `hint` bytes first
 /// (the size of a file): at the end of the buffer, a probe for end of file
 /// before it grows (doubled, copied); the error code of `read` otherwise.
-unsafe fn read_fd(fd: c_int, hint: usize) -> Result<IscArray, c_int> {
+/// `at`: the offset of `fd` when it can be read at any offset (a file:
+/// its first `hint` bytes are then read in parallel, D221), -1 otherwise.
+unsafe fn read_fd(fd: c_int, hint: usize, at: i64) -> Result<IscArray, c_int> {
     let mut cap: usize = hint.max(1);
     let mut buf = isc_alloc(cap as i64);
     let mut len: usize = 0;
+    #[cfg(not(target_os = "wasi"))]
+    if at >= 0 {
+        match read_parallel(fd, buf, cap, at) {
+            Ok(got) => {
+                len = got;
+                if got > 0 {
+                    lseek(fd, at + got as i64, SEEK_SET);
+                }
+            }
+            Err(e) => {
+                isc_free(buf);
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(target_os = "wasi")]
+    let _ = at;
     loop {
         if len == cap {
             let mut probe = [0u8; 64];
@@ -587,7 +680,7 @@ unsafe fn try_read_file(path: &str) -> Result<IscArray, Panic<'_>> {
     let end = lseek(fd, 0, SEEK_END);
     lseek(fd, 0, SEEK_SET);
     let hint = if end > 0 && end < (1i64 << 44) { end as usize } else { 1 << 16 };
-    let r = read_fd(fd, hint);
+    let r = read_fd(fd, hint, if end > 0 { 0 } else { -1 });
     close(fd);
     r.map_err(read_error)
 }

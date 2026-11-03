@@ -3787,3 +3787,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   Test `every_array_of_a_phase_grows_from_the_cache` (three arrays per
   phase, one of zeros, while a large array stays in use: 4 grown blocks
   against 2 before).
+- **D221 — A large file read by every thread (2026-11-04).** The floor
+  of reverse-complement (67 ms) was beaten by the Rust program (66 ms): a
+  floor a program beats is wrong. Its term for the input, 56 ms, was the
+  time of our own `readStdin` (one `read` of 254 MB into new pages), not
+  the cost of the machine. Measured on xeon (a C program, 254 MB of a file
+  in the page cache): one thread 57.1 ms into new pages, 30.4 ms into pages
+  already written; `pread` by parts, 2 threads 32.6 / 18.9 ms, 4 threads
+  27.5 / 15.7 ms. The copies out of the page cache, and the clearing of
+  the new pages, are made by the thread that reads: one core for one
+  `read`. `readStdin` and `readBytes` of a file of 8 MiB or more
+  (READ_PARALLEL_MIN) now read it with one task per thread of the pool,
+  each its part with `pread` from the offset of the descriptor; the
+  offset is then set after the bytes read, and the usual loop reads what
+  is left (a file that grew) or what a part did not get (a file that got
+  shorter: the bytes without a gap are kept). A pipe, one thread, a busy
+  pool, WebAssembly: one `read` as before. At fixed frequency, 4 threads,
+  best of 7: readStdin of 254 MB 0.056 s -> 0.029 s, reverse-complement
+  0.155 s -> 0.128 s, k-nucleotide 1.179 s -> 1.148 s, regex-redux 0.858
+  s -> 0.846 s; one thread unchanged; the same outputs. Test
+  `large_files_read_by_several_threads` (offsets 0, 1, in the middle, at
+  the end; 1 and 4 threads; a pipe; `readBytes`).

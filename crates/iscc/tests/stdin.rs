@@ -90,3 +90,49 @@ fn standard_input_from_a_file() {
         assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "from byte {}", skip);
     }
 }
+
+#[test]
+fn large_files_read_by_several_threads() {
+    // D221: a file of 8 MiB or more is read by every thread, each its part
+    // (`pread`), from the offset of the standard input; the offset is left
+    // at the end (nothing more for `readStdinText`). The same bytes on one
+    // thread and four, from a pipe, and by `readBytes`.
+    let src = "action main(args: string[k]): i32 {
+    const b = readStdin();
+    const n = b.length;
+    print([n, i64(sum(map(b, (x) => u64(x)))), n > 0 ? i64(b[0]) : -1, n > 0 ? i64(b[n - 1]) : -1, n > 1 ? i64(b[n / 2]) : -1] as const);
+    print(readStdinText().length);
+    const f = readBytes(args[0]);
+    print([f.length, i64(sum(map(f, (x) => u64(x))))] as const);
+    return 0;
+}
+";
+    let big: Vec<u8> = (0..20_000_011u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    let path = tmp("stdin_large.bin");
+    std::fs::write(&path, &big).unwrap();
+    let all: u64 = big.iter().map(|&b| b as u64).sum();
+    let bin = compile(src, "stdin_large");
+    let arg = path.to_str().unwrap();
+    let want_of = |rest: &[u8]| {
+        let n = rest.len();
+        let s: u64 = rest.iter().map(|&b| b as u64).sum();
+        let at = |i: usize| if n > i { rest[i] as i64 } else { -1 };
+        format!("({}, {}, {}, {}, {})\n0\n({}, {})\n", n, s, at(0), if n > 0 { rest[n - 1] as i64 } else { -1 }, if n > 1 { rest[n / 2] as i64 } else { -1 }, big.len(), all)
+    };
+    for skip in [0usize, 1, 12_345_679, 20_000_011] {
+        let want = want_of(&big[skip..]);
+        for t in ["1", "4"] {
+            let mut f = std::fs::File::open(&path).unwrap();
+            std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(skip as u64)).unwrap();
+            let o = std::process::Command::new(&bin).arg(arg).env("ISC_THREADS", t).stdin(f).output().unwrap();
+            assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "from byte {}, {} threads: {}", skip, t, String::from_utf8_lossy(&o.stderr));
+        }
+    }
+    let mut c = std::process::Command::new(&bin).arg(arg).env("ISC_THREADS", "4").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut w = c.stdin.take().unwrap();
+    let data = big.clone();
+    let writer = std::thread::spawn(move || w.write_all(&data).unwrap());
+    let o = c.wait_with_output().unwrap();
+    writer.join().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want_of(&big)), "from a pipe");
+}
