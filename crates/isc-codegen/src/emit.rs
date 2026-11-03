@@ -2845,6 +2845,21 @@ impl<'p> Gen<'p> {
         // of its own (a `reduce` per row), one chunk per thread: the
         // elements do not depend on the cut (D121)
         let heavy = matches!(&e.kind, ExprKind::Map(_, l) if inner_loop(&l.body));
+        // at most one block: filled here, without a task (D172)
+        let ldone = if heavy {
+            None
+        } else {
+            let small = self.ins(format!("icmp sle i64 {}, {}", n, BLOCK));
+            let lsmall = self.label();
+            let lpar = self.label();
+            let ldone = self.label();
+            self.cbr(&small, &lsmall, &lpar);
+            self.block(&lsmall);
+            self.fill_range(&src, &p, &n, &et, "0", &n, w)?;
+            self.br(&ldone);
+            self.block(&lpar);
+            Some(ldone)
+        };
         let bs = if heavy {
             // HEAVY_CHUNKS chunks per thread, taken in turn (`isc_parallel_for_dynamic`):
             // elements of very different costs (a loop whose length depends
@@ -2889,6 +2904,10 @@ impl<'p> Gen<'p> {
         // finish the one before (D145)
         let pf = if heavy { "isc_parallel_for_dynamic" } else { "isc_parallel_for" };
         self.emit(format!("call void @{}(i64 {}, ptr {}, ptr {}, i64 {})", pf, c, task, ctx, ctx_bytes));
+        if let Some(l) = ldone {
+            self.br(&l);
+            self.block(&l);
+        }
         Ok(self.arr(&p, &n))
     }
 

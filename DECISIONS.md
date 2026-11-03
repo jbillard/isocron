@@ -2880,3 +2880,13 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   divisions chosen to reach the corrections of the quotient and the step
   that adds back (`big_divisions`). pidigits 10 000 digits, one core at a
   fixed frequency: 11.574 s before, 2.503 s after (42.649 s before D168).
+- **D172 — An array of at most one block is filled without a task
+  (2026-11-03).** n-body made three calls of `isc_parallel_for` at each
+  step, each through an outlined task (callgrind: about 110 instructions
+  for the call and 80 per task, to compute 5 numbers): a `map` or an
+  element-wise operation outside a task always went through the pool,
+  even for one block of B elements, which one thread takes anyway. When
+  its length is at most B (a test at run time), the array is now filled in
+  place, as inside a task; beyond, nothing changes. The elements do not
+  depend on the cut (D121). n-body, 50 000 000 steps, one core at a fixed
+  frequency: 8.135 s before, 6.915 s after.
