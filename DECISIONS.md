@@ -3919,3 +3919,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (its IR changes); the other eight unchanged (k-nucleotide and n-body:
   the same IR, their differences of a series to the next noise). The same
   outputs. Test `consecutive_indices_under_a_mask`.
+- **D227 — A floor keeps the bits of the computation (2026-11-04).**
+  Two floors of D222 assumed other bits than the programs compute.
+  mandelbrot counted 4 operations per iteration, with fused
+  multiply-adds (`fma(zr, zr, cr - zi zi)`): a fused multiply-add rounds
+  once where the program rounds twice, the escapes near the border of the
+  set may change, and the image with them (the C++ program gpp-4 already
+  gives another image than the reference at N = 200). n-body put the mass
+  into the division (`dt m / d^3`) where the program computes `dx * m[j] *
+  mag` after `mag = dt / d^3`. Isocron keeps the bits of the computation
+  as written, so does its floor: mandelbrot 7 operations per iteration (3
+  products, 4 sums, `2.0 * zr` exact) and one addition for the test every
+  8 iterations, 0.260 s -> 0.436 s (Isocron 1.5 times it, gpp-4 1.8);
+  n-body the chain as written, 11 latencies of an addition, a root and a
+  division, 1.253 s -> 1.316 s (Isocron 1.6, gcc-9 1.5), the value of
+  D182. The rule written in `results/floors.md`.

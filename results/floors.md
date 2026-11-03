@@ -12,7 +12,10 @@ this machine has to do it (Intel Xeon E-2388G, fixed frequency,
 ours or another: the first floors (D182) took the time of our own reading
 of the input, and the Rust program of reverse-complement went below its
 floor. A floor that a measured program beats is wrong; `floors.py` flags
-it.
+it. A floor keeps the bits of the computation as the program writes it,
+as Isocron does: no fused multiply-add where a product and a sum are
+written (it rounds once, other bits: the image of mandelbrot may change),
+no reordered sum (D227).
 
 The work is counted (`bench/floor/counts.c`: flips, permutations,
 iterations, k-mers; `floors.py`: the nodes of binary-trees, the passes of
@@ -50,8 +53,8 @@ image with the other languages (`results/benchmarks_game.tsv`).
 | fannkuchredux | 0.883 s | 3.76e+09 flips (0.692 ns, 4 permutations per vector), 4.79e+08 permutations (1.943 ns) | measured | 1.677 s | 1.9 | gcc-6 2.467 s | 2.8 |
 | fasta | 0.037 s | 2e8 numbers of the generator in lanes: 1.029 ns (IUB), 0.557 ns (homo sapiens) | measured | 0.174 s | 4.7 | rust-7 0.755 s | 20.6 |
 | knucleotide | 0.268 s | read 0.027 s (4 threads), 8.75e8 counts: 0.654 ns (tables of 4096), 2.221 ns (138127 and 139882 keys for 12, 18) | measured | 1.176 s | 4.4 | gpp-2 1.170 s | 4.4 |
-| mandelbrot | 0.260 s | 6.25e+09 iterations x 4.25 operations, 8 lanes per cycle | measured | 0.638 s | 2.5 | gpp-4 0.785 s | 3.0 |
-| nbody | 1.253 s | latency of a step 25.1 ns (10 roots and divisions: 15.6 ns) | estimate | 2.057 s | 1.6 | gcc-9 1.945 s | 1.6 |
+| mandelbrot | 0.436 s | 6.25e+09 iterations x 7.12 operations, 8 lanes per cycle | measured | 0.638 s | 1.5 | gpp-4 0.785 s | 1.8 |
+| nbody | 1.316 s | latency of a step 26.3 ns (10 roots and divisions: 15.6 ns) | estimate | 2.057 s | 1.6 | gcc-9 1.945 s | 1.5 |
 | pidigits | 0.194 s | 5.85e+08 passes over a word (mulx, adc: 0.331 ns) | measured | 0.887 s | 4.6 | gcc-2 0.682 s | 3.5 |
 | regexredux | 0.030 s | read 5.4 ms, 6 copies of 50.8 MB at 20.9 GB/s, 9 scans for literals (0.074 ns per byte) | estimate | 0.856 s | 28.8 | rust-7 0.760 s | 25.6 |
 | revcomp | 0.017 s | the file read twice by blocks in the caches, 30.2 GB/s | measured | 0.172 s | 10.2 | rust 0.066 s | 3.9 |
@@ -65,7 +68,7 @@ reverse-complement (10.2: the floor reads the file twice by blocks that
 stay in the caches, the programs read it into new pages and write it
 again), fasta (4.7), pidigits (4.6: a word times a word costs 0.33 ns in
 assembly, and the digit is found from the leading words), k-nucleotide
-(4.4), mandelbrot (2.5: 4 operations per iteration, the test every 8),
-fannkuch-redux (1.9), spectral-norm (1.8: part of the matrix read from
-memory where it was stored, while the cores divide the rest),
-binary-trees (1.7: the nodes made by a loop), n-body (1.6).
+(4.4), fannkuch-redux (1.9), spectral-norm (1.8: part of the matrix read
+from memory where it was stored, while the cores divide the rest),
+binary-trees (1.7: the nodes made by a loop), n-body (1.6), mandelbrot
+(1.5: the 7 operations of an iteration as written).
