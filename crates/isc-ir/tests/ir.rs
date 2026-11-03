@@ -153,7 +153,7 @@ action main(args: string[k]): i32 {
 ",
     );
     let bound_tuples = count(&p.body, &|k| {
-        matches!(k, ExprKind::Let { init, .. } if matches!(&init.ty, isc_ir::Type::Array(t) if matches!(**t, isc_ir::Type::Tuple(_))))
+        matches!(k, ExprKind::Let { init, .. } if matches!(&init.ty, isc_ir::Type::Array(t, _) if matches!(**t, isc_ir::Type::Tuple(_))))
     });
     // `print(z)` only
     assert_eq!(bound_tuples, 1, "{}", print::program(&p));
