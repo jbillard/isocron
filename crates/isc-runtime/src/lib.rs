@@ -951,6 +951,68 @@ pub unsafe extern "C" fn isc_rx_new(out: *mut IscStr, p: *const u8, n: i64, q: *
     });
 }
 
+/// Parts of a text searched by different tasks (D189), of at least this
+/// many bytes.
+const RX_PART: usize = 1 << 18;
+
+/// The matches of the global search of `re` in `s` (D189): with several
+/// threads and a long text, its parts searched by the tasks of the pool,
+/// each up to its first match in the next part, then merged into the
+/// matches of one search (`merge_bounds`); inside a task, one search.
+unsafe fn rx_bounds(re: &sem::rx::Regex, s: &str) -> alloc::vec::Vec<(usize, usize)> {
+    let threads = thread_count();
+    // inside a task (the pool busy) the parts would run one after the
+    // other, each with a new cache of the lazy DFA to fill again: one search
+    if threads <= 1 || s.len() < 2 * RX_PART || BUSY.load(Ordering::Relaxed) {
+        return sem::rx::bounds_from(re, s, 0, usize::MAX);
+    }
+    // one part per thread: each one fills one cache
+    let parts = (s.len() / RX_PART).min(threads);
+    let mut starts: alloc::vec::Vec<usize> = alloc::vec::Vec::with_capacity(parts);
+    for k in 0..parts {
+        let mut c = s.len() * k / parts;
+        while !s.is_char_boundary(c) {
+            c += 1;
+        }
+        if starts.last() != Some(&c) {
+            starts.push(c);
+        }
+    }
+    let mut found: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>> = (0..starts.len()).map(|_| alloc::vec::Vec::new()).collect();
+    #[repr(C)]
+    struct Ctx {
+        re: *const sem::rx::Regex,
+        s: *const u8,
+        n: usize,
+        starts: *const usize,
+        k: usize,
+        found: *mut alloc::vec::Vec<(usize, usize)>,
+    }
+    extern "C" fn part(ctx: *mut c_void, i: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let s = core::str::from_utf8_unchecked(core::slice::from_raw_parts(c.s, c.n));
+            let starts = core::slice::from_raw_parts(c.starts, c.k);
+            let i = i as usize;
+            let until = if i + 1 < c.k { starts[i + 1] } else { usize::MAX };
+            *c.found.add(i) = sem::rx::bounds_from(&*c.re, s, starts[i], until);
+        }
+    }
+    let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr() };
+    parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true);
+    sem::rx::merge_bounds(re, s, &starts, &found)
+}
+
+/// A `String` of the runtime as a string of the program: its buffer is a
+/// block of the heap of the runtime (the global allocator), no copy.
+unsafe fn adopt(s: alloc::string::String) -> IscStr {
+    let mut s = core::mem::ManuallyDrop::new(s);
+    if s.capacity() == 0 {
+        return IscStr { ptr: isc_alloc(0), len: 0 };
+    }
+    IscStr { ptr: s.as_mut_ptr(), len: s.len() as i64 }
+}
+
 /// 0 `re.test(s)` (1 or 0), 1 `s.search(re)`, 2 `countMatches(s, re)`.
 #[no_mangle]
 pub unsafe extern "C" fn isc_rx_int(v: *const u8, n: i64, s: *const u8, m: i64, which: i32) -> i64 {
@@ -958,16 +1020,16 @@ pub unsafe extern "C" fn isc_rx_int(v: *const u8, n: i64, s: *const u8, m: i64, 
     match which {
         0 => sem::rx::test(re, t) as i64,
         1 => sem::rx::search(re, t),
-        _ => sem::rx::count(re, t),
+        _ => rx_bounds(&sem::rx::of(re), t).len() as i64,
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_rx_matches(out: *mut IscArray, s: *const u8, n: i64, v: *const u8, m: i64) {
     let (t, re) = (text(s, n), text(v, m));
-    let found = sem::rx::matches(re, t);
-    let count = found.len();
-    *out = str_array(&mut found.into_iter(), count);
+    let bounds = rx_bounds(&sem::rx::of(re), t);
+    let count = bounds.len();
+    *out = str_array(&mut bounds.into_iter().map(|(a, b)| &t[a..b]), count);
 }
 
 #[no_mangle]
@@ -976,6 +1038,14 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
     let (flags, _) = sem::rx::parts(re);
     if all != 0 && !flags.contains('g') {
         die(line, col, &Panic::ReplaceAllNotGlobal)
+    }
+    // every match, `to` without groups: the bounds of the global search,
+    // in parallel, and the result built once (D189; `written` would search
+    // twice, to count the bytes and to write them)
+    if (all != 0 || flags.contains('g')) && sem::rx::without_groups(to) {
+        let bounds = rx_bounds(&sem::rx::of(re), t);
+        *out = adopt(sem::rx::replace_bounds(t, to, &bounds));
+        return;
     }
     *out = written(&|w| {
         let _ = sem::rx::replace(w, re, t, to, all != 0);

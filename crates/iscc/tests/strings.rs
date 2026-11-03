@@ -380,3 +380,29 @@ fn typescript_string_functions() {
         }
     }
 }
+
+#[test]
+fn global_searches_split_among_threads_find_the_matches_of_one_search() {
+    // a text of several parts of 256 KiB (D189): counts, matches and
+    // replacements of global regular expressions, searched by part in
+    // parallel then merged, against the interpreter; empty matches, matches
+    // across the cuts, characters of several bytes, `$&`
+    let src = "action main(args: string[k]): i32 {
+    const unit = \"aN<tB|Y>é\\n>xa|t\\nBYaS<|>\";
+    const s = unit.repeat(80000);
+    print(s.length);
+    print([countMatches(s, /a[NSt]|BY/g), countMatches(s, /<[^>]*>/g), countMatches(s, /x*/g), countMatches(s, /^>.*\\n|\\n/gm)] as const);
+    const m = matches(s, /\\|[^|][^|]*\\|/g);
+    print([m.length, m[0], m[m.length - 1]] as const);
+    const r = s.replace(/^>.*\\n|\\n/gm, \"\").replace(/<[^>]*>/g, \"[$&]\").replace(/é|Y/g, \"-\").replace(/x*/g, \"_\");
+    print([r.length, r.slice(0, 40), r.slice(r.length - 40, r.length)] as const);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "rx_split");
+    for t in [1, 2, 3, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

@@ -345,6 +345,55 @@ mod replacements {
 }
 
 #[cfg(test)]
+mod split_searches {
+    extern crate std;
+    use std::string::String;
+    use std::vec::Vec;
+
+    /// The global search split into parts searched apart, then merged
+    /// (D189), finds the matches of one search: empty matches, matches
+    /// across the cuts, look-arounds at the cuts, characters of several
+    /// bytes, cuts anywhere.
+    #[test]
+    fn merged_parts_find_the_matches_of_one_search() {
+        let mut seed: u64 = 7;
+        let mut rnd = |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let alphabet: Vec<char> = "aNtBY<>|\n>éx".chars().collect();
+        let mut texts: Vec<String> = std::vec!["".into(), "aaa".into(), ">h\nab\ncd\n".into()];
+        for len in [7u64, 40, 300, 2000] {
+            for _ in 0..3 {
+                texts.push((0..len).map(|_| alphabet[rnd(alphabet.len() as u64) as usize]).collect());
+            }
+        }
+        let patterns = [
+            "g/a[NSt]|BY", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "gm/^>.*\n|\n", "g/a*", "g/", "g/\\b", "gm/^", "gm/$", "g/x|é", "gi/t",
+        ];
+        for v in patterns {
+            let re = super::rx::of(v);
+            for t in &texts {
+                let whole = super::rx::bounds_from(&re, t, 0, usize::MAX);
+                for parts in 1..6 {
+                    for _ in 0..8 {
+                        let mut starts: Vec<usize> = (1..parts).map(|_| rnd(t.len() as u64 + 1) as usize).filter(|&c| t.is_char_boundary(c) && c > 0).collect();
+                        starts.push(0);
+                        starts.sort();
+                        starts.dedup();
+                        let found: Vec<Vec<(usize, usize)>> = (0..starts.len())
+                            .map(|k| super::rx::bounds_from(&re, t, starts[k], starts.get(k + 1).copied().unwrap_or(usize::MAX)))
+                            .collect();
+                        let merged = super::rx::merge_bounds(&re, t, &starts, &found);
+                        assert_eq!(merged, whole, "{:?} in {:?} cut at {:?}", v, t, starts);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod big_divisions {
     extern crate std;
     use num_bigint::BigUint;
@@ -1574,7 +1623,7 @@ pub mod rx {
     use alloc::string::ToString;
     use alloc::vec::Vec;
     use core::fmt::{self, Write};
-    use regex_automata::meta::Regex;
+    pub use regex_automata::meta::Regex;
     use regex_automata::util::syntax;
 
     /// The value of `RegExp(source, flags)`, its flags checked.
@@ -1611,7 +1660,7 @@ pub mod rx {
         })
     }
 
-    fn of(v: &str) -> Regex {
+    pub fn of(v: &str) -> Regex {
         let (flags, source) = parts(v);
         // the value was checked when it was made
         compile(source, flags).unwrap_or_else(|_| Regex::new("[^\\s\\S]").unwrap())
@@ -1632,15 +1681,111 @@ pub mod rx {
     /// character further; an empty match right after a match counts (where
     /// the iterator of the crate skips it). By the fast engines, without
     /// captures (D174).
-    fn each_match(re: &Regex, s: &str, mut f: impl FnMut(usize, usize) -> bool) {
-        let mut at = 0;
+    fn each_match(re: &Regex, s: &str, f: impl FnMut(usize, usize) -> bool) {
+        each_match_from(re, s, 0, f)
+    }
+
+    /// `each_match` from the byte `at` (a boundary of characters), with a
+    /// cache of its own (not the pool of the regex, D189).
+    pub fn each_match_from(re: &Regex, s: &str, mut at: usize, mut f: impl FnMut(usize, usize) -> bool) {
+        let mut cache = re.create_cache();
         while at <= s.len() {
-            let Some(m) = re.find(regex_automata::Input::new(s).range(at..)) else { break };
+            let Some(m) = re.search_with(&mut cache, &regex_automata::Input::new(s).range(at..)) else { break };
             if !f(m.start(), m.end()) {
                 break;
             }
-            at = if m.end() > m.start() { m.end() } else { s[m.end()..].chars().next().map(|c| m.end() + c.len_utf8()).unwrap_or(s.len() + 1) };
+            at = next_at(s, m.start(), m.end());
         }
+    }
+
+    /// Where the global search goes on after the match `s[start..end]`: its
+    /// end, one character further after an empty match.
+    pub fn next_at(s: &str, start: usize, end: usize) -> usize {
+        if end > start {
+            end
+        } else {
+            s[end..].chars().next().map(|c| end + c.len_utf8()).unwrap_or(s.len() + 1)
+        }
+    }
+
+    /// The matches of the global search from `from` (a boundary of
+    /// characters) up to the first one that starts at `until` or after, that
+    /// one included (D189).
+    pub fn bounds_from(re: &Regex, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        each_match_from(re, s, from, |a, b| {
+            out.push((a, b));
+            a < until
+        });
+        out
+    }
+
+    /// The matches of the global search over all of `s`, from the searches
+    /// started at `starts[k]` (`starts[0] = 0`, increasing boundaries of
+    /// characters), each one up to its first match at `starts[k + 1]` or
+    /// after (`bounds_from`). The search after a match depends only on where
+    /// it goes on (`next_at`): while that place is one where the search of
+    /// a part went on (its start, or after one of its matches), the next
+    /// match is the next one of that part; otherwise one true search, until
+    /// such a place is met again. The same matches as one search (D189).
+    pub fn merge_bounds(re: &Regex, s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut cache = re.create_cache();
+        // the part whose search went on from `at` (the part `c` with
+        // `starts[c] <= at`: its start, or after one of its matches), and
+        // the index of its next match
+        let follow = |at: usize| -> Option<(usize, usize)> {
+            let c = match starts.binary_search(&at) {
+                Ok(c) => return Some((c, 0)),
+                Err(0) => return None,
+                Err(c) => c - 1,
+            };
+            parts[c].iter().position(|&(a, b)| next_at(s, a, b) == at).map(|j| (c, j + 1))
+        };
+        let mut at = 0;
+        let mut cur = follow(0);
+        while at <= s.len() {
+            match cur {
+                Some((k, j)) if j < parts[k].len() => {
+                    let (a, b) = parts[k][j];
+                    out.push((a, b));
+                    at = next_at(s, a, b);
+                    // the last match of a part starts in a following one:
+                    // its search stopped there
+                    cur = if k + 1 < starts.len() && a >= starts[k + 1] { follow(at) } else { Some((k, j + 1)) };
+                }
+                // a part stops only at a match in a following part: this
+                // one met no more match up to the end of `s`
+                Some(_) => break,
+                None => {
+                    let Some(m) = re.search_with(&mut cache, &regex_automata::Input::new(s).range(at..)) else { break };
+                    out.push((m.start(), m.end()));
+                    at = next_at(s, m.start(), m.end());
+                    cur = follow(at);
+                }
+            }
+        }
+        out
+    }
+
+    /// `s` with each match of `bounds` replaced by `to` (without groups).
+    pub fn replace_bounds(s: &str, to: &str, bounds: &[(usize, usize)]) -> alloc::string::String {
+        let mut out = alloc::string::String::with_capacity(s.len());
+        let mut last = 0;
+        for &(a, b) in bounds {
+            out.push_str(&s[last..a]);
+            substitute_bounds(&mut out, to, s, a, b);
+            last = b;
+        }
+        out.push_str(&s[last..]);
+        out
+    }
+
+    /// `to` has no group (`$1` to `$99`): the bounds of the matches are
+    /// enough (D174).
+    pub fn without_groups(to: &str) -> bool {
+        let b = to.as_bytes();
+        !(0..b.len().saturating_sub(1)).any(|i| b[i] == b'$' && b[i + 1].is_ascii_digit()) && !SLOW_PATH.load(core::sync::atomic::Ordering::Relaxed)
     }
 
     /// `countMatches(s, re)`: the matches, left to right, without overlap.

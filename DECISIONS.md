@@ -3210,3 +3210,31 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   frequency, 4 threads: 3.013 s -> 2.684 s; the same output; the other
   programs unchanged. Test
   `the_runtime_for_x86_64_v3_is_linked_only_for_targets_that_have_it`.
+- **D189 — Global searches of regular expressions split among the threads
+  (2026-11-04).** After D188 regex-redux used 1.45 CPUs: its 5
+  replacements, one after the other, are dense (3.5 million matches of
+  `a[NSt]|BY` and of `<[^>]*>` in 50 MB) and the engine (`meta::Regex`)
+  costs 120 to 420 ns per match (its start state, its prefilter, the
+  forward then the reverse lazy DFA: `^>.*\n|\n` reads each line back to
+  its start), on one core. And `isc_rx_replace` wrote its result through
+  `written`, which calls its function twice (to count the bytes, then to
+  write them): every replacement searched twice. Now the compiled program
+  (`countMatches`, `matches`, a replacement of every match without groups)
+  takes the matches of the global search (`rx_bounds`): on a text of at
+  least 512 KiB, with several threads and outside a task, one part per
+  thread, each searched from its start up to its first match that starts
+  in the next part (`bounds_from`, its own cache), then merged
+  (`merge_bounds`): the search after a match depends only on where it goes
+  on, so that while that place is one where a part's search went on, the
+  next match is the next one of that part, and otherwise one true search,
+  until such a place is met: the matches of one search, whatever the cuts.
+  Inside a task (the 9 counts of regex-redux, D174), one search: its parts
+  would run one after the other, each filling a new cache of the lazy DFA
+  (the counts took 1.45 s instead of 0.58 s with 32 parts). The result of
+  a replacement is built once, its buffer (a block of the runtime's heap,
+  the global allocator) is the string (`adopt`). regex-redux at fixed
+  frequency: 2.686 s -> 1.146 s on 4 threads, 4.159 s -> 3.110 s on one;
+  the same output. Tests `merged_parts_find_the_matches_of_one_search`
+  (isc-runtime-core: 11 patterns, random texts and cuts) and
+  `global_searches_split_among_threads_find_the_matches_of_one_search`
+  (1 to 4 threads against the interpreter).
