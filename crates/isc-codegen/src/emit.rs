@@ -2710,6 +2710,38 @@ impl<'p> Gen<'p> {
             }
             // a slice of a producer: only its elements computed, into new
             // memory (D101)
+            // rows a .. b of an array of arrays of scalars: a new block
+            // (not a view: `slice_is_view`), each row copied (D193)
+            Slice(x, a, b) if x.ty.elem().is_array() => {
+                let et = x.ty.elem().elem().clone();
+                if !et.is_scalar() {
+                    return Err(format!("{}:{}: a slice of an array of arrays of `{:?}` is not supported", span.line, span.col, et));
+                }
+                let xv = self.ex(x, 1)?;
+                let (p, rows, cols, stride) = self.nested_parts(&xv);
+                let av = self.ex(a, 1)?;
+                let bv = self.ex(b, 1)?;
+                self.slice_check(&av.r, &bv.r, &rows, span);
+                let m = self.ins(format!("sub i64 {}, {}", bv.r, av.r));
+                let total = self.ins(format!("mul i64 {}, {}", m, cols));
+                let dst = self.alloc_elems(&total, &et);
+                let sz = esize(&et);
+                let row_bytes = self.ins(format!("mul i64 {}, {}", cols, sz));
+                self.for_range("0", &m, 1, &mut |g, r| {
+                    let from_row = g.ins(format!("add i64 {}, {}", av.r, r));
+                    let off = g.ins(format!("mul i64 {}, {}", from_row, stride));
+                    let src = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", mt(&et), p, off));
+                    let doff = g.ins(format!("mul i64 {}, {}", r, cols));
+                    let d = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", mt(&et), dst, doff));
+                    g.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, src, row_bytes));
+                    Ok(())
+                })?;
+                // a producer was made for the slice: freed after it
+                if isc_ir::passes::is_producer(x) {
+                    self.drop_value(&xv, &x.ty);
+                }
+                Ok(self.nested(&dst, &m, &cols, &cols))
+            }
             Slice(x, ..) if isc_ir::passes::is_producer(x) => self.materialize(e),
             Slice(x, a, b) => {
                 // a view of scalars, or a new array of the elements a .. b - 1,
@@ -4170,7 +4202,9 @@ impl<'p> Gen<'p> {
                 }
                 Ok(n)
             }
-            Var(..) | Index(..) | Slice(..) => {
+            // (an array of constants, data of the program, borrowed: copied,
+            // never freed, D173, D193)
+            Var(..) | Index(..) | Slice(..) | ConstArray(_) => {
                 let moved = matches!(&body.kind, Var(_, Use::Move));
                 let xv = self.ex(body, 1)?;
                 let (p, n) = self.str_parts(&xv);

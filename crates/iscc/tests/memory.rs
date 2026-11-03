@@ -634,3 +634,28 @@ action main(args: string[k]): i32 {
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
     clean(src, "stack_literals_vg", &[]);
 }
+
+#[test]
+fn slices_of_arrays_of_arrays_and_rows_of_constants() {
+    // D193: a slice of an array of arrays (of a variable, of a `map`: rows
+    // copied into a new block), rows that are arrays of constants (copied,
+    // never freed); the compiler refused the first and freed the data of
+    // the program for the second. The results of the interpreter; Valgrind
+    // clean.
+    let src = "action main(args: string[k]): i32 {
+    const rows = map(iota(8), (k) => [k, 2 * k, 3]);
+    print(rows.slice(2, 5));
+    print(map(iota(6), (k) => [1, 2, 3]).slice(1, 3));
+    const wide = map(iota(5000), (k) => [k % 7, k / 7]);
+    const part = wide.slice(4000, 4003);
+    print([part.length, part[0][1], part[2][0]] as const);
+    print(rows.slice(3, 3).length);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "nested_slices");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    clean(src, "nested_slices_vg", &[]);
+}

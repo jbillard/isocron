@@ -3303,3 +3303,15 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   changes. Test `divisions_of_64_bit_lanes_by_constants_are_exact` (the
   edges of the bound, multiples, negative and large values, 3000 random
   ones; divisors 2, 3, 7, 61, 139968, 2^40).
+- **D193 — Slices of arrays of arrays, rows of constants (2026-11-04).**
+  Two faults found by writing the test of D192, both older (the compiler of
+  v1, 56dfbc8, has the first): (1) the compiled code could not slice an
+  array of arrays (`rows.slice(a, b)`: an IR of the wrong type, refused by
+  LLVM), where the interpreter could; it is now a new block (not a view:
+  `slice_is_view`), each row copied, the source freed after when it is a
+  producer made for the slice; (2) a `map` whose rows are arrays of
+  constants (D173: data of the program, borrowed) freed them after copying
+  them into the rows (an invalid free under Valgrind); they are now copied
+  as a borrowed variable is. The IR of the ten programs does not change.
+  Test `slices_of_arrays_of_arrays_and_rows_of_constants` (the
+  interpreter's results, Valgrind clean).
