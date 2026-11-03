@@ -411,3 +411,29 @@ action main(args: string[k]): i32 {
         assert!(r.stderr.contains(&m), "{:?}: {} / {}", args, r.stderr, m);
     }
 }
+
+/// D205: a loop of a constant count of at most 16 (a `fold` over `iota(10)`,
+/// a `map` over a fixed array) is unrolled whole (`llvm.loop.unroll.full`),
+/// beside a `fold` of 17 steps. The interpreter's outputs.
+#[test]
+fn short_loops_unrolled_whole() {
+    let src = "function pairs(x: f64[5]): f64 {
+    const pi = [0, 0, 0, 0, 1, 1, 1, 2, 2, 3];
+    const pj = [1, 2, 3, 4, 2, 3, 4, 3, 4, 4];
+    return fold(iota(10), 0.0, (acc, k) => acc + Math.sqrt(1.0 + (x[pi[k]] - x[pj[k]]) * (x[pi[k]] - x[pj[k]])));
+}
+action main(args: string[k]): i32 {
+    const x = [1.0, 2.5, -3.0, 4.25, 0.5];
+    print(pairs(x));
+    print(fold(iota(17), 1, (a, k) => a * 3 % 1000003 + k));
+    print(map(x, (v) => v * 2.0 + 1.0));
+    return 0;
+}
+";
+    let bin = compile(src, "short_loops");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("!{!\"llvm.loop.unroll.full\"}"), "no loop unrolled whole");
+    let want = interp_ok(src, &[]);
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+}

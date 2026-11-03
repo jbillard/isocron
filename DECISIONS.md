@@ -3539,3 +3539,16 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   25 % in `isc_alloc` and `isc_free`; its pair loop is still a loop, each
   pair a chain root, division, products (the hottest instruction the
   division).
+- **D205 — Short loops unrolled whole (2026-11-04).** After D204, the 10
+  pairs of a step of n-body were still a loop: LLVM's threshold of size
+  for a full unrolling is smaller than 10 bodies of a pair, so the root
+  and the division of each pair waited for those of the pair before, the
+  10 being independent of each other (they read the positions only). A
+  loop whose bounds are constants of the generated code and whose count
+  is at most UNROLL_FULL = 16 now gets `llvm.loop.unroll.full`; the
+  length that a type fixes (D204) is such a constant: a read of field 1
+  (or 2, the columns) of an aggregate just fixed is the constant itself
+  (`known_len`, in `ins`). At fixed frequency, 4 threads: n-body 5.529 s
+  -> 4.785 s; mandelbrot, k-nucleotide, regex-redux, reverse-complement
+  and fasta (whose code changes) unchanged, the others compile to the
+  same code; the same outputs at 1 and 4 threads.

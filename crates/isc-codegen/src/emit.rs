@@ -122,6 +122,10 @@ const STACK_SCRATCH: i64 = 32 << 10;
 /// 1760.5 ns, 8 MB 176172.2 against 174722.3 ns; DECISIONS D86).
 const STREAM_BYTES: i64 = 32 << 20;
 const STREAM_UNROLL: i64 = 4;
+/// Loops of a constant count up to this are unrolled whole (D205).
+const UNROLL_FULL: i64 = 16;
+/// The first identifier of their metadata, after those of the scalar loops.
+const UNROLL_IDS: u64 = 1 << 20;
 /// Width of the element-wise loops (speed only, never results).
 pub const MAP_WIDTH: u32 = 16;
 /// Chunks per thread of a `map` whose elements are loops (D121, D143).
@@ -392,6 +396,9 @@ struct Func {
     /// Vectors of consecutive indices (the index of a loop, by lanes): each
     /// one's first index, a scalar, and its step, 1 or -1 (D181, D185).
     contig: HashMap<String, (String, i64)>,
+    /// The aggregates whose length (field 1, or the columns at 2) a type
+    /// fixed (D204): their reads are that constant (D205).
+    known_len: HashMap<(String, u32), u32>,
     /// The tables of bytes of the vector loop being emitted, their 8 parts
     /// of 32 bytes loaded once before it (D198).
     table_parts: HashMap<VarId, Vec<String>>,
@@ -442,6 +449,8 @@ pub struct Gen<'p> {
     stream: Option<String>,
     /// Loops of `for_range_scalar` so far (their metadata ends the module).
     scalar_loops: u32,
+    /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
+    unrolled_loops: u32,
     ntask: u32,
     decls: BTreeSet<String>,
     globals: Vec<String>,
@@ -786,6 +795,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         task_shared: None,
         stream: None,
         scalar_loops: 0,
+        unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
         globals: Vec::new(),
@@ -885,6 +895,12 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
              define void @isc_wasm_notify(ptr %p) {\n  \
              %r = call i32 @llvm.wasm.memory.atomic.notify(ptr %p, i32 -1)\n  ret void\n}\n",
         );
+    }
+    if g.unrolled_loops > 0 {
+        out.push_str(&format!("\n!{} = !{{!\"llvm.loop.unroll.full\"}}\n", UNROLL_IDS));
+        for k in 1..=g.unrolled_loops as u64 {
+            out.push_str(&format!("!{0} = distinct !{{!{0}, !{1}}}\n", UNROLL_IDS + k, UNROLL_IDS));
+        }
     }
     if g.scalar_loops > 0 {
         out.push_str("\n!0 = !{!\"llvm.loop.vectorize.enable\", i1 false}\n!1 = !{!\"llvm.loop.unroll.disable\"}\n");
@@ -1489,6 +1505,17 @@ impl<'p> Gen<'p> {
     }
 
     fn ins(&mut self, rhs: String) -> String {
+        // the length of an array that its type fixed: the constant (D205),
+        // so that the loops over it have a known count here too
+        if rhs.starts_with("extractvalue {") {
+            if let Some((head, field)) = rhs.rsplit_once(", ") {
+                if let (Ok(k), Some(reg)) = (field.parse::<u32>(), head.rsplit(' ').next()) {
+                    if let Some(n) = self.f.known_len.get(&(reg.to_string(), k)) {
+                        return n.to_string();
+                    }
+                }
+            }
+        }
         let t = self.tmp();
         self.emit(format!("{} = {}", t, rhs));
         t
@@ -1810,10 +1837,20 @@ impl<'p> Gen<'p> {
         body(self, &i)?;
         let i2 = self.ins(format!("add i64 {}, {}", i, step));
         self.emit(format!("store i64 {}, ptr {}", i2, ia));
+        // a constant count of at most UNROLL_FULL: unrolled whole, whatever
+        // the size of the body (LLVM's threshold kept the 10 pairs of n-body
+        // a loop, its roots and divisions one after the other, D205)
+        let count = match (lo.parse::<i64>(), hi.parse::<i64>()) {
+            (Ok(a), Ok(b)) if step > 0 && b > a => Some((b - a + step - 1) / step),
+            _ => None,
+        };
         if scalar {
             // a distinct loop identifier, its properties !0 and !1 (see `emit_with`)
             self.scalar_loops += 1;
             self.emit(format!("br label %{}, !llvm.loop !{}", head, self.scalar_loops + 1));
+        } else if count.is_some_and(|c| (2..=UNROLL_FULL).contains(&c)) {
+            self.unrolled_loops += 1;
+            self.emit(format!("br label %{}, !llvm.loop !{}", head, UNROLL_IDS + self.unrolled_loops as u64));
         } else {
             self.br(&head);
         }
@@ -2644,9 +2681,16 @@ impl<'p> Gen<'p> {
         let mut ls = Vec::new();
         fixed_lengths(t, &mut Vec::new(), &mut ls);
         let mut r = x.r.clone();
+        let mut top = Vec::new();
         for (path, n) in ls {
             let idx = path.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
             r = self.ins(format!("insertvalue {} {}, i64 {}, {}", lay, r, n, idx));
+            if path.len() == 1 {
+                top.push((path[0], n));
+            }
+        }
+        for (k, n) in top {
+            self.f.known_len.insert((r.clone(), k), n);
         }
         V { r, ..x }
     }
