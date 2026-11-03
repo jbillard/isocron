@@ -213,6 +213,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The masks of the engine of shapes: a letter and its upper case compared once, the checks of bounds dropped: regexredux 0.324 s -> 0.305 s (D238)
   - [ ] The engine of shapes still 7 times the cost of the primitive of the floor (0.56 against 0.074 ns a byte): its loop of starts, the vectors of bounds of dense matches, a runtime for AVX-512
   - [x] The product of a big integer by a word in assembly, one chain of `adc`: pidigits 0.888 s -> 0.697 s (D239)
+  - [x] A quotient of one word certain from the top words, without a pass over the words: pidigits 0.696 s -> 0.503 s (D240)
+  - [ ] pidigits: `num * 3 + acc` and `num * 4 + acc` made whole only to be divided (the top words would do)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

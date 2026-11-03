@@ -442,6 +442,51 @@ mod quotients_of_one_word {
             assert_eq!(got, want, "{} / {}", a, b);
         }
     }
+
+    /// D240: the quotient certain from the top words, and not when it is
+    /// not: dividends just below `(q + 1) * b` (the estimate from the top
+    /// words is then `q + 1`), just above `q * b`, at `q * b` and `(q + 1) *
+    /// b`, with divisors whose low words are all ones or zero.
+    #[test]
+    fn quotients_at_the_edge_of_the_estimate() {
+        let mut seed: u64 = 11;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed
+        };
+        let one = BigInt::from(1);
+        let mut n = 0;
+        for words in 2..7 {
+            for low in 0..3 {
+                for _ in 0..60 {
+                    let mut b = BigInt::from(rnd() | 1);
+                    for k in 1..words {
+                        let w = match low {
+                            0 => u64::MAX,
+                            1 => 0,
+                            _ => rnd(),
+                        };
+                        b = if k + 1 == words { (BigInt::from(rnd() >> (rnd() % 63)) << (64 * k)) + b } else { (BigInt::from(w) << (64 * k)) + b };
+                    }
+                    if b <= one {
+                        continue;
+                    }
+                    let q = BigInt::from(rnd() >> (rnd() % 64));
+                    let small = BigInt::from(rnd() % 1000 + 1);
+                    let cases = [&b * &q, &b * &q + &one, &b * (&q + &one) - &small, &b * (&q + &one) - &one, &b * (&q + &one)];
+                    for a in cases.iter() {
+                        if a.sign() == num_bigint::Sign::Minus {
+                            continue;
+                        }
+                        let got = super::big256::op(3, &super::big256::encode(a), &super::big256::encode(&b)).ok().unwrap();
+                        assert_eq!(got, super::big256::encode(&(a / &b)), "{} / {}", a, b);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 3000);
+    }
 }
 
 #[cfg(test)]
@@ -1528,6 +1573,14 @@ mod limbs {
             }
         }
         let mut q = qhat as u64;
+        // certain from the top words alone (D240): the lower words of `b`
+        // add less than one unit of its third word, so `qhat * b <= a` when
+        // `a`'s three top words exceed `qhat * (v1, v2 + 1)`, that is
+        // `rhat * 2^64 + u0 >= qhat * (v2 + 1)`; `qhat` is never below the
+        // quotient, so it is the quotient, without a pass over the words
+        if qhat >> 64 == 0 && rhat >> 64 == 0 && ((rhat << 64) | u0 as u128) >= qhat * (v2 as u128 + 1) {
+            return Some(q);
+        }
         // a - q * b >= 0 ? the whole words of both without a test of
         // bounds, then the others
         let below = |q: u64| -> bool {

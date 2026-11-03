@@ -4120,3 +4120,19 @@ again), compares of 32 bytes where AVX-512 gives a mask of 64 at once.
   frequency: 0.888 s -> 0.697 s; the same digits for N = 1, 27, 1000,
   10000, with both runtimes. Test `big_integers_times_a_word` (1 to 41
   words, all ones, signs, small and large words).
+- **D240 — A quotient of one word certain from the top words
+  (2026-11-04).** The division whose quotient is one word (D196) estimated
+  it from the three top words of the dividend and the two of the divisor
+  (Knuth's step D3: the estimate is the quotient or one more), then always
+  checked it by a pass over all the words (`a - q b >= 0`). pidigits
+  divides twice per digit tested. The lower words of the divisor add less
+  than one unit of its second word: when `rhat * 2^64 + u0 >= qhat * (v2 +
+  1)` (the three top words of the dividend exceed `qhat` times the two top
+  words of the divisor plus one), `qhat * b <= a`, and since the estimate
+  is never below the quotient, it is the quotient: no pass. Otherwise
+  (rarely: the dividend just below a multiple of the divisor) the pass as
+  before. pidigits at fixed frequency, alternated: 0.696 s -> 0.503 s; the
+  same digits for N = 1, 27, 1000, 10000. Test
+  `quotients_at_the_edge_of_the_estimate` (more than 3000 dividends at
+  `q b`, `q b + 1`, just below `(q + 1) b`, at `(q + 1) b`; divisors whose
+  low words are all ones or zero), against num-bigint.
