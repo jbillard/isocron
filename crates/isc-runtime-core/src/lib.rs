@@ -311,6 +311,40 @@ pub const fn alloc_class_size(i: usize) -> usize {
 }
 
 #[cfg(test)]
+mod replacements {
+    extern crate std;
+    use std::string::String;
+
+    /// The replacement by the bounds of the matches (D174) gives what the
+    /// path with captures gives, empty matches included (ECMAScript's
+    /// rule: an empty match right after a match is replaced too).
+    #[test]
+    fn the_fast_replacement_as_the_complete_one() {
+        let texts = ["aaa", "abc", "", "a\nb\n\nc", "xaxbxx", "héllo wörld", ">h\nab\ncd\n"];
+        let patterns = ["g/a*", "g/x*", "g/", "g/\\b", "gm/^", "gm/$", "g/a|", "gm/^>.*\n|\n", "g/[^x]*", "/a*", "g/ö|é", "gi/A"];
+        let tos = ["-", "[$&]", "$$", "<$`|$'>", ""];
+        for v in patterns {
+            for t in texts {
+                for to in tos {
+                    let mut fast = String::new();
+                    super::rx::SLOW_PATH.store(false, core::sync::atomic::Ordering::Relaxed);
+                    super::rx::replace(&mut fast, v, t, to, false).ok().unwrap();
+                    let mut slow = String::new();
+                    super::rx::SLOW_PATH.store(true, core::sync::atomic::Ordering::Relaxed);
+                    super::rx::replace(&mut slow, v, t, to, false).ok().unwrap();
+                    super::rx::SLOW_PATH.store(false, core::sync::atomic::Ordering::Relaxed);
+                    assert_eq!(fast, slow, "{:?}.replace({:?}, {:?})", t, v, to);
+                }
+            }
+        }
+        // `"aaa".match(/a*/g)` is `["aaa", ""]` in ECMAScript
+        assert_eq!(super::rx::matches("g/a*", "aaa"), std::vec!["aaa", ""]);
+        assert_eq!(super::rx::count("g/a*", "aaa"), 2);
+        assert_eq!(super::rx::count("g/x*", "abc"), 4);
+    }
+}
+
+#[cfg(test)]
 mod big_divisions {
     extern crate std;
     use num_bigint::BigUint;
@@ -1593,14 +1627,40 @@ pub mod rx {
         of(v).find(s).map(|m| m.start() as i64).unwrap_or(-1)
     }
 
+    /// The matches of `re` in `s`, left to right, as ECMAScript's global
+    /// search finds them: after an empty match, the next search starts one
+    /// character further; an empty match right after a match counts (where
+    /// the iterator of the crate skips it). By the fast engines, without
+    /// captures (D174).
+    fn each_match(re: &Regex, s: &str, mut f: impl FnMut(usize, usize) -> bool) {
+        let mut at = 0;
+        while at <= s.len() {
+            let Some(m) = re.find(regex_automata::Input::new(s).range(at..)) else { break };
+            if !f(m.start(), m.end()) {
+                break;
+            }
+            at = if m.end() > m.start() { m.end() } else { s[m.end()..].chars().next().map(|c| m.end() + c.len_utf8()).unwrap_or(s.len() + 1) };
+        }
+    }
+
     /// `countMatches(s, re)`: the matches, left to right, without overlap.
     pub fn count(v: &str, s: &str) -> i64 {
-        of(v).find_iter(s).count() as i64
+        let mut n = 0;
+        each_match(&of(v), s, |_, _| {
+            n += 1;
+            true
+        });
+        n
     }
 
     /// `matches(s, re)`: their texts.
     pub fn matches<'s>(v: &str, s: &'s str) -> Vec<&'s str> {
-        of(v).find_iter(s).map(|m| &s[m.range()]).collect()
+        let mut out = Vec::new();
+        each_match(&of(v), s, |a, b| {
+            out.push(&s[a..b]);
+            true
+        });
+        out
     }
 
     /// `s.replace(re, to)` (every match with the flag `g`, else the first)
@@ -1613,6 +1673,23 @@ pub mod rx {
         }
         let re = of(v);
         let global = flags.contains('g');
+        // without `$1` to `$99`, the bounds of the matches are enough: found
+        // by the fast engines, without captures (D174)
+        let b = to.as_bytes();
+        let groups = (0..b.len().saturating_sub(1)).any(|i| b[i] == b'$' && b[i + 1].is_ascii_digit());
+        if !groups && !SLOW_PATH.load(core::sync::atomic::Ordering::Relaxed) {
+            let mut out = alloc::string::String::with_capacity(s.len());
+            let mut last = 0;
+            each_match(&re, s, |a, b| {
+                out.push_str(&s[last..a]);
+                substitute_bounds(&mut out, to, s, a, b);
+                last = b;
+                global
+            });
+            out.push_str(&s[last..]);
+            let _ = w.write_str(&out);
+            return Ok(());
+        }
         let mut last = 0;
         let mut caps = re.create_captures();
         let mut at = 0;
@@ -1630,6 +1707,41 @@ pub mod rx {
         }
         let _ = w.write_str(&s[last..]);
         Ok(())
+    }
+
+    /// For the tests: the path with captures, to compare with (D174).
+    pub static SLOW_PATH: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    /// `to` for the match `s[start..end]`, without groups: `$$`, `$&`,
+    /// `` $` ``, `$'`, any other `$` as it is.
+    fn substitute_bounds(out: &mut alloc::string::String, to: &str, s: &str, start: usize, end: usize) {
+        if !to.contains('$') {
+            out.push_str(to);
+            return;
+        }
+        let b = to.as_bytes();
+        let mut i = 0;
+        let mut plain = 0;
+        while i < b.len() {
+            if b[i] == b'$' && i + 1 < b.len() {
+                let piece = match b[i + 1] {
+                    b'$' => Some("$"),
+                    b'&' => Some(&s[start..end]),
+                    b'`' => Some(&s[..start]),
+                    b'\'' => Some(&s[end..]),
+                    _ => None,
+                };
+                if let Some(p) = piece {
+                    out.push_str(&to[plain..i]);
+                    out.push_str(p);
+                    i += 2;
+                    plain = i;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out.push_str(&to[plain..]);
     }
 
     fn substitute(w: &mut dyn Write, to: &str, s: &str, caps: &regex_automata::util::captures::Captures) -> fmt::Result {

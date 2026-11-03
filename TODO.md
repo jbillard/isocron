@@ -160,5 +160,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 - [ ] (4) Code of scalar recursions (fannkuchredux)
   - [x] The program by chunks, without divisions, one pass: 41.7 s -> 4.3 s on 4 threads (D170)
 - [ ] (5) Copies of strings, cache of regular expressions (regexredux)
+  - [x] Replacements by the bounds of the matches, ECMAScript's empty matches, searches shared out among threads: regexredux 3.7 s -> 3.0 s (D174)
+  - [ ] The prefilter of literals chosen by the data (44 % of regexredux's instructions, D174)
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
 - [ ] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md`

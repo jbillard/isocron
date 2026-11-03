@@ -428,7 +428,10 @@ fn holds_owned(t: &Type) -> bool {
 /// `e` contains a loop of its own (`reduce`, `fold`, `scan`, `filter`):
 /// an element of a `map` that costs much more than an operation.
 fn inner_loop(e: &Expr) -> bool {
+    // a search of a regular expression or a replacement in a text is a loop
+    // over the text too (D174): a `map` of a few of them is shared out
     matches!(e.kind, ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Call(..))
+        || matches!(&e.kind, ExprKind::StrOp(StrOp::Rx(_) | StrOp::ReplaceAll | StrOp::ReplaceFirst, _))
         || e.children().into_iter().any(inner_loop)
 }
 

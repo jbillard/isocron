@@ -2903,3 +2903,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   now accepts such a literal), SPEC section 8 states it. n-body, 50 000 000
   steps, one core at a fixed frequency: 6.915 s before, 6.374 s after.
   Tests: `tests/stdlib.rs` (`arrays_of_constants`), `tests/phase4.rs`.
+- **D174 — Regular expressions: the bounds of the matches, ECMAScript's
+  empty matches, the searches shared out (2026-11-03).** regex-redux:
+  removing the 830 000 newlines of its input cost about 0.56 µs per match,
+  each found by `search_captures`, which resolves the groups with a slower
+  engine, while most replacements name no group. A replacement whose text
+  has no `$1` to `$99` now takes the bounds of the matches from the fast
+  engines (`find`), built in one buffer. The comparison of the two paths
+  (a test of the runtime) showed that the iterator of the crate skips an
+  empty match right after a match, where ECMAScript counts it
+  (`"aaa".replace(/a*/g, "-")` is `--`): one walk of the matches by
+  ECMAScript's rule now serves `replace`, `countMatches` and `matches`,
+  which also fixes `countMatches` and `matches` (`"aaa".match(/a*/g)` has
+  two matches). A search or a replacement inside a `map` is a loop over its
+  text: the `map` is shared out among the threads (the 9 counts of
+  regex-redux: 763 ms on one thread, 249 ms on 4). regex-redux on 5 000 000
+  bases, 4 threads at a fixed frequency: 3.748 s before, 3.042 s after.
+  Open: 44 % of its instructions are the prefilter of literals of the
+  crate (Aho-Corasick), which for the 256 cases of a pattern with `i` on
+  DNA finds many false candidates (the 9 counts take 592 ms without it,
+  1398 ms with it), while it makes a rare word 5 to 10 times faster to
+  find; choosing by the data without timing is later work.
