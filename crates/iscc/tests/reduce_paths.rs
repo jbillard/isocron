@@ -51,3 +51,34 @@ fn unrolled_loop_and_heap_scratch_match_the_interpreter() {
         }
     }
 }
+
+#[test]
+fn exact_reductions_in_one_loop_give_the_results_of_the_interpreter() {
+    // exact operators (D183): at most one block, or inside a task (the
+    // rows of a map), one loop instead of the fixed form; integer sums and
+    // products that wrap, `min` and `max` of floats with NaN and -0
+    let src = "action main(args: string[k]): i32 {
+    const n = 3 * 4096 + 7;
+    const big = map(iota(n), (i) => i * 7919 + 9223372036854775000);
+    print(sum(big));
+    print(reduce(map(iota(40), (i) => i + 3), (a, b) => a * b, 1));
+    const bytes = map(iota(1000), (i) => u8(i * 37));
+    print(sum(bytes));
+    const xs = map(iota(50), (i) => i % 17 == 3 ? 0.0 / 0.0 : (i % 5 == 0 ? -0.0 : f64(i) - 20.5));
+    print([reduce(xs, (a, b) => Math.min(a, b), 1e308), reduce(xs.slice(0, 3), (a, b) => Math.max(a, b), -1e308)] as const);
+    const zs = [0.0, -0.0, 0.0];
+    print([1.0 / reduce(zs, (a, b) => Math.min(a, b), 1.0), 1.0 / reduce(zs, (a, b) => Math.max(a, b), -1.0)] as const);
+    // in the tasks of a map: a count per row
+    const rows = map(iota(5000), (r) => count(iota(r % 37), (j) => (j * r) % 3 == 1));
+    print(sum(rows));
+    print(rows.slice(0, 12));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "exact_loops");
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

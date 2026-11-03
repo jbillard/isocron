@@ -712,7 +712,7 @@ pub fn cannot_panic(e: &Expr) -> bool {
 /// does not depend on the order of the operands nor on their grouping,
 /// exactly: integer `+`, `*` (modulo 2^bits), `min`, `max` of integers and
 /// floats (IEEE 754-2019 `minimum`, `maximum`).
-fn exact_op(l: &Lambda) -> Option<BinOp> {
+pub fn exact_op(l: &Lambda) -> Option<BinOp> {
     let ExprKind::Binary(op, a, b) = &l.body.kind else { return None };
     let var = |e: &Expr| match e.kind {
         ExprKind::Var(v, _) => Some(v),

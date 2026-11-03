@@ -3070,3 +3070,23 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   k-nucleotide 8.1, reverse-complement 5.4, n-body 4.9, pidigits 3.7,
   binary-trees 3.0, fannkuch-redux 2.9, mandelbrot 1.5, spectral-norm 1.0;
   the work goes in that order.
+- **D183 — The reduction of an exact operator over fewer elements than
+  lanes, in one loop (2026-11-04).** fasta was 57.8 times its floor
+  (D182): 34.2e9 instructions for 254 MB, 135 per byte. Profile: each
+  byte calls `count(cp, (c) => c <= r)` over 4 or 15 probabilities, and a
+  `reduce` always took the fixed form of section 10: a block of B, its
+  results on the stack (`stacksave`), 32 lanes set to the neutral value,
+  read under a mask, then their tree, about a hundred instructions for 4
+  comparisons. An exact operator (integer `+`, `*`, `min`, `max`, `min`
+  and `max` of floats, `exact_op`) gives the same value in any order (the
+  bits of a NaN are not observable, SPEC section 10), so that the fixed
+  form is not needed for the bits: with fewer elements than lanes, one
+  loop from `z`. Not beyond: in one loop over the whole range LLVM kept a
+  check of bounds that it removes within a block (the k-mers of
+  k-nucleotide, 7 instructions per step of the inner `fold` instead of 5,
+  12 % slower when this rule also took larger arrays). fasta at fixed
+  frequency: 1.135 s -> 0.391 s on 4 threads, 4.493 s -> 1.517 s on one;
+  the other programs unchanged. Test
+  `exact_reductions_in_one_loop_give_the_results_of_the_interpreter`
+  (wrapping sums and products, `min` and `max` with NaN and -0, counts in
+  the tasks of a map).

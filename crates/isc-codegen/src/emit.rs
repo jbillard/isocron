@@ -4019,6 +4019,32 @@ impl<'p> Gen<'p> {
         let w = if src_vec_ok(x) && lam_ok(l) { lanes } else { 1 };
         let wm = if lam_ok(l) { lanes } else { 1 };
         let (src, n) = self.prepare_src(x)?;
+        // An exact operator (D183): its result does not depend on the order
+        // of the elements, so that the fixed form is not needed for the
+        // bits. Fewer elements than lanes: one loop instead of the blocks,
+        // the lanes and their tree, whose setup cost a hundred instructions
+        // per call (`count` over 4 probabilities per byte in fasta). More:
+        // the fixed form (within a block of B, LLVM removes checks of
+        // bounds that it keeps in one loop over the whole range: k-nucleotide
+        // 12 % slower with one loop).
+        let exact = isc_ir::passes::exact_op(l).is_some() && t.is_scalar();
+        let exact_res = if exact {
+            let limit = lanes as i64 - 1;
+            let slot = self.alloca(&lt(&t));
+            let small = self.ins(format!("icmp sle i64 {}, {}", n, limit));
+            let lloop = self.label();
+            let lfixed = self.label();
+            let ljoin = self.label();
+            self.cbr(&small, &lloop, &lfixed);
+            self.block(&lloop);
+            let r = self.reduce_loop(&src, &n, l, &zv, &t)?;
+            self.emit(format!("store {} {}, ptr {}", lt(&t), r.r, slot));
+            self.br(&ljoin);
+            self.block(&lfixed);
+            Some((slot, ljoin))
+        } else {
+            None
+        };
         let m = mt(&t);
         let big = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
         let n1 = self.ins(format!("add i64 {}, {}", n, BLOCK - 1));
@@ -4152,7 +4178,30 @@ impl<'p> Gen<'p> {
         // `parts_heap` is false unless `parts` came from the heap
         self.free_scratch(&parts, &parts_heap);
         self.emit(format!("call void @llvm.stackrestore.p0(ptr {})", sp));
+        if let Some((slot, ljoin)) = exact_res {
+            self.emit(format!("store {} {}, ptr {}", lt(&t), res.r, slot));
+            self.br(&ljoin);
+            self.block(&ljoin);
+            let r = self.ins(format!("load {}, ptr {}", lt(&t), slot));
+            return Ok(V { r, t: lt(&t), uni: true });
+        }
         Ok(V { r: res.r, t: res.t, uni: true })
+    }
+
+    /// The `reduce` of an exact operator in one loop, from `z` (D183).
+    fn reduce_loop(&mut self, src: &Src, n: &str, l: &Lambda, z: &V, t: &Type) -> R<V> {
+        let st = lt(t);
+        let acc = self.alloca(&st);
+        self.emit(format!("store {} {}, ptr {}", st, z.r, acc));
+        self.for_range("0", n, 1, &mut |g, i| {
+            let el = g.elem(src, i, 1)?;
+            let a = g.ins(format!("load {}, ptr {}", st, acc));
+            let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, el, 1)?;
+            g.emit(format!("store {} {}, ptr {}", st, r.r, acc));
+            Ok(())
+        })?;
+        let r = self.ins(format!("load {}, ptr {}", st, acc));
+        Ok(V { r, t: st, uni: true })
     }
 
     /// `scan` (SPEC section 6): from left to right into a new array; its
