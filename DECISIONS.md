@@ -3488,3 +3488,11 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   installed but its runtime does not build (checked by adding an error for
   WASI only: "building crates/isc-runtime for wasm32-wasip1 failed (the
   target is installed)").
+- **D203 — `x.length` whatever the program declares (2026-11-04).** The
+  parser wrote `x.length` as the call `len(x)`, and the functions of a
+  program shadow the primitives of the same name: a program declaring its
+  own `len` (a test of D202 did, the length of a list) changed every
+  `.length` into a call of it ("type mismatch: expected `List`, found
+  `string[k]`"). The parser now writes the name `$length`, which no program
+  can declare (like `$text`, D150), and the checker takes it for the
+  primitive; `len(x)` still calls the program's `len` when it has one.

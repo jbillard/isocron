@@ -185,6 +185,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] 32 lanes for the maps that make bytes: fasta 0.207 s -> 0.174 s, revcomp 0.254 s -> 0.242 s (D199)
   - [x] Regions for the trees that die whole: binarytrees 2.030 s -> 1.317 s (D200)
   - [x] Loops of tasks shared with the idle threads: binarytrees 1.316 s -> 0.989 s, knucleotide 1.591 s -> 1.443 s (D201)
+  - [x] `x.length` unchanged by a function `len` of the program (D203)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

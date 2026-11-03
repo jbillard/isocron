@@ -262,3 +262,19 @@ fn functions_in_sum_types() {
     let e = error("type Op = Apply((x: f64) => f64) | Const(f64);\n\naction main(args: string[k]): i32 {\n    print(Apply((v) => v) == Const(1.0));\n    return 0;\n}\n");
     assert!(e.contains("class Eq"), "{}", e);
 }
+
+/// D203: `x.length` is the length whatever the program declares: a
+/// function `len` of its own (which `len(x)` calls) does not change it.
+#[test]
+fn length_is_not_a_function_of_the_program() {
+    let src = "function len(x: i64): i64 {
+    return x + 1;
+}
+action main(args: string[k]): i32 {
+    const xs = [4, 5, 6];
+    print([xs.length, len(41), args.length, \"abc\".length]);
+    return 0;
+}
+";
+    agree(src, "own_len", &["a", "b"], "[3, 42, 2, 3]\n");
+}

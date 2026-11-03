@@ -138,7 +138,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "parseI64" => Prim::ParseI64,
         "parseF64" => Prim::ParseF64,
         "concat" | "++" => Prim::Concat,
-        "len" => Prim::StrLen,
+        "len" | "$length" => Prim::StrLen,
         "bytes" => Prim::Bytes,
         "stringOf" => Prim::StringOf,
         // `$text`: an insertion of a template literal (D150)

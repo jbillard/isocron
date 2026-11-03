@@ -992,9 +992,11 @@ impl P {
                     }
                 }
                 match f.as_str() {
-                    // `x.length`: `len(x)`
+                    // `x.length`: the primitive `len(x)`, under a name no
+                    // program can declare (a function `len` of the program
+                    // does not change it, D203)
                     "length" if !self.is(S::LParen) => {
-                        let callee = Expr { kind: ExprKind::Var("len".into()), span: fsp };
+                        let callee = Expr { kind: ExprKind::Var("$length".into()), span: fsp };
                         e = Expr { kind: ExprKind::Call(Box::new(callee), vec![e]), span };
                     }
                     // `x.slice(a, b)`: the slice `x[a..b]`
