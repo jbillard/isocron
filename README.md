@@ -60,6 +60,18 @@ section 14.
 * For the benchmarks: GCC, Go, Zig 0.14 (its `zig cc` is used as Clang),
   `taskset`, Python 3; Docker for the Benchmarks Game.
 
+### On Windows
+
+`iscc.exe` runs on Windows 10 and 11 (x86-64) with LLVM 21 for Windows
+installed (the official installer, `LLVM-21.1.8-win64.exe`; its `bin` in the
+`PATH`, or in `C:\Program Files\LLVM\bin`); nothing else, MinGW-w64 is
+embedded. `iscc build prog.isc` writes `prog.exe`. It is built on Linux:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+ISC_MINGW_DIR=/usr ISC_LLVM_LIB_DIR=<the lib directory of LLVM for Windows, with LLVM-C.lib> tools/windows/build_iscc.sh
+```
+
 ### Building and running
 
 ```sh

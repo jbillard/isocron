@@ -106,43 +106,12 @@ extern "C" {
 
 /// The POSIX code of the last Win32 error of the thread (0 if none).
 pub fn errno() -> c_int {
-    match unsafe { GetLastError() } {
-        0 => 0,
-        1 => 21,                           // EISDIR (the read of a directory)
-        2 | 3 | 15 | 123 | 161 | 206 => 2, // ENOENT (a bad name too)
-        4 => 24,                           // EMFILE
-        5 | 32 | 33 => 13,                 // EACCES (sharing, lock)
-        6 => 9,                            // EBADF
-        8 | 14 => 12,                      // ENOMEM
-        19 => 30,                          // EROFS
-        80 | 183 => 17,                    // EEXIST
-        87 => 22,                          // EINVAL
-        112 | 39 => 28,                    // ENOSPC
-        267 => 20,                         // ENOTDIR
-        _ => 5,                            // EIO
-    }
+    isc_runtime_core::oserr::from_win32(unsafe { GetLastError() })
 }
 
 /// The text of glibc for a POSIX code.
 pub unsafe fn strerror(code: c_int) -> *const c_char {
-    let s: &'static [u8] = match code {
-        0 => b"Success\0",
-        2 => b"No such file or directory\0",
-        5 => b"Input/output error\0",
-        9 => b"Bad file descriptor\0",
-        12 => b"Cannot allocate memory\0",
-        13 => b"Permission denied\0",
-        17 => b"File exists\0",
-        20 => b"Not a directory\0",
-        21 => b"Is a directory\0",
-        22 => b"Invalid argument\0",
-        24 => b"Too many open files\0",
-        28 => b"No space left on device\0",
-        29 => b"Illegal seek\0",
-        30 => b"Read-only file system\0",
-        _ => b"Unknown error\0",
-    };
-    s.as_ptr() as *const c_char
+    isc_runtime_core::oserr::text_c(code).as_ptr() as *const c_char
 }
 
 // ---------------------------------------------------------------------

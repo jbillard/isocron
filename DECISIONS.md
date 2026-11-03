@@ -4305,3 +4305,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Not yet: the runtimes for x86-64-v3 and v4 (AVX2 and AVX-512 searches,
     D188, D241) for Windows, the console in UTF-8 (`SetConsoleOutputCP`),
     `iscc` itself on Windows, the MSVC ABI, timings on Windows.
+- **D247 — iscc on Windows (2026-11-04).** `iscc.exe` (target
+  `x86_64-pc-windows-gnu`), built on Linux by `tools/windows/build_iscc.sh`
+  (the gcc of MinGW-w64 as its linker; `LLVM-C.lib`, the import library of
+  the official LLVM 21 for Windows): on Windows, native code is code for
+  Windows (`Options::windows` is `cfg!(windows)`, the default name of a
+  program `<file>.exe`).
+  - The runtimes of native code are those of the target of iscc (build.rs:
+    `--target $TARGET`), so that iscc.exe embeds the runtime of Windows.
+  - The files of MinGW-w64 its linker needs (`crt2.o`, `crtbegin.o`,
+    `crtend.o`, `libmingw32`, `libmingwex`, `libmsvcrt`, `libmoldname`,
+    `libkernel32`, `libsynchronization`, `libgcc`, `libgcc_eh`: 8.48 MB)
+    are embedded in iscc when it is built (from `$ISC_MINGW_DIR`), on Linux
+    too: building for Windows then needs no MinGW either. The linker:
+    `$ISC_LLD`, else the `rust-lld` of Rust, else `ld.lld` of LLVM (the
+    `PATH`, or `C:\Program Files\LLVM\bin`). An iscc.exe needs only LLVM
+    21 for Windows: `LLVM-C.dll` (it exports the 35 functions of the C API
+    the back-end calls) and `ld.lld.exe`.
+  - The interpreter on Windows: the C functions of `declare function` are
+    called by a few lines of assembly for Win64 (the position of an
+    argument gives its register; each of the first four goes in its
+    integer and its vector register, as for a variadic call; the others on
+    the stack after the 32 bytes of shadow space), looked up in the
+    program, `ucrtbase`, `msvcrt`, `kernel32` and the DLLs of `--link`
+    (`LoadLibraryW`, `GetProcAddress`). The errors of files: the Win32 code
+    mapped to the POSIX one with the text of glibc (`isc_runtime_core::
+    oserr`, shared with the runtime of Windows), the messages of Linux.
+  - Test `iscc_on_windows` (`$ISC_WINDOWS_ISCC`: the iscc.exe to test, with
+    LLVM 21 in `$ISC_WINDOWS_LLVM_BIN` of the Windows machine): `iscc
+    build` then the program, and `iscc run`, on the Windows machine of
+    D246, against the Linux program: printing and threads, files, the
+    standard input and a missing file, a panic; C functions of Windows,
+    `MultiByteToWideChar` with six arguments (two on the stack), in both.
+    Passes. The LLVM of the machine: 21.1.8, the version of the host.

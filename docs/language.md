@@ -1907,7 +1907,7 @@ bounds).
 ### C functions: `declare function`
 
 `declare function name(parameters): type;` declares a C function (System V x86-64
-ABI), which only an action may call; the call is an effect, run in its
+ABI; Win64 under Windows), which only an action may call; the call is an effect, run in its
 place, never removed. Its parameters are scalars (passed as the C
 scalars of the same width; `boolean` as C's `bool`), `string` (passed as a
 NUL-terminated copy, `const char *`) and arrays of scalars (passed as two
@@ -2357,6 +2357,14 @@ iscc completions bash|zsh|fish              the completion of the shell
   import libraries of MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian
   packages `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the
   program needs no DLL beyond those of Windows.
+* `iscc` also runs on Windows (`iscc.exe`, built on Linux by
+  `tools/windows/build_iscc.sh`): there, `build` writes a Windows
+  executable by default (`<file>.exe`), and the start files and libraries
+  of MinGW-w64 it links with are embedded in `iscc.exe`; it needs LLVM 21
+  for Windows (the official installer: `LLVM-C.dll` and `ld.lld.exe`, in
+  the `PATH` or in `C:\Program Files\LLVM\bin`). `run` calls the C
+  functions of Windows (`--link name` loads `name.dll`), the errors of files
+  with the messages of Linux.
 * Native (Linux and Windows), WebAssembly with or without threads, and the
   interpreter give the same results to the bit, and the same panic
   messages. Linking WebAssembly

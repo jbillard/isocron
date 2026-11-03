@@ -15,6 +15,9 @@ fn main() {
         println!("cargo:rerun-if-changed={}", p);
     }
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // the runtimes of native code are those of the target of iscc (D247:
+    // an iscc for Windows built on Linux embeds the runtime of Windows)
+    let native = env::var("TARGET").unwrap();
     let build_in = |triple: Option<&str>, dir: &PathBuf, flags: Option<&str>| -> bool {
         let mut cmd = Command::new(&cargo);
         cmd.args(["build", "--release", "--quiet", "--manifest-path"]).arg(&manifest).arg("--target-dir").arg(dir);
@@ -41,8 +44,8 @@ fn main() {
             .success()
     };
     let build = |triple: Option<&str>| build_in(triple, &target, None);
-    assert!(build(None), "building crates/isc-runtime failed");
-    let lib = target.join("release").join("libisc_runtime.a");
+    assert!(build(Some(&native)), "building crates/isc-runtime failed");
+    let lib = target.join(&native).join("release").join("libisc_runtime.a");
     assert!(lib.exists(), "{} was not produced", lib.display());
     println!("cargo:rustc-env=ISC_RUNTIME_LIB={}", lib.display());
     // the same runtime for x86-64-v3 (AVX2, BMI2, FMA): the searches of
@@ -50,9 +53,9 @@ fn main() {
     // which the runtime cannot detect at run time without the standard
     // library (D188); linked for the targets that have them
     let v3_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("runtime-v3");
-    let v3 = v3_dir.join("release").join("libisc_runtime.a");
+    let v3 = v3_dir.join(&native).join("release").join("libisc_runtime.a");
     let x86 = env::var("CARGO_CFG_TARGET_ARCH").map(|a| a == "x86_64").unwrap_or(false);
-    let v3_built = x86 && build_in(None, &v3_dir, Some("-Ctarget-cpu=x86-64-v3")) && v3.exists();
+    let v3_built = x86 && build_in(Some(&native), &v3_dir, Some("-Ctarget-cpu=x86-64-v3")) && v3.exists();
     if v3_built {
         println!("cargo:rustc-env=ISC_RUNTIME_V3_LIB={}", v3.display());
     } else {
@@ -61,8 +64,8 @@ fn main() {
     // and for x86-64-v4 (AVX-512): the masks of 64 bytes of the searches of
     // regular expressions in one comparison (D241)
     let v4_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("runtime-v4");
-    let v4 = v4_dir.join("release").join("libisc_runtime.a");
-    if v3_built && build_in(None, &v4_dir, Some("-Ctarget-cpu=x86-64-v4")) && v4.exists() {
+    let v4 = v4_dir.join(&native).join("release").join("libisc_runtime.a");
+    if v3_built && build_in(Some(&native), &v4_dir, Some("-Ctarget-cpu=x86-64-v4")) && v4.exists() {
         println!("cargo:rustc-env=ISC_RUNTIME_V4_LIB={}", v4.display());
     } else if v3_built {
         println!("cargo:rustc-env=ISC_RUNTIME_V4_LIB={}", v3.display());
@@ -101,4 +104,41 @@ fn main() {
             println!("cargo:rustc-env={}={}", var, lib.display());
         }
     }
+    mingw_files();
+}
+
+/// The files of MinGW-w64 that the linker of Windows programs needs (D247),
+/// from `$ISC_MINGW_DIR` (else `/usr`) when iscc is built: embedded, so that
+/// an iscc on Windows needs only LLVM, and on Linux no MinGW to build for
+/// Windows. Without them, an empty list: iscc then reads them from
+/// `$ISC_MINGW_DIR` when it links.
+fn mingw_files() {
+    const LIB: [&str; 7] = ["crt2.o", "libmingw32.a", "libmingwex.a", "libmsvcrt.a", "libkernel32.a", "libsynchronization.a", "libmoldname.a"];
+    const GCC: [&str; 4] = ["crtbegin.o", "crtend.o", "libgcc.a", "libgcc_eh.a"];
+    println!("cargo:rerun-if-env-changed=ISC_MINGW_DIR");
+    let root = PathBuf::from(env::var("ISC_MINGW_DIR").unwrap_or_else(|_| "/usr".into()));
+    let lib = root.join("x86_64-w64-mingw32/lib");
+    let gcc = std::fs::read_dir(root.join("lib/gcc/x86_64-w64-mingw32"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d.ok())
+        .map(|d| d.path())
+        .filter(|p| p.join("libgcc.a").is_file())
+        .min_by_key(|p| (!p.to_string_lossy().ends_with("posix"), p.clone()));
+    let mut entries = Vec::new();
+    if let Some(gcc) = gcc {
+        let files: Vec<PathBuf> = LIB.iter().map(|f| lib.join(f)).chain(GCC.iter().map(|f| gcc.join(f))).collect();
+        if files.iter().all(|f| f.is_file()) {
+            for f in &files {
+                println!("cargo:rerun-if-changed={}", f.display());
+                entries.push(format!("    ({:?}, include_bytes!({:?})),", f.file_name().unwrap().to_string_lossy(), f.display().to_string()));
+            }
+        }
+    }
+    if entries.is_empty() {
+        println!("cargo:warning=no MinGW-w64 in {}: the Windows target will read it from ISC_MINGW_DIR", root.display());
+    }
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("mingw_files.rs");
+    std::fs::write(&out, format!("/// The files of MinGW-w64 for the linker (build.rs).\npub const MINGW_FILES: &[(&str, &[u8])] = &[\n{}\n];\n", entries.join("\n"))).unwrap();
 }

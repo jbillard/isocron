@@ -225,7 +225,8 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     let isa = opts.codegen.isa;
     let wasm = matches!(isa, isc_codegen::Isa::Wasm32 | isc_codegen::Isa::Wasm32Threads);
     let threads = isa == isc_codegen::Isa::Wasm32Threads;
-    let windows = opts.codegen.windows;
+    // (WebAssembly from an iscc on Windows too)
+    let windows = opts.codegen.windows && !wasm;
     let obj = opts.output.with_extension("o");
     isc_codegen::backend::compile_for(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows)?;
     // the embedded runtime, written next to the object file for the linker
@@ -344,25 +345,65 @@ fn mingw_dirs() -> Result<(PathBuf, PathBuf), String> {
     Ok((lib, gcc))
 }
 
-/// Links a program for Windows with `rust-lld` as the linker of MinGW
-/// (`-m i386pep`): the start files and the libraries of MinGW-w64
-/// (`msvcrt`, `kernel32`, `synchronization` for `WaitOnAddress`), a console
-/// executable whose main thread has a stack of 8 MiB, as on Linux.
-fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
-    let sysroot = rust_sysroot()?;
-    let rustlib = sysroot.join("lib/rustlib");
-    let lld = std::fs::read_dir(&rustlib)
-        .map_err(|e| format!("cannot read `{}`: {}", rustlib.display(), e))?
-        .filter_map(|d| d.ok())
-        .map(|d| d.path().join("bin/rust-lld"))
+// The files of MinGW-w64 embedded when iscc was built (build.rs, D247).
+include!(concat!(env!("OUT_DIR"), "/mingw_files.rs"));
+
+/// The linker of Windows programs (D247), and whether it needs `-flavor
+/// gnu` (`lld`, `rust-lld`): `$ISC_LLD`; else the `rust-lld` of Rust when
+/// there is one (iscc on Linux); else `ld.lld` of LLVM, in the `PATH` or in
+/// `C:\Program Files\LLVM\bin` (iscc on Windows: the LLVM it uses).
+fn windows_linker() -> Result<(PathBuf, bool), String> {
+    let flavor = |p: &Path| matches!(p.file_stem().and_then(|s| s.to_str()), Some("lld" | "rust-lld"));
+    if let Ok(p) = std::env::var("ISC_LLD") {
+        let p = PathBuf::from(p);
+        let f = flavor(&p);
+        return Ok((p, f));
+    }
+    if let Ok(sysroot) = rust_sysroot() {
+        let rustlib = sysroot.join("lib/rustlib");
+        if let Some(p) = std::fs::read_dir(&rustlib).ok().into_iter().flatten().filter_map(|d| d.ok()).map(|d| d.path().join("bin").join(if cfg!(windows) { "rust-lld.exe" } else { "rust-lld" })).find(|p| p.is_file()) {
+            return Ok((p, true));
+        }
+    }
+    let exe = if cfg!(windows) { "ld.lld.exe" } else { "ld.lld" };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    if cfg!(windows) {
+        dirs.push(PathBuf::from("C:\\Program Files\\LLVM\\bin"));
+    }
+    dirs.into_iter()
+        .map(|d| d.join(exe))
         .find(|p| p.is_file())
-        .ok_or_else(|| format!("no `rust-lld` under `{}`", rustlib.display()))?;
-    let (lib, gcc) = mingw_dirs()?;
+        .map(|p| (p, false))
+        .ok_or_else(|| "no linker for Windows: install LLVM 21 (its ld.lld), or set ISC_LLD".to_string())
+}
+
+/// Links a program for Windows with lld as the linker of MinGW (`-m
+/// i386pep`): the start files and the libraries of MinGW-w64 (`msvcrt`,
+/// `kernel32`, `synchronization` for `WaitOnAddress`), those embedded in
+/// iscc (written next to the program for the linker), else those of
+/// `$ISC_MINGW_DIR`; a console executable whose main thread has a stack of
+/// 8 MiB, as on Linux.
+fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+    let (lld, flavor) = windows_linker()?;
+    let tmp = out.with_extension("mingw");
+    let (lib, gcc) = if MINGW_FILES.is_empty() {
+        mingw_dirs()?
+    } else {
+        std::fs::create_dir_all(&tmp).map_err(|e| format!("cannot make `{}`: {}", tmp.display(), e))?;
+        for (name, bytes) in MINGW_FILES {
+            std::fs::write(tmp.join(name), bytes).map_err(|e| format!("cannot write `{}`: {}", tmp.join(name).display(), e))?;
+        }
+        (tmp.clone(), tmp.clone())
+    };
     let mut cmd = std::process::Command::new(&lld);
-    cmd.args(["-flavor", "gnu", "-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-o"]).arg(out);
+    if flavor {
+        cmd.args(["-flavor", "gnu"]);
+    }
+    cmd.args(["-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-o"]).arg(out);
     cmd.arg(lib.join("crt2.o")).arg(gcc.join("crtbegin.o")).arg(obj);
     for l in libs {
-        if l.contains('/') || l.ends_with(".a") || l.ends_with(".o") || l.ends_with(".lib") {
+        if l.contains('/') || l.contains('\\') || l.ends_with(".a") || l.ends_with(".o") || l.ends_with(".lib") {
             cmd.arg(l);
         } else {
             cmd.arg(format!("-l{}", l));
@@ -370,14 +411,18 @@ fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String])
     }
     cmd.arg(rt).arg("-L").arg(&lib).arg("-L").arg(&gcc);
     cmd.arg("--start-group");
-    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "kernel32", "synchronization", "advapi32", "shell32", "user32"] {
+    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization"] {
         cmd.arg(format!("-l{}", l));
     }
     cmd.arg("--end-group").arg(gcc.join("crtend.o"));
     if !debug {
         cmd.arg("-s");
     }
-    let status = cmd.status().map_err(|e| format!("cannot run the linker `{}`: {}", lld.display(), e))?;
+    let status = cmd.status();
+    if !MINGW_FILES.is_empty() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    let status = status.map_err(|e| format!("cannot run the linker `{}`: {}", lld.display(), e))?;
     if !status.success() {
         return Err(format!("the linker `{}` failed ({})", lld.display(), status));
     }

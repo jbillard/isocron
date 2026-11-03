@@ -171,3 +171,73 @@ fn benchmarks_game_on_windows() {
         same_on_windows(&runner, &source(name), name, &d, &["0"], Some("input.fasta"));
     }
 }
+
+const C_FUNCTIONS: &str = r#"declare function abs(v: i32): i32;
+declare function strlen(s: string): u64;
+declare function pow(x: f64, y: f64): f64;
+declare function ldexp(x: f64, e: i32): f64;
+declare function strncmp(a: string, b: string, n: u64): i32;
+declare function MultiByteToWideChar(cp: u32, flags: u32, s: string, n: i32, wide: i64, room: i32): i32;
+
+action main(args: string[k]): i32 {
+    print(abs(-12i32));
+    print(strlen("héllo"));
+    print(pow(2.0, 10.0));
+    print(ldexp(3.0, 4i32));
+    print(strncmp("abcdef", "abcxyz", 3u64));
+    print(MultiByteToWideChar(65001u32, 0u32, "héllo", -1i32, 0, 0i32));
+    return 0;
+}
+"#;
+
+/// iscc itself on Windows (D247, `$ISC_WINDOWS_ISCC`: an iscc.exe built by
+/// `tools/windows/build_iscc.sh`), with LLVM 21 in `$ISC_WINDOWS_LLVM_BIN`
+/// of the Windows machine (default `C:\LLVM\bin`): `iscc build` without a
+/// target makes a Windows program, which prints what the Linux program
+/// prints, and `iscc run` (the interpreter) prints the same; C functions
+/// of Windows called by both, with arguments in the registers of both kinds
+/// and on the stack (Win64).
+#[test]
+fn iscc_on_windows() {
+    let (Some(runner), Ok(iscc)) = (runner(), std::env::var("ISC_WINDOWS_ISCC")) else {
+        eprintln!("no Windows machine or no iscc.exe (ISC_WINDOWS_RUNNER, ISC_WINDOWS_ISCC): iscc on Windows not run");
+        return;
+    };
+    let llvm = std::env::var("ISC_WINDOWS_LLVM_BIN").unwrap_or_else(|_| "C:\\LLVM\\bin".into());
+    for (name, src, args, stdin, interpret) in [
+        ("basics", BASICS, &["one", "two words"][..], None, false),
+        ("files", FILES, &["big.txt"][..], Some("in.txt"), true),
+        ("panics", PANICS, &[][..], None, true),
+        ("cfunctions", C_FUNCTIONS, &[][..], None, true),
+    ] {
+        let d = dir(&format!("native_{}", name));
+        std::fs::copy(&iscc, d.join("iscc.exe")).unwrap();
+        std::fs::write(d.join("prog.isc"), src).unwrap();
+        if name == "files" {
+            std::fs::write(d.join("big.txt"), "x".repeat(9 << 20)).unwrap();
+            std::fs::write(d.join("in.txt"), "a\nb\nc\n").unwrap();
+        }
+        let input = stdin.map(|f| format!(" < {}", f)).unwrap_or_default();
+        let argv = args.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(" ");
+        // the compiled program, then the interpreter: each one's output,
+        // error and exit code
+        let mut script = format!("@echo off\r\nset \"PATH={};%PATH%\"\r\niscc.exe build prog.isc || exit /b 77\r\nprog.exe {}{}\r\necho == %ERRORLEVEL%\r\n", llvm, argv, input);
+        if interpret {
+            script += &format!("iscc.exe run prog.isc {}{}\r\necho == %ERRORLEVEL%\r\n", argv, input);
+        }
+        std::fs::write(d.join("go.cmd"), script).unwrap();
+        let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg(d.join("go.cmd")).output().unwrap();
+        let (out, err) = (String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string());
+        assert_eq!(o.status.code(), Some(0), "{}: {}\n{}", name, out, err);
+        let want = if name == "cfunctions" {
+            "12\n6\n1024\n48\n0\n6\n== 0\n".to_string()
+        } else {
+            let bin = compile(src, &format!("native_linux_{}", name));
+            let l = run_linux(&bin, &d, args, stdin, 4);
+            format!("{}== {}\n", String::from_utf8_lossy(&l.1), l.0)
+        };
+        let want = if interpret { format!("{}{}", want, want) } else { want };
+        // `echo` of cmd ends its lines with \r\n
+        assert_eq!(out.replace("\r\n", "\n"), want, "{}: iscc on Windows", name);
+    }
+}

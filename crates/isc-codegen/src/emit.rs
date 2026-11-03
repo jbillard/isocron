@@ -279,7 +279,8 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: false }
+        // native code of an iscc on Windows is for Windows (D247)
+        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: cfg!(windows) }
     }
 }
 

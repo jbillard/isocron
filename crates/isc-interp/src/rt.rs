@@ -91,6 +91,19 @@ pub fn parse_csv(t: &str, skip: i64) -> Result<Vec<Vec<f64>>, String> {
 /// code; it is also the `Display` of `std::io::Error`).
 fn io_text(e: &std::io::Error, path: &str, reading: bool) -> String {
     match e.raw_os_error() {
+        // under Windows, the POSIX code and the text of glibc, as a program
+        // on Windows (D247)
+        #[cfg(windows)]
+        Some(code) => {
+            let code = sem::oserr::from_win32(code as u32);
+            let detail = sem::oserr::text(code);
+            if reading {
+                text(&Panic::Read { path, detail, code })
+            } else {
+                text(&Panic::Write { path, detail, code })
+            }
+        }
+        #[cfg(not(windows))]
         Some(code) => {
             let full = e.to_string();
             let detail = full.split(" (os error").next().unwrap_or(&full);

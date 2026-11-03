@@ -332,7 +332,7 @@ fn main() {
             if wasm_target && !explicit_output {
                 opts.output.set_extension("wasm");
             }
-            if windows_target && !explicit_output {
+            if (windows_target || (cfg!(windows) && !wasm_target)) && !explicit_output {
                 opts.output.set_extension("exe");
             }
             if report {

@@ -652,6 +652,59 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------
+// the errors of the system under Windows (D246, D247): the POSIX code of a
+// Win32 error and the text of glibc for it, so that a program and the
+// interpreter on Windows give the messages of Linux
+
+pub mod oserr {
+    /// The POSIX code of a Win32 error (0 if none; EIO for the others).
+    pub fn from_win32(code: u32) -> i32 {
+        match code {
+            0 => 0,
+            1 => 21,                           // EISDIR (the read of a directory)
+            2 | 3 | 15 | 123 | 161 | 206 => 2, // ENOENT (a bad name too)
+            4 => 24,                           // EMFILE
+            5 | 32 | 33 => 13,                 // EACCES (sharing, lock)
+            6 => 9,                            // EBADF
+            8 | 14 => 12,                      // ENOMEM
+            19 => 30,                          // EROFS
+            80 | 183 => 17,                    // EEXIST
+            87 => 22,                          // EINVAL
+            112 | 39 => 28,                    // ENOSPC
+            267 => 20,                         // ENOTDIR
+            _ => 5,                            // EIO
+        }
+    }
+
+    /// The text of glibc for a POSIX code, NUL-terminated.
+    pub fn text_c(code: i32) -> &'static [u8] {
+        match code {
+            0 => b"Success\0",
+            2 => b"No such file or directory\0",
+            5 => b"Input/output error\0",
+            9 => b"Bad file descriptor\0",
+            12 => b"Cannot allocate memory\0",
+            13 => b"Permission denied\0",
+            17 => b"File exists\0",
+            20 => b"Not a directory\0",
+            21 => b"Is a directory\0",
+            22 => b"Invalid argument\0",
+            24 => b"Too many open files\0",
+            28 => b"No space left on device\0",
+            29 => b"Illegal seek\0",
+            30 => b"Read-only file system\0",
+            _ => b"Unknown error\0",
+        }
+    }
+
+    /// The text of glibc for a POSIX code.
+    pub fn text(code: i32) -> &'static str {
+        let t = text_c(code);
+        core::str::from_utf8(&t[..t.len() - 1]).unwrap_or("Unknown error")
+    }
+}
+
+// ---------------------------------------------------------------------
 // mathematical functions (SPEC section 10, D108): the same code for the
 // interpreter and every target, so that their results are the same bits
 
