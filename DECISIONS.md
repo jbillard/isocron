@@ -3023,3 +3023,26 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `filters_and_divisions_of_the_index_do_not_depend_on_threads` (the
   remainder by 61 carried, the results of the interpreter for 1 to 8
   threads).
+- **D181 — Indexing in vector code (2026-11-04).** spectral-norm 5500
+  against the floor of the machine: 40 products of a 5500 x 5500 matrix by
+  a vector, 1.21e9 divisions of `f64`, 0.626 ns each per core for
+  independent divisions of 4 lanes (`bench/floor`, D182): 0.189 s on 4
+  cores; Isocron took 0.527 s (2.8 times the floor). Profile: 25.5e9
+  instructions, 21 per element, the hot loop scalar (`vdivsd`, its
+  accumulator through memory): `vec_ok` refused every lambda reading an
+  array by an index (`u[j]`), so the sum ran one element at a time. An
+  index of an array of the context (a variable, elements of integers or
+  floats) by an index that cannot panic is now vector code: every lane
+  checked at once (one comparison, one test of the mask), the first lane
+  out of bounds giving the panic of the scalar loop; a vector of
+  consecutive indices (the index of the loop, recorded by lane in
+  `Func::contig`) is one vector load, any other a gather. So that the
+  first lane out of bounds is the element at which the scalar loop
+  panics, a body with an index has no other site that can panic
+  (`index_vec_ok`); with several threads another block may still fail
+  first, as before (SPEC section 5: which panic is not specified). The
+  window cascade (D115) keeps its scalar form for such bodies. spectral-norm
+  at fixed frequency: 0.527 s -> 0.195 s on 4 threads (1.03 times the
+  floor), 2.125 s -> 0.778 s on one; the nine other programs unchanged
+  (within 1 %). Tests `vector_index.rs` (loads, gathers, `u8` and signed
+  indices, panics against the interpreter).

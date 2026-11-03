@@ -170,3 +170,4 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)
   - [x] The standard input read in a buffer of its size when it is a file: readStdin 0.104 s -> 0.056 s, revcomp 0.414 s -> 0.365 s (D179)
   - [x] Quotient and remainder of the index by a constant carried by the loop: revcomp 0.369 s -> 0.356 s (D180)
+  - [x] Indexing in vector code: spectralnorm 0.527 s -> 0.195 s on 4 threads, 1.03 times the floor of the divider (D181)

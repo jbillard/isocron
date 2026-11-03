@@ -387,6 +387,9 @@ struct Func {
     allocas: Vec<String>,
     body: Vec<String>,
     tmp: u32,
+    /// Vectors of consecutive indices (the index of a loop, by lanes): each
+    /// one's first index, a scalar (D181).
+    contig: HashMap<String, String>,
 }
 
 pub struct Gen<'p> {
@@ -881,7 +884,31 @@ fn is_signed(t: &Type) -> bool {
 
 /// Can this element computation be emitted with vector types?
 fn vec_ok(e: &Expr, varying: &mut HashSet<VarId>) -> bool {
-    vec_ok_given(e, varying, std::ptr::null())
+    vec_ok_given(e, varying, std::ptr::null()) && index_vec_ok(e)
+}
+
+/// The sites of `e` that can panic (SPEC section 5): an index, an integer
+/// division by a variable, a power by a signed exponent, ...
+fn panic_sites(e: &Expr) -> usize {
+    use ExprKind::*;
+    let here = match &e.kind {
+        Index(..) | Update { .. } | Slice(..) | Window(..) | CheckSize(..) | CheckNonNegative(..) | Action(..) | Bench(..) => 1,
+        Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) && !matches!(b.kind, Lit(isc_ir::Lit::Int(d)) if d != 0) => 1,
+        Pow(_, k) if !(matches!(k.kind, Lit(isc_ir::Lit::Int(n)) if n >= 0) || !matches!(k.ty, Type::Int(ik) if ik.signed())) => 1,
+        _ => 0,
+    };
+    here + e.children().into_iter().map(panic_sites).sum::<usize>()
+}
+
+fn has_index(e: &Expr) -> bool {
+    matches!(e.kind, ExprKind::Index(..)) || e.children().into_iter().any(has_index)
+}
+
+/// Vector code of a body with an index (D181): its only site that can
+/// panic, so that the first lane out of bounds is the element at which the
+/// scalar loop panics.
+fn index_vec_ok(e: &Expr) -> bool {
+    !has_index(e) || panic_sites(e) == 1
 }
 
 /// `vec_ok`, the expression `given` (a `reduce` whose value is computed
@@ -927,6 +954,16 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
         }
         // a SPMD call (D140)
         ExprKind::Call(f, args) => SPMD.with(|s| s.borrow().contains(f)) && args.iter().all(|a| vec_ok_given(a, varying, given)),
+        // an element of an array of the context, by an index that cannot
+        // panic (D181): a load of consecutive elements or a gather
+        ExprKind::Index(x, i) => {
+            matches!(x.kind, ExprKind::Var(..))
+                && !mentions(x, varying)
+                && !has_given(x)
+                && matches!(x.ty.elem(), Type::Int(_) | Type::F64 | Type::F32)
+                && isc_ir::passes::cannot_panic(i)
+                && vec_ok_given(i, varying, given)
+        }
         // a `fold` over the same elements in every lane (`iota(8)`, an
         // array of the context): a scalar loop of a vector accumulator
         ExprKind::Fold(x, init, l) => {
@@ -2377,6 +2414,7 @@ impl<'p> Gen<'p> {
                 }
                 Ok(self.arr(&p, &n))
             }
+            Index(a, i) if w > 1 => self.index_vec(a, i, w, span),
             Index(a, i) => {
                 let (src, n) = self.prepare_src(a)?;
                 let iv = self.ex(i, 1)?;
@@ -2594,6 +2632,67 @@ impl<'p> Gen<'p> {
             }
             _ => iv.r.clone(),
         }
+    }
+
+    /// `a[i]` in vector code (D181): `a` an array of the context, `i` a
+    /// vector of indices. Every lane checked at once; the first lane out of
+    /// bounds gives the panic of the scalar loop (the body has no other site
+    /// that can panic, `index_vec_ok`). Consecutive indices (the index of
+    /// the loop): one vector load; others: a gather.
+    fn index_vec(&mut self, a: &Expr, i: &Expr, w: u32, span: Span) -> R<V> {
+        let (src, n) = self.prepare_src(a)?;
+        let iv = self.ex(i, w)?;
+        if uni(&iv) {
+            let idx = self.index64(&iv, &i.ty);
+            self.bounds(&idx, &n, &i.ty, span);
+            return self.elem(&src, &idx, 1);
+        }
+        let Src::Mat { ptr, elem, .. } = &src else {
+            return Err("internal error: an index of vector code into a computed array".into());
+        };
+        let (ptr, elem) = (ptr.clone(), elem.clone());
+        let idx = match &i.ty {
+            Type::Int(k) if k.bits() < 64 => {
+                let op = if k.signed() { "sext" } else { "zext" };
+                self.ins(format!("{} <{} x i{}> {} to <{} x i64>", op, w, k.bits(), iv.r, w))
+            }
+            _ => iv.r.clone(),
+        };
+        let nv = self.widen(&v(n.clone(), "i64"), w);
+        let bad0 = self.ins(format!("icmp uge <{} x i64> {}, {}", w, idx, nv.r));
+        let bad = match self.mask.clone() {
+            Some(m) => self.ins(format!("and <{} x i1> {}, {}", w, bad0, m)),
+            None => bad0,
+        };
+        let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, bad, w));
+        let ok = self.ins(format!("icmp eq i{} {}, 0", w, bits));
+        let lfail = self.label();
+        let lok = self.label();
+        self.cbr(&ok, &lok, &lfail);
+        self.block(&lfail);
+        let first = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {bits}, i1 true)", w = w, bits = bits));
+        self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+        let at = self.ins(format!("extractelement <{} x i64> {}, i{} {}", w, idx, w, first));
+        let unsigned = if is_signed(&i.ty) { 0 } else { 1 };
+        self.emit(format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", at, n, unsigned, Self::pos(span)));
+        self.emit("unreachable");
+        self.block(&lok);
+        if let Some(base) = self.f.contig.get(&iv.r).cloned() {
+            return Ok(self.load_scalar(&ptr, &base, &elem, w));
+        }
+        let m = mt(&elem);
+        let ptrs = self.ins(format!("getelementptr inbounds {}, ptr {}, <{} x i64> {}", m, ptr, w, idx));
+        let suffix = match m.as_str() {
+            "double" => "f64".to_string(),
+            "float" => "f32".to_string(),
+            t => t.to_string(),
+        };
+        let name = format!("llvm.masked.gather.v{}{}.v{}p0", w, suffix, w);
+        let vm = format!("<{} x {}>", w, m);
+        self.decls.insert(format!("declare {} @{}(<{} x ptr>, i32, <{} x i1>, {})", vm, name, w, w, vm));
+        let all = format!("<{}>", (0..w).map(|_| "i1 true").collect::<Vec<_>>().join(", "));
+        let x = self.ins(format!("call {} @{}(<{} x ptr> {}, i32 {}, <{} x i1> {}, {} poison)", vm, name, w, ptrs, esize(&elem), w, all, vm));
+        Ok(V { r: x, t: vm, uni: false })
     }
 
     /// 0 <= a <= b <= n, or the panic of a slice.
@@ -2967,6 +3066,7 @@ impl<'p> Gen<'p> {
                 let base = self.widen(&v(idx, "i64"), w);
                 let steps: Vec<String> = (0..w).map(|i| format!("i64 {}", i)).collect();
                 let r = self.ins(format!("add <{} x i64> {}, <{}>", w, base.r, steps.join(", ")));
+                self.f.contig.insert(r.clone(), idx.to_string());
                 Ok(V { r, t: format!("<{} x i64>", w), uni: false })
             }
             Src::Uniform(x) => Ok(x.clone()),
@@ -3248,7 +3348,7 @@ impl<'p> Gen<'p> {
             let fin = from.clone();
             let vw = (64 / esize(&rt)) as u32;
             let mut tail_from = "0".to_string();
-            let body_vec = vec_ok_given(&l.body, &mut l.params.iter().copied().collect(), red as *const Expr);
+            let body_vec = vec_ok_given(&l.body, &mut l.params.iter().copied().collect(), red as *const Expr) && !has_index(&l.body);
             if body_vec && et.is_scalar() && esize(&et) == esize(&rt) && vw > 1 {
                 let full = g.ins(format!("and i64 {}, -{}", cnt, vw));
                 let vty = format!("<{} x {}>", vw, rlt);
