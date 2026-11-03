@@ -3410,3 +3410,12 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   the permutations take them (`permute_bytes`). reverse-complement at
   fixed frequency, 4 threads: 0.263 s -> 0.253 s; fasta (tables of 4 and
   15 bytes) unchanged; the same outputs.
+- **D199 — 32 lanes for the `map`s that make bytes (2026-11-04).** After
+  D198 the vector loop of the lines of reverse-complement and of fasta
+  makes 16 bytes per iteration (`MAP_WIDTH`), its fixed costs (the window
+  of D187, the checks, the steps of D186) shared by 16 bytes, half a `ymm`
+  register of results. A `map` whose elements are bytes now takes 32
+  lanes. At fixed frequency, 4 threads: reverse-complement 0.254 s ->
+  0.242 s, fasta 0.207 s -> 0.174 s, mandelbrot unchanged; 64 lanes were
+  worse (0.436 s and 0.249 s: registers spilled, the permutations of
+  bytes made for 32 lanes at most). The same outputs.

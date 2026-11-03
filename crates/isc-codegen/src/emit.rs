@@ -3758,6 +3758,8 @@ impl<'p> Gen<'p> {
         let w = match (src_vec_ok_lookup(e), spmd) {
             (false, _) => 1,
             (true, Some(state)) => self.spmd_width(state),
+            // bytes: 32 lanes, one `ymm` register of results (D199)
+            (true, None) if esize(&et) == 1 && et.is_scalar() => 2 * MAP_WIDTH,
             (true, None) => MAP_WIDTH,
         };
         let (src, n) = self.prepare_src(e)?;
