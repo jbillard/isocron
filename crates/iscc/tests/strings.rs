@@ -472,3 +472,30 @@ fn simple_shapes_found_by_masks() {
         }
     }
 }
+
+/// D236: a replacement without `$` of many matches (16384 or more) written
+/// by every thread, each its part of the result at its place; with `$&`, or
+/// few matches, as before. The texts of the interpreter, whole, on 1, 4 and
+/// 16 threads.
+#[test]
+fn replacements_written_in_parallel() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const s = \"aaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNéHaSWaSBY|q<<k>Kks\".repeat(n);
+    print(s.replace(/a/g, \"<1>\"));
+    print(s.replace(/a[NSt]|BY/g, \"\"));
+    print(s.replace(/<[^>]*>/g, \"|\").replace(/\\|[^|][^|]*\\|/g, \"-\"));
+    print(s.replace(/é|aa/g, \"$&$&\"));
+    print(s.replace(/q/g, \"Q\"));
+    return 0;
+}
+";
+    let bin = compile(src, "replace_parallel");
+    for n in ["1", "300", "20000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4, 16] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert!(r.code == 0 && r.stdout == want, "n {} {} threads: {} bytes, {} expected: {}", n, t, r.stdout.len(), want.len(), r.stderr);
+        }
+    }
+}

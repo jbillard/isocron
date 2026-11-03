@@ -1187,6 +1187,84 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
     re.merge(s, &starts, &found)
 }
 
+/// From this many matches on, a replacement writes its result in parallel.
+const REPLACE_PARALLEL_MIN: usize = 1 << 14;
+
+/// `s` with each match of `bounds` replaced by `to`, a text without `$`
+/// (each replacement the same bytes), written by every thread (D236): the
+/// matches cut into one part per thread, the size of each part of the
+/// result known before (its text between the matches, then `to` per
+/// match), each part written at its place. The bytes of `replace_bounds`.
+/// None with one thread, few matches or a busy pool.
+unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Option<IscStr> {
+    let threads = thread_count();
+    if threads <= 1 || bounds.len() < REPLACE_PARALLEL_MIN || BUSY.load(Ordering::Relaxed) {
+        return None;
+    }
+    let parts = threads.min(64);
+    // part k: the matches first[k] .. first[k + 1], the text from the end of
+    // the match before (0 for the first) to the end of its last (the end of
+    // `s` for the last part)
+    let mut first = [0usize; 65];
+    for k in 0..=parts {
+        first[k] = bounds.len() * k / parts;
+    }
+    let from = |k: usize| if first[k] == 0 { 0 } else { bounds[first[k] - 1].1 };
+    let until = |k: usize| if k + 1 == parts { s.len() } else { bounds[first[k + 1] - 1].1 };
+    let mut at = [0usize; 65];
+    for k in 0..parts {
+        let removed: usize = bounds[first[k]..first[k + 1]].iter().map(|&(a, b)| b - a).sum();
+        let count = first[k + 1] - first[k];
+        at[k + 1] = at[k] + (until(k) - from(k)) - removed + count * to.len();
+    }
+    let total = at[parts];
+    let buf = isc_alloc(total.max(1) as i64);
+    #[repr(C)]
+    struct Ctx {
+        s: *const u8,
+        n: usize,
+        to: *const u8,
+        tn: usize,
+        bounds: *const (usize, usize),
+        first: *const usize,
+        at: *const usize,
+        parts: usize,
+        out: *mut u8,
+    }
+    extern "C" fn part(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let k = k as usize;
+            let (i0, i1) = (*c.first.add(k), *c.first.add(k + 1));
+            let mut last = if i0 == 0 { 0 } else { (*c.bounds.add(i0 - 1)).1 };
+            let mut o = c.out.add(*c.at.add(k));
+            for i in i0..i1 {
+                let (a, b) = *c.bounds.add(i);
+                core::ptr::copy_nonoverlapping(c.s.add(last), o, a - last);
+                o = o.add(a - last);
+                core::ptr::copy_nonoverlapping(c.to, o, c.tn);
+                o = o.add(c.tn);
+                last = b;
+            }
+            let end = if k + 1 == c.parts { c.n } else { (*c.bounds.add(i1 - 1)).1 };
+            core::ptr::copy_nonoverlapping(c.s.add(last), o, end - last);
+        }
+    }
+    let mut ctx = Ctx {
+        s: s.as_ptr(),
+        n: s.len(),
+        to: to.as_ptr(),
+        tn: to.len(),
+        bounds: bounds.as_ptr(),
+        first: first.as_ptr(),
+        at: at.as_ptr(),
+        parts,
+        out: buf,
+    };
+    parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, false);
+    Some(IscStr { ptr: buf, len: total as i64 })
+}
+
 /// A `String` of the runtime as a string of the program: its buffer is a
 /// block of the heap of the runtime (the global allocator), no copy.
 unsafe fn adopt(s: alloc::string::String) -> IscStr {
@@ -1265,6 +1343,12 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
     // twice, to count the bytes and to write them)
     if (all != 0 || flags.contains('g')) && sem::rx::without_groups(to) {
         let bounds = rx_bounds(&rx_engine(re, t), t);
+        if !to.contains('$') {
+            if let Some(r) = replace_parallel(t, to, &bounds) {
+                *out = r;
+                return;
+            }
+        }
         *out = adopt(sem::rx::replace_bounds(t, to, &bounds));
         return;
     }

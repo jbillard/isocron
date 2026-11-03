@@ -4057,3 +4057,16 @@ they were: only the marks of their verdicts are added (made again from
 their JSON, they would change: their scripts changed since), and their
 scripts add them from now on. `DECISIONS.md`, `TODO.md` and `SPEC.md`
 keep their text.
+- **D236 — A replacement written by every thread (2026-11-04).** After
+D224 the matches of a replacement were found in parallel (D189), but its
+result was built by one thread (`replace_bounds`), a piece of text and the
+replacement per match: three replacements of regex-redux have millions of
+matches. When the replacement has no `$` (each one the same bytes) and
+there are at least 16384 matches, the matches are cut into one part per
+thread; the size of each part of the result is known before (its text
+between the matches, then `to` per match), and each thread writes its
+part at its place (`replace_parallel`). The bytes of `replace_bounds`.
+At fixed frequency, 4 threads, best of 5: regex-redux 0.475 s -> 0.336 s;
+by step: the cleaning 66 ms, the 9 counts about 91 ms, the 5 replacements
+about 184 ms. Test `replacements_written_in_parallel` (the whole texts of
+the interpreter, 1, 4 and 16 threads, with `$&` the path before).
