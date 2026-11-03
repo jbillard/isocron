@@ -3552,3 +3552,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   -> 4.785 s; mandelbrot, k-nucleotide, regex-redux, reverse-complement
   and fasta (whose code changes) unchanged, the others compile to the
   same code; the same outputs at 1 and 4 threads.
+- **D206 — The states of loops owned (2026-11-04).** n-body's `steps(b, n)`
+  is a loop (its call to itself a tail call) whose other result is `b`: its
+  parameter was borrowed, so each step copied `b.vx`, `b.vy` and `b.vz`
+  into the accumulator of its `fold` ("a part of `b` is kept as a value of
+  its own"), and the loop then freed the whole old state. Such a parameter
+  (a tuple, every call of the function to itself a tail call, every other
+  result the parameter itself, read only through its fields) is now owned
+  (`own_states`, `Function::consumed`): the body starts with `let b.k =
+  take k b` for each field, reads `b.k` for `b[k]` and gives back the tuple
+  of the `b.k` for `b`; each field is owned on its own, moved at its last
+  use or freed. The generated code copies the parameter once on entry (its
+  caller lends it) and never frees a slot the body takes apart. The
+  borrowed form copied it once too, as its result: no copy is added. The
+  memory check (`verify_fn`) knows such a parameter as owned. n-body at
+  fixed frequency, 4 threads: 4.763 s -> 4.135 s; the nine others compile
+  to the same code; the same outputs.

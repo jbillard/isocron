@@ -51,11 +51,18 @@ fn fail<T>(span: Span, msg: String) -> R<T> {
 }
 
 /// Checks the memory decisions of a recursive function: its parameters are
-/// borrowed, its result is new memory or a scalar (D102).
+/// borrowed (the state of a loop is owned, its copy made on entry, D206),
+/// its result is new memory or a scalar (D102).
 fn verify_fn(p: &Program, f: &Function) -> R<()> {
     let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default() };
-    for v in &f.params {
-        c.st[*v as usize] = if p.vars[*v as usize].ty.has_heap() { State::View(Vec::new()) } else { State::Scalar };
+    for (k, v) in f.params.iter().enumerate() {
+        c.st[*v as usize] = if f.consumed.get(k).copied().unwrap_or(false) {
+            State::Owned { moved: None, region: 0 }
+        } else if p.vars[*v as usize].ty.has_heap() {
+            State::View(Vec::new())
+        } else {
+            State::Scalar
+        };
     }
     match c.eval(&f.body)? {
         Val::View(_) if f.body.ty.has_heap() => {

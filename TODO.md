@@ -189,6 +189,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] `x.length` unchanged by a function `len` of the program (D203)
   - [x] Lengths fixed by the types in the generated code: nbody 5.960 s -> 5.552 s, revcomp 0.240 s -> 0.228 s (D204)
   - [x] Short loops unrolled whole: nbody 5.529 s -> 4.785 s (D205)
+  - [x] The states of loops owned: nbody 4.763 s -> 4.135 s (D206)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

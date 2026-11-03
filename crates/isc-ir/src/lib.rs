@@ -387,6 +387,10 @@ pub struct Function {
     pub span: isc_syntax::Span,
     /// `requireTail` (SPEC section 9), with its position (D106).
     pub require_tail: Option<isc_syntax::Span>,
+    /// Per parameter: owned by the function and taken apart on entry (the
+    /// state of a loop, D206); its caller lends it, so the generated code
+    /// copies it once on entry.
+    pub consumed: Vec<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1929,7 +1929,109 @@ pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<Va
     })
 }
 
+/// The state of a loop (D206): a recursive function whose calls to itself
+/// are all tail calls, and whose other results are all its tuple parameter
+/// `p` itself (`if (n == 0) return b; return steps(advance(b), n - 1)`),
+/// owns `p`: its body starts with `let p.k = take k p` for each field, reads
+/// `p.k` for `p[k]` and gives back the tuple of the `p.k` for `p`. Each
+/// field is then owned on its own: moved instead of copied at its last use,
+/// freed when not moved. The borrowed form copies `p` once, as the result of
+/// the loop; this form copies it once on entry (the generated code, for
+/// `consumed`), and an iteration no longer copies its fields.
+fn own_states(p: &mut Program) {
+    fn calls(e: &Expr, fi: u32) -> usize {
+        let own = matches!(e.kind, ExprKind::Call(g, _) if g == fi) as usize;
+        own + e.children().into_iter().map(|c| calls(c, fi)).sum::<usize>()
+    }
+    // every result is a tail call to `fi` or `pv`: their numbers
+    fn results(e: &Expr, fi: u32, pv: VarId, tails: &mut usize, states: &mut usize) -> bool {
+        match &e.kind {
+            ExprKind::If(c, t, f) => calls(c, fi) == 0 && results(t, fi, pv, tails, states) && results(f, fi, pv, tails, states),
+            ExprKind::Let { init, body, .. } => calls(init, fi) == 0 && results(body, fi, pv, tails, states),
+            ExprKind::CheckSize(a, b, body) => calls(a, fi) + calls(b, fi) == 0 && results(body, fi, pv, tails, states),
+            ExprKind::CheckNonNegative(k, body) => calls(k, fi) == 0 && results(body, fi, pv, tails, states),
+            ExprKind::Call(g, args) if *g == fi => {
+                *tails += 1;
+                args.iter().all(|a| calls(a, fi) == 0)
+            }
+            ExprKind::Var(v, _) if *v == pv => {
+                *states += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+    // `pv` read only as `pv[k]`, or given back whole as a result
+    fn fields_only(e: &Expr, pv: VarId, tail: bool) -> bool {
+        match &e.kind {
+            ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(v, _) if v == pv) => true,
+            ExprKind::Var(v, _) if *v == pv => tail,
+            ExprKind::If(c, t, f) => fields_only(c, pv, false) && fields_only(t, pv, tail) && fields_only(f, pv, tail),
+            ExprKind::Let { init, body, .. } => fields_only(init, pv, false) && fields_only(body, pv, tail),
+            ExprKind::CheckSize(a, b, body) => fields_only(a, pv, false) && fields_only(b, pv, false) && fields_only(body, pv, tail),
+            ExprKind::CheckNonNegative(k, body) => fields_only(k, pv, false) && fields_only(body, pv, tail),
+            _ => e.children().into_iter().all(|c| fields_only(c, pv, false)),
+        }
+    }
+    fn rewrite(e: &mut Expr, pv: VarId, parts: &[(VarId, Type)]) {
+        match &mut e.kind {
+            ExprKind::Proj(x, k) if matches!(x.kind, ExprKind::Var(v, _) if v == pv) => {
+                let (c, t) = parts[*k as usize].clone();
+                *e = Expr::var(c, t, e.span);
+            }
+            ExprKind::Var(v, _) if *v == pv => {
+                let es = parts.iter().map(|(c, t)| Expr::var(*c, t.clone(), e.span)).collect();
+                *e = Expr::new(ExprKind::Tuple(es), e.ty.clone(), e.span);
+            }
+            _ => {
+                for c in e.children_mut() {
+                    rewrite(c, pv, parts);
+                }
+            }
+        }
+    }
+    for fi in 0..p.fns.len() {
+        for k in 0..p.fns[fi].params.len() {
+            let pv = p.fns[fi].params[k];
+            let ty = p.vars[pv as usize].ty.clone();
+            let Type::Tuple(ts) = &ty else { continue };
+            if !ty.has_heap() {
+                continue;
+            }
+            let f = &p.fns[fi];
+            let (mut tails, mut states) = (0, 0);
+            let shape = results(&f.body, fi as u32, pv, &mut tails, &mut states) && calls(&f.body, fi as u32) == tails;
+            if !shape || tails == 0 || states == 0 || !fields_only(&f.body, pv, true) {
+                continue;
+            }
+            let name = p.vars[pv as usize].name.clone();
+            let mut parts = Vec::new();
+            for (j, t) in ts.iter().enumerate() {
+                let c = p.vars.len() as VarId;
+                p.vars.push(VarInfo { name: format!("{}.{}", name, j), ty: t.clone() });
+                parts.push((c, t.clone()));
+            }
+            let f = &mut p.fns[fi];
+            let span = f.body.span;
+            let mut body = std::mem::replace(&mut f.body, Expr::new(ExprKind::Zero, Type::Unit, span));
+            rewrite(&mut body, pv, &parts);
+            for (j, (c, t)) in parts.iter().enumerate().rev() {
+                let bty = body.ty.clone();
+                let take = Expr::new(ExprKind::Take(Box::new(Expr::var(pv, ty.clone(), span)), j as u32), t.clone(), span);
+                body = Expr::new(
+                    ExprKind::Let { var: *c, init: Box::new(take), body: Box::new(body), stmt: false, drop: false },
+                    bty,
+                    span,
+                );
+            }
+            f.body = body;
+            f.consumed[k] = true;
+        }
+    }
+}
+
 pub fn ownership(p: &mut Program) -> R<()> {
+    own_states(p);
     // `main` owns the array of its arguments (allocated by the runtime at
     // start-up), defined in the outermost region
     p.drop_args = ownership_body(&mut p.body, &p.vars, Some(p.args), &mut p.copy_reasons)?;

@@ -2275,7 +2275,8 @@ impl<'p> Lower<'p> {
         }
         let require_tail = f.requires.iter().find(|(m, _)| *m == isc_syntax::ast::Modifier::RequireTail).map(|(_, s)| *s);
         self.reassoc_body(f, &mut body);
-        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail });
+        let consumed = vec![false; params.len()];
+        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, consumed });
         Ok(idx)
     }
 

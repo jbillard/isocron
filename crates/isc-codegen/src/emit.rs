@@ -1597,6 +1597,18 @@ impl<'p> Gen<'p> {
         if !self.opts.isa.is_wasm() {
             self.stack_check(&f.name, f.span);
         }
+        // the state of a loop (D206): lent by the caller, copied once here;
+        // its body takes it apart, each iteration receives a new one
+        let mut entry: Vec<String> = (0..f.params.len()).map(|k| format!("%a{}", k)).collect();
+        for (k, var) in f.params.iter().enumerate() {
+            if f.consumed.get(k).copied().unwrap_or(false) {
+                let ty = self.p.vars[*var as usize].ty.clone();
+                let t = lt(&ty);
+                let x = self.copy_value(&v(entry[k].clone(), t.clone()), &ty);
+                entry[k] = x.r.clone();
+                self.env.insert(*var, v(x.r, t));
+            }
+        }
         // direct tail calls: the parameters in slots, the body a loop
         let calls = isc_ir::passes::tail_calls(i as u32, f);
         // the tail calls to other functions, unless the loop of this one owns
@@ -1613,8 +1625,11 @@ impl<'p> Gen<'p> {
                 let ty = self.p.vars[*var as usize].ty.clone();
                 let t = lt(&ty);
                 let s = self.alloca(&t);
-                self.emit(format!("store {} %a{}, ptr {}", t, k, s));
-                let owned = if ty.has_heap() {
+                self.emit(format!("store {} {}, ptr {}", t, entry[k], s));
+                // a state is consumed by each iteration: never freed by the
+                // loop (no flag)
+                let consumed = f.consumed.get(k).copied().unwrap_or(false);
+                let owned = if ty.has_heap() && !consumed {
                     let o = self.alloca("i1");
                     self.emit(format!("store i1 false, ptr {}", o));
                     Some(o)
@@ -1698,8 +1713,7 @@ impl<'p> Gen<'p> {
         for (k, x) in vals.iter().enumerate() {
             let (s, owned, ty) = &tl.slots[k];
             let t = lt(ty);
-            if let Some((_, _)) = tc.moved.iter().find(|(j, _)| *j == k) {
-                let o = owned.as_ref().unwrap();
+            if let (Some((_, _)), Some(o)) = (tc.moved.iter().find(|(j, _)| *j == k), owned.as_ref()) {
                 let own = self.ins(format!("load i1, ptr {}", o));
                 let lf = self.label();
                 let ld = self.label();

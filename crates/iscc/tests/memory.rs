@@ -761,3 +761,61 @@ action main(args: string[k]): i32 {
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
     clean(src, "nested_tasks_vg", &[]);
 }
+
+#[test]
+fn states_of_loops_are_owned() {
+    // D206: a loop (its calls to itself all tail calls) whose other result
+    // is its tuple parameter takes it apart on entry, the parameter copied
+    // once: its fields moved, updated in place, or freed when the new state
+    // drops them; a state given whole to a function, a loop returning a
+    // field, a recursion that is not a loop keep borrowed parameters. The
+    // results of the interpreter, nothing lost or freed twice.
+    let src = "type S = { a: f64[3], b: f64[3], k: i64 };
+function step(s: S): S {
+    const a = s.a.with(0, s.a[0] + s.b[1]);
+    return { a: a, b: s.b * 0.5 + a, k: s.k + 1 };
+}
+function run(s: S, n: i64): S {
+    if (n == 0) return s;
+    return run(step(s), n - 1);
+}
+function drop(s: S, n: i64): S {
+    if (n == 0) return s;
+    return drop({ a: s.b, b: s.b + 1.0, k: s.k }, n - 1);
+}
+function total(s: S): f64 {
+    return sum(s.a) + sum(s.b);
+}
+function whole(s: S, n: i64): f64 {
+    if (n == 0) return total(s);
+    return whole(step(s), n - 1);
+}
+function deep(s: S, n: i64): f64 {
+    if (n == 0) return s.a[0];
+    return deep(step(s), n - 1) + 1.0;
+}
+action main(args: string[k]): i32 {
+    const s0 = { a: [1.0, 2.0, 3.0], b: [0.5, 0.25, 0.125], k: 0 };
+    const r = run(s0, 1000);
+    print(r.a);
+    print(r.k);
+    print(s0.a);
+    print(drop(s0, 50).b);
+    print(whole(s0, 20));
+    print(deep(s0, 30));
+    print(map(iota(4), (i) => run({ a: [f64(i), 1.0, 2.0], b: [1.0, 1.0, 1.0], k: i }, i * 3).k));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "states");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    let p = iscc::frontend("states.isc", src).unwrap();
+    let names: Vec<(String, Vec<bool>)> = p.fns.iter().map(|f| (f.name.clone(), f.consumed.clone())).collect();
+    let consumed = |n: &str| names.iter().any(|(m, c)| m == n && c.first() == Some(&true));
+    assert!(consumed("run") && consumed("drop"), "{:?}", names);
+    assert!(!consumed("whole") && !consumed("deep"), "{:?}", names);
+    clean(src, "states_vg", &[]);
+}
+
