@@ -736,5 +736,53 @@ int main(int argc, char **argv) {
         munmap(txt, BLOCK * t + 128);
     }
 
+    // fasta: lines of 60 bytes and a newline made from a table of 139968
+    // bytes read in turn (one period of the generator, its symbols), into a
+    // buffer of 256 KiB per thread (the output written by blocks that stay
+    // in the caches); ns per byte of output per core
+    {
+        const size_t TABLE = 139968, BLOCK = 256u << 10;
+        unsigned char *tab = mapped(TABLE + 64);
+        for (size_t i = 0; i < TABLE; i++) tab[i] = "acgt"[(i * 2654435761u >> 7) & 3];
+        unsigned char *outs = mapped(BLOCK * t + 128);
+        memset(outs, 0, BLOCK * t);
+        const long BYTES_OUT = 1l << 30;
+        best = 1e9;
+        for (int r = 0; r < REPS; r++) {
+            long chk = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : chk)
+            for (int k = 0; k < t; k++) {
+                unsigned char *o = outs + (size_t)k * BLOCK;
+                size_t at = (size_t)k * 1000 % TABLE, made = 0;
+                while (made < (size_t)(BYTES_OUT / t)) {
+                    size_t pos = 0;
+                    while (pos + 61 <= BLOCK) {
+                        if (at + 60 <= TABLE) {
+                            memcpy(o + pos, tab + at, 60);
+                            at += 60;
+                        } else {
+                            size_t a = TABLE - at;
+                            memcpy(o + pos, tab + at, a);
+                            memcpy(o + pos + a, tab, 60 - a);
+                            at = 60 - a;
+                        }
+                        o[pos + 60] = '\n';
+                        pos += 61;
+                    }
+                    __asm__ volatile("" : : "r"(o) : "memory");
+                    made += pos;
+                }
+                chk += o[100] + o[5000];
+            }
+            sink += chk;
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        printf("table_rows %.4f ns_per_byte_per_core\n", best * t / BYTES_OUT * 1e9);
+        munmap(tab, TABLE + 64);
+        munmap(outs, BLOCK * t + 128);
+    }
+
     return (int)(sink & 0);
 }

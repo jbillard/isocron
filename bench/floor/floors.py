@@ -76,14 +76,17 @@ def fannkuch():
     return (perms * g + flips * f) * ns / T, "%.2e flips (%.3f ns, 4 permutations per vector), %.2e permutations (%.3f ns)" % (flips, f, perms, g), "measured"
 rows.append(("fannkuchredux", fannkuch()))
 
-# fasta 25000000: the 200e6 numbers of the generator (75e6 symbols of the
-# IUB table, 125e6 of homo sapiens), in lanes each 8 numbers ahead, a symbol
-# by comparisons with integer thresholds; the output (to /dev/null) made in
-# blocks that stay in the caches; the copies of the repeated sequence and
-# the newlines not counted
+# fasta 25000000: the generator has a period of 139968 values: one period
+# computed, and the symbol of each value for the two tables (IUB, homo
+# sapiens), at the cost of a number of the generator in lanes and its
+# comparisons; the 254 166 745 bytes of output then copied from tables
+# (the period of the symbols, the 287 bytes of ALU) in lines of 60 and a
+# newline, into blocks that stay in the caches, written to /dev/null
 def fasta():
-    iub, homo = c4("fasta_number_iub"), c4("fasta_number_homo")
-    return (75e6 * iub + 125e6 * homo) * ns / T, "2e8 numbers of the generator in lanes: %.3f ns (IUB), %.3f ns (homo sapiens)" % (iub, homo), "measured"
+    period = 139968
+    make = 3 * period * c4("fasta_number_iub")
+    copy = 254166745 * c4("table_rows")
+    return (make + copy) * ns / T, "one period of the generator (139968 values, %.3f ns) and its symbols, then 254 MB of lines copied from tables (%.4f ns a byte)" % (c4("fasta_number_iub"), c4("table_rows")), "measured"
 rows.append(("fasta", fasta()))
 
 # k-nucleotide: the input read by every thread into new pages, then 7

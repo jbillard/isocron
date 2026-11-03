@@ -39,7 +39,8 @@ next permutation (a branch per level) could still be cheaper; the tables
 of k-mers of 1 to 4 bases fit the L1 cache, counted here at the cost of
 4096 counters; binary-trees counts the trees of depth 16 and 18 at the
 cost of trees in memory, though they fit the L3 cache. The output goes to
-/dev/null, as in the measurements.
+/dev/null, as in the measurements. fasta needs one period of its
+generator (139968 values) and copies from tables (D233).
 
 The reference is the machine, not another language: a program at the level
 of the fastest of another language can still be far from its floor.

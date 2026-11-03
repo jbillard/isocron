@@ -4007,3 +4007,14 @@ any file after `-o`, `--emit-llvm`, `--emit-asm`, `--link`, else the
 `.isc` files and the directories. zsh takes the script of bash through
 `bashcompinit`. Test `completion_of_the_shell` (the script of bash run in
 bash on 7 cases).
+- **D233 — The floor of fasta from one period of its generator
+  (2026-11-04).** After D230 fasta took 0.047 s, below nothing but already
+  0.8 of its floor of D222 (2e8 numbers of the generator, 0.037 s): that
+  floor assumed every number computed, though the generator has a period
+  of 139968 values. The floor now: one period and the symbol of each value
+  for the two tables (3 x 139968 numbers at the cost of `fasta_number_iub`,
+  1.029 ns), then the 254 166 745 bytes copied from tables in lines of 60
+  and a newline, into blocks that stay in the caches (a new primitive,
+  `table_rows`: 0.0347 ns a byte per core on 4 threads): 0.002 s. The
+  measured programs: Isocron 0.049 s in Docker (20 times its floor), Rust
+  0.755 s (326 times).
