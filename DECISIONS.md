@@ -3905,3 +3905,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `bytes_written_by_blocks` (lengths around the blocks, rows of 61,
   between `print`s, 1 and 4 threads, against bytes computed in the test,
   valgrind).
+- **D226 — Consecutive indices checked from their ends under a mask
+  (2026-11-04).** After D225 the lines of reverse-complement took about 20
+  ms on 4 threads, the bound the computation (about one cycle a byte):
+  `bases[m - 1 - i]` is read in the branch of an `if` (not a newline), and
+  under a mask the check of D217 (the first and the last of consecutive
+  indices) was not tried: every lane compared, 4 comparisons of 8 indices
+  of 64 bits per vector of 32 bytes. Under a mask it holds as well: every
+  lane in bounds, the active ones are; when it fails (lanes left out past
+  the end) the test of the active lanes as before, and its panic. At
+  fixed frequency, best of 7: reverse-complement 0.106 s -> 0.104 s on 4
+  threads, 0.229 s -> 0.218 s on one; fannkuch-redux 1.677 s -> 1.661 s
+  (its IR changes); the other eight unchanged (k-nucleotide and n-body:
+  the same IR, their differences of a series to the next noise). The same
+  outputs. Test `consecutive_indices_under_a_mask`.

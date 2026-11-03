@@ -453,3 +453,37 @@ fn consecutive_indices_compared_and_checked_from_their_ends() {
         }
     }
 }
+
+/// D226: consecutive indices under a mask (a branch of an `if`): checked
+/// from their first and last lanes, as without a mask; lanes left out past
+/// the end of the array (the test of the active lanes then, no panic), an
+/// active lane past the end (the panic of the scalar code, its index),
+/// upwards and downwards, rows of 61 (D214). The interpreter's results.
+#[test]
+fn consecutive_indices_under_a_mask() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const k = parseI64(args[1]);
+    const a = map(iota(n), (i) => (i * 3) % 17);
+    print(sum(map(iota(n + 40), (i) => i >= n ? 0 : a[n - 1 - i])));
+    print(sum(map(iota(n + 40), (i) => i % 5 == 0 || i >= n ? 1 : a[i])));
+    print(sum(map(iota(n), (q) => q % 61 == 60 ? 7 : a[q / 61 * 60 + q % 61 - q / 61])));
+    print(sum(map(iota(n), (i) => i % 7 == 3 ? 0 : a[i + k])));
+    return 0;
+}
+";
+    let bin = compile(src, "masked_consecutive");
+    for args in [["1000", "0"], ["61", "0"], ["1000", "1"], ["1000", "-1"], ["300", "40"]] {
+        let want = interp(src, &args);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(t));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, t, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    assert!(r.stderr.contains(m.as_str()), "{:?} {} threads: {} / {}", args, t, r.stderr, m);
+                }
+            }
+        }
+    }
+}

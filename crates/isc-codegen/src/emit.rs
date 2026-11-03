@@ -3646,8 +3646,10 @@ impl<'p> Gen<'p> {
         let lok = self.label();
         // consecutive indices: all in bounds when the first and the last are
         // (D217); the test of every lane only when they are not (the first
-        // lane out, for the message)
-        if let (Some((first, d)), None, true) = (self.f.contig.get(&iv.r).cloned(), &self.mask, idx == iv.r) {
+        // lane out, for the message). Under a mask too (a branch of an `if`,
+        // D226): every lane in bounds, the active ones are; the lanes left
+        // out may be past the end, then the test of the active lanes.
+        if let (Some((first, d)), true) = (self.f.contig.get(&iv.r).cloned(), idx == iv.r) {
             let last = self.ins(format!("add i64 {}, {}", first, d * (w as i64 - 1)));
             let a1 = self.ins(format!("icmp ult i64 {}, {}", first, n));
             let a2 = self.ins(format!("icmp ult i64 {}, {}", last, n));
