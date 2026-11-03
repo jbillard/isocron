@@ -376,6 +376,10 @@ pub struct Gen<'p> {
     vregs: (u32, u32),
     /// Inside a task of a parallel loop: nested loops stay sequential.
     in_task: bool,
+    /// In a task: the recursive types whose nodes may be shared with other
+    /// threads (reached from what the task captures or returns); None: all
+    /// of them (D175).
+    task_shared: Option<HashSet<u32>>,
     /// While the first level of a `reduce` is emitted: an `i1`, true when its
     /// array has at least STREAM_BYTES bytes (see `reduce_block`).
     stream: Option<String>,
@@ -692,6 +696,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         spmd_cond: None,
         vregs: opts.isa.vector_registers(),
         in_task: false,
+        task_shared: None,
         stream: None,
         scalar_loops: 0,
         ntask: 0,
@@ -1525,7 +1530,7 @@ impl<'p> Gen<'p> {
         match t {
             // one owner less: the node is freed by the last one (D103)
             Type::Rec(i) => {
-                let atomic = self.in_task;
+                let atomic = self.rec_atomic(*i);
                 self.rec_drops.insert((*i, atomic));
                 self.emit(format!("call void @{}(ptr {})", rec_drop_name(*i, atomic), x.r));
             }
@@ -1630,8 +1635,8 @@ impl<'p> Gen<'p> {
                 self.arr(&q, &n)
             }
             // one owner more (D103)
-            Type::Rec(_) => {
-                self.rec_incref(&x.r);
+            Type::Rec(i) => {
+                self.rec_incref(&x.r, *i);
                 x.clone()
             }
             // a string: a new one (D134)
@@ -1695,16 +1700,45 @@ impl<'p> Gen<'p> {
         self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", lay, tagged, ltag, loaded, lload))
     }
 
+    /// The recursive types reached from a type, through the layouts of
+    /// their nodes.
+    fn rec_types_in(&self, t: &Type, out: &mut HashSet<u32>) {
+        match t {
+            Type::Rec(i) => {
+                if out.insert(*i) {
+                    let l = self.p.recs[*i as usize].layout.clone();
+                    self.rec_types_in(&l, out);
+                }
+            }
+            Type::Tuple(ts) => ts.iter().for_each(|x| self.rec_types_in(x, out)),
+            Type::Array(e) => self.rec_types_in(e, out),
+            _ => {}
+        }
+    }
+
+    /// The counts of the nodes of the recursive type `i` must be atomic:
+    /// in a task, unless no type reached from `i` can be shared with
+    /// another thread (D175).
+    fn rec_atomic(&self, i: u32) -> bool {
+        if !self.in_task {
+            return false;
+        }
+        let Some(shared) = &self.task_shared else { return true };
+        let mut reach = HashSet::new();
+        self.rec_types_in(&Type::Rec(i), &mut reach);
+        reach.iter().any(|r| shared.contains(r))
+    }
+
     /// Adds one owner to a node: atomic in a task (other threads may hold
     /// it), a plain increment otherwise (SPEC section 8); nothing for a
     /// constructor without payload (D169).
-    fn rec_incref(&mut self, p: &str) {
+    fn rec_incref(&mut self, p: &str, i: u32) {
         let node = self.is_node(p);
         let linc = self.label();
         let lj = self.label();
         self.cbr(&node, &linc, &lj);
         self.block(&linc);
-        if self.in_task {
+        if self.rec_atomic(i) {
             self.emit(format!("atomicrmw add ptr {}, i64 1 monotonic", p));
         } else {
             let c = self.ins(format!("load i64, ptr {}", p));
@@ -1749,6 +1783,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_task = std::mem::replace(&mut self.in_task, atomic);
+        // inside an atomic drop, every count is atomic (D175)
+        let saved_shared = self.task_shared.take();
         let nt = self.rec_node_ty(i);
         let layout = self.p.recs[i as usize].layout.clone();
         let lay = lt(&layout);
@@ -1801,6 +1837,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.in_task = saved_task;
+        self.task_shared = saved_shared;
         self.funcs.push(text);
         Ok(())
     }
@@ -3460,6 +3497,16 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_task = std::mem::replace(&mut self.in_task, true);
+        // the recursive types the task may share with other threads (D175)
+        let mut shared = HashSet::new();
+        for c in &caps {
+            let t = self.p.vars[*c as usize].ty.clone();
+            self.rec_types_in(&t, &mut shared);
+        }
+        for e in scope {
+            self.rec_types_in(&e.ty, &mut shared);
+        }
+        let saved_shared = std::mem::replace(&mut self.task_shared, Some(shared));
         let mut loaded = Vec::new();
         for (i, c) in vals.iter().enumerate() {
             let g = self.ins(format!("getelementptr inbounds {}, ptr %ctx, i32 0, i32 {}", ctx_ty, i));
@@ -3484,6 +3531,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.in_task = saved_task;
+        self.task_shared = saved_shared;
         r?;
         self.funcs.push(text);
         Ok((name, ctxp, ctx_bytes))

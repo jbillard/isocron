@@ -2924,3 +2924,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   DNA finds many false candidates (the 9 counts take 592 ms without it,
   1398 ms with it), while it makes a rare word 5 to 10 times faster to
   find; choosing by the data without timing is later work.
+- **D175 — Atomic counts only for the nodes a task may share (2026-11-03).**
+  In a task every increment and drop of a count was atomic, since another
+  thread might hold the node (SPEC section 8: atomic when the value leaves
+  its thread). A node can reach another thread only through what the task
+  captures or returns: the recursive types reached from the types of its
+  captured variables and of its result, through the layouts of the nodes,
+  are shared; a type none of whose reached types is shared is local, and
+  its counts are plain (inside an atomic drop, everything stays atomic, so
+  that a local node holding a shared one never drops it plainly).
+  binary-trees builds and drops its trees inside the tasks: no atomic
+  operation is left. binary-trees 21 on 4 threads at a fixed frequency:
+  2.742 s before, 2.385 s after. Test: `tests/memory.rs`
+  (`atomic_counts_only_for_shared_nodes`: none for a tree of the task,
+  some for a captured one, the same results on 4 threads).

@@ -553,3 +553,40 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ";
+
+/// The counts of the nodes of a task are atomic only for the recursive
+/// types the task may share with another thread (D175): a tree it builds
+/// and drops itself is counted plainly; a tree it captures, atomically.
+#[test]
+fn atomic_counts_only_for_shared_nodes() {
+    let local = "type Tree = Leaf | Node(Tree, Tree);
+
+function make(d: i64): Tree {
+    if (d == 0) return Leaf;
+    return Node(make(d - 1), make(d - 1));
+}
+
+function nodes(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Node(l, r) => 1 + nodes(l) + nodes(r),
+    };
+}
+
+action main(args: string[k]): i32 {
+    print(sum(map(iota(10000), (i) => nodes(make(i % 5)))));
+    return 0;
+}
+";
+    let shared = local.replace("print(sum(map(iota(10000), (i) => nodes(make(i % 5)))));", "const t = make(4);\n    print(sum(map(iota(10000), (i) => nodes(Node(t, make(i % 3))))));");
+    for (src, name, atomic, want) in [(local, "atomic_local", false, "114000\n"), (shared.as_str(), "atomic_shared", true, "356664\n")] {
+        let ll = tmp(&format!("{}.ll", name));
+        let p = iscc::frontend("a.isc", src).unwrap();
+        let bin = tmp(&format!("{}_bin", name));
+        iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+        let text = std::fs::read_to_string(&ll).unwrap();
+        assert_eq!(text.contains("atomicrmw"), atomic, "{}", name);
+        assert_eq!(run_bin_threads(&bin, &[], Some(4)).stdout, want, "{}", name);
+        assert_eq!(interp_ok(src, &[]), want, "{} interpreted", name);
+    }
+}
