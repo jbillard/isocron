@@ -3841,3 +3841,14 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (10.2 / 3.9), spectral-norm 0.107 s (1.8 / 1.9). Some are still above
   the machine (see `results/floors.md`: the flips, the next permutation,
   the smallest tables of k-mers, the trees that fit the L3 cache).
+- **D223 — Valgrind with 2 threads in every suite (2026-11-04).** The
+  complete suite (`cargo test`, then with `ISC_ALLOC=glibc`) took 13.3
+  minutes; three suites took 100, 50 and 48 s each (bitwise, text,
+  result). Under valgrind the threads run one at a time, and each idle
+  worker of the pool spins (SPIN = 65536 pauses, about 3 ms on the
+  machine) before it sleeps: the program of the test of `concat`, 0.00 s
+  alone, took 47.4 s under valgrind with the 16 threads of the machine,
+  0.31 s with one. Six of the nine helpers already gave valgrind
+  `ISC_THREADS=2` (the pool and its worker still checked); the three
+  others now do too: bitwise 100.8 s -> 12.0 s, result 47.8 s -> 3.9 s,
+  text 49.9 s -> 5.0 s.

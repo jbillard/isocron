@@ -20,6 +20,9 @@ fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
         .arg(&bin)
         .args(args)
         .env("ISC_ALLOC", "glibc")
+        // 2 threads, as the other suites: under valgrind (one thread at a
+        // time) each idle worker of the pool spins before it sleeps
+        .env("ISC_THREADS", "2")
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
