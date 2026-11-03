@@ -921,7 +921,8 @@ A `RegExp` is written `/source/flags` (where an expression starts) or
 `RegExp(source, flags)`; the flags are `g`, `i`, `m`, `s` and `u`.
 `re.test(s)`, `s.search(re)` (a byte index, -1 if none), `s.replace(re,
 to)` (every match with `g`, else the first), `s.replaceAll(re, to)` (`g`
-required, as in TypeScript), `countMatches(s, re)` and `matches(s, re)`
+required, as in TypeScript: checked at compilation when the flags are
+written), `countMatches(s, re)` and `matches(s, re)`
 (the texts of the matches, left to right, without overlap). In `to`, `$&`
 is the match, `$1` to `$99` its groups, `` $` `` and `$'` the text before
 and after, `$$` a `$`; with a text as the pattern, `s.replace(a, b)`
@@ -2131,6 +2132,26 @@ panic at line 3, column 12: index out of bounds: the index is 5 but the length i
 
 When several panics are possible, which one is reported is not specified; that
 the program stops is guaranteed.
+
+A panic that the literals of an operation make certain is a compile error,
+with the same message, as in Rust: a division or a remainder of integers by
+the literal `0`, a literal index outside an array literal, a negative
+literal exponent of an integer, a negative literal size given to `iota` or
+`fill`, a literal count of `repeat` below 0 or of `toFixed` outside 0 to
+100, an invalid literal regular expression, `replaceAll` of a `RegExp`
+whose written flags lack `g`. The check at run time remains for the
+values known only then.
+
+```isc-error
+action main(args: string[k]): i32 {
+    print([10, 20][2]);
+    return 0;
+}
+```
+
+```output
+2:19: error: index out of bounds: the index is 2 but the length is 2
+```
 
 ### Errors as values: `Result`
 

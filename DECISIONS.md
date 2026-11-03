@@ -2726,3 +2726,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   recursion (D113), the fixed form of a parallel scan of floats (D112),
   `scatter` and its rule of collisions (D111); SPEC sections 6, 10 and 11
   say so. The questions left in section 16 are those of after v1.
+- **D162 — Panics certain at compile time (2026-11-03).** Part (6) of v1
+  asks for the errors found at compile time whenever possible: an
+  operation whose literal operands make it panic is now a compile error
+  with the message of the panic, at its position, as Rust's
+  `unconditional_panic`: a division or remainder of integers by the
+  literal 0 (whatever the dividend), a literal index outside an array
+  literal, a negative literal exponent of an integer or a `bigint`, a
+  negative literal size of `iota` or `fill`, a negative literal count of
+  `repeat`, a literal number of digits of `toFixed` outside 0 to 100, and
+  `replaceAll` of a `RegExp` whose flags are written without `g` (an
+  invalid literal regular expression already was, D157). The check is a
+  walk of the typed tree of the program's functions (not of the prelude);
+  values known only at run time keep their panic. The tests of these
+  panics at run time now use values read at run time.

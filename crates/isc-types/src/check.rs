@@ -2466,6 +2466,17 @@ impl<'g> FnCx<'g> {
                 if self.shallow(&pat.ty) != Ty::RegExp {
                     self.unify(&Ty::Str, &pat.ty, pat.span)?;
                 }
+                // `replaceAll` of a RegExp whose flags are known here: `g`
+                // checked now (else at run time, D157)
+                if p == Prim::ReplaceAll {
+                    if let TExprKind::Call { callee: Callee::Prim(Prim::RegExpNew), args: ra, .. } = &pat.kind {
+                        if let Some(TExprKind::Lit(Lit::Str(f))) = ra.get(1).map(|a| &a.kind) {
+                            if !f.contains('g') {
+                                return err(span, "replaceAll: the RegExp must have the flag g");
+                            }
+                        }
+                    }
+                }
                 let to = self.check(&args[2], Some(&Ty::Str))?;
                 self.unify(&Ty::Str, &to.ty, to.span)?;
                 Ok(mk(vec![x, pat, to], Ty::Str, self))
@@ -3050,6 +3061,10 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
     if !m.is_action || !ok_params || m.ret != Ty::Int(IntKind::I32) {
         return err(m.span, "`main` must be declared `action main(args: string[k]): i32`");
     }
+    // the panics certain at compile time (D162)
+    for f in fns.iter().filter(|f| !f.from_prelude) {
+        certain_panics(&f.body)?;
+    }
     let recursive = recursive_fns(&fns);
     // a constant computed from itself would never end (D159)
     for (id, f) in fns.iter().enumerate() {
@@ -3427,6 +3442,114 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         body,
         requires: d.modifiers.clone(),
     })
+}
+
+/// An integer literal, negated or not.
+fn lit_int(e: &TExpr) -> Option<i128> {
+    match &e.kind {
+        TExprKind::Lit(Lit::Int(v)) => Some(*v),
+        TExprKind::Unary(ast::UnOp::Neg, x) => lit_int(x).map(|v| -v),
+        _ => None,
+    }
+}
+
+/// The operations whose operands are literals that make them panic, as
+/// compile errors with the message of the panic (D162): as Rust refuses
+/// `1 / 0` or `[1, 2][5]`, the run-time check is then only a second net.
+fn certain_panics(e: &TExpr) -> Result<()> {
+    match &e.kind {
+        TExprKind::Binary { op: ast::BinOp::Div | ast::BinOp::Rem, rhs, .. } if matches!(rhs.ty, Ty::Int(_)) && lit_int(rhs) == Some(0) => {
+            return err(e.span, "integer division by zero");
+        }
+        TExprKind::Index(a, i) => {
+            if let (TExprKind::Array(es), Some(v)) = (&a.kind, lit_int(i)) {
+                if v < 0 || v >= es.len() as i128 {
+                    return err(e.span, format!("index out of bounds: the index is {} but the length is {}", v, es.len()));
+                }
+            }
+        }
+        TExprKind::Pow(b, x) => {
+            let neg = match &x.kind {
+                TExprKind::Lit(Lit::BigInt(d, _, true)) => d.trim_start_matches('0') != "",
+                _ => matches!(b.ty, Ty::Int(_)) && lit_int(x).is_some_and(|v| v < 0),
+            };
+            if neg {
+                return err(e.span, "negative integer exponent");
+            }
+        }
+        TExprKind::Call { callee: Callee::Prim(p), args, .. } => {
+            let at = |i: usize| args.get(i).and_then(lit_int);
+            match p {
+                Prim::Iota | Prim::Fill if at(0).is_some_and(|v| v < 0) => {
+                    return err(e.span, format!("negative size: {}", at(0).unwrap()));
+                }
+                Prim::ToFixed if at(1).is_some_and(|v| !(0..=100).contains(&v)) => {
+                    return err(e.span, format!("toFixed: the number of digits must be between 0 and 100, got {}", at(1).unwrap()));
+                }
+                Prim::Repeat if at(1).is_some_and(|v| v < 0) => {
+                    return err(e.span, format!("repeat: the count is negative: {}", at(1).unwrap()));
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    let mut res = Ok(());
+    for_each_child(e, &mut |c| {
+        if res.is_ok() {
+            res = certain_panics(c);
+        }
+    });
+    res
+}
+
+/// Each direct sub-expression of `e`.
+fn for_each_child(e: &TExpr, f: &mut dyn FnMut(&TExpr)) {
+    match &e.kind {
+        TExprKind::Lit(_) | TExprKind::Local(_) | TExprKind::SizeVal(_) | TExprKind::FnRef { .. } | TExprKind::PrimRef(_) | TExprKind::OpRef(_) => {}
+        TExprKind::Tuple(es) | TExprKind::Array(es) | TExprKind::Construct { args: es, .. } => es.iter().for_each(f),
+        TExprKind::Field(x, _) | TExprKind::Unary(_, x) | TExprKind::Lambda(_, x) => f(x),
+        TExprKind::FieldUpdate { target, value, .. } => {
+            f(target);
+            f(value);
+        }
+        TExprKind::Match(x, arms) => {
+            f(x);
+            arms.iter().for_each(|(_, b)| f(b));
+        }
+        TExprKind::Call { callee, args, .. } => {
+            if let Callee::Value(c) = callee {
+                f(c);
+            }
+            args.iter().for_each(f);
+        }
+        TExprKind::Index(a, b) | TExprKind::Pow(a, b) => {
+            f(a);
+            f(b);
+        }
+        TExprKind::Binary { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        TExprKind::Slice(a, b, c) | TExprKind::If(a, b, c) => {
+            f(a);
+            f(b);
+            f(c);
+        }
+        TExprKind::Update { target, index, value, .. } => {
+            f(target);
+            f(index);
+            f(value);
+        }
+        TExprKind::Block(stmts, last) => {
+            for st in stmts {
+                match st {
+                    TStmt::Let(_, x) | TStmt::Expr(x) => f(x),
+                }
+            }
+            f(last);
+        }
+    }
 }
 
 fn collect_calls(e: &TExpr, out: &mut Vec<(FnId, Span)>) {

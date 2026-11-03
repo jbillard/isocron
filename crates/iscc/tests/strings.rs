@@ -355,10 +355,10 @@ const TS_STRINGS: &str = r#"action main(args: string[k]): i32 {
 fn typescript_string_functions() {
     agree(TS_STRINGS, "str_ts", &[], "(7, -1, 0)\n(true, true, true, false)\nHeLLO, World, heLLO\n-a-b-c-\nHELLO, WORLD, HELLO été straße STRASSE\n[007|ab   |ababax|abc]\nababab|x  |  x|\nWorld\n[1.00, 0.13, 3, -3, -0.00, 123.4560000000, 0.0000001000]\n[0.000, 0.0, 100.00, 1, 1.4, 1000000000000000000000, 12.500]\n[A, B]\n");
     for (body, want) in [
-        ("print(\"ab\".repeat(-1))", "panic at line 2, column 22: repeat: the count is negative: -1"),
+        ("print(\"ab\".repeat(args.length - 1))", "panic at line 2, column 22: repeat: the count is negative: -1"),
         ("print(\"é\".slice(0, 1))", "panic at line 2, column 20: slice: the index 1 is inside a character of UTF-8"),
         ("print(\"abc\".slice(2, 5))", "panic at line 2, column 22: slice out of bounds: [2..5] of a string of 3 bytes"),
-        ("print((1.5).toFixed(101))", "panic at line 2, column 24: toFixed: the number of digits must be between 0 and 100, got 101"),
+        ("print((1.5).toFixed(args.length + 101))", "panic at line 2, column 24: toFixed: the number of digits must be between 0 and 100, got 101"),
     ] {
         let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
         let m = interp_panic(&src, &[]);
@@ -367,5 +367,16 @@ fn typescript_string_functions() {
         let r = run_bin(&bin, &[]);
         assert_eq!(r.code, 101, "{}", body);
         assert!(r.stderr.starts_with(want), "{}: {}", body, r.stderr);
+    }
+    // with literals: compile errors (D162)
+    for (body, want) in [
+        ("print(\"ab\".repeat(-1))", "2:22: error: repeat: the count is negative: -1"),
+        ("print((1.5).toFixed(101))", "2:24: error: toFixed: the number of digits must be between 0 and 100, got 101"),
+    ] {
+        let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
+        match iscc::frontend("t.isc", &src) {
+            Ok(_) => panic!("accepted: {}", body),
+            Err(e) => assert!(e.contains(want), "{}: {}", body, e),
+        }
     }
 }

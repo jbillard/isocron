@@ -127,6 +127,7 @@
 ## v1 — the language finalized (goal of 2026-11-02)
 
 - [x] (1) Syntax: named imports `import { f, T } from "./m";`, `export` (what is not exported is private), modules in subdirectories, template literals `${...}` (D150)
+  - [x] Type aliases `type X = { ... };` and constants of the top level `const X = ...;`, found missing while writing (4) (D159)
 - [x] (2) Known holes: functions in sum types, functions returning functions, a recursive function given a lambda that reads a size, arrays of arrays of strings; "Not implemented yet" of the guide holds only what DECISIONS defers after v1 (D152, D153, D154)
 - [x] (3) Standard library: `sort`, `sort_by`, `abs`, `floor`, `ceil`, `round`, `trunc`, `tan`, `atan`, `atan2`, `asin`, `acos`, seeded random numbers, standard input, `to_fixed`, `pad_start`, string functions, `Map<K, V>`, `bigint`, regular expressions
   - [x] `Math` functions, string functions of TypeScript, `toFixed`, standard input, `random`, `sort`, `sortBy`, `toReversed`, `iota(n)` of any integer (D155)

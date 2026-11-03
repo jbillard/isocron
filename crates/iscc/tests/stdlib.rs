@@ -186,7 +186,7 @@ fn big_integers() {
     agree(BIG, "std_big", &[], "123456788913580246791358024680\n(-12193263113702179522496570642237463801111263526900, -1249999988, 60185185207253086410, -123456789012345678901234567890)\n1267650600228229401496703205376\n265252859812191058636308480000000\n(true, true, true, true)\n30\n(5, -7, 1180591620717411300000)\n213\n[-3, 0, 5, 1208925819614629174706176]\n6\n30\n");
     for (body, want) in [
         ("print(1n / 0n)", "panic at line 2, column 14: integer division by zero"),
-        ("print(2n ** -1n)", "panic at line 2, column 14: negative integer exponent: -1"),
+        ("print(2n ** BigInt(args.length - 1))", "panic at line 2, column 14: negative integer exponent: -1"),
         ("print(BigInt(\"1.5\"))", "panic at line 2, column 17: BigInt: `1.5` is not an integer"),
     ] {
         let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
@@ -195,6 +195,11 @@ fn big_integers() {
         let r = run_bin(&bin, &[]);
         assert_eq!(r.code, 101, "{}", body);
         assert!(r.stderr.contains(want), "{}: {}", body, r.stderr);
+    }
+    // a literal negative exponent: a compile error (D162)
+    match iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(2n ** -1n);\n    return 0;\n}\n") {
+        Ok(_) => panic!("accepted"),
+        Err(e) => assert!(e.contains("t.isc:2:14: error: negative integer exponent"), "{}", e),
     }
     // no mixing with the other numbers, as in TypeScript
     match iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(1n + 1.5);\n    return 0;\n}\n") {
@@ -242,7 +247,13 @@ fn regular_expressions() {
         Ok(_) => panic!("accepted"),
         Err(e) => assert!(e.contains("a RegExp cannot be printed"), "{}", e),
     }
-    let src = "action main(args: string[k]): i32 {\n    print(RegExp(args[0]).test(\"ab\"));\n    print(\"ab\".replaceAll(/a/, \"x\"));\n    return 0;\n}\n";
+    // flags known at compile time: checked there
+    match iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(\"ab\".replaceAll(/a/, \"x\"));\n    return 0;\n}\n") {
+        Ok(_) => panic!("accepted"),
+        Err(e) => assert!(e.contains("t.isc:2:26: error: replaceAll: the RegExp must have the flag g"), "{}", e),
+    }
+    // flags computed at run time: a panic
+    let src = "action main(args: string[k]): i32 {\n    print(RegExp(args[0]).test(\"ab\"));\n    print(\"ab\".replaceAll(RegExp(\"a\", args[0].slice(0, 0)), \"x\"));\n    return 0;\n}\n";
     for (arg, want) in [("(", "panic at line 2, column 17: RegExp: invalid regular expression `(`: unclosed group"), ("a", "panic at line 3, column 26: replaceAll: the RegExp must have the flag g")] {
         assert_eq!(interp_panic(src, &[arg]), want);
         let bin = compile(src, "std_regex_panic");
@@ -335,4 +346,34 @@ fn scalar_part_after_taken_parts() {
     let src = "action main(args: string[k]): i32 {\n    const x = [\"a\"];\n    const p = [3, x, 4] as const;\n    const [r, q, s] = p;\n    print(r + s);\n    print(q);\n    return 0;\n}\n";
     agree(src, "tuple_scalar_part", &[], "7\n[a]\n");
     valgrind_clean(src, "tuple_scalar_part", &[]);
+}
+
+/// A panic that the literals of an operation make certain is a compile
+/// error with the message of the panic (D162); the same operation on
+/// values known at run time keeps its panic.
+#[test]
+fn certain_panics_are_compile_errors() {
+    for (body, want) in [
+        ("print(1 / 0)", "2:13: error: integer division by zero"),
+        ("print(args.length % 0)", "2:23: error: integer division by zero"),
+        ("print([1, 2][5])", "2:17: error: index out of bounds: the index is 5 but the length is 2"),
+        ("print([1, 2][-1])", "2:17: error: index out of bounds: the index is -1 but the length is 2"),
+        ("print(2 ** -1)", "2:13: error: negative integer exponent"),
+        ("print(iota(-1))", "2:15: error: negative size: -1"),
+        ("print(fill(-2, 0.5))", "2:15: error: negative size: -2"),
+        ("print(\"ab\".replaceAll(RegExp(\"a\", \"i\"), \"x\"))", "2:26: error: replaceAll: the RegExp must have the flag g"),
+    ] {
+        let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
+        match iscc::frontend("t.isc", &src) {
+            Ok(_) => panic!("accepted: {}", body),
+            Err(e) => assert!(e.contains(want), "{}: {}", body, e),
+        }
+    }
+    // values of run time: panics, and nothing refused that may not panic
+    let src = "action main(args: string[k]): i32 {\n    const z = args.length;\n    print([2.0 ** -1.0, 1.0 / 0.0]);\n    print([1, 2][z]);\n    print(10 / z);\n    return 0;\n}\n";
+    assert_eq!(interp_panic(src, &[]), "panic at line 5, column 14: integer division by zero");
+    let bin = compile(src, "certain_panics");
+    let r = run_bin(&bin, &[]);
+    assert_eq!(r.code, 101);
+    assert!(r.stdout.starts_with("[0.5, inf]\n1\n"), "{}", r.stdout);
 }

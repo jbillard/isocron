@@ -87,12 +87,30 @@ action main(args: string[k]): i32 {
 }
 "##;
 
+fn valgrind_clean(bin: &std::path::Path) {
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    if !vg.is_file() {
+        return;
+    }
+    let out = std::process::Command::new(vg)
+        .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
+        .arg(bin)
+        .env("ISC_ALLOC", "glibc")
+        .env("ISC_THREADS", "2")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "valgrind: {}", String::from_utf8_lossy(&out.stderr));
+}
+
 #[test]
 fn aliases_and_constants() {
     let want = "5\n0\n(2, 1)\n(b, a)\n6.5\n[2, 4]\n3\n[isocron, isocron, isocron]\ntrue\n17\n2.0000000000000004\n10\n";
     assert_eq!(interp_ok(DECL, &[]), want, "interpreter");
     let bin = compile(DECL, "declarations");
     assert_eq!(run_bin(&bin, &[]).stdout, want, "compiled");
+    // Valgrind knows AVX2, not AVX-512
+    let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+    valgrind_clean(&compile_with(DECL, "declarations_vg", opts));
 }
 
 #[test]
