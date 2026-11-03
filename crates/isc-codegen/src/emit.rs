@@ -414,6 +414,8 @@ pub struct Gen<'p> {
     /// elements of the vector again one at a time, where a failed check
     /// jumps, so that the panic is the one of the scalar loop (D185).
     vec_fail: Option<String>,
+    /// The array literals put on the stack (D191): never freed.
+    stack_vars: HashSet<VarId>,
     /// In a task: the recursive types whose nodes may be shared with other
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
@@ -762,6 +764,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         env: HashMap::new(),
         divmod: Vec::new(),
         vec_fail: None,
+        stack_vars: HashSet::new(),
         tail: None,
         rec_drops: BTreeSet::new(),
         rec_prints: BTreeSet::new(),
@@ -888,6 +891,46 @@ fn mentions(e: &Expr, vars: &HashSet<VarId>) -> bool {
         return vars.contains(&v);
     }
     e.children().into_iter().any(|c| mentions(c, vars))
+}
+
+/// The elements of an array literal `e` ends in, through `let`s of scalars
+/// (the body of an inlined function, D191).
+fn literal_tail(e: &Expr) -> Option<&Vec<Expr>> {
+    match &e.kind {
+        ExprKind::ArrayLit(es) => Some(es),
+        ExprKind::Let { init, body, stmt: false, drop: false, .. } if init.ty.is_scalar() => literal_tail(body),
+        _ => None,
+    }
+}
+
+/// Every use of the array `v` in `e` reads it, borrowed: an element, its
+/// length, the source of a `map`, `reduce`, `fold`, `filter` or `scan`, a
+/// copy; never moved, freed, viewed (a slice, a window), stored or passed
+/// to a function (a tail call would carry it into the loop). It may then
+/// live on the stack (D191).
+fn stack_array(v: VarId, e: &Expr) -> bool {
+    fn is_v(e: &Expr, v: VarId) -> bool {
+        matches!(e.kind, ExprKind::Var(x, Use::Borrow) if x == v)
+    }
+    fn src(x: &Expr, v: VarId) -> bool {
+        is_v(x, v) || ok(x, v)
+    }
+    fn ok(e: &Expr, v: VarId) -> bool {
+        use ExprKind::*;
+        match &e.kind {
+            Var(x, _) => *x != v,
+            Free(x, b) => *x != v && ok(b, v),
+            Index(a, i) if is_v(a, v) => ok(i, v),
+            Len(a) if is_v(a, v) => true,
+            Copy(x) if is_v(x, v) => true,
+            Map(ins, l) => ins.iter().all(|x| src(x, v)) && ok(&l.body, v),
+            Reduce(x, l, z) | Scan(x, l, z) => src(x, v) && ok(&l.body, v) && ok(z, v),
+            Fold(x, init, l) => src(x, v) && ok(init, v) && ok(&l.body, v),
+            Filter(x, l) => src(x, v) && ok(&l.body, v),
+            _ => e.children().into_iter().all(|c| ok(c, v)),
+        }
+    }
+    ok(e, v)
 }
 
 /// `e` frees `v` somewhere (`Free`, D105).
@@ -1384,6 +1427,9 @@ impl<'p> Gen<'p> {
         let tl = self.tail.take().unwrap();
         let tc = &tl.calls[&(e as *const Expr)];
         for var in &tc.free_first {
+            if self.stack_vars.contains(var) {
+                continue;
+            }
             let ty = self.p.vars[*var as usize].ty.clone();
             let x = self.env[var].clone();
             self.drop_value(&x, &ty);
@@ -2346,6 +2392,18 @@ impl<'p> Gen<'p> {
                 isc_ir::Lit::Unit => v("false", "i1"),
             }),
             Var(x, _) => self.env.get(x).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", x)),
+            // a literal array of scalars that its body only reads: on the
+            // stack, never freed (D191)
+            Let { var, init, body, .. } if literal_tail(init).is_some() && init.ty.elem().is_scalar() && stack_array(*var, body) => {
+                let n = literal_tail(init).unwrap().len();
+                let et = init.ty.elem().clone();
+                let slot = self.alloca(&format!("[{} x {}]", n.max(1), mt(&et)));
+                self.stack_literal(init, &slot, &et, n)?;
+                let arr = self.arr(&slot, &n.to_string());
+                self.bind(*var, arr);
+                self.stack_vars.insert(*var);
+                self.ex(body, w)
+            }
             Let { var, init, body, stmt, drop } => {
                 let iv = self.ex(init, w)?;
                 self.bind(*var, iv.clone());
@@ -2791,6 +2849,10 @@ impl<'p> Gen<'p> {
                 // one (D113)
                 if let Some(first) = self.other_tails.get(&key).cloned() {
                     for var in &first {
+                        // (an array on the stack is never freed, D191)
+                        if self.stack_vars.contains(var) {
+                            continue;
+                        }
                         let ty = self.p.vars[*var as usize].ty.clone();
                         let x = self.env[var].clone();
                         self.drop_value(&x, &ty);
@@ -2860,6 +2922,26 @@ impl<'p> Gen<'p> {
                 self.block(&lok);
             }
             None => self.guard(ok, panic_call),
+        }
+    }
+
+    /// The `let`s of scalars of `e`, then its array literal stored at `slot`
+    /// (`literal_tail`, D191).
+    fn stack_literal(&mut self, e: &Expr, slot: &str, et: &Type, n: usize) -> R<()> {
+        match &e.kind {
+            ExprKind::Let { var, init, body, .. } => {
+                let iv = self.ex(init, 1)?;
+                self.bind(*var, iv);
+                self.stack_literal(body, slot, et, n)
+            }
+            ExprKind::ArrayLit(es) => {
+                for (i, x) in es.iter().enumerate() {
+                    let xv = self.ex(x, 1)?;
+                    self.store_elem(slot, &n.to_string(), &i.to_string(), et, &xv, 1);
+                }
+                Ok(())
+            }
+            _ => Err("internal error: not an array literal".into()),
         }
     }
 

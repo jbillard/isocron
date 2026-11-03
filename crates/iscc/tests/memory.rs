@@ -590,3 +590,47 @@ action main(args: string[k]): i32 {
         assert_eq!(interp_ok(src, &[]), want, "{} interpreted", name);
     }
 }
+
+#[test]
+fn literal_arrays_only_read_live_on_the_stack() {
+    // D191: an array literal of scalars that its scope only reads (an
+    // element, its length, the source of a map, reduce or fold, a copy) is
+    // on the stack, without allocation; returned, viewed, passed to a
+    // function or updated, it stays on the heap. The results of the
+    // interpreter, nothing lost or freed twice under Valgrind.
+    let src = "function weights(): f64[3] {
+    const s = 2.0;
+    return [s, 0.5 * s, 0.25 * s];
+}
+function total(x: f64[n]): f64 {
+    return sum(x);
+}
+function steps(acc: f64, k: i64): f64 {
+    if (k == 0) return acc;
+    const w = weights();
+    const v = fold(iota(3), acc, (a, i) => a + w[i] * f64(k % 7));
+    const m = sum(map(w, (x) => x * 2.0)) + reduce(w, (a, b) => Math.max(a, b), 0.0) + f64(w.length);
+    return steps(v + m * 0.001, k - 1);
+}
+action main(args: string[k]): i32 {
+    print(steps(0.0, 100000));
+    const kept = weights();
+    print(kept);
+    const view = [1.0, 2.0, 3.0, 4.0].slice(1, 3);
+    print(view);
+    print(total([4.0, 5.0, 6.0]));
+    const changed = [1, 2, 3].with(1, 20);
+    print(changed);
+    const copied = map(iota(2), (i) => { const t = [7, 8, 9]; return t[i] + t.length; });
+    print(copied);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "stack_literals");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("alloca [3 x double]"), "the weights are not on the stack");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    clean(src, "stack_literals_vg", &[]);
+}

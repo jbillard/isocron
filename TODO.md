@@ -150,6 +150,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] Parameters of a tail-recursive function owned (nbody: 3 copies per step)
   - [x] Fast path of the allocator: 63 -> 25 instructions per allocation, 43 -> 28 per free; nbody 9.9 s -> 8.4 s (D165)
   - [ ] Small arrays of a fixed size without the heap
+    - [x] Array literals only read by their scope on the stack: nbody 6.441 s -> 6.111 s (D191)
   - [x] Nodes in cells of their size without a header, a free list per thread: binarytrees 21 on 4 threads 43.3 s -> 4.3 s (D166)
   - [x] A constructor without payload of a recursive type without allocation: binarytrees 21 on 4 threads 4.3 s -> 2.5 s (D169)
   - [x] Non-atomic reference counts in a task none of whose nodes can leave it: binarytrees 2.7 s -> 2.4 s (D175)

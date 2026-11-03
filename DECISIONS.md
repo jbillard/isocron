@@ -3252,3 +3252,36 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `toUpperCase` of 50 MB 412 ms -> 119 ms, the text of a `bigint` of 9135
   digits 397 us -> 208 us, `padEnd` 24 ms -> 24 ms (a copy either way);
   the same results.
+- **D188, measured on the ten programs (2026-11-04).** D188 had been
+  measured on 4 programs; on all ten, against the binaries of D187 (the
+  same IR): pidigits 2.496 s -> 2.224 s (the runtime's multiplications of
+  big integers with BMI2 `mulx`), binary-trees 1.921 s -> 2.020 s and
+  fannkuch-redux 4.301 s -> 4.416 s, the others unchanged. Explained by the
+  place of the code, not by the runtime: binary-trees runs the same 43.509e9
+  instructions with both runtimes, at an IPC of 2.66 instead of 2.89, its
+  hot addresses moved by 16 bytes (the runtime of another size before
+  them); the same object linked with the two runtimes (`ISC_RUNTIME`) gives
+  2.015 s and 1.925 s, and with functions and loops aligned on 64 bytes
+  (`ISC_LLVM_ARGS="-align-all-functions=6 -align-loops=64"`) 2.049 s and
+  2.047 s (fannkuch-redux 4.297 s and 4.306 s). Not kept as the default:
+  on the ten it moves the lottery rather than removing it (fannkuch-redux
+  4.417 s -> 4.300 s, binary-trees 2.012 s -> 2.067 s, n-body 5.911 s ->
+  5.992 s, the others the same). A margin of about 3 to 5 % comes from the
+  place of the code when unrelated code changes size.
+- **D191 — Array literals that their scope only reads, on the stack
+  (2026-11-04).** n-body allocated 7 arrays and copied 3 per step. The
+  first: `const m = masses()` in `advance`, an array of 5 numbers on the
+  heap at every step and freed at its end. The first of the small arrays
+  of a fixed size without the heap (goal, priority 1): a `let` whose value
+  is an array literal of scalars (maybe after `let`s of scalars: an
+  inlined function) and whose scope only reads it, borrowed (an element,
+  its length, the source of a `map`, `reduce`, `fold`, `filter` or `scan`,
+  a copy; never moved, freed, viewed by a slice or a window, stored, or
+  passed to a function: a tail call would carry it into the loop) is an
+  `alloca` of the function, never freed (`stack_array`, `stack_vars`: the
+  tail calls do not free it). n-body at fixed frequency, 4 threads: 6.441 s
+  -> 6.111 s; the only program whose IR changes. Test
+  `literal_arrays_only_read_live_on_the_stack` (in a tail-recursive loop;
+  returned, viewed, passed, updated: on the heap; the interpreter's
+  results, Valgrind clean). It found that the tail call freed the array on
+  the stack (fixed before this commit).
