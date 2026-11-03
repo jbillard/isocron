@@ -157,6 +157,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The free list of nodes in the compiled code: binarytrees 2.4 s -> 2.1 s on 4 threads (D176)
   - [ ] Allocation by regions (binarytrees)
 - [x] (2) `Map` and `countBy` by a table of hashes: knucleotide 36.9 s -> 3.4 s on 4 threads (D167)
+  - [x] Integer keys in a small range by a table: knucleotide 2.108 s -> 1.591 s (D194)
 - [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
   - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)
   - [x] The common operations (add, subtract, multiply, divide, compare) on the bytes themselves: pidigits 10000 11.6 s -> 2.5 s (D171)

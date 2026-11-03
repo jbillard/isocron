@@ -2071,6 +2071,50 @@ pub fn group<H: Fn(usize) -> u64, E: Fn(usize, usize) -> bool>(n: usize, hash: H
     first
 }
 
+/// `group` of integer keys within a small range (D194): the keys minus the
+/// smallest index a table of the groups, no hash and no probing; the same
+/// three columns. `key(i)` is the key `i` as an `i64` in the order of the
+/// keys (a `u64` with its top bit flipped); `None` when the range of the
+/// keys is too large for a table (more than `DENSE_MAX` and more than `n`
+/// slots).
+pub fn group_dense(n: usize, key: impl Fn(usize) -> i64) -> Option<alloc::vec::Vec<i64>> {
+    use alloc::vec::Vec;
+    const DENSE_MAX: u64 = 1 << 16;
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    let (mut lo, mut hi) = (key(0), key(0));
+    for i in 1..n {
+        let k = key(i);
+        lo = lo.min(k);
+        hi = hi.max(k);
+    }
+    let span = (hi.wrapping_sub(lo) as u64).saturating_add(1);
+    if span > DENSE_MAX && span > n as u64 {
+        return None;
+    }
+    let mut slot: Vec<u32> = alloc::vec![u32::MAX; span as usize];
+    let mut first: Vec<i64> = Vec::new();
+    let mut last: Vec<i64> = Vec::new();
+    let mut count: Vec<i64> = Vec::new();
+    for i in 0..n {
+        let s = key(i).wrapping_sub(lo) as u64 as usize;
+        let g = slot[s];
+        if g == u32::MAX {
+            slot[s] = first.len() as u32;
+            first.push(i as i64);
+            last.push(i as i64);
+            count.push(1);
+        } else {
+            last[g as usize] = i as i64;
+            count[g as usize] += 1;
+        }
+    }
+    first.extend_from_slice(&last);
+    first.extend_from_slice(&count);
+    Some(first)
+}
+
 /// The hash of an integer key (its bits).
 #[inline(always)]
 pub fn hash_word(x: u64) -> u64 {
@@ -2090,4 +2134,33 @@ pub fn hash_bytes(b: &[u8]) -> u64 {
         h = (h ^ x as u64).wrapping_mul(0x0000_0100_0000_01B3);
     }
     hash_word(h)
+}
+
+#[cfg(test)]
+mod dense_groups {
+    extern crate std;
+    use std::vec::Vec;
+
+    /// The groups of integer keys by a table (D194) are those of the table
+    /// of hashes: small ranges, negative keys, a range too large (`None`),
+    /// one key, none.
+    #[test]
+    fn dense_groups_as_hashed_ones() {
+        let mut seed: u64 = 11;
+        let mut rnd = |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let mut cases: Vec<Vec<i64>> = std::vec![std::vec![], std::vec![7], std::vec![-3, -3, 5, -3]];
+        for (n, range, base) in [(100u64, 4u64, 0i64), (5000, 300, -150), (2000, 70000, 10), (300, 1 << 40, -(1 << 39))] {
+            cases.push((0..n).map(|_| base + rnd(range) as i64).collect());
+        }
+        for keys in &cases {
+            let hashed = super::group(keys.len(), |i| super::hash_word(keys[i] as u64), |i, j| keys[i] == keys[j]);
+            match super::group_dense(keys.len(), |i| keys[i]) {
+                Some(d) => assert_eq!(d, hashed, "{:?}", &keys[..keys.len().min(10)]),
+                None => assert!(keys.iter().max().unwrap() - keys.iter().min().unwrap() >= 1 << 16),
+            }
+        }
+    }
 }

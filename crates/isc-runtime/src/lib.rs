@@ -1206,9 +1206,16 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
     unsafe fn at<T: Copy>(p: *const u8, i: usize) -> T {
         *(p as *const T).add(i)
     }
+    // integer keys in a small range: a table indexed by the key (D194)
     macro_rules! ints {
+        ($t:ty, $order:expr) => {
+            match sem::group_dense(n, |i| $order(at::<$t>(p, i))) {
+                Some(g) => g,
+                None => sem::group(n, |i| sem::hash_word(at::<$t>(p, i) as u64), |i, j| at::<$t>(p, i) == at::<$t>(p, j)),
+            }
+        };
         ($t:ty) => {
-            sem::group(n, |i| sem::hash_word(at::<$t>(p, i) as u64), |i, j| at::<$t>(p, i) == at::<$t>(p, j))
+            ints!($t, |x: $t| x as i64)
         };
     }
     let g = match kind {
@@ -1219,7 +1226,7 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
         4 | 10 => ints!(u8),
         5 => ints!(u16),
         6 => ints!(u32),
-        7 => ints!(u64),
+        7 => ints!(u64, |x: u64| (x ^ (1 << 63)) as i64),
         _ => sem::group(
             n,
             |i| {

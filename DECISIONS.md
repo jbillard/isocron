@@ -3315,3 +3315,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   as a borrowed variable is. The IR of the ten programs does not change.
   Test `slices_of_arrays_of_arrays_and_rows_of_constants` (the
   interpreter's results, Valgrind clean).
+- **D194 — The groups of integer keys in a small range, by a table
+  (2026-11-04).** Profile of k-nucleotide (callgrind): 34 % of the
+  instructions in `isc_group` (the `countBy` of the 1-mers and 2-mers, 4
+  and 16 distinct keys), 45 instructions per key: its hash, the probing,
+  the comparison. When the integer keys lie in a range of at most 2^16
+  values or of at most as many values as keys (their smallest and largest,
+  one pass that LLVM vectorizes, in `i64`: a `u64` with its top bit
+  flipped keeps its order), the key minus the smallest indexes a table of
+  the groups: the same three columns (first and last index, count) in the
+  order of the first occurrences. A first form in `i128` kept 34
+  instructions per key (its pass of the range not vectorized); in `i64`,
+  19 per key over the whole of `isc_group`. k-nucleotide at fixed
+  frequency: 2.108 s -> 1.591 s on 4 threads, 2.710 s -> 2.200 s on one;
+  the same output. Test `dense_groups_as_hashed_ones` (isc-runtime-core:
+  small and negative ranges, a range too large, one key, none).
