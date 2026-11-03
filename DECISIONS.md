@@ -4136,3 +4136,23 @@ again), compares of 32 bytes where AVX-512 gives a mask of 64 at once.
   `quotients_at_the_edge_of_the_estimate` (more than 3000 dividends at
   `q b`, `q b + 1`, just below `(q + 1) b`, at `(q + 1) b`; divisors whose
   low words are all ones or zero), against num-bigint.
+- **D241 — A runtime for x86-64-v4 (2026-11-04).** The generated code
+uses AVX-512 on this machine, the runtime only AVX2 (x86-64-v3, D188):
+the engine of shapes (D224) needed two comparisons of 32 bytes, two
+`vpmovmskb`, a shift and an or for the mask of 64 bytes that one
+`vpcmpeqb` into a mask register gives. `build.rs` now builds a third
+runtime for x86-64-v4, which `iscc` links for `native` and `avx512` on a
+host with AVX-512 F, BW, CD, DQ and VL (`--isa avx2`, asked by the tests
+under valgrind, which has no AVX-512, keeps the one for v3); the engine
+has a version of its comparisons for it. First measure: pidigits 0.506 s
+-> 0.746 s: with AVX-512 LLVM turned the loop of the additions of big
+integers (Rust, a carry per word) into vector code that carries through
+masks, much slower than one chain of `adc`. The additions and
+subtractions of words are now in assembly on every x86-64 (by 4 words,
+one chain of `adc` or `sbb` through the flags), whatever LLVM chooses. At
+fixed frequency, 4 threads but pidigits: regex-redux 0.305 s -> 0.294 s,
+pidigits 0.503 s -> 0.490 s (the runtime for v3 too: 0.490 s; the one
+without BMI2 0.822 s), k-nucleotide 1.153 s -> 1.141 s, the seven others
+unchanged (n-body, alternated: 2.057, 2.056, 2.018 s against 2.067,
+2.029, 2.020 s); the same outputs. The test of the shapes also runs with
+the runtime for v3 (`--isa avx2`).

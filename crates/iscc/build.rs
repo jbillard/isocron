@@ -52,10 +52,22 @@ fn main() {
     let v3_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("runtime-v3");
     let v3 = v3_dir.join("release").join("libisc_runtime.a");
     let x86 = env::var("CARGO_CFG_TARGET_ARCH").map(|a| a == "x86_64").unwrap_or(false);
-    if x86 && build_in(None, &v3_dir, Some("-Ctarget-cpu=x86-64-v3")) && v3.exists() {
+    let v3_built = x86 && build_in(None, &v3_dir, Some("-Ctarget-cpu=x86-64-v3")) && v3.exists();
+    if v3_built {
         println!("cargo:rustc-env=ISC_RUNTIME_V3_LIB={}", v3.display());
     } else {
         println!("cargo:rustc-env=ISC_RUNTIME_V3_LIB={}", lib.display());
+    }
+    // and for x86-64-v4 (AVX-512): the masks of 64 bytes of the searches of
+    // regular expressions in one comparison (D241)
+    let v4_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("runtime-v4");
+    let v4 = v4_dir.join("release").join("libisc_runtime.a");
+    if v3_built && build_in(None, &v4_dir, Some("-Ctarget-cpu=x86-64-v4")) && v4.exists() {
+        println!("cargo:rustc-env=ISC_RUNTIME_V4_LIB={}", v4.display());
+    } else if v3_built {
+        println!("cargo:rustc-env=ISC_RUNTIME_V4_LIB={}", v3.display());
+    } else {
+        println!("cargo:rustc-env=ISC_RUNTIME_V4_LIB={}", lib.display());
     }
     // the runtimes for `iscc build --target wasm32-wasi` and
     // `wasm32-wasi-threads`, when the Rust targets are installed (`rustup

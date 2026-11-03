@@ -232,6 +232,8 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
         ("ISC_RUNTIME_WASM_THREADS", RUNTIME_WASM_THREADS, "wasm32-wasip1-threads")
     } else if wasm {
         ("ISC_RUNTIME_WASM", RUNTIME_WASM, "wasm32-wasip1")
+    } else if runtime_v4(isa) {
+        ("ISC_RUNTIME", RUNTIME_V4, "")
     } else if runtime_v3(isa) {
         ("ISC_RUNTIME", RUNTIME_V3, "")
     } else {
@@ -272,6 +274,23 @@ const RUNTIME: &[u8] = include_bytes!(env!("ISC_RUNTIME_LIB"));
 /// The same runtime built for x86-64-v3 (AVX2, BMI2, FMA, D188); the one
 /// above when the host is not an x86-64.
 const RUNTIME_V3: &[u8] = include_bytes!(env!("ISC_RUNTIME_V3_LIB"));
+
+/// The same runtime built for x86-64-v4 (AVX-512, D241); the one above when
+/// it could not be built.
+const RUNTIME_V4: &[u8] = include_bytes!(env!("ISC_RUNTIME_V4_LIB"));
+
+/// The runtime for x86-64-v4 when the target has its instructions: `native`
+/// and `avx512` on a host with AVX-512 F, BW, CD, DQ and VL (not `avx2`: the
+/// tests under valgrind, which has no AVX-512, ask for it, D241).
+pub fn runtime_v4(isa: isc_codegen::Isa) -> bool {
+    use isc_codegen::Isa;
+    if !matches!(isa, Isa::Native | Isa::Avx512) || !runtime_v3(isa) {
+        return false;
+    }
+    let host = isc_codegen::backend::host_features();
+    let has = |f: &str| host.split(',').any(|x| x == f);
+    ["+avx512f", "+avx512bw", "+avx512cd", "+avx512dq", "+avx512vl"].iter().all(|f| has(f))
+}
 
 /// The runtime for x86-64-v3 when the target has its instructions: `avx2`
 /// and `avx512` are the host's CPU, and so is `native` (D188).

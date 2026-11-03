@@ -463,12 +463,18 @@ fn simple_shapes_found_by_masks() {
     return 0;
 }
 ";
+    // the runtime of the host (AVX-512 on a machine that has it, D241) and
+    // the one for AVX2
     let bin = compile(src, "simple_shapes");
+    let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+    let bin2 = compile_with(src, "simple_shapes_avx2", opts);
     for n in ["1", "3", "9000"] {
         let want = interp_ok(src, &[n]);
-        for t in [1, 4] {
-            let r = run_bin_threads(&bin, &[n], Some(t));
-            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        for b in [&bin, &bin2] {
+            for t in [1, 4] {
+                let r = run_bin_threads(b, &[n], Some(t));
+                assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads {:?}: {}", n, t, b, r.stderr);
+            }
         }
     }
 }

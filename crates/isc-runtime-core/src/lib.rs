@@ -1276,6 +1276,60 @@ mod limbs {
         a.len().cmp(&b.len()).then_with(|| a.iter().rev().cmp(b.iter().rev()))
     }
 
+    /// `dst[i] = x[i] + y[i]` (or `-`, `SUB`) on `4 * quads` words with one
+    /// chain of `adc` (`sbb`) through the flags, from the carry `c`: the
+    /// carry out (D241). In assembly: with AVX-512 LLVM turned the loop of
+    /// Rust into vector code that carries through masks, slower than the
+    /// chain (pidigits 0.506 s -> 0.746 s).
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn chain<const SUB: bool>(x: *const u8, y: *const u8, dst: *mut u8, quads: usize, c: bool) -> bool {
+        let out: u8;
+        let (mut x, mut y, mut d, mut n) = (x, y, dst, quads);
+        macro_rules! body {
+            ($op:literal) => {
+                core::arch::asm!(
+                    "bt {c:e}, 0",
+                    "2:",
+                    "mov {t0}, [{x}]",
+                    "mov {t1}, [{x} + 8]",
+                    concat!($op, " {t0}, [{y}]"),
+                    concat!($op, " {t1}, [{y} + 8]"),
+                    "mov [{d}], {t0}",
+                    "mov [{d} + 8], {t1}",
+                    "mov {t0}, [{x} + 16]",
+                    "mov {t1}, [{x} + 24]",
+                    concat!($op, " {t0}, [{y} + 16]"),
+                    concat!($op, " {t1}, [{y} + 24]"),
+                    "mov [{d} + 16], {t0}",
+                    "mov [{d} + 24], {t1}",
+                    "lea {x}, [{x} + 32]",
+                    "lea {y}, [{y} + 32]",
+                    "lea {d}, [{d} + 32]",
+                    "dec {n}",
+                    "jnz 2b",
+                    "setc {o}",
+                    x = inout(reg) x,
+                    y = inout(reg) y,
+                    d = inout(reg) d,
+                    n = inout(reg) n,
+                    c = in(reg) c as u32,
+                    t0 = out(reg) _,
+                    t1 = out(reg) _,
+                    o = lateout(reg_byte) out,
+                    options(nostack),
+                )
+            };
+        }
+        if SUB {
+            body!("sbb");
+        } else {
+            body!("adc");
+        }
+        let _ = (x, y, d, n);
+        out != 0
+    }
+
     fn add(neg: bool, a: &[u8], b: &[u8]) -> Vec<u8> {
         let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
         let n = a.len().div_ceil(8);
@@ -1283,11 +1337,23 @@ mod limbs {
         let mut v: Vec<u8> = unwritten(1 + 8 * (n + 1));
         v[0] = if neg { b'-' } else { b'+' };
         let mut carry = false;
-        // the whole words of both, without a test of bounds (D171)
+        // the whole words of both, without a test of bounds (D171); by 4 in
+        // assembly on x86-64 (D241)
         let both = b.len() / 8;
+        #[cfg(target_arch = "x86_64")]
+        let done = {
+            let quads = both / 4;
+            if quads > 0 {
+                // SAFETY: `a` and `b` have `both * 8` bytes, `v` as many from 1
+                carry = unsafe { chain::<false>(a.as_ptr(), b.as_ptr(), v[1..].as_mut_ptr(), quads, false) };
+            }
+            quads * 4
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let done = 0;
         {
-            let dst = &mut v[1..1 + both * 8];
-            for ((x, y), z) in a.chunks_exact(8).zip(b.chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
+            let dst = &mut v[1 + done * 8..1 + both * 8];
+            for ((x, y), z) in a[done * 8..].chunks_exact(8).zip(b[done * 8..both * 8].chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
                 let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
                 let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
                 let (s, c1) = xa.overflowing_add(yb);
@@ -1324,9 +1390,20 @@ mod limbs {
         v[0] = if neg { b'-' } else { b'+' };
         let mut borrow = false;
         let both = b.len() / 8;
+        #[cfg(target_arch = "x86_64")]
+        let done = {
+            let quads = both / 4;
+            if quads > 0 {
+                // SAFETY: `a` and `b` have `both * 8` bytes, `v` as many from 1
+                borrow = unsafe { chain::<true>(a.as_ptr(), b.as_ptr(), v[1..].as_mut_ptr(), quads, false) };
+            }
+            quads * 4
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let done = 0;
         {
-            let dst = &mut v[1..1 + both * 8];
-            for ((x, y), z) in a.chunks_exact(8).zip(b.chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
+            let dst = &mut v[1 + done * 8..1 + both * 8];
+            for ((x, y), z) in a[done * 8..].chunks_exact(8).zip(b[done * 8..both * 8].chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
                 let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
                 let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
                 let (d, b1) = xa.overflowing_sub(yb);
@@ -2394,7 +2471,28 @@ pub mod rx {
             }
         }
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        /// AVX-512 (the runtime for x86-64-v4, D241): one comparison gives
+        /// the mask of the 64 bytes.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[inline(always)]
+        fn eqs(sm: &Simple, p: *const u8, cm: &mut [u64; CLASSES]) {
+            use core::arch::x86_64::*;
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            unsafe {
+                let a = _mm512_loadu_si512(p as *const __m512i);
+                let af = _mm512_or_si512(a, _mm512_set1_epi8(0x20));
+                for &(v, cl, fold) in &sm.bytes {
+                    let m = _mm512_cmpeq_epi8_mask(if fold { af } else { a }, _mm512_set1_epi8(v as i8));
+                    let mut c = cl;
+                    while c != 0 {
+                        cm[(c.trailing_zeros() & 15) as usize] |= m;
+                        c &= c - 1;
+                    }
+                }
+            }
+        }
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512bw")))]
         #[inline(always)]
         fn eqs(sm: &Simple, p: *const u8, cm: &mut [u64; CLASSES]) {
             use core::arch::x86_64::*;

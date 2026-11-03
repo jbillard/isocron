@@ -215,6 +215,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The product of a big integer by a word in assembly, one chain of `adc`: pidigits 0.888 s -> 0.697 s (D239)
   - [x] A quotient of one word certain from the top words, without a pass over the words: pidigits 0.696 s -> 0.503 s (D240)
   - [ ] pidigits: `num * 3 + acc` and `num * 4 + acc` made whole only to be divided (the top words would do)
+  - [x] A runtime for x86-64-v4 (AVX-512): the masks of 64 bytes in one comparison; the additions of big integers in assembly: regexredux 0.305 s -> 0.294 s, pidigits 0.503 s -> 0.490 s (D241)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
