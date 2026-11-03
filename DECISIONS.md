@@ -3602,12 +3602,14 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   unmapped by `free`): slower. At fixed frequency, 4 threads:
   reverse-complement 0.235 s -> 0.252 s, k-nucleotide 1.435 s -> 1.456 s,
   regex-redux 1.154 s -> 1.165 s, the same outputs. The cause, measured on
-  two programs that read the 254 MB of fasta25m.txt (one thread, 5 runs):
-  read 12.69 ms, 117 page faults (huge pages), 3857 dTLB misses; mapped
-  16.43 ms, 73 faults, 6513 misses; with one pass over the bytes, 16.85
-  ms against 20.55 ms. Filling about 62000 entries of 4 KiB pages costs
-  more than copying into huge pages (about 20 GB/s), and the passes over
-  4 KiB pages miss the TLB 1.7 times as often. Measured too: reading is
-  not the cost of reverse-complement (13 ms of its 0.235 s), and its floor
-  in `results/floors.md` (0.067 s, of which 0.056 s for reading) is too
-  high; to be redone with the floors.
+  a program that reads the 254 MB of fasta25m.txt and prints its length
+  (best of 5 runs, each with the file opened again): read 57.75 ms, 293
+  page faults (huge pages), 16376 dTLB misses; mapped 76.03 ms, 72 faults,
+  28679 misses; with one pass over the bytes, 75.65 ms against 96.20 ms.
+  Filling the entries of about 62000 pages of 4 KiB costs more than
+  clearing huge pages and copying into them, and the passes over 4 KiB
+  pages miss the TLB more often. (A first measurement with `perf stat -r
+  5` was wrong: its runs shared one standard input, the four last ones
+  read nothing; it gave 12.7 ms for reading and is not kept.) The floor
+  of reverse-complement (0.067 s, of which 0.056 s for reading) agrees
+  with the 55.5 ms measured here.
