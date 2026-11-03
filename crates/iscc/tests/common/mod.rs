@@ -9,7 +9,12 @@ pub const HIST: &str = include_str!("../../../../examples/poc/histogram.isc");
 pub const STD: &str = include_str!("../../../../examples/poc/std_dev.isc");
 
 pub fn tmp(name: &str) -> PathBuf {
-    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("isc-tests");
+    // `ISC_TEST_TMP`: a directory of its own for a run of the suites at the
+    // same time as another (both allocators at once)
+    let d = match std::env::var_os("ISC_TEST_TMP") {
+        Some(t) => PathBuf::from(t),
+        None => PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("isc-tests"),
+    };
     std::fs::create_dir_all(&d).unwrap();
     d.join(name)
 }
