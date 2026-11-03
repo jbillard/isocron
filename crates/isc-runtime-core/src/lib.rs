@@ -1979,8 +1979,11 @@ pub mod rx {
         }
 
         pub struct Simple {
-            /// each distinct byte of the classes, and its classes (a bit each)
-            bytes: Vec<(u8, u16)>,
+            /// each distinct byte of the classes, its classes (a bit each),
+            /// and whether it is a lower case letter that stands for its
+            /// upper case too (the two in the same classes: compared with
+            /// the bytes `| 0x20`, which only these two give, D238)
+            bytes: Vec<(u8, u16, bool)>,
             /// the alternatives, in their order
             alts: Vec<Alt>,
             /// the class `\n` (for the starts of lines), when an alternative
@@ -2231,17 +2234,28 @@ pub mod rx {
                 alts.push(Alt { seq, line: *line, stop: *stop });
             }
             let nl = if alts.iter().any(|a| a.line) { Some(index(&mut classes, 1u128 << b'\n')? as usize) } else { None };
-            let mut bytes = Vec::new();
-            for b in 0..128u8 {
+            let class_of = |b: u8| -> u16 {
                 let mut cl = 0u16;
                 for (k, &m) in classes.iter().enumerate() {
                     if m >> b & 1 == 1 {
                         cl |= 1 << k;
                     }
                 }
-                if cl != 0 {
-                    bytes.push((b, cl));
+                cl
+            };
+            let mut bytes = Vec::new();
+            for b in 0..128u8 {
+                let cl = class_of(b);
+                if cl == 0 {
+                    continue;
                 }
+                let letter = b.is_ascii_alphabetic();
+                let pair = class_of(b ^ 0x20);
+                if letter && b.is_ascii_uppercase() && pair == cl {
+                    // its lower case compares for it
+                    continue;
+                }
+                bytes.push((b, cl, letter && b.is_ascii_lowercase() && pair == cl));
             }
             if bytes.len() > BYTES {
                 return None;
@@ -2281,12 +2295,15 @@ pub mod rx {
             unsafe {
                 let a = _mm256_loadu_si256(p as *const __m256i);
                 let b = _mm256_loadu_si256(p.add(32) as *const __m256i);
-                for &(v, cl) in &sm.bytes {
+                let low = _mm256_set1_epi8(0x20);
+                let (af, bf) = (_mm256_or_si256(a, low), _mm256_or_si256(b, low));
+                for &(v, cl, fold) in &sm.bytes {
                     let x = _mm256_set1_epi8(v as i8);
-                    let m = (_mm256_movemask_epi8(_mm256_cmpeq_epi8(a, x)) as u32 as u64) | ((_mm256_movemask_epi8(_mm256_cmpeq_epi8(b, x)) as u32 as u64) << 32);
+                    let (ya, yb) = if fold { (af, bf) } else { (a, b) };
+                    let m = (_mm256_movemask_epi8(_mm256_cmpeq_epi8(ya, x)) as u32 as u64) | ((_mm256_movemask_epi8(_mm256_cmpeq_epi8(yb, x)) as u32 as u64) << 32);
                     let mut c = cl;
                     while c != 0 {
-                        cm[c.trailing_zeros() as usize] |= m;
+                        cm[(c.trailing_zeros() & 15) as usize] |= m;
                         c &= c - 1;
                     }
                 }
@@ -2304,15 +2321,19 @@ pub mod rx {
                 let v1 = _mm_loadu_si128(p.add(16) as *const __m128i);
                 let v2 = _mm_loadu_si128(p.add(32) as *const __m128i);
                 let v3 = _mm_loadu_si128(p.add(48) as *const __m128i);
-                for &(v, cl) in &sm.bytes {
+                let low = _mm_set1_epi8(0x20);
+                let f = [_mm_or_si128(v0, low), _mm_or_si128(v1, low), _mm_or_si128(v2, low), _mm_or_si128(v3, low)];
+                let r = [v0, v1, v2, v3];
+                for &(v, cl, fold) in &sm.bytes {
                     let x = _mm_set1_epi8(v as i8);
-                    let m = (_mm_movemask_epi8(_mm_cmpeq_epi8(v0, x)) as u16 as u64)
-                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(v1, x)) as u16 as u64) << 16)
-                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(v2, x)) as u16 as u64) << 32)
-                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(v3, x)) as u16 as u64) << 48);
+                    let y = if fold { &f } else { &r };
+                    let m = (_mm_movemask_epi8(_mm_cmpeq_epi8(y[0], x)) as u16 as u64)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(y[1], x)) as u16 as u64) << 16)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(y[2], x)) as u16 as u64) << 32)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(y[3], x)) as u16 as u64) << 48);
                     let mut c = cl;
                     while c != 0 {
-                        cm[c.trailing_zeros() as usize] |= m;
+                        cm[(c.trailing_zeros() & 15) as usize] |= m;
                         c &= c - 1;
                     }
                 }
@@ -2326,10 +2347,11 @@ pub mod rx {
         fn eqs(sm: &Simple, p: *const u8, cm: &mut [u64; CLASSES]) {
             // SAFETY: `p` has 64 readable bytes (the text or `tail`)
             let blk = unsafe { core::slice::from_raw_parts(p, 64) };
-            for &(v, cl) in &sm.bytes {
+            for &(v, cl, fold) in &sm.bytes {
                 let mut m = 0u64;
                 for (i, &x) in blk.iter().enumerate() {
-                    m |= ((x == v) as u64) << i;
+                    let y = if fold { x | 0x20 } else { x };
+                    m |= ((y == v) as u64) << i;
                 }
                 let mut c = cl;
                 while c != 0 {
@@ -2343,13 +2365,15 @@ pub mod rx {
         /// starts (its bytes past them in `next`).
         #[inline(always)]
         fn starts(seq: &[u8], cur: &[u64; CLASSES], next: &[u64; CLASSES]) -> u64 {
-            let mut m = cur[seq[0] as usize];
+            // (the indices of classes are below CLASSES by construction: the
+            // masks drop the checks of bounds, D238)
+            let mut m = cur[(seq[0] & 15) as usize];
             for (j, &k) in seq.iter().enumerate().skip(1) {
                 if m == 0 {
                     break;
                 }
-                let k = k as usize;
-                m &= (cur[k] >> j) | (next[k] << (64 - j));
+                let k = (k & 15) as usize;
+                m &= (cur[k] >> (j & 63)) | (next[k] << ((64 - j) & 63));
             }
             m
         }
@@ -2390,7 +2414,7 @@ pub mod rx {
                         if alt.line {
                             m &= lines;
                         }
-                        st[a] = m;
+                        st[a & (ALTS - 1)] = m;
                         any |= m;
                     }
                     while any != 0 {
@@ -2403,7 +2427,7 @@ pub mod rx {
                         // the first alternative that matches at p
                         let mut found = None;
                         for (a, alt) in self.alts.iter().enumerate().take(na) {
-                            if st[a] >> j & 1 == 0 || dead >> a & 1 == 1 {
+                            if st[a & (ALTS - 1)] >> j & 1 == 0 || dead >> a & 1 == 1 {
                                 continue;
                             }
                             let h = p + alt.seq.len();

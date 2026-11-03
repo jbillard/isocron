@@ -210,6 +210,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The bytes written by blocks through the choice of a table and the test of a length: fasta 0.048 s -> 0.017 s (D234)
   - [x] A replacement without `$` of many matches written by every thread: regexredux 0.475 s -> 0.336 s (D236)
   - [x] Alternations of simple shapes of other lengths and kinds, at the start of a line: the cleaning of regexredux 0.066 s -> 0.030 s, regexredux 0.336 s -> 0.322 s (D237)
+  - [x] The masks of the engine of shapes: a letter and its upper case compared once, the checks of bounds dropped: regexredux 0.324 s -> 0.305 s (D238)
+  - [ ] The engine of shapes still 7 times the cost of the primitive of the floor (0.56 against 0.074 ns a byte): its loop of starts, the vectors of bounds of dense matches, a runtime for AVX-512
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

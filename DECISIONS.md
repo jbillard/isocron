@@ -4087,3 +4087,20 @@ on 4 threads, 0.791 s -> 0.714 s on one; the same outputs, with the
 runtime without AVX2 too. Tests: the shapes and the matches of the
 automaton (isc-runtime-core) on such alternations,
 `alternations_of_shapes_found_by_masks` (strings).
+- **D238 — The masks of the engine of shapes, tighter (2026-11-04).** On
+one thread the engine of shapes (`Simple::bounds_from`) took 64 % of
+regex-redux: about 5.8 instructions and 0.56 ns a byte for the 9 counts
+(the primitive of the floor: 0.074 ns). Its loop checked the bounds of
+each index of class, and compared each letter twice when the pattern
+ignores case. A lower case letter whose upper case is in the same classes
+is now compared once, with the bytes `| 0x20` (only these two bytes give
+it); the indices of classes and of alternatives, below their bounds by
+construction, are masked, which drops the checks. At fixed frequency,
+alternated in one series: regex-redux 0.324 s -> 0.305 s on 4 threads,
+0.716 s -> 0.650 s on one; the same outputs, with the runtime without AVX2
+too. Tried and not kept: each class computed in registers from its bytes,
+then its mask once (no write per byte): 0.312 s and 0.677 s, worse, the
+bytes of overlapping classes compared again for each class. The engine is
+still 7 times the cost of the primitive: its loop of starts, the vectors
+of the bounds of dense matches (millions of pairs written, merged, read
+again), compares of 32 bytes where AVX-512 gives a mask of 64 at once.
