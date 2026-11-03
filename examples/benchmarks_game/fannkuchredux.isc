@@ -74,16 +74,19 @@ function factorial(n: i64): i64 {
 }
 
 // the checksum and the largest count of the `length` permutations from
-// the rank `first`
+// the rank `first`: the permutations one after the other (a `fold`, each
+// from the one before, written in place), then their flips, independent
+// of each other (a `map`: in vector code, one permutation per lane)
 function chunk(n: i64, first: i64, length: i64, fact: i64, identity: u64): [i64, i64] {
-    const [p0, c0] = start(first, n - 1, fact, identity, 0u64);
-    const [p, c, sum, most] = fold(iota(length), [p0, c0, 0, 0] as const, (s, k) => {
-        const [p, c, sum, most] = s;
-        const f = flips(p, 0);
-        const [q, d] = next(p, c, 1, n);
-        return [q, d, (first + k) % 2 == 0 ? sum + f : sum - f, Math.max(most, f)] as const;
+    const made = fold(iota(length), [fill(length, 0u64), start(first, n - 1, fact, identity, 0u64)] as const, (acc, k) => {
+        const [ps, s] = acc;
+        const [p, c] = s;
+        return [ps.with(k, p), next(p, c, 1, n)] as const;
     });
-    return [sum, most] as const;
+    const [perms, last] = made;
+    const f = map(perms, (p) => flips(p, 0));
+    const sum = reduce(map(iota(length), (k) => (first + k) % 2 == 0 ? f[k] : -f[k]), (a, b) => a + b, 0);
+    return [sum, reduce(f, (a, b) => Math.max(a, b), 0)] as const;
 }
 
 action main(args: string[k]): i32 {

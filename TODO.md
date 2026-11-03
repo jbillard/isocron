@@ -164,6 +164,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The division whose quotient is one word, results built once: pidigits 2.232 s -> 0.888 s (D196)
 - [ ] (4) Code of scalar recursions (fannkuchredux)
   - [x] The program by chunks, without divisions, one pass: 41.7 s -> 4.3 s on 4 threads (D170)
+  - [x] The flips of a chunk as a `map`, one permutation per lane: 4.413 s -> 1.663 s (D197)
 - [ ] (5) Copies of strings, cache of regular expressions (regexredux)
   - [x] Replacements by the bounds of the matches, ECMAScript's empty matches, searches shared out among threads: regexredux 3.7 s -> 3.0 s (D174)
   - [x] Teddy in AVX2: a runtime built for x86-64-v3, linked for the targets that have it: regexredux 3.013 s -> 2.684 s (D188)

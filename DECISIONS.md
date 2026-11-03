@@ -3383,3 +3383,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `isc_alloc`, `isc_alloc_zeroed` and `isc_node_alloc` declared `noalias`
   (a new block shares no byte with another): n-body 6.130 s -> 6.135 s,
   the other programs within 1 %. None kept: no measured gain.
+- **D197 — fannkuch-redux: the flips of a chunk as a `map` (2026-11-04).**
+  A change of the program, not of the language (as D170). Its counters
+  (n = 11, one thread): 15.4 cycles and 29 instructions per flip, 1.1
+  mispredicted branch per permutation; the loop of the flips is 19
+  instructions whose chain (each flip reads the first digit of the one
+  before) takes 7 to 8 cycles: bound by latency, as the reference programs
+  (a table of masks and `pshufb`). The flips of different permutations are
+  independent: the chunk now makes its permutations one after the other
+  (a `fold` writing them in place into an array) and then takes their
+  flips by `map(perms, (p) => flips(p, 0))`, which the compiler runs as
+  vector code (`flips`, recursive on scalars, is SPMD, D140): one
+  permutation per lane, the loop until the last lane ends. fannkuch-redux
+  12 at fixed frequency: 4.413 s -> 1.663 s on 4 threads (the fastest C
+  2.480 s), 1.342 s -> 0.502 s on one (n = 11); the same output. The floor
+  of D182 assumed the flips one after the other (1.472 s): wrong, the
+  bound is the throughput, below it.
