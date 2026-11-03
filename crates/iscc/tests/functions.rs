@@ -495,3 +495,52 @@ action main(args: string[k]): i32 {
     let ir = isc_ir::print::program(&p);
     assert!(!ir.lines().any(|l| l.trim() == "len"), "{}", ir);
 }
+
+/// D230: a function of an element of a small table, costly and unable to
+/// panic whatever the element, computed once per element of the table when
+/// the `map` has at least twice as many elements: each element of the `map`
+/// reads the new table. The interpreter's results (the floats printed
+/// whole: the same bits), below and above that size, 1 and 4 threads; not
+/// done for a mere read; an index of the table past its end still panics.
+#[test]
+fn functions_of_table_elements_computed_once() {
+    let src = "const P = [0.27, 0.12, 0.12, 0.27, 0.22];
+const CODES = \"acgtN\";
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const shift = parseI64(args[1]);
+    const values = map(iota(1000), (i) => (i * 7919) % 1000);
+    const cp = map(iota(5), (i) => fold(iota(i + 1), 0.0, (c, j) => c + P[j]));
+    const codes = bytes(CODES);
+    printBytes(map(iota(n), (t) => {
+        const r = f64(values[(t + shift) % 1000]) / 1000.0;
+        return codes[Math.min(count(cp, (c) => c <= r), 4)];
+    }));
+    print(\"\");
+    print(sum(map(iota(n), (t) => Math.sqrt(f64(values[t % 1000])) / 3.0)));
+    print(sum(map(iota(n), (t) => values[(t * 3) % 1000] + 1)));
+    print(sum(map(iota(n), (t) => f64(codes[values[t % 1000] % 7]) / 2.0)));
+    return 0;
+}
+";
+    let bin = compile(src, "table_functions");
+    for args in [["0", "0"], ["10", "3"], ["1999", "0"], ["2000", "7"], ["50000", "11"], ["3000", "-2001"]] {
+        let want = interp(src, &args);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(t));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, t, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    assert!(r.stderr.contains(m.as_str()), "{:?} {} threads: {} / {}", args, t, r.stderr, m);
+                }
+            }
+        }
+    }
+    let p = iscc::frontend("table_functions.isc", src).unwrap();
+    let ir = isc_ir::print::program(&p);
+    // tables: the code of the bytes, the root, the half of an element of
+    // `codes` (read at a remainder of 7, past its 5 bytes: the new table of
+    // 5 panics where `codes` did); not the read alone (`+ 1`)
+    assert_eq!(ir.lines().filter(|l| l.contains(" table%") && l.trim_start().starts_with("let")).count(), 3, "{}", ir);
+}

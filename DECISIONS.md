@@ -3963,3 +3963,27 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   0.547 s -> 0.519 s on one. Test
   `consecutive_indices_through_a_remainder` (crossings in a vector, a
   negative `x`, c below the lanes, an index past the end).
+- **D230 — A function of an element of a small table, computed once per
+  element of the table (2026-11-04).** After D229 each random byte of fasta
+  still cost a division of floats (`f64(values[t % IM]) / f64(IM)`,
+  `vdivpd`, 2 cycles a lane) and a count over the cumulative
+  probabilities, for 2e8 bytes, though `values` has only the 139968 values
+  of one period of the generator. A pass of the IR (`table_functions`,
+  after `constant_lengths`) looks in each `map` for a read `t[i]` of an
+  array bound outside it, at an index that varies, and the highest node
+  above it that depends on nothing else of the `map`: `h(t[i])`. When `h`
+  costs more than a read (a loop, a division of floats, a root) and cannot
+  panic whatever the element (`total`: no call, no slice; a read of an
+  array of known length at an index whose bounds, from `int_bounds`, are
+  inside it: `codes[min(count(...), n - 1)]`, a count being a sum of 0
+  and 1 over an array of known length), the `map` becomes `if length >= 2
+  * len(t) then (let H = map(t, h) in the map with H[i]) else the map`:
+  `h` once per element of `t`, then a read per element. The same
+  operations on the same values: the same bits; `H` has the length of `t`,
+  so `H[i]` panics where `t[i]` did. The `n` of `iota(n)` bound once, the
+  test of a size around the input looked through. Of the ten programs only
+  fasta changes. At fixed frequency, best of 7: fasta 0.135 s -> 0.047 s
+  on 4 threads, 0.520 s -> 0.085 s on one; the same output (also for N =
+  1, 7, 1000). Its floor (D222: 2e8 numbers of the generator) is to be
+  redone: the program needs one period and copies. Test
+  `functions_of_table_elements_computed_once`.

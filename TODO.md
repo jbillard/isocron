@@ -206,7 +206,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Consecutive indices checked from their ends under a mask too: revcomp 0.106 s -> 0.104 s, one thread 0.229 s -> 0.218 s (D226)
   - [x] The length of an array known before running a constant of the IR: fasta 0.167 s -> 0.142 s (D228)
   - [x] Consecutive indices through a remainder by a constant read by one load: fasta 0.142 s -> 0.135 s (D229)
-  - [ ] fasta: `f64(x) / f64(IM)` a division per byte, the count over the cumulative probabilities: a function of an element of a small table, computed per byte
+  - [x] A function of an element of a small table computed once per element of the table: fasta 0.135 s -> 0.047 s (D230)
+  - [ ] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)

@@ -322,6 +322,7 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     copy_prop(body, &mut HashMap::new());
     producer_lengths(body);
     constant_lengths(body, &mut HashMap::new());
+    table_functions(body, vars, &mut HashMap::new());
     inline_zips(body, vars);
     fuse_fixpoint(body);
     bind_temporaries(body, vars);
@@ -1122,6 +1123,317 @@ fn constant_lengths(e: &mut Expr, strs: &mut HashMap<VarId, i64>) {
     }
     for c in e.children_mut() {
         constant_lengths(c, strs);
+    }
+}
+
+// ---------------------------------------------------------------------
+// a function of an element of a small table (D230)
+
+/// The bounds of the integer `e` when they are known: constants, `min`,
+/// `max`, sums and differences, the branches of an `if`, a sum (`reduce`
+/// with `+`) of the terms of a `map` over an array of known length.
+fn int_bounds(e: &Expr, lens: &HashMap<VarId, i64>) -> Option<(i64, i64)> {
+    match &e.kind {
+        ExprKind::Lit(Lit::Int(c)) => Some((*c, *c)),
+        ExprKind::Convert(x) if x.ty == Type::Bool => Some((0, 1)),
+        ExprKind::If(_, t, f) => {
+            let (a, b) = (int_bounds(t, lens)?, int_bounds(f, lens)?);
+            Some((a.0.min(b.0), a.1.max(b.1)))
+        }
+        // `let v = map(...) in reduce(v, +, z)`: the sum of the map
+        ExprKind::Let { var, init, body, .. } => match &body.kind {
+            ExprKind::Reduce(x, l, z) if matches!(x.kind, ExprKind::Var(v, _) if v == *var) && matches!(init.kind, ExprKind::Map(..)) => {
+                sum_bounds(init, l, z, lens)
+            }
+            _ => int_bounds(body, lens),
+        },
+        ExprKind::Binary(op, a, b) => {
+            let (x, y) = (int_bounds(a, lens)?, int_bounds(b, lens)?);
+            match op {
+                BinOp::Min => Some((x.0.min(y.0), x.1.min(y.1))),
+                BinOp::Max => Some((x.0.max(y.0), x.1.max(y.1))),
+                BinOp::Add => Some((x.0.checked_add(y.0)?, x.1.checked_add(y.1)?)),
+                BinOp::Sub => Some((x.0.checked_sub(y.1)?, x.1.checked_sub(y.0)?)),
+                _ => None,
+            }
+        }
+        ExprKind::Reduce(x, l, z) => sum_bounds(x, l, z, lens),
+        _ => None,
+    }
+}
+
+/// The bounds of `reduce(x, +, z)` where `x` is a `map` over an array of
+/// known length: z plus that many terms within the bounds of its body.
+fn sum_bounds(x: &Expr, l: &Lambda, z: &Expr, lens: &HashMap<VarId, i64>) -> Option<(i64, i64)> {
+    if exact_op(l) != Some(BinOp::Add) {
+        return None;
+    }
+    let ExprKind::Map(ins, m) = &x.kind else { return None };
+    let n = match &ins.first()?.kind {
+        ExprKind::Var(v, _) => *lens.get(v)?,
+        _ => static_len(&ins[0], &HashMap::new())?,
+    };
+    let (a, b) = int_bounds(&m.body, lens)?;
+    let (z0, z1) = int_bounds(z, lens)?;
+    Some((z0.checked_add(a.min(0).checked_mul(n)?)?, z1.checked_add(b.max(0).checked_mul(n)?)?))
+}
+
+/// `e` cannot panic, whatever its free variables: as `cannot_panic`, and
+/// besides the elements of arrays of known length at indices whose bounds
+/// are inside it, the tests of sizes of two equal constants.
+fn total(e: &Expr, lens: &HashMap<VarId, i64>) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Index(a, i) => {
+            let ok = match a.kind {
+                Var(v, _) => match (lens.get(&v), int_bounds(i, lens)) {
+                    (Some(&n), Some((lo, hi))) => lo >= 0 && hi < n,
+                    _ => false,
+                },
+                _ => false,
+            };
+            ok && total(i, lens)
+        }
+        CheckSize(a, b, body) => matches!((&a.kind, &b.kind), (Lit(crate::Lit::Int(x)), Lit(crate::Lit::Int(y))) if x == y) && total(body, lens),
+        Update { .. } | Slice(..) | Window(..) | CheckNonNegative(..) | Action(..) | Bench(..) | Call(..) => false,
+        Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) => {
+            matches!(b.kind, Lit(crate::Lit::Int(d)) if d != 0 && d != -1) && total(a, lens)
+        }
+        Pow(..) => cannot_panic(e),
+        _ => e.children().into_iter().all(|c| total(c, lens)),
+    }
+}
+
+/// `e` costs more than reading an element: a loop, a division of floats,
+/// a root.
+fn dear(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Sqrt(_) => true,
+        ExprKind::Binary(BinOp::Div | BinOp::Rem, a, _) if matches!(a.ty, Type::F64 | Type::F32) => true,
+        _ => e.children().into_iter().any(dear),
+    }
+}
+
+/// The spans of `e` all set to `sp` (to compare two expressions).
+fn unspan(e: &mut Expr, sp: Span) {
+    e.span = sp;
+    for c in e.children_mut() {
+        unspan(c, sp);
+    }
+}
+
+fn same(a: &Expr, b: &Expr) -> bool {
+    let (mut x, mut y) = (a.clone(), b.clone());
+    unspan(&mut x, a.span);
+    unspan(&mut y, a.span);
+    x == y
+}
+
+/// Each `t[i]` in `e` (the same `i` as `idx`) replaced by `with`.
+fn replace_loads(e: &mut Expr, t: VarId, idx: &Expr, with: &Expr) -> usize {
+    if let ExprKind::Index(a, i) = &e.kind {
+        if matches!(a.kind, ExprKind::Var(v, _) if v == t) && same(i, idx) {
+            *e = with.clone();
+            return 1;
+        }
+    }
+    e.children_mut().into_iter().map(|c| replace_loads(c, t, idx, with)).sum()
+}
+
+/// The variables bound inside `e` renamed to new ones (a copy of `e`
+/// beside it).
+fn rename_bound(e: &mut Expr, vars: &mut Vec<VarInfo>) {
+    let mut bound = HashSet::new();
+    bound_in(e, &mut bound);
+    let map: HashMap<VarId, VarId> = bound
+        .into_iter()
+        .map(|v| {
+            vars.push(vars[v as usize].clone());
+            (v, (vars.len() - 1) as VarId)
+        })
+        .collect();
+    fn go(e: &mut Expr, map: &HashMap<VarId, VarId>) {
+        match &mut e.kind {
+            ExprKind::Var(v, _) => {
+                if let Some(w) = map.get(v) {
+                    *v = *w;
+                }
+            }
+            ExprKind::Let { var, .. } => {
+                if let Some(w) = map.get(var) {
+                    *var = *w;
+                }
+            }
+            ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+                for p in l.params.iter_mut() {
+                    if let Some(w) = map.get(p) {
+                        *p = *w;
+                    }
+                }
+            }
+            _ => {}
+        }
+        for c in e.children_mut() {
+            go(c, map);
+        }
+    }
+    go(e, &map);
+}
+
+/// The reads `t[i]` in `e` of an array `t` not bound in it (`inner`), of
+/// scalars, at an index that depends on what is bound in it: their paths.
+fn table_loads(e: &Expr, inner: &HashSet<VarId>, path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, VarId)>) {
+    if let ExprKind::Index(a, i) = &e.kind {
+        if let ExprKind::Var(t, _) = a.kind {
+            let mut fi = HashSet::new();
+            free_in(i, &mut Vec::new(), &mut fi);
+            if !inner.contains(&t) && a.ty.elem().is_scalar() && fi.iter().any(|v| inner.contains(v)) {
+                out.push((path.clone(), t));
+            }
+        }
+    }
+    for (k, c) in e.children().into_iter().enumerate() {
+        path.push(k);
+        table_loads(c, inner, path, out);
+        path.pop();
+    }
+}
+
+fn at_path_ref<'a>(e: &'a Expr, path: &[usize]) -> &'a Expr {
+    match path.split_first() {
+        None => e,
+        Some((i, rest)) => at_path_ref(e.children().into_iter().nth(*i).unwrap(), rest),
+    }
+}
+
+/// `map(x, (q) -> ... h(t[i]) ...)`, where `h(t[i])` depends on `q` only
+/// through the element `t[i]` of an array `t` bound outside, costs more
+/// than a read (`dear`) and cannot panic whatever the element (`total`):
+/// when the `map` has at least twice as many elements as `t`, `h` is
+/// computed once per element of `t` (`H = map(t, h)`) and each element of
+/// the `map` reads `H[i]`; otherwise the `map` as it was. The same
+/// operations on the same values: the same bits; `H[i]` panics where `t[i]`
+/// did.
+fn table_function(m: &Expr, vars: &mut Vec<VarInfo>, lens: &HashMap<VarId, i64>) -> Option<Expr> {
+    let ExprKind::Map(ins, _) = &m.kind else { return None };
+    if ins.len() != 1 {
+        return None;
+    }
+    // the length of `iota(n)`, `n` computed once: bound to a variable
+    let mut m = m.clone();
+    let mut bind_len = None;
+    if let ExprKind::Map(ins, _) = &mut m.kind {
+        if let ExprKind::Iota(n) = &mut ins[0].kind {
+            if !matches!(n.kind, ExprKind::Var(..) | ExprKind::Lit(_)) {
+                vars.push(VarInfo { name: "length".into(), ty: Type::Int(IntKind::I64) });
+                let nv = (vars.len() - 1) as VarId;
+                let value = std::mem::replace(&mut **n, Expr::var(nv, Type::Int(IntKind::I64), m.span));
+                bind_len = Some((nv, value));
+            }
+        }
+    }
+    let m = &m;
+    let ExprKind::Map(ins, l) = &m.kind else { unreachable!() };
+    // (through the test of a size around the input: it stays in the `map`)
+    let input = match &ins[0].kind {
+        ExprKind::CheckNonNegative(_, x) => &**x,
+        _ => &ins[0],
+    };
+    let n_map = length_expr(input)?;
+    let mut inner = HashSet::new();
+    bound_in(&l.body, &mut inner);
+    inner.extend(&l.params);
+    let mut loads = Vec::new();
+    table_loads(&l.body, &inner, &mut Vec::new(), &mut loads);
+    let sp = m.span;
+    for (path, t) in loads {
+        let ExprKind::Index(_, idx) = &at_path_ref(&l.body, &path).kind else { continue };
+        let idx = (**idx).clone();
+        let mut fi = HashSet::new();
+        free_in(&idx, &mut Vec::new(), &mut fi);
+        let elem = vars[t as usize].ty.elem().clone();
+        vars.push(VarInfo { name: "elem".into(), ty: elem.clone() });
+        let ev = (vars.len() - 1) as VarId;
+        let hole = Expr::var(ev, elem.clone(), sp);
+        // the highest node holding the read that depends on nothing else
+        // bound in the `map`, and where the index is in scope
+        let mut best = None;
+        for k in (0..path.len()).rev() {
+            let x = at_path_ref(&l.body, &path[..k]);
+            if !x.ty.is_scalar() || matches!(x.kind, ExprKind::Let { stmt: true, .. }) {
+                continue;
+            }
+            let mut inside = HashSet::new();
+            bound_in(x, &mut inside);
+            if fi.iter().any(|v| inside.contains(v)) {
+                continue;
+            }
+            let mut xc = x.clone();
+            replace_loads(&mut xc, t, &idx, &hole);
+            let mut free = HashSet::new();
+            free_in(&xc, &mut Vec::new(), &mut free);
+            free.remove(&ev);
+            if free.iter().any(|v| inner.contains(v)) {
+                continue;
+            }
+            best = Some((k, xc));
+        }
+        let Some((k, h)) = best else { continue };
+        if !dear(&h) || !total(&h, lens) {
+            continue;
+        }
+        // H = map(t, (elem) -> h), its own variables
+        let mut h = h;
+        rename_bound(&mut h, vars);
+        let hty = Type::Array(Box::new(h.ty.clone()), crate::Fixed::ANY);
+        vars.push(VarInfo { name: "table".into(), ty: hty.clone() });
+        let hv = (vars.len() - 1) as VarId;
+        let tvar = Expr::var(t, vars[t as usize].ty.clone(), sp);
+        let table = Expr::new(ExprKind::Map(vec![tvar.clone()], Lambda { params: vec![ev], body: Box::new(h), drop_params: vec![false] }), hty.clone(), sp);
+        // the `map` with H[i] where h(t[i]) was
+        let mut fast = m.clone();
+        {
+            let ExprKind::Map(_, fl) = &mut fast.kind else { unreachable!() };
+            let x = at_path(&mut fl.body, &path[..k]);
+            let read = Expr::new(ExprKind::Index(Box::new(Expr::var(hv, hty.clone(), sp)), Box::new(idx.clone())), x.ty.clone(), sp);
+            *x = read;
+        }
+        let i64t = Type::Int(IntKind::I64);
+        let tlen = Expr::new(ExprKind::Len(Box::new(tvar)), i64t.clone(), sp);
+        let twice = Expr::new(ExprKind::Binary(BinOp::Mul, Box::new(Expr::i64(2, sp)), Box::new(tlen)), i64t, sp);
+        let worth = Expr::new(ExprKind::Binary(BinOp::Ge, Box::new(n_map), Box::new(twice)), Type::Bool, sp);
+        let with_table = Expr::new(ExprKind::Let { var: hv, init: Box::new(table), body: Box::new(fast), stmt: false, drop: false }, m.ty.clone(), sp);
+        let mut slow = m.clone();
+        rename_bound(&mut slow, vars);
+        let choice = Expr::new(ExprKind::If(Box::new(worth), Box::new(with_table), Box::new(slow)), m.ty.clone(), sp);
+        return Some(match bind_len {
+            Some((nv, value)) => Expr::new(ExprKind::Let { var: nv, init: Box::new(value), body: Box::new(choice), stmt: false, drop: false }, m.ty.clone(), sp),
+            None => choice,
+        });
+    }
+    None
+}
+
+/// `table_function` at every `map`, the lengths known before running of
+/// the arrays bound around it (`static_len`).
+fn table_functions(e: &mut Expr, vars: &mut Vec<VarInfo>, lens: &mut HashMap<VarId, i64>) {
+    if let ExprKind::Let { var, init, body, .. } = &mut e.kind {
+        table_functions(init, vars, lens);
+        if init.ty.is_array() {
+            if let Some(n) = static_len(init, &HashMap::new()) {
+                lens.insert(*var, n);
+            }
+        }
+        table_functions(body, vars, lens);
+        return;
+    }
+    for c in e.children_mut() {
+        table_functions(c, vars, lens);
+    }
+    if matches!(e.kind, ExprKind::Map(..)) {
+        if let Some(new) = table_function(e, vars, lens) {
+            *e = new;
+        }
     }
 }
 
