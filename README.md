@@ -60,16 +60,22 @@ section 14.
 * For the benchmarks: GCC, Go, Zig 0.14 (its `zig cc` is used as Clang),
   `taskset`, Python 3; Docker for the Benchmarks Game.
 
-### On Windows
+### The released compiler
 
-`iscc.exe` runs on Windows 10 and 11 (x86-64) with LLVM 21 for Windows
-installed (the official installer, `LLVM-21.1.8-win64.exe`; its `bin` in the
-`PATH`, or in `C:\Program Files\LLVM\bin`); nothing else, MinGW-w64 is
-embedded. `iscc build prog.isc` writes `prog.exe`. It is built on Linux:
+The `iscc` of a release (Linux x86-64, any glibc from 2.28 on) and
+`iscc.exe` (Windows 10 and 11, x86-64) need nothing else: LLVM and its
+linker (LLD) are inside, with the start files and the C libraries they
+link programs with (glibc's start files, MinGW-w64, WASI). Each builds
+for its own system by default, and for `--target x86_64-windows` and
+`--target wasm32-wasi`. They are built by `tools/release` (LLVM 21.1.8 and
+LLD as static libraries, in Docker):
 
 ```sh
-rustup target add x86_64-pc-windows-gnu
-ISC_MINGW_DIR=/usr ISC_LLVM_LIB_DIR=<the lib directory of LLVM for Windows, with LLVM-C.lib> tools/windows/build_iscc.sh
+docker build -t isocron-release-linux tools/release/linux
+docker build -t isocron-release-windows tools/release/windows
+# in each image: tools/release/build_llvm.sh, then tools/release/build_iscc.sh
+tools/release/selftest_linux.sh <iscc> target/release/iscc           # in minimal systems, without network
+tools/release/selftest_windows.py <iscc.exe> target/release/iscc     # on the Windows machine of tools/windows/run.py
 ```
 
 ### Building and running

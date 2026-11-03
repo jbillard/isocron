@@ -219,6 +219,16 @@ impl Write for Stderr {
     }
 }
 
+/// The end of a cleanup of the precompiled `alloc` of Rust (built to
+/// unwind): with `panic = "abort"` no panic unwinds, so no cleanup runs. A
+/// program linked by the LLD of iscc gets no `libgcc_s` (D248); one linked
+/// by `cc` takes this one too.
+#[cfg(target_os = "linux")]
+#[no_mangle]
+pub extern "C" fn _Unwind_Resume() -> ! {
+    unsafe { abort() }
+}
+
 /// Set by the first thread that panics.
 static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 

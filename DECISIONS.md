@@ -4338,3 +4338,52 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     standard input and a missing file, a panic; C functions of Windows,
     `MultiByteToWideChar` with six arguments (two on the stack), in both.
     Passes. The LLVM of the machine: 21.1.8, the version of the host.
+- **D248 — An iscc that needs nothing else, on Linux and on Windows
+  (2026-11-04).** Before: the shared library of LLVM 21 (on Linux, 15
+  shared libraries for the iscc built here, `libLLVM.so.21.1` and those it
+  needs; `LLVM-C.dll` on Windows), a
+  linker (`cc` and the development files of glibc, `rust-lld` or
+  `ld.lld`), the WASI C library of the Rust targets, and a glibc of at
+  least 2.39 for the iscc built here.
+  - LLVM 21.1.8 and LLD built from their sources as static libraries
+    (`tools/release/build_llvm.sh`): the targets x86 and WebAssembly, LLD
+    for ELF, COFF, MinGW and Wasm, no compression, XML, line editing,
+    terminfo or RTTI; for Linux in `manylinux_2_28` (AlmaLinux 8, glibc
+    2.28: 117 libraries), for Windows cross-compiled by MinGW-w64 in
+    Debian 13 (119). Debian 11 was the first choice, but its repositories
+    are archived.
+  - `isc-codegen` with `ISC_LLVM_STATIC`: the 103 libraries of `llvm-config
+    --libnames all` (an archive gives only the members used), LLD's drivers
+    and `libstdc++` statically; `src/lld_shim.cpp` calls `lld::lldMain`
+    with the four drivers; `isc_codegen::lld::link` runs it in the process,
+    one link at a time (LLD keeps state between links; the tests link from
+    several threads). Without `ISC_LLVM_STATIC`, the shared LLVM and the
+    linkers of the system as before.
+  - iscc embeds what LLD links with: for Linux, the start files of glibc
+    of the build (`Scrt1.o`, `crti.o`, `crtn.o`, and `libc_nonshared.a`,
+    whose `__libc_csu_init` and `__libc_csu_fini` the `Scrt1.o` of glibc
+    2.28 calls; from glibc 2.34 on, `__libc_start_main` ignores them and
+    runs the constructors itself), a program then linked with the
+    `libc.so.6` and `libm.so.6` of the machine (no development files: the
+    program uses the glibc of the system, as with `cc`); the MinGW-w64
+    files of D247; the WASI C library of both WebAssembly targets. The
+    precompiled `alloc` of Rust calls `_Unwind_Resume` in its cleanups,
+    never run with `panic = "abort"`: the runtime of Linux defines it (an
+    abort), `libgcc_s` is not needed.
+  - The same code: the assembly that our LLVM gives for knucleotide,
+    nbody, mandelbrot and regexredux is the one of Debian's LLVM 21.1.8,
+    byte for byte.
+  - The iscc for Linux: 125 004 856 bytes (its symbols removed), it needs
+    a glibc of at least 2.28 and `libgcc_s`. `tools/release/selftest_linux.sh`:
+    in Debian 12 slim, Ubuntu 20.04 (glibc 2.31) and AlmaLinux 8 (glibc
+    2.28), without compiler, linker, development files or network, it
+    builds the ten programs of the Benchmarks Game, whose outputs are
+    those of the programs built here, and builds for Windows and
+    WebAssembly. iscc.exe: 109 575 168 bytes, it imports only DLLs of
+    Windows (`KERNEL32`, `ADVAPI32`, `SHELL32`, `ole32`, `USERENV`,
+    `WS2_32`, `ntdll`, `bcryptprimitives`, `msvcrt`, the synchronization
+    API set); `tools/release/selftest_windows.py`: on the Windows machine
+    of D246, LLVM made absent, the ten programs with the outputs of Linux,
+    `iscc run`, WebAssembly.
+  - Most of the size: the embedded runtimes (six, 5.2 to 7.8 MB each),
+    then LLVM and LLD. Compressing the runtimes is left for later.

@@ -105,6 +105,46 @@ fn main() {
         }
     }
     mingw_files();
+    link_files(sysroot.as_ref());
+}
+
+/// The other files a linker of its own needs (D248), embedded: the start
+/// files of glibc (`Scrt1.o`, `crti.o`, `crtn.o`, `libc_nonshared.a`, from `$ISC_GLIBC_DIR`, else
+/// the usual directories; programs are then linked with the `libc.so.6` of
+/// the machine), and the C library of WASI of each WebAssembly target (in
+/// the Rust sysroot). An empty list for what is not found.
+fn link_files(sysroot: Option<&PathBuf>) {
+    println!("cargo:rerun-if-env-changed=ISC_GLIBC_DIR");
+    let mut dirs: Vec<PathBuf> = env::var("ISC_GLIBC_DIR").ok().map(PathBuf::from).into_iter().collect();
+    dirs.extend(["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"].iter().map(PathBuf::from));
+    let glibc = dirs.into_iter().find(|d| ["Scrt1.o", "crti.o", "crtn.o"].iter().all(|f| d.join(f).is_file()));
+    let entry = |name: &str, f: &PathBuf| format!("    ({:?}, include_bytes!({:?})),", name, f.display().to_string());
+    // and `libc_nonshared.a`: before glibc 2.34, `Scrt1.o` calls its
+    // `__libc_csu_init` and `__libc_csu_fini`
+    let glibc_entries: Vec<String> = match &glibc {
+        Some(d) => ["Scrt1.o", "crti.o", "crtn.o", "libc_nonshared.a"].iter().filter(|f| d.join(f).is_file()).map(|f| entry(f, &d.join(f))).collect(),
+        None => Vec::new(),
+    };
+    let mut wasi = Vec::new();
+    for (triple, tag) in [("wasm32-wasip1", ""), ("wasm32-wasip1-threads", "threads-")] {
+        if let Some(r) = sysroot {
+            let d = r.join("lib/rustlib").join(triple).join("lib/self-contained");
+            if d.join("libc.a").is_file() && d.join("crt1-command.o").is_file() {
+                wasi.push(entry(&format!("{}crt1-command.o", tag), &d.join("crt1-command.o")));
+                wasi.push(entry(&format!("{}libc.a", tag), &d.join("libc.a")));
+            }
+        }
+    }
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("link_files.rs");
+    std::fs::write(
+        &out,
+        format!(
+            "/// The start files of glibc for the linker of iscc (build.rs).\npub const GLIBC_FILES: &[(&str, &[u8])] = &[\n{}\n];\n/// The C library of WASI, `threads-` for wasm32-wasip1-threads.\npub const WASI_FILES: &[(&str, &[u8])] = &[\n{}\n];\n",
+            glibc_entries.join("\n"),
+            wasi.join("\n")
+        ),
+    )
+    .unwrap();
 }
 
 /// The files of MinGW-w64 that the linker of Windows programs needs (D247),

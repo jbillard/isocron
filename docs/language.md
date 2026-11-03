@@ -2357,14 +2357,17 @@ iscc completions bash|zsh|fish              the completion of the shell
   import libraries of MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian
   packages `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the
   program needs no DLL beyond those of Windows.
-* `iscc` also runs on Windows (`iscc.exe`, built on Linux by
-  `tools/windows/build_iscc.sh`): there, `build` writes a Windows
-  executable by default (`<file>.exe`), and the start files and libraries
-  of MinGW-w64 it links with are embedded in `iscc.exe`; it needs LLVM 21
-  for Windows (the official installer: `LLVM-C.dll` and `ld.lld.exe`, in
-  the `PATH` or in `C:\Program Files\LLVM\bin`). `run` calls the C
+* `iscc` also runs on Windows (`iscc.exe`): there, `build` writes a
+  Windows executable by default (`<file>.exe`). `run` calls the C
   functions of Windows (`--link name` loads `name.dll`), the errors of files
   with the messages of Linux.
+* The `iscc` of a release needs nothing else, on Linux (any glibc from 2.28
+  on) and on Windows: LLVM and its linker (LLD) are inside, with the start
+  files and C libraries of each target (glibc's start files: a program is
+  linked with the `libc.so.6` of the machine, as with `cc`; MinGW-w64;
+  WASI). An `iscc` built from the sources without `ISC_LLVM_STATIC` uses
+  the LLVM 21 shared library and the linkers of the system (`cc`, or
+  `$ISC_CC`; `rust-lld` or `ld.lld` for Windows and WebAssembly).
 * Native (Linux and Windows), WebAssembly with or without threads, and the
   interpreter give the same results to the bit, and the same panic
   messages. Linking WebAssembly

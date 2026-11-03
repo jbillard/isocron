@@ -224,7 +224,9 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
   - [ ] Windows: the runtimes for x86-64-v3 and v4, the console in UTF-8, the MSVC ABI, timings
+  - [x] An iscc that needs nothing else, on Linux (glibc from 2.28 on) and on Windows: LLVM and LLD inside (D248)
   - [ ] A first release: the compilers for Linux and Windows
+  - [ ] A smaller iscc: the embedded runtimes compressed
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
