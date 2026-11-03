@@ -3934,3 +3934,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   n-body the chain as written, 11 latencies of an addition, a root and a
   division, 1.253 s -> 1.316 s (Isocron 1.6, gcc-9 1.5), the value of
   D182. The rule written in `results/floors.md`.
+- **D228 — The length of an array known before running is a constant
+  (2026-11-04).** fasta was 4.7 times its floor, all of it computation:
+  about 15 instructions per byte of output. Its first sequence,
+  `alu[i % alu.length]` over the bytes of a constant string, was a scalar
+  loop with a hardware division (`div`) per byte, about 9 cycles a byte:
+  `alu.length` was a value of the run, so neither the remainder carried by
+  the loop (D180) nor the vector code applied. A pass of the IR
+  (`constant_lengths`, after `producer_lengths`) now replaces `len(v)` by
+  a constant when `v` is bound to an array whose length is known before
+  running: the bytes of a constant string, a literal or constant array,
+  `iota`, `fill` or `zeros` of a constant length, a `map` of one, through
+  `let`s. Of the ten programs only fasta changes. At fixed frequency, best
+  of 7: fasta 0.167 s -> 0.142 s on 4 threads, 0.650 s -> 0.546 s on one;
+  the same output. Test `lengths_known_before_running` (the interpreter's
+  results, no `len` of them left in the IR).

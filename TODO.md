@@ -204,6 +204,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Two simple shapes of regular expressions searched by masks of 64 bytes: regexredux 0.857 s -> 0.479 s (D224)
   - [x] An array of bytes made only to be written made and written by blocks of 1 MiB: revcomp 0.128 s -> 0.107 s (D225)
   - [x] Consecutive indices checked from their ends under a mask too: revcomp 0.106 s -> 0.104 s, one thread 0.229 s -> 0.218 s (D226)
+  - [x] The length of an array known before running a constant of the IR: fasta 0.167 s -> 0.142 s (D228)
+  - [ ] fasta: `values[t % IM]` read by a gather (consecutive but for the wrap), `f64(x) / f64(IM)` a division per byte
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)

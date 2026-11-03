@@ -321,6 +321,7 @@ fn uses_by_element(e: &Expr, v: VarId, index: &mut u32, other: &mut u32) {
 pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     copy_prop(body, &mut HashMap::new());
     producer_lengths(body);
+    constant_lengths(body, &mut HashMap::new());
     inline_zips(body, vars);
     fuse_fixpoint(body);
     bind_temporaries(body, vars);
@@ -1068,6 +1069,59 @@ fn producer_lengths(e: &mut Expr) {
                 replace_len(body, *var, &l);
             }
         }
+    }
+}
+
+/// The length of the array `e` when it is known before running (D228): the
+/// bytes of a constant string, a literal or constant array, `iota`, `fill` or `zeros`
+/// of a constant length, a `map` of such an input, through `let`s; `strs`
+/// the variables bound to constant strings around it.
+fn static_len(e: &Expr, strs: &HashMap<VarId, i64>) -> Option<i64> {
+    match &e.kind {
+        ExprKind::StrOp(crate::StrOp::Bytes, xs) if xs.len() == 1 => match &xs[0].kind {
+            ExprKind::StrLit(s) => Some(s.len() as i64),
+            ExprKind::Var(v, _) => strs.get(v).copied(),
+            _ => None,
+        },
+        ExprKind::ArrayLit(es) => Some(es.len() as i64),
+        ExprKind::ConstArray(ls) => Some(ls.len() as i64),
+        ExprKind::Iota(n) | ExprKind::Zeros(n) | ExprKind::Fill(n, _) => match n.kind {
+            ExprKind::Lit(crate::Lit::Int(c)) if c >= 0 => Some(c),
+            _ => None,
+        },
+        ExprKind::Map(ins, _) => ins.first().and_then(|i| static_len(i, strs)),
+        ExprKind::Let { var, init, body, .. } => {
+            let mut inner = strs.clone();
+            if let ExprKind::StrLit(s) = &init.kind {
+                inner.insert(*var, s.len() as i64);
+            }
+            static_len(body, &inner)
+        }
+        _ => None,
+    }
+}
+
+/// `length(v)`, where `v` is bound to an array whose length is known before
+/// running, becomes that constant (D228): `i % alu.length` over the bytes
+/// of a constant string is then a remainder by a constant, carried by the
+/// loop (D180), and its loop a vector one.
+fn constant_lengths(e: &mut Expr, strs: &mut HashMap<VarId, i64>) {
+    if let ExprKind::Let { var, init, body, .. } = &mut e.kind {
+        constant_lengths(init, strs);
+        if let ExprKind::StrLit(s) = &init.kind {
+            strs.insert(*var, s.len() as i64);
+        }
+        if init.ty.is_array() {
+            if let Some(n) = static_len(init, strs) {
+                let lit = Expr::new(ExprKind::Lit(crate::Lit::Int(n)), Type::Int(IntKind::I64), init.span);
+                replace_len(body, *var, &lit);
+            }
+        }
+        constant_lengths(body, strs);
+        return;
+    }
+    for c in e.children_mut() {
+        constant_lengths(c, strs);
     }
 }
 

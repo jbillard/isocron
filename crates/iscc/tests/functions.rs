@@ -462,3 +462,36 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
 }
+
+/// D228: the length of an array known before running (the bytes of a
+/// constant string, a literal array, `iota` and `fill` of a constant length,
+/// a `map` of one) is a constant in the IR: `i % alu.length` a remainder by
+/// a constant. The interpreter's results; no `len` of them left in the IR.
+#[test]
+fn lengths_known_before_running() {
+    let src = "const ALU = \"GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGG\";
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const alu = bytes(ALU);
+    const lit = [3, 1, 4, 1, 5];
+    const ids = iota(7);
+    const twice = map(fill(5, 2), (x) => x * 2);
+    printBytes(map(iota(n), (i) => alu[i % alu.length]));
+    print(\"\");
+    print(sum(map(iota(n), (i) => lit[i % lit.length] + ids[i % ids.length] + twice[i % twice.length])));
+    print([alu.length, lit.length, ids.length, twice.length] as const);
+    return 0;
+}
+";
+    let bin = compile(src, "constant_lengths");
+    for n in ["0", "1", "71", "100000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+    let p = iscc::frontend("constant_lengths.isc", src).unwrap();
+    let ir = isc_ir::print::program(&p);
+    assert!(!ir.lines().any(|l| l.trim() == "len"), "{}", ir);
+}
