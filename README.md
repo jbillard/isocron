@@ -60,6 +60,8 @@ wasmtime run -W threads=y -S threads=y --env ISC_THREADS=8 --dir=/::/ sum.wasm $
 
 ```sh
 cargo test
+ISC_ALLOC=glibc cargo test             # the same with glibc's allocator
+python3 tools/suite.py . target suite.log 6   # both at once: 3 minutes instead of 13
 ```
 
 The suite covers the lexer and parser (all examples of the specification),

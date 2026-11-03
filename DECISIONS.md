@@ -3852,3 +3852,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `ISC_THREADS=2` (the pool and its worker still checked); the three
   others now do too: bitwise 100.8 s -> 12.0 s, result 47.8 s -> 3.9 s,
   text 49.9 s -> 5.0 s.
+  The two passes also run at once (`tools/suite.py`: one build, then the
+  39 test binaries twice, 6 at a time, the longest first, each allocator
+  its own directory of temporary files through `ISC_TEST_TMP`): 3.0
+  minutes instead of 13.3, the same 78 runs and the doc tests.
