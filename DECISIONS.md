@@ -3046,3 +3046,27 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   floor), 2.125 s -> 0.778 s on one; the nine other programs unchanged
   (within 1 %). Tests `vector_index.rs` (loads, gathers, `u8` and signed
   indices, panics against the interpreter).
+- **D182 — The floors of the machine (2026-11-04).** The goal of
+  2026-11-03 asks that each optimization start from a model of cost on
+  this machine; the work had been ranked by the ratio to the fastest
+  program of another language, which hides the work a program does not
+  need when the others do it too. `bench/floor/floor.c` measures, without
+  Isocron, the costs of the resources (bandwidths of reading and copying,
+  writing into new pages, the divider and the square root by throughput
+  and latency, fused multiply-adds, the latency of an addition and of a
+  load from L1, random increments in tables of 256 KiB, 2 MiB and 64 MiB,
+  the nodes of a tree in an arena, a big integer times a word with `mulx`
+  and `adc`); `bench/floor/counts.c` counts the work of the programs that
+  their sizes do not give (3.76e9 flips of fannkuch-redux 12, 6.25e9
+  iterations of mandelbrot 16000, the k-mers of k-nucleotide: only 138 127
+  and 139 882 distinct keys of 12 and 18, the generator of fasta having a
+  period of 139 968); `bench/floor/floors.py` multiplies them
+  (`results/floors.md`). Two first models were wrong and corrected before
+  use: fused multiply-adds measured through memory (2.9 lanes per cycle,
+  8 in registers), and the passes of pidigits counted unfused with a
+  multiplication by a word in plain C (a floor above the time of the C
+  program; `mulx` and `adc`, one pass per operation: 0.669 s, the C program
+  1.1 times it). Isocron over its floor: fasta 57.8, regex-redux 10.1,
+  k-nucleotide 8.1, reverse-complement 5.4, n-body 4.9, pidigits 3.7,
+  binary-trees 3.0, fannkuch-redux 2.9, mandelbrot 1.5, spectral-norm 1.0;
+  the work goes in that order.

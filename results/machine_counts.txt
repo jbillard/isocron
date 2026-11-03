@@ -1,0 +1,10 @@
+mandelbrot n=16000 pixels 256000000 iterations 6248109921 at_50 101721435
+fannkuch n=12 permutations 479001600 flips 3758940272 maxflips 65
+kmers bases 125000000
+kmers k=1 windows 125000000 distinct 4
+kmers k=2 windows 124999999 distinct 16
+kmers k=3 windows 124999998 distinct 64
+kmers k=4 windows 124999997 distinct 256
+kmers k=6 windows 124999995 distinct 4096
+kmers k=12 windows 124999989 distinct 138127
+kmers k=18 windows 124999983 distinct 139882

@@ -1,0 +1,36 @@
+# 1 thread(s), CPUs 0
+read 21.8 GB/s
+copy 16.0 GB/s
+new_pages 9.4 GB/s
+divide_f64 0.626 ns_per_division_per_core
+sqrt_f64 0.940 ns_per_root_per_core
+fma_f64 0.0392 ns_per_lane_per_core
+divide_latency 5.637 ns
+sqrt_latency 6.889 ns
+random_increment_65536KiB 7.090 ns_per_update_per_core
+random_increment_2048KiB 1.704 ns_per_update_per_core
+random_increment_256KiB 1.159 ns_per_update_per_core
+tree_node_depth12 3.396 ns_per_node_per_core
+tree_node_depth20 2.799 ns_per_node_per_core
+add_latency 1.253 ns
+l1_latency 1.566 ns
+mul_word 0.736 ns_per_word
+memory_latency 85.8 ns
+# 4 thread(s), CPUs 0,1,2,3
+read 47.8 GB/s
+copy 20.8 GB/s
+new_pages 17.7 GB/s
+divide_f64 0.626 ns_per_division_per_core
+sqrt_f64 0.939 ns_per_root_per_core
+fma_f64 0.0392 ns_per_lane_per_core
+divide_latency 5.638 ns
+sqrt_latency 6.894 ns
+random_increment_65536KiB 22.875 ns_per_update_per_core
+random_increment_2048KiB 2.218 ns_per_update_per_core
+random_increment_256KiB 1.246 ns_per_update_per_core
+tree_node_depth12 3.495 ns_per_node_per_core
+tree_node_depth20 4.901 ns_per_node_per_core
+add_latency 1.253 ns
+l1_latency 1.566 ns
+mul_word 0.765 ns_per_word
+memory_latency 85.9 ns

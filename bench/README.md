@@ -43,3 +43,13 @@ bench/compile.py           # compilation times, cold and warm caches -> results/
 bench/run.py --quick --sizes small --kernels sum    # quick check of the scripts
 bench/run.py --report-only                          # rewrite poc.md from poc.json
 ```
+
+## Floors of the machine (`bench/floor`, D182)
+
+`bench/floor/run.sh > results/machine_floor.txt` measures the costs of the
+resources of the machine without Isocron (bandwidths, new pages, divider,
+square root, fused multiply-adds, latencies, random increments, nodes in an
+arena, a big integer times a word), at fixed frequency on 1 and 4 cores;
+`bench/floor/build/counts` counts the work of the programs;
+`bench/floor/floors.py` gives the floor of each program
+(`results/floors.md`).

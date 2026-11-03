@@ -165,6 +165,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Replacements by the bounds of the matches, ECMAScript's empty matches, searches shared out among threads: regexredux 3.7 s -> 3.0 s (D174)
   - [ ] The prefilter of literals chosen by the data (44 % of regexredux's instructions, D174)
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
+  - [x] The costs of the machine measured, the floor of each program (`results/floors.md`, D182): Isocron over its floor fasta 57.8, regexredux 10.1, knucleotide 8.1, revcomp 5.4, nbody 4.9, pidigits 3.7, binarytrees 3.0, fannkuchredux 2.9, mandelbrot 1.5, spectralnorm 1.0
+  - [ ] A microbenchmark and a floor for each primitive of the library
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)
