@@ -154,7 +154,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 - [x] (2) `Map` and `countBy` by a table of hashes: knucleotide 36.9 s -> 3.4 s on 4 threads (D167)
 - [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
   - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)
-  - [ ] The common operations (add, subtract, multiply by a word, compare, divide) on the bytes themselves, without num-bigint (still 73 % in conversions)
+  - [x] The common operations (add, subtract, multiply, divide, compare) on the bytes themselves: pidigits 10000 11.6 s -> 2.5 s (D171)
 - [ ] (4) Code of scalar recursions (fannkuchredux)
   - [x] The program by chunks, without divisions, one pass: 41.7 s -> 4.3 s on 4 threads (D170)
 - [ ] (5) Copies of strings, cache of regular expressions (regexredux)

@@ -311,6 +311,56 @@ pub const fn alloc_class_size(i: usize) -> usize {
 }
 
 #[cfg(test)]
+mod big_divisions {
+    extern crate std;
+    use num_bigint::BigUint;
+
+    fn big(w: &[u64]) -> BigUint {
+        let mut v = std::vec::Vec::new();
+        for &x in w {
+            v.push(x as u32);
+            v.push((x >> 32) as u32);
+        }
+        BigUint::new(v)
+    }
+
+    /// Knuth's algorithm D against num-bigint (D171): random words, words
+    /// near their limits (the corrections of qhat, the step that adds back),
+    /// divisors of one word and longer than the dividend.
+    #[test]
+    fn divisions_as_num_bigint() {
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let pick = |r: u64| match r % 6 {
+            0 => 0,
+            1 => u64::MAX,
+            2 => 1 << 63,
+            3 => (1 << 63) - 1,
+            4 => 1,
+            _ => r.rotate_left(17),
+        };
+        for case in 0..20000 {
+            let la = 1 + (next() % 9) as usize;
+            let lb = 1 + (next() % 6) as usize;
+            let a: std::vec::Vec<u64> = (0..la).map(|_| if case % 2 == 0 { next() } else { pick(next()) }).collect();
+            let mut b: std::vec::Vec<u64> = (0..lb).map(|_| if case % 3 == 0 { next() } else { pick(next()) }).collect();
+            if b.iter().all(|&x| x == 0) {
+                b[0] = 1;
+            }
+            let (q, r) = super::limbs::divrem_for_test(&a, &b);
+            let (ba, bb) = (big(&a), big(&b));
+            assert_eq!(big(&q), &ba / &bb, "{:?} / {:?}", a, b);
+            assert_eq!(big(&r), &ba % &bb, "{:?} % {:?}", a, b);
+        }
+    }
+}
+
+#[cfg(test)]
 mod big_forms {
     extern crate std;
     use num_bigint::BigInt;
@@ -327,7 +377,7 @@ mod big_forms {
             s
         };
         let mut values: std::vec::Vec<BigInt> = std::vec![BigInt::from(0), BigInt::from(1), BigInt::from(-1), BigInt::from(255), BigInt::from(256), BigInt::from(u64::MAX), -BigInt::from(u64::MAX)];
-        for len in 0..40 {
+        for len in (0..40).chain([60, 120]) {
             let mut v = BigInt::from(next() % 1000);
             for _ in 0..len {
                 v = v * BigInt::from(next()) + BigInt::from(next() >> (next() % 64));
@@ -344,12 +394,17 @@ mod big_forms {
             assert_eq!(e256.is_empty(), *v == BigInt::from(0));
         }
         for a in &values {
-            for b in values.iter().take(12) {
-                for op in 0..3u8 {
-                    let r128 = super::big::op(op, &super::big::encode(a), &super::big::encode(b)).ok().unwrap();
-                    let r256 = super::big256::op(op, &super::big256::encode(a), &super::big256::encode(b)).ok().unwrap();
-                    assert_eq!(super::big_to_256(&r128), r256);
+            for b in values.iter().take(12).chain(values.iter().rev().take(3)) {
+                for op in [0u8, 1, 2, 3, 4, 6] {
+                    let r128 = super::big::op(op, &super::big::encode(a), &super::big::encode(b));
+                    let r256 = super::big256::op(op, &super::big256::encode(a), &super::big256::encode(b));
+                    match (r128, r256) {
+                        (Ok(x), Ok(y)) => assert_eq!(super::big_to_256(&x), y, "op {} of {} and {}", op, a, b),
+                        (Err(_), Err(_)) => {}
+                        _ => panic!("op {} of {} and {}: a panic on one side only", op, a, b),
+                    }
                 }
+                assert_eq!(super::big::cmp(&super::big::encode(a), &super::big::encode(b)), super::big256::cmp(&super::big256::encode(a), &super::big256::encode(b)), "{} and {}", a, b);
             }
         }
     }
@@ -822,6 +877,11 @@ macro_rules! big_module {
     /// `+ - * / % **` and the negation (`op` 0 to 6): `/` truncates toward
     /// zero and `%` has the sign of the dividend, as ECMAScript.
     pub fn op(op: u8, a: &[u8], b: &[u8]) -> Result<Vec<u8>, Panic<'static>> {
+        if $radix == 256 {
+            if let Some(r) = super::limbs::op(op, a, b) {
+                return Ok(r);
+            }
+        }
         let (x, y) = (decode(a), decode(b));
         let r = match op {
             0 => x + y,
@@ -850,6 +910,9 @@ macro_rules! big_module {
     }
 
     pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
+        if $radix == 256 {
+            return super::limbs::cmp(a, b);
+        }
         decode(a).cmp(&decode(b))
     }
 
@@ -945,6 +1008,355 @@ fn mag_to_bytes(m: &num_bigint::BigUint) -> alloc::vec::Vec<u8> {
         out.pop();
     }
     out
+}
+
+/// The common operations of `big256` on its bytes (D171): addition,
+/// subtraction, product (schoolbook, for operands up to `MUL_LIMBS` words;
+/// num-bigint's Karatsuba beyond), comparison. A magnitude is its bytes,
+/// least significant first, without a zero at the top; it is read by words
+/// of 64 bits.
+mod limbs {
+    use alloc::vec::Vec;
+    use core::cmp::Ordering;
+
+    const MUL_LIMBS: usize = 48;
+
+    /// The words of a magnitude (its bytes read by 8, the last one padded).
+    fn words(m: &[u8]) -> Vec<u64> {
+        let mut v = Vec::with_capacity(m.len().div_ceil(8));
+        let mut c = m.chunks_exact(8);
+        for w in &mut c {
+            v.push(u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]));
+        }
+        let r = c.remainder();
+        if !r.is_empty() {
+            let mut w = [0u8; 8];
+            w[..r.len()].copy_from_slice(r);
+            v.push(u64::from_le_bytes(w));
+        }
+        v
+    }
+
+    /// The word i of a magnitude (zero beyond it).
+    #[inline(always)]
+    fn word(m: &[u8], i: usize) -> u64 {
+        let s = i * 8;
+        if s + 8 <= m.len() {
+            u64::from_le_bytes([m[s], m[s + 1], m[s + 2], m[s + 3], m[s + 4], m[s + 5], m[s + 6], m[s + 7]])
+        } else if s < m.len() {
+            let mut w = [0u8; 8];
+            w[..m.len() - s].copy_from_slice(&m[s..]);
+            u64::from_le_bytes(w)
+        } else {
+            0
+        }
+    }
+
+    /// A value under construction: its sign byte, then its words as bytes.
+    struct Out(Vec<u8>);
+
+    impl Out {
+        fn new(neg: bool, words: usize) -> Out {
+            let mut v = Vec::with_capacity(words * 8 + 1);
+            v.push(if neg { b'-' } else { b'+' });
+            Out(v)
+        }
+        #[inline(always)]
+        fn push(&mut self, w: u64) {
+            self.0.extend_from_slice(&w.to_le_bytes());
+        }
+        /// Without the zeros at the top; zero is empty.
+        fn done(mut self) -> Vec<u8> {
+            while self.0.last() == Some(&0) {
+                self.0.pop();
+            }
+            if self.0.len() == 1 {
+                self.0.clear();
+            }
+            self.0
+        }
+    }
+
+    fn signed(neg: bool, w: &[u64]) -> Vec<u8> {
+        let mut out = Out::new(neg, w.len());
+        for &x in w {
+            out.push(x);
+        }
+        out.done()
+    }
+
+    fn split(e: &[u8]) -> (bool, &[u8]) {
+        if e.is_empty() {
+            (false, e)
+        } else {
+            (e[0] == b'-', &e[1..])
+        }
+    }
+
+    fn cmp_mag(a: &[u8], b: &[u8]) -> Ordering {
+        a.len().cmp(&b.len()).then_with(|| a.iter().rev().cmp(b.iter().rev()))
+    }
+
+    fn add(neg: bool, a: &[u8], b: &[u8]) -> Vec<u8> {
+        let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+        let n = a.len().div_ceil(8);
+        let mut v: Vec<u8> = alloc::vec![0u8; 1 + 8 * (n + 1)];
+        v[0] = if neg { b'-' } else { b'+' };
+        let mut carry = false;
+        // the whole words of both, without a test of bounds (D171)
+        let both = b.len() / 8;
+        {
+            let dst = &mut v[1..1 + both * 8];
+            for ((x, y), z) in a.chunks_exact(8).zip(b.chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
+                let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
+                let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
+                let (s, c1) = xa.overflowing_add(yb);
+                let (s, c2) = s.overflowing_add(carry as u64);
+                z.copy_from_slice(&s.to_le_bytes());
+                carry = c1 | c2;
+            }
+        }
+        for i in both..n {
+            let (s, c1) = word(a, i).overflowing_add(word(b, i));
+            let (s, c2) = s.overflowing_add(carry as u64);
+            v[1 + 8 * i..9 + 8 * i].copy_from_slice(&s.to_le_bytes());
+            carry = c1 | c2;
+        }
+        if carry {
+            v[1 + 8 * n] = 1;
+        }
+        Out(v).done()
+    }
+
+    /// a - b, |a| >= |b|
+    fn sub(neg: bool, a: &[u8], b: &[u8]) -> Vec<u8> {
+        let n = a.len().div_ceil(8);
+        let mut v: Vec<u8> = alloc::vec![0u8; 1 + 8 * n];
+        v[0] = if neg { b'-' } else { b'+' };
+        let mut borrow = false;
+        let both = b.len() / 8;
+        {
+            let dst = &mut v[1..1 + both * 8];
+            for ((x, y), z) in a.chunks_exact(8).zip(b.chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
+                let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
+                let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
+                let (d, b1) = xa.overflowing_sub(yb);
+                let (d, b2) = d.overflowing_sub(borrow as u64);
+                z.copy_from_slice(&d.to_le_bytes());
+                borrow = b1 | b2;
+            }
+        }
+        for i in both..n {
+            let (d, b1) = word(a, i).overflowing_sub(word(b, i));
+            let (d, b2) = d.overflowing_sub(borrow as u64);
+            v[1 + 8 * i..9 + 8 * i].copy_from_slice(&d.to_le_bytes());
+            borrow = b1 | b2;
+        }
+        Out(v).done()
+    }
+
+    /// The product by one word: the whole words of `a` without a test of
+    /// bounds, written in place in the result (D171).
+    fn mul_word(neg: bool, a: &[u8], w: u64) -> Vec<u8> {
+        let n = a.len().div_ceil(8);
+        let mut v: Vec<u8> = alloc::vec![0u8; 1 + 8 * (n + 1)];
+        v[0] = if neg { b'-' } else { b'+' };
+        let mut c: u128 = 0;
+        let full = a.len() / 8;
+        {
+            let (src, dst) = (&a[..full * 8], &mut v[1..1 + full * 8]);
+            for (x, y) in src.chunks_exact(8).zip(dst.chunks_exact_mut(8)) {
+                let t = (u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]) as u128) * (w as u128) + c;
+                y.copy_from_slice(&(t as u64).to_le_bytes());
+                c = t >> 64;
+            }
+        }
+        for i in full..n {
+            let t = (word(a, i) as u128) * (w as u128) + c;
+            v[1 + 8 * i..9 + 8 * i].copy_from_slice(&(t as u64).to_le_bytes());
+            c = t >> 64;
+        }
+        v[1 + 8 * n..9 + 8 * n].copy_from_slice(&(c as u64).to_le_bytes());
+        Out(v).done()
+    }
+
+    fn mul(a: &[u64], b: &[u64]) -> Vec<u64> {
+        let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+        let mut r = alloc::vec![0u64; a.len() + b.len()];
+        for (j, &bj) in b.iter().enumerate() {
+            if bj == 0 {
+                continue;
+            }
+            let mut c: u128 = 0;
+            for (i, &ai) in a.iter().enumerate() {
+                let t = (ai as u128) * (bj as u128) + r[i + j] as u128 + c;
+                r[i + j] = t as u64;
+                c = t >> 64;
+            }
+            r[j + a.len()] = c as u64;
+        }
+        r
+    }
+
+    /// The quotient and the remainder of magnitudes, b not zero: by one
+    /// word in 128 bits, else Knuth's algorithm D (The Art of Computer
+    /// Programming, 4.3.1), in words of 64 bits.
+    fn divrem(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
+        let mut b = b.to_vec();
+        while b.last() == Some(&0) {
+            b.pop();
+        }
+        let mut a = a.to_vec();
+        while a.last() == Some(&0) {
+            a.pop();
+        }
+        if a.len() < b.len() {
+            return (Vec::new(), a);
+        }
+        if b.len() == 1 {
+            let d = b[0] as u128;
+            let mut q = alloc::vec![0u64; a.len()];
+            let mut r: u128 = 0;
+            for i in (0..a.len()).rev() {
+                let t = (r << 64) | a[i] as u128;
+                q[i] = (t / d) as u64;
+                r = t % d;
+            }
+            return (q, alloc::vec![r as u64]);
+        }
+        let n = b.len();
+        let m = a.len() - n;
+        let s = b[n - 1].leading_zeros();
+        // normalized: the top bit of v set
+        let shl = |x: &[u64], extra: bool| -> Vec<u64> {
+            let mut out = Vec::with_capacity(x.len() + 1);
+            let mut carry = 0u64;
+            for &w in x {
+                out.push(if s == 0 { w } else { (w << s) | carry });
+                carry = if s == 0 { 0 } else { w >> (64 - s) };
+            }
+            if extra {
+                out.push(carry);
+            }
+            out
+        };
+        let v = shl(&b, false);
+        let mut u = shl(&a, true);
+        let mut q = alloc::vec![0u64; m + 1];
+        let base: u128 = 1 << 64;
+        for j in (0..=m).rev() {
+            let num = ((u[j + n] as u128) << 64) | u[j + n - 1] as u128;
+            let mut qhat = num / v[n - 1] as u128;
+            let mut rhat = num % v[n - 1] as u128;
+            while qhat >= base || qhat * v[n - 2] as u128 > ((rhat << 64) | u[j + n - 2] as u128) {
+                qhat -= 1;
+                rhat += v[n - 1] as u128;
+                if rhat >= base {
+                    break;
+                }
+            }
+            // u[j..j+n+1] -= qhat * v
+            let mut borrow: i128 = 0;
+            let mut carry: u128 = 0;
+            for i in 0..n {
+                let p = qhat * v[i] as u128 + carry;
+                carry = p >> 64;
+                let t = u[i + j] as i128 - (p as u64) as i128 + borrow;
+                u[i + j] = t as u64;
+                borrow = t >> 64;
+            }
+            let t = u[j + n] as i128 - carry as i128 + borrow;
+            u[j + n] = t as u64;
+            if t < 0 {
+                // one too many: add v back
+                qhat -= 1;
+                let mut c: u128 = 0;
+                for i in 0..n {
+                    let t = u[i + j] as u128 + v[i] as u128 + c;
+                    u[i + j] = t as u64;
+                    c = t >> 64;
+                }
+                u[j + n] = u[j + n].wrapping_add(c as u64);
+            }
+            q[j] = qhat as u64;
+        }
+        // the remainder: u >> s
+        let mut r = Vec::with_capacity(n);
+        for i in 0..n {
+            r.push(if s == 0 { u[i] } else { (u[i] >> s) | (u[i + 1] << (64 - s)) });
+        }
+        (q, r)
+    }
+
+    /// `+ - * / %` and the negation (`op` 0 to 4, 6) of two values of
+    /// `big256`; None for the others (num-bigint does them). `/` truncates
+    /// toward zero and `%` has the sign of the dividend, as ECMAScript; a
+    /// division by zero is left to num-bigint (its panic).
+    pub fn op(op: u8, a: &[u8], b: &[u8]) -> Option<Vec<u8>> {
+        let (na, ma) = split(a);
+        let (nb, mb) = split(b);
+        match op {
+            0 | 1 => {
+                let nb = if op == 1 && !mb.is_empty() { !nb } else { nb };
+                Some(if na == nb {
+                    add(na, ma, mb)
+                } else {
+                    match cmp_mag(ma, mb) {
+                        Ordering::Greater => sub(na, ma, mb),
+                        Ordering::Less => sub(nb, mb, ma),
+                        Ordering::Equal => Vec::new(),
+                    }
+                })
+            }
+            2 => {
+                if ma.is_empty() || mb.is_empty() {
+                    return Some(Vec::new());
+                }
+                if mb.len() <= 8 {
+                    return Some(mul_word(na != nb, ma, word(mb, 0)));
+                }
+                if ma.len() <= 8 {
+                    return Some(mul_word(na != nb, mb, word(ma, 0)));
+                }
+                let (wa, wb) = (words(ma), words(mb));
+                if wa.len().min(wb.len()) > MUL_LIMBS {
+                    return None;
+                }
+                Some(signed(na != nb, &mul(&wa, &wb)))
+            }
+            3 | 4 => {
+                if mb.is_empty() {
+                    return None;
+                }
+                let (q, r) = divrem(&words(ma), &words(mb));
+                Some(if op == 3 { signed(na != nb, &q) } else { signed(na, &r) })
+            }
+            6 => Some(if ma.is_empty() { Vec::new() } else { signed(!na, &words(ma)) }),
+            _ => None,
+        }
+    }
+
+    /// The order of two values of `big256`.
+    pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
+        let (na, ma) = split(a);
+        let (nb, mb) = split(b);
+        let sign = |neg: bool, m: &[u8]| if m.is_empty() { 0 } else if neg { -1 } else { 1 };
+        let (sa, sb) = (sign(na, ma), sign(nb, mb));
+        if sa != sb {
+            return sa.cmp(&sb);
+        }
+        let o = cmp_mag(ma, mb);
+        if sa < 0 {
+            o.reverse()
+        } else {
+            o
+        }
+    }
+
+    #[cfg(test)]
+    pub fn divrem_for_test(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
+        divrem(a, b)
+    }
 }
 
 big_module!(big, 128);

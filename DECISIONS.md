@@ -2864,3 +2864,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   first digits of the `u64` without a loop (its 16 digits reversed by
   shifts and masks, which LLVM makes a `bswap`, then shifted). N = 12 on
   4 threads, fixed frequency: 41.728 s before, 4.305 s after.
+- **D171 — The common operations of `bigint` on its bytes (2026-11-03).**
+  After D168 the conversions to and from num-bigint were still 73 % of the
+  instructions of pidigits (num-bigint takes words of 32 bits only, its
+  constructor of words of 64 bits is private). The compiled programs now
+  add, subtract, multiply (by one word in one pass; schoolbook up to 48
+  words; num-bigint's Karatsuba beyond), divide (by one word in 128 bits,
+  else Knuth's algorithm D, The Art of Computer Programming 4.3.1),
+  negate and compare their values on their bytes themselves, read by words
+  of 64 bits, the whole words without a test of bounds
+  (`isc_runtime_core::limbs`); `/` truncates toward zero and `%` has the
+  sign of the dividend, as before; num-bigint keeps the power, the text,
+  the parsing and the large products. Checked against num-bigint: every
+  operation on values of every size and sign (`big_forms`), and 20 000
+  divisions chosen to reach the corrections of the quotient and the step
+  that adds back (`big_divisions`). pidigits 10 000 digits, one core at a
+  fixed frequency: 11.574 s before, 2.503 s after (42.649 s before D168).
