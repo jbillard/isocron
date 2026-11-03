@@ -29,16 +29,37 @@ for mode in ivybridge native; do
         bench="${name%%.*}"
         # the ten Isocron programs are checked above
         [ "$name" = "$bench.isocron" ] && [[ "$ours" == *" $bench "* ]] && continue
-        ref="upstream/$bench/200_out"
-        r200="different"
-        "$bin" 200 | cmp -s - "$ref" && r200="same"
-        mine="bin/$mode/$bench.isocron"
-        r16="different"
-        [ "$("$bin" 16000 | md5sum)" = "$("$mine" 16000 | md5sum)" ] && r16="same"
-        printf '%-10s %-24s N=200 vs reference: %-9s N=16000 vs Isocron: %s\n' "$mode" "$name" "$r200" "$r16"
-        # C++ #4 at N = 200: the known difference above, N = 16000 checks it
-        [ "$name" = mandelbrot.gpp-4 ] && r200=same
-        [ "$r200" = same ] && [ "$r16" = same ] || status=1
+        if [ "$bench" = mandelbrot ]; then
+            ref="upstream/$bench/200_out"
+            r200="different"
+            "$bin" 200 | cmp -s - "$ref" && r200="same"
+            mine="bin/$mode/$bench.isocron"
+            r16="different"
+            [ "$("$bin" 16000 | md5sum)" = "$("$mine" 16000 | md5sum)" ] && r16="same"
+            printf '%-10s %-24s N=200 vs reference: %-9s N=16000 vs Isocron: %s\n' "$mode" "$name" "$r200" "$r16"
+            # C++ #4 at N = 200: the known difference above, N = 16000 checks it
+            [ "$name" = mandelbrot.gpp-4 ] && r200=same
+            [ "$r200" = same ] && [ "$r16" = same ] || status=1
+            continue
+        fi
+        # Go #4 of pidigits writes no last line shorter than 10 digits (the
+        # Benchmarks Game runs it with N = 10000): checked at N = 10000
+        # against the Isocron program
+        if [ "$name" = pidigits.go-4 ]; then
+            r="different"
+            [ "$("$bin" 10000 | md5sum)" = "$("bin/$mode/pidigits.isocron" 10000 | md5sum)" ] && r="same"
+            printf '%-10s %-24s N=10000 vs Isocron: %s\n' "$mode" "$name" "$r"
+            [ "$r" = same ] || status=1
+            continue
+        fi
+        # the others: the argument and the input of the reference output
+        read -r _ n input <<< "$(grep -E "^$bench[[:space:]]" references.txt)"
+        in=/dev/null
+        [ -n "${input:-}" ] && in="upstream/$bench/$input"
+        r="different"
+        "$bin" "$n" < "$in" 2>/dev/null | cmp -s - "upstream/$bench/${n}_out" && r="same"
+        printf '%-10s %-24s N=%-5s vs reference: %s\n' "$mode" "$name" "$n" "$r"
+        [ "$r" = same ] || status=1
     done
 done
 exit $status

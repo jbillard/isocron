@@ -27,28 +27,36 @@ for mode in ivybridge native; do
         cflags="-ffp-contract=off"
         cxxflags="-ffp-contract=off -mno-avx512f"
     fi
-    while read -r src lang; do
+    while read -r src lang extra; do
         case "$src" in ""|\#*) continue ;; esac
         name="$(basename "$src")"
         bench="${name%%.*}"
         tag="${name#*.}"; tag="${tag%.*}"
         f="/work/upstream/$src"
-        case "$lang" in
+        # $extra: the options of this program alone (its libraries)
+        # shellcheck disable=SC2086
+        if ! case "$lang" in
             c++)
                 cp "$f" "build/$tag.cpp"
-                g++ -pipe -O3 -fomit-frame-pointer -march=$march -std=c++17 -mno-fma $cxxflags "build/$tag.cpp" -o "$out/$bench.$tag" -pthread ;;
+                g++ -pipe -O3 -fomit-frame-pointer -march=$march -std=c++17 -mno-fma $cxxflags "build/$tag.cpp" -o "$out/$bench.$tag" -pthread $extra ;;
             c)
                 cp "$f" "build/$tag.c"
-                gcc -pipe -Wall -O3 -fomit-frame-pointer -march=$march -mno-fma -fno-finite-math-only -fopenmp $cflags "build/$tag.c" -o "$out/$bench.$tag" ;;
+                gcc -pipe -Wall -O3 -fomit-frame-pointer -march=$march -mno-fma -fno-finite-math-only -fopenmp $cflags "build/$tag.c" -o "$out/$bench.$tag" $extra -lm ;;
             rust)
                 cp "$f" /opt/rust-bench/src/main.rs
                 (cd /opt/rust-bench && CARGO_TARGET_DIR="/work/build/rust/$mode" RUSTFLAGS="-C target-cpu=$march" \
-                    cargo build --release --offline --quiet)
-                cp "/work/build/rust/$mode/release/bg" "$out/$bench.$tag" ;;
+                    cargo build --release --offline --quiet) \
+                    && cp "/work/build/rust/$mode/release/bg" "$out/$bench.$tag" ;;
             go)
-                cp "$f" "build/$tag.go"
-                GOAMD64=$goamd64 go build -o "$out/$bench.$tag" "build/$tag.go" ;;
-        esac
+                # in a module, with its dependencies fetched in the image
+                rm -rf "build/gomod"
+                cp -r /opt/go-bench "build/gomod"
+                cp "$f" "build/gomod/main.go"
+                (cd build/gomod && GOAMD64=$goamd64 GOFLAGS=-mod=mod GOPROXY=off go build -o "$out/$bench.$tag" .) ;;
+        esac; then
+            echo "FAILED $mode/$bench.$tag"
+            continue
+        fi
         echo "built $mode/$bench.$tag"
     done < /work/programs.txt
     for f in /work/isocron/*.isc; do

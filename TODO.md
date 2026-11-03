@@ -141,7 +141,7 @@
 
 ## Performance — the ten programs at the level of the fastest (goal of 2026-11-03)
 
-Method: every optimization from a profile and a model of cost of the primitive, never from a difference with another language alone; every gap left explained by a measurement. First survey (4 threads, the sizes of the Benchmarks Game): binarytrees 34.4 s, fannkuchredux 29.9 s, knucleotide 29.2 s, pidigits 29.7 s, nbody 19.2 s, regexredux 2.62 s; fasta, mandelbrot, revcomp, spectralnorm at the level of the fastest.
+Method: every optimization from a profile and a model of cost of the primitive, never from a difference with another language alone; every gap left explained by a measurement. First survey (4 threads, the sizes of the Benchmarks Game): binarytrees 34.4 s, fannkuchredux 29.9 s, knucleotide 29.2 s, pidigits 29.7 s, nbody 19.2 s, regexredux 2.62 s. Measured against the fastest on the same machine (D177, `results/benchmarks_game.md`), Isocron over the fastest: mandelbrot 0.81, fasta 1.54, fannkuchredux 1.75, knucleotide 2.32, binarytrees 2.34, spectralnorm 2.61, nbody 3.33, pidigits 3.49, regexredux 3.74, revcomp 7.47.
 
 - [ ] (1) Allocation
   - [x] Components of a tuple accumulator owned, fields in the order of the program: nbody 27.6 s -> 9.9 s (D164)
@@ -165,4 +165,5 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Replacements by the bounds of the matches, ECMAScript's empty matches, searches shared out among threads: regexredux 3.7 s -> 3.0 s (D174)
   - [ ] The prefilter of literals chosen by the data (44 % of regexredux's instructions, D174)
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
-- [ ] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md`
+- [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
+- [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement

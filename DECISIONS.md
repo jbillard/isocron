@@ -2950,3 +2950,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   WebAssembly), so that Valgrind still sees every node in the tests.
   binary-trees, fixed frequency: depth 18 on one core 0.609 s before,
   0.509 s after; depth 21 on 4 threads 2.385 s, 2.082 s.
+- **D177 — The ten programs measured against the fastest in Docker
+  (2026-11-03).** `programs.txt` now lists, for the nine benchmarks other
+  than mandelbrot, the fastest program in C, C++, Rust and Go on the site
+  of the Benchmarks Game, with the options of their command lines (their
+  libraries: APR, Boost, GMP, PCRE2, khash of klib); the image has these
+  libraries and the dependencies of the Rust programs (one Cargo project,
+  at the versions that build with Rust 1.84.1, the one of the Benchmarks
+  Game, by the MSRV-aware resolver of Cargo; `pcre2-sys` pinned to 0.2.9,
+  whose next version Cargo 1.84 cannot read). Go #5 and #4 of regex-redux
+  bind PCRE1, gone from Debian trixie: Go #3 is built. Every program is
+  checked against the reference output of its benchmark
+  (`check_programs.sh`); Go #4 of pidigits writes no last line shorter than
+  10 digits and is checked at N = 10000 against Isocron. `run.sh measure`
+  runs `measure.sh` in the image, in `isc-bench.slice`, on 4 physical
+  cores with 4 threads, after `bench/machine.sh apply parallel`; the
+  results are in `results/benchmarks_game.md`, without the name of the
+  machine. They correct a comparison made earlier with the times of the
+  site, measured on an older machine: on the same machine, Isocron is the
+  fastest on mandelbrot only; fasta, reverse-complement and spectral-norm,
+  thought at the level of the fastest, are 1.54, 7.47 and 2.61 times
+  slower.

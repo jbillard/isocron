@@ -1,6 +1,47 @@
 # The programs of the Benchmarks Game we compare with: the fastest of each
-# language on its site (2026-11-02), with the options of its command line.
+# language on its site (2026-11-02 for mandelbrot, 2026-11-03 for the
+# others), with the options of their command lines: the path, the
+# language, then the options of this program alone (its libraries).
 mandelbrot/mandelbrot.gpp-4.gpp    c++
 mandelbrot/mandelbrot.gcc-6.gcc    c
 mandelbrot/mandelbrot.rust-4.rust  rust
 mandelbrot/mandelbrot.go-4.go      go
+binarytrees/binarytrees.gcc-2.gcc      c     -I/usr/include/apr-1.0 -lapr-1
+binarytrees/binarytrees.gpp-7.gpp      c++
+binarytrees/binarytrees.rust-5.rust    rust
+binarytrees/binarytrees.go-2.go        go
+fannkuchredux/fannkuchredux.gcc-6.gcc   c
+fannkuchredux/fannkuchredux.gpp-6.gpp   c++   -fopenmp
+fannkuchredux/fannkuchredux.rust-6.rust rust
+fannkuchredux/fannkuchredux.go-3.go     go
+fasta/fasta.gcc-3.gcc     c
+fasta/fasta.gpp-9.gpp     c++
+fasta/fasta.rust-7.rust   rust
+fasta/fasta.go-2.go       go
+knucleotide/knucleotide.gcc          c     -I/opt/klib
+knucleotide/knucleotide.gpp-2.gpp    c++
+knucleotide/knucleotide.rust-7.rust  rust
+knucleotide/knucleotide.go-7.go      go
+nbody/nbody.gcc-9.gcc     c
+nbody/nbody.gpp-0.gpp     c++
+nbody/nbody.rust-9.rust   rust
+nbody/nbody.go-3.go       go
+pidigits/pidigits.gcc-2.gcc     c     -lgmp
+pidigits/pidigits.gpp-4.gpp     c++   -lgmpxx -lgmp
+pidigits/pidigits.rust-4.rust   rust
+pidigits/pidigits.go-4.go       go
+regexredux/regexredux.gcc-5.gcc     c     -lpcre2-8
+regexredux/regexredux.gpp-6.gpp     c++   -lpcre2-8
+regexredux/regexredux.rust-7.rust   rust
+# Go #5 (the fastest, 3.23 s) and #4 (14.49 s) need PCRE1 (github.com/GRbit/go-pcre,
+# golang-pkg-pcre), which Debian trixie no longer has: Go #3 (25.15 s), the
+# fastest with the regexp of Go
+regexredux/regexredux.go-3.go       go
+revcomp/revcomp.gcc-7.gcc     c
+revcomp/revcomp.gpp-2.gpp     c++
+revcomp/revcomp.rust          rust
+revcomp/revcomp.go-6.go       go
+spectralnorm/spectralnorm.gcc-6.gcc     c
+spectralnorm/spectralnorm.gpp-6.gpp     c++   -fopenmp
+spectralnorm/spectralnorm.rust-6.rust   rust
+spectralnorm/spectralnorm.go-4.go       go

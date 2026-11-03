@@ -12,7 +12,8 @@ and Zig, and the benchmark protocol of section 14.
 * Choices made where the specification is silent: `DECISIONS.md`.
 * Benchmark results: `results/poc.md` (Celeron J3455, the POC decision point), `results/xeon.md`
   (Xeon E-2388G, block parallelism), `results/xeon-lanes.md` (study of V), `results/xeon-single.md`
-  (one core), `results/xeon-compile.md` (compilation times).
+  (one core), `results/xeon-compile.md` (compilation times), `results/benchmarks_game.md` (the ten
+  programs of the Benchmarks Game against the fastest in C, C++, Rust and Go).
 
 ## Layout
 

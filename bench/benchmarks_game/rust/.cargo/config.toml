@@ -1,0 +1,4 @@
+# The versions of the dependencies that declare a Rust no newer than 1.84
+# (the one of the command lines of the Benchmarks Game).
+[resolver]
+incompatible-rust-versions = "fallback"
