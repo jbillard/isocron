@@ -392,6 +392,9 @@ struct Func {
     /// Vectors of consecutive indices (the index of a loop, by lanes): each
     /// one's first index, a scalar, and its step, 1 or -1 (D181, D185).
     contig: HashMap<String, (String, i64)>,
+    /// The tables of bytes of the vector loop being emitted, their 8 parts
+    /// of 32 bytes loaded once before it (D198).
+    table_parts: HashMap<VarId, Vec<String>>,
 }
 
 pub struct Gen<'p> {
@@ -3178,7 +3181,11 @@ impl<'p> Gen<'p> {
             let ljoin = self.label();
             self.cbr(&small, &llook, &lgather);
             self.block(&llook);
-            let r1 = self.byte_lookup(&ptr, &n, &idx, w);
+            let parts = match a.kind {
+                ExprKind::Var(v, _) => self.f.table_parts.get(&v).cloned(),
+                _ => None,
+            };
+            let r1 = self.byte_lookup(&ptr, &n, &idx, w, parts);
             let l1 = self.current_label(&llook);
             self.br(&ljoin);
             self.block(&lgather);
@@ -3284,9 +3291,19 @@ impl<'p> Gen<'p> {
     /// bounds): its 8 parts of 32 bytes in registers (masked loads: nothing
     /// read past its end), 4 permutations of 64 of them (`vpermi2b`, bits 0
     /// to 5 of each index), the one of bits 6 and 7 (D185).
-    fn byte_lookup(&mut self, ptr: &str, n: &str, idx: &str, w: u32) -> String {
-        self.decls.insert("declare <32 x i8> @llvm.masked.load.v32i8.p0(ptr, i32, <32 x i1>, <32 x i8>)".into());
+    fn byte_lookup(&mut self, ptr: &str, n: &str, idx: &str, w: u32, loaded: Option<Vec<String>>) -> String {
         self.decls.insert("declare <32 x i8> @llvm.x86.avx512.vpermi2var.qi.256(<32 x i8>, <32 x i8>, <32 x i8>)".into());
+        let parts = match loaded {
+            Some(p) => p,
+            None => self.table_registers(ptr, n),
+        };
+        self.permute_bytes(&parts, idx, w)
+    }
+
+    /// The 8 parts of 32 bytes of a table of `n` <= 256 bytes, the bytes
+    /// past its end zero (masked loads: nothing read there).
+    fn table_registers(&mut self, ptr: &str, n: &str) -> Vec<String> {
+        self.decls.insert("declare <32 x i8> @llvm.masked.load.v32i8.p0(ptr, i32, <32 x i1>, <32 x i8>)".into());
         let mut parts = Vec::new();
         for k in 0..8 {
             let left = self.ins(format!("sub i64 {}, {}", n, 32 * k));
@@ -3301,6 +3318,11 @@ impl<'p> Gen<'p> {
             let p = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", ptr, 32 * k));
             parts.push(self.ins(format!("call <32 x i8> @llvm.masked.load.v32i8.p0(ptr {}, i32 1, <32 x i1> {}, <32 x i8> zeroinitializer)", p, mv)));
         }
+        parts
+    }
+
+    /// The bytes of the table of `parts` at the lanes of `idx`.
+    fn permute_bytes(&mut self, parts: &[String], idx: &str, w: u32) -> String {
         let i8v = self.ins(format!("trunc <{} x i64> {} to <{} x i8>", w, idx, w));
         let iv = if w == 32 {
             i8v
@@ -4343,6 +4365,14 @@ impl<'p> Gen<'p> {
             self.cbr(&all, &lvec, &lsc);
             self.block(&lvec);
             lscalar = Some(lsc);
+            // each table in registers once, before the loop (D198)
+            for t in &tables {
+                let tv = self.env.get(t).cloned().ok_or("codegen: a table of bytes unbound")?;
+                let tp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", tv.r));
+                let tn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", tv.r));
+                let parts = self.table_registers(&tp, &tn);
+                self.f.table_parts.insert(*t, parts);
+            }
         }
         if w > 1 {
             let len = self.ins(format!("sub i64 {}, {}", end, start));
@@ -4357,6 +4387,9 @@ impl<'p> Gen<'p> {
             })?;
             let kept = self.divmod.len() - dmv.len();
             self.divmod.truncate(kept);
+            for t in &tables {
+                self.f.table_parts.remove(t);
+            }
             tail_start = vend;
         }
         let ljoin = lscalar.as_ref().map(|_| self.label());

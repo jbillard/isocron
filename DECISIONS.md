@@ -3399,3 +3399,14 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   2.480 s), 1.342 s -> 0.502 s on one (n = 11); the same output. The floor
   of D182 assumed the flips one after the other (1.472 s): wrong, the
   bound is the throughput, below it.
+- **D198 — Tables of bytes in registers before the vector loop
+  (2026-11-04).** The profile of reverse-complement's `map` of lines
+  (`perf annotate`): at every vector of 16 bytes, the 8 masked loads of
+  32 bytes of its table of complements, their masks computed again, then
+  the permutations (D185): LLVM does not move them out of the loop, not
+  knowing that the stores into the result miss the table. `fill_range`,
+  which tests the size of each table before its vector loop, now loads
+  their parts there, once (`table_registers`, `Func::table_parts`), and
+  the permutations take them (`permute_bytes`). reverse-complement at
+  fixed frequency, 4 threads: 0.263 s -> 0.253 s; fasta (tables of 4 and
+  15 bytes) unchanged; the same outputs.
