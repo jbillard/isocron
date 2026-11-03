@@ -4156,3 +4156,14 @@ without BMI2 0.822 s), k-nucleotide 1.153 s -> 1.141 s, the seven others
 unchanged (n-body, alternated: 2.057, 2.056, 2.018 s against 2.067,
 2.029, 2.020 s); the same outputs. The test of the shapes also runs with
 the runtime for v3 (`--isa avx2`).
+- **D242 — k-nucleotide by the rules: every k-mer counted (2026-11-04).**
+The rules of the Benchmarks Game ask, for the lengths 3, 4, 6, 12 and 18,
+to count all the k-mers of the sequence in a table, then to read the
+given ones in it; the programs in C, C++, Rust and Go do so. The Isocron
+program (D160) counted only the 5 given k-mers, one scan each (`count(...,
+kmer == target)`): less work than the others, and its result of the
+publications (0.98 of the C++ program at D240) was not a comparison of
+the same work. It now counts every k-mer of each length with `countBy`
+and reads the query with `get`; the same output. At fixed frequency:
+4 threads 1.141 s -> 3.061 s, one thread 1.757 s -> 4.867 s, 2.6 times
+the C++ program. The publications from here on measure this program.

@@ -1,8 +1,9 @@
 // k-nucleotide (The Computer Language Benchmarks Game): the sequence THREE
 // of a FASTA file on the standard input; the frequencies of its 1-mers and
 // 2-mers (by decreasing frequency, then by name), then the number of
-// occurrences of 5 given k-mers. A k-mer is a number, 2 bits per base, so
-// that its counting is a sort of integers (countBy, a Map).
+// occurrences of 5 given k-mers, read in the table of all the k-mers of
+// their length (the rules). A k-mer is a number, 2 bits per base, so that
+// its counting is a grouping of integers (countBy, a Map).
 // usage: knucleotide < input.fasta
 const BASES = "ACGT";
 const QUERIES = ["GGT", "GGTA", "GGTATT", "GGTATTTTAATT", "GGTATTTTAATTTATAGT"];
@@ -40,12 +41,13 @@ function frequencies(codes: i64[n], k: i64): string {
     }).join("\n");
 }
 
+// every k-mer of the length of the query counted in a table, as the rules
+// of the Benchmarks Game ask, then the query read in it
 function occurrences(codes: i64[n], query: string): string {
     const q = map(bytes(query), code);
     const k = q.length;
-    const target = kmer(q, 0, k);
-    const m = count(iota(n - k + 1), (i) => kmer(codes, i, k) == target);
-    return `${m}\t${query}`;
+    const counts = countBy(iota(n - k + 1), (i) => kmer(codes, i, k));
+    return `${counts.get(kmer(q, 0, k)) ?? 0}\t${query}`;
 }
 
 action main(args: string[k]): i32 {
