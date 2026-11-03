@@ -496,6 +496,8 @@ thread_local! {
     /// The target permutes bytes (AVX-512 VBMI): an index into a table of
     /// bytes is vector code (D185).
     static BYTE_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The target has the 52-bit products of AVX-512 IFMA (D192).
+    static IFMA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The parameters of the lambdas being checked bound to an `iota`: the
     /// index of the loop, consecutive in the lanes (D185).
     static INDEX_VARS: std::cell::RefCell<HashSet<VarId>> = std::cell::RefCell::new(HashSet::new());
@@ -743,6 +745,10 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     SPMD.with(|s| *s.borrow_mut() = spmd_fns(p));
     BYTE_LOOKUP.with(|b| {
         b.set(matches!(opts.isa, Isa::Native | Isa::Avx512) && crate::backend::host_features().split(',').any(|f| f == "+avx512vbmi"))
+    });
+    IFMA.with(|b| {
+        let f = crate::backend::host_features();
+        b.set(matches!(opts.isa, Isa::Native | Isa::Avx512) && ["+avx512ifma", "+avx512vl"].iter().all(|x| f.split(',').any(|y| y == *x)))
     });
     let mut g = Gen {
         p,
@@ -2476,6 +2482,23 @@ impl<'p> Gen<'p> {
                 let r = self.ins(format!("load {}, ptr {}", t, slot));
                 Ok(V { r, t, uni: false })
             }
+            // a 64-bit division by a constant in vector code (D192)
+            Binary(op @ (BinOp::Div | BinOp::Rem), a, b)
+                // (a power of two: shifts, which LLVM already makes)
+                if w > 1
+                    && w % 4 == 0
+                    && a.ty == Type::Int(IntKind::I64)
+                    && matches!(b.kind, Lit(isc_ir::Lit::Int(c)) if c >= 3 && (c & (c - 1)) != 0)
+                    && IFMA.with(|f| f.get()) =>
+            {
+                let Lit(isc_ir::Lit::Int(c)) = b.kind else { unreachable!() };
+                let av = self.ex(a, w)?;
+                if uni(&av) {
+                    let bv = self.ex(b, 1)?;
+                    return self.binop(*op, av, bv, &a.ty, w, span);
+                }
+                self.div_ifma(*op, &av, c, w, span)
+            }
             Binary(op, a, b) => {
                 let av = self.ex(a, w)?;
                 let bv = self.ex(b, w)?;
@@ -2888,6 +2911,66 @@ impl<'p> Gen<'p> {
             }
             _ => iv.r.clone(),
         }
+    }
+
+    /// `x / c` or `x % c` of the 64-bit lanes of `x` by a constant `c >= 2`
+    /// (D192): x86 has no 64-bit vector product high, so that LLVM divides
+    /// one lane at a time. When every lane is in `0 .. 2^52 / c`, the high
+    /// 52 bits of `x * m`, `m = ceil(2^52 / c)` (`vpmadd52huq`, AVX-512
+    /// IFMA), are `x / c`: `m` exceeds `2^52 / c` by less than 1, so that
+    /// the product exceeds `x / c * 2^52` by less than `x`, less than
+    /// `2^52 / c`; the remainder is `x - q * c`. Otherwise the division of
+    /// LLVM.
+    fn div_ifma(&mut self, op: BinOp, x: &V, c: i64, w: u32, span: Span) -> R<V> {
+        let vt = format!("<{} x i64>", w);
+        let bound = (1i64 << 52) / c;
+        let lim = self.cst("i64", &bound.to_string(), w);
+        let out = self.ins(format!("icmp uge {} {}, {}", vt, x.r, lim));
+        let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, out, w));
+        let ok = self.ins(format!("icmp eq i{} {}, 0", w, bits));
+        let lfast = self.label();
+        let lslow = self.label();
+        let ljoin = self.label();
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        let m = (((1i128 << 52) + c as i128 - 1) / c as i128) as i64;
+        self.decls.insert("declare <4 x i64> @llvm.x86.avx512.vpmadd52h.uq.256(<4 x i64>, <4 x i64>, <4 x i64>)".into());
+        let mv = format!("<i64 {m}, i64 {m}, i64 {m}, i64 {m}>", m = m);
+        // by 4 lanes, then the quotients put together two by two
+        let mut parts = Vec::new();
+        for k in 0..w / 4 {
+            let lanes = (0..4).map(|j| format!("i32 {}", 4 * k + j)).collect::<Vec<_>>().join(", ");
+            let part = self.ins(format!("shufflevector {} {}, {} poison, <4 x i32> <{}>", vt, x.r, vt, lanes));
+            parts.push(self.ins(format!("call <4 x i64> @llvm.x86.avx512.vpmadd52h.uq.256(<4 x i64> zeroinitializer, <4 x i64> {}, <4 x i64> {})", part, mv)));
+        }
+        let mut n = 4;
+        while parts.len() > 1 {
+            let lanes = (0..2 * n).map(|j| format!("i32 {}", j)).collect::<Vec<_>>().join(", ");
+            let mut next = Vec::new();
+            for pair in parts.chunks(2) {
+                next.push(self.ins(format!("shufflevector <{n} x i64> {}, <{n} x i64> {}, <{} x i32> <{}>", pair[0], pair[1], 2 * n, lanes, n = n)));
+            }
+            parts = next;
+            n *= 2;
+        }
+        let q = parts.pop().unwrap();
+        let r_fast = if op == BinOp::Div {
+            q.clone()
+        } else {
+            let cv = self.cst("i64", &c.to_string(), w);
+            let qc = self.ins(format!("mul {} {}, {}", vt, q, cv));
+            self.ins(format!("sub {} {}, {}", vt, x.r, qc))
+        };
+        let l1 = self.current_label(&lfast);
+        self.br(&ljoin);
+        self.block(&lslow);
+        let cv = v(self.cst("i64", &c.to_string(), w), vt.clone());
+        let r_slow = self.binop(op, x.clone(), cv, &Type::Int(IntKind::I64), w, span)?;
+        let l2 = self.current_label(&lslow);
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", vt, r_fast, l1, r_slow.r, l2));
+        Ok(V { r, t: vt, uni: false })
     }
 
     /// A check of a value of every lane: in vector code under a mask, a

@@ -3285,3 +3285,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   returned, viewed, passed, updated: on the heap; the interpreter's
   results, Valgrind clean). It found that the tail call freed the array on
   the stack (fixed before this commit).
+- **D192 — Divisions of 64-bit lanes by constants with the 52-bit products
+  of AVX-512 IFMA (2026-11-04).** After D186 the vector code of fasta still
+  divides one lane at a time `t % IM` (`t` the number of the draw, not the
+  index of the loop): x86 has no 64-bit vector product high. With AVX-512
+  IFMA (and VL; this Xeon has them), `vpmadd52huq` gives the high 52 bits
+  of a product of 52-bit numbers: with `m = ceil(2^52 / c)`, the high
+  part of `x * m` is `x / c` for `0 <= x < 2^52 / c` (`m` exceeds
+  `2^52 / c` by less than 1, so that the product exceeds `x / c * 2^52`
+  by less than `x`, below `2^52 / c`, less than the distance to the next
+  multiple), the remainder `x - q * c`. One unsigned comparison of the
+  vector chooses it, LLVM's division otherwise (a negative or large lane);
+  4 lanes per instruction (the 256-bit form, which the functions of the
+  host may use). Not for a power of two (LLVM shifts: spectral-norm's
+  `/ 2` stays as it was). fasta at fixed frequency: 0.257 s -> 0.207 s on
+  4 threads, 0.987 s -> 0.786 s on one; the only one of the ten whose IR
+  changes. Test `divisions_of_64_bit_lanes_by_constants_are_exact` (the
+  edges of the bound, multiples, negative and large values, 3000 random
+  ones; divisors 2, 3, 7, 61, 139968, 2^40).

@@ -280,3 +280,44 @@ fn bytes_close_together_are_read_through_a_window() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+#[test]
+fn divisions_of_64_bit_lanes_by_constants_are_exact() {
+    // D192: `x / c` and `x % c` of 64-bit lanes by a constant through the
+    // 52-bit products of AVX-512 IFMA when every lane is in 0 .. 2^52 / c,
+    // LLVM's division otherwise (negative, large); the values of the
+    // interpreter at the edges and at random
+    let mut xs: Vec<i64> = vec![0, 1, -1, i64::MIN, i64::MAX, -139968, 1 << 52, (1 << 52) - 1];
+    for c in [2i64, 3, 7, 61, 139968, 1 << 40] {
+        let bound = (1i64 << 52) / c;
+        for d in [-2i64, -1, 0, 1, 2] {
+            xs.push(bound + d);
+            xs.push(c * 1000 + d);
+            xs.push(c + d);
+        }
+    }
+    let mut r = Rng(5);
+    for _ in 0..3000 {
+        xs.push((r.next() % (1 << 40)) as i64);
+    }
+    for _ in 0..200 {
+        xs.push(r.next() as i64);
+    }
+    let list = xs.iter().map(|x| format!("{}", x)).collect::<Vec<_>>().join(", ");
+    let src = format!(
+        "action main(args: string[k]): i32 {{\n    const x = [{list}];\n    \
+         print(sum(map(x, (v) => v / 2 + v % 2)));\n    print(sum(map(x, (v) => v / 3 - v % 3)));\n    \
+         print(sum(map(x, (v) => v / 7 * 5 + v % 7)));\n    print(sum(map(x, (v) => v / 61 + v % 61 * 1000)));\n    \
+         print(sum(map(x, (v) => v / 139968 + v % 139968)));\n    print(sum(map(x, (v) => v / 1099511627776 + v % 1099511627776)));\n    \
+         print(map(x, (v) => v % 139968).slice(0, 40));\n    return 0;\n}}\n"
+    );
+    let want = interp_ok(&src, &[]);
+    let bin = compile(&src, "vector_ifma");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let f = isc_codegen::backend::host_features();
+    if ["+avx512ifma", "+avx512vl"].iter().all(|x| f.split(',').any(|y| y == *x)) {
+        assert!(ll.contains("vpmadd52h"), "no product of 52 bits");
+    }
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+}
