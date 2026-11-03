@@ -3595,3 +3595,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (`vmulpd`, `vsqrtpd`, `vdivpd`). At fixed frequency, 4 threads: n-body
   3.571 s -> 2.093 s; the nine others unchanged (within 0.5 %); the same
   outputs at 1 and 4 threads.
+- **Rejected after measurement (2026-11-04): the standard input mapped
+  (`mmap`) instead of read.** A regular file of at least 1 MiB on the
+  standard input, read from its start, mapped privately with
+  `MAP_POPULATE` (a page before it for the header, a class of its own
+  unmapped by `free`): slower. At fixed frequency, 4 threads:
+  reverse-complement 0.235 s -> 0.252 s, k-nucleotide 1.435 s -> 1.456 s,
+  regex-redux 1.154 s -> 1.165 s, the same outputs. The cause, measured on
+  two programs that read the 254 MB of fasta25m.txt (one thread, 5 runs):
+  read 12.69 ms, 117 page faults (huge pages), 3857 dTLB misses; mapped
+  16.43 ms, 73 faults, 6513 misses; with one pass over the bytes, 16.85
+  ms against 20.55 ms. Filling about 62000 entries of 4 KiB pages costs
+  more than copying into huge pages (about 20 GB/s), and the passes over
+  4 KiB pages miss the TLB 1.7 times as often. Measured too: reading is
+  not the cost of reverse-complement (13 ms of its 0.235 s), and its floor
+  in `results/floors.md` (0.067 s, of which 0.056 s for reading) is too
+  high; to be redone with the floors.
