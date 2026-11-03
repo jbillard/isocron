@@ -29,9 +29,11 @@ name = "isc-runtime-core"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "memchr",
  "num-bigint",
  "num-traits",
  "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]

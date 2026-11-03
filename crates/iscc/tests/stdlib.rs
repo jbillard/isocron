@@ -418,6 +418,72 @@ fn map_groups_by_hashes() {
     agree(MAP_GROUPS, "std_map_groups", &[], &want);
 }
 
+const GROUPS_AS_MADE: &str = r##"function key(i: i64): i64 {
+    const r = (i * 7919) % 1237;
+    return i % 2 == 0 ? r : -r * 100003;
+}
+
+action main(args: string[k]): i32 {
+    const n = 1500000;
+    const ks = countBy(iota(n), key);
+    print(ks.size);
+    print(ks.keys().slice(0, 6));
+    print([ks.get(0) ?? -1, ks.get(1236) ?? -1, ks.get(-123603708) ?? -1, ks.get(5) ?? -1]);
+    const small = countBy(iota(n), (i) => u8(i % 200));
+    print([small.size, small.get(199u8) ?? -1, small.get(0u8) ?? -1]);
+    const words = countBy(iota(n), (i) => i32(i % 7) - 3i32);
+    print(words.entries());
+    print(map([3, 5], (m) => countBy(iota(n), (i) => i % m * 70001).size));
+    return 0;
+}
+"##;
+
+/// `countBy` of a `map` of integer keys: the keys grouped as they are made,
+/// by blocks, never stored all (D244), in parallel parts merged in their
+/// order; small keys counted by their value and large ones hashed in the
+/// same tables, negative keys, bytes, `i32`, inside the tasks of a `map`;
+/// the `iota` read twice (the keys and the first element of each group)
+/// never made. The same groups, in the order of their first occurrence.
+#[test]
+fn keys_grouped_as_they_are_made() {
+    let n = 1500000i64;
+    let key = |i: i64| {
+        let r = (i * 7919) % 1237;
+        if i % 2 == 0 { r } else { -r * 100003 }
+    };
+    let mut order: Vec<i64> = Vec::new();
+    let mut counts: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for i in 0..n {
+        let k = key(i);
+        let c = counts.entry(k).or_insert(0);
+        if *c == 0 {
+            order.push(k);
+        }
+        *c += 1;
+    }
+    let get = |k: i64| counts.get(&k).copied().unwrap_or(-1);
+    let first6: Vec<String> = order[..6].iter().map(|k| k.to_string()).collect();
+    let small199 = (0..n).filter(|i| i % 200 == 199).count();
+    let small0 = (0..n).filter(|i| i % 200 == 0).count();
+    let words: Vec<String> = (0..7).map(|r| format!("({}, {})", r - 3, (0..n).filter(|i| i % 7 == r).count())).collect();
+    let want = format!(
+        "{}\n[{}]\n[{}, {}, {}, {}]\n[200, {}, {}]\n[{}]\n[3, 5]\n",
+        order.len(),
+        first6.join(", "),
+        get(0),
+        get(1236),
+        get(-123603708),
+        get(5),
+        small199,
+        small0,
+        words.join(", ")
+    );
+    agree(GROUPS_AS_MADE, "std_groups_as_made", &[], &want);
+    let p = iscc::frontend("g.isc", GROUPS_AS_MADE).unwrap_or_else(|e| panic!("{}", e));
+    let ir = isc_ir::print::program(&p);
+    assert!(!ir.lines().zip(ir.lines().skip(1)).any(|(a, b)| a.contains(": i64[] =") && b.trim() == "iota"), "an iota bound to a variable:\n{}", ir);
+}
+
 const TAGGED: &str = r##"type List = Nil | Cons(i64, List);
 type Tree = Leaf | Empty | Node(Tree, i64, Tree);
 

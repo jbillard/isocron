@@ -325,6 +325,8 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     table_functions(body, vars, &mut HashMap::new());
     inline_zips(body, vars);
     fuse_fixpoint(body);
+    // (after the fusion: the size checks around an `iota` floated out)
+    iota_vars(body, vars);
     bind_temporaries(body, vars);
     fuse_fixpoint(body);
     // (the source of a map a variable, the `let`s floated out of the value
@@ -337,6 +339,61 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     fuse_fixpoint(body);
     let pending = place_streams(body, vars, Mode::Evaluated);
     debug_assert!(pending.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// ranges never made (D244)
+
+/// Every use of `v` in `e` reads it in place: an input of a loop (`map`,
+/// `reduce`, `fold`, `scan`, `filter`), its length, one of its elements,
+/// the source of a slice (`fusable_slots`), inside lambdas too.
+fn read_in_place(e: &Expr, v: VarId) -> bool {
+    let slots = fusable_slots(e);
+    e.children().into_iter().enumerate().all(|(i, c)| match c.kind {
+        ExprKind::Var(w, _) if w == v => slots.contains(&i),
+        _ => read_in_place(c, v),
+    })
+}
+
+/// Each use of `v` replaced by `iota(len)`.
+fn iota_of_var(e: &mut Expr, v: VarId, len: VarId, ty: &Type) {
+    if let ExprKind::Var(w, _) = e.kind {
+        if w == v {
+            let n = Expr { kind: ExprKind::Var(len, Use::Borrow), ty: Type::Int(IntKind::I64), span: e.span, reassoc: e.reassoc };
+            e.kind = ExprKind::Iota(Box::new(n));
+            e.ty = ty.clone();
+            return;
+        }
+    }
+    for c in e.children_mut() {
+        iota_of_var(c, v, len, ty);
+    }
+}
+
+/// `let v = iota(n) in body`, every use of `v` reading it in place
+/// (`read_in_place`): `let len = n in body` with each use `iota(len)`, a
+/// producer computed where it is read, never an array of n indices (D244:
+/// `countBy(iota(n), f)` reads its input twice, a `map` of it and its
+/// elements at the first index of each group; made whole, 8n bytes and the
+/// index of a `map` read from memory, a gather in vector code, instead of
+/// the index of the loop).
+fn iota_vars(e: &mut Expr, vars: &mut Vec<VarInfo>) {
+    for c in e.children_mut() {
+        iota_vars(c, vars);
+    }
+    if let ExprKind::Let { var, init, body, stmt: false, .. } = &mut e.kind {
+        if let ExprKind::Iota(n) = &mut init.kind {
+            if read_in_place(body, *var) {
+                let len = vars.len() as VarId;
+                vars.push(VarInfo { name: "length".into(), ty: Type::Int(IntKind::I64) });
+                let ty = init.ty.clone();
+                iota_of_var(body, *var, len, &ty);
+                let n = take(n);
+                **init = n;
+                *var = len;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

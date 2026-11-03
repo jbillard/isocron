@@ -4167,3 +4167,52 @@ the same work. It now counts every k-mer of each length with `countBy`
 and reads the query with `get`; the same output. At fixed frequency:
 4 threads 1.141 s -> 3.061 s, one thread 1.757 s -> 4.867 s, 2.6 times
 the C++ program. The publications from here on measure this program.
+- **D243 — Groups of integer keys with the key in its slot, in parallel
+(2026-11-04).** Profile of k-nucleotide by the rules (D242): `isc_group`
+53 % of the cycles, `clear_page_erms` 20 %. `group` keeps the index of a
+group in its slot and compares the key of its first occurrence in the
+array of keys: a random read of memory per key once the array is large
+(1 GB of `i64`), then the arrays of the last index and the count.
+`WordGroups` keeps the key, its last index and its count in its slot (16
+bytes, one line per probe and update; indices and counts below 2^32,
+`group` beyond); the slot of the key 16 places ahead is prefetched.
+From 2^20 keys on, one table per part of consecutive indices (in a task
+too: the parts shared with the idle threads, D201), the tables merged in
+the order of the parts: the groups in the order of their first
+occurrence, the columns of `group` whatever the number of threads.
+k-nucleotide at fixed frequency: 4 threads 3.057 s -> 2.563 s, one
+thread 4.869 s -> 4.341 s; the same output.
+- **D244 — `countBy` groups its keys as they are made; an `iota` read in
+place is never made (2026-11-04).** After D243, each `countBy` of
+k-nucleotide still wrote its 125 million keys (1 GB, new pages: the
+`clear_page_erms` of the profile) before grouping them, and its input
+`iota(n)` was bound to a variable, read twice, so made whole (1 GB more)
+and read by the `map` as an array: the index of each lane a load, the
+windows of `codes` a gather. Three changes:
+  - `countBy` (prelude) no longer reads its keys twice: `$group(map(xs,
+    f))`, the key of each group made again from its first element
+    (`f(xs[g[i]])`, at most one more `f` per distinct key).
+  - `$group` of a `map` of integer keys (codegen `group_stream`): the
+    parts of `isc_group_parts` (one per thread from 2^20 keys, at least
+    2^18 keys each) in parallel, each making its keys by blocks of 1024 in
+    a buffer on its stack (`fill_range`, the vector code of the `map`) and
+    adding each block to its own table (`isc_groups_add`); the tables
+    merged in their order (`isc_groups_end`). From 2^31 keys on, the keys
+    made whole and `isc_group`. From 2^16 keys on, the keys below 2^16 are
+    counted in a table indexed by the key, which grows to the largest of
+    them (what `group_dense` did for an array of keys).
+  - `iota_vars` (pass, after the first fusion): `let v = iota(n)` whose
+    every use reads it in place (an input of a loop, its length, an
+    element, the source of a slice, inside lambdas too) becomes `let len
+    = n` with each use `iota(len)`: a producer computed where it is read.
+    Of the ten programs, only k-nucleotide has one (6).
+k-nucleotide at fixed frequency: 4 threads 2.563 s -> 1.659 s, one thread
+4.341 s -> 3.706 s; the same output for 1, 2 and 4 threads; the other
+nine programs unchanged (no `countBy`, no `iota` rewritten). The tables
+of the two large frames (12 and 18: about 140 000 keys each, 8 MiB per
+part at half load) still take 4 times the memory of one table on 4
+threads (32 MiB for a 16 MiB L3: 15.7 ns per key on 4 threads, 6.6 on
+one); a load of 3/4 halves it (k=12 alone: 0.981 s -> 0.856 s on 4
+threads) but costs one thread 0.437 s in branches mispredicted (25 to 64
+million): left at 1/2 here, the tables to be split by key next. Test
+`keys_grouped_as_they_are_made`.

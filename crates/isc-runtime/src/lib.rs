@@ -1518,6 +1518,133 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
     *out = IscArray { ptr: q as *mut u8, len: n as i64 };
 }
 
+/// From this many keys on, the groups of integer keys are made in parallel.
+const GROUP_PARALLEL_MIN: usize = 1 << 20;
+/// The slot of the key this many places ahead is prefetched (D243).
+const GROUP_AHEAD: usize = 16;
+
+/// The columns of `group` for integer keys (`key(i)`, its bits), by
+/// `WordGroups` (D243): with several threads and many keys, one table per
+/// part of consecutive indices, then the tables merged in their order.
+unsafe fn group_words(n: usize, key: impl Fn(usize) -> u64 + Sync) -> alloc::vec::Vec<i64> {
+    let threads = thread_count();
+    if n >= sem::WordGroups::MAX_INDEX {
+        return sem::group(n, |i| sem::hash_word(key(i)), |i, j| key(i) == key(j));
+    }
+    if threads <= 1 || n < GROUP_PARALLEL_MIN {
+        let mut g = sem::WordGroups::new(false);
+        for i in 0..n {
+            if i + GROUP_AHEAD < n {
+                g.prefetch(key(i + GROUP_AHEAD));
+            }
+            g.add(key(i), i);
+        }
+        return g.columns();
+    }
+    // inside a task too: its parts shared with the threads that are done
+    // (D201)
+    let parts = threads.min(64);
+    let mut tables: alloc::vec::Vec<sem::WordGroups> = (0..parts).map(|_| sem::WordGroups::new(false)).collect();
+    struct Ctx<'a> {
+        key: &'a (dyn Fn(usize) -> u64 + Sync),
+        n: usize,
+        parts: usize,
+        tables: *mut sem::WordGroups,
+    }
+    extern "C" fn part(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let k = k as usize;
+            let (lo, hi) = (c.n * k / c.parts, c.n * (k + 1) / c.parts);
+            let t = &mut *c.tables.add(k);
+            for i in lo..hi {
+                if i + GROUP_AHEAD < hi {
+                    t.prefetch((c.key)(i + GROUP_AHEAD));
+                }
+                t.add((c.key)(i), i);
+            }
+        }
+    }
+    let mut ctx = Ctx { key: &key, n, parts, tables: tables.as_mut_ptr() };
+    isc_parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, -1);
+    let mut it = tables.into_iter();
+    let mut all = it.next().unwrap();
+    for t in it {
+        all.merge(&t);
+    }
+    all.columns()
+}
+
+/// The number of parts of `$group` of `n` integer keys made as they are
+/// grouped (D244): one per thread from GROUP_PARALLEL_MIN keys on, each part
+/// of at least GROUP_PART_MIN keys; the columns do not depend on it.
+#[no_mangle]
+pub extern "C" fn isc_group_parts(n: i64) -> i64 {
+    const GROUP_PART_MIN: i64 = 1 << 18;
+    if (n as usize) < GROUP_PARALLEL_MIN {
+        return 1;
+    }
+    (thread_count() as i64).min(64).min(n / GROUP_PART_MIN).max(1)
+}
+
+/// The tables of the `parts` parts of a `$group` of `n` keys (D244): the
+/// small keys counted by their value from GROUP_DIRECT_MIN keys on.
+#[no_mangle]
+pub extern "C" fn isc_groups_new(n: i64, parts: i64) -> *mut c_void {
+    const GROUP_DIRECT_MIN: i64 = 1 << 16;
+    let direct = n >= GROUP_DIRECT_MIN;
+    let tables: alloc::boxed::Box<[sem::WordGroups]> = (0..parts.max(1)).map(|_| sem::WordGroups::new(direct)).collect();
+    alloc::boxed::Box::into_raw(alloc::boxed::Box::new(tables)) as *mut c_void
+}
+
+/// The `len` keys at `p` (of the integer kind `kind`, as for `isc_group`),
+/// of the indices `start ..`, added to the table of the part `part`: its
+/// blocks come in the order of their indices.
+#[no_mangle]
+pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const u8, len: i64, start: i64, kind: i32) {
+    let tables = &mut *(state as *mut alloc::boxed::Box<[sem::WordGroups]>);
+    let t = &mut tables[part as usize];
+    let len = len.max(0) as usize;
+    let start = start as usize;
+    macro_rules! add {
+        ($t:ty) => {{
+            let q = p as *const $t;
+            for i in 0..len {
+                if i + GROUP_AHEAD < len {
+                    t.prefetch(*q.add(i + GROUP_AHEAD) as u64);
+                }
+                t.add(*q.add(i) as u64, start + i);
+            }
+        }};
+    }
+    match kind {
+        0 => add!(i8),
+        1 => add!(i16),
+        2 => add!(i32),
+        3 => add!(i64),
+        4 | 10 => add!(u8),
+        5 => add!(u16),
+        6 => add!(u32),
+        _ => add!(u64),
+    }
+}
+
+/// The columns of `isc_group` from the tables of `state`, merged in the
+/// order of their parts; `state` freed.
+#[no_mangle]
+pub unsafe extern "C" fn isc_groups_end(out: *mut IscArray, state: *mut c_void) {
+    let tables = *alloc::boxed::Box::from_raw(state as *mut alloc::boxed::Box<[sem::WordGroups]>);
+    let mut it = alloc::vec::Vec::from(tables).into_iter();
+    let mut all = it.next().unwrap();
+    for t in it {
+        all.merge(&t);
+    }
+    let g = all.columns();
+    let q = isc_alloc((g.len() * 8) as i64) as *mut i64;
+    core::ptr::copy_nonoverlapping(g.as_ptr(), q, g.len());
+    *out = IscArray { ptr: q as *mut u8, len: g.len() as i64 };
+}
+
 /// `$group(keys)` (D167): see `isc_runtime_core::group`; `kind` as for
 /// `isc_argsort` (strings and `bigint` by their bytes, both canonical).
 #[no_mangle]
@@ -1526,12 +1653,17 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
     unsafe fn at<T: Copy>(p: *const u8, i: usize) -> T {
         *(p as *const T).add(i)
     }
-    // integer keys in a small range: a table indexed by the key (D194)
+    // integer keys in a small range: a table indexed by the key (D194);
+    // otherwise each key kept in its slot, the parts in parallel (D243)
     macro_rules! ints {
         ($t:ty, $order:expr) => {
             match sem::group_dense(n, |i| $order(at::<$t>(p, i))) {
                 Some(g) => g,
-                None => sem::group(n, |i| sem::hash_word(at::<$t>(p, i) as u64), |i, j| at::<$t>(p, i) == at::<$t>(p, j)),
+                None => {
+                    // (the address as a number: read by the threads)
+                    let pa = p as usize;
+                    group_words(n, move |i| at::<$t>(pa as *const u8, i) as u64)
+                }
             }
         };
         ($t:ty) => {

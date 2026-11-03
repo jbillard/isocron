@@ -217,7 +217,9 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] pidigits: `num * 3 + acc` and `num * 4 + acc` made whole only to be divided (the top words would do)
   - [x] A runtime for x86-64-v4 (AVX-512): the masks of 64 bytes in one comparison; the additions of big integers in assembly: regexredux 0.305 s -> 0.294 s, pidigits 0.503 s -> 0.490 s (D241)
   - [x] k-nucleotide by the rules: every k-mer of 3, 4, 6, 12, 18 counted in a table (it counted only the 5 asked: less work than the others), 1.141 s -> 3.061 s (D242)
-  - [ ] `countBy` of 125e6 keys into 140 000: 2.6 times the C++ program on k-nucleotide
+  - [x] Groups of integer keys with the key in its slot, by parts in parallel, prefetched: k-nucleotide 3.057 s -> 2.563 s (D243)
+  - [x] `countBy` groups its keys as they are made, by blocks; an `iota` read in place never made: k-nucleotide 2.563 s -> 1.659 s (D244)
+  - [ ] The tables of `countBy` split by key between the threads (4 tables of 140 000 keys overflow the L3 on 4 threads)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

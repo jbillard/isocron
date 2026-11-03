@@ -766,6 +766,10 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_read_stdin(ptr, i32, i32)",
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
     "declare void @isc_group(ptr, ptr, i64, i32)",
+    "declare i64 @isc_group_parts(i64)",
+    "declare ptr @isc_groups_new(i64, i64)",
+    "declare void @isc_groups_add(ptr, i64, ptr, i64, i64, i32)",
+    "declare void @isc_groups_end(ptr, ptr)",
     "declare double @isc_js_number(ptr, i64, i32, i64)",
     "declare void @isc_print_big(ptr, i64)",
     "declare void @isc_big_op(ptr, ptr, i64, ptr, i64, i32, i32, i32)",
@@ -1318,6 +1322,31 @@ fn lam_ok_replay(l: &Lambda) -> bool {
 /// `let x = map(...) in printBytes(x)`: an array of bytes made only to be
 /// written, by `materialize` (not a stream, not rows), its elements without
 /// a loop of their own (D225).
+/// `$group(map(...))` of integer keys (D244): the keys made by blocks that
+/// stay in the caches and grouped as they are made, never stored all.
+fn group_stream_ok(init: &Expr) -> bool {
+    matches!(&init.kind, ExprKind::Map(..))
+        && init.ty.is_array()
+        && matches!(init.ty.elem(), Type::Int(_))
+        && !isc_ir::passes::is_stream(init)
+        && !matches!(&init.kind, ExprKind::Map(ins, _) if ins.iter().any(|i| matches!(i.kind, ExprKind::Var(_, Use::Move))))
+}
+
+/// `let ks = map(...) in $group(ks)`: see `group_stream_ok`.
+fn group_let_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
+    group_stream_ok(init) && matches!(&body.kind, ExprKind::StrOp(StrOp::Group, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
+}
+
+/// The kind of the integer keys of `$group` for the runtime (as
+/// `isc_argsort`).
+fn group_kind(t: &Type) -> i32 {
+    match t {
+        Type::Int(k) => (k.bits().trailing_zeros() as i32 - 3) + if k.signed() { 0 } else { 4 },
+        Type::Bool => 10,
+        _ => 11,
+    }
+}
+
 fn print_stream_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
     streamable(init) && matches!(&body.kind, ExprKind::Action(ActionOp::PrintBytes, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
 }
@@ -2857,6 +2886,8 @@ impl<'p> Gen<'p> {
                 self.print_stream_any(init)?;
                 Ok(v("false", "i1"))
             }
+            // keys made only to be grouped: grouped as they are made (D244)
+            Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body) => self.group_stream(init),
             // a literal array of scalars that its body only reads: on the
             // stack, never freed (D191)
             Let { var, init, body, .. } if literal_tail(init).is_some() && init.ty.elem().is_scalar() && stack_array(*var, body) => {
@@ -4501,6 +4532,79 @@ impl<'p> Gen<'p> {
                 Ok(())
             }
         }
+    }
+
+    /// `$group(e)`, `e` a `map` of integer keys (D244): the parts of
+    /// consecutive indices that the runtime chooses (`isc_group_parts`), in
+    /// parallel, each with a table of its own; a part makes its keys by
+    /// blocks of GROUP_BLOCK in a buffer on its stack, each block added to
+    /// its table (`isc_groups_add`), then the tables merged in their order
+    /// (`isc_groups_end`): the columns of `isc_group` for the same keys.
+    /// From 2^31 keys on, the array of keys made whole and `isc_group`.
+    fn group_stream(&mut self, e: &Expr) -> R<V> {
+        const GROUP_BLOCK: i64 = 1024;
+        let et = e.ty.elem().clone();
+        let kind = group_kind(&et);
+        let spmd = match &e.kind {
+            ExprKind::Map(_, l) => spmd_state(self.p, &l.body),
+            _ => None,
+        };
+        let w = match (src_vec_ok_lookup(e), spmd) {
+            (false, _) => 1,
+            (true, Some(state)) => self.spmd_width(state),
+            (true, None) if esize(&et) == 1 => 2 * MAP_WIDTH,
+            (true, None) => MAP_WIDTH,
+        };
+        let (_, n) = self.prepare_src(e)?;
+        let out = self.alloca("{ ptr, i64 }");
+        let big = self.ins(format!("icmp sge i64 {}, {}", n, 1i64 << 31));
+        let lbig = self.label();
+        let lstream = self.label();
+        let ldone = self.label();
+        self.cbr(&big, &lbig, &lstream);
+        self.block(&lbig);
+        let all = self.materialize(e)?;
+        let (p, m) = self.str_parts(&all);
+        self.emit(format!("call void @isc_group(ptr {}, ptr {}, i64 {}, i32 {})", out, p, m, kind));
+        self.emit(format!("call void @isc_free(ptr {})", p));
+        self.br(&ldone);
+        self.block(&lstream);
+        let parts = self.ins(format!("call i64 @isc_group_parts(i64 {})", n));
+        let state = self.ins(format!("call ptr @isc_groups_new(i64 {}, i64 {})", n, parts));
+        let extra = [v(state.clone(), "ptr"), v(parts.clone(), "i64")];
+        let et2 = et.clone();
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, x, i| {
+            let (src, n) = g.prepare_src(e)?;
+            let buf = g.alloca(&format!("[{} x {}]", GROUP_BLOCK, mt(&et2)));
+            // the part i: n * i / parts .. n * (i + 1) / parts
+            let a0 = g.ins(format!("mul i64 {}, {}", n, i));
+            let lo = g.ins(format!("sdiv i64 {}, {}", a0, x[1].r));
+            let i1 = g.ins(format!("add i64 {}, 1", i));
+            let b0 = g.ins(format!("mul i64 {}, {}", n, i1));
+            let hi = g.ins(format!("sdiv i64 {}, {}", b0, x[1].r));
+            let len = g.ins(format!("sub i64 {}, {}", hi, lo));
+            let nb0 = g.ins(format!("add i64 {}, {}", len, GROUP_BLOCK - 1));
+            let nb = g.ins(format!("sdiv i64 {}, {}", nb0, GROUP_BLOCK));
+            let state = x[0].r.clone();
+            g.for_range_scalar("0", &nb, 1, &mut |g, k| {
+                let off = g.ins(format!("mul i64 {}, {}", k, GROUP_BLOCK));
+                let start = g.ins(format!("add i64 {}, {}", lo, off));
+                let lim = g.ins(format!("add i64 {}, {}", start, GROUP_BLOCK));
+                let short = g.ins(format!("icmp slt i64 {}, {}", hi, lim));
+                let end = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, hi, lim));
+                let neg = g.ins(format!("sub i64 0, {}", start));
+                let dst = g.ins(format!("getelementptr {}, ptr {}, i64 {}", mt(&et2), buf, neg));
+                g.fill_range(&src, &dst, &n, &et2, &start, &end, w)?;
+                let cnt = g.ins(format!("sub i64 {}, {}", end, start));
+                g.emit(format!("call void @isc_groups_add(ptr {}, i64 {}, ptr {}, i64 {}, i64 {}, i32 {})", state, i, buf, cnt, start, kind));
+                Ok(())
+            })
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", parts, task, ctx, ctx_bytes));
+        self.emit(format!("call void @isc_groups_end(ptr {}, ptr {})", out, state));
+        self.br(&ldone);
+        self.block(&ldone);
+        Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
     }
 
     fn print_stream(&mut self, e: &Expr) -> R<()> {
@@ -8407,6 +8511,9 @@ impl<'p> Gen<'p> {
     /// string is new, the operands are only read.
     fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
         use isc_ir::StrOp as S;
+        if op == S::Group && group_stream_ok(&es[0]) {
+            return self.group_stream(&es[0]);
+        }
         let mut vals = Vec::new();
         for x in es {
             vals.push(self.ex(x, 1)?);
@@ -8626,11 +8733,7 @@ impl<'p> Gen<'p> {
             }
             S::Group => {
                 let (p, n) = self.str_parts(&vals[0]);
-                let kind = match es[0].ty.elem() {
-                    Type::Int(k) => (k.bits().trailing_zeros() as i32 - 3) + if k.signed() { 0 } else { 4 },
-                    Type::Bool => 10,
-                    _ => 11,
-                };
+                let kind = group_kind(es[0].ty.elem());
                 new_str(self, format!("call void @isc_group(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
             }
             S::ArgSort => {

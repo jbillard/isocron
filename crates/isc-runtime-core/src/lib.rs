@@ -3031,6 +3031,180 @@ pub fn group<H: Fn(usize) -> u64, E: Fn(usize, usize) -> bool>(n: usize, hash: H
     first
 }
 
+/// The groups of integer keys (as their 64 bits), each key kept in its slot
+/// of the table with its last index and its count (D243): a probe and its
+/// update touch one line, where `group` reads the key of the first
+/// occurrence in the array of keys (a random read of memory per key when
+/// the array is large) and then two more arrays. With `direct`, the keys
+/// below DIRECT_MAX are counted in a table indexed by the key, which grows
+/// to the largest of them (D244: no hash, no probe). Indices below 2^32.
+/// The keys of a range of indices are added in increasing order; the tables
+/// of consecutive ranges merged in their order give the groups of the whole
+/// range in the order of their first occurrence: the columns of `group`.
+pub struct WordGroups {
+    /// (key, last index, count) per slot, count 0 when empty
+    slots: alloc::vec::Vec<(u64, u32, u32)>,
+    /// (last index, count) of the key i below DIRECT_MAX (`direct`)
+    small: alloc::vec::Vec<(u32, u32)>,
+    direct: bool,
+    /// per group in the order of its first occurrence: its first index and
+    /// its key
+    first: alloc::vec::Vec<u32>,
+    keys: alloc::vec::Vec<u64>,
+    /// the groups in `slots`
+    hashed: usize,
+}
+
+impl Default for WordGroups {
+    fn default() -> Self {
+        Self::new(false)
+    }
+}
+
+impl WordGroups {
+    /// The indices below this bound only (and counts).
+    pub const MAX_INDEX: usize = u32::MAX as usize;
+    /// The keys counted by their value (`direct`).
+    pub const DIRECT_MAX: u64 = 1 << 16;
+
+    /// `direct`: the small keys in a table of their values (for many keys:
+    /// that table may take 512 KiB).
+    pub fn new(direct: bool) -> WordGroups {
+        WordGroups {
+            slots: alloc::vec![(0, 0, 0); 1024],
+            small: alloc::vec::Vec::new(),
+            direct,
+            first: alloc::vec::Vec::new(),
+            keys: alloc::vec::Vec::new(),
+            hashed: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn slot(slots: &[(u64, u32, u32)], k: u64) -> usize {
+        let mask = slots.len() - 1;
+        let mut s = (hash_word(k) as usize) & mask;
+        loop {
+            let (key, _, c) = slots[s];
+            if c == 0 || key == k {
+                return s;
+            }
+            s = (s + 1) & mask;
+        }
+    }
+
+    #[inline(always)]
+    fn is_small(&self, k: u64) -> bool {
+        self.direct && k < Self::DIRECT_MAX
+    }
+
+    /// The key `k` at the index `i` (after every index added before), `c`
+    /// times, its last index `l`.
+    #[inline(always)]
+    fn add_count(&mut self, k: u64, i: u32, l: u32, c: u32) {
+        if self.is_small(k) {
+            let j = k as usize;
+            if j >= self.small.len() {
+                self.grow_small(j);
+            }
+            let e = &mut self.small[j];
+            if e.1 == 0 {
+                self.first.push(i);
+                self.keys.push(k);
+            }
+            *e = (l, e.1 + c);
+            return;
+        }
+        let s = Self::slot(&self.slots, k);
+        let e = &mut self.slots[s];
+        if e.2 != 0 {
+            e.1 = l;
+            e.2 += c;
+            return;
+        }
+        *e = (k, l, c);
+        self.first.push(i);
+        self.keys.push(k);
+        self.hashed += 1;
+        if self.hashed * 2 > self.slots.len() {
+            self.grow_slots();
+        }
+    }
+
+    #[cold]
+    fn grow_small(&mut self, j: usize) {
+        let n = (j + 1).next_power_of_two().max(256);
+        self.small.resize(n, (0, 0));
+    }
+
+    #[cold]
+    fn grow_slots(&mut self) {
+        let mut slots = alloc::vec![(0u64, 0u32, 0u32); self.slots.len() * 2];
+        for &k in &self.keys {
+            if !self.is_small(k) {
+                let old = self.slots[Self::slot(&self.slots, k)];
+                let t = Self::slot(&slots, k);
+                slots[t] = old;
+            }
+        }
+        self.slots = slots;
+    }
+
+    /// The key `k` at the index `i` (below MAX_INDEX).
+    #[inline(always)]
+    pub fn add(&mut self, k: u64, i: usize) {
+        self.add_count(k, i as u32, i as u32, 1)
+    }
+
+    /// The line of the slot of `k` brought into the caches, for a key added
+    /// a few keys later (the loads of several keys then overlap, where each
+    /// probe waits for its line, D243).
+    #[inline(always)]
+    pub fn prefetch(&self, k: u64) {
+        if self.is_small(k) {
+            return;
+        }
+        let s = (hash_word(k) as usize) & (self.slots.len() - 1);
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: a prefetch reads nothing; `s` is a slot of the table
+        unsafe {
+            core::arch::x86_64::_mm_prefetch(self.slots.as_ptr().add(s) as *const i8, core::arch::x86_64::_MM_HINT_T0)
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = s;
+    }
+
+    /// (last index, count) of the group of the key `k`, present.
+    fn entry(&self, k: u64) -> (u32, u32) {
+        if self.is_small(k) {
+            self.small[k as usize]
+        } else {
+            let (_, l, c) = self.slots[Self::slot(&self.slots, k)];
+            (l, c)
+        }
+    }
+
+    /// The groups of `other`, of indices all after those of `self`.
+    pub fn merge(&mut self, other: &WordGroups) {
+        for g in 0..other.first.len() {
+            let k = other.keys[g];
+            let (l, c) = other.entry(k);
+            self.add_count(k, other.first[g], l, c);
+        }
+    }
+
+    /// The three columns of `group`.
+    pub fn columns(self) -> alloc::vec::Vec<i64> {
+        let m = self.first.len();
+        let entries: alloc::vec::Vec<(u32, u32)> = self.keys.iter().map(|&k| self.entry(k)).collect();
+        let mut out = alloc::vec::Vec::with_capacity(3 * m);
+        out.extend(self.first.iter().map(|&f| f as i64));
+        out.extend(entries.iter().map(|e| e.0 as i64));
+        out.extend(entries.iter().map(|e| e.1 as i64));
+        out
+    }
+}
+
 /// `group` of integer keys within a small range (D194): the keys minus the
 /// smallest index a table of the groups, no hash and no probing; the same
 /// three columns. `key(i)` is the key `i` as an `i64` in the order of the
