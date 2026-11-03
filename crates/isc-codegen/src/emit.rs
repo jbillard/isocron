@@ -1684,7 +1684,9 @@ impl<'p> Gen<'p> {
         // (mutual tail recursion, D113)
         let cc = self.fn_cc();
         let name = if in_region { format!("{}_rg", i) } else { i.to_string() };
-        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}", cc, ret, name, ps.join(", "), attrs));
+        // on 64 bytes (D213): a small function called at each node of a
+        // tree stays whole in the cache of decoded instructions
+        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){} align 64", cc, ret, name, ps.join(", "), attrs));
         self.region = saved_region;
         self.other_tails = saved_others;
         self.f = saved_f;

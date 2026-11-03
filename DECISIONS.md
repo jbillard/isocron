@@ -3657,3 +3657,15 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   1.137 s, the eight others unchanged (binary-trees 0.706 s -> 0.705 s);
   the same outputs. A request for zeros on such a block is cleared (its
   contents DIRTY), checked by a test.
+- **D213 — The recursive functions aligned on 64 bytes (2026-11-04).**
+  With the code on a page (D212), binary-trees lost 5 % to the misses of
+  the cache of decoded instructions (n = 19, one thread: 2.84 million
+  `frontend_retired.dsb_miss`, 74.3 million µops decoded by the legacy
+  path, `idq.mite_uops`): its small recursive functions, called at each
+  node, crossed lines of the cache. Each recursive function now starts on
+  64 bytes (`align 64`; D188 aligned every function and every loop, which
+  moved the gains and losses around): 1.20 million misses, 59.3 million
+  µops, 1.663e9 -> 1.520e9 cycles. At fixed frequency, 4 threads:
+  binary-trees 0.700 s -> 0.667 s, fannkuch-redux 1.662 s -> 1.676 s
+  (+0.8 %), n-body 2.106 s -> 2.052 s (its spread between series is about
+  2 %), the seven others unchanged; the same outputs.
