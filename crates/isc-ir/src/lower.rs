@@ -920,6 +920,11 @@ impl<'p> Lower<'p> {
                 for x in es {
                     out.push(self.expr(env, x)?);
                 }
+                // scalar constants: data of the program, not allocated (D173)
+                if !out.is_empty() && ty.elem().is_scalar() && out.iter().all(|x| matches!(x.kind, ExprKind::Lit(_))) {
+                    let lits = out.into_iter().map(|x| if let ExprKind::Lit(l) = x.kind { l } else { unreachable!() }).collect();
+                    return Ok(Expr::new(ExprKind::ConstArray(lits), ty, span));
+                }
                 Ok(Expr::new(ExprKind::ArrayLit(out), ty, span))
             }
             TExprKind::Call { callee, args, size_checks } => self.call(env, callee, args, size_checks, e),

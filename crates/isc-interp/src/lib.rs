@@ -712,6 +712,19 @@ impl<'a> Interp<'a> {
         Ok(match &e.kind {
             StrLit(s) => Value::Str(Rc::from(s.as_str())),
             StrOp(op, es) => return self.str_op(e, *op, es),
+            ConstArray(ls) => {
+                let mut a = Array::with_capacity(e.ty.elem(), ls.len());
+                for l in ls {
+                    a.push(match l {
+                        isc_ir::Lit::Int(v) => Value::Int(*v),
+                        isc_ir::Lit::F64(f) => Value::F64(*f),
+                        isc_ir::Lit::F32(f) => Value::F32(*f),
+                        isc_ir::Lit::Bool(b) => Value::Bool(*b),
+                        isc_ir::Lit::Unit => Value::Unit,
+                    });
+                }
+                Value::Array(Rc::new(a))
+            }
             Lit(l) => match l {
                 isc_ir::Lit::Int(v) => Value::Int(*v),
                 isc_ir::Lit::F64(f) => Value::F64(*f),

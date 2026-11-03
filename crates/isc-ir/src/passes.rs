@@ -1308,6 +1308,8 @@ impl Info {
         }
         match &e.kind {
             ExprKind::Var(v, _) => Some(self.base(*v)),
+            // data of the program (D173): borrowed from no variable
+            ExprKind::ConstArray(_) => Some(Vec::new()),
             ExprKind::Proj(x, _) | ExprKind::Unbox(x) => self.borrows(x),
             // views of an array of arrays: its windows, its rows (D95);
             // slices (rule F4, D97)
@@ -1468,6 +1470,8 @@ impl<'a> Rewriter<'a> {
                 self.index += 1;
                 return Ok(if heap { Own::Borrowed(self.info.base(*v), Some(i)) } else { Own::Scalar });
             }
+            // data of the program (D173): a consumer gets a copy
+            ExprKind::ConstArray(_) => return Ok(Own::Borrowed(Vec::new(), None)),
             ExprKind::Let { var, init, body, .. } => {
                 let v = *var;
                 self.walk(init)?;

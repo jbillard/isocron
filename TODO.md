@@ -145,6 +145,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 
 - [ ] (1) Allocation
   - [x] Components of a tuple accumulator owned, fields in the order of the program: nbody 27.6 s -> 9.9 s (D164)
+  - [x] An array of at most one block filled without a task: nbody 8.1 s -> 6.9 s (D172)
+  - [x] An array literal of scalar constants is data of the program: nbody 6.9 s -> 6.4 s (D173)
   - [ ] Parameters of a tail-recursive function owned (nbody: 3 copies per step)
   - [x] Fast path of the allocator: 63 -> 25 instructions per allocation, 43 -> 28 per free; nbody 9.9 s -> 8.4 s (D165)
   - [ ] Small arrays of a fixed size without the heap

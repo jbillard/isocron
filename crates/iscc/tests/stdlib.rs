@@ -470,3 +470,34 @@ action main(args: string[k]): i32 {
 fn constructors_without_payload_are_not_allocated() {
     agree(TAGGED, "std_tagged", &[], "10\nCons(0, Cons(1, Cons(2, Cons(3, Cons(4, Nil)))))\n[Nil, Cons(1, Nil), Nil]\ntrue\ntrue\nfalse\n33\n[33, 33, 1, 10]\nfalse\n");
 }
+
+const CONSTANT_ARRAYS: &str = r##"const T = [3, 1, 2];
+
+function bump(a: i64[n]): i64[n] {
+    return a.with(0, 9);
+}
+
+action main(args: string[k]): i32 {
+    print(T.with(1, 5));
+    print(T);
+    print(bump(T));
+    print(T);
+    print(fold(iota(3), [0.0, 0.0], (acc, i) => acc.with(i % 2, acc[i % 2] + 1.0)));
+    print(sort([5, 3, 4]));
+    print([1, 2] == [1, 2]);
+    print([1.5, 2.5] * 2.0);
+    print(map(iota(10000), (i) => [1, 2, 3][i % 3]).sum());
+    print([true, false, true].filter((b) => b).length);
+    print([7u8, 255u8][1]);
+    print([1.0f32, -0.0f32]);
+    return 0;
+}
+"##;
+
+/// An array literal of scalar constants is data of the program (D173):
+/// read without an allocation, copied when a value is made of it (`with`,
+/// the accumulator of a `fold`), never freed nor changed.
+#[test]
+fn arrays_of_constants() {
+    agree(CONSTANT_ARRAYS, "std_const_arrays", &[], "[3, 5, 2]\n[3, 1, 2]\n[9, 1, 2]\n[3, 1, 2]\n[2, 1]\n[3, 4, 5]\ntrue\n[3, 5]\n19999\n2\n255\n[1, -0]\n");
+}

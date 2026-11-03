@@ -2890,3 +2890,16 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   place, as inside a task; beyond, nothing changes. The elements do not
   depend on the cut (D121). n-body, 50 000 000 steps, one core at a fixed
   frequency: 8.135 s before, 6.915 s after.
+- **D173 — An array literal of scalar constants is data of the program
+  (2026-11-03).** Three of the nine allocations of each step of n-body were
+  tables of constants (`masses()`, the indices of the pairs): an array
+  literal was built and freed at each evaluation, and so was every use of a
+  constant of the top level holding one (D159), a common form of
+  TypeScript programs. A literal whose elements are all scalar constants is
+  now `ConstArray` in the IR, a global constant of the compiled program
+  aligned as an array: borrowed from no variable (the ownership pass and
+  the verifier give a copy to any consumer: `with`, the initial value of a
+  `fold`), never freed. As this changes a verdict of `@requireNoAlloc` (it
+  now accepts such a literal), SPEC section 8 states it. n-body, 50 000 000
+  steps, one core at a fixed frequency: 6.915 s before, 6.374 s after.
+  Tests: `tests/stdlib.rs` (`arrays_of_constants`), `tests/phase4.rs`.

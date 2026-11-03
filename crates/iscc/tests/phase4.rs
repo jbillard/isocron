@@ -212,7 +212,7 @@ action main(args: string[k]): i32 {
     rejected(
         "@requireNoAlloc
 function lit(x: f64[n]): f64 {
-    return sum(x) + sum([1.0, 2.0]);
+    return sum(x) + sum([x[0], 2.0]);
 }
 
 action main(args: string[k]): i32 {
@@ -221,6 +221,20 @@ action main(args: string[k]): i32 {
 }
 ",
         &["requireNoAlloc not satisfied (line 2)", "line 3: 16 bytes an array literal"],
+    );
+    // a literal of constants is data of the program, not allocated (D173)
+    accepted(
+        "@requireNoAlloc
+function lit(x: f64[n]): f64 {
+    return sum(x) + sum([1.0, 2.0]) + [5.0, 7.0][1];
+}
+
+action main(args: string[k]): i32 {
+    print(lit([1.0]));
+    return 0;
+}
+",
+        "req_no_alloc_const",
     );
     // a copy that is not the result
     rejected(

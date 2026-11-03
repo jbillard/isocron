@@ -2197,6 +2197,24 @@ impl<'p> Gen<'p> {
                 }
                 Ok(self.nested(&p, &rows, &cols, &cols))
             }
+            // data of the program, aligned as an array (D173)
+            ConstArray(ls) => {
+                let et = e.ty.elem().clone();
+                let m = mt(&et);
+                let vals: Vec<String> = ls
+                    .iter()
+                    .map(|l| match l {
+                        isc_ir::Lit::Int(i) => format!("{} {}", m, i),
+                        isc_ir::Lit::F64(f) => format!("double {}", fconst(*f)),
+                        isc_ir::Lit::F32(f) => format!("float {}", fconst32(*f)),
+                        isc_ir::Lit::Bool(b) => format!("i8 {}", *b as u8),
+                        isc_ir::Lit::Unit => "i8 0".to_string(),
+                    })
+                    .collect();
+                let name = format!("@.arr.{}", self.globals.len());
+                self.globals.push(format!("{} = private unnamed_addr constant [{} x {}] [{}], align 64", name, ls.len(), m, vals.join(", ")));
+                Ok(self.arr(&name, &ls.len().to_string()))
+            }
             ArrayLit(es) => {
                 let et = e.ty.elem().clone();
                 let n = es.len().to_string();
@@ -5884,6 +5902,7 @@ impl<'p> Gen<'p> {
                 _ => None,
             },
             ExprKind::ArrayLit(es) => Some(es.len() as i64),
+            ExprKind::ConstArray(ls) => Some(ls.len() as i64),
             _ => None,
         };
         // 4 rounds of the K copies per iteration: 32 elements, so that the

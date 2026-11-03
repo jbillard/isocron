@@ -1950,6 +1950,11 @@ exactly once, nothing is used after it is freed or given away, and no view
 compilation error, which reports a defect of the compiler, not of the
 program.
 
+An array literal whose elements are all scalar constants (`[1, 2, 3]`,
+`[0.5, 1.5]`, `const T = [true, false];`) is data of the program: reading
+it allocates nothing, so `@requireNoAlloc` accepts it, and a value made of
+it (`T.with(0, 9)`, the initial value of a `fold`) is a copy.
+
 ### The memory report
 
 `iscc check file.isc --report` prints, and `iscc build file.isc --report`

@@ -252,6 +252,9 @@ impl<'p> Checker<'p> {
         let fresh = |h: bool| if h { Val::Fresh } else { Val::Scalar };
         match &e.kind {
             Lit(_) => Ok(Val::Scalar),
+            // data of the program (D173): borrowed from no variable, never
+            // given away nor freed
+            ConstArray(_) => Ok(Val::View(Vec::new())),
             // a literal: a new string; the operands of an operation on
             // strings are only read (D134)
             StrLit(_) => Ok(Val::Fresh),

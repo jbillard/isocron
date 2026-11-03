@@ -58,6 +58,7 @@ pub fn expr(e: &Expr, p: &Program, ind: usize, s: &mut String) {
         Lit(crate::Lit::Bool(b)) => format!("{}", b),
         Lit(crate::Lit::Unit) => "()".into(),
         Zero => "zero".into(),
+        ConstArray(ls) => format!("const array {} ({} elements)", type_str(&e.ty), ls.len()),
         Var(v, u) => format!("{}{}", name(p, *v), if *u == Use::Move { " (move)" } else { "" }),
         Let { var, stmt, drop, .. } => format!(
             "let{}{} {}: {} =",

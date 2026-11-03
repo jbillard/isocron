@@ -382,7 +382,8 @@ Aucun ramasse-miettes : chaque allocation est libérée à un point connu à la 
 - Scalaires, tuples, records et types somme non récursifs : registres ou pile.
 - Tableaux : un bloc contigu, aligné sur 64 octets (une ligne de cache sur les CPU x86-64 courants), sur le tas.
 - Le compilateur peut placer sur la pile un tableau de taille constante ; le seuil est à fixer (section 16). Ce choix n'affecte que la vitesse, jamais le verdict d'une exigence (section 9).
-- Types récursifs : sur le tas, avec comptage de références.
+- Types récursifs : sur le tas, avec comptage de références ; un constructeur sans charge n'est pas alloué (D169).
+- Un littéral de tableau dont tous les éléments sont des constantes scalaires est une donnée du programme : le lire n'alloue rien (`@requireNoAlloc` l'accepte), et une valeur qui en est faite (`with`, valeur initiale d'un `fold`) en est une copie (D173).
 
 ### Unicité
 
