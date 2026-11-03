@@ -501,3 +501,29 @@ action main(args: string[k]): i32 {
 fn arrays_of_constants() {
     agree(CONSTANT_ARRAYS, "std_const_arrays", &[], "[3, 5, 2]\n[3, 1, 2]\n[9, 1, 2]\n[3, 1, 2]\n[2, 1]\n[3, 4, 5]\ntrue\n[3, 5]\n19999\n2\n255\n[1, -0]\n");
 }
+
+/// D239: the product of a big integer by a word, by 4 words in assembly
+/// (`mulx` and one chain of `adc`) then the rest: numbers of 1 to 41 words
+/// and a partial last word, words of all ones (every carry), signs, the
+/// products by small and large words; the interpreter's results.
+#[test]
+fn big_integers_times_a_word() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const ones = 2n ** BigInt(64 * n) - 1n;
+    print(ones * 3n);
+    print(ones * 18446744073709551615n);
+    print(-ones * 7n);
+    print((ones + 12345n) * 4294967296n);
+    print((3n ** BigInt(40 * n + 7)) * 1000000007n);
+    print(BigInt(n) * 10n);
+    return 0;
+}
+";
+    let bin = compile(src, "big_times_word");
+    for n in ["1", "3", "4", "5", "8", "9", "16", "41"] {
+        let want = interp_ok(src, &[n]);
+        let r = run_bin(&bin, &[n]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}: {}", n, r.stderr);
+    }
+}

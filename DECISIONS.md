@@ -4104,3 +4104,19 @@ bytes of overlapping classes compared again for each class. The engine is
 still 7 times the cost of the primitive: its loop of starts, the vectors
 of the bounds of dense matches (millions of pairs written, merged, read
 again), compares of 32 bytes where AVX-512 gives a mask of 64 at once.
+- **D239 — The product of a big integer by a word in assembly
+  (2026-11-04).** pidigits: `limbs::mul_word` 53 % of the time, `big256::op`
+  38 % (its additions, already one chain of `adc`), 8.7e9 instructions at
+  3 a cycle. The loop of `mul_word` (Rust, `u128`) used `mulx` but chained
+  an addition and an `adc` per word: the carry waited two cycles a word.
+  An earlier try in assembly (before D222) was dropped because the loop
+  was then at the floor of the time, 0.74 ns a word, which was the cost of
+  a loop written in C; the primitive of D222 in assembly costs 0.33 ns.
+  Where `mulx` is (the runtime for x86-64-v3), the words by 4 are now that
+  loop: the products of 4 words, the high word of each added to the low
+  word of the next in one chain of `adc` through the flags; the rest of
+  the words and a partial last word in Rust, from its carry. The runtime
+  without BMI2 and WebAssembly keep the loop of Rust. pidigits at fixed
+  frequency: 0.888 s -> 0.697 s; the same digits for N = 1, 27, 1000,
+  10000, with both runtimes. Test `big_integers_times_a_word` (1 to 41
+  words, all ones, signs, small and large words).

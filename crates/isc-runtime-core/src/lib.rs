@@ -1308,8 +1308,62 @@ mod limbs {
         v[0] = if neg { b'-' } else { b'+' };
         let mut c: u128 = 0;
         let full = a.len() / 8;
+        // the words by 4 in assembly where `mulx` is (D239): one chain of
+        // `adc` through the flags, the high word of each product added to the
+        // low word of the next (about a cycle a word, where the loop below
+        // chains an addition and an `adc` per word)
+        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+        let done = {
+            let quads = full / 4;
+            if quads > 0 {
+                let mut src = a.as_ptr();
+                let mut dst = v[1..].as_mut_ptr();
+                let mut n = quads;
+                let carry: u64;
+                // SAFETY: `a` has `full * 8` bytes from its start and `v` as
+                // many from its byte 1: `quads * 32` bytes read and written
+                unsafe {
+                    core::arch::asm!(
+                        "xor {c:e}, {c:e}",
+                        "2:",
+                        "mulx {h0}, {l0}, [{s}]",
+                        "mulx {h1}, {l1}, [{s} + 8]",
+                        "adc {l0}, {c}",
+                        "mov [{d}], {l0}",
+                        "adc {l1}, {h0}",
+                        "mov [{d} + 8], {l1}",
+                        "mulx {h0}, {l0}, [{s} + 16]",
+                        "mulx {c}, {l1}, [{s} + 24]",
+                        "adc {l0}, {h1}",
+                        "mov [{d} + 16], {l0}",
+                        "adc {l1}, {h0}",
+                        "mov [{d} + 24], {l1}",
+                        "lea {s}, [{s} + 32]",
+                        "lea {d}, [{d} + 32]",
+                        "dec {n}",
+                        "jnz 2b",
+                        "adc {c}, 0",
+                        s = inout(reg) src,
+                        d = inout(reg) dst,
+                        n = inout(reg) n,
+                        c = out(reg) carry,
+                        l0 = out(reg) _,
+                        l1 = out(reg) _,
+                        h0 = out(reg) _,
+                        h1 = out(reg) _,
+                        in("rdx") w,
+                        options(nostack),
+                    );
+                }
+                let _ = (src, dst, n);
+                c = carry as u128;
+            }
+            quads * 4
+        };
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+        let done = 0;
         {
-            let (src, dst) = (&a[..full * 8], &mut v[1..1 + full * 8]);
+            let (src, dst) = (&a[done * 8..full * 8], &mut v[1 + done * 8..1 + full * 8]);
             for (x, y) in src.chunks_exact(8).zip(dst.chunks_exact_mut(8)) {
                 let t = (u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]) as u128) * (w as u128) + c;
                 y.copy_from_slice(&(t as u64).to_le_bytes());
