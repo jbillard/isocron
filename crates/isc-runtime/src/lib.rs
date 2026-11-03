@@ -1111,12 +1111,44 @@ const RX_PART: usize = 1 << 18;
 /// threads and a long text, its parts searched by the tasks of the pool,
 /// each up to its first match in the next part, then merged into the
 /// matches of one search (`merge_bounds`); inside a task, one search.
-unsafe fn rx_bounds(re: &sem::rx::Regex, s: &str) -> alloc::vec::Vec<(usize, usize)> {
+/// The engine of a global search: the shapes searched by masks (D224), or
+/// the automata of regex-automata.
+enum RxEngine {
+    Simple(sem::rx::simple::Simple),
+    Meta(sem::rx::Regex),
+}
+
+impl RxEngine {
+    fn bounds_from(&self, s: &str, from: usize, until: usize) -> alloc::vec::Vec<(usize, usize)> {
+        match self {
+            RxEngine::Simple(sm) => sm.bounds_from(s, from, until),
+            RxEngine::Meta(re) => sem::rx::bounds_from(re, s, from, until),
+        }
+    }
+
+    fn merge(&self, s: &str, starts: &[usize], parts: &[alloc::vec::Vec<(usize, usize)>]) -> alloc::vec::Vec<(usize, usize)> {
+        match self {
+            RxEngine::Simple(sm) => sem::rx::merge_bounds_with(s, starts, parts, |at| sm.find_at(s, at)),
+            RxEngine::Meta(re) => sem::rx::merge_bounds(re, s, starts, parts),
+        }
+    }
+}
+
+/// The engine for a global search of `v` in `s`: a simple shape by masks
+/// (D224), else the automaton with or without its prefilter (D219).
+fn rx_engine(v: &str, s: &str) -> RxEngine {
+    match sem::rx::simple::of(v) {
+        Some(sm) => RxEngine::Simple(sm),
+        None => RxEngine::Meta(rx_for(v, s)),
+    }
+}
+
+unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
     let threads = thread_count();
     // inside a task (the pool busy) the parts would run one after the
     // other, each with a new cache of the lazy DFA to fill again: one search
     if threads <= 1 || s.len() < 2 * RX_PART || BUSY.load(Ordering::Relaxed) {
-        return sem::rx::bounds_from(re, s, 0, usize::MAX);
+        return re.bounds_from(s, 0, usize::MAX);
     }
     // one part per thread: each one fills one cache
     let parts = (s.len() / RX_PART).min(threads);
@@ -1133,7 +1165,7 @@ unsafe fn rx_bounds(re: &sem::rx::Regex, s: &str) -> alloc::vec::Vec<(usize, usi
     let mut found: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>> = (0..starts.len()).map(|_| alloc::vec::Vec::new()).collect();
     #[repr(C)]
     struct Ctx {
-        re: *const sem::rx::Regex,
+        re: *const RxEngine,
         s: *const u8,
         n: usize,
         starts: *const usize,
@@ -1147,12 +1179,12 @@ unsafe fn rx_bounds(re: &sem::rx::Regex, s: &str) -> alloc::vec::Vec<(usize, usi
             let starts = core::slice::from_raw_parts(c.starts, c.k);
             let i = i as usize;
             let until = if i + 1 < c.k { starts[i + 1] } else { usize::MAX };
-            *c.found.add(i) = sem::rx::bounds_from(&*c.re, s, starts[i], until);
+            *c.found.add(i) = (*c.re).bounds_from(s, starts[i], until);
         }
     }
     let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr() };
     parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true);
-    sem::rx::merge_bounds(re, s, &starts, &found)
+    re.merge(s, &starts, &found)
 }
 
 /// A `String` of the runtime as a string of the program: its buffer is a
@@ -1172,7 +1204,7 @@ pub unsafe extern "C" fn isc_rx_int(v: *const u8, n: i64, s: *const u8, m: i64, 
     match which {
         0 => sem::rx::test(re, t) as i64,
         1 => sem::rx::search(re, t),
-        _ => rx_bounds(&rx_for(re, t), t).len() as i64,
+        _ => rx_bounds(&rx_engine(re, t), t).len() as i64,
     }
 }
 
@@ -1216,7 +1248,7 @@ fn rx_for(v: &str, s: &str) -> sem::rx::Regex {
 #[no_mangle]
 pub unsafe extern "C" fn isc_rx_matches(out: *mut IscArray, s: *const u8, n: i64, v: *const u8, m: i64) {
     let (t, re) = (text(s, n), text(v, m));
-    let bounds = rx_bounds(&rx_for(re, t), t);
+    let bounds = rx_bounds(&rx_engine(re, t), t);
     let count = bounds.len();
     *out = str_array(&mut bounds.into_iter().map(|(a, b)| &t[a..b]), count);
 }
@@ -1232,7 +1264,7 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
     // in parallel, and the result built once (D189; `written` would search
     // twice, to count the bytes and to write them)
     if (all != 0 || flags.contains('g')) && sem::rx::without_groups(to) {
-        let bounds = rx_bounds(&rx_for(re, t), t);
+        let bounds = rx_bounds(&rx_engine(re, t), t);
         *out = adopt(sem::rx::replace_bounds(t, to, &bounds));
         return;
     }

@@ -3856,3 +3856,31 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   39 test binaries twice, 6 at a time, the longest first, each allocator
   its own directory of temporary files through `ISC_TEST_TMP`): 3.0
   minutes instead of 13.3, the same 78 runs and the doc tests.
+- **D224 — Two simple shapes of patterns searched by masks
+  (2026-11-04).** regex-redux was 28.8 times its floor (D222). By step, 4
+  threads: reading and cleaning 71 ms, the 9 counts 287 ms, the
+  replacements 14, 13, 152, 192 and 124 ms; the three dear ones have
+  millions of matches, each a search of the automaton from its start. Two
+  shapes are now recognized in the syntax tree of a pattern
+  (`sem::rx::simple`): an alternation of sequences of classes of ASCII
+  bytes, all of one length L from 1 to 64 (literals, classes, groups,
+  fixed repetitions, at most 32 sequences: the 9 counts, `tHa[Nt]`,
+  `aND|caN|Ha[DS]|WaS`, `a[NSt]|BY`); and such a head, then `[^c]*` or
+  `[^c]+`, then the ASCII byte c (`<[^>]*>`, `\|[^|][^|]*\|`). In 64
+  bytes: a comparison per distinct byte (AVX2 in the runtime for
+  x86-64-v3, SSE2 in the other), the masks of the classes, then the starts
+  of each sequence as the and of the masks of its classes shifted by their
+  places across two blocks; every start in a mask taken in order, without
+  overlap; for the second shape the end is the first c after the head
+  (`memchr`). A class with a member outside ASCII (`k` or `s` ignoring
+  case: the Kelvin sign, the long s) keeps the automaton: ASCII bytes are
+  whole characters in UTF-8, so the matches of bytes are those of
+  characters. The parts in parallel and their merge (D189) take any
+  engine (`merge_bounds_with`). Elsewhere than x86-64 (WebAssembly),
+  the automaton as before. The interpreter keeps the automaton: the tests
+  compare the two. At fixed frequency: regex-redux, 4 threads 0.857 s ->
+  0.479 s, one thread 1.958 s -> 0.786 s; the runtime without AVX2
+  1.039 s -> 0.519 s (a first version without SIMD there took 1.829 s);
+  the same outputs. Tests: `shapes_of_patterns` and
+  `masks_find_the_matches_of_the_automaton` (isc-runtime-core),
+  `simple_shapes_found_by_masks` (strings).

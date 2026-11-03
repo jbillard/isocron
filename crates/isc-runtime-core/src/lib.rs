@@ -1893,8 +1893,14 @@ pub mod rx {
     /// match is the next one of that part; otherwise one true search, until
     /// such a place is met again. The same matches as one search (D189).
     pub fn merge_bounds(re: &Regex, s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>]) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
         let mut cache = re.create_cache();
+        merge_bounds_with(s, starts, parts, |at| re.search_with(&mut cache, &regex_automata::Input::new(s).range(at..)).map(|m| (m.start(), m.end())))
+    }
+
+    /// `merge_bounds` with `find(at)`, the first match of a search from
+    /// `at`, for any engine (D224).
+    pub fn merge_bounds_with(s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>], mut find: impl FnMut(usize) -> Option<(usize, usize)>) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
         // the part whose search went on from `at` (the part `c` with
         // `starts[c] <= at`: its start, or after one of its matches), and
         // the index of its next match
@@ -1922,14 +1928,485 @@ pub mod rx {
                 // one met no more match up to the end of `s`
                 Some(_) => break,
                 None => {
-                    let Some(m) = re.search_with(&mut cache, &regex_automata::Input::new(s).range(at..)) else { break };
-                    out.push((m.start(), m.end()));
-                    at = next_at(s, m.start(), m.end());
+                    let Some((a, b)) = find(at) else { break };
+                    out.push((a, b));
+                    at = next_at(s, a, b);
                     cur = follow(at);
                 }
             }
         }
         out
+    }
+
+    /// Two simple shapes of patterns, searched by masks of 64 bytes instead
+    /// of an automaton walked byte by byte (D224):
+    ///
+    /// - fixed: an alternation of sequences of classes of ASCII bytes, all
+    ///   of the same length L (1 to 64): `agggtaaa|tttaccct` with `i`,
+    ///   `a[NSt]|BY`. In 64 bytes, the mask of each class (a comparison per
+    ///   distinct byte), then the starts of each sequence: the and of the
+    ///   masks of its classes, each shifted by its place. Whatever sequence
+    ///   matches at a place, the match is the same L bytes.
+    /// - delimited: such a head, then `[^c]*` (or `[^c]+`), then the ASCII
+    ///   byte c: `<[^>]*>`, `\|[^|][^|]*\|`. After a head at p, the match
+    ///   ends at the first c from p + L (none: no match from p on).
+    ///
+    /// The classes must have no member outside ASCII (a member dropped
+    /// would change the matches): ASCII bytes are whole characters in UTF-8,
+    /// so the matches of bytes are the matches of characters. The global
+    /// search: left to right, without overlap, as `each_match_from`.
+    pub mod simple {
+        use alloc::vec::Vec;
+        use regex_syntax::hir::{Class, Hir, HirKind};
+
+        /// At most this many alternatives, distinct classes, distinct bytes.
+        const ALTS: usize = 32;
+        const CLASSES: usize = 16;
+        const BYTES: usize = 32;
+
+        pub struct Simple {
+            /// each distinct byte of the classes, and its classes (a bit each)
+            bytes: Vec<(u8, u16)>,
+            /// the sequences, as indices of classes, all of length `len`
+            alts: Vec<Vec<u8>>,
+            len: usize,
+            /// delimited: the stop byte, and the least number of bytes
+            /// between the head and it
+            stop: Option<(u8, usize)>,
+        }
+
+        /// The ASCII bytes of a class or literal of one character (a bit
+        /// each); None if it has a member outside ASCII.
+        fn ascii_set(h: &Hir) -> Option<u128> {
+            match h.kind() {
+                HirKind::Literal(l) if l.0.len() == 1 && l.0[0] < 0x80 => Some(1u128 << l.0[0]),
+                HirKind::Class(Class::Unicode(c)) => {
+                    let mut m = 0u128;
+                    for r in c.ranges() {
+                        if r.end() as u32 >= 0x80 {
+                            return None;
+                        }
+                        for b in r.start() as u32..=r.end() as u32 {
+                            m |= 1u128 << b;
+                        }
+                    }
+                    Some(m)
+                }
+                HirKind::Class(Class::Bytes(c)) => {
+                    let mut m = 0u128;
+                    for r in c.ranges() {
+                        if r.end() >= 0x80 {
+                            return None;
+                        }
+                        for b in r.start()..=r.end() {
+                            m |= 1u128 << b;
+                        }
+                    }
+                    Some(m)
+                }
+                HirKind::Capture(c) => ascii_set(&c.sub),
+                _ => None,
+            }
+        }
+
+        /// The class "every character but the ASCII byte c": its c.
+        fn all_but(h: &Hir) -> Option<u8> {
+            match h.kind() {
+                HirKind::Class(Class::Unicode(c)) => {
+                    let r: Vec<_> = c.ranges().iter().map(|r| (r.start() as u32, r.end() as u32)).collect();
+                    match r.as_slice() {
+                        [(0, a), (b, 0x10FFFF)] if *a + 2 == *b && *b - 1 < 0x80 => Some((*b - 1) as u8),
+                        [(1, 0x10FFFF)] => Some(0),
+                        _ => None,
+                    }
+                }
+                HirKind::Class(Class::Bytes(c)) => {
+                    let r: Vec<_> = c.ranges().iter().map(|r| (r.start() as u32, r.end() as u32)).collect();
+                    match r.as_slice() {
+                        [(0, a), (b, 0xFF)] if *a + 2 == *b && *b - 1 < 0x80 => Some((*b - 1) as u8),
+                        [(1, 0xFF)] => Some(0),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        /// The sequences of classes a pattern of fixed length matches: a
+        /// literal, a class, a concatenation, an alternation, a group, a
+        /// repetition of fixed count; None otherwise or beyond ALTS.
+        fn expand(h: &Hir) -> Option<Vec<Vec<u128>>> {
+            match h.kind() {
+                HirKind::Empty => Some(alloc::vec![Vec::new()]),
+                HirKind::Literal(l) => {
+                    if l.0.iter().any(|&b| b >= 0x80) {
+                        return None;
+                    }
+                    Some(alloc::vec![l.0.iter().map(|&b| 1u128 << b).collect()])
+                }
+                HirKind::Class(_) => Some(alloc::vec![alloc::vec![ascii_set(h)?]]),
+                HirKind::Capture(c) => expand(&c.sub),
+                HirKind::Concat(hs) => {
+                    let mut acc: Vec<Vec<u128>> = alloc::vec![Vec::new()];
+                    for x in hs {
+                        let e = expand(x)?;
+                        if acc.len() * e.len() > ALTS {
+                            return None;
+                        }
+                        let mut next = Vec::with_capacity(acc.len() * e.len());
+                        for a in &acc {
+                            for b in &e {
+                                let mut v = a.clone();
+                                v.extend_from_slice(b);
+                                next.push(v);
+                            }
+                        }
+                        acc = next;
+                    }
+                    Some(acc)
+                }
+                HirKind::Alternation(hs) => {
+                    let mut out = Vec::new();
+                    for x in hs {
+                        out.extend(expand(x)?);
+                        if out.len() > ALTS {
+                            return None;
+                        }
+                    }
+                    Some(out)
+                }
+                HirKind::Repetition(r) if r.max == Some(r.min) && r.min <= 64 => {
+                    let e = expand(&r.sub)?;
+                    let mut acc: Vec<Vec<u128>> = alloc::vec![Vec::new()];
+                    for _ in 0..r.min {
+                        if acc.len() * e.len() > ALTS {
+                            return None;
+                        }
+                        let mut next = Vec::new();
+                        for a in &acc {
+                            for b in &e {
+                                let mut v = a.clone();
+                                v.extend_from_slice(b);
+                                next.push(v);
+                            }
+                        }
+                        acc = next;
+                    }
+                    Some(acc)
+                }
+                _ => None,
+            }
+        }
+
+        /// The shape of the pattern of the value `v` (`flags/source`), if it
+        /// is one of the two.
+        pub fn of(v: &str) -> Option<Simple> {
+            // the masks need SIMD (SSE2 at least)
+            if !cfg!(target_arch = "x86_64") {
+                return None;
+            }
+            let (flags, source) = super::parts(v);
+            let cfg = regex_automata::util::syntax::Config::new()
+                .case_insensitive(flags.contains('i'))
+                .multi_line(flags.contains('m'))
+                .dot_matches_new_line(flags.contains('s'));
+            let hir = regex_automata::util::syntax::parse_with(source, &cfg).ok()?;
+            let mut h = &hir;
+            while let HirKind::Capture(c) = h.kind() {
+                h = &c.sub;
+            }
+            // delimited: head, [^c] (optional), [^c]* or [^c]+, c
+            let mut stop = None;
+            let mut head: Vec<Vec<u128>> = Vec::new();
+            if let HirKind::Concat(hs) = h.kind() {
+                let n = hs.len();
+                if n >= 3 {
+                    let last = ascii_set(&hs[n - 1]).filter(|m| m.count_ones() == 1).map(|m| m.trailing_zeros() as u8);
+                    if let (Some(c), HirKind::Repetition(r)) = (last, hs[n - 2].kind()) {
+                        if r.max.is_none() && r.min <= 1 && all_but(&r.sub) == Some(c) {
+                            let mut k = n - 2;
+                            let mut mid = r.min as usize;
+                            if mid == 0 && k >= 2 && all_but(&hs[k - 1]) == Some(c) {
+                                k -= 1;
+                                mid = 1;
+                            }
+                            let mut acc: Vec<Vec<u128>> = alloc::vec![Vec::new()];
+                            let mut ok = true;
+                            for x in &hs[..k] {
+                                let Some(e) = expand(x) else {
+                                    ok = false;
+                                    break;
+                                };
+                                if acc.len() * e.len() > ALTS {
+                                    ok = false;
+                                    break;
+                                }
+                                let mut next = Vec::new();
+                                for a in &acc {
+                                    for b in &e {
+                                        let mut v = a.clone();
+                                        v.extend_from_slice(b);
+                                        next.push(v);
+                                    }
+                                }
+                                acc = next;
+                            }
+                            if ok {
+                                stop = Some((c, mid));
+                                head = acc;
+                            }
+                        }
+                    }
+                }
+            }
+            let seqs = if stop.is_some() { head } else { expand(h)? };
+            let len = seqs.first()?.len();
+            if len == 0 || len > 64 || seqs.iter().any(|q| q.len() != len) {
+                return None;
+            }
+            // distinct classes, distinct bytes
+            let mut classes: Vec<u128> = Vec::new();
+            let mut alts: Vec<Vec<u8>> = Vec::new();
+            for q in &seqs {
+                let mut a = Vec::with_capacity(len);
+                for &m in q {
+                    if m == 0 {
+                        return None;
+                    }
+                    let k = match classes.iter().position(|&c| c == m) {
+                        Some(k) => k,
+                        None => {
+                            classes.push(m);
+                            classes.len() - 1
+                        }
+                    };
+                    if k >= CLASSES {
+                        return None;
+                    }
+                    a.push(k as u8);
+                }
+                alts.push(a);
+            }
+            let mut bytes = Vec::new();
+            for b in 0..128u8 {
+                let mut cl = 0u16;
+                for (k, &m) in classes.iter().enumerate() {
+                    if m >> b & 1 == 1 {
+                        cl |= 1 << k;
+                    }
+                }
+                if cl != 0 {
+                    bytes.push((b, cl));
+                }
+            }
+            if bytes.len() > BYTES {
+                return None;
+            }
+            Some(Simple { bytes, alts, len, stop })
+        }
+
+        /// The masks of the classes over the 64 bytes from `at` (bytes past
+        /// the end of `s` in no class).
+        #[inline(always)]
+        fn masks(sm: &Simple, s: &[u8], at: usize, cm: &mut [u64; CLASSES]) {
+            *cm = [0; CLASSES];
+            if at >= s.len() {
+                return;
+            }
+            let mut tail = [0u8; 64];
+            let (p, valid) = if at + 64 <= s.len() {
+                (s[at..].as_ptr(), !0u64)
+            } else {
+                let n = s.len() - at;
+                tail[..n].copy_from_slice(&s[at..]);
+                (tail.as_ptr(), (1u64 << n) - 1)
+            };
+            eqs(sm, p, cm);
+            if valid != !0u64 {
+                for m in cm.iter_mut() {
+                    *m &= valid;
+                }
+            }
+        }
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        #[inline(always)]
+        fn eqs(sm: &Simple, p: *const u8, cm: &mut [u64; CLASSES]) {
+            use core::arch::x86_64::*;
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            unsafe {
+                let a = _mm256_loadu_si256(p as *const __m256i);
+                let b = _mm256_loadu_si256(p.add(32) as *const __m256i);
+                for &(v, cl) in &sm.bytes {
+                    let x = _mm256_set1_epi8(v as i8);
+                    let m = (_mm256_movemask_epi8(_mm256_cmpeq_epi8(a, x)) as u32 as u64) | ((_mm256_movemask_epi8(_mm256_cmpeq_epi8(b, x)) as u32 as u64) << 32);
+                    let mut c = cl;
+                    while c != 0 {
+                        cm[c.trailing_zeros() as usize] |= m;
+                        c &= c - 1;
+                    }
+                }
+            }
+        }
+
+        /// SSE2, in every x86-64: 4 comparisons of 16 bytes per byte.
+        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[inline(always)]
+        fn eqs(sm: &Simple, p: *const u8, cm: &mut [u64; CLASSES]) {
+            use core::arch::x86_64::*;
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            unsafe {
+                let v0 = _mm_loadu_si128(p as *const __m128i);
+                let v1 = _mm_loadu_si128(p.add(16) as *const __m128i);
+                let v2 = _mm_loadu_si128(p.add(32) as *const __m128i);
+                let v3 = _mm_loadu_si128(p.add(48) as *const __m128i);
+                for &(v, cl) in &sm.bytes {
+                    let x = _mm_set1_epi8(v as i8);
+                    let m = (_mm_movemask_epi8(_mm_cmpeq_epi8(v0, x)) as u16 as u64)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(v1, x)) as u16 as u64) << 16)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(v2, x)) as u16 as u64) << 32)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(v3, x)) as u16 as u64) << 48);
+                    let mut c = cl;
+                    while c != 0 {
+                        cm[c.trailing_zeros() as usize] |= m;
+                        c &= c - 1;
+                    }
+                }
+            }
+        }
+
+        /// Without SIMD (not used: `of` finds no shape there, the automaton
+        /// is faster than this).
+        #[cfg(not(target_arch = "x86_64"))]
+        #[inline(always)]
+        fn eqs(sm: &Simple, p: *const u8, cm: &mut [u64; CLASSES]) {
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            let blk = unsafe { core::slice::from_raw_parts(p, 64) };
+            for &(v, cl) in &sm.bytes {
+                let mut m = 0u64;
+                for (i, &x) in blk.iter().enumerate() {
+                    m |= ((x == v) as u64) << i;
+                }
+                let mut c = cl;
+                while c != 0 {
+                    cm[c.trailing_zeros() as usize] |= m;
+                    c &= c - 1;
+                }
+            }
+        }
+
+        /// The places in the 64 bytes of `cur` where a sequence starts (its
+        /// bytes past them in `next`).
+        #[inline(always)]
+        fn starts(sm: &Simple, cur: &[u64; CLASSES], next: &[u64; CLASSES]) -> u64 {
+            let mut st = 0u64;
+            for a in &sm.alts {
+                let mut m = cur[a[0] as usize];
+                for (j, &k) in a.iter().enumerate().skip(1) {
+                    if m == 0 {
+                        break;
+                    }
+                    let k = k as usize;
+                    m &= (cur[k] >> j) | (next[k] << (64 - j));
+                }
+                st |= m;
+            }
+            st
+        }
+
+        impl Simple {
+            /// The matches of the global search from `from` (a boundary of
+            /// characters) up to the first one that starts at `until` or
+            /// after, that one included (as `bounds_from`).
+            pub fn bounds_from(&self, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
+                let b = s.as_bytes();
+                let n = b.len();
+                let mut out = Vec::new();
+                let mut base = from;
+                let (mut cur, mut next) = ([0u64; CLASSES], [0u64; CLASSES]);
+                masks(self, b, base, &mut cur);
+                // no match starts before `allowed` (the end of the last one)
+                let mut allowed = from;
+                while base < n {
+                    masks(self, b, base + 64, &mut next);
+                    let mut st = starts(self, &cur, &next);
+                    while st != 0 {
+                        let p = base + st.trailing_zeros() as usize;
+                        st &= st - 1;
+                        if p < allowed {
+                            continue;
+                        }
+                        let e = match self.stop {
+                            None => p + self.len,
+                            Some((c, mid)) => {
+                                let h = p + self.len;
+                                // no stop byte left: no match from here on
+                                let Some(q) = memchr::memchr(c, &b[h..]) else { return out };
+                                if q < mid {
+                                    continue;
+                                }
+                                h + q + 1
+                            }
+                        };
+                        out.push((p, e));
+                        allowed = e;
+                        if p >= until {
+                            return out;
+                        }
+                    }
+                    base += 64;
+                    core::mem::swap(&mut cur, &mut next);
+                    // inside a long match: on from its end
+                    if allowed > base + 64 {
+                        base = allowed;
+                        masks(self, b, base, &mut cur);
+                    }
+                }
+                out
+            }
+
+            /// The first match of a search from `at`.
+            pub fn find_at(&self, s: &str, at: usize) -> Option<(usize, usize)> {
+                self.bounds_from(s, at, at).first().copied()
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            /// Which patterns have a shape, and which do not (the automaton).
+            #[test]
+            fn shapes_of_patterns() {
+                for v in ["ig/agggtaaa|tttaccct", "ig/[cgt]gggtaaa|tttaccc[acg]", "g/tHa[Nt]", "g/aND|caN|Ha[DS]|WaS", "g/a[NSt]|BY", "g/a{3}", "g/(ab|ba)x"] {
+                    let sm = of(v).unwrap_or_else(|| panic!("{} has no shape", v));
+                    assert!(sm.stop.is_none(), "{}", v);
+                }
+                for (v, c, mid) in [("g/<[^>]*>", b'>', 0), ("g/\\|[^|][^|]*\\|", b'|', 1), ("g/<[^>]+>", b'>', 1), ("g/x[^y]*y", b'y', 0)] {
+                    let sm = of(v).unwrap_or_else(|| panic!("{} has no shape", v));
+                    assert_eq!(sm.stop, Some((c, mid)), "{}", v);
+                }
+                // classes beyond ASCII ignoring case (the Kelvin sign, the
+                // long s), lengths that differ, repetitions, anchors, empty
+                for v in ["ig/k", "ig/ks", "g/a*", "g/ab|c", "mg/^>.*\n|\n", "g/é", "g/", "g/[^a]", "g/.b"] {
+                    assert!(of(v).is_none(), "{} has a shape", v);
+                }
+            }
+
+            /// The matches of the masks are those of the automaton.
+            #[test]
+            fn masks_find_the_matches_of_the_automaton() {
+                let text: alloc::string::String = "aaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNHaSWaSBY|q<<k>tail <open|".repeat(37);
+                for v in ["ig/agggtaaa|tttaccct", "g/aa", "g/a{3}", "g/a[NSt]|BY", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/<[^>]+>", "ig/tHa[Nt]"] {
+                    let sm = of(v).unwrap();
+                    let re = super::super::of(v);
+                    for from in [0usize, 1, 63, 64, 65, 500] {
+                        assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
+                    }
+                    assert_eq!(sm.bounds_from(&text, 0, 700), super::super::bounds_from(&re, &text, 0, 700), "{} until 700", v);
+                }
+            }
+        }
     }
 
     /// `s` with each match of `bounds` replaced by `to` (without groups).

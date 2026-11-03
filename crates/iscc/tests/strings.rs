@@ -439,3 +439,36 @@ fn searches_choose_their_engine_from_a_sample() {
         }
     }
 }
+
+/// D224: the patterns of two simple shapes, alternations of sequences of
+/// ASCII classes of one length and `head [^c]* c`, are searched by masks of
+/// 64 bytes; the others, and those whose classes have members outside
+/// ASCII (`k` and `s` ignoring case: the Kelvin sign, the long s), by the
+/// automaton. The matches of the interpreter (the automaton), for counts,
+/// lists and replacements: dense and rare matches, patterns that overlap
+/// themselves (`aa`), heads without a stop after them, `[^|]+` between
+/// stops side by side, text outside ASCII, short and long texts (parts in
+/// parallel and their merge), 1 and 4 threads.
+#[test]
+fn simple_shapes_found_by_masks() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const base = \"aaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNéHaSWaSBY|q<<k>Kks\".repeat(n);
+    const s = base + \"tail <open|and|\";
+    const pats = [\"aa\", \"agggtaaa|tttaccct\", \"a[NSt]|BY\", \"aND|caN|Ha[DS]|WaS\", \"tHa[Nt]\", \"<[^>]*>\", \"\\\\|[^|][^|]*\\\\|\", \"a{3}\", \"(ab|ba)x\", \"k\", \"ks\", \"[a-c]\", \"é\", \"a*\", \"<[^>]+>\", \"x[^y]*y\"];
+    print(pats.map((p) => `${p} ${countMatches(s, RegExp(p, \"g\"))} ${countMatches(s, RegExp(p, \"gi\"))} ${matches(s, RegExp(p, \"g\")).join(\",\").length} ${s.replace(RegExp(p, \"gi\"), \"<>\").length} ${s.replace(RegExp(p, \"g\"), \"#\").length}`).join(\"\\n\"));
+    const r = s.replace(/tHa[Nt]/g, \"<4>\").replace(/aND|caN|Ha[DS]|WaS/g, \"<3>\").replace(/a[NSt]|BY/g, \"<2>\").replace(/<[^>]*>/g, \"|\").replace(/\\|[^|][^|]*\\|/g, \"-\");
+    print(r.length);
+    print(r.slice(0, r.length < 80 ? r.length : 80));
+    return 0;
+}
+";
+    let bin = compile(src, "simple_shapes");
+    for n in ["1", "3", "9000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+}
