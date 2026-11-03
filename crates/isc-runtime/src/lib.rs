@@ -1079,14 +1079,51 @@ pub unsafe extern "C" fn isc_rx_int(v: *const u8, n: i64, s: *const u8, m: i64, 
     match which {
         0 => sem::rx::test(re, t) as i64,
         1 => sem::rx::search(re, t),
-        _ => rx_bounds(&sem::rx::of(re), t).len() as i64,
+        _ => rx_bounds(&rx_for(re, t), t).len() as i64,
     }
+}
+
+/// From this size on, a search chooses its engine on a sample (D219).
+const RX_CHOOSE_MIN: usize = 4 << 20;
+const RX_SAMPLE: usize = 64 << 10;
+
+/// The regular expression `v` for a global search of `s` (D219): with the
+/// prefilter of its literals (a fast search of them, the automaton only
+/// where they are) or without it (the automaton over every byte), whichever
+/// searches the first RX_SAMPLE bytes of `s` faster, each once to fill its
+/// cache and bring the sample in, then timed. A prefilter whose literals are
+/// everywhere (the patterns of DNA in DNA) costs more than it saves; one
+/// whose literals are rare (`<[^>]*>`) saves the scan. The two find the
+/// same matches: the choice changes the time only.
+fn rx_for(v: &str, s: &str) -> sem::rx::Regex {
+    let re = sem::rx::of(v);
+    #[cfg(target_arch = "x86_64")]
+    if s.len() >= RX_CHOOSE_MIN {
+        let plain = sem::rx::of_plain(v);
+        let mut end = RX_SAMPLE;
+        while !s.is_char_boundary(end) {
+            end += 1;
+        }
+        let sample = &s[..end];
+        let (mut c1, mut c2) = (re.create_cache(), plain.create_cache());
+        let _ = sem::rx::count_with(&re, &mut c1, sample);
+        let _ = sem::rx::count_with(&plain, &mut c2, sample);
+        let t0 = unsafe { core::arch::x86_64::_rdtsc() };
+        let _ = sem::rx::count_with(&re, &mut c1, sample);
+        let t1 = unsafe { core::arch::x86_64::_rdtsc() };
+        let _ = sem::rx::count_with(&plain, &mut c2, sample);
+        let t2 = unsafe { core::arch::x86_64::_rdtsc() };
+        if (t2 - t1) * 10 < (t1 - t0) * 9 {
+            return plain;
+        }
+    }
+    re
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_rx_matches(out: *mut IscArray, s: *const u8, n: i64, v: *const u8, m: i64) {
     let (t, re) = (text(s, n), text(v, m));
-    let bounds = rx_bounds(&sem::rx::of(re), t);
+    let bounds = rx_bounds(&rx_for(re, t), t);
     let count = bounds.len();
     *out = str_array(&mut bounds.into_iter().map(|(a, b)| &t[a..b]), count);
 }
@@ -1102,7 +1139,7 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
     // in parallel, and the result built once (D189; `written` would search
     // twice, to count the bytes and to write them)
     if (all != 0 || flags.contains('g')) && sem::rx::without_groups(to) {
-        let bounds = rx_bounds(&sem::rx::of(re), t);
+        let bounds = rx_bounds(&rx_for(re, t), t);
         *out = adopt(sem::rx::replace_bounds(t, to, &bounds));
         return;
     }

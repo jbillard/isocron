@@ -198,7 +198,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] A map by rows of the constant that divides its index: revcomp 0.214 s -> 0.182 s (D214)
   - [x] An array stored in a narrower type: knucleotide 1.387 s -> 1.178 s (D218)
   - [x] Comparisons and bounds checks of vectors of consecutive indices from their first and last lanes: revcomp 0.184 s -> 0.174 s, knucleotide 1.433 s -> 1.382 s (D217)
-  - [ ] The prefilter of a regular expression left out when its candidates are dense (regex-redux without it: 1.140 s -> 1.093 s)
+  - [x] A search of a large text chooses its engine (with or without prefilter) on a sample: regexredux 1.144 s -> 0.855 s (D219)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

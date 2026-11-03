@@ -406,3 +406,36 @@ fn global_searches_split_among_threads_find_the_matches_of_one_search() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+/// D219: a global search of a large text (4 MiB and more) takes its engine,
+/// with the prefilter of its literals or without, from a sample: the same
+/// matches either way. Counts of dense patterns (the automaton alone wins),
+/// a replacement and the matches of rare literals (the prefilter wins),
+/// patterns that can match the empty string; short texts too, inside a
+/// parallel `map` (one search per task). The interpreter's results.
+#[test]
+fn searches_choose_their_engine_from_a_sample() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const s = \"aaXbbaaa-AAxagggtaaaTTTACCCTacgtacgtca\".repeat(n);
+    print(countMatches(s, /a*/g));
+    print(countMatches(s, /a+/g));
+    print(countMatches(s, /AA/gi));
+    print(countMatches(s, /agggtaaa|tttaccct/gi));
+    print(map([\"ab\", \"\", \"a[act]\", \"(x|b)+\"], (p) => countMatches(s, RegExp(p, \"gi\"))));
+    const r = s.replace(/X|-A/g, \"<1>\").replace(/<[^>]*>/g, \"|\");
+    print(r.length);
+    print(countMatches(r, /\\|/g));
+    print(matches(s, /xag+t/gi).length);
+    return 0;
+}
+";
+    let bin = compile(src, "rx_engines");
+    for n in ["3", "120000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+}

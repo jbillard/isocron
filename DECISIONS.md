@@ -3747,3 +3747,22 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   same values for the program, here 125 MB of bytes. At fixed frequency:
   k-nucleotide, 4 threads 1.387 s -> 1.178 s, one thread 1.965 s -> 1.778
   s; the nine others compile to the same code; the same outputs.
+- **D219 — A search of a large text chooses its engine on a sample
+  (2026-11-04).** In regex-redux the prefilter of the literals of each
+  pattern (Teddy, `aho-corasick`) took 72 % of the cycles of the 9 counts
+  on one thread: its literals (`agggtaaa`, `tttaccct`...) are made of the 4
+  letters of the text, candidates everywhere, each checked again by the
+  automaton. Without any prefilter the counts took half the time (2.21 s
+  -> 1.12 s on one thread), but the replacements, whose literals are rare
+  (`<[^>]*>`, `tHa[Nt]`), lost what that saved (the program 1.140 s ->
+  1.093 s). A global search of a text of 4 MiB or more (`rx_for`: the
+  counts, the matches, the replacements) now compiles its pattern with and
+  without the prefilter, runs each twice over the first 64 KiB of the text
+  (to fill its cache and bring the sample in, then timed by the counter of
+  cycles), and searches the text with the faster one. The two find the
+  same matches: the choice changes the time only. At fixed frequency:
+  regex-redux, 4 threads 1.144 s -> 0.855 s, one thread 3.116 s -> 1.953
+  s; the same outputs. Tried before it and not kept: counting by searches
+  forwards only (no gain: for these patterns the engine finds an inner
+  literal and searches backwards from it anyway, `find_rev` still 4 % of
+  the cycles).

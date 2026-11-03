@@ -1783,11 +1783,16 @@ pub mod rx {
     }
 
     pub fn compile<'a>(source: &'a str, flags: &str) -> Result<Regex, Panic<'a>> {
+        build(source, flags, true)
+    }
+
+    /// `compile`, with or without the prefilter of its literals (D219).
+    fn build<'a>(source: &'a str, flags: &str, prefilter: bool) -> Result<Regex, Panic<'a>> {
         let cfg = syntax::Config::new()
             .case_insensitive(flags.contains('i'))
             .multi_line(flags.contains('m'))
             .dot_matches_new_line(flags.contains('s'));
-        Regex::builder().syntax(cfg).build(source).map_err(|e| {
+        Regex::builder().configure(Regex::config().auto_prefilter(prefilter)).syntax(cfg).build(source).map_err(|e| {
             // the reason: the last line of the error of syntax (`error:
             // look-around ... is not supported`)
             let text = match e.syntax_error() {
@@ -1804,6 +1809,25 @@ pub mod rx {
         let (flags, source) = parts(v);
         // the value was checked when it was made
         compile(source, flags).unwrap_or_else(|_| Regex::new("[^\\s\\S]").unwrap())
+    }
+
+    /// `of` without the prefilter: the automaton alone over every byte
+    /// (D219).
+    pub fn of_plain(v: &str) -> Regex {
+        let (flags, source) = parts(v);
+        build(source, flags, false).unwrap_or_else(|_| Regex::new("[^\\s\\S]").unwrap())
+    }
+
+    /// The number of matches of the global search of `re` in `s`, with the
+    /// cache `cache` (kept by the caller from one call to the next).
+    pub fn count_with(re: &Regex, cache: &mut regex_automata::meta::Cache, s: &str) -> usize {
+        let (mut at, mut n) = (0usize, 0usize);
+        while at <= s.len() {
+            let Some(m) = re.search_with(cache, &regex_automata::Input::new(s).range(at..)) else { break };
+            n += 1;
+            at = next_at(s, m.start(), m.end());
+        }
+        n
     }
 
     /// `re.test(s)`.
