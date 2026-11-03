@@ -3371,3 +3371,15 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   read before written). Test `small_quotients_as_num_bigint` (3360
   divisions: random quotients of 64 bits, at 2^64, divisors whose top word
   is small, signs mixed).
+- **Rejected after measurement (2026-11-04): the stack floor in
+  local-exec, the free list of nodes without the test of the mode, the
+  allocations `noalias`.** (1) The assembly of the recursive functions
+  read the stack floor of the thread through `__tls_get_addr`
+  (`isc_stack_floor_tls`, local-dynamic); in the linked executables there
+  is no such call (none in binary-trees): the linker relaxes the sequence
+  to local-exec. (2) Taking a node from the free list without testing the
+  mode of the heap (the list is filled only by Isocron's allocator): 3
+  instructions fewer per node, binary-trees 2.016 s -> 2.017 s. (3)
+  `isc_alloc`, `isc_alloc_zeroed` and `isc_node_alloc` declared `noalias`
+  (a new block shares no byte with another): n-body 6.130 s -> 6.135 s,
+  the other programs within 1 %. None kept: no measured gain.
