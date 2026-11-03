@@ -19,28 +19,28 @@ the chain of a step of n-body).
 
 The reference is the machine, not another language: a program at the level
 of the fastest of another language can still be far from its floor (fasta).
-Times of Isocron at commit 0e1c58c (D213), 4 threads but n-body and
+Times of Isocron at commit bf7158c (D219), 4 threads but n-body and
 pidigits (sequential programs), lowest of 3 runs, measured in the Docker
 image with the other languages (`results/benchmarks_game.tsv`).
 
 | benchmark | floor | model | how | Isocron | Isocron / floor | fastest other | its / floor |
 | --- | ---: | --- | --- | ---: | ---: | --- | ---: |
-| binarytrees | 0.631 s | make and visit each node (C, an arena): 3 ns per node | measured | 0.678 s | 1.1 | rust-5 0.868 s | 1.4 |
-| fannkuchredux | 1.472 s | 3.76e+09 flips, each after a dependent load (1.57 ns) | estimate | 1.679 s | 1.1 | gcc-6 2.468 s | 1.7 |
+| binarytrees | 0.631 s | make and visit each node (C, an arena): 3 ns per node | measured | 0.668 s | 1.1 | rust-5 0.843 s | 1.3 |
+| fannkuchredux | 1.472 s | 3.76e+09 flips, each after a dependent load (1.57 ns) | estimate | 1.677 s | 1.1 | gcc-6 2.467 s | 1.7 |
 | fasta | 0.020 s | 254 MB written into new pages, read back once | estimate | 0.174 s | 8.8 | rust-7 0.755 s | 38.4 |
-| knucleotide | 0.389 s | read 0.056 s, 8.75e8 counts (138127 and 139882 keys for 12, 18) | measured | 1.428 s | 3.7 | gpp-2 1.171 s | 3.0 |
-| mandelbrot | 0.429 s | 6.25e+09 iterations x 7 operations, 8 lanes per cycle | measured | 0.640 s | 1.5 | gpp-4 0.781 s | 1.8 |
-| nbody | 1.315 s | latency of a step 26.3 ns (10 roots and divisions: 15.7 ns) | estimate | 2.027 s | 1.5 | gcc-9 1.945 s | 1.5 |
-| pidigits | 0.669 s | 9.09e+08 passes over a word (mulx, adc: 0.74 ns) | measured | 0.891 s | 1.3 | gcc-2 0.681 s | 1.0 |
-| regexredux | 0.298 s | 15 passes over 50.8 MB, one dependent load per byte | estimate | 1.136 s | 3.8 | rust-7 0.760 s | 2.5 |
-| revcomp | 0.067 s | read 0.056 s, then 2 x 254 MB at 47.8 GB/s | measured | 0.210 s | 3.2 | rust 0.066 s | 1.0 |
-| spectralnorm | 0.189 s | 1.21e+09 divisions at 0.626 ns per core | measured | 0.196 s | 1.0 | rust-6 0.206 s | 1.1 |
+| knucleotide | 0.389 s | read 0.056 s, 8.75e8 counts (138127 and 139882 keys for 12, 18) | measured | 1.176 s | 3.0 | gpp-2 1.170 s | 3.0 |
+| mandelbrot | 0.429 s | 6.25e+09 iterations x 7 operations, 8 lanes per cycle | measured | 0.638 s | 1.5 | gpp-4 0.785 s | 1.8 |
+| nbody | 1.315 s | latency of a step 26.3 ns (10 roots and divisions: 15.7 ns) | estimate | 2.057 s | 1.6 | gcc-9 1.945 s | 1.5 |
+| pidigits | 0.669 s | 9.09e+08 passes over a word (mulx, adc: 0.74 ns) | measured | 0.887 s | 1.3 | gcc-2 0.682 s | 1.0 |
+| regexredux | 0.298 s | 15 passes over 50.8 MB, one dependent load per byte | estimate | 0.856 s | 2.9 | rust-7 0.760 s | 2.5 |
+| revcomp | 0.067 s | read 0.056 s, then 2 x 254 MB at 47.8 GB/s | measured | 0.172 s | 2.6 | rust 0.066 s | 1.0 |
+| spectralnorm | 0.189 s | 1.21e+09 divisions at 0.626 ns per core | measured | 0.195 s | 1.0 | rust-6 0.205 s | 1.1 |
 
 ## Order of the work
 
 By the gap to the floor: fasta (8.8, but its floor is to be redone: the
-model ignores the sequence of its generator), regex-redux (3.8),
-k-nucleotide (3.7), reverse-complement (3.2), mandelbrot and n-body (1.5),
-pidigits (1.3), binary-trees and fannkuch-redux (1.1, the floor of
-fannkuch-redux to be redone: its flips are independent, the model chains
-them); spectral-norm is at its floor.
+model ignores the sequence of its generator), k-nucleotide and
+regex-redux (3.0 and 2.9), reverse-complement (2.6), n-body (1.6),
+mandelbrot (1.5), pidigits (1.3), binary-trees and fannkuch-redux (1.1,
+the floor of fannkuch-redux to be redone: its flips are independent, the
+model chains them); spectral-norm is at its floor.
