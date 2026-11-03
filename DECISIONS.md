@@ -3949,3 +3949,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   of 7: fasta 0.167 s -> 0.142 s on 4 threads, 0.650 s -> 0.546 s on one;
   the same output. Test `lengths_known_before_running` (the interpreter's
   results, no `len` of them left in the IR).
+- **D229 — Consecutive indices through a remainder by a constant
+  (2026-11-04).** In fasta `values[t % IM]`, with `t` consecutive in the
+  lanes, was a gather (`vpgatherqq`, 4 of 8 lanes per 32 bytes): the
+  remainder hid that its lanes are consecutive but where they cross a
+  multiple of IM. In vector code `a[x % c]`, `x` consecutive (D217) of
+  type i64 and c a constant of at least the lanes: the first remainder
+  `x0 % c` computed alone; when `x0 >= 0` and `x0 % c + w - 1 < c`, the
+  lanes are `x0 % c + j` and the index is read by one load (its bounds
+  from its ends, D217); otherwise the general code, its gather and its
+  checks. The same values. Of the ten programs only fasta changes. At
+  fixed frequency, best of 7: fasta 0.142 s -> 0.135 s on 4 threads,
+  0.547 s -> 0.519 s on one. Test
+  `consecutive_indices_through_a_remainder` (crossings in a vector, a
+  negative `x`, c below the lanes, an index past the end).

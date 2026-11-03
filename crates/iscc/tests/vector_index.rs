@@ -487,3 +487,38 @@ fn consecutive_indices_under_a_mask() {
         }
     }
 }
+
+/// D229: `t[x % c]` with consecutive `x` and a constant c of at least the
+/// lanes: one load from the first remainder when the lanes do not cross a
+/// multiple of c, the general code when they do, when `x` is negative (the
+/// remainder of a negative), when c is smaller than the lanes; an index past
+/// the end (the panic of the scalar code). The interpreter's results.
+#[test]
+fn consecutive_indices_through_a_remainder() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const k = parseI64(args[1]);
+    const t = map(iota(1000), (i) => (i * 7) % 251);
+    print(sum(map(iota(n), (i) => t[(i + k) % 1000])));
+    print(sum(map(iota(n), (i) => t[(i + k) % 997])));
+    print(sum(map(iota(n), (i) => t[(i + k) % 5])));
+    print(sum(map(iota(n), (q) => q % 61 == 60 ? 1 : t[(q / 61 * 60 + q % 61 + k) % 999])));
+    print(sum(map(iota(n), (i) => t[(i + k) % 1001])));
+    return 0;
+}
+";
+    let bin = compile(src, "remainder_indices");
+    for args in [["5000", "0"], ["5000", "3"], ["999", "-7"], ["64", "990"], ["5000", "-5000"]] {
+        let want = interp(src, &args);
+        for th in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(th));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, th, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    assert!(r.stderr.contains(m.as_str()), "{:?} {} threads: {} / {}", args, th, r.stderr, m);
+                }
+            }
+        }
+    }
+}

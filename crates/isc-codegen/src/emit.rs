@@ -3599,7 +3599,51 @@ impl<'p> Gen<'p> {
     /// the loop): one vector load; others: a gather.
     fn index_vec(&mut self, a: &Expr, i: &Expr, w: u32, span: Span) -> R<V> {
         let (src, n) = self.prepare_src(a)?;
+        // `x % c` of consecutive `x` and a constant c of at least w: the
+        // lanes are consecutive unless they cross a multiple of c, known from
+        // the first lane alone: then one load from the first remainder, the
+        // general code (a gather) otherwise (D229)
+        if let (ExprKind::Binary(BinOp::Rem, x, c), Type::Int(IntKind::I64), Src::Mat { .. }) = (&i.kind, &i.ty, &src) {
+            if let ExprKind::Lit(isc_ir::Lit::Int(c)) = c.kind {
+                if w > 1 && c >= w as i64 && x.ty == Type::Int(IntKind::I64) {
+                    let xv = self.ex(x, w)?;
+                    if let (false, Some((first, 1))) = (uni(&xv), self.f.contig.get(&xv.r).cloned()) {
+                        let r0 = self.ins(format!("srem i64 {}, {}", first, c));
+                        let nonneg = self.ins(format!("icmp sge i64 {}, 0", first));
+                        let room = self.ins(format!("icmp sle i64 {}, {}", r0, c - w as i64));
+                        let ok = self.ins(format!("and i1 {}, {}", nonneg, room));
+                        let lfast = self.label();
+                        let lslow = self.label();
+                        let ljoin = self.label();
+                        self.cbr(&ok, &lfast, &lslow);
+                        self.block(&lfast);
+                        let base = self.widen(&v(r0.clone(), "i64"), w);
+                        let steps: Vec<String> = (0..w).map(|k| format!("i64 {}", k)).collect();
+                        let fv = self.ins(format!("add <{} x i64> {}, <{}>", w, base.r, steps.join(", ")));
+                        self.f.contig.insert(fv.clone(), (r0.clone(), 1));
+                        let x1 = self.index_vec_with(a, i, V { r: fv, t: format!("<{} x i64>", w), uni: false }, &src, &n, w, span)?;
+                        let l1 = self.current_label(&lfast);
+                        self.br(&ljoin);
+                        self.block(&lslow);
+                        let iv = self.ex(i, w)?;
+                        let x2 = self.index_vec_with(a, i, iv, &src, &n, w, span)?;
+                        let l2 = self.current_label(&lslow);
+                        self.br(&ljoin);
+                        self.block(&ljoin);
+                        let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", x1.t, x1.r, l1, x2.r, l2));
+                        return Ok(V { r, t: x1.t, uni: false });
+                    }
+                }
+            }
+        }
         let iv = self.ex(i, w)?;
+        self.index_vec_with(a, i, iv, &src, &n, w, span)
+    }
+
+    /// `index_vec` once the index `iv` (the lanes of `i`) is computed.
+    #[allow(clippy::too_many_arguments)]
+    fn index_vec_with(&mut self, a: &Expr, i: &Expr, iv: V, src: &Src, n: &str, w: u32, span: Span) -> R<V> {
+        let (src, n) = (src.clone(), n.to_string());
         let unsigned = if is_signed(&i.ty) { 0 } else { 1 };
         if uni(&iv) {
             let idx = self.index64(&iv, &i.ty);
