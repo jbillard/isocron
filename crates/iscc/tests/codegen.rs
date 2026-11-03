@@ -318,3 +318,23 @@ fn the_runtime_for_x86_64_v3_is_linked_only_for_targets_that_have_it() {
     }
     assert_eq!(iscc::runtime_v3(Isa::Native), iscc::runtime_v3(Isa::Avx2));
 }
+
+/// D212: the generated code starts on a page (`isc_code_start`, so that its
+/// place does not depend on the size of the runtime before it).
+#[test]
+fn generated_code_starts_on_a_page() {
+    let src = "function depth(n: i64): i64 {
+    if (n == 0) return 0;
+    return 1 + depth(n - 1);
+}
+action main(args: string[k]): i32 {
+    print(depth(10));
+    return 0;
+}
+";
+    let bin = compile(src, "code_start");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("define hidden void @isc_code_start() align 4096"), "no start of the code on a page");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, "10\n"), "{}", run.stderr);
+}

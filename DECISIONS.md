@@ -3625,3 +3625,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   measured by phases); an estimate of what it pays, to be measured: two
   passes over its 247 MB (counting, then writing) and the 247 MB it
   writes into new pages, which the system first clears.
+- **D212 — The generated code starts on a page (2026-11-04).** A change
+  of the runtime that leaves its hot paths alone moved binary-trees: the
+  linker puts the cold functions of the runtime (`.text.unlikely`) before
+  the generated code, whose place, and the alignment of its loops, then
+  depend on their size (848 bytes more with D211: its hot addresses
+  0x2b26 -> 0x2e76, the same 26.47e9 instructions, 7.80e9 -> 8.23e9
+  cycles, 5 % slower; the same effect as D188). The module now starts with
+  an empty function aligned on 4096 bytes (`isc_code_start`, not internal,
+  so kept), the generated functions after it in the same section: their
+  place modulo 4096 no longer depends on the code before them. A draw
+  made once: at fixed frequency, 4 threads, against D208, binary-trees
+  0.672 s -> 0.706 s (n = 19, one thread: 0.90 -> 4.06 million misses of
+  the cache of decoded instructions, `frontend_retired.dsb_miss`; D213
+  takes it back), the nine others unchanged (n-body 2.025 s -> 2.029 s,
+  regex-redux 1.158 s -> 1.148 s, the others within 1 %).

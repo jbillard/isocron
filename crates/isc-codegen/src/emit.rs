@@ -880,6 +880,15 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         out.push('\n');
     }
     out.push('\n');
+    // The generated code starts on a page (D212): its place modulo 4096, so
+    // the alignment of its loops, no longer depends on the size of the code
+    // the linker puts before it (the cold functions of the runtime: a change
+    // of the runtime moved binary-trees by 848 bytes and made it 5 % slower,
+    // the same instructions, D188, D211). A first function, empty and kept
+    // (not internal), aligned; the others follow it in the same section.
+    if !opts.isa.is_wasm() {
+        out.push_str("define hidden void @isc_code_start() align 4096 {\nentry:\n  ret void\n}\n\n");
+    }
     for f in &g.funcs {
         out.push_str(f);
         out.push('\n');
