@@ -12,6 +12,9 @@
 //! form (SPEC section 10), for experiments only: the language fixes V = 32
 //! and results depend on V.
 //!
+//! `iscc completions bash|zsh|fish` prints the completion of the shell
+//! (D232): `source <(iscc completions bash)` in `~/.bashrc`.
+//!
 //! `--color auto|always|never` (anywhere, `auto` by default): the messages
 //! in colors, with the line of the source under an error, when the error
 //! output is a terminal and `NO_COLOR` is not set (D231); the same text as
@@ -19,6 +22,77 @@
 
 use std::io::IsTerminal;
 use std::process::exit;
+
+/// `iscc completions bash`: the completion of the commands, options, their
+/// values and the `.isc` files, for bash (D232). In `~/.bashrc`:
+/// `source <(iscc completions bash)`.
+const BASH_COMPLETION: &str = r#"# the completion of iscc (iscc completions bash)
+_iscc() {
+    local cur prev cmd i
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    cmd=""
+    for ((i = 1; i < COMP_CWORD; i++)); do
+        case "${COMP_WORDS[i]}" in
+            check|ir|run|build|completions) cmd="${COMP_WORDS[i]}"; break ;;
+        esac
+    done
+    case "$prev" in
+        --isa) COMPREPLY=($(compgen -W "native sse avx avx2 avx512" -- "$cur")); return ;;
+        --target) COMPREPLY=($(compgen -W "native wasm32-wasi wasm32-wasi-threads" -- "$cur")); return ;;
+        --color) COMPREPLY=($(compgen -W "auto always never" -- "$cur")); return ;;
+        --lanes) COMPREPLY=($(compgen -W "2 4 8 16 32 64 128 256" -- "$cur")); return ;;
+        -o|--emit-llvm|--emit-asm|--link) compopt -o filenames 2>/dev/null; COMPREPLY=($(compgen -f -- "$cur")); return ;;
+    esac
+    if [ -z "$cmd" ]; then
+        COMPREPLY=($(compgen -W "check ir run build completions --color" -- "$cur"))
+        return
+    fi
+    if [ "$cmd" = completions ]; then
+        COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
+        return
+    fi
+    if [[ "$cur" == -* ]]; then
+        case "$cmd" in
+            check) COMPREPLY=($(compgen -W "--report --color" -- "$cur")) ;;
+            ir) COMPREPLY=($(compgen -W "--color" -- "$cur")) ;;
+            run) COMPREPLY=($(compgen -W "--lanes --link --color" -- "$cur")) ;;
+            build) COMPREPLY=($(compgen -W "-o --emit-llvm --emit-asm --debug --report --lanes --isa --target --link --color" -- "$cur")) ;;
+        esac
+        return
+    fi
+    # the .isc files and the directories
+    compopt -o filenames 2>/dev/null
+    COMPREPLY=($(compgen -f -X '!*.isc' -- "$cur") $(compgen -d -- "$cur"))
+}
+complete -F _iscc iscc
+"#;
+
+/// `iscc completions zsh`: the script of bash through `bashcompinit`. In
+/// `~/.zshrc`: `source <(iscc completions zsh)`.
+const ZSH_COMPLETION: &str = "# the completion of iscc (iscc completions zsh)\nautoload -U +X compinit && compinit\nautoload -U +X bashcompinit && bashcompinit\n";
+
+/// `iscc completions fish`. In fish: `iscc completions fish | source`.
+const FISH_COMPLETION: &str = r#"# the completion of iscc (iscc completions fish)
+complete -c iscc -f
+complete -c iscc -n "__fish_use_subcommand" -a "check" -d "type-check"
+complete -c iscc -n "__fish_use_subcommand" -a "ir" -d "print the optimized IR"
+complete -c iscc -n "__fish_use_subcommand" -a "run" -d "run with the interpreter"
+complete -c iscc -n "__fish_use_subcommand" -a "build" -d "compile"
+complete -c iscc -n "__fish_use_subcommand" -a "completions" -d "the completion of a shell"
+complete -c iscc -n "__fish_seen_subcommand_from completions" -a "bash zsh fish"
+complete -c iscc -n "__fish_seen_subcommand_from check ir run build" -a "(__fish_complete_suffix .isc)"
+complete -c iscc -l color -x -a "auto always never"
+complete -c iscc -n "__fish_seen_subcommand_from check build" -l report
+complete -c iscc -n "__fish_seen_subcommand_from run build" -l lanes -x -a "2 4 8 16 32 64 128 256"
+complete -c iscc -n "__fish_seen_subcommand_from run build" -l link -r -F
+complete -c iscc -n "__fish_seen_subcommand_from build" -s o -r -F
+complete -c iscc -n "__fish_seen_subcommand_from build" -l emit-llvm -r -F
+complete -c iscc -n "__fish_seen_subcommand_from build" -l emit-asm -r -F
+complete -c iscc -n "__fish_seen_subcommand_from build" -l debug
+complete -c iscc -n "__fish_seen_subcommand_from build" -l isa -x -a "native sse avx avx2 avx512"
+complete -c iscc -n "__fish_seen_subcommand_from build" -l target -x -a "native wasm32-wasi wasm32-wasi-threads"
+"#;
 
 /// The colors of the messages of `iscc` (D231): ANSI codes, or nothing.
 struct Style {
@@ -114,7 +188,7 @@ impl Style {
 
 fn usage() -> ! {
     eprintln!(
-        "usage (--color auto|always|never anywhere):\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads] [--link lib]..."
+        "usage (--color auto|always|never anywhere):\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads] [--link lib]..."
     );
     exit(2)
 }
@@ -133,6 +207,18 @@ fn main() {
     let started = std::time::Instant::now();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let style = Style::from_args(&mut args);
+    if args.first().map(|a| a.as_str()) == Some("completions") {
+        match args.get(1).map(|a| a.as_str()) {
+            Some("bash") => print!("{}", BASH_COMPLETION),
+            Some("zsh") => print!("{}{}", ZSH_COMPLETION, BASH_COMPLETION),
+            Some("fish") => print!("{}", FISH_COMPLETION),
+            _ => {
+                eprintln!("{}", style.error("iscc completions bash|zsh|fish"));
+                exit(2)
+            }
+        }
+        return;
+    }
     if args.len() < 2 {
         usage();
     }

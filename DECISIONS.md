@@ -3998,3 +3998,12 @@ in N ms` in green. Only when the error output is a terminal and
 tests and scripts read. The messages of the compiled programs (their
 panics) do not change: they are part of the behavior the tests check.
 Test `messages_in_colors_on_demand` (tests/cli.rs).
+- **D232 — The completion of `iscc` in the shell (2026-11-04).** Asked
+for: completion when typing `iscc ...`. `iscc completions bash|zsh|fish`
+prints the script of the shell, kept in the driver (no file to install
+apart): the commands (`check`, `ir`, `run`, `build`, `completions`), the
+options of each, the values of `--isa`, `--target`, `--color`, `--lanes`,
+any file after `-o`, `--emit-llvm`, `--emit-asm`, `--link`, else the
+`.isc` files and the directories. zsh takes the script of bash through
+`bashcompinit`. Test `completion_of_the_shell` (the script of bash run in
+bash on 7 cases).

@@ -58,3 +58,49 @@ fn messages_in_colors_on_demand() {
     // a bad choice
     assert_eq!(iscc(&["check", b, "--color", "sometimes"], &[]).0, 2);
 }
+
+/// D232: `iscc completions bash|zsh|fish` prints the completion of the
+/// shell; in bash, the commands, the options of each, their values and the
+/// `.isc` files and directories (not the other files).
+#[test]
+fn completion_of_the_shell() {
+    let out = |shell: &str| {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_iscc")).args(["completions", shell]).output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", shell);
+        String::from_utf8(o.stdout).unwrap()
+    };
+    assert!(out("bash").contains("complete -F _iscc iscc"));
+    assert!(out("zsh").contains("bashcompinit") && out("zsh").contains("complete -F _iscc iscc"));
+    assert!(out("fish").contains("complete -c iscc"));
+    assert_eq!(std::process::Command::new(env!("CARGO_BIN_EXE_iscc")).args(["completions", "tcsh"]).output().unwrap().status.code(), Some(2));
+    if !std::path::Path::new("/bin/bash").exists() {
+        return;
+    }
+    let dir = tmp("completion_dir");
+    let _ = std::fs::create_dir_all(dir.join("sub"));
+    for f in ["a.isc", "b.isc", "c.txt"] {
+        std::fs::write(dir.join(f), "").unwrap();
+    }
+    let script = tmp("completion.bash");
+    std::fs::write(&script, out("bash")).unwrap();
+    let cases: &[(&[&str], &str)] = &[
+        (&["iscc", "bu"], "build"),
+        (&["iscc", "build", "a.isc", "--i"], "--isa"),
+        (&["iscc", "build", "a.isc", "--isa", "avx"], "avx avx2 avx512"),
+        (&["iscc", "--color", "a"], "always auto"),
+        (&["iscc", "completions", ""], "bash fish zsh"),
+        (&["iscc", "run", "--l"], "--lanes --link"),
+        (&["iscc", "check", ""], "a.isc b.isc sub"),
+    ];
+    for (words, want) in cases {
+        let quoted: Vec<String> = words.iter().map(|w| format!("'{}'", w)).collect();
+        let cmd = format!(
+            "source '{}'; COMP_WORDS=({}); COMP_CWORD={}; _iscc; printf '%s\\n' \"${{COMPREPLY[@]}}\" | sort | tr '\\n' ' '",
+            script.display(),
+            quoted.join(" "),
+            words.len() - 1
+        );
+        let o = std::process::Command::new("/bin/bash").arg("-c").arg(&cmd).current_dir(&dir).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), *want, "{:?}: {}", words, String::from_utf8_lossy(&o.stderr));
+    }
+}
