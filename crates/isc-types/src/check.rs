@@ -1034,9 +1034,30 @@ impl<'g> FnCx<'g> {
                     let h = hints.iter().find(|(m, _)| m == n).map(|(_, t)| t.clone());
                     out.push((n.clone(), self.check(x, h.as_ref())?));
                 }
+                // the fields are values in the order of their names; they
+                // are evaluated in the order of the program, as TypeScript
+                // does, so that `{ x: f(v), v: v }` reads `v` before it is
+                // moved into its field (D164)
+                let in_order = out.windows(2).all(|w| w[0].0 < w[1].0);
+                let mut stmts = Vec::new();
+                if !in_order {
+                    for (n, x) in out.iter_mut() {
+                        if matches!(x.kind, TExprKind::Local(_) | TExprKind::Lit(_)) {
+                            continue;
+                        }
+                        let (ty, sp) = (x.ty.clone(), x.span);
+                        let l = self.add_local(&format!("${}", n), ty.clone(), sp);
+                        let value = std::mem::replace(x, self.mk(TExprKind::Local(l), ty, sp));
+                        stmts.push(TStmt::Let(TPat::Bind(l), value));
+                    }
+                }
                 out.sort_by(|a, b| a.0.cmp(&b.0));
                 let ty = Ty::Record(out.iter().map(|(n, x)| (n.clone(), x.ty.clone())).collect());
-                Ok(self.mk(TExprKind::Tuple(out.into_iter().map(|(_, x)| x).collect()), ty, span))
+                let tuple = self.mk(TExprKind::Tuple(out.into_iter().map(|(_, x)| x).collect()), ty.clone(), span);
+                if stmts.is_empty() {
+                    return Ok(tuple);
+                }
+                Ok(self.mk(TExprKind::Block(stmts, Box::new(tuple)), ty, span))
             }
             ExprKind::Field(x, name) => {
                 let x = self.check(x, None)?;

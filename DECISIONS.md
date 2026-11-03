@@ -2746,3 +2746,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   path of the project on it. The history was rewritten (the reports
   `results/xeon*`, the machine called `xeon`); the reports now name the
   machine by `$ISC_BENCH_MACHINE`, else by its CPU (`run.machine_label`).
+- **D164 — Components of a tuple accumulator owned; fields evaluated in
+  the order of the program (2026-11-03).** Goal of performance (TODO,
+  "Performance"): every optimization starts from a profile and a model of
+  cost. n-body made 42 allocations and 36 copies of arrays of 5 numbers at
+  each step (callgrind: `calls=`), where its step needs none; the memory
+  report gave the reasons. (1) The accumulator of a `fold`, a tuple taken
+  apart at the top of the body (`const [vx, vy, vz] = v;`) and not read
+  otherwise, now gives each component its own value, as a new tuple did
+  (D138, `split_tuples`): each `with` updates in place instead of copying
+  ("`v` is used again"); the result of a `fold` is a new tuple too. (2) A
+  record is a tuple of its fields in the order of their names, and they
+  were evaluated in that order: in `{ x: b.x + DT * vx, vx: vx }` the field
+  `vx` took `vx` before `x` read it, hence a copy. The fields are now
+  evaluated in the order of the program (each bound to a local first when
+  the orders differ), as in TypeScript. n-body, 50 000 000 steps, one core
+  at a fixed frequency: 27.619 s before, 9.929 s after; 3 copies and 3
+  allocations remain per step (the parameter of the recursive `steps` is
+  borrowed, D102). Test: `tests/report.rs`.

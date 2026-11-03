@@ -138,3 +138,20 @@
 - [x] (5) SPEC section 16 "avant la v1" decided and written; grammar = parser; every feature in the guide with a tested example (D161)
 - [x] (6) Interpreter and compiled tests, Valgrind, compile-time checks, `cargo test` with both allocators (D162; 90 suites, 0 failures with both allocators on 2026-11-03)
 - [x] (7) One commit per part, without any reference to the assistant
+
+## Performance — the ten programs at the level of the fastest (goal of 2026-11-03)
+
+Method: every optimization from a profile and a model of cost of the primitive, never from a difference with another language alone; every gap left explained by a measurement. First survey (4 threads, the sizes of the Benchmarks Game): binarytrees 34.4 s, fannkuchredux 29.9 s, knucleotide 29.2 s, pidigits 29.7 s, nbody 19.2 s, regexredux 2.62 s; fasta, mandelbrot, revcomp, spectralnorm at the level of the fastest.
+
+- [ ] (1) Allocation
+  - [x] Components of a tuple accumulator owned, fields in the order of the program: nbody 27.6 s -> 9.9 s (D164)
+  - [ ] Parameters of a tail-recursive function owned (nbody: 3 copies per step)
+  - [ ] Fast path of the allocator (63 instructions per allocation, 43 per free)
+  - [ ] Small arrays of a fixed size without the heap
+  - [ ] Allocation by regions for recursive types, non-atomic reference counts, a constructor without payload without allocation (binarytrees)
+- [ ] (2) `Map` without sorting (knucleotide: 78 % in `argsort`)
+- [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
+- [ ] (4) Code of scalar recursions (fannkuchredux)
+- [ ] (5) Copies of strings, cache of regular expressions (regexredux)
+- [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
+- [ ] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md`

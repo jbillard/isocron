@@ -320,3 +320,41 @@ fn histogram_without_allocation() {
     assert!(allocs.iter().any(|e| e.why.contains("read from a file")), "{}", d);
     assert!(allocs.iter().any(|e| e.rule == Some("M3")), "{}", d);
 }
+
+const FOLD_OF_TUPLES: &str = "function walk(a: f64[n], b: f64[n]): [f64[n], f64[n]] {
+    return fold(iota(n), [map(a, (x) => x), map(b, (x) => x)] as const, (acc, k) => {
+        const [x, y] = acc;
+        return [x.with(k, x[k] + 1.0), y.with(k, y[k] * 2.0)] as const;
+    });
+}
+
+function record(v: f64[n]): { x: f64[n], v: f64[n] } {
+    const w = map(v, (e) => e);
+    return { x: w * 2.0, v: w };
+}
+
+action main(args: string[k]): i32 {
+    const [a, b] = walk([1.0, 2.0], [3.0, 4.0]);
+    print(a);
+    print(b);
+    const r = record([5.0, 6.0]);
+    print(r.x);
+    print(r.v);
+    return 0;
+}
+";
+
+/// The accumulator of a `fold`, a tuple taken apart at the top of the body,
+/// gives its components their own values: each `with` updates in place
+/// (D164); the fields of a record are evaluated in the order of the
+/// program, so that `w` is read for `x` before it is moved into `v`.
+#[test]
+fn tuples_of_folds_and_records_without_copies() {
+    let es = report(FOLD_OF_TUPLES);
+    let copies: Vec<&Entry> = es.iter().filter(|e| e.kind == "copy").collect();
+    assert!(copies.is_empty(), "{}", dump(&es));
+    let mut out = Vec::new();
+    let p = iscc::frontend("r.isc", FOLD_OF_TUPLES).unwrap();
+    assert_eq!(isc_interp::run(&p, &[], &mut out).unwrap(), 0);
+    assert_eq!(String::from_utf8(out).unwrap(), "[2, 3]\n[6, 8]\n[10, 12]\n[5, 6]\n");
+}

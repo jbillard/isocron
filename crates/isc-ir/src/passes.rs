@@ -1772,10 +1772,11 @@ fn set_drops(e: &mut Expr, info: &Info) {
     }
 }
 
-/// A tuple that is new memory: a call, an action, a tuple literal.
+/// A tuple that is new memory: a call, an action, a tuple literal, the
+/// result of a `fold` (D164).
 fn new_tuple(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Call(..) | ExprKind::Action(..) | ExprKind::Tuple(_) => true,
+        ExprKind::Call(..) | ExprKind::Action(..) | ExprKind::Tuple(_) | ExprKind::Fold(..) => true,
         ExprKind::Let { body, .. } | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => new_tuple(body),
         _ => false,
     }
@@ -1822,6 +1823,26 @@ fn rewrite_takes(e: &mut Expr, r: VarId) {
 fn split_tuples(e: &mut Expr, out: &mut Vec<VarId>) {
     for c in e.children_mut() {
         split_tuples(c, out);
+    }
+    // the accumulator of a `fold`, a tuple it owns, taken apart at the top
+    // of the body and not read otherwise: its components are owned, so that
+    // `const [a, b] = acc; ... a.with(i, v)` updates in place (D164)
+    if let ExprKind::Fold(_, _, l) = &mut e.kind {
+        let r = l.params[0];
+        if let Type::Tuple(ts) = &l.body.ty {
+            if l.body.ty.has_heap() {
+                let mut bound = vec![false; ts.len()];
+                let ok = match proj_chain(&l.body, r, &mut bound) {
+                    Some(rest) => ts.iter().enumerate().all(|(k, t)| !t.has_heap() || bound[k]) && !reads_var(rest, r),
+                    None => false,
+                };
+                if ok {
+                    rewrite_takes(&mut l.body, r);
+                    out.push(r);
+                }
+            }
+        }
+        return;
     }
     let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
     let r = *var;
