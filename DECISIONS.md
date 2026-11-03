@@ -2740,3 +2740,9 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   walk of the typed tree of the program's functions (not of the prelude);
   values known only at run time keep their panic. The tests of these
   panics at run time now use values read at run time.
+- **D163 — No name of a machine in the repository (2026-11-03).** The
+  scripts of measurement wrote the host name of the machine into every
+  report (`socket.gethostname()`), and the text named the server and the
+  path of the project on it. The history was rewritten (the reports
+  `results/xeon*`, the machine called `xeon`); the reports now name the
+  machine by `$ISC_BENCH_MACHINE`, else by its CPU (`run.machine_label`).

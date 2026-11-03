@@ -20,7 +20,6 @@ import datetime
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 
@@ -88,7 +87,7 @@ def measure(args):
     os.makedirs(run.OUT, exist_ok=True)
     cpus = primary_cpus()
     threads = [t for t in args.threads if t <= len(cpus)]
-    res = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "host": socket.gethostname(), "machine": run.machine(), "cpus": cpus,
+    res = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "host": run.machine_label(), "machine": run.machine(), "cpus": cpus,
            "threads": threads, "protocol": {"warmup": args.warmup, "measures": args.measures}, "sizes": run.SIZES, "runs": {}}
     for size in args.sizes:
         d = run.gen_data(size)

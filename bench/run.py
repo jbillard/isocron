@@ -274,12 +274,15 @@ def sh(cmd):
         return ""
 
 
-# Host names of the machines of the reports (`hostname` -> the name used in the reports).
-KNOWN_HOSTS = {"xeon": "xeon"}
+# The name of the machine in the reports: $ISC_BENCH_MACHINE, else its CPU.
+# Never its host name, which would identify the machine in a public
+# repository (DECISIONS D163).
+def machine_label():
+    return os.environ.get("ISC_BENCH_MACHINE") or machine().get("cpu") or "unknown CPU"
 
 
 def host_label(h):
-    return KNOWN_HOSTS.get(h, h) if h else "xeon"
+    return h or machine_label()
 
 
 def machine():

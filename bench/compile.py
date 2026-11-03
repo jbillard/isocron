@@ -24,7 +24,6 @@ import json
 import os
 import resource
 import shutil
-import socket
 import statistics
 import subprocess
 import sys
@@ -173,7 +172,7 @@ def source_file(path):
 
 
 def measure(args):
-    res = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "host": socket.gethostname(), "kernels": args.kernels,
+    res = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "host": run.machine_label(), "kernels": args.kernels,
            "machine": run.machine(), "cold_reps": args.cold, "warm_reps": args.warm, "programs": []}
     work = os.path.join(HERE, "build", "compile-work")
     shutil.rmtree(work, ignore_errors=True)

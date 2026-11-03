@@ -19,7 +19,6 @@ import datetime
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 
@@ -60,7 +59,7 @@ def programs(kernel):
 def measure(args):
     os.makedirs(run.OUT, exist_ok=True)
     iscc = os.path.join(run.ROOT, "target", "release", "iscc")
-    res = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "host": socket.gethostname(), "machine": run.machine(), "cpu": args.cpu,
+    res = {"date": datetime.datetime.now().isoformat(timespec="seconds"), "host": run.machine_label(), "machine": run.machine(), "cpu": args.cpu,
            "protocol": {"warmup": args.warmup, "measures": args.measures}, "sizes": SIZES, "runs": {}}
     for size in SIZES:
         d = gen(size)
