@@ -1664,6 +1664,75 @@ impl<'p> Gen<'p> {
         format!("{{ i64, {} }}", lt(&self.p.recs[i as usize].layout))
     }
 
+    /// The cells of nodes in the code itself (D176): the free list of the
+    /// thread (`isc_node_thread` of the runtime, `heap.rs`) when the
+    /// allocator of Isocron is in use and the node takes at most 256
+    /// bytes; the runtime otherwise (glibc, WebAssembly, a refill).
+    fn node_decls(&mut self) {
+        self.decls.insert("@isc_heap_mode = external global i8".into());
+        self.decls.insert("@isc_node_thread = external hidden thread_local(localexec) global [32 x ptr], align 64".into());
+    }
+
+    /// `i1`: the free list of the thread serves nodes of `bytes` bytes.
+    fn node_fast(&mut self, bytes: &str) -> String {
+        self.node_decls();
+        let mode = self.ins("load i8, ptr @isc_heap_mode".to_string());
+        let isc = self.ins(format!("icmp eq i8 {}, 2", mode));
+        let small = self.ins(format!("icmp ule i64 {}, 256", bytes));
+        self.ins(format!("and i1 {}, {}", isc, small))
+    }
+
+    /// The slot of the free list of nodes of `bytes` bytes.
+    fn node_slot(&mut self, bytes: &str) -> String {
+        let c1 = self.ins(format!("add i64 {}, 15", bytes));
+        let c2 = self.ins(format!("lshr i64 {}, 4", c1));
+        let c = self.ins(format!("sub i64 {}, 1", c2));
+        self.ins(format!("getelementptr inbounds [32 x ptr], ptr @isc_node_thread, i64 0, i64 {}", c))
+    }
+
+    fn node_alloc(&mut self, bytes: &str) -> String {
+        if self.opts.isa.is_wasm() {
+            return self.ins(format!("call ptr @isc_node_alloc(i64 {})", bytes));
+        }
+        let ok = self.node_fast(bytes);
+        let (lfast, lpop, lslow, lj) = (self.label(), self.label(), self.label(), self.label());
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        let slot = self.node_slot(bytes);
+        let h = self.ins(format!("load ptr, ptr {}", slot));
+        let some = self.ins(format!("icmp ne ptr {}, null", h));
+        self.cbr(&some, &lpop, &lslow);
+        self.block(&lpop);
+        let next = self.ins(format!("load ptr, ptr {}", h));
+        self.emit(format!("store ptr {}, ptr {}", next, slot));
+        self.br(&lj);
+        self.block(&lslow);
+        let q = self.ins(format!("call ptr @isc_node_alloc(i64 {})", bytes));
+        self.br(&lj);
+        self.block(&lj);
+        self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", h, lpop, q, lslow))
+    }
+
+    fn node_free(&mut self, p: &str, bytes: &str) {
+        if self.opts.isa.is_wasm() {
+            self.emit(format!("call void @isc_node_free(ptr {}, i64 {})", p, bytes));
+            return;
+        }
+        let ok = self.node_fast(bytes);
+        let (lfast, lslow, lj) = (self.label(), self.label(), self.label());
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        let slot = self.node_slot(bytes);
+        let old = self.ins(format!("load ptr, ptr {}", slot));
+        self.emit(format!("store ptr {}, ptr {}", old, p));
+        self.emit(format!("store ptr {}, ptr {}", p, slot));
+        self.br(&lj);
+        self.block(&lslow);
+        self.emit(format!("call void @isc_node_free(ptr {}, i64 {})", p, bytes));
+        self.br(&lj);
+        self.block(&lj);
+    }
+
     /// `i1`: the value of a recursive type is a node in memory (not null,
     /// not a constructor without payload, D169).
     fn is_node(&mut self, p: &str) -> String {
@@ -1827,7 +1896,7 @@ impl<'p> Gen<'p> {
         let rest = tail.map(|k| (self.ins(format!("extractvalue {} {}, {}", lay, t, k)), comps[k].clone()));
         let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
         let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
-        self.emit(format!("call void @isc_node_free(ptr %p, i64 {})", bytes));
+        self.node_free("%p", &bytes);
         if let Some((f, Type::Rec(j))) = rest {
             self.rec_drops.insert((j, atomic));
             self.emit(format!("tail call void @{}(ptr {})", rec_drop_name(j, atomic), f));
@@ -2416,8 +2485,8 @@ impl<'p> Gen<'p> {
                 let nt = self.rec_node_ty(i);
                 let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
                 let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
-                // a cell of the allocator of nodes (D166)
-                let p = self.ins(format!("call ptr @isc_node_alloc(i64 {})", bytes));
+                // a cell of the allocator of nodes (D166, D176)
+                let p = self.node_alloc(&bytes);
                 self.emit(format!("store i64 1, ptr {}", p));
                 let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
                 self.emit(format!("store {} {}, ptr {}", t.t, t.r, pt));

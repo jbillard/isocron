@@ -239,8 +239,12 @@ unsafe fn str_of<'a>(p: *const u8, len: i64) -> &'a str {
 /// Whether the allocator of Isocron (`heap.rs`) is used: always, unless
 /// `ISC_ALLOC=glibc` asks for glibc's (DECISIONS D81). Read once, at the
 /// first allocation, before the thread pool exists.
+// 0 not read yet, 1 glibc, 2 the allocator of Isocron; read by the
+// compiled code too, which takes and gives back the cells of nodes itself
+// in mode 2 (D176)
 #[cfg(not(target_os = "wasi"))]
-static HEAP_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+#[export_name = "isc_heap_mode"]
+pub static HEAP_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 #[cfg(not(target_os = "wasi"))]
 #[inline(always)]

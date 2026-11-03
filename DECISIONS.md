@@ -2938,3 +2938,15 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   2.742 s before, 2.385 s after. Test: `tests/memory.rs`
   (`atomic_counts_only_for_shared_nodes`: none for a tree of the task,
   some for a captured one, the same results on 4 threads).
+- **D176 — The free list of nodes in the compiled code (2026-11-03).**
+  After D175, `isc_node_alloc` and `isc_node_free` were still about a third
+  of the instructions of binary-trees, much of it the calls themselves.
+  The size of a node is known where it is made and freed: the compiled
+  code now takes a cell from, and gives it back to, the free list of the
+  thread itself (`isc_node_thread`, a thread-local variable of the runtime,
+  local-exec) when the allocator of Isocron is in use (`isc_heap_mode`, now
+  exported by the runtime) and the node takes at most 256 bytes; the
+  runtime keeps the rest (an empty list, larger nodes, `ISC_ALLOC=glibc`,
+  WebAssembly), so that Valgrind still sees every node in the tests.
+  binary-trees, fixed frequency: depth 18 on one core 0.609 s before,
+  0.509 s after; depth 21 on 4 threads 2.385 s, 2.082 s.
