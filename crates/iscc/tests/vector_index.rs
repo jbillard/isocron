@@ -84,3 +84,48 @@ fn indexes_out_of_bounds_in_vector_code_panic_as_the_interpreter() {
         }
     }
 }
+
+const KMERS: &str = "function kmer(codes: i64[n], i: i64, k: i64): i64 {
+    return fold(iota(k), 0, (c, j) => c * 4 + codes[i + j]);
+}
+function occurrences(codes: i64[n], k: i64, target: i64): i64 {
+    return count(iota(n - k + 1), (i) => kmer(codes, i, k) == target);
+}
+action main(args: string[k]): i32 {
+    const n = 5 * 4096 + 11;
+    const codes = map(iota(n), (i) => (i * 7 + i / 13) % 4);
+    print(map(iota(4), (q) => occurrences(codes, [1, 3, 6, 12][q], kmer(codes, 100 * q, [1, 3, 6, 12][q]))));
+    print(sum(map(iota(n - 2), (i) => codes[i + 2] - codes[i])));
+    return 0;
+}
+";
+
+#[test]
+fn folds_over_a_size_of_every_lane_and_shifted_indices_are_vector_code() {
+    // a `fold` over `iota(k)`, its size checked once for all the lanes, and
+    // indices `i + j` (consecutive plus a value of every lane): vector code
+    // whose loads are of consecutive elements (D184)
+    let want = interp_ok(KMERS, &[]);
+    let bin = compile(KMERS, "vector_kmers");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(!ll.contains("@llvm.masked.gather"), "a gather where the indices are consecutive");
+    assert!(ll.contains("@llvm.cttz.i"), "the k-mers are not vector code");
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+    // the panics of the interpreter: a negative size, an index past the end
+    for (name, from, to) in [
+        ("negsize", "occurrences(codes, [1, 3, 6, 12][q]", "occurrences(codes, [1, 3, 6, 12][q] - 7"),
+        ("bounds", "codes[i + 2] - codes[i]", "codes[i + 3] - 1"),
+    ] {
+        let src = KMERS.replace(from, to);
+        let want = match interp(&src, &[]) {
+            Outcome::Panic(m, _) => m,
+            Outcome::Exit(c, out) => panic!("{}: no panic ({} {})", name, c, out),
+        };
+        let bin = compile(&src, &format!("vector_kmers_{}", name));
+        let run = run_bin_threads(&bin, &[], Some(1));
+        assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", name);
+    }
+}

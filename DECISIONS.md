@@ -3090,3 +3090,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `exact_reductions_in_one_loop_give_the_results_of_the_interpreter`
   (wrapping sums and products, `min` and `max` with NaN and -0, counts in
   the tasks of a map).
+- **D184 — A size of every lane and shifted indices in vector code
+  (2026-11-04).** k-nucleotide was 8.1 times its floor; half of its time
+  is `occurrences`: `count(iota(n - k + 1), (i) => kmer(codes, i, k) ==
+  target)`, `kmer` a `fold` over `iota(k)` reading `codes[i + j]`, one
+  element at a time (a chain of a shift and an addition per base). `vec_ok`
+  refused the check that `k` is not negative (`CheckNonNegative` of the
+  `iota`), though `k` is the same in every lane: it is now vector code when
+  its size is not varying (one scalar check, failing for every lane at
+  once, so not a site of `index_vec_ok`). And a vector of consecutive
+  indices plus a value of every lane (`i + j`, `j` the step of the `fold`)
+  is a vector of consecutive indices (`Func::contig`): one vector load,
+  not a gather. The 5 queries count their k-mers 32 lanes at a time.
+  k-nucleotide at fixed frequency, 4 threads: 3.199 s -> 2.098 s, the same
+  output; the other programs unchanged. Test
+  `folds_over_a_size_of_every_lane_and_shifted_indices_are_vector_code`
+  (no gather, the results and the panics of the interpreter).

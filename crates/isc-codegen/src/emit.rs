@@ -892,7 +892,10 @@ fn vec_ok(e: &Expr, varying: &mut HashSet<VarId>) -> bool {
 fn panic_sites(e: &Expr) -> usize {
     use ExprKind::*;
     let here = match &e.kind {
-        Index(..) | Update { .. } | Slice(..) | Window(..) | CheckSize(..) | CheckNonNegative(..) | Action(..) | Bench(..) => 1,
+        // a size of every lane (vector code: not varying) fails for all the
+        // lanes at once (D183)
+        CheckNonNegative(..) => 0,
+        Index(..) | Update { .. } | Slice(..) | Window(..) | CheckSize(..) | Action(..) | Bench(..) => 1,
         Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) && !matches!(b.kind, Lit(isc_ir::Lit::Int(d)) if d != 0) => 1,
         Pow(_, k) if !(matches!(k.kind, Lit(isc_ir::Lit::Int(n)) if n >= 0) || !matches!(k.ty, Type::Int(ik) if ik.signed())) => 1,
         _ => 0,
@@ -954,6 +957,10 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
         }
         // a SPMD call (D140)
         ExprKind::Call(f, args) => SPMD.with(|s| s.borrow().contains(f)) && args.iter().all(|a| vec_ok_given(a, varying, given)),
+        // a size checked once for every lane (`iota(k)` in a `fold`, D183)
+        ExprKind::CheckNonNegative(k, b) => {
+            !mentions(k, varying) && !has_given(k) && vec_ok_given(k, varying, given) && vec_ok_given(b, varying, given)
+        }
         // an element of an array of the context, by an index that cannot
         // panic (D181): a load of consecutive elements or a gather
         ExprKind::Index(x, i) => {
@@ -2250,10 +2257,25 @@ impl<'p> Gen<'p> {
             Binary(op, a, b) => {
                 let av = self.ex(a, w)?;
                 let bv = self.ex(b, w)?;
+                // consecutive indices plus a value of every lane are
+                // consecutive indices (D183)
+                let base = if *op == BinOp::Add && a.ty == Type::Int(IntKind::I64) && w > 1 {
+                    match (self.f.contig.get(&av.r).cloned(), self.f.contig.get(&bv.r).cloned()) {
+                        (Some(x), None) if uni(&bv) => Some((x, bv.r.clone())),
+                        (None, Some(y)) if uni(&av) => Some((y, av.r.clone())),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 // inside `allowReassoc` (D109)
                 let saved = std::mem::replace(&mut self.fast_math, e.reassoc);
                 let r = self.binop(*op, av, bv, &a.ty, w, span);
                 self.fast_math = saved;
+                if let (Some((x, u)), Ok(rv)) = (base, &r) {
+                    let first = self.ins(format!("add i64 {}, {}", x, u));
+                    self.f.contig.insert(rv.r.clone(), first);
+                }
                 r
             }
             Pow(b, k) => {
