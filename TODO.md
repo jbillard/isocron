@@ -156,6 +156,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)
   - [ ] The common operations (add, subtract, multiply by a word, compare, divide) on the bytes themselves, without num-bigint (still 73 % in conversions)
 - [ ] (4) Code of scalar recursions (fannkuchredux)
+  - [x] The program by chunks, without divisions, one pass: 41.7 s -> 4.3 s on 4 threads (D170)
 - [ ] (5) Copies of strings, cache of regular expressions (regexredux)
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
 - [ ] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md`

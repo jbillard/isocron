@@ -2,12 +2,21 @@
 // permutation of 1..N, the number of flips (reversals of the first p[0] + 1
 // elements) until 1 comes first; the checksum (the counts summed with
 // alternating signs, in the order of the reference programs) and the
-// largest count. A permutation is a u64 of 4-bit digits, the element i in
-// bits 4i to 4i + 3; the permutation of rank r is computed from r (its
-// factorial digits), so that every permutation is counted in parallel.
+// largest count. A permutation, and its counters, are a u64 of 4-bit
+// digits (the element i in bits 4i to 4i + 3). The permutations are cut
+// into chunks computed in parallel: the first permutation of a chunk comes
+// from its rank (the counters are the digits of the rank in the factorial
+// base), the next ones by the step of the reference programs (a rotation,
+// a counter incremented with its carry), without a division.
 // usage: fannkuchredux <N>
+const CHUNK = 40320;
+
 function digit(p: u64, i: i64): u64 {
     return (p >> u64(4 * i)) & 15u64;
+}
+
+function withDigit(p: u64, i: i64, d: u64): u64 {
+    return p ^ ((digit(p, i) ^ d) << u64(4 * i));
 }
 
 // the first k + 1 digits of p rotated left by d
@@ -19,30 +28,62 @@ function rotate(p: u64, k: i64, d: i64): u64 {
     return d == 0 ? p : (p ^ low) | rotated;
 }
 
-// the permutation of rank r, in the order of the reference programs: for
-// i from n - 1 down to 1, the first i + 1 elements rotated left by the
-// digit r / i! (`fact` is i!), r then taken modulo i!
-function permutation(n: i64, r: i64, i: i64, fact: i64, p: u64): u64 {
-    if (i == 0) return p;
-    const f = fact / i;
-    return permutation(n, r % fact, i - 1, f, rotate(p, i, r / fact));
+// the permutation of rank r and its counters: for i from n - 1 down to 1,
+// the counter i is the digit r / i! (`fact` is i!), the first i + 1
+// elements rotated left by it, r then taken modulo i!
+function start(r: i64, i: i64, fact: i64, p: u64, count: u64): [u64, u64] {
+    if (i == 0) return [p, count] as const;
+    const d = r / fact;
+    return start(r % fact, i - 1, fact / i, rotate(p, i, d), withDigit(count, i, u64(d)));
 }
 
-// the first k + 1 digits of p reversed
-function reverse(p: u64, a: i64, b: i64): u64 {
-    if (a >= b) return p;
-    const x = digit(p, a) ^ digit(p, b);
-    return reverse(p ^ (x << u64(4 * a)) ^ (x << u64(4 * b)), a + 1, b - 1);
+// the permutation of the next rank: the counters are a number in the
+// factorial base, incremented from the digit i
+function next(p: u64, count: u64, i: i64, n: i64): [u64, u64] {
+    if (i >= n) return [p, count] as const;
+    const q = rotate(p, i, 1);
+    const c = digit(count, i) + 1u64;
+    if (c <= u64(i)) return [q, withDigit(count, i, c)] as const;
+    return next(q, withDigit(count, i, 0u64), i + 1, n);
+}
+
+// the 16 digits of p in the reverse order: its bytes reversed (LLVM makes
+// it one `bswap`), then the two digits of each byte
+function reverseDigits(p: u64): u64 {
+    const a = ((p >> 8u64) & 0x00ff00ff00ff00ffu64) | ((p & 0x00ff00ff00ff00ffu64) << 8u64);
+    const b = ((a >> 16u64) & 0x0000ffff0000ffffu64) | ((a & 0x0000ffff0000ffffu64) << 16u64);
+    const c = (b >> 32u64) | (b << 32u64);
+    return ((c >> 4u64) & 0x0f0f0f0f0f0f0f0fu64) | ((c & 0x0f0f0f0f0f0f0f0fu64) << 4u64);
+}
+
+// the first k + 1 digits of p reversed, without a loop (k < 15)
+function reversePrefix(p: u64, k: i64): u64 {
+    const width = u64(4 * (k + 1));
+    const mask = (1u64 << width) - 1u64;
+    return (p ^ (p & mask)) | (reverseDigits(p) >> (64u64 - width));
 }
 
 function flips(p: u64, count: i64): i64 {
     const first = i64(digit(p, 0));
     if (first == 0) return count;
-    return flips(reverse(p, 0, first), count + 1);
+    return flips(reversePrefix(p, first), count + 1);
 }
 
 function factorial(n: i64): i64 {
     return n <= 1 ? 1 : n * factorial(n - 1);
+}
+
+// the checksum and the largest count of the `length` permutations from
+// the rank `first`
+function chunk(n: i64, first: i64, length: i64, fact: i64, identity: u64): [i64, i64] {
+    const [p0, c0] = start(first, n - 1, fact, identity, 0u64);
+    const [p, c, sum, most] = fold(iota(length), [p0, c0, 0, 0] as const, (s, k) => {
+        const [p, c, sum, most] = s;
+        const f = flips(p, 0);
+        const [q, d] = next(p, c, 1, n);
+        return [q, d, (first + k) % 2 == 0 ? sum + f : sum - f, Math.max(most, f)] as const;
+    });
+    return [sum, most] as const;
 }
 
 action main(args: string[k]): i32 {
@@ -53,9 +94,14 @@ action main(args: string[k]): i32 {
     const n = parseI64(args[0]);
     const identity = fold(iota(n), 0u64, (p, i) => p | (u64(i) << u64(4 * i)));
     const total = factorial(n);
-    const counts = (r: i64) => flips(permutation(n, r, n - 1, factorial(n - 1), identity), 0);
-    const checksum = sum(map(iota(total), (r) => r % 2 == 0 ? counts(r) : -counts(r)));
-    const most = max(map(iota(total), counts));
+    const fact = factorial(n - 1);
+    const chunks = (total + CHUNK - 1) / CHUNK;
+    const results = map(iota(chunks), (c) => chunk(n, c * CHUNK, Math.min(CHUNK, total - c * CHUNK), fact, identity));
+    const [checksum, most] = reduce(results, (a, b) => {
+        const [s1, m1] = a;
+        const [s2, m2] = b;
+        return [s1 + s2, Math.max(m1, m2)] as const;
+    }, [0, 0] as const);
     print(checksum);
     print(`Pfannkuchen(${n}) = ${most}`);
     return 0;

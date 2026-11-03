@@ -2849,3 +2849,18 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   depth 18 on one core 1.077 s before, 0.679 s after; depth 21 on 4
   threads 4.323 s, 2.542 s. Test: `tests/stdlib.rs`
   (`constructors_without_payload_are_not_allocated`).
+- **D170 — fannkuch-redux by chunks, without divisions (2026-11-03).** Its
+  profile was the generated code alone (no allocation): the model of cost
+  gave two divisions of 64 bits per level to rebuild each permutation from
+  its rank (22 for N = 12, tens of cycles each), `factorial(n - 1)`
+  recomputed for each permutation inside the lambda, and two passes over
+  the 479 001 600 permutations (the checksum, then the maximum). The
+  program (no change of the compiler) now cuts the permutations into
+  chunks of 40 320 computed in parallel: the first permutation of a chunk
+  and its counters come from its rank, the next ones by the step of the
+  reference programs (a rotation, a counter of the factorial base
+  incremented with its carry), the checksum and the maximum in one `fold`
+  over a tuple of scalars, combined by one `reduce`; a flip reverses the
+  first digits of the `u64` without a loop (its 16 digits reversed by
+  shifts and masks, which LLVM makes a `bswap`, then shifted). N = 12 on
+  4 threads, fixed frequency: 41.728 s before, 4.305 s after.
