@@ -3669,3 +3669,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   binary-trees 0.700 s -> 0.667 s, fannkuch-redux 1.662 s -> 1.676 s
   (+0.8 %), n-body 2.106 s -> 2.052 s (its spread between series is about
   2 %), the seven others unchanged; the same outputs.
+- **D214 — A `map` by rows of the constant that divides its index
+  (2026-11-04).** The formatting of reverse-complement (`map(iota(length),
+  (q) => q % 61 == 60 || ... ? 10u8 : base(q / 61 * 60 + q % 61))`) cost
+  2.83 cycles and 5.30 instructions per byte on one thread, the same from
+  the caches as from memory (inputs of 2.5, 25 and 254 MB): bound by its
+  instructions, the indices of 32 bytes in 64-bit lanes, their quotients
+  and remainders carried (D186), the bounds of a window and its
+  permutation (D187). A `map` over an index `q` whose body divides it by
+  one constant `c` of at least the width of its vectors, and is neither a
+  loop nor a call (`row_split`), now runs by rows of `c` (`fill_rows`): in
+  a row `q / c` is the row, the same for the lanes, and `q % c` the place
+  in it, consecutive lanes (given to the body through `pre`; the scalar
+  replay of a failed check computes them itself), so that an index made of
+  them is consecutive too: one load where the window was. A row by vectors
+  from its start, then one more ending at its end over the one before (an
+  element computed twice is the same value); a row shorter than a vector
+  one element at a time. The formatting: 1.28 cycles and 3.23 instructions
+  per byte. At fixed frequency, 4 threads: reverse-complement 0.214 s ->
+  0.182 s; the nine others compile to the same code (fasta's lines call
+  `pick`: a first version without that rule took it 0.174 s -> 0.178 s,
+  each row computing 3 of its 61 elements twice); the same outputs.

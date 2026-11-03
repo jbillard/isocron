@@ -361,3 +361,57 @@ fn filters_compress_their_vectors() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+/// D214: a `map` over an index divided by a constant of at least the width
+/// of its vectors runs by rows (the quotient the same for the lanes, the
+/// remainder consecutive): bytes in lines of 61 read backwards (as
+/// reverse-complement), 64-bit elements in rows of 17, rows cut by the
+/// chunks of the threads, a range shorter than a row, an index past the end
+/// (the panic of the same element as the interpreter). Any number of
+/// threads.
+#[test]
+fn maps_by_rows_of_their_divisor() {
+    let src = "function lines(m: i64, base: (i: i64) => u8): u8[k] {
+    const length = m + (m + 59) / 60;
+    return map(iota(length), (q) => q % 61 == 60 || q == length - 1 ? 10u8 : base(q / 61 * 60 + q % 61));
+}
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const bases = map(iota(n), (i) => u8(65 + (i * 7 + i / 3) % 26));
+    const out = lines(n, (i) => bases[n - 1 - i]);
+    print(sum(map(out, (b) => i64(b))));
+    print(out.slice(0, 70));
+    const grid = map(iota(n), (q) => (q / 17) * 1000 + q % 17 * 3 + q);
+    print(sum(grid));
+    print(grid.slice(n - 5, n));
+    const short = map(iota(9), (q) => q / 40 + q % 40);
+    print(short);
+    const k = parseI64(args[1]);
+    const far = map(iota(n), (q) => bases[q / 61 * 60 + q % 61 + k]);
+    print(far.length);
+    return 0;
+}
+";
+    let bin = compile(src, "by_rows");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains(", i64 61)"), "the map is not by rows");
+    for args in [["100000", "0"], ["7", "0"], ["250", "0"]] {
+        let want = interp(src, &args);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(t));
+            match &want {
+                Outcome::Exit(c, out) => assert_eq!((r.code, r.stdout.as_str()), (*c, out.as_str()), "{:?} {} threads: {}", args, t, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    assert!(r.stderr.contains(m.as_str()), "{:?}: {} / {}", args, r.stderr, m);
+                }
+            }
+        }
+    }
+    let m = interp_panic(src, &["100000", "2000"]);
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["100000", "2000"], Some(t));
+        assert_eq!(r.code, 101, "{}", r.stderr);
+        assert!(r.stderr.contains(&m), "{} threads: {} / {}", t, r.stderr, m);
+    }
+}

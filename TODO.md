@@ -195,6 +195,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The generated code on a page, its place independent of the runtime (D212)
   - [x] A cached large block grown instead of new memory: revcomp 0.230 s -> 0.210 s (D211)
   - [x] The recursive functions on 64 bytes: binarytrees 0.700 s -> 0.667 s (D213)
+  - [x] A map by rows of the constant that divides its index: revcomp 0.214 s -> 0.182 s (D214)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

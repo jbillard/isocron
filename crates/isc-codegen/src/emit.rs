@@ -55,6 +55,43 @@ fn index_divisions(e: &Expr, vars: &[VarId], out: &mut Vec<(VarId, i64)>) {
     }
 }
 
+/// A `map` over an index `q` (an `iota`) whose body divides it by one
+/// constant `c` of at least `w` (D214): `c`, the `q / c` and the `q % c`.
+fn row_split(src: &Src, w: u32) -> Option<(i64, Vec<*const Expr>, Vec<*const Expr>)> {
+    fn walk(e: &Expr, q: VarId, cs: &mut Vec<i64>, divs: &mut Vec<*const Expr>, rems: &mut Vec<*const Expr>) {
+        if let ExprKind::Binary(op @ (BinOp::Div | BinOp::Rem), a, b) = &e.kind {
+            if let (ExprKind::Var(x, _), ExprKind::Lit(Lit::Int(c))) = (&a.kind, &b.kind) {
+                if *x == q && *c > 0 && a.ty == Type::Int(IntKind::I64) {
+                    cs.push(*c);
+                    if *op == BinOp::Div {
+                        divs.push(e as *const Expr);
+                    } else {
+                        rems.push(e as *const Expr);
+                    }
+                    return;
+                }
+            }
+        }
+        for c in e.children() {
+            walk(c, q, cs, divs, rems);
+        }
+    }
+    let Src::Map(srcs, l) = src else { return None };
+    // an element that is a loop or a call costs more than the arithmetic of
+    // its index, and the last vector of a row computes some elements twice
+    // (fasta: 3 of 61 elements of `pick` again, 0.174 s -> 0.178 s)
+    if srcs.len() != 1 || !matches!(srcs[0], Src::Iota) || l.params.len() != 1 || inner_loop(&l.body) {
+        return None;
+    }
+    let (mut cs, mut divs, mut rems) = (Vec::new(), Vec::new(), Vec::new());
+    walk(&l.body, l.params[0], &mut cs, &mut divs, &mut rems);
+    let c = *cs.first()?;
+    if cs.iter().any(|&x| x != c) || c < w as i64 {
+        return None;
+    }
+    Some((c, divs, rems))
+}
+
 /// Levels of the reduction of a stream (`reduce_stream`): B^5 = 2^60
 /// elements kept.
 const STREAM_LEVELS: i64 = 5;
@@ -2725,7 +2762,11 @@ impl<'p> Gen<'p> {
         let span = e.span;
         if !self.pre.is_empty() {
             if let Some(x) = self.pre.get(&(e as *const Expr)) {
-                return Ok(x.clone());
+                // (a vector given for vector code: the scalar replay of a
+                // failed check computes the element itself, D214)
+                if !(w == 1 && x.t.starts_with('<')) {
+                    return Ok(x.clone());
+                }
             }
         }
         match &e.kind {
@@ -4825,7 +4866,14 @@ impl<'p> Gen<'p> {
                 self.f.table_parts.insert(*t, parts);
             }
         }
-        if w > 1 {
+        if let (true, Some((c, divs, rems))) = (w > 1, row_split(src, w)) {
+            // by rows of the constant that divides the index (D214)
+            self.fill_rows(src, p, n, et, start, end, w, c, &divs, &rems)?;
+            for t in &tables {
+                self.f.table_parts.remove(t);
+            }
+            tail_start = end.to_string();
+        } else if w > 1 {
             let len = self.ins(format!("sub i64 {}, {}", end, start));
             let full = self.ins(format!("and i64 {}, -{}", len, w));
             let vend = self.ins(format!("add i64 {}, {}", start, full));
@@ -4865,6 +4913,114 @@ impl<'p> Gen<'p> {
         })?;
         let kept = self.divmod.len() - dm.len();
         self.divmod.truncate(kept);
+        Ok(())
+    }
+
+    /// The elements `start .. end` of a `map` over an index `q` whose body
+    /// divides it by the constant `c` (`q / c`, `q % c`, c >= w), by rows of
+    /// `c` (D214): in a row, `q / c` is the row, the same for its lanes, and
+    /// `q % c` the place in it, consecutive lanes; no division, and an index
+    /// made of them is consecutive too (one load where a window, its bounds
+    /// and a permutation were). Each row by vectors of `w` from its start,
+    /// then one more ending at its end, over the one before (the elements
+    /// of a `map` are values: computed twice, stored twice, the same); a row
+    /// of fewer than `w` elements (the ends of `start .. end`) one at a time.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_rows(
+        &mut self,
+        src: &Src,
+        p: &str,
+        n: &str,
+        et: &Type,
+        start: &str,
+        end: &str,
+        w: u32,
+        c: i64,
+        divs: &[*const Expr],
+        rems: &[*const Expr],
+    ) -> R<()> {
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        let some = self.ins(format!("icmp slt i64 {}, {}", start, end));
+        let (lrows, ldone) = (self.label(), self.label());
+        self.cbr(&some, &lrows, &ldone);
+        self.block(&lrows);
+        let rlo = self.ins(format!("sdiv i64 {}, {}", start, c));
+        let em1 = self.ins(format!("sub i64 {}, 1", end));
+        let rhi = self.ins(format!("sdiv i64 {}, {}", em1, c));
+        let rend = self.ins(format!("add i64 {}, 1", rhi));
+        self.for_range(&rlo, &rend, 1, &mut |g, row| {
+            let bq = g.ins(format!("mul i64 {}, {}", row, c));
+            let a = g.ins(format!("sub i64 {}, {}", start, bq));
+            let r_lo = g.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", a));
+            let b = g.ins(format!("sub i64 {}, {}", end, bq));
+            let r_hi = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", b, c));
+            let len = g.ins(format!("sub i64 {}, {}", r_hi, r_lo));
+            let wide = g.ins(format!("icmp sge i64 {}, {}", len, w));
+            let (lvec, lsc, lj) = (g.label(), g.label(), g.label());
+            g.cbr(&wide, &lvec, &lsc);
+            g.block(&lvec);
+            let rowv = V { r: row.to_string(), t: "i64".into(), uni: true };
+            g.for_range(&r_lo, &r_hi, w as i64, &mut |g, r| g.row_vector(src, p, n, et, w, &rowv, &bq, r, divs, rems))?;
+            let last = g.ins(format!("sub i64 {}, {}", r_hi, w));
+            g.row_vector(src, p, n, et, w, &rowv, &bq, &last, divs, rems)?;
+            g.br(&lj);
+            g.block(&lsc);
+            g.for_range(&r_lo, &r_hi, 1, &mut |g, r| {
+                let idx = g.ins(format!("add i64 {}, {}", bq, r));
+                for d in divs {
+                    g.pre.insert(*d, rowv.clone());
+                }
+                for m in rems {
+                    g.pre.insert(*m, V { r: r.to_string(), t: "i64".into(), uni: true });
+                }
+                let x = g.elem(src, &idx, 1);
+                for e in divs.iter().chain(rems) {
+                    g.pre.remove(e);
+                }
+                let x = x?;
+                g.store_elem(p, n, &idx, et, &x, 1);
+                Ok(())
+            })?;
+            g.br(&lj);
+            g.block(&lj);
+            Ok(())
+        })?;
+        self.br(&ldone);
+        self.block(&ldone);
+        Ok(())
+    }
+
+    /// One vector of a row of `fill_rows`: the elements `bq + r ..
+    /// bq + r + w`, the row and the places in it given to the body.
+    #[allow(clippy::too_many_arguments)]
+    fn row_vector(
+        &mut self,
+        src: &Src,
+        p: &str,
+        n: &str,
+        et: &Type,
+        w: u32,
+        row: &V,
+        bq: &str,
+        r: &str,
+        divs: &[*const Expr],
+        rems: &[*const Expr],
+    ) -> R<()> {
+        let idx = self.ins(format!("add i64 {}, {}", bq, r));
+        let places = self.elem(&Src::Iota, r, w)?;
+        for d in divs {
+            self.pre.insert(*d, row.clone());
+        }
+        for m in rems {
+            self.pre.insert(*m, places.clone());
+        }
+        let x = self.elem_replayed(src, &idx, w);
+        for e in divs.iter().chain(rems) {
+            self.pre.remove(e);
+        }
+        let x = x?;
+        self.store_elem(p, n, &idx, et, &x, w);
         Ok(())
     }
 
