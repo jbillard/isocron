@@ -3173,3 +3173,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   bases is larger than 256 bytes). Test
   `divisions_of_the_index_are_carried_by_the_vector_loop` (divisors 61, 7,
   16 and 1, from the starts of the blocks).
+- **D187 — Bytes close together read through a window (2026-11-04).**
+  reverse-complement was 5.2 times its floor: its `map` of lines reads
+  `bases[m - 1 - (q / 61 * 60 + q % 61)]`, consecutive downwards but for
+  the end of each line, in 250 MB: a gather of bytes, emulated one lane at
+  a time, so that D185 ran its loop one element at a time. A vector of 16
+  such indices spans at most 17 bytes. An index of an array of bytes
+  computed from the index of the loop alone (no other array read in it)
+  now reads, when the array has more than 256 bytes, the window of its
+  lanes: their lowest and highest indices (two reductions), and when they
+  are less than 64 apart, two masked loads of 32 bytes from the lowest
+  (nothing past the end) and one `vpermi2b` of the indices relative to
+  it; a gather otherwise. Only the arrays indexed by another array's
+  values (`table[bases[...]]`) still decide whether the loop is vector
+  code (at most 256 bytes, D185). reverse-complement at fixed frequency:
+  0.350 s -> 0.291 s on 4 threads, 0.894 s -> 0.668 s on one; fasta and
+  k-nucleotide unchanged (their outputs the same), the other binaries
+  identical. Test `bytes_close_together_are_read_through_a_window` (lines
+  of 60 downwards, indices 80 apart, a window at the end of the array).

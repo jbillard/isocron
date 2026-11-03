@@ -247,3 +247,36 @@ fn divisions_of_the_index_are_carried_by_the_vector_loop() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+#[test]
+fn bytes_close_together_are_read_through_a_window() {
+    // an index of an array of more than 256 bytes computed from the index
+    // of the loop alone (D187): a window of 64 bytes and a permutation when
+    // the lanes are close (downwards with breaks, as lines of 60, up to the
+    // last byte of the array), a gather when they are far apart; under a
+    // mask; the values of the interpreter
+    let src = "action main(args: string[k]): i32 {
+    const m = 5 * 4096 + 33;
+    const bases = map(iota(m), (i) => u8(65 + (i * 7 + i / 3) % 26));
+    const length = m + (m + 59) / 60;
+    const lines = map(iota(length), (q) => q % 61 == 60 || q == length - 1 ? 10u8 : bases[m - 1 - (q / 61 * 60 + q % 61)]);
+    const far = map(iota(m / 80), (q) => bases[q * 80 % m]);
+    const tail = map(iota(1000), (q) => bases[m - 1 - q % 50]);
+    print([lines[0], lines[60], lines[length - 1], far[3], tail[999]] as const);
+    print(sum(map(lines, (x) => u64(x))));
+    print(sum(map(far, (x) => u64(x))));
+    print(sum(map(tail, (x) => u64(x))));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "vector_window");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    if isc_codegen::backend::host_features().split(',').any(|f| f == "+avx512vbmi") {
+        assert!(ll.contains("llvm.vector.reduce.umin"), "no window of bytes");
+    }
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

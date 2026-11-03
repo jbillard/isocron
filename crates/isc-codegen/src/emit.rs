@@ -995,14 +995,15 @@ fn src_vec_ok_lookup(e: &Expr) -> bool {
     ok
 }
 
-/// The arrays of bytes that the body of `l` indexes by an index that is not
-/// consecutive: permuted in registers by vector code (D185).
+/// The arrays of bytes that the body of `l` indexes by an index read from
+/// another array: permuted in registers by vector code (D185); an index
+/// computed from the index of the loop alone reads a window (D187).
 fn lookup_tables(l: &Lambda) -> Vec<VarId> {
     fn walk(e: &Expr, out: &mut Vec<VarId>) {
         if let ExprKind::Index(x, i) = &e.kind {
             if let ExprKind::Var(v, _) = x.kind {
                 let none = HashSet::new();
-                if esize(x.ty.elem()) == 1 && !affine_index(i, &none) && !out.contains(&v) {
+                if esize(x.ty.elem()) == 1 && !affine_index(i, &none) && has_index(i) && !out.contains(&v) {
                     out.push(v);
                 }
             }
@@ -2975,7 +2976,9 @@ impl<'p> Gen<'p> {
             let l1 = self.current_label(&llook);
             self.br(&ljoin);
             self.block(&lgather);
-            let r2 = self.gather(&ptr, &idx, &elem, w);
+            // an index computed from the index of the loop alone: its lanes
+            // close together, one window of 64 bytes permuted (D187)
+            let r2 = if has_index(i) { self.gather(&ptr, &idx, &elem, w) } else { self.byte_window(&ptr, &n, &idx, &elem, w) };
             let l2 = self.current_label(&lgather);
             self.br(&ljoin);
             self.block(&ljoin);
@@ -3001,6 +3004,74 @@ impl<'p> Gen<'p> {
         self.decls.insert(format!("declare {} @{}(<{} x ptr>, i32, <{} x i1>, {})", vm, name, w, w, vm));
         let lanes = self.mask.clone().unwrap_or_else(|| format!("<{}>", (0..w).map(|_| "i1 true").collect::<Vec<_>>().join(", ")));
         self.ins(format!("call {} @{}(<{} x ptr> {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, w, ptrs, esize(elem), w, lanes, vm))
+    }
+
+    /// The bytes of `ptr` at the lanes of `idx` (those of the mask, in
+    /// bounds) when they lie in a window of 64 bytes (D187): two masked
+    /// loads of 32 bytes from the lowest index (nothing past the end) and
+    /// one `vpermi2b` of the indices relative to it; a gather otherwise.
+    fn byte_window(&mut self, ptr: &str, n: &str, idx: &str, elem: &Type, w: u32) -> String {
+        let vt = format!("<{} x i64>", w);
+        let (lo_in, hi_in) = match self.mask.clone() {
+            Some(m) => (
+                self.ins(format!("select <{} x i1> {}, {} {}, {} {}", w, m, vt, idx, vt, self.cst("i64", "-1", w))),
+                self.ins(format!("select <{} x i1> {}, {} {}, {} zeroinitializer", w, m, vt, idx, vt)),
+            ),
+            None => (idx.to_string(), idx.to_string()),
+        };
+        for f in ["umin", "umax"] {
+            self.decls.insert(format!("declare i64 @llvm.vector.reduce.{}.v{}i64({})", f, w, vt));
+        }
+        let lo = self.ins(format!("call i64 @llvm.vector.reduce.umin.v{}i64({} {})", w, vt, lo_in));
+        let hi = self.ins(format!("call i64 @llvm.vector.reduce.umax.v{}i64({} {})", w, vt, hi_in));
+        let span = self.ins(format!("sub i64 {}, {}", hi, lo));
+        let near = self.ins(format!("icmp ult i64 {}, 64", span));
+        let lwin = self.label();
+        let lgat = self.label();
+        let ljoin = self.label();
+        self.cbr(&near, &lwin, &lgat);
+        self.block(&lwin);
+        self.decls.insert("declare <32 x i8> @llvm.masked.load.v32i8.p0(ptr, i32, <32 x i1>, <32 x i8>)".into());
+        self.decls.insert("declare <32 x i8> @llvm.x86.avx512.vpermi2var.qi.256(<32 x i8>, <32 x i8>, <32 x i8>)".into());
+        let mut parts = Vec::new();
+        for k in 0..2 {
+            let from = self.ins(format!("add i64 {}, {}", lo, 32 * k));
+            let left = self.ins(format!("sub i64 {}, {}", n, from));
+            let neg = self.ins(format!("icmp slt i64 {}, 0", left));
+            let l0 = self.ins(format!("select i1 {}, i64 0, i64 {}", neg, left));
+            let big = self.ins(format!("icmp sgt i64 {}, 32", l0));
+            let bits = self.ins(format!("select i1 {}, i64 32, i64 {}", big, l0));
+            let one = self.ins(format!("shl i64 1, {}", bits));
+            let m64 = self.ins(format!("sub i64 {}, 1", one));
+            let m32 = self.ins(format!("trunc i64 {} to i32", m64));
+            let mv = self.ins(format!("bitcast i32 {} to <32 x i1>", m32));
+            let p = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", ptr, from));
+            parts.push(self.ins(format!("call <32 x i8> @llvm.masked.load.v32i8.p0(ptr {}, i32 1, <32 x i1> {}, <32 x i8> zeroinitializer)", p, mv)));
+        }
+        let lov = self.widen(&v(lo.clone(), "i64"), w);
+        let rel = self.ins(format!("sub {} {}, {}", vt, idx, lov.r));
+        let i8v = self.ins(format!("trunc {} {} to <{} x i8>", vt, rel, w));
+        let iv = if w == 32 {
+            i8v
+        } else {
+            let lanes = (0..32).map(|j| if j < w { format!("i32 {}", j) } else { "i32 poison".to_string() }).collect::<Vec<_>>().join(", ");
+            self.ins(format!("shufflevector <{} x i8> {}, <{} x i8> poison, <32 x i32> <{}>", w, i8v, w, lanes))
+        };
+        let r = self.ins(format!("call <32 x i8> @llvm.x86.avx512.vpermi2var.qi.256(<32 x i8> {}, <32 x i8> {}, <32 x i8> {})", parts[0], iv, parts[1]));
+        let r1 = if w == 32 {
+            r
+        } else {
+            let lanes = (0..w).map(|j| format!("i32 {}", j)).collect::<Vec<_>>().join(", ");
+            self.ins(format!("shufflevector <32 x i8> {}, <32 x i8> poison, <{} x i32> <{}>", r, w, lanes))
+        };
+        let l1 = self.current_label(&lwin);
+        self.br(&ljoin);
+        self.block(&lgat);
+        let r2 = self.gather(ptr, idx, elem, w);
+        let l2 = self.current_label(&lgat);
+        self.br(&ljoin);
+        self.block(&ljoin);
+        self.ins(format!("phi <{} x i8> [ {}, %{} ], [ {}, %{} ]", w, r1, l1, r2, l2))
     }
 
     /// The bytes of a table of `n` <= 256 bytes at the lanes of `idx` (in
