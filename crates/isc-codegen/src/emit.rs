@@ -3643,7 +3643,7 @@ impl<'p> Gen<'p> {
     /// `index_vec` once the index `iv` (the lanes of `i`) is computed.
     #[allow(clippy::too_many_arguments)]
     fn index_vec_with(&mut self, a: &Expr, i: &Expr, iv: V, src: &Src, n: &str, w: u32, span: Span) -> R<V> {
-        let (src, n) = (src.clone(), n.to_string());
+        let n = n.to_string();
         let unsigned = if is_signed(&i.ty) { 0 } else { 1 };
         if uni(&iv) {
             let idx = self.index64(&iv, &i.ty);

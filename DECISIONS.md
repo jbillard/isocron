@@ -3987,3 +3987,14 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   1, 7, 1000). Its floor (D222: 2e8 numbers of the generator) is to be
   redone: the program needs one period and copies. Test
   `functions_of_table_elements_computed_once`.
+- **D231 — The messages of `iscc` in colors (2026-11-04).** Asked for:
+the output of a compilation, with or without errors, in colors. As rustc
+and cargo: the place (`file:line:col`) in bold, `error` in red, the notes
+in cyan, then the line of the source with a caret under the column (in
+blue the margin and its number); after a build, `compiled file -> output
+in N ms` in green. Only when the error output is a terminal and
+`NO_COLOR` is not set (https://no-color.org), or with `--color always`;
+`--color never` and pipes give the text of before, unchanged, which the
+tests and scripts read. The messages of the compiled programs (their
+panics) do not change: they are part of the behavior the tests check.
+Test `messages_in_colors_on_demand` (tests/cli.rs).

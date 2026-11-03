@@ -56,6 +56,11 @@ target/release/iscc build examples/poc/sum.isc --target wasm32-wasi-threads   # 
 wasmtime run -W threads=y -S threads=y --env ISC_THREADS=8 --dir=/::/ sum.wasm $PWD/in.f64 $PWD/out.f64 100
 ```
 
+Messages: in colors, with the line of the source under an error, when the
+error output is a terminal and `NO_COLOR` is not set; `--color always` or
+`--color never` (anywhere on the command line) forces the choice. Piped,
+the text is the same as without colors.
+
 ## Tests
 
 ```sh
