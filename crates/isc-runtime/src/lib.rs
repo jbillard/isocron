@@ -305,6 +305,32 @@ fn alloc_cold(bytes: i64) -> *mut u8 {
     alloc_bytes(bytes, false)
 }
 
+/// A node of a recursive type of `bytes` bytes (D166): a cell of the
+/// allocator of nodes, or a block of the general allocator.
+#[no_mangle]
+pub extern "C" fn isc_node_alloc(bytes: i64) -> *mut u8 {
+    #[cfg(not(target_os = "wasi"))]
+    if bytes > 0 && bytes as usize <= heap::NODE_MAX && isc_heap() {
+        let p = unsafe { heap::node_alloc(bytes as usize) };
+        if !p.is_null() {
+            return p;
+        }
+        die(0, 0, &Panic::OutOfMemory(bytes));
+    }
+    alloc_cold(bytes)
+}
+
+/// Frees a node of `isc_node_alloc` of the same `bytes`.
+#[no_mangle]
+pub extern "C" fn isc_node_free(p: *mut u8, bytes: i64) {
+    #[cfg(not(target_os = "wasi"))]
+    if bytes > 0 && bytes as usize <= heap::NODE_MAX && isc_heap() {
+        unsafe { heap::node_free(p, bytes as usize) };
+        return;
+    }
+    free_cold(p)
+}
+
 #[no_mangle]
 pub extern "C" fn isc_alloc_zeroed(bytes: i64) -> *mut u8 {
     alloc_bytes(bytes, true)

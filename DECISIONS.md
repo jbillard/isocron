@@ -2779,3 +2779,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   before, 8.351 s after; binary-trees at depth 18: 2.571 s, 2.377 s (its
   cost is elsewhere: the refills of the cache, the header of 64 bytes of
   each node, D166).
+- **D166 — An allocator of nodes (2026-11-03).** binary-trees spent its
+  time in the allocator (perf: `heap::refill` 29 %, `alloc_bytes` and
+  `isc_free` 10 % each, `heap::spill` 6 %): a node of `Tree` holds 32 bytes
+  (its count, its tag, two pointers) but took a block of 64 bytes and a
+  header of 64, and building or freeing millions of them emptied and filled
+  the cache of the thread through the global lists, under their lock,
+  which 4 threads then fought for (the program was slower on 4 threads than
+  on one). The size of a node is known where the compiled code makes it
+  (`Box`) and where it frees it (`isc_rec_drop`), the only two places:
+  `isc_node_alloc(bytes)` and `isc_node_free(p, bytes)` now take cells of
+  that size (a multiple of 16 bytes, up to 256) from a free list of the
+  thread, carved from regions of 256 KiB, without a header; a cell freed
+  by another thread joins the list of that thread; the regions are kept
+  (their memory is at most the largest number of nodes alive at once).
+  Larger nodes, WebAssembly and `ISC_ALLOC=glibc` use the general
+  allocator, so that Valgrind still sees every node in the tests. The
+  check of a double free by the header is lost for nodes: their frees are
+  made by the compiler and checked by the verifier of the IR (D96).
+  binary-trees, fixed frequency: depth 18 on one core 2.406 s before,
+  1.082 s after; depth 21 on 4 threads (`machine.sh apply parallel`)
+  43.338 s before, 4.326 s after.

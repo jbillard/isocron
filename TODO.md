@@ -148,7 +148,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] Parameters of a tail-recursive function owned (nbody: 3 copies per step)
   - [x] Fast path of the allocator: 63 -> 25 instructions per allocation, 43 -> 28 per free; nbody 9.9 s -> 8.4 s (D165)
   - [ ] Small arrays of a fixed size without the heap
-  - [ ] Allocation by regions for recursive types, non-atomic reference counts, a constructor without payload without allocation (binarytrees)
+  - [x] Nodes in cells of their size without a header, a free list per thread: binarytrees 21 on 4 threads 43.3 s -> 4.3 s (D166)
+  - [ ] A constructor without payload without allocation; non-atomic reference counts in a task none of whose nodes can leave it; allocation by regions (binarytrees)
 - [ ] (2) `Map` without sorting (knucleotide: 78 % in `argsort`)
 - [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
 - [ ] (4) Code of scalar recursions (fannkuchredux)

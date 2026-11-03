@@ -210,6 +210,91 @@ core::arch::global_asm!(
     ".text",
 );
 
+// The nodes of the recursive types (D166): cells of their exact size, a
+// multiple of 16 bytes up to NODE_MAX, without a header, taken from and
+// given back to a free list of the thread, carved from regions of
+// NODE_REGION bytes. The size is known where the node is made and where it
+// is freed (the compiled code), so nothing is stored with it. A cell freed
+// by another thread joins the list of that thread. The regions are never
+// given back: their memory is at most the largest number of nodes alive at
+// once. `ISC_ALLOC=glibc` uses malloc and free for nodes too, so that
+// Valgrind sees each of them.
+pub const NODE_MAX: usize = 256;
+const NODE_CLASSES: usize = NODE_MAX / 16;
+const NODE_REGION: usize = 256 << 10;
+
+#[repr(C)]
+struct NodeCache {
+    heads: [*mut u8; NODE_CLASSES],
+    bump: *mut u8,
+    end: *mut u8,
+}
+
+const _: () = assert!(core::mem::size_of::<NodeCache>() <= 256);
+
+core::arch::global_asm!(
+    ".section .tbss,\"awT\",@nobits",
+    ".p2align 6",
+    ".globl isc_node_thread",
+    ".hidden isc_node_thread",
+    ".type isc_node_thread,@object",
+    ".size isc_node_thread,256",
+    "isc_node_thread:",
+    ".skip 256",
+    ".text",
+);
+
+#[inline(always)]
+unsafe fn node_cache() -> *mut NodeCache {
+    let p: *mut NodeCache;
+    core::arch::asm!(
+        "movq %fs:0, {0}",
+        "leaq isc_node_thread@tpoff({0}), {0}",
+        out(reg) p,
+        options(att_syntax, nostack, preserves_flags, pure, readonly)
+    );
+    p
+}
+
+/// A cell for a node of `bytes` bytes (0 < bytes <= NODE_MAX); null when
+/// the memory is exhausted.
+#[inline(always)]
+pub unsafe fn node_alloc(bytes: usize) -> *mut u8 {
+    let class = (bytes + 15) / 16 - 1;
+    let nc = node_cache();
+    let h = (*nc).heads[class];
+    if !h.is_null() {
+        (*nc).heads[class] = *(h as *mut *mut u8);
+        return h;
+    }
+    node_carve(nc, (class + 1) * 16)
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn node_carve(nc: *mut NodeCache, size: usize) -> *mut u8 {
+    if (*nc).bump.is_null() || ((*nc).end as usize) - ((*nc).bump as usize) < size {
+        let r = alloc(NODE_REGION, false);
+        if r.is_null() {
+            return null_mut();
+        }
+        (*nc).bump = r;
+        (*nc).end = r.add(NODE_REGION);
+    }
+    let p = (*nc).bump;
+    (*nc).bump = p.add(size);
+    p
+}
+
+/// Gives back the cell of a node of `bytes` bytes.
+#[inline(always)]
+pub unsafe fn node_free(p: *mut u8, bytes: usize) {
+    let class = (bytes + 15) / 16 - 1;
+    let nc = node_cache();
+    *(p as *mut *mut u8) = (*nc).heads[class];
+    (*nc).heads[class] = p;
+}
+
 #[inline(always)]
 unsafe fn thread_cache() -> *mut ThreadCache {
     let p: *mut ThreadCache;

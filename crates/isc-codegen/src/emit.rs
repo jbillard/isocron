@@ -582,6 +582,8 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare ptr @isc_alloc(i64)",
     "declare ptr @isc_alloc_zeroed(i64)",
     "declare void @isc_free(ptr)",
+    "declare ptr @isc_node_alloc(i64)",
+    "declare void @isc_node_free(ptr, i64)",
     "declare void @isc_read_f64(ptr, ptr, i64, i32, i32)",
     "declare void @isc_read_f32(ptr, ptr, i64, i32, i32)",
     "declare void @isc_read_bytes(ptr, ptr, i64, i32, i32)",
@@ -1724,7 +1726,9 @@ impl<'p> Gen<'p> {
             }
         }
         let rest = tail.map(|k| (self.ins(format!("extractvalue {} {}, {}", lay, t, k)), comps[k].clone()));
-        self.emit("call void @isc_free(ptr %p)".to_string());
+        let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
+        let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
+        self.emit(format!("call void @isc_node_free(ptr %p, i64 {})", bytes));
         if let Some((f, Type::Rec(j))) = rest {
             self.rec_drops.insert((j, atomic));
             self.emit(format!("tail call void @{}(ptr {})", rec_drop_name(j, atomic), f));
@@ -2283,7 +2287,8 @@ impl<'p> Gen<'p> {
                 let nt = self.rec_node_ty(i);
                 let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
                 let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
-                let p = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+                // a cell of the allocator of nodes (D166)
+                let p = self.ins(format!("call ptr @isc_node_alloc(i64 {})", bytes));
                 self.emit(format!("store i64 1, ptr {}", p));
                 let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
                 self.emit(format!("store {} {}, ptr {}", t.t, t.r, pt));
