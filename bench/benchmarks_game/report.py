@@ -113,9 +113,20 @@ def main():
                "divisions; D197: the flips of a chunk as a `map`, in vector code). Part of its gain comes from the "
                "program, not from the language; the nine others are their first version (D160), but for names of the "
                "standard library.")
+    # the gaps to the floors, from the table of results/floors.md
+    gaps = []
+    try:
+        for line in open(os.path.join(HERE, "..", "..", "results", "floors.md")):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) == 8 and cells[0] in times:
+                gaps.append(float(cells[5]))
+                gaps.append(float(cells[7]))
+    except (OSError, ValueError):
+        gaps = []
+    span = " by %.1f to %.0f times" % (min(gaps), max(gaps)) if gaps else ""
     out.append("* The floor of each program on this machine, what its result requires at the cost of the cheapest way "
                "the machine has to do it, never the time of a program (D222): `results/floors.md`. Every program here, "
-               "of every language, is still above its floor, by 1.6 to 29 times.")
+               "of every language, is still above its floor%s." % span)
     out.append("")
     # the programs and the protocol of the measurements (a file of their own)
     out.append(open(os.path.join(HERE, "protocol.md")).read().rstrip("\n"))

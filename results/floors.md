@@ -44,32 +44,29 @@ generator (139968 values) and copies from tables (D233).
 
 The reference is the machine, not another language: a program at the level
 of the fastest of another language can still be far from its floor.
-Times of Isocron at commit bf7158c (D219), 4 threads but n-body and
+Times of Isocron at commit de50af3 (D233), 4 threads but n-body and
 pidigits (sequential programs), lowest of 3 runs, measured in the Docker
 image with the other languages (`results/benchmarks_game.tsv`).
 
 | benchmark | floor | model | how | Isocron | Isocron / floor | fastest other | its / floor |
 | --- | ---: | --- | --- | ---: | ---: | --- | ---: |
-| binarytrees | 0.396 s | each node made in an arena and visited through its pointers: 1.48 ns per node (4.43 in memory) | measured | 0.668 s | 1.7 | rust-5 0.843 s | 2.1 |
-| fannkuchredux | 0.883 s | 3.76e+09 flips (0.692 ns, 4 permutations per vector), 4.79e+08 permutations (1.943 ns) | measured | 1.677 s | 1.9 | gcc-6 2.467 s | 2.8 |
-| fasta | 0.037 s | 2e8 numbers of the generator in lanes: 1.029 ns (IUB), 0.557 ns (homo sapiens) | measured | 0.174 s | 4.7 | rust-7 0.755 s | 20.6 |
-| knucleotide | 0.268 s | read 0.027 s (4 threads), 8.75e8 counts: 0.654 ns (tables of 4096), 2.221 ns (138127 and 139882 keys for 12, 18) | measured | 1.176 s | 4.4 | gpp-2 1.170 s | 4.4 |
-| mandelbrot | 0.436 s | 6.25e+09 iterations x 7.12 operations, 8 lanes per cycle | measured | 0.638 s | 1.5 | gpp-4 0.785 s | 1.8 |
-| nbody | 1.316 s | latency of a step 26.3 ns (10 roots and divisions: 15.6 ns) | estimate | 2.057 s | 1.6 | gcc-9 1.945 s | 1.5 |
-| pidigits | 0.194 s | 5.85e+08 passes over a word (mulx, adc: 0.331 ns) | measured | 0.887 s | 4.6 | gcc-2 0.682 s | 3.5 |
-| regexredux | 0.030 s | read 5.4 ms, 6 copies of 50.8 MB at 20.9 GB/s, 9 scans for literals (0.074 ns per byte) | estimate | 0.856 s | 28.8 | rust-7 0.760 s | 25.6 |
-| revcomp | 0.017 s | the file read twice by blocks in the caches, 30.2 GB/s | measured | 0.172 s | 10.2 | rust 0.066 s | 3.9 |
-| spectralnorm | 0.107 s | 1.21e+09 elements: 52 % divided (0.627 ns per core), 48 % read from memory, stored once | measured | 0.195 s | 1.8 | rust-6 0.205 s | 1.9 |
+| binarytrees | 0.395 s | each node made in an arena and visited through its pointers: 1.47 ns per node (4.42 in memory) | measured | 0.686 s | 1.7 | rust-5 0.874 s | 2.2 |
+| fannkuchredux | 0.883 s | 3.76e+09 flips (0.691 ns, 4 permutations per vector), 4.79e+08 permutations (1.955 ns) | measured | 1.666 s | 1.9 | gcc-6 2.464 s | 2.8 |
+| fasta | 0.002 s | one period of the generator (139968 values, 1.029 ns) and its symbols, then 254 MB of lines copied from tables (0.0347 ns a byte) | measured | 0.049 s | 21.2 | rust-7 0.755 s | 326.4 |
+| knucleotide | 0.268 s | read 0.027 s (4 threads), 8.75e8 counts: 0.654 ns (tables of 4096), 2.221 ns (138127 and 139882 keys for 12, 18) | measured | 1.151 s | 4.3 | gpp-2 1.170 s | 4.4 |
+| mandelbrot | 0.436 s | 6.25e+09 iterations x 7.12 operations, 8 lanes per cycle | measured | 0.640 s | 1.5 | gpp-4 0.782 s | 1.8 |
+| nbody | 1.316 s | latency of a step 26.3 ns (10 roots and divisions: 15.7 ns) | estimate | 2.113 s | 1.6 | rust-9 1.947 s | 1.5 |
+| pidigits | 0.194 s | 5.85e+08 passes over a word (mulx, adc: 0.332 ns) | measured | 0.886 s | 4.6 | gcc-2 0.681 s | 3.5 |
+| regexredux | 0.030 s | read 5.4 ms, 6 copies of 50.8 MB at 20.8 GB/s, 9 scans for literals (0.074 ns per byte) | estimate | 0.476 s | 16.0 | rust-7 0.789 s | 26.5 |
+| revcomp | 0.017 s | the file read twice by blocks in the caches, 30.2 GB/s | measured | 0.104 s | 6.2 | rust 0.067 s | 4.0 |
+| spectralnorm | 0.107 s | 1.21e+09 elements: 52 % divided (0.626 ns per core), 48 % read from memory, stored once | measured | 0.195 s | 1.8 | rust-6 0.205 s | 1.9 |
 
 ## Order of the work
 
-By the gap to the floor: regex-redux (28.8: its floor is 9 scans and 6
-copies of 50.8 MB, the engines walk an automaton byte by byte),
-reverse-complement (10.2: the floor reads the file twice by blocks that
-stay in the caches, the programs read it into new pages and write it
-again), fasta (4.7), pidigits (4.6: a word times a word costs 0.33 ns in
-assembly, and the digit is found from the leading words), k-nucleotide
-(4.4), fannkuch-redux (1.9), spectral-norm (1.8: part of the matrix read
-from memory where it was stored, while the cores divide the rest),
-binary-trees (1.7: the nodes made by a loop), n-body (1.6), mandelbrot
-(1.5: the 7 operations of an iteration as written).
+By the gap to the floor: fasta (20.5: one period of the generator and
+copies, against lines made byte by byte), regex-redux (15.9: the cleaning
+still by the automaton, each replacement building the whole text on one
+thread), reverse-complement (6.1: the input read into new pages, a filter
+in two passes), pidigits (4.6: a word times a word costs 0.74 ns in the
+runtime, 0.33 ns in assembly), k-nucleotide (4.3), fannkuch-redux (1.9),
+spectral-norm (1.8), binary-trees (1.7), n-body (1.6), mandelbrot (1.5).
