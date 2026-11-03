@@ -3496,3 +3496,23 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `string[k]`"). The parser now writes the name `$length`, which no program
   can declare (like `$text`, D150), and the checker takes it for the
   primitive; `len(x)` still calls the program's `len` when it has one.
+- **D202 — Base cases computed by the callers (2026-11-04).** After D201,
+  binary-trees made about 1.23 G calls, half of them for leaves: the
+  call of `bottomUp(0)` returning `Leaf`, of `check(Leaf)` returning 1,
+  each with its prologue, its test of the stack and its epilogue (about
+  30 instructions per call, 36.95 G in all on one thread). A recursive
+  function whose body is `if (c) a else b`, `c` and one branch simple (no
+  call, no allocation, no division, no index: nothing that can panic; the
+  branch a scalar or a constructor without payload; `base_cases`), has
+  that branch computed by its callers: `c` on the arguments, the call only
+  for the other branch. The parameters of a recursive function are
+  borrowed (its caller owns them): nothing changes hands. LLVM then also
+  drops the test at the entry of `bottomUp` (internal, every caller tests
+  it). A tail call (a jump) and the calls of SPMD code are left as they
+  are. A recursion one frame less deep at a leaf: the limit of the stack
+  (D102) is reached one call later, the same on every machine. binary-
+  trees 21 at fixed frequency: 4 threads 0.986 s -> 0.671 s, 1 thread
+  3.555 s -> 2.269 s, 36.95 G -> 26.41 G instructions; fannkuch-redux
+  (its `factorial`, called once; the base case of `next` is a tuple)
+  1.661 s -> 1.663 s, the eight others
+  compile to the same code; the same outputs at 1 and 4 threads.

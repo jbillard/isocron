@@ -427,6 +427,9 @@ pub struct Gen<'p> {
     region_vars: HashMap<VarId, String>,
     /// The variants of builders to emit.
     rg_needed: BTreeSet<u32>,
+    /// The recursive functions whose body is `if (c) base else ...` (or the
+    /// other way), `c` and `base` simple: computed by the caller (D202).
+    base_cases: HashMap<u32, (&'p Expr, &'p Expr, bool)>,
     /// In a task: the recursive types whose nodes may be shared with other
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
@@ -795,6 +798,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         region: None,
         region_vars: HashMap::new(),
         rg_needed: BTreeSet::new(),
+        base_cases: base_cases(p),
         tail: None,
         rec_drops: BTreeSet::new(),
         rec_prints: BTreeSet::new(),
@@ -928,6 +932,64 @@ fn mentions(e: &Expr, vars: &HashSet<VarId>) -> bool {
         return vars.contains(&v);
     }
     e.children().into_iter().any(|c| mentions(c, vars))
+}
+
+/// The recursive functions whose body is `if (c) a else b` with `c` and one
+/// branch simple (D202): no call, no allocation, no panic, a scalar or a
+/// constructor without payload as result. A caller computes `c` and that
+/// branch itself and calls the function only for the other one: the leaves
+/// of a tree cost no call. The parameters of a recursive function are
+/// borrowed (its caller owns them), so nothing changes hands.
+fn base_cases(p: &Program) -> HashMap<u32, (&Expr, &Expr, bool)> {
+    fn payloadless(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Box(x) => match &x.kind {
+                ExprKind::Tuple(es) => {
+                    matches!(es.first().map(|t| &t.kind), Some(ExprKind::Lit(_))) && es.iter().skip(1).all(|c| matches!(c.kind, ExprKind::Zero))
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    fn simple(e: &Expr) -> bool {
+        use ExprKind::*;
+        match &e.kind {
+            // (reading a variable does nothing; what a base case gives back
+            // is checked by `base`)
+            Lit(_) | Zero | Var(..) => true,
+            Unary(_, x) => simple(x),
+            Binary(op, a, b) => {
+                !matches!(op, BinOp::Div | BinOp::Rem) && !a.ty.has_heap() && !b.ty.has_heap() && simple(a) && simple(b)
+            }
+            If(c, t, f) => simple(c) && simple(t) && simple(f),
+            Let { init, body, drop: false, .. } => simple(init) && simple(body),
+            Proj(x, _) | Unbox(x) => simple(x),
+            Box(_) => payloadless(e),
+            _ => false,
+        }
+    }
+    fn base(e: &Expr) -> bool {
+        simple(e) && (e.ty.is_scalar() || payloadless(e))
+    }
+    let mut out = HashMap::new();
+    for (i, f) in p.fns.iter().enumerate() {
+        if let ExprKind::If(c, t, e) = &f.body.kind {
+            if !simple(c) {
+                continue;
+            }
+            match (base(t), base(e)) {
+                (true, false) => {
+                    out.insert(i as u32, (&**c, &**t, true));
+                }
+                (false, true) => {
+                    out.insert(i as u32, (&**c, &**e, false));
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// The recursive functions that build trees of new nodes only (D200): no
@@ -3077,9 +3139,11 @@ impl<'p> Gen<'p> {
                     return self.tail_jump(e, args);
                 }
                 let mut vals = Vec::new();
+                let mut xs = Vec::new();
                 for a in args {
                     let x = self.ex(a, 1)?;
                     vals.push(format!("{} {}", x.t, x.r));
+                    xs.push(x);
                 }
                 let ret = lt(&e.ty);
                 // a tail call to another function: its frame replaces this
@@ -3105,14 +3169,59 @@ impl<'p> Gen<'p> {
                     self.block(&dead);
                     return Ok(V { r: "poison".into(), t: ret, uni: true });
                 }
+                // the base case of the callee here, the call only for the
+                // other branch (D202)
+                let inline_base = self.base_cases.get(f).copied();
+                let mut base_join = None;
+                if let Some((c, base, then_base)) = inline_base {
+                    let params = self.p.fns[*f as usize].params.clone();
+                    let saved: Vec<(VarId, Option<V>)> = params.iter().map(|q| (*q, self.env.get(q).cloned())).collect();
+                    for (q, x) in params.iter().zip(xs.iter()) {
+                        self.bind(*q, x.clone());
+                    }
+                    let r = (|| -> R<(String, String, String)> {
+                        let cv = self.ex(c, 1)?;
+                        let (lbase, lcall) = (self.label(), self.label());
+                        if then_base {
+                            self.cbr(&cv.r, &lbase, &lcall);
+                        } else {
+                            self.cbr(&cv.r, &lcall, &lbase);
+                        }
+                        self.block(&lbase);
+                        let bv = self.ex(base, 1)?;
+                        let bend = self.current_label(&lbase);
+                        let lj = self.label();
+                        self.br(&lj);
+                        self.block(&lcall);
+                        Ok((bv.r, bend, lj))
+                    })();
+                    for (q, old) in saved {
+                        match old {
+                            Some(x) => {
+                                self.env.insert(q, x);
+                            }
+                            None => {
+                                self.env.remove(&q);
+                            }
+                        }
+                    }
+                    base_join = Some(r?);
+                }
                 let cc = self.fn_cc();
                 // a builder called while a region is made: its variant
-                if let (Some(rg), true) = (self.region.clone(), self.builders.contains(f)) {
+                let r = if let (Some(rg), true) = (self.region.clone(), self.builders.contains(f)) {
                     self.rg_needed.insert(*f);
-                    let r = self.ins(format!("call {}{} @isc_fn_{}_rg(ptr {}, {})", cc, ret, f, rg, vals.join(", ")));
-                    return Ok(V { r, t: ret, uni: true });
+                    self.ins(format!("call {}{} @isc_fn_{}_rg(ptr {}, {})", cc, ret, f, rg, vals.join(", ")))
+                } else {
+                    self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")))
+                };
+                if let Some((bv, bend, lj)) = base_join {
+                    let cend = self.current_label("");
+                    self.br(&lj);
+                    self.block(&lj);
+                    let phi = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", ret, bv, bend, r, cend));
+                    return Ok(V { r: phi, t: ret, uni: true });
                 }
-                let r = self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")));
                 Ok(V { r, t: ret, uni: true })
             }
         }

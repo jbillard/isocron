@@ -263,6 +263,87 @@ fn functions_in_sum_types() {
     assert!(e.contains("class Eq"), "{}", e);
 }
 
+/// D202: the base case of a recursive function (`if (c) base else ...`,
+/// `c` and `base` without call, allocation or panic, `base` a scalar or a
+/// constructor without payload) is computed by its callers, the call made
+/// only for the other branch. A number, a tree, a list, mutual recursion;
+/// left as calls: a base case that divides (it may panic, at its own line),
+/// one that makes an array, a condition that calls. The interpreter's
+/// results and panic.
+#[test]
+fn base_cases_computed_by_the_callers() {
+    let src = "type Tree = Leaf | Node(Tree, i64, Tree);
+type List = Nil | Cons(i64, List);
+function fib(n: i64): i64 {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+function make(d: i64, k: i64): Tree {
+    if (d == 0) return Leaf;
+    return Node(make(d - 1, 2 * k), k, make(d - 1, 2 * k + 1));
+}
+function weigh(t: Tree): i64 {
+    return match (t) {
+        Leaf => 0,
+        Node(l, v, r) => v + weigh(l) - weigh(r),
+    };
+}
+function upTo(k: i64): List {
+    if (k == 0) return Nil;
+    return Cons(k, upTo(k - 1));
+}
+function len(l: List): i64 {
+    return match (l) {
+        Nil => 0,
+        Cons(x, rest) => 1 + len(rest),
+    };
+}
+function isEven(n: i64): boolean {
+    if (n == 0) return true;
+    return isOdd(n - 1);
+}
+function isOdd(n: i64): boolean {
+    if (n == 0) return false;
+    return isEven(n - 1);
+}
+function share(n: i64, d: i64): i64 {
+    if (n == 0) return 100 / d;
+    return share(n - 1, d) + 1;
+}
+function ramp(n: i64): i64[2] {
+    if (n == 0) return [7, 8];
+    return map(ramp(n - 1), (x) => x + 1);
+}
+function deep(n: i64): i64 {
+    if (fib(n) < 3) return 1;
+    return deep(n - 1) + deep(n - 2);
+}
+action main(args: string[k]): i32 {
+    print(fib(25));
+    print(weigh(make(12, 1)));
+    print(len(upTo(5000)));
+    print([isEven(10), isOdd(7), isEven(3)]);
+    print(share(5, 4));
+    print(ramp(6));
+    print(deep(15));
+    print(share(3, args.length - 1));
+    return 0;
+}
+";
+    let bin = compile(src, "base_cases");
+    let want = interp_panic(src, &["x"]);
+    let r = run_bin(&bin, &["x"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    assert!(r.stderr.contains(&want), "{} / {}", r.stderr, want);
+    let want_out = "75025\n";
+    assert!(r.stdout.starts_with(want_out), "{}", r.stdout);
+    let full = interp_ok(&src.replace("    print(share(3, args.length - 1));\n", ""), &[]);
+    let bin2 = compile(&src.replace("    print(share(3, args.length - 1));\n", ""), "base_cases_ok");
+    let r2 = run_bin(&bin2, &[]);
+    assert_eq!((r2.code, r2.stdout.as_str()), (0, full.as_str()), "{}", r2.stderr);
+    assert_eq!(r.stdout, full, "the output before the panic");
+}
+
 /// D203: `x.length` is the length whatever the program declares: a
 /// function `len` of its own (which `len(x)` calls) does not change it.
 #[test]
