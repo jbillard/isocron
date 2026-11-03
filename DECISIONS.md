@@ -3640,3 +3640,20 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   the cache of decoded instructions, `frontend_retired.dsb_miss`; D213
   takes it back), the nine others unchanged (n-body 2.025 s -> 2.029 s,
   regex-redux 1.158 s -> 1.148 s, the others within 1 %).
+- **D211 — A cached large block grown instead of new memory
+  (2026-11-04).** reverse-complement spent about 38 % of its cycles in the
+  kernel clearing new pages (`clear_page_erms`, `folio_zero_user`): 365
+  huge pages for its arrays (bases 50, 74, 123 MB and lines 54, 83, 131 MB
+  for its three records), each larger than any cached block, so that the
+  cache unmapped the blocks of the record before and mapped new ones. When
+  no cached block can serve a request, the largest smaller one now grows
+  to it (`grow_cached`: `mremap` to a place of the same offset modulo 2
+  MiB, its huge pages moved whole, after one advice on the whole mapping:
+  `mremap` moves a single area, the parts that `shape_large` advised
+  differently were refused with EFAULT); its written pages stay, only the
+  rest is new. reverse-complement: 365 -> 306 new huge pages. At fixed
+  frequency, 4 threads, with D212 (the place of the code no longer
+  moving): reverse-complement 0.230 s -> 0.210 s, regex-redux 1.148 s ->
+  1.137 s, the eight others unchanged (binary-trees 0.706 s -> 0.705 s);
+  the same outputs. A request for zeros on such a block is cleared (its
+  contents DIRTY), checked by a test.

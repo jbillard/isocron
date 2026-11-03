@@ -53,6 +53,7 @@ use isc_runtime_core::{alloc_class, alloc_class_size, Panic, ALLOC_CLASSES as CL
 extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> c_int;
+    fn mremap(old: *mut c_void, old_len: usize, new_len: usize, flags: c_int, ...) -> *mut c_void;
     fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
     fn pthread_key_create(key: *mut c_uint, destructor: Option<unsafe extern "C" fn(*mut c_void)>) -> c_int;
     fn pthread_setspecific(key: c_uint, value: *const c_void) -> c_int;
@@ -990,6 +991,12 @@ unsafe fn alloc_large(class: usize, size: usize, bytes: usize) -> *mut Header {
         }
     }
     if h.is_null() {
+        // The largest cached block smaller than the request grows to it
+        // (D211): its pages, written, stay; only the rest is new memory
+        // that the system clears. Arrays that grow from one phase to the
+        // next (reverse-complement: 50, 74, then 123 MB) then reuse the
+        // pages of the phase before.
+        h = grow_cached(st, class, size);
         // The program asks for a size the cache cannot serve: the cached
         // blocks smaller than it cannot serve it either (an array that grows,
         // phases of increasing sizes) and go back before new memory is mapped.
@@ -1002,8 +1009,10 @@ unsafe fn alloc_large(class: usize, size: usize, bytes: usize) -> *mut Header {
             }
             b = newer;
         }
-        h = new_large(st, class, size);
-        st.grown += size;
+        if h.is_null() {
+            h = new_large(st, class, size);
+            st.grown += size;
+        }
     }
     if !h.is_null() {
         st.large_in_use += alloc_class_size((*h).class as usize);
@@ -1012,6 +1021,68 @@ unsafe fn alloc_large(class: usize, size: usize, bytes: usize) -> *mut Header {
     trim_large(st);
     trim_idle(st);
     unlock();
+    h
+}
+
+/// The largest cached large block smaller than `size`, out of the cache,
+/// its mapping grown (`mremap`) so that it holds a block of class `class`;
+/// null if there is none or the system refuses. The mapping moves to an
+/// address of the same offset modulo HUGE, so that its huge pages move
+/// whole (their tables are moved, not split). Its contents stay (DIRTY).
+/// Lock held.
+unsafe fn grow_cached(st: &mut State, class: usize, size: usize) -> *mut Header {
+    const MREMAP_MAYMOVE: c_int = 1;
+    const MREMAP_FIXED: c_int = 2;
+    let mut best: *mut Header = null_mut();
+    let mut b = st.large_oldest;
+    while !b.is_null() {
+        if alloc_class_size((*b).class as usize) < size && (best.is_null() || (*b).len > (*best).len) {
+            best = b;
+        }
+        b = (*b).newer;
+    }
+    if best.is_null() {
+        return null_mut();
+    }
+    take_cached(st, best);
+    let base = (*best).base as usize;
+    let old_len = (*best).len;
+    let off = best as usize - base;
+    let new_len = (off + HEADER + size + HUGE).next_multiple_of(PAGE);
+    // a place of new_len bytes at the same offset modulo HUGE
+    let res = map(new_len + HUGE, 0);
+    if res.is_null() {
+        munmap(base as *mut c_void, old_len);
+        return null_mut();
+    }
+    let dst = (res as usize).next_multiple_of(HUGE) + base % HUGE;
+    let dst = if dst + new_len > res as usize + new_len + HUGE { dst - HUGE } else { dst };
+    // one advice on the whole mapping: the kernel merges the areas that
+    // `shape_large` made (`mremap` moves one area only, EFAULT otherwise)
+    madvise(base as *mut c_void, old_len, MADV_HUGEPAGE);
+    let moved = mremap(base as *mut c_void, old_len, new_len, MREMAP_MAYMOVE | MREMAP_FIXED, dst as *mut c_void);
+    if moved as isize == -1 {
+        munmap(res as *mut c_void, new_len + HUGE);
+        munmap(base as *mut c_void, old_len);
+        return null_mut();
+    }
+    // the rest of the place
+    if dst > res as usize {
+        munmap(res as *mut c_void, dst - res as usize);
+    }
+    let end = res as usize + new_len + HUGE;
+    if end > dst + new_len {
+        munmap((dst + new_len) as *mut c_void, end - (dst + new_len));
+    }
+    let h = (dst + off) as *mut Header;
+    (*h).class = class as u32;
+    (*h).state = FREE;
+    (*h).contents = DIRTY;
+    (*h).base = dst as *mut Header;
+    (*h).len = new_len;
+    // `shape_large` advises its parts again
+    (*h).dirty = 0;
+    st.grown += new_len - old_len;
     h
 }
 

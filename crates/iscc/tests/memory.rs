@@ -866,3 +866,27 @@ action main(args: string[k]): i32 {
     assert!(grow.is_empty(), "the maps of `grow` still allocate: {:?}", grow);
     clean(src, "reuse_vg", &[]);
 }
+
+#[test]
+fn large_blocks_grow_from_the_cache() {
+    // D211: arrays larger at each phase (above the medium blocks) take the
+    // pages of the cached block of the phase before, grown; a new array of
+    // zeros on such pages is cleared. The results of the interpreter.
+    let src = "function phase(k: i64): i64 {
+    const n = k * 5000000;
+    const a = map(iota(n), (i) => i % 251);
+    const z = fill(n, 0);
+    return sum(a) + sum(z) + a[n - 1];
+}
+action main(args: string[k]): i32 {
+    print(map(iota(4), (k) => phase(k + 1)));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "grow_large");
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}
