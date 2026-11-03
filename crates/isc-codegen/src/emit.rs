@@ -27,6 +27,31 @@ use isc_syntax::Span;
 pub const LANES: u32 = 32;
 pub const BLOCK: i64 = 4096;
 
+/// A quotient and a remainder of the index of a loop by the constant `c`,
+/// in two slots that each iteration moves on (D180).
+#[derive(Clone)]
+struct DivMod {
+    var: VarId,
+    c: i64,
+    q: String,
+    r: String,
+}
+
+/// The pairs (x, c) of the divisions `x / c` and `x % c` of `e`, `x` one
+/// of `vars` (an `i64` index, never negative) and `c` a positive integer
+/// literal.
+fn index_divisions(e: &Expr, vars: &[VarId], out: &mut Vec<(VarId, i64)>) {
+    if let ExprKind::Binary(BinOp::Div | BinOp::Rem, a, b) = &e.kind {
+        if let (ExprKind::Var(x, _), ExprKind::Lit(Lit::Int(c))) = (&a.kind, &b.kind) {
+            if *c > 0 && vars.contains(x) && a.ty == Type::Int(IntKind::I64) && !out.contains(&(*x, *c)) {
+                out.push((*x, *c));
+            }
+        }
+    }
+    for c in e.children() {
+        index_divisions(c, vars, out);
+    }
+}
 
 /// Levels of the reduction of a stream (`reduce_stream`): B^5 = 2^60
 /// elements kept.
@@ -377,6 +402,9 @@ pub struct Gen<'p> {
     vregs: (u32, u32),
     /// Inside a task of a parallel loop: nested loops stay sequential.
     in_task: bool,
+    /// The quotients and remainders of the index of the loop being emitted
+    /// by constants, carried from one iteration to the next (D180).
+    divmod: Vec<DivMod>,
     /// In a task: the recursive types whose nodes may be shared with other
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
@@ -708,6 +736,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         nbench: 0,
         f: Func::default(),
         env: HashMap::new(),
+        divmod: Vec::new(),
         tail: None,
         rec_drops: BTreeSet::new(),
         rec_prints: BTreeSet::new(),
@@ -1059,6 +1088,7 @@ impl<'p> Gen<'p> {
         let f = &self.p.fns[i];
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let mut ps = Vec::new();
         for (k, var) in f.params.iter().enumerate() {
@@ -1135,6 +1165,7 @@ impl<'p> Gen<'p> {
         self.other_tails = saved_others;
         self.f = saved_f;
         self.env = saved_env;
+        self.divmod = saved_divmod;
         self.in_task = saved_task;
         r?;
         self.funcs.push(text);
@@ -1852,6 +1883,7 @@ impl<'p> Gen<'p> {
     fn emit_rec_drop(&mut self, i: u32, atomic: bool) -> R<()> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_task = std::mem::replace(&mut self.in_task, atomic);
         // inside an atomic drop, every count is atomic (D175)
         let saved_shared = self.task_shared.take();
@@ -1906,6 +1938,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal void @{}(ptr %p)", rec_drop_name(i, atomic)));
         self.f = saved_f;
         self.env = saved_env;
+        self.divmod = saved_divmod;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
         self.funcs.push(text);
@@ -1920,6 +1953,7 @@ impl<'p> Gen<'p> {
     fn emit_rec_eq(&mut self, i: u32) -> R<()> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let nt = self.rec_node_ty(i);
         let layout = self.p.recs[i as usize].layout.clone();
@@ -1975,6 +2009,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal i1 @isc_rec_eq_{}(ptr %p, ptr %q)", i));
         self.f = saved_f;
         self.env = saved_env;
+        self.divmod = saved_divmod;
         self.in_task = saved_task;
         res?;
         self.funcs.push(text);
@@ -2035,6 +2070,7 @@ impl<'p> Gen<'p> {
     fn emit_rec_print(&mut self, i: u32) -> R<()> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let nt = self.rec_node_ty(i);
         let r = self.p.recs[i as usize].clone();
@@ -2046,6 +2082,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal void @isc_rec_print_{}(ptr %p)", i));
         self.f = saved_f;
         self.env = saved_env;
+        self.divmod = saved_divmod;
         self.in_task = saved_task;
         res?;
         self.funcs.push(text);
@@ -2167,6 +2204,11 @@ impl<'p> Gen<'p> {
                 self.rec_eqs.insert(j);
                 let r = self.ins(format!("call i1 @isc_rec_eq_{}(ptr {}, ptr {})", j, av.r, bv.r));
                 Ok(v(r, "i1"))
+            }
+            Binary(op, a, b) if w == 1 && self.divmod_slot(*op, a, b).is_some() => {
+                let slot = self.divmod_slot(*op, a, b).unwrap();
+                let r = self.ins(format!("load i64, ptr {}", slot));
+                Ok(v(r, "i64"))
             }
             Binary(op, a, b) => {
                 let av = self.ex(a, w)?;
@@ -3521,11 +3563,70 @@ impl<'p> Gen<'p> {
             })?;
             tail_start = vend;
         }
+        let dm = self.divmod_start(src, &tail_start);
         self.for_range(&tail_start, end, 1, &mut |g, i| {
             let x = g.elem(src, i, 1)?;
             g.store_elem(p, n, i, et, &x, 1);
+            g.divmod_step(&dm);
             Ok(())
-        })
+        })?;
+        let kept = self.divmod.len() - dm.len();
+        self.divmod.truncate(kept);
+        Ok(())
+    }
+
+    /// Before a loop over a `map` from index `start`, one element at a
+    /// time: for each `x / c` and `x % c` of its body, `x` the index (a
+    /// parameter bound to an `iota`) and `c` a positive integer literal,
+    /// the quotient and the remainder of `start`, in two slots that each
+    /// iteration moves on (`divmod_step`): an addition and a comparison
+    /// instead of a division by a constant, about ten instructions (D180).
+    fn divmod_start(&mut self, src: &Src, start: &str) -> Vec<DivMod> {
+        let Src::Map(srcs, l) = src else { return Vec::new() };
+        let vars: Vec<VarId> = srcs.iter().zip(&l.params).filter(|(s, _)| matches!(s, Src::Iota)).map(|(_, x)| *x).collect();
+        let mut pairs = Vec::new();
+        if !vars.is_empty() {
+            index_divisions(&l.body, &vars, &mut pairs);
+        }
+        let mut dm = Vec::new();
+        for (var, c) in pairs {
+            let q = self.alloca("i64");
+            let r = self.alloca("i64");
+            let q0 = self.ins(format!("sdiv i64 {}, {}", start, c));
+            let r0 = self.ins(format!("srem i64 {}, {}", start, c));
+            self.emit(format!("store i64 {}, ptr {}", q0, q));
+            self.emit(format!("store i64 {}, ptr {}", r0, r));
+            dm.push(DivMod { var, c, q, r });
+        }
+        self.divmod.extend(dm.iter().cloned());
+        dm
+    }
+
+    /// The next index: the remainder plus one, back to 0 at `c`, which
+    /// adds one to the quotient.
+    fn divmod_step(&mut self, dm: &[DivMod]) {
+        for d in dm {
+            let r = self.ins(format!("load i64, ptr {}", d.r));
+            let r1 = self.ins(format!("add i64 {}, 1", r));
+            let wrap = self.ins(format!("icmp eq i64 {}, {}", r1, d.c));
+            let r2 = self.ins(format!("select i1 {}, i64 0, i64 {}", wrap, r1));
+            self.emit(format!("store i64 {}, ptr {}", r2, d.r));
+            let q = self.ins(format!("load i64, ptr {}", d.q));
+            let k = self.ins(format!("zext i1 {} to i64", wrap));
+            let q1 = self.ins(format!("add i64 {}, {}", q, k));
+            self.emit(format!("store i64 {}, ptr {}", q1, d.q));
+        }
+    }
+
+    /// The slot of `a / b` or `a % b` carried by the loop (`divmod_start`).
+    fn divmod_slot(&self, op: BinOp, a: &Expr, b: &Expr) -> Option<String> {
+        let (ExprKind::Var(x, _), ExprKind::Lit(Lit::Int(c))) = (&a.kind, &b.kind) else { return None };
+        let d = self.divmod.iter().find(|d| d.var == *x && d.c == *c)?;
+        match op {
+            BinOp::Div => Some(d.q.clone()),
+            BinOp::Rem => Some(d.r.clone()),
+            _ => None,
+        }
     }
 
     /// Emits `define internal void @isc_task_N(ptr %ctx, i64 %i)`, whose body
@@ -3566,6 +3667,7 @@ impl<'p> Gen<'p> {
         let name = format!("@isc_task_{}", self.ntask);
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_task = std::mem::replace(&mut self.in_task, true);
         // the recursive types the task may share with other threads (D175)
         let mut shared = HashSet::new();
@@ -3600,6 +3702,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal void {}(ptr %ctx, i64 %i){}", name, attrs));
         self.f = saved_f;
         self.env = saved_env;
+        self.divmod = saved_divmod;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
         r?;
@@ -6918,6 +7021,7 @@ impl<'p> Gen<'p> {
         let rt = lt(&body.ty);
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_divmod = std::mem::take(&mut self.divmod);
         for (i, c) in caps.iter().enumerate() {
             let t = cap_vals[i].t.clone();
             let g = self.ins(format!("getelementptr inbounds {}, ptr %env, i32 0, i32 {}", env_ty, i));
@@ -6931,6 +7035,7 @@ impl<'p> Gen<'p> {
         self.funcs.push(text);
         self.f = saved_f;
         self.env = saved_env;
+        self.divmod = saved_divmod;
         // the loop
         let t0 = self.ins("call i64 @isc_clock_ns()".into());
         let ia = self.alloca("i64");

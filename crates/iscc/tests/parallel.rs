@@ -116,7 +116,8 @@ fn privatized_folds_match_the_interpreter() {
 fn filters_and_divisions_of_the_index_do_not_depend_on_threads() {
     // filters of more than one block (by blocks in parallel, D178):
     // integers, the bytes of a slice, tuples (columns), strings (owned); a
-    // map whose index is divided by constants
+    // map whose index is divided by constants (the quotients and remainders
+    // carried by the loop, D180)
     let src = r#"function strs(n: i64): string[k] {
     return filter(map(iota(n), (i) => String(i)), (s) => s.length == 2 || s.length == 5);
 }
@@ -157,6 +158,8 @@ action main(args: string[k]): i32 {
     let want = "(8790, 270419953, 3, 61524)\n(39016, 3899678)\n(4102, 25237555, 12618777.5)\n(2395, 11705)\n12304\n48645906552\n(67008, 167010, 1108051)\n[0, 2, 4, 6, 8]\n";
     assert_eq!(interp_ok(src, &[]), want);
     let bin = compile(src, "p_filters");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("srem i64 %t") && ll.contains(", 61\n"), "the remainder by 61 is not carried by the loop");
     for t in THREADS {
         let run = run_bin_threads(&bin, &[], Some(t));
         assert_eq!((run.code, run.stdout.as_str()), (0, want), "{} threads: {}", t, run.stderr);

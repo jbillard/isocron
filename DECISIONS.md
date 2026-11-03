@@ -3001,3 +3001,25 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `cat` and the zeroing of 254 MB); reverse-complement 0.414 s -> 0.365 s
   on 4 threads. Test `standard_input_from_a_file` (offsets 0, 1000 and the
   end of the file).
+- **D180 — The quotient and the remainder of the index of a loop by a
+  constant, carried by the loop (2026-11-03).** After D179, half of the
+  time of reverse-complement is its map that puts the bases in lines of
+  60: 32 instructions per byte, 12 of them for `q / 61` and `q % 61` (a
+  multiplication by the inverse, its corrections, a multiplication back),
+  computed again at every element though `q` moves by one. Model: from
+  one index to the next, the remainder grows by one and goes back to 0 at
+  the divisor, which adds one to the quotient: an addition, a comparison
+  and two selections. In a loop over a `map`, one element at a time
+  (`fill_range`), each `x / c` and `x % c` of its body, `x` the index (a
+  parameter bound to an `iota`, never negative) and `c` a positive integer
+  literal, is the slot of the loop: the quotient and the remainder of the
+  first index computed once before the loop, moved on after each
+  element. The same values (truncated division of a non-negative number
+  by a positive one), no panic possible. reverse-complement at fixed
+  frequency: 0.369 s -> 0.356 s on 4 threads, 0.975 s -> 0.930 s on one
+  (28 instructions per byte left: the two bounds checks and the branch of
+  the line ends). The slots are emptied with the environment when another
+  function or a task is emitted. Test
+  `filters_and_divisions_of_the_index_do_not_depend_on_threads` (the
+  remainder by 61 carried, the results of the interpreter for 1 to 8
+  threads).
