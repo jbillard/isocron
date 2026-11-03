@@ -3581,3 +3581,17 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   The memory check takes the input as moved into the result, the memory
   report counts no allocation. n-body at fixed frequency, 4 threads: 4.135
   s -> 3.589 s; the nine others compile to the same code; the same outputs.
+- **D208 — The allocations `noalias` (2026-11-04).** Rejected before
+  (see "Rejected after measurement", 2026-11-04: n-body 6.130 s -> 6.135
+  s), when each step of n-body allocated and freed its arrays. After D206
+  and D207 a step allocates nothing: its six arrays are made once, before
+  the loop, and written in place. Its loop was then 466 scalar instructions,
+  75 stores and 148 reads of memory per step: LLVM could not tell the six
+  arrays apart, so each update of `vx[i]` went through memory and the 10
+  pairs could not be put side by side. `isc_alloc` and `isc_alloc_zeroed`
+  are now declared `noalias`, as `malloc` (a new block shares no byte with
+  any other; Isocron's arrays are values, two owned arrays never share
+  memory): the loop is 258 instructions, vector code of 2 pairs at a time
+  (`vmulpd`, `vsqrtpd`, `vdivpd`). At fixed frequency, 4 threads: n-body
+  3.571 s -> 2.093 s; the nine others unchanged (within 0.5 %); the same
+  outputs at 1 and 4 threads.

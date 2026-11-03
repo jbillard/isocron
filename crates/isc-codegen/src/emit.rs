@@ -669,8 +669,8 @@ struct TailLoop {
 
 
 const RUNTIME_DECLS: &[&str] = &[
-    "declare ptr @isc_alloc(i64)",
-    "declare ptr @isc_alloc_zeroed(i64)",
+    "declare noalias ptr @isc_alloc(i64)",
+    "declare noalias ptr @isc_alloc_zeroed(i64)",
     "declare void @isc_free(ptr)",
     "declare ptr @isc_node_alloc(i64)",
     "declare void @isc_node_free(ptr, i64)",

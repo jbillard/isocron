@@ -437,3 +437,28 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
 }
+
+/// D208: the allocations are declared `noalias` (a new block shares no
+/// byte with another), so that LLVM keeps the arrays of a loop that does
+/// not allocate in registers; the interpreter's outputs.
+#[test]
+fn allocations_are_new_memory() {
+    let src = "type S = { a: f64[4], b: f64[4] };
+function run(s: S, n: i64): S {
+    if (n == 0) return s;
+    return run({ a: s.a + s.b * 0.5, b: s.b * 0.75 + 0.125 }, n - 1);
+}
+action main(args: string[k]): i32 {
+    const r = run({ a: [1.0, 2.0, 3.0, 4.0], b: [0.5, 0.25, 0.125, 1.0] }, 1000);
+    print(r.a);
+    print(r.b);
+    return 0;
+}
+";
+    let bin = compile(src, "noalias_allocs");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("declare noalias ptr @isc_alloc(i64)"), "isc_alloc is not declared noalias");
+    let want = interp_ok(src, &[]);
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+}
