@@ -638,6 +638,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_fixed(ptr, double, i64, i32, i32)",
     "declare void @isc_read_stdin(ptr, i32, i32)",
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
+    "declare void @isc_group(ptr, ptr, i64, i32)",
     "declare double @isc_js_number(ptr, i64, i32, i64)",
     "declare void @isc_print_big(ptr, i64)",
     "declare void @isc_big_op(ptr, ptr, i64, ptr, i64, i32, i32, i32)",
@@ -6182,6 +6183,15 @@ impl<'p> Gen<'p> {
                     _ => (2, vals[1].r.clone()),
                 };
                 v(self.ins(format!("call double @isc_js_number(ptr {}, i64 {}, i32 {}, i64 {})", p, n, which, radix)), "double")
+            }
+            S::Group => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let kind = match es[0].ty.elem() {
+                    Type::Int(k) => (k.bits().trailing_zeros() as i32 - 3) + if k.signed() { 0 } else { 4 },
+                    Type::Bool => 10,
+                    _ => 11,
+                };
+                new_str(self, format!("call void @isc_group(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
             }
             S::ArgSort => {
                 let (p, n) = self.str_parts(&vals[0]);

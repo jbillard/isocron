@@ -2800,3 +2800,19 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   binary-trees, fixed frequency: depth 18 on one core 2.406 s before,
   1.082 s after; depth 21 on 4 threads (`machine.sh apply parallel`)
   43.338 s before, 4.326 s after.
+- **D167 — `Map` and `countBy` by a table of hashes (2026-11-03).**
+  k-nucleotide spent 78 % of its time sorting (perf: `isc_argsort`):
+  `countBy` and `Map(entries)` sorted all their n keys to group the equal
+  ones (D158), O(n log n), where the keys counted are 4 or 16 distinct
+  k-mers among 125 million. The model of cost of a grouping is one pass
+  over the keys with a probe of a small table in the cache. `$group(keys)`
+  (a primitive of the prelude, shared by the interpreter and the runtime,
+  `isc_runtime_core::group`) gives the distinct keys in the order of their
+  first occurrence with their first and last indices and their counts, by
+  a table of hashes with linear probing; only the m distinct keys are then
+  sorted, for the search by bisection. The result depends on the equality
+  of the keys only, not on the hash (integers by value, strings and
+  `bigint` by their bytes, canonical). O(n + m log m) instead of
+  O(n log n). k-nucleotide on 25 000 000 bases, 4 threads, fixed frequency
+  (`machine.sh apply parallel`): 36.935 s before, 3.384 s after. Test:
+  `tests/stdlib.rs` (`map_groups_by_hashes`).

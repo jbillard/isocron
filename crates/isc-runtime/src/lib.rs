@@ -1142,6 +1142,45 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
     *out = IscArray { ptr: q as *mut u8, len: n as i64 };
 }
 
+/// `$group(keys)` (D167): see `isc_runtime_core::group`; `kind` as for
+/// `isc_argsort` (strings and `bigint` by their bytes, both canonical).
+#[no_mangle]
+pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kind: i32) {
+    let n = n.max(0) as usize;
+    unsafe fn at<T: Copy>(p: *const u8, i: usize) -> T {
+        *(p as *const T).add(i)
+    }
+    macro_rules! ints {
+        ($t:ty) => {
+            sem::group(n, |i| sem::hash_word(at::<$t>(p, i) as u64), |i, j| at::<$t>(p, i) == at::<$t>(p, j))
+        };
+    }
+    let g = match kind {
+        0 => ints!(i8),
+        1 => ints!(i16),
+        2 => ints!(i32),
+        3 => ints!(i64),
+        4 | 10 => ints!(u8),
+        5 => ints!(u16),
+        6 => ints!(u32),
+        7 => ints!(u64),
+        _ => sem::group(
+            n,
+            |i| {
+                let a = at::<IscStr>(p, i);
+                sem::hash_bytes(bytes_of(a.ptr, a.len))
+            },
+            |i, j| {
+                let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
+                bytes_of(a.ptr, a.len) == bytes_of(b.ptr, b.len)
+            },
+        ),
+    };
+    let q = isc_alloc((g.len() * 8) as i64) as *mut i64;
+    core::ptr::copy_nonoverlapping(g.as_ptr(), q, g.len());
+    *out = IscArray { ptr: q as *mut u8, len: g.len() as i64 };
+}
+
 /// `join(xs, sep)`: the strings of `xs` with `sep` between them.
 #[no_mangle]
 pub unsafe extern "C" fn isc_join(out: *mut IscStr, xs: *const IscStr, n: i64, q: *const u8, m: i64) {

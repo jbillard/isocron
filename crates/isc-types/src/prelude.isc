@@ -139,25 +139,25 @@ function $findIn<K extends Key>(keys: K[n], order: i64[n], k: K): i64 {
     return $find(keys, order, k, 0, n);
 }
 
-// the first rank of each run of equal keys, `idx` the order of the keys
-function $runs<K extends Key>(ks: K[n], idx: i64[n]): i64[m] {
-    return filter(iota(n), (p) => p == 0 || ks[idx[p - 1]] != ks[idx[p]]);
-}
-
-// the map of `ks` and `vs`, `starts` their runs: each key at its first
-// position, with its last value (as `set` of TypeScript, one entry after
-// the other)
-function $mapRuns<K extends Key, V>(ks: K[n], vs: V[n], idx: i64[n], starts: i64[m]): Map<K, V> {
-    const firsts = map(iota(m), (r) => idx[starts[r]]);
-    const lasts = map(iota(m), (r) => idx[(r + 1 < m ? starts[r + 1] : n) - 1]);
-    // the run at each position of insertion, and its inverse
-    const byFirst = argsort(firsts);
-    return $mapOf(map(byFirst, (r) => ks[firsts[r]]), map(byFirst, (r) => vs[lasts[r]]), argsort(byFirst));
+// the map of `ks` and `vs`: each distinct key at its first position, with
+// its last value (as `set` of TypeScript, entry after entry). `$group`
+// gives, for the m distinct keys in the order of their first occurrence,
+// their first indices, their last ones and their counts (a table of
+// hashes, D167); only the m keys are sorted, for `order`.
+// the number of keys of a result of `$group` (no `len`: a program may
+// replace it)
+function $third(g: i64[t]): i64 {
+    return t / 3;
 }
 
 function $mapFrom<K extends Key, V>(ks: K[n], vs: V[n]): Map<K, V> {
-    const idx = argsort(ks);
-    return $mapRuns(ks, vs, idx, $runs(ks, idx));
+    const g = $group(ks);
+    return $mapPick(ks, vs, g, iota($third(g)));
+}
+
+function $mapPick<K extends Key, V>(ks: K[n], vs: V[n], g: i64[t], r: i64[m]): Map<K, V> {
+    const keys = map(r, (i) => ks[g[i]]);
+    return $mapOf(keys, map(r, (i) => vs[g[m + i]]), argsort(keys));
 }
 
 // `Map(entries)`: TypeScript's `new Map(entries)`
@@ -173,18 +173,17 @@ function Map<K extends Key, V>(entries: [K, V][n]): Map<K, V> {
     return $mapFrom(ks, vs);
 }
 
-function $countRuns<K extends Key>(ks: K[n], idx: i64[n], starts: i64[m]): Map<K, i64> {
-    const byFirst = argsort(map(iota(m), (r) => idx[starts[r]]));
-    const counts = map(byFirst, (r) => (r + 1 < m ? starts[r + 1] : n) - starts[r]);
-    return $mapOf(map(byFirst, (r) => ks[idx[starts[r]]]), counts, argsort(byFirst));
-}
-
 // `countBy(xs, f)`: the number of the elements of each key `f(x)`, the keys
 // in the order of their first element
 function countBy<T, K extends Key>(xs: T[n], f: (x: T) => K): Map<K, i64> {
     const ks = map(xs, f);
-    const idx = argsort(ks);
-    return $countRuns(ks, idx, $runs(ks, idx));
+    const g = $group(ks);
+    return $countPick(ks, g, iota($third(g)));
+}
+
+function $countPick<K extends Key>(ks: K[n], g: i64[t], r: i64[m]): Map<K, i64> {
+    const keys = map(r, (i) => ks[g[i]]);
+    return $mapOf(keys, map(r, (i) => g[2 * m + i]), argsort(keys));
 }
 
 function get<K extends Key, V>(m: Map<K, V>, k: K): Option<V> {

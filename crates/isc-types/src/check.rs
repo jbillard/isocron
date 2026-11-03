@@ -175,6 +175,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "BigInt" => Prim::ToBigInt,
         "RegExp" | "$RegExp" => Prim::RegExpNew,
         "$mapOf" => Prim::MapOf,
+        "$group" => Prim::Group,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -1996,7 +1997,7 @@ impl<'g> FnCx<'g> {
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
-            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt => 1,
+            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group => 1,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -2347,6 +2348,14 @@ impl<'g> FnCx<'g> {
             }
             // the order of the elements (D155): integers, floats, booleans,
             // strings
+            Prim::Group => {
+                let x = self.check(&args[0], None)?;
+                let elem = self.expect_array(&x.ty, x.span, "the keys of `$group`")?;
+                self.require(&elem, class::KEY, x.span)?;
+                let s = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
+            }
             Prim::ArgSort => {
                 let x = self.check(&args[0], None)?;
                 let elem = self.expect_array(&x.ty, x.span, "the argument of `argsort`")?;

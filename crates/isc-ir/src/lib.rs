@@ -177,6 +177,9 @@ pub enum StrOp {
     Slice,
     /// `argsort(x)` of an array of scalars or strings (D155): a new `[n]i64`.
     ArgSort,
+    /// `$group(keys)` (D167): the first, last and count of each distinct
+    /// key, in the order of first occurrence: a new `[3m]i64`.
+    Group,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.

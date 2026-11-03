@@ -2323,11 +2323,13 @@ impl<'p> Lower<'p> {
             | Prim::TrimEnd
             | Prim::ToFixed
             | Prim::ArgSort
+            | Prim::Group
             | Prim::ParseFloat
             | Prim::ParseInt
             | Prim::StrSlice => {
                 let op = match p {
                     Prim::ArgSort => StrOp::ArgSort,
+                    Prim::Group => StrOp::Group,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),

@@ -1247,3 +1247,77 @@ pub mod map {
         super::order_f64(z(a), z(b))
     }
 }
+
+// ---------------------------------------------------------------------
+// `$group(keys)` (D167): the distinct keys of an array in the order of
+// their first occurrence, by a table of hashes (linear probing). The result
+// does not depend on the hash: only on the equality of the keys.
+
+/// For the m distinct keys of the `n` keys, in the order of their first
+/// occurrence, three columns of m numbers: the index of the first
+/// occurrence of each, of its last one, and its count.
+pub fn group<H: Fn(usize) -> u64, E: Fn(usize, usize) -> bool>(n: usize, hash: H, eq: E) -> alloc::vec::Vec<i64> {
+    use alloc::vec::Vec;
+    let mut first: Vec<i64> = Vec::new();
+    let mut last: Vec<i64> = Vec::new();
+    let mut count: Vec<i64> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut cap = 16usize;
+    let mut table: Vec<usize> = alloc::vec![usize::MAX; cap];
+    for i in 0..n {
+        let h = hash(i);
+        let mut s = (h as usize) & (cap - 1);
+        loop {
+            let g = table[s];
+            if g == usize::MAX {
+                table[s] = first.len();
+                first.push(i as i64);
+                last.push(i as i64);
+                count.push(1);
+                hashes.push(h);
+                if first.len() * 2 > cap {
+                    cap *= 2;
+                    table = alloc::vec![usize::MAX; cap];
+                    for (k, &hk) in hashes.iter().enumerate() {
+                        let mut t = (hk as usize) & (cap - 1);
+                        while table[t] != usize::MAX {
+                            t = (t + 1) & (cap - 1);
+                        }
+                        table[t] = k;
+                    }
+                }
+                break;
+            }
+            if hashes[g] == h && eq(first[g] as usize, i) {
+                last[g] = i as i64;
+                count[g] += 1;
+                break;
+            }
+            s = (s + 1) & (cap - 1);
+        }
+    }
+    first.extend_from_slice(&last);
+    first.extend_from_slice(&count);
+    first
+}
+
+/// The hash of an integer key (its bits).
+#[inline(always)]
+pub fn hash_word(x: u64) -> u64 {
+    let x = x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^ (x >> 29)
+}
+
+/// The hash of the bytes of a string or a `bigint` key.
+#[inline(always)]
+pub fn hash_bytes(b: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ b.len() as u64;
+    let mut chunks = b.chunks_exact(8);
+    for c in &mut chunks {
+        h = (h ^ u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).wrapping_mul(0x0000_0100_0000_01B3).rotate_left(23);
+    }
+    for &x in chunks.remainder() {
+        h = (h ^ x as u64).wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash_word(h)
+}

@@ -135,6 +135,8 @@ pub enum Prim {
     ReadStdin,
     ReadStdinText,
     ReadStdinLines,
+    /// `$group(keys)` (D167): the first, last and count of each distinct key
+    Group,
     /// `argsort(x)`: the indices of the elements in their order, stable
     /// (D155): the primitive of `sort` and `sortBy`.
     ArgSort,

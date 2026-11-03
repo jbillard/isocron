@@ -276,7 +276,7 @@ type Result<T, E> = Ok(T) | Err(E);
 ### Types de la bibliothèque
 
 - `RegExp` (D157) : une expression régulière, compilée par un moteur en temps linéaire (pas de référence arrière ni d'assertion de contexte) ; une expression littérale invalide est une erreur de compilation. Ni affichée ni comparée.
-- `Map<K, V>` (D158) : un dictionnaire immuable dont les clés gardent l'ordre de leur première insertion ; construit d'un bloc en O(n log n), lu en O(log n). Ni affiché, ni comparé, ni rangé dans un tableau ou un constructeur.
+- `Map<K, V>` (D158) : un dictionnaire immuable dont les clés gardent l'ordre de leur première insertion ; construit d'un bloc en O(n + m log m) pour n entrées et m clés distinctes (une table de hachage, puis le tri des m clés, D167), lu en O(log m). Ni affiché, ni comparé, ni rangé dans un tableau ou un constructeur.
 - Un alias `type Nom = T;` n'est pas un nouveau type : c'est `T` (D159).
 
 ### Génériques et classes

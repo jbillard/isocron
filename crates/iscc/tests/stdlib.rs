@@ -377,3 +377,43 @@ fn certain_panics_are_compile_errors() {
     assert_eq!(r.code, 101);
     assert!(r.stdout.starts_with("[0.5, inf]\n1\n"), "{}", r.stdout);
 }
+
+const MAP_GROUPS: &str = r##"action main(args: string[k]): i32 {
+    const n = 200000;
+    const ints = countBy(iota(n), (i) => (i * 7919) % 1237);
+    print(ints.size);
+    print(ints.keys().slice(0, 5));
+    print(ints.get(0) ?? -1);
+    print(ints.get(1236) ?? -1);
+    const words = countBy(iota(n), (i) => `w${i % 3001}`);
+    print(words.size);
+    print(words.get("w3000") ?? -1);
+    print(words.keys().slice(0, 3));
+    const bools = countBy(iota(10), (i) => i % 3 == 0);
+    print(bools.entries());
+    const bigs = Map(map(iota(1000), (i) => [BigInt(i % 10) * 10n ** 30n, i] as const));
+    print(bigs.size);
+    print(bigs.get(7n * 10n ** 30n) ?? -1);
+    return 0;
+}
+"##;
+
+/// `Map` and `countBy` by a table of hashes (D167): many keys (the table
+/// grows), integers, strings, booleans and `bigint`, in the order of their
+/// first occurrence; the counts and last values checked here.
+#[test]
+fn map_groups_by_hashes() {
+    let n = 200000i64;
+    let c0 = (0..n).filter(|i| (i * 7919) % 1237 == 0).count();
+    let c1236 = (0..n).filter(|i| (i * 7919) % 1237 == 1236).count();
+    let first5: Vec<String> = (0..5).map(|i: i64| ((i * 7919) % 1237).to_string()).collect();
+    let w3000 = (0..n).filter(|i| i % 3001 == 3000).count();
+    let want = format!(
+        "1237\n[{}]\n{}\n{}\n3001\n{}\n[w0, w1, w2]\n[(true, 4), (false, 6)]\n10\n997\n",
+        first5.join(", "),
+        c0,
+        c1236,
+        w3000
+    );
+    agree(MAP_GROUPS, "std_map_groups", &[], &want);
+}

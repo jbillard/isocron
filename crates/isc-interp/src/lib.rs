@@ -363,6 +363,21 @@ impl Interp<'_> {
                 };
                 Value::F64(isc_runtime_core::js_parse_int(&s(&vs[0]), r))
             }
+            // the distinct keys in the order of first occurrence (D167)
+            S::Group => {
+                use isc_runtime_core::{group, hash_bytes, hash_word};
+                let a = match &vs[0] {
+                    Value::Array(a) => a.clone(),
+                    v => panic!("array expected, got {:?}", v),
+                };
+                let g = match &*a {
+                    Array::Int(v) => group(v.len(), |i| hash_word(v[i] as u64), |i, j| v[i] == v[j]),
+                    Array::Bool(v) => group(v.len(), |i| hash_word(v[i] as u64), |i, j| v[i] == v[j]),
+                    Array::Str(v) => group(v.len(), |i| hash_bytes(v[i].as_bytes()), |i, j| v[i].as_bytes() == v[j].as_bytes()),
+                    a => panic!("$group of {:?}", a),
+                };
+                Value::Array(Rc::new(Array::Int(g)))
+            }
             // stable: the ties by index (D155)
             S::ArgSort => {
                 let a = match &vs[0] {

@@ -1032,9 +1032,10 @@ each key `f(x)` to its number of elements. Then:
 TypeScript for `undefined`; `a ?? b ?? c` tries `a`, then `b`. The keys
 have the class `Key`: integers, booleans, strings and `bigint`; a float is
 refused, its equality not being one of keys (NaN). A map is stored as three
-arrays (keys, values, the keys in order): built at once in O(n log n), `get`
-and `has` in O(log n), `set` and `delete` in O(n log n), so a map is built
-from all its entries rather than by `set` in a loop. A map is neither
+arrays (keys, values, the keys in order): built at once from n entries with
+m distinct keys in O(n + m log m) (a table of hashes, then the m keys
+sorted), `get` and `has` in O(log m), `set` and `delete` rebuild it, so a
+map is built from all its entries rather than by `set` in a loop. A map is neither
 printed (print `m.entries()`), nor compared, nor stored in an array.
 
 ```isc
