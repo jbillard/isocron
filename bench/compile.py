@@ -32,6 +32,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mdstyle  # the marks of the verdicts (D235)
 
 ROOT = run.ROOT
 ZIG = os.environ.get("ZIG") or shutil.which("zig") or os.path.expanduser("~/.local/opt/zig-x86_64-linux-0.14.1/zig")
@@ -265,7 +267,7 @@ def main():
     res = json.load(open(jpath)) if args.report_only else measure(args)
     if not args.report_only:
         json.dump(res, open(jpath, "w"), indent=1)
-    open(os.path.join(run.RESULTS, args.name + ".md"), "w").write(report(res, args.name) + "\n")
+    open(os.path.join(run.RESULTS, args.name + ".md"), "w").write(mdstyle.verdicts(report(res, args.name)) + "\n")
     run.log("wrote", os.path.join(run.RESULTS, args.name + ".md"))
 
 

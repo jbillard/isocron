@@ -1,4 +1,6 @@
-The programs (the fastest of each language on the site of the Benchmarks Game, 2026-11-02 and 2026-11-03):
+## The programs
+
+The fastest of each language on the site of the Benchmarks Game (2026-11-02 and 2026-11-03):
 
 | benchmark | C | C++ | Rust | Go |
 | --- | --- | --- | --- | --- |

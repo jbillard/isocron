@@ -4,9 +4,10 @@ the cost of the cheapest way the machine has to do it (measured:
 bench/floor/floor.c), never the time of one program. Prints a
 Markdown table against the times of Isocron and of the fastest program of
 another language.
-  floors.py CONSTANTS COUNTS ISOCRON_TSV OTHERS_TSV
+  floors.py CONSTANTS COUNTS ISOCRON_TSV OTHERS_TSV [FLOORS_TSV]
 CONSTANTS: the output of bench/floor/run.sh; COUNTS: of counts.c;
-ISOCRON_TSV: `benchmark seconds` lines; OTHERS_TSV: results/benchmarks_game.tsv."""
+ISOCRON_TSV: `benchmark seconds` lines; OTHERS_TSV: results/benchmarks_game.tsv;
+FLOORS_TSV: written, `benchmark seconds` of each floor (for report.py)."""
 import re, sys
 
 def constants(path):
@@ -192,16 +193,33 @@ def spectralnorm():
     return min(d * cd, mixed), "%.2e elements: %.0f %% divided (%.3f ns per core), %.0f %% read from memory, stored once" % (d, 100 * (1 - f), c4("divide_f64"), 100 * f), "measured"
 rows.append(("spectralnorm", spectralnorm()))
 
-print("| benchmark | floor | model | how | Isocron | Isocron / floor | fastest other | its / floor |")
-print("| --- | ---: | --- | --- | ---: | ---: | --- | ---: |")
+# the look on GitHub (D235): colors of math, emoji, a chart
+sys.path.insert(0, __import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)), ".."))
+import mdstyle as md
+
+print("| benchmark | floor | Isocron | Isocron / floor | fastest other | its / floor | model |")
+print("| :-- | --: | --: | :-: | :-- | :-: | :-- |")
 beaten = []
+gaps = []
 for name, (f, model, how) in rows:
     iso = ISO[name]
     prog, ms = OTHER[name]
     if min(iso, ms / 1000) < f:
         beaten.append(name)
-    print("| %s | %.3f s | %s | %s | %.3f s | %.1f | %s %.3f s | %.1f |" % (name, f, model, how, iso, iso / f, prog, ms / 1000, ms / 1000 / f))
+    gaps.append((name, iso / f, ms / 1000 / f))
+    mark = "" if how == "measured" else " *(estimate)*"
+    print("| **%s** | %.3f s | %.3f s | %s | %s %.3f s | %s | %s%s |" % (md.name(name), f, iso, md.vs_floor(iso / f), prog, ms / 1000, md.vs_floor(ms / 1000 / f), model, mark))
+print()
+print("Over the floor: $\\color{green}{\\text{up to 1.5}}$, $\\color{orange}{\\text{up to 3}}$, $\\color{red}{\\text{beyond}}$.")
+print()
+gaps.sort(key=lambda g: -g[1])
+print(md.bar_chart("Isocron time / its floor (1: at the floor)", [md.name(g[0]) for g in gaps], [g[1] for g in gaps], "times the floor", int(max(g[1] for g in gaps)) + 2, [1.0] * len(gaps)))
 if beaten:
     # a floor below a measured time is wrong: its model misses a way to do it
-    print("\n**Floors beaten by a measured program (wrong models)**: " + ", ".join(beaten))
+    print("\n> [!CAUTION]\n> **Floors beaten by a measured program (wrong models)**: " + ", ".join(beaten))
     sys.stderr.write("floors beaten: %s\n" % ", ".join(beaten))
+# the floors, for the report of the measurements
+if len(sys.argv) > 5:
+    with open(sys.argv[5], "w") as t:
+        for name, (f, model, how) in rows:
+            t.write("%s %.6f\n" % (name, f))

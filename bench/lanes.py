@@ -25,6 +25,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mdstyle  # the marks of the verdicts (D235)
 
 BIN = os.path.join(HERE, "bin-lanes")
 SIZES = {"l1": 2048, "l2": 16384}
@@ -186,7 +188,7 @@ def main():
     res = json.load(open(jpath)) if args.report_only else measure(args)
     if not args.report_only:
         json.dump(res, open(jpath, "w"), indent=1)
-    open(os.path.join(run.RESULTS, args.name + ".md"), "w").write(report(res, args.name) + "\n")
+    open(os.path.join(run.RESULTS, args.name + ".md"), "w").write(mdstyle.verdicts(report(res, args.name)) + "\n")
     run.log("wrote", os.path.join(run.RESULTS, args.name + ".md"))
 
 

@@ -11,26 +11,26 @@ Note: the matvec kernel was measured again on 2026-11-02, after DECISIONS D121 (
 
 | Kernel | Size | Isocron | Best other | Difference | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| sum | small | 1.78 µs | 1.85 µs (Zig, opt) | -3.8 % | equals |
-| dot | small | 3.74 µs | 6.95 µs (Zig, opt) | -46.2 % | **beats** |
-| std_dev | small | 5.68 µs | 5.80 µs (Zig, opt) | -2.0 % | equals |
-| histogram | small | 90.79 µs | 94.47 µs (Rust, opt) | -3.9 % | **beats** |
-| histogram_skewed | small | 91.49 µs | 96.84 µs (Rust, opt) | -5.5 % | **beats** |
-| moving_average | small | 19.89 µs | 30.86 µs (C (GCC), opt) | -35.6 % | **beats** |
-| moving_average_b | small | 19.88 µs | 44.64 µs (Rust, idiomatic) | -55.5 % | **beats** |
-| filter_sum | small | 5.75 µs | 5.82 µs (C (GCC), opt) | -1.1 % | equals |
-| prefix_sum | small | 6.62 µs | 8.18 µs (C (Clang), opt) | -19.1 % | **beats** |
-| matvec | small | 2.88 µs | 3.22 µs (Zig, opt) | -10.4 % | **beats** |
-| sum | large | 3.473 ms | 3.493 ms (Rust, opt) | -0.6 % | equals |
-| dot | large | 6.484 ms | 6.893 ms (C (Clang), opt) | -5.9 % | **beats** |
-| std_dev | large | 6.944 ms | 7.013 ms (Rust, opt) | -1.0 % | **beats** |
-| histogram | large | 3.502 ms | 3.616 ms (Rust, opt) | -3.2 % | **beats** |
-| histogram_skewed | large | 3.539 ms | 3.731 ms (Rust, opt) | -5.2 % | **beats** |
-| moving_average | large | 9.171 ms | 14.405 ms (C (GCC), opt) | -36.3 % | **beats** |
-| moving_average_b | large | 9.167 ms | 14.205 ms (Rust, idiomatic) | -35.5 % | **beats** |
-| filter_sum | large | 4.017 ms | 4.357 ms (Rust, opt) | -7.8 % | **beats** |
-| prefix_sum | large | 5.544 ms | 7.871 ms (Zig, opt) | -29.6 % | **beats** |
-| matvec | large | 6.439 ms | 6.738 ms (C (Clang), opt) | -4.4 % | **beats** |
+| sum | small | 1.78 µs | 1.85 µs (Zig, opt) | -3.8 % | 🟡 equals |
+| dot | small | 3.74 µs | 6.95 µs (Zig, opt) | -46.2 % | 🟢 **beats** |
+| std_dev | small | 5.68 µs | 5.80 µs (Zig, opt) | -2.0 % | 🟡 equals |
+| histogram | small | 90.79 µs | 94.47 µs (Rust, opt) | -3.9 % | 🟢 **beats** |
+| histogram_skewed | small | 91.49 µs | 96.84 µs (Rust, opt) | -5.5 % | 🟢 **beats** |
+| moving_average | small | 19.89 µs | 30.86 µs (C (GCC), opt) | -35.6 % | 🟢 **beats** |
+| moving_average_b | small | 19.88 µs | 44.64 µs (Rust, idiomatic) | -55.5 % | 🟢 **beats** |
+| filter_sum | small | 5.75 µs | 5.82 µs (C (GCC), opt) | -1.1 % | 🟡 equals |
+| prefix_sum | small | 6.62 µs | 8.18 µs (C (Clang), opt) | -19.1 % | 🟢 **beats** |
+| matvec | small | 2.88 µs | 3.22 µs (Zig, opt) | -10.4 % | 🟢 **beats** |
+| sum | large | 3.473 ms | 3.493 ms (Rust, opt) | -0.6 % | 🟡 equals |
+| dot | large | 6.484 ms | 6.893 ms (C (Clang), opt) | -5.9 % | 🟢 **beats** |
+| std_dev | large | 6.944 ms | 7.013 ms (Rust, opt) | -1.0 % | 🟢 **beats** |
+| histogram | large | 3.502 ms | 3.616 ms (Rust, opt) | -3.2 % | 🟢 **beats** |
+| histogram_skewed | large | 3.539 ms | 3.731 ms (Rust, opt) | -5.2 % | 🟢 **beats** |
+| moving_average | large | 9.171 ms | 14.405 ms (C (GCC), opt) | -36.3 % | 🟢 **beats** |
+| moving_average_b | large | 9.167 ms | 14.205 ms (Rust, idiomatic) | -35.5 % | 🟢 **beats** |
+| filter_sum | large | 4.017 ms | 4.357 ms (Rust, opt) | -7.8 % | 🟢 **beats** |
+| prefix_sum | large | 5.544 ms | 7.871 ms (Zig, opt) | -29.6 % | 🟢 **beats** |
+| matvec | large | 6.439 ms | 6.738 ms (C (Clang), opt) | -4.4 % | 🟢 **beats** |
 
 Isocron has the lowest median in 20 of the 20 cases (16 *beats*, 4 *equals*, 0 *slower*).
 
@@ -38,18 +38,18 @@ Isocron has the lowest median in 20 of the 20 cases (16 *beats*, 4 *equals*, 0 *
 
 | Kernel | Size | Isocron allow_reassoc | Best reassociated | Difference | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| sum | small | 1.78 µs | 2.58 µs (Zig (reassociated)) | -30.9 % | **beats** |
-| dot | small | 3.74 µs | 7.56 µs (C (Clang, reassociated)) | -50.5 % | **beats** |
-| std_dev | small | 4.41 µs | 5.25 µs (C (Clang, reassociated)) | -16.0 % | **beats** |
-| moving_average | small | 20.05 µs | 117.29 µs (C (GCC, reassociated)) | -82.9 % | **beats** |
-| filter_sum | small | 1.77 µs | 2.64 µs (Zig (reassociated)) | -33.0 % | **beats** |
-| matvec | small | 2.74 µs | 3.92 µs (C (Clang, reassociated)) | -30.2 % | **beats** |
-| sum | large | 3.474 ms | 3.554 ms (Zig (reassociated)) | -2.2 % | **beats** |
-| dot | large | 6.484 ms | 6.896 ms (C (Clang, reassociated)) | -6.0 % | **beats** |
-| std_dev | large | 7.052 ms | 7.178 ms (Zig (reassociated)) | -1.8 % | **beats** |
-| moving_average | large | 9.160 ms | 36.364 ms (C (GCC, reassociated)) | -74.8 % | **beats** |
-| filter_sum | large | 3.514 ms | 3.614 ms (Zig (reassociated)) | -2.8 % | **beats** |
-| matvec | large | 6.394 ms | 6.654 ms (C (Clang, reassociated)) | -3.9 % | **beats** |
+| sum | small | 1.78 µs | 2.58 µs (Zig (reassociated)) | -30.9 % | 🟢 **beats** |
+| dot | small | 3.74 µs | 7.56 µs (C (Clang, reassociated)) | -50.5 % | 🟢 **beats** |
+| std_dev | small | 4.41 µs | 5.25 µs (C (Clang, reassociated)) | -16.0 % | 🟢 **beats** |
+| moving_average | small | 20.05 µs | 117.29 µs (C (GCC, reassociated)) | -82.9 % | 🟢 **beats** |
+| filter_sum | small | 1.77 µs | 2.64 µs (Zig (reassociated)) | -33.0 % | 🟢 **beats** |
+| matvec | small | 2.74 µs | 3.92 µs (C (Clang, reassociated)) | -30.2 % | 🟢 **beats** |
+| sum | large | 3.474 ms | 3.554 ms (Zig (reassociated)) | -2.2 % | 🟢 **beats** |
+| dot | large | 6.484 ms | 6.896 ms (C (Clang, reassociated)) | -6.0 % | 🟢 **beats** |
+| std_dev | large | 7.052 ms | 7.178 ms (Zig (reassociated)) | -1.8 % | 🟢 **beats** |
+| moving_average | large | 9.160 ms | 36.364 ms (C (GCC, reassociated)) | -74.8 % | 🟢 **beats** |
+| filter_sum | large | 3.514 ms | 3.614 ms (Zig (reassociated)) | -2.8 % | 🟢 **beats** |
+| matvec | large | 6.394 ms | 6.654 ms (C (Clang, reassociated)) | -3.9 % | 🟢 **beats** |
 
 Isocron's `allow_reassoc` programs have the lowest median in 12 of the 12 cases.
 

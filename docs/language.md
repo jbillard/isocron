@@ -2,11 +2,17 @@
 
 This guide describes the language **as the current compiler (`iscc`) implements
 it**: the proof of concept of SPEC section 15, extended by the improvements
-recorded in `DECISIONS.md`. `SPEC.md` (in French) describes the complete
-design; much of it is not implemented yet (see [Not implemented yet](#not-implemented-yet)).
-Every example of this guide is compiled and run by the test
-`crates/iscc/tests/docs.rs`, with the interpreter and with the compiler, and
-its output is compared with the output printed here.
+recorded in `DECISIONS.md`.
+
+> [!NOTE]
+> `SPEC.md` (in French) describes the complete design; much of it is not
+> implemented yet (see [Not implemented yet](#not-implemented-yet)).
+
+> [!TIP]
+> Every example of this guide is compiled and run by the test
+> `crates/iscc/tests/docs.rs`, with the interpreter and with the compiler,
+> and its output is compared with the output printed here: they all work as
+> written.
 
 Isocron is a purely functional, strict array language. Its goal is raw CPU
 speed with results that are identical to the bit whatever the machine and the
@@ -2317,7 +2323,14 @@ iscc ir    <file.isc>                       print the optimized IR
 iscc run   <file.isc> [args...]             run with the reference interpreter
 iscc build <file.isc> [-o out] [--emit-llvm f.ll] [--emit-asm f.s] [--debug]
            [--target native|wasm32-wasi|wasm32-wasi-threads]
+iscc completions bash|zsh|fish              the completion of the shell
 ```
+
+> [!TIP]
+> `source <(iscc completions bash)` in `~/.bashrc` completes the commands,
+> their options and values, and the `.isc` files. The messages are in
+> colors, with the line of the source under an error, on a terminal
+> (`--color auto|always|never` anywhere, `NO_COLOR` respected).
 
 * `build` writes a native executable for the host processor (default name:
   the source file without `.isc`), stripped unless `--debug` is given. The

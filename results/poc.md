@@ -30,14 +30,14 @@ Verdict rule (section 14): *beats* when Isocron's median is lower by more than t
 
 | Kernel | Size | Isocron | Best strict C | Verdict | Best Rust | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| sum | small | 21.97 µs ± 79 ns | 24.76 µs (C (Clang), opt) ± 145 ns | **beats** | 44.55 µs (opt) ± 238 ns | **beats** |
-| dot | small | 43.57 µs ± 783 ns | 47.81 µs (C (Clang), opt) ± 916 ns | **beats** | 60.36 µs (opt) ± 1.95 µs | **beats** |
-| std_dev | small | 51.26 µs ± 627 ns | 55.78 µs (C (GCC), opt) ± 508 ns | **beats** | 88.02 µs (opt) ± 690 ns | **beats** |
-| histogram | small | 891.56 µs ± 4.71 µs | 889.44 µs (C (GCC), idiomatic) ± 7.14 µs | **equals** | 888.94 µs (opt) ± 6.22 µs | **equals** |
-| sum | large | 14.236 ms ± 189.87 µs | 14.305 ms (C (Clang), opt) ± 184.51 µs | **equals** | 18.888 ms (opt) ± 433.73 µs | **beats** |
-| dot | large | 26.456 ms ± 442.09 µs | 27.097 ms (C (Clang), opt) ± 245.44 µs | **beats** | 28.311 ms (idiomatic) ± 785.41 µs | **beats** |
-| std_dev | large | 30.596 ms ± 1.639 ms | 30.871 ms (C (GCC), opt) ± 2.090 ms | **equals** | 37.510 ms (opt) ± 1.464 ms | **beats** |
-| histogram | large | 34.394 ms ± 121.58 µs | 34.398 ms (C (GCC), idiomatic) ± 164.02 µs | **equals** | 34.382 ms (opt) ± 182.90 µs | **equals** |
+| sum | small | 21.97 µs ± 79 ns | 24.76 µs (C (Clang), opt) ± 145 ns | 🟢 **beats** | 44.55 µs (opt) ± 238 ns | 🟢 **beats** |
+| dot | small | 43.57 µs ± 783 ns | 47.81 µs (C (Clang), opt) ± 916 ns | 🟢 **beats** | 60.36 µs (opt) ± 1.95 µs | 🟢 **beats** |
+| std_dev | small | 51.26 µs ± 627 ns | 55.78 µs (C (GCC), opt) ± 508 ns | 🟢 **beats** | 88.02 µs (opt) ± 690 ns | 🟢 **beats** |
+| histogram | small | 891.56 µs ± 4.71 µs | 889.44 µs (C (GCC), idiomatic) ± 7.14 µs | 🟡 **equals** | 888.94 µs (opt) ± 6.22 µs | 🟡 **equals** |
+| sum | large | 14.236 ms ± 189.87 µs | 14.305 ms (C (Clang), opt) ± 184.51 µs | 🟡 **equals** | 18.888 ms (opt) ± 433.73 µs | 🟢 **beats** |
+| dot | large | 26.456 ms ± 442.09 µs | 27.097 ms (C (Clang), opt) ± 245.44 µs | 🟢 **beats** | 28.311 ms (idiomatic) ± 785.41 µs | 🟢 **beats** |
+| std_dev | large | 30.596 ms ± 1.639 ms | 30.871 ms (C (GCC), opt) ± 2.090 ms | 🟡 **equals** | 37.510 ms (opt) ± 1.464 ms | 🟢 **beats** |
+| histogram | large | 34.394 ms ± 121.58 µs | 34.398 ms (C (GCC), idiomatic) ± 164.02 µs | 🟡 **equals** | 34.382 ms (opt) ± 182.90 µs | 🟡 **equals** |
 
 **Result: the decision point is passed** — on the small size, Isocron at least equals the best strict
 variant of C and of Rust on the sum and the dot product.

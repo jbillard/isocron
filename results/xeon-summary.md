@@ -28,16 +28,16 @@ are excluded because they change the floating-point result (they are compared wi
 
 | Kernel | Size | Isocron | Best other | Difference | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| sum | small | 1.78 µs | 1.85 µs (Zig, opt) | -3.68 % | **beats** |
-| dot | small | 3.74 µs | 6.79 µs (Zig, opt) | -44.96 % | **beats** |
-| std_dev | small | 5.69 µs | 5.79 µs (Zig, opt) | -1.83 % | equals |
-| histogram | small | 90.80 µs | 94.36 µs (Rust, opt) | -3.77 % | **beats** |
-| histogram_skewed | small | 91.49 µs | 97.14 µs (Rust, opt) | -5.82 % | **beats** |
-| sum | large | 3.463 ms | 3.493 ms (Rust, opt) | -0.85 % | **beats** |
-| dot | large | 6.477 ms | 6.887 ms (Clang, opt) | -5.95 % | **beats** |
-| std_dev | large | 6.946 ms | 7.017 ms (Rust, opt) | -1.00 % | **beats** |
-| histogram | large | 3.501 ms | 3.615 ms (Rust, opt) | -3.16 % | **beats** |
-| histogram_skewed | large | 3.539 ms | 3.735 ms (Rust, opt) | -5.24 % | **beats** |
+| sum | small | 1.78 µs | 1.85 µs (Zig, opt) | -3.68 % | 🟢 **beats** |
+| dot | small | 3.74 µs | 6.79 µs (Zig, opt) | -44.96 % | 🟢 **beats** |
+| std_dev | small | 5.69 µs | 5.79 µs (Zig, opt) | -1.83 % | 🟡 equals |
+| histogram | small | 90.80 µs | 94.36 µs (Rust, opt) | -3.77 % | 🟢 **beats** |
+| histogram_skewed | small | 91.49 µs | 97.14 µs (Rust, opt) | -5.82 % | 🟢 **beats** |
+| sum | large | 3.463 ms | 3.493 ms (Rust, opt) | -0.85 % | 🟢 **beats** |
+| dot | large | 6.477 ms | 6.887 ms (Clang, opt) | -5.95 % | 🟢 **beats** |
+| std_dev | large | 6.946 ms | 7.017 ms (Rust, opt) | -1.00 % | 🟢 **beats** |
+| histogram | large | 3.501 ms | 3.615 ms (Rust, opt) | -3.16 % | 🟢 **beats** |
+| histogram_skewed | large | 3.539 ms | 3.735 ms (Rust, opt) | -5.24 % | 🟢 **beats** |
 
 ## Threads: Isocron against C (OpenMP), Rust (rayon), Go and Zig
 

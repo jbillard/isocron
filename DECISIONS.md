@@ -4033,3 +4033,27 @@ bash on 7 cases).
   frequency, best of 7: fasta 0.048 s -> 0.017 s on 4 threads, 0.085 s ->
   0.061 s on one; the same output (N = 1, 7, 1000, 25e6). Test
   `bytes_written_by_blocks_through_a_table`.
+- **D235 — The Markdown made for GitHub (2026-11-04).** Asked for: the
+floor in the tables of the benchmarks, colors in every Markdown file, a
+better look on GitHub. GitHub keeps no color of HTML or CSS (it removes
+`style`), but renders the colors of math (`$\color{green}{...}$`, also in
+tables), emoji, its alerts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`,
+`[!WARNING]`, `[!CAUTION]`), Mermaid charts and `<details>`. `bench/mdstyle.py`
+holds the look: the readable names of the programs, Isocron over the
+fastest in green below 0.95, orange to 1.05, red beyond, with a mark (🟢
+🟡 🔴), a time over its floor in green up to 1.5, orange up to 3, red
+beyond, a bar chart, the marks of the verdicts of SPEC section 14 (🟢
+*beats*, 🟡 *equals*, 🔴 *slower*). `report.py` gives the floor of each
+program (`results/floors.tsv`, now written by `floors.py`) and Isocron
+over it, a chart of Isocron over the fastest, the plain programs and what
+the others use in `<details>`, and writes the summary of the results into
+`README.md`, between `<!-- results:begin -->` and `<!-- results:end -->`.
+`floors.py` colors the gaps and charts them. `README.md` is laid out again
+(the summary of the results first, alerts, `<details>` for the long
+options); `results/README.md` is the index of the results;
+`docs/language.md` has alerts and the commands of D231 and D232. The
+reports of the campaigns of the proof of concept keep their numbers as
+they were: only the marks of their verdicts are added (made again from
+their JSON, they would change: their scripts changed since), and their
+scripts add them from now on. `DECISIONS.md`, `TODO.md` and `SPEC.md`
+keep their text.

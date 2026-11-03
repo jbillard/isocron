@@ -26,6 +26,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mdstyle  # the marks of the verdicts (D235)
 
 IMPLS = {
     "isc": "Isocron",
@@ -238,7 +240,7 @@ def main():
     res.setdefault("name", args.name)
     if not args.report_only:
         json.dump(res, open(jpath, "w"), indent=1)
-    open(os.path.join(run.RESULTS, args.name + ".md"), "w").write(report(res) + "\n")
+    open(os.path.join(run.RESULTS, args.name + ".md"), "w").write(mdstyle.verdicts(report(res)) + "\n")
     run.log("wrote", os.path.join(run.RESULTS, args.name + ".md"))
 
 

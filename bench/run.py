@@ -26,6 +26,8 @@ import struct
 import subprocess
 import sys
 import time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mdstyle  # the marks of the verdicts (D235)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -664,7 +666,7 @@ def main():
     if not (args.report_only or args.ghz_only):
         res = measure(args)
         json.dump(res, open(jpath, "w"), indent=1)
-    open(os.path.join(RESULTS, args.name + ".md"), "w").write(report(res, args.name) + "\n")
+    open(os.path.join(RESULTS, args.name + ".md"), "w").write(mdstyle.verdicts(report(res, args.name)) + "\n")
     log("wrote", os.path.join(RESULTS, args.name + ".md"))
 
 

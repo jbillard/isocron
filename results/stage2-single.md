@@ -43,26 +43,26 @@ Verdict rule (section 14): *beats* when Isocron's median is lower by more than t
 
 | Kernel | Size | Isocron | Best strict C | Verdict | Best Rust | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
-| sum | small | 1.78 µs ± 2 ns | 2.83 µs (C (Clang), opt) ± 293 ns | **beats** | 3.24 µs (opt) ± 169 ns | **beats** |
-| dot | small | 3.74 µs ± 33 ns | 7.78 µs (C (GCC), opt) ± 529 ns | **beats** | 8.07 µs (opt) ± 450 ns | **beats** |
-| std_dev | small | 5.68 µs ± 3 ns | 6.73 µs (C (Clang), opt) ± 220 ns | **beats** | 7.19 µs (opt) ± 168 ns | **beats** |
-| histogram | small | 90.79 µs ± 62 ns | 97.22 µs (C (GCC), opt) ± 1.02 µs | **beats** | 94.47 µs (opt) ± 971 ns | **beats** |
-| histogram_skewed | small | 91.49 µs ± 60 ns | 99.53 µs (C (GCC), opt) ± 1.31 µs | **beats** | 96.84 µs (opt) ± 1.44 µs | **beats** |
-| moving_average | small | 19.89 µs ± 685 ns | 30.86 µs (C (GCC), opt) ± 1.08 µs | **beats** | 38.06 µs (opt) ± 177 ns | **beats** |
-| moving_average_b | small | 19.88 µs ± 609 ns | 47.15 µs (C (GCC), idiomatic) ± 141 ns | **beats** | 44.64 µs (idiomatic) ± 610 ns | **beats** |
-| filter_sum | small | 5.75 µs ± 381 ns | 5.82 µs (C (GCC), opt) ± 217 ns | **equals** | 7.53 µs (opt) ± 248 ns | **beats** |
-| prefix_sum | small | 6.62 µs ± 25 ns | 8.18 µs (C (Clang), opt) ± 770 ns | **beats** | 9.06 µs (opt) ± 555 ns | **beats** |
-| matvec | small | 2.88 µs ± 29 ns | 5.31 µs (C (Clang), opt) ± 116 ns | **beats** | 4.91 µs (opt) ± 436 ns | **beats** |
-| sum | large | 3.473 ms ± 25.10 µs | 3.587 ms (C (Clang), opt) ± 10.64 µs | **beats** | 3.493 ms (opt) ± 20.11 µs | **equals** |
-| dot | large | 6.484 ms ± 28.27 µs | 6.893 ms (C (Clang), opt) ± 30.43 µs | **beats** | 7.035 ms (opt) ± 26.59 µs | **beats** |
-| std_dev | large | 6.944 ms ± 53.87 µs | 7.295 ms (C (GCC), opt) ± 21.44 µs | **beats** | 7.013 ms (opt) ± 41.74 µs | **beats** |
-| histogram | large | 3.502 ms ± 2.18 µs | 3.712 ms (C (GCC), opt) ± 4.63 µs | **beats** | 3.616 ms (opt) ± 4.69 µs | **beats** |
-| histogram_skewed | large | 3.539 ms ± 1.98 µs | 3.783 ms (C (GCC), opt) ± 6.78 µs | **beats** | 3.731 ms (opt) ± 7.54 µs | **beats** |
-| moving_average | large | 9.171 ms ± 239.86 µs | 14.405 ms (C (GCC), opt) ± 106.06 µs | **beats** | 15.619 ms (opt) ± 38.19 µs | **beats** |
-| moving_average_b | large | 9.167 ms ± 163.72 µs | 15.025 ms (C (GCC), idiomatic) ± 39.18 µs | **beats** | 14.205 ms (idiomatic) ± 46.99 µs | **beats** |
-| filter_sum | large | 4.017 ms ± 57.37 µs | 4.478 ms (C (Clang), opt) ± 61.54 µs | **beats** | 4.357 ms (opt) ± 30.48 µs | **beats** |
-| prefix_sum | large | 5.544 ms ± 26.75 µs | 8.080 ms (C (Clang), opt) ± 50.59 µs | **beats** | 8.040 ms (opt) ± 48.11 µs | **beats** |
-| matvec | large | 6.439 ms ± 41.98 µs | 6.738 ms (C (Clang), opt) ± 34.04 µs | **beats** | 7.146 ms (opt) ± 48.28 µs | **beats** |
+| sum | small | 1.78 µs ± 2 ns | 2.83 µs (C (Clang), opt) ± 293 ns | 🟢 **beats** | 3.24 µs (opt) ± 169 ns | 🟢 **beats** |
+| dot | small | 3.74 µs ± 33 ns | 7.78 µs (C (GCC), opt) ± 529 ns | 🟢 **beats** | 8.07 µs (opt) ± 450 ns | 🟢 **beats** |
+| std_dev | small | 5.68 µs ± 3 ns | 6.73 µs (C (Clang), opt) ± 220 ns | 🟢 **beats** | 7.19 µs (opt) ± 168 ns | 🟢 **beats** |
+| histogram | small | 90.79 µs ± 62 ns | 97.22 µs (C (GCC), opt) ± 1.02 µs | 🟢 **beats** | 94.47 µs (opt) ± 971 ns | 🟢 **beats** |
+| histogram_skewed | small | 91.49 µs ± 60 ns | 99.53 µs (C (GCC), opt) ± 1.31 µs | 🟢 **beats** | 96.84 µs (opt) ± 1.44 µs | 🟢 **beats** |
+| moving_average | small | 19.89 µs ± 685 ns | 30.86 µs (C (GCC), opt) ± 1.08 µs | 🟢 **beats** | 38.06 µs (opt) ± 177 ns | 🟢 **beats** |
+| moving_average_b | small | 19.88 µs ± 609 ns | 47.15 µs (C (GCC), idiomatic) ± 141 ns | 🟢 **beats** | 44.64 µs (idiomatic) ± 610 ns | 🟢 **beats** |
+| filter_sum | small | 5.75 µs ± 381 ns | 5.82 µs (C (GCC), opt) ± 217 ns | 🟡 **equals** | 7.53 µs (opt) ± 248 ns | 🟢 **beats** |
+| prefix_sum | small | 6.62 µs ± 25 ns | 8.18 µs (C (Clang), opt) ± 770 ns | 🟢 **beats** | 9.06 µs (opt) ± 555 ns | 🟢 **beats** |
+| matvec | small | 2.88 µs ± 29 ns | 5.31 µs (C (Clang), opt) ± 116 ns | 🟢 **beats** | 4.91 µs (opt) ± 436 ns | 🟢 **beats** |
+| sum | large | 3.473 ms ± 25.10 µs | 3.587 ms (C (Clang), opt) ± 10.64 µs | 🟢 **beats** | 3.493 ms (opt) ± 20.11 µs | 🟡 **equals** |
+| dot | large | 6.484 ms ± 28.27 µs | 6.893 ms (C (Clang), opt) ± 30.43 µs | 🟢 **beats** | 7.035 ms (opt) ± 26.59 µs | 🟢 **beats** |
+| std_dev | large | 6.944 ms ± 53.87 µs | 7.295 ms (C (GCC), opt) ± 21.44 µs | 🟢 **beats** | 7.013 ms (opt) ± 41.74 µs | 🟢 **beats** |
+| histogram | large | 3.502 ms ± 2.18 µs | 3.712 ms (C (GCC), opt) ± 4.63 µs | 🟢 **beats** | 3.616 ms (opt) ± 4.69 µs | 🟢 **beats** |
+| histogram_skewed | large | 3.539 ms ± 1.98 µs | 3.783 ms (C (GCC), opt) ± 6.78 µs | 🟢 **beats** | 3.731 ms (opt) ± 7.54 µs | 🟢 **beats** |
+| moving_average | large | 9.171 ms ± 239.86 µs | 14.405 ms (C (GCC), opt) ± 106.06 µs | 🟢 **beats** | 15.619 ms (opt) ± 38.19 µs | 🟢 **beats** |
+| moving_average_b | large | 9.167 ms ± 163.72 µs | 15.025 ms (C (GCC), idiomatic) ± 39.18 µs | 🟢 **beats** | 14.205 ms (idiomatic) ± 46.99 µs | 🟢 **beats** |
+| filter_sum | large | 4.017 ms ± 57.37 µs | 4.478 ms (C (Clang), opt) ± 61.54 µs | 🟢 **beats** | 4.357 ms (opt) ± 30.48 µs | 🟢 **beats** |
+| prefix_sum | large | 5.544 ms ± 26.75 µs | 8.080 ms (C (Clang), opt) ± 50.59 µs | 🟢 **beats** | 8.040 ms (opt) ± 48.11 µs | 🟢 **beats** |
+| matvec | large | 6.439 ms ± 41.98 µs | 6.738 ms (C (Clang), opt) ± 34.04 µs | 🟢 **beats** | 7.146 ms (opt) ± 48.28 µs | 🟢 **beats** |
 
 **Result: the decision point is passed** — on the small size, Isocron at least equals the best strict
 variant of C and of Rust on the sum and the dot product.
