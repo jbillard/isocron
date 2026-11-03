@@ -1469,6 +1469,10 @@ struct Rewriter<'a> {
     /// The branches of an `if` whose two branches borrow, with what each
     /// borrows: made new one by one if the `if` must be (D138).
     branch_owns: HashMap<*const Expr, Own>,
+    /// The `map`s of scalars whose input `k` is a variable at its last use,
+    /// owned, of the same scalars: written into it when the `map` is
+    /// materialized (D207).
+    reusable: HashMap<*const Expr, usize>,
 }
 
 impl<'a> Rewriter<'a> {
@@ -1487,6 +1491,7 @@ impl<'a> Rewriter<'a> {
             ExprKind::Let { var, init, body, .. } => {
                 let v = *var;
                 self.walk(init)?;
+                self.reuse(init);
                 let o = self.walk(body)?;
                 if let Own::Borrowed(s, _) = &o {
                     if s.contains(&v) {
@@ -1599,6 +1604,7 @@ impl<'a> Rewriter<'a> {
                     if matches!(o, Own::Borrowed(..)) {
                         self.make_fresh(c, o, false)?;
                     }
+                    self.reuse(c);
                 }
                 return Ok(if heap { Own::Fresh } else { Own::Scalar });
             }
@@ -1615,6 +1621,34 @@ impl<'a> Rewriter<'a> {
                 let o = self.walk(&mut l.body)?;
                 if matches!(o, Own::Borrowed(..)) {
                     self.make_fresh(&mut l.body, o, false)?;
+                }
+                return Ok(Own::Fresh);
+            }
+            // a `map` of scalars: an input it may write its result into
+            // (D207), taken by its parent if the `map` is materialized there
+            ExprKind::Map(ins, l) if e.ty.elem().is_scalar() && !may_panic(&l.body) => {
+                let et = e.ty.elem().clone();
+                let mut found = None;
+                for (k, i) in ins.iter_mut().enumerate() {
+                    let o = self.walk(i)?;
+                    if found.is_some() {
+                        continue;
+                    }
+                    if let (ExprKind::Var(v, _), Own::Borrowed(_, Some(idx))) = (&i.kind, &o) {
+                        let v = *v as usize;
+                        if i.ty.is_array()
+                            && *i.ty.elem() == et
+                            && self.info.candidates.contains(idx)
+                            && self.info.owned[v]
+                            && self.info.alias[v].is_none()
+                        {
+                            found = Some(k);
+                        }
+                    }
+                }
+                self.walk(&mut l.body)?;
+                if let Some(k) = found {
+                    self.reusable.insert(e as *const Expr, k);
                 }
                 return Ok(Own::Fresh);
             }
@@ -1636,6 +1670,18 @@ impl<'a> Rewriter<'a> {
             self.walk(c)?;
         }
         Ok(if heap { Own::Fresh } else { Own::Scalar })
+    }
+
+    /// A `map` materialized here (a component, the value of a `let`) that may
+    /// write into its input (D207): that input moved into it.
+    fn reuse(&mut self, e: &mut Expr) {
+        let Some(k) = self.reusable.remove(&(e as *const Expr)) else { return };
+        if let ExprKind::Map(ins, _) = &mut e.kind {
+            if let ExprKind::Var(v, u) = &mut ins[k].kind {
+                *u = Use::Move;
+                self.info.moved[*v as usize] = true;
+            }
+        }
     }
 
     /// Makes a borrowed value owned: moves the variable in tail position when
@@ -1721,6 +1767,18 @@ impl<'a> Rewriter<'a> {
             return format!("`{}` is defined outside this loop or branch, so it is used more than once", name(*v));
         }
         "the value is borrowed".into()
+    }
+}
+
+/// `e` may panic: a check of an index, of a size, a division, a call (D207:
+/// a `map` that writes into its input must not stop half done, its replays
+/// reading elements already written).
+fn may_panic(e: &Expr) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Index(..) | CheckSize(..) | CheckNonNegative(..) | Call(..) | Slice(..) | Window(..) | Update { .. } => true,
+        Binary(BinOp::Div | BinOp::Rem, a, _) if !a.ty.is_float() => true,
+        _ => e.children().into_iter().any(may_panic),
     }
 }
 
@@ -1915,7 +1973,8 @@ pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<Va
         info.candidates.extend(cands);
     }
     {
-        let mut rw = Rewriter { info: &mut info, vars, index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new() };
+        let mut rw =
+            Rewriter { info: &mut info, vars, index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new() };
         let o = rw.walk(body)?;
         if matches!(o, Own::Borrowed(..)) && body.ty.has_heap() {
             rw.make_fresh(body, o, false)?;

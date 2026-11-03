@@ -437,7 +437,9 @@ impl<'p> Checker<'p> {
                 let mut elems = Vec::new();
                 let one = ins.len() == 1;
                 for i in ins {
-                    let v = self.eval_src(i, one)?;
+                    // an input moved into the `map`: its memory becomes the
+                    // result, itself new (D207)
+                    let v = if matches!(i.kind, Var(_, Use::Move)) { self.eval(i)? } else { self.eval_src(i, one)? };
                     elems.push(self.elem_of(&v, i));
                 }
                 if e.ty.elem().is_array() {

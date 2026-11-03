@@ -4187,7 +4187,19 @@ impl<'p> Gen<'p> {
             (true, None) => MAP_WIDTH,
         };
         let (src, n) = self.prepare_src(e)?;
-        let p = self.alloc_elems(&n, &et);
+        // an input moved into the `map` (an array of the same scalars at its
+        // last use, D207): the results written into it, no new array
+        let reused = match &e.kind {
+            ExprKind::Map(ins, _) => ins.iter().find_map(|i| match i.kind {
+                ExprKind::Var(v, Use::Move) if i.ty.is_array() && *i.ty.elem() == et => self.env.get(&v).cloned(),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let p = match reused {
+            Some(x) => self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r)),
+            None => self.alloc_elems(&n, &et),
+        };
         // when each element is a loop of its own (a `reduce` per row, a
         // call), chunks taken in turn (D121, D143)
         let heavy = matches!(&e.kind, ExprKind::Map(_, l) if inner_loop(&l.body));

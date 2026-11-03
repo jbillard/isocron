@@ -819,3 +819,50 @@ action main(args: string[k]): i32 {
     clean(src, "states_vg", &[]);
 }
 
+#[test]
+fn maps_write_into_inputs_that_die() {
+    // D207: a `map` of scalars materialized in a `let` or a tuple, one of
+    // whose inputs is an owned array of the same scalars at its last use,
+    // writes into it; an input read later, borrowed (a parameter), of other
+    // elements, a `map` that may panic or that a `reduce` reads, keep their
+    // memory. The results of the interpreter, nothing lost or freed twice.
+    let src = "type P = { a: f64[4], b: f64[4] };
+function scale(x: f64[n], k: f64): f64[n] {
+    return x * k;
+}
+function grow(p: P, n: i64): P {
+    if (n == 0) return p;
+    return grow({ a: p.a + p.b * 0.5, b: p.b * 0.75 }, n - 1);
+}
+action main(args: string[k]): i32 {
+    const x = map(iota(1000), (i) => f64(i) * 0.5);
+    const y = x * 2.0 + 1.0;
+    print(sum(y));
+    const u = map(iota(8), (i) => f64(i));
+    const v = u * 3.0;
+    print([sum(u), sum(v)]);
+    const w = map(iota(8), (i) => i * i);
+    const z = map(w, (t) => f64(t) / 2.0);
+    print(z);
+    const idx = [3, 1, 2, 0];
+    const q = map(iota(4), (i) => f64(i) + 0.25);
+    const r = map(q, (t) => t + q[idx[0]]);
+    print(r);
+    const s = map(iota(100), (i) => f64(i));
+    print(sum(map(s, (t) => t * t)));
+    print(scale(y, 0.5)[999]);
+    const g = grow({ a: [1.0, 2.0, 3.0, 4.0], b: [4.0, 3.0, 2.0, 1.0] }, 200);
+    print(g.a);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "reuse");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    let p = iscc::frontend("reuse.isc", src).unwrap();
+    let es = isc_ir::report::entries_of(&p, true);
+    let grow: Vec<_> = es.iter().filter(|e| e.line == 7 && e.kind == "alloc").collect();
+    assert!(grow.is_empty(), "the maps of `grow` still allocate: {:?}", grow);
+    clean(src, "reuse_vg", &[]);
+}

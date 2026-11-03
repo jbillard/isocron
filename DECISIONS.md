@@ -3568,3 +3568,16 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   memory check (`verify_fn`) knows such a parameter as owned. n-body at
   fixed frequency, 4 threads: 4.763 s -> 4.135 s; the nine others compile
   to the same code; the same outputs.
+- **D207 — A `map` written into an input that dies (2026-11-04).** After
+  D206, a step of n-body still made 3 new arrays, `b.x + DT * vx` and the
+  two others, and freed the 3 old ones. A `map` of scalars materialized as
+  the value of a `let` or as a component of a tuple, one of whose inputs is
+  an owned array of the same scalars at its last use, now writes its
+  results into that input (the input marked `Use::Move`: not freed, its
+  memory the result); element `i` is read before it is written, the vector
+  code included. Not when the body of the `map` may panic (an index, a
+  size, a division of integers, a call: a replay must read elements not
+  yet written), nor for a `map` that a `reduce` reads (never materialized).
+  The memory check takes the input as moved into the result, the memory
+  report counts no allocation. n-body at fixed frequency, 4 threads: 4.135
+  s -> 3.589 s; the nine others compile to the same code; the same outputs.

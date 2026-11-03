@@ -416,6 +416,8 @@ impl<'p> Walk<'p> {
     fn allocates(e: &Expr) -> bool {
         use ExprKind::*;
         match &e.kind {
+            // a `map` that writes into its input moved into it (D207)
+            Map(ins, _) if ins.iter().any(|i| matches!(i.kind, Var(_, Use::Move))) => false,
             Map(..) | Iota(_) | Zeros(_) | Fill(..) | ArrayLit(_) | Scan(..) | Filter(..) => true,
             Slice(x, _, _) => !e.ty.slice_is_view() || is_producer(x),
             Action(..) => e.ty.is_array(),
