@@ -14,5 +14,5 @@ for t in 1 4; do
     cpus="$(echo "$BENCH_CPUS" | tr ',' '\n' | head -n "$t" | paste -sd, -)"
     echo "# $t thread(s), CPUs $cpus"
     sudo -n systemd-run --quiet --scope --slice=isc-bench -p AllowedCPUs="$cpus" --uid="$(id -u)" --gid="$(id -g)" \
-        env OMP_PROC_BIND=true "$here/build/floor" "$t"
+        env OMP_PROC_BIND=true "$here/build/floor" "$t" "$root/bench/benchmarks_game/build/inputs/fasta25m.txt"
 done

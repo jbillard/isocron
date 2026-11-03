@@ -3808,3 +3808,36 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   s -> 0.846 s; one thread unchanged; the same outputs. Test
   `large_files_read_by_several_threads` (offsets 0, 1, in the middle, at
   the end; 1 and 4 threads; a pipe; `readBytes`).
+- **D222 — The floors redone from what each result requires
+  (2026-11-04).** The floor of reverse-complement (D182) was beaten by
+  the Rust program (D221): it took the time of our own reading of the
+  input. The others had the same fault, or another hypothesis on the way
+  to do the work: binary-trees took a C program that recurses, pidigits
+  the passes of our divisions and a multiplication by a word written in C
+  (0.74 ns a word: 0.33 ns in assembly), spectral-norm only divisions,
+  mandelbrot 7 operations per iteration, regex-redux an automaton walked
+  byte by byte, fannkuch-redux and fasta chains that the work does not
+  have. Each floor is now what the result requires, under the rules of
+  the Benchmarks Game (its algorithm), at the cost of the cheapest way the
+  machine has to do it, measured in C by `bench/floor/floor.c` (new: a
+  file read by every thread into new pages, into pages written, by blocks
+  in the caches; an array changed in place; the flips of fannkuch-redux,
+  4 permutations per vector, 8 vectors interleaved, and its next
+  permutation; a big integer times a word in assembly; counts in tables
+  of 4096; trees made by a loop and visited with an explicit stack; the
+  generator of fasta in 4 vectors of lanes, 32 numbers ahead; two literals
+  found in 64 bytes by the masks of the 4 bases in general registers,
+  checked against a count byte by byte). Three primitives were first
+  limited by my own code and were rewritten before use: fasta 1.945 ->
+  1.029 ns per number (IUB), 1.641 -> 0.557 (homo sapiens), one chain of
+  lanes made 4; the literals 0.157 -> 0.074 ns per byte, the masks out of
+  the one port of mask operations; the flips 0.766 -> 0.692 ns, 8 vectors
+  instead of 4. `floors.py` flags a floor below a measured time; none is.
+  Floors (Isocron at D219 / floor, the fastest other / floor):
+  binary-trees 0.396 s (1.7 / 2.1), fannkuch-redux 0.883 s (1.9 / 2.8),
+  fasta 0.037 s (4.7 / 20.6), k-nucleotide 0.268 s (4.4 / 4.4), mandelbrot
+  0.260 s (2.5 / 3.0), n-body 1.253 s (1.6 / 1.6), pidigits 0.194 s (4.6 /
+  3.5), regex-redux 0.030 s (28.8 / 25.6), reverse-complement 0.017 s
+  (10.2 / 3.9), spectral-norm 0.107 s (1.8 / 1.9). Some are still above
+  the machine (see `results/floors.md`: the flips, the next permutation,
+  the smallest tables of k-mers, the trees that fit the L3 cache).

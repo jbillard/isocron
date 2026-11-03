@@ -201,7 +201,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] A search of a large text chooses its engine (with or without prefilter) on a sample: regexredux 1.144 s -> 0.855 s (D219)
   - [x] Every cached large block smaller than a request kept for the next ones: revcomp 0.174 s -> 0.156 s (D220)
   - [x] A large file read by every thread (`pread` by parts): readStdin 0.056 s -> 0.029 s, revcomp 0.155 s -> 0.128 s, knucleotide 1.179 s -> 1.148 s (D221)
-  - [ ] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221)
+  - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
+  - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)

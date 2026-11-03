@@ -113,9 +113,9 @@ def main():
                "divisions; D197: the flips of a chunk as a `map`, in vector code). Part of its gain comes from the "
                "program, not from the language; the nine others are their first version (D160), but for names of the "
                "standard library.")
-    out.append("* The floor of each program on this machine, from a model of its bytes and operations: "
-               "`results/floors.md`. Those of fannkuch-redux (its flips are independent, the model chains them) and of "
-               "fasta (the model ignores the sequence of its generator) are to be redone.")
+    out.append("* The floor of each program on this machine, what its result requires at the cost of the cheapest way "
+               "the machine has to do it, never the time of a program (D222): `results/floors.md`. Every program here, "
+               "of every language, is still above its floor, by 1.6 to 29 times.")
     out.append("")
     # the programs and the protocol of the measurements (a file of their own)
     out.append(open(os.path.join(HERE, "protocol.md")).read().rstrip("\n"))

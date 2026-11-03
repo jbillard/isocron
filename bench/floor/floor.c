@@ -1,6 +1,10 @@
 // The constants of the machine that the floors of the programs are made of
-// (DECISIONS D182), measured without Isocron: the best of R runs of each.
-//   floor <threads>
+// (DECISIONS D182, D222), measured without Isocron: the best of R runs of
+// each. A constant is the cost of a primitive of the machine done the
+// cheapest way known, never the time of one program.
+//   floor <threads> [file]
+// `file`: a file read through the page cache (the input of
+// reverse-complement and k-nucleotide).
 // Each line: `name value unit`. Run after `bench/machine.sh apply parallel`
 // (fixed frequency) through `bench/floor/run.sh`.
 #define _GNU_SOURCE
@@ -10,8 +14,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 // a node of a binary tree (two pointers), made in an arena by a bump
 struct node {
@@ -41,6 +48,23 @@ static double now(void) {
 
 #define BYTES (256ul << 20)
 #define REPS 7
+
+// a node visited by an explicit stack: every node once, its pointers followed
+static long walk(const struct node *root) {
+    const struct node *stack[128];
+    int sp = 0;
+    long c = 0;
+    stack[sp++] = root;
+    while (sp) {
+        const struct node *n = stack[--sp];
+        c++;
+        if (n->l) {
+            stack[sp++] = n->r;
+            stack[sp++] = n->l;
+        }
+    }
+    return c;
+}
 
 static unsigned char *mapped(size_t n) {
     unsigned char *p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -317,5 +341,400 @@ int main(int argc, char **argv) {
         printf("memory_latency %.1f ns\n", e / L * 1e9);
         free(perm);
     }
+
+    // ---- D222: the primitives of the floors redone ----
+
+    // a file of the page cache read by every thread, each its part with
+    // `pread`: into new pages, into pages already written, and by blocks of
+    // 256 KiB into a buffer of each thread (the bytes stay in its caches)
+    if (argc > 2) {
+        int fd = open(argv[2], O_RDONLY);
+        struct stat st;
+        if (fd < 0 || fstat(fd, &st) != 0) { perror(argv[2]); exit(1); }
+        size_t n = st.st_size;
+        unsigned char *w = mapped(n + 4096);
+        memset(w, 3, n);
+        for (size_t o = 0; o < n;) { ssize_t r = pread(fd, w, n - o < (64u << 20) ? n - o : (64u << 20), o); if (r <= 0) break; o += r; }
+        const size_t BLOCK = 256u << 10;
+        unsigned char *small = mapped(BLOCK * t);
+        memset(small, 0, BLOCK * t);
+        for (int mode = 0; mode < 3; mode++) {
+            best = 1e9;
+            for (int r = 0; r < REPS; r++) {
+                unsigned char *dst = mode == 0 ? mapped(n + 4096) : w;
+                double s = now();
+#pragma omp parallel for
+                for (int k = 0; k < t; k++) {
+                    size_t lo = n / t * k, hi = k == t - 1 ? n : n / t * (k + 1);
+                    while (lo < hi) {
+                        size_t m = hi - lo;
+                        if (mode == 2 && m > BLOCK) m = BLOCK;
+                        ssize_t got = pread(fd, mode == 2 ? small + (size_t)k * BLOCK : dst + lo, m, lo);
+                        if (got <= 0) break;
+                        lo += got;
+                    }
+                }
+                double e = now() - s;
+                if (e < best) best = e;
+                if (mode == 0) munmap(dst, n + 4096);
+            }
+            printf("%s %.1f GB/s\n", mode == 0 ? "file_read_new" : mode == 1 ? "file_read_written" : "file_read_blocks", n / best / 1e9);
+        }
+        munmap(small, BLOCK * t);
+        munmap(w, n + 4096);
+        close(fd);
+    }
+
+    // an array of 256 MiB changed in place: each line loaded, a table
+    // lookup of its bytes (vpshufb), stored back
+    {
+        best = 1e9;
+        __m512i tbl = _mm512_set_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6,
+                                      5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10,
+                                      9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+        for (int r = 0; r < REPS; r++) {
+            double s = now();
+#pragma omp parallel for
+            for (int k = 0; k < t; k++) {
+                __m512i *p = (__m512i *)(a + k * chunk);
+                for (size_t i = 0; i < chunk / 64; i++) _mm512_store_si512(p + i, _mm512_shuffle_epi8(tbl, _mm512_load_si512(p + i)));
+            }
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        printf("update_in_place %.1f GB/s\n", BYTES / best / 1e9);
+    }
+
+    // fannkuch-redux: flips of permutations of 12, 4 permutations of 16 bytes
+    // in a vector of 64, 8 vectors interleaved per thread: the index of a
+    // flip computed in the vector (f - i below f, i above), one vpshufb; a
+    // permutation done (first element 0) replaced by the next of a pool
+    // (an expanding load). ns per real flip (first element not 0).
+    {
+        const size_t POOL = 1u << 20;
+        unsigned char *pool = mapped(POOL * 16 + 4096);
+        uint64_t h = 0x2545f4914f6cdd1dull;
+        for (size_t i = 0; i < POOL; i++) {
+            unsigned char *q = pool + i * 16;
+            for (int j = 0; j < 16; j++) q[j] = j;
+            for (int j = 11; j > 0; j--) {
+                h ^= h << 13; h ^= h >> 7; h ^= h << 17;
+                int x = h % (j + 1);
+                unsigned char tmp = q[j]; q[j] = q[x]; q[x] = tmp;
+            }
+        }
+        const __m512i iota = _mm512_set_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 7,
+                                             6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12,
+                                             11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+        const __m512i zero = _mm512_setzero_si512();
+        const __mmask64 firsts = 0x0001000100010001ull;
+        const long STEPS = 1l << 27;
+        best = 1e9;
+        long flips_best = 1;
+        for (int r = 0; r < 3; r++) {
+            long flips = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : flips)
+            for (int k = 0; k < t; k++) {
+                const unsigned char *src = pool + (size_t)k * (POOL / t) * 16;
+                size_t next = 16;
+                __m512i v0 = _mm512_loadu_si512(src), v1 = _mm512_loadu_si512(src + 64), v2 = _mm512_loadu_si512(src + 128),
+                        v3 = _mm512_loadu_si512(src + 192), v4 = _mm512_loadu_si512(src + 256), v5 = _mm512_loadu_si512(src + 320),
+                        v6 = _mm512_loadu_si512(src + 384), v7 = _mm512_loadu_si512(src + 448);
+                next = 32;
+                long fl = 0;
+#define FLIP(v)                                                                              \
+    {                                                                                        \
+        __m512i f = _mm512_shuffle_epi8(v, zero);                                            \
+        __mmask64 below = _mm512_cmple_epu8_mask(iota, f);                                   \
+        __m512i idx = _mm512_mask_sub_epi8(iota, below, f, iota);                            \
+        v = _mm512_shuffle_epi8(v, idx);                                                     \
+        __mmask64 live = _mm512_mask_cmpneq_epu8_mask(firsts, f, zero);                      \
+        fl += __builtin_popcountll(live);                                                    \
+        __mmask8 done = (__mmask8)_pext_u64(~live & firsts, firsts) ;                        \
+        __mmask8 dq = (__mmask8)_pdep_u64(done, 0x55) | (__mmask8)(_pdep_u64(done, 0x55) << 1); \
+        v = _mm512_mask_expandloadu_epi64(v, dq, src + next * 16);                           \
+        next = (next + __builtin_popcount(done)) & (POOL / t - 1);                           \
+    }
+                for (long i = 0; i < STEPS / t / 32; i++) { FLIP(v0) FLIP(v1) FLIP(v2) FLIP(v3) FLIP(v4) FLIP(v5) FLIP(v6) FLIP(v7) }
+#undef FLIP
+                __m512i all = _mm512_add_epi64(_mm512_add_epi64(_mm512_add_epi64(v0, v1), _mm512_add_epi64(v2, v3)),
+                                               _mm512_add_epi64(_mm512_add_epi64(v4, v5), _mm512_add_epi64(v6, v7)));
+                flips += fl + _mm512_reduce_add_epi64(all) % 2;
+            }
+            double e = now() - s;
+            if (e / flips < best / flips_best) { best = e; flips_best = flips; }
+        }
+        printf("fannkuch_flip %.3f ns_per_flip_per_core\n", best * t / flips_best * 1e9);
+        munmap(pool, POOL * 16 + 4096);
+    }
+
+    // fannkuch-redux: the next permutation (the counting order of the
+    // program), 8 independent generators interleaved per thread, each a
+    // rotation of a prefix by a vpshufb from a table. ns per permutation
+    {
+        __m128i rot[16];
+        for (int r = 0; r < 16; r++) {
+            unsigned char m[16];
+            for (int i = 0; i < 16; i++) m[i] = i < r ? i + 1 : i == r ? 0 : i;
+            rot[r] = _mm_loadu_si128((const __m128i *)m);
+        }
+        const long PERMS = 1l << 26;
+        best = 1e9;
+        for (int r = 0; r < 3; r++) {
+            long chk = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : chk)
+            for (int k = 0; k < t; k++) {
+                __m128i p[8];
+                unsigned char cnt[8][16];
+                for (int g = 0; g < 8; g++) {
+                    p[g] = _mm_set_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+                    memset(cnt[g], 0, 16);
+                    for (int j = 0; j < g + k; j++) p[g] = _mm_shuffle_epi8(p[g], rot[11]);
+                }
+                long c = 0;
+                for (long i = 0; i < PERMS / t / 8; i++)
+                    for (int g = 0; g < 8; g++) {
+                        int q = 1;
+                        p[g] = _mm_shuffle_epi8(p[g], rot[1]);
+                        while (++cnt[g][q] > q) {
+                            cnt[g][q] = 0;
+                            q++;
+                            p[g] = _mm_shuffle_epi8(p[g], rot[q]);
+                        }
+                        c += _mm_cvtsi128_si32(p[g]) & 0xff;
+                    }
+                chk += c;
+            }
+            sink += chk;
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        printf("fannkuch_next_permutation %.3f ns_per_permutation_per_core\n", best * t / PERMS * 1e9);
+    }
+
+    // a big integer times a word, in assembly: mulx (no flags) and one chain
+    // of adc, by 4 words, a load and a store each; ns per word
+    {
+        static uint64_t x[1024], out[1025];
+        for (int i = 0; i < 1024; i++) x[i] = 0x9e3779b97f4a7c15ull * (i + 1);
+        const long R = 1l << 17;
+        double best_w = 1e9;
+        for (int rep = 0; rep < 5; rep++) {
+            double s = now();
+            for (long r = 0; r < R; r++) {
+                uint64_t w = 0xfedcba9876543210ull + r;
+                const uint64_t *src = x;
+                uint64_t *dst = out;
+                long n4 = 1024 / 4;
+                __asm__ volatile(
+                    "xor %%r8d, %%r8d\n"
+                    "1:\n"
+                    "mulx (%[s]), %%rax, %%r9\n"
+                    "mulx 8(%[s]), %%r10, %%r11\n"
+                    "adc %%r8, %%rax\n"
+                    "mov %%rax, (%[d])\n"
+                    "adc %%r9, %%r10\n"
+                    "mov %%r10, 8(%[d])\n"
+                    "mulx 16(%[s]), %%rax, %%r9\n"
+                    "mulx 24(%[s]), %%r10, %%r8\n"
+                    "adc %%r11, %%rax\n"
+                    "mov %%rax, 16(%[d])\n"
+                    "adc %%r9, %%r10\n"
+                    "mov %%r10, 24(%[d])\n"
+                    "lea 32(%[s]), %[s]\n"
+                    "lea 32(%[d]), %[d]\n"
+                    "dec %[n]\n"
+                    "jnz 1b\n"
+                    "adc $0, %%r8\n"
+                    "mov %%r8, (%[d])\n"
+                    : [s] "+r"(src), [d] "+r"(dst), [n] "+r"(n4)
+                    : "d"(w)
+                    : "rax", "r8", "r9", "r10", "r11", "cc", "memory");
+            }
+            double e = now() - s;
+            if (e < best_w) best_w = e;
+        }
+        sink += out[100];
+        printf("mul_word_asm %.3f ns_per_word\n", best_w / R / 1024 * 1e9);
+    }
+
+    // counting k-mers in a table of 4096 counters (k = 6): the keys of 4
+    // parts of a sequence of random bases, each part its own table (no
+    // dependence through a counter), rolling keys; ns per update per core
+    {
+        const size_t BASES = 1u << 24;
+        unsigned char *seq = mapped(BASES);
+        uint64_t h = 0x9e3779b97f4a7c15ull;
+        for (size_t i = 0; i < BASES; i++) { h ^= h << 13; h ^= h >> 7; h ^= h << 17; seq[i] = h & 3; }
+        best = 1e9;
+        for (int r = 0; r < REPS; r++) {
+            long chk = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : chk)
+            for (int k = 0; k < t; k++) {
+                static __thread uint32_t tab[4][4096];
+                memset(tab, 0, sizeof tab);
+                size_t part = BASES / 4;
+                uint32_t k0 = 0, k1 = 0, k2 = 0, k3 = 0;
+                for (size_t i = 0; i < part; i++) {
+                    k0 = ((k0 << 2) | seq[i]) & 4095; tab[0][k0]++;
+                    k1 = ((k1 << 2) | seq[part + i]) & 4095; tab[1][k1]++;
+                    k2 = ((k2 << 2) | seq[2 * part + i]) & 4095; tab[2][k2]++;
+                    k3 = ((k3 << 2) | seq[3 * part + i]) & 4095; tab[3][k3]++;
+                }
+                chk += tab[0][5] + tab[3][7];
+            }
+            sink += chk;
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        printf("count_table_4096 %.3f ns_per_update_per_core\n", best / BASES * 1e9);
+        munmap(seq, BASES);
+    }
+
+    // binary trees with pointers, made in an arena in breadth-first order
+    // (a loop, no recursion), visited by an explicit stack; depth 12 (in the
+    // L2 cache) and 20 (in memory); ns per node per core
+    for (int d = 12; d <= 20; d += 8) {
+        long nodes = (2l << d) - 1;
+        long trees = (1l << 24) / nodes + 1;
+        struct node *arena = (struct node *)mapped(sizeof(struct node) * nodes * t);
+        best = 1e9;
+        for (int r = 0; r < 3; r++) {
+            double s = now();
+            long total = 0;
+#pragma omp parallel for reduction(+ : total)
+            for (int k = 0; k < t; k++)
+                for (long i = 0; i < trees / t; i++) {
+                    struct node *n = arena + k * nodes;
+                    long inner = nodes / 2;
+                    for (long j = 0; j < inner; j++) { n[j].l = n + 2 * j + 1; n[j].r = n + 2 * j + 2; }
+                    for (long j = inner; j < nodes; j++) n[j].l = n[j].r = 0;
+                    total += walk(n);
+                }
+            double e = now() - s;
+            sink += total;
+            if (e < best) best = e;
+        }
+        printf("tree_loop_depth%d %.3f ns_per_node_per_core\n", d, best * t / ((trees / t) * t * nodes) * 1e9);
+        munmap(arena, sizeof(struct node) * nodes * t);
+    }
+
+    // fasta: the generator of the program (x = (x * 3877 + 29573) mod
+    // 139968) in 4 vectors of 8 lanes, each lane 32 numbers ahead (the
+    // multiplier and the increment of 32 steps; 4 chains interleaved), the
+    // remainder by a multiplication in doubles; each number a symbol by
+    // comparisons with integer thresholds (15: the IUB table, 3: homo
+    // sapiens) on 16 lanes of 32 bits, packed to bytes, stored in a buffer of
+    // 64 KiB per thread. ns per number per core
+    for (int nth = 15; nth >= 3; nth -= 12) {
+        const uint64_t M = 139968, A = 3877, C = 29573;
+        uint64_t A32 = 1, C32 = 0;
+        for (int i = 0; i < 32; i++) { A32 = A32 * A % M; C32 = (C32 * A + C) % M; }
+        const long NUMS = 1l << 28;
+        best = 1e9;
+        for (int r = 0; r < REPS; r++) {
+            long chk = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : chk)
+            for (int k = 0; k < t; k++) {
+                static __thread unsigned char outb[65536 + 64];
+                uint64_t x0[32];
+                uint64_t y = 42 + k;
+                for (int j = 0; j < 32; j++) { y = (y * A + C) % M; x0[j] = y; }
+                __m512i x[4];
+                for (int v = 0; v < 4; v++) x[v] = _mm512_loadu_si512(x0 + 8 * v);
+                const __m512i a32 = _mm512_set1_epi64(A32), c32 = _mm512_set1_epi64(C32), mm = _mm512_set1_epi64(M), z = _mm512_setzero_si512();
+                const __m512d inv = _mm512_set1_pd(1.0 / (double)M), md = _mm512_set1_pd((double)M);
+                __m512i th[15];
+                for (int j = 0; j < 15; j++) th[j] = _mm512_set1_epi32((int)(M * (j + 1) / 16));
+                size_t at = 0;
+                for (long i = 0; i < NUMS / t / 32; i++) {
+                    for (int v = 0; v < 4; v++) {
+                        __m512i p = _mm512_add_epi64(_mm512_mul_epu32(x[v], a32), c32);
+                        __m512d q = _mm512_roundscale_pd(_mm512_mul_pd(_mm512_cvtepu64_pd(p), inv), _MM_FROUND_TO_NEG_INF);
+                        __m512i rr = _mm512_sub_epi64(p, _mm512_cvtpd_epu64(_mm512_mul_pd(q, md)));
+                        rr = _mm512_mask_add_epi64(rr, _mm512_cmplt_epi64_mask(rr, z), rr, mm);
+                        x[v] = _mm512_mask_sub_epi64(rr, _mm512_cmpge_epi64_mask(rr, mm), rr, mm);
+                    }
+                    for (int h = 0; h < 2; h++) {
+                        __m512i w = _mm512_inserti64x4(_mm512_castsi256_si512(_mm512_cvtepi64_epi32(x[2 * h])), _mm512_cvtepi64_epi32(x[2 * h + 1]), 1);
+                        __m512i sym = _mm512_setzero_si512();
+                        for (int j = 0; j < nth; j++) sym = _mm512_mask_sub_epi32(sym, _mm512_cmpge_epu32_mask(w, th[j]), sym, _mm512_set1_epi32(-1));
+                        _mm_storeu_si128((__m128i *)(outb + at), _mm512_cvtepi32_epi8(sym));
+                        at = (at + 16) & 65535;
+                    }
+                }
+                chk += outb[100] + outb[60000];
+            }
+            sink += chk;
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        printf("fasta_number_%s %.3f ns_per_number_per_core\n", nth == 15 ? "iub" : "homo", best * t / NUMS * 1e9);
+    }
+
+    // regex-redux: the matches of two literals of 8 bytes in a text of random
+    // bases (agggtaaa|tttaccct), in blocks of 256 KiB in the caches of each
+    // thread: per 64 bytes, the masks of the 4 bases (4 comparisons); a
+    // literal at position p is the and of the masks of its bytes shifted by
+    // their places, across two blocks (shrd), in general registers; ns per
+    // byte per core
+    {
+        const size_t BLOCK = 256u << 10;
+        unsigned char *txt = mapped(BLOCK * t + 128);
+        const char *bases = "acgt";
+        uint64_t h = 0x9e3779b97f4a7c15ull;
+        for (size_t i = 0; i < BLOCK * t + 128; i++) { h ^= h << 13; h ^= h >> 7; h ^= h << 17; txt[i] = bases[h & 3]; }
+        const long PASSES = 1l << 12;
+        best = 1e9;
+        long found_check = 0;
+        for (int r = 0; r < REPS; r++) {
+            long found = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : found)
+            for (int k = 0; k < t; k++) {
+                const unsigned char *b = txt + (size_t)k * BLOCK;
+                long f = 0;
+                const __m512i va = _mm512_set1_epi8('a'), vc = _mm512_set1_epi8('c'), vg = _mm512_set1_epi8('g'), vt = _mm512_set1_epi8('t');
+                for (long pass = 0; pass < PASSES / t; pass++) {
+                    __m512i v = _mm512_loadu_si512(b);
+                    uint64_t pa = _mm512_cmpeq_epi8_mask(v, va), pc = _mm512_cmpeq_epi8_mask(v, vc), pg = _mm512_cmpeq_epi8_mask(v, vg),
+                             pt = _mm512_cmpeq_epi8_mask(v, vt);
+                    for (size_t i = 64; i <= BLOCK; i += 64) {
+                        v = _mm512_loadu_si512(b + i);
+                        uint64_t na = _mm512_cmpeq_epi8_mask(v, va), nc = _mm512_cmpeq_epi8_mask(v, vc), ng = _mm512_cmpeq_epi8_mask(v, vg),
+                                 nt = _mm512_cmpeq_epi8_mask(v, vt);
+#define SH(m, n, j) (j == 0 ? m : (m >> j) | (n << (64 - j)))
+                        // agggtaaa
+                        uint64_t m1 = SH(pa, na, 0) & SH(pg, ng, 1) & SH(pg, ng, 2) & SH(pg, ng, 3) & SH(pt, nt, 4) & SH(pa, na, 5) &
+                                      SH(pa, na, 6) & SH(pa, na, 7);
+                        // tttaccct
+                        uint64_t m2 = SH(pt, nt, 0) & SH(pt, nt, 1) & SH(pt, nt, 2) & SH(pa, na, 3) & SH(pc, nc, 4) & SH(pc, nc, 5) &
+                                      SH(pc, nc, 6) & SH(pt, nt, 7);
+#undef SH
+                        f += __builtin_popcountll(m1 | m2);
+                        pa = na; pc = nc; pg = ng; pt = nt;
+                    }
+                }
+                found += f;
+            }
+            sink += found;
+            found_check = found;
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        // the same count by bytes: the scan finds every match
+        long naive = 0;
+        for (int k = 0; k < t; k++)
+            for (size_t i = (size_t)k * BLOCK; i < (size_t)k * BLOCK + BLOCK; i++)
+                naive += memcmp(txt + i, "agggtaaa", 8) == 0 || memcmp(txt + i, "tttaccct", 8) == 0;
+        if (found_check != naive * (PASSES / t)) { fprintf(stderr, "literal_pair_scan: %ld matches, %ld expected\n", found_check, naive * (PASSES / t)); exit(1); }
+        printf("literal_pair_scan %.4f ns_per_byte_per_core\n", best * t / ((double)(PASSES / t) * t * BLOCK) * 1e9);
+        munmap(txt, BLOCK * t + 128);
+    }
+
     return (int)(sink & 0);
 }
