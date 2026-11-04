@@ -5020,3 +5020,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the same bytes: 63631 page faults against 5454 (the input is mapped,
     D257, and the pages of that copy in the page cache were small ones).
     The inputs of a measurement are made again before it.
+- **D275 — The masks of a simple shape: one per byte in registers, the
+  first six places without a branch (2026-11-04).** regex-redux was 9.7
+  times its floor; 43 % of its CPU in the engine of masks (D224), about
+  0.66 ns a byte over the 9 counts where the floor scans for two literals
+  at 0.074 ns. Its profile: the masks of the classes made by an `or` into
+  an array in memory for each class of each distinct byte (a chain of
+  stores and loads each block), and each alternative left at its first
+  empty mask, a branch the text decides (mispredicted about once a block
+  in random bases). Now (1) the fixed alternatives over at most 8
+  distinct bytes (no stop byte, no start of line: the 9 patterns and the
+  first 3 replacements) have a plan `Fixed`: one mask per distinct byte,
+  each class the `or` of the masks of its bytes; (2) every alternative
+  takes its first six places without a branch, each shift a constant,
+  then goes on while its mask is not empty (a test then predicted: after
+  six places of classes of a few bytes nearly no candidate is left).
+  Measured and left: every place of every alternative without a branch
+  (shifts of 128 bits by a variable), 293.6 -> 459.6 ms. In alternation
+  (the binaries run in turn, best of 9 each: a busy process on the sibling
+  threads of the cores of the measurements moves every time), 4 threads:
+  regex-redux 293.6 ms -> 279.4 ms (1 alone), 291.8 ms -> 260.4 ms (1 and
+  2). The same output. Test `fixed_alternatives_find_the_matches_of_the_automaton`
+  (the 9 patterns and others over random bases with upper cases and other
+  bytes, from and until anywhere; also built for AVX2 and AVX-512).

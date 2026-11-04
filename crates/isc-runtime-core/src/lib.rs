@@ -2262,7 +2262,29 @@ pub mod rx {
             /// the class `\n` (for the starts of lines), when an alternative
             /// is at the start of a line
             nl: Option<usize>,
+            /// the plan of the fixed alternatives over few bytes (D275)
+            fixed: Option<Fixed>,
         }
+
+        /// Fixed alternatives only (no stop byte, none at the start of a
+        /// line), over at most 8 distinct bytes (D275): per 64 bytes, the
+        /// mask of each byte (a comparison), each class the `or` of the masks
+        /// of its bytes, each alternative the `and` of its classes shifted by
+        /// their places across two blocks (a shift of 128 bits), over its
+        /// whole length: no branch that depends on the text before its
+        /// candidates, where the general search leaves each alternative at
+        /// its first empty mask (a branch the text decides).
+        struct Fixed {
+            /// the distinct bytes and whether each is compared `| 0x20`
+            bytes: [(u8, bool); FIXED_BYTES],
+            nb: usize,
+            /// for each class used, the bytes in it (a bit each)
+            classes: [u8; CLASSES],
+            ncl: usize,
+        }
+
+        /// At most this many distinct bytes for `Fixed`.
+        const FIXED_BYTES: usize = 8;
 
         /// The ASCII bytes of a class or literal of one character (a bit
         /// each); None if it has a member outside ASCII.
@@ -2533,7 +2555,191 @@ pub mod rx {
             if bytes.len() > BYTES {
                 return None;
             }
-            Some(Simple { bytes, alts, nl })
+            let fixed = Fixed::of(&bytes, &alts);
+            Some(Simple { bytes, alts, nl, fixed })
+        }
+
+        impl Fixed {
+            fn of(bytes: &[(u8, u16, bool)], alts: &[Alt]) -> Option<Fixed> {
+                if bytes.len() > FIXED_BYTES || alts.iter().any(|a| a.stop.is_some() || a.line || a.seq.is_empty() || a.seq.len() > 64) {
+                    return None;
+                }
+                let ncl = alts.iter().flat_map(|a| a.seq.iter()).map(|&k| k as usize + 1).max().unwrap_or(0);
+                if ncl > CLASSES {
+                    return None;
+                }
+                let mut fx = Fixed { bytes: [(0, false); FIXED_BYTES], nb: bytes.len(), classes: [0; CLASSES], ncl };
+                for (i, &(v, cl, fold)) in bytes.iter().enumerate() {
+                    fx.bytes[i] = (v, fold);
+                    for c in 0..CLASSES {
+                        if cl >> c & 1 == 1 {
+                            fx.classes[c] |= 1 << i;
+                        }
+                    }
+                }
+                Some(fx)
+            }
+
+            /// The masks of the classes over the 64 bytes from `at` (bytes
+            /// past the end of `s` in no class).
+            #[inline(always)]
+            fn masks<const N: usize>(&self, s: &[u8], at: usize, cm: &mut [u64; CLASSES]) {
+                let mut tail = [0u8; 64];
+                let (p, valid) = if at >= s.len() {
+                    *cm = [0; CLASSES];
+                    return;
+                } else if at + 64 <= s.len() {
+                    (s[at..].as_ptr(), !0u64)
+                } else {
+                    let n = s.len() - at;
+                    tail[..n].copy_from_slice(&s[at..]);
+                    (tail.as_ptr(), (1u64 << n) - 1)
+                };
+                let bm: [u64; N] = byte_masks::<N>(&self.bytes, p);
+                for c in 0..self.ncl {
+                    let set = self.classes[c];
+                    let mut m = 0u64;
+                    for (i, &b) in bm.iter().enumerate() {
+                        // the same bytes every block: predicted
+                        if set >> i & 1 == 1 {
+                            m |= b;
+                        }
+                    }
+                    cm[c] = m & valid;
+                }
+            }
+
+            fn bounds<const N: usize>(&self, sm: &Simple, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
+                let b = s.as_bytes();
+                let n = b.len();
+                let mut out = Vec::new();
+                let mut base = from;
+                let mut blocks = [[0u64; CLASSES]; 2];
+                let mut cur = 0usize;
+                self.masks::<N>(b, base, &mut blocks[cur]);
+                let mut allowed = from;
+                let mut st = [0u64; ALTS];
+                while base < n {
+                    let nx = 1 - cur;
+                    self.masks::<N>(b, base + 64, &mut blocks[nx]);
+                    let (c, x) = (&blocks[cur], &blocks[nx]);
+                    let mut any = 0u64;
+                    for (a, alt) in sm.alts.iter().enumerate() {
+                        let m = starts(&alt.seq, c, x);
+                        st[a & (ALTS - 1)] = m;
+                        any |= m;
+                    }
+                    while any != 0 {
+                        let j = any.trailing_zeros();
+                        any &= any - 1;
+                        let p = base + j as usize;
+                        if p < allowed {
+                            continue;
+                        }
+                        // the first alternative that matches at p
+                        let Some(a) = (0..sm.alts.len()).find(|&a| st[a & (ALTS - 1)] >> j & 1 == 1) else { continue };
+                        let e = p + sm.alts[a].seq.len();
+                        out.push((p, e));
+                        allowed = e;
+                        if p >= until {
+                            return out;
+                        }
+                    }
+                    base += 64;
+                    cur = nx;
+                    // inside a long match: on from its end
+                    if allowed > base + 64 {
+                        base = allowed;
+                        self.masks::<N>(b, base, &mut blocks[cur]);
+                    }
+                }
+                out
+            }
+        }
+
+        /// The mask of each of the first `N` bytes of `bytes` over the 64
+        /// bytes at `p` (`| 0x20` first where its flag says).
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[inline(always)]
+        fn byte_masks<const N: usize>(bytes: &[(u8, bool); FIXED_BYTES], p: *const u8) -> [u64; N] {
+            use core::arch::x86_64::*;
+            let mut out = [0u64; N];
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            unsafe {
+                let a = _mm512_loadu_si512(p as *const __m512i);
+                let af = _mm512_or_si512(a, _mm512_set1_epi8(0x20));
+                for (i, o) in out.iter_mut().enumerate() {
+                    let (v, fold) = bytes[i];
+                    *o = _mm512_cmpeq_epi8_mask(if fold { af } else { a }, _mm512_set1_epi8(v as i8));
+                }
+            }
+            out
+        }
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512bw")))]
+        #[inline(always)]
+        fn byte_masks<const N: usize>(bytes: &[(u8, bool); FIXED_BYTES], p: *const u8) -> [u64; N] {
+            use core::arch::x86_64::*;
+            let mut out = [0u64; N];
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            unsafe {
+                let v0 = _mm256_loadu_si256(p as *const __m256i);
+                let v1 = _mm256_loadu_si256(p.add(32) as *const __m256i);
+                let low = _mm256_set1_epi8(0x20);
+                let (f0, f1) = (_mm256_or_si256(v0, low), _mm256_or_si256(v1, low));
+                for (i, o) in out.iter_mut().enumerate() {
+                    let (v, fold) = bytes[i];
+                    let x = _mm256_set1_epi8(v as i8);
+                    let (y0, y1) = if fold { (f0, f1) } else { (v0, v1) };
+                    *o = (_mm256_movemask_epi8(_mm256_cmpeq_epi8(y0, x)) as u32 as u64) | ((_mm256_movemask_epi8(_mm256_cmpeq_epi8(y1, x)) as u32 as u64) << 32);
+                }
+            }
+            out
+        }
+
+        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[inline(always)]
+        fn byte_masks<const N: usize>(bytes: &[(u8, bool); FIXED_BYTES], p: *const u8) -> [u64; N] {
+            use core::arch::x86_64::*;
+            let mut out = [0u64; N];
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            unsafe {
+                let r = [
+                    _mm_loadu_si128(p as *const __m128i),
+                    _mm_loadu_si128(p.add(16) as *const __m128i),
+                    _mm_loadu_si128(p.add(32) as *const __m128i),
+                    _mm_loadu_si128(p.add(48) as *const __m128i),
+                ];
+                let low = _mm_set1_epi8(0x20);
+                let f = [_mm_or_si128(r[0], low), _mm_or_si128(r[1], low), _mm_or_si128(r[2], low), _mm_or_si128(r[3], low)];
+                for (i, o) in out.iter_mut().enumerate() {
+                    let (v, fold) = bytes[i];
+                    let x = _mm_set1_epi8(v as i8);
+                    let y = if fold { &f } else { &r };
+                    *o = (_mm_movemask_epi8(_mm_cmpeq_epi8(y[0], x)) as u16 as u64)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(y[1], x)) as u16 as u64) << 16)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(y[2], x)) as u16 as u64) << 32)
+                        | ((_mm_movemask_epi8(_mm_cmpeq_epi8(y[3], x)) as u16 as u64) << 48);
+                }
+            }
+            out
+        }
+
+        /// Without SIMD (not used: `of` finds no shape there).
+        #[cfg(not(target_arch = "x86_64"))]
+        #[inline(always)]
+        fn byte_masks<const N: usize>(bytes: &[(u8, bool); FIXED_BYTES], p: *const u8) -> [u64; N] {
+            let mut out = [0u64; N];
+            // SAFETY: `p` has 64 readable bytes (the text or `tail`)
+            let blk = unsafe { core::slice::from_raw_parts(p, 64) };
+            for (i, o) in out.iter_mut().enumerate() {
+                let (v, fold) = bytes[i];
+                for (j, &x) in blk.iter().enumerate() {
+                    let y = if fold { x | 0x20 } else { x };
+                    *o |= ((y == v) as u64) << j;
+                }
+            }
+            out
         }
 
         /// The masks of the classes over the 64 bytes from `at` (bytes past
@@ -2661,8 +2867,33 @@ pub mod rx {
         fn starts(seq: &[u8], cur: &[u64; CLASSES], next: &[u64; CLASSES]) -> u64 {
             // (the indices of classes are below CLASSES by construction: the
             // masks drop the checks of bounds, D238)
+            // the first 6 places without a branch, each shift a constant
+            // (D275): leaving at the first empty mask is a branch the text
+            // decides, mispredicted about once a block; after 6 places of
+            // classes of a few bytes nearly no candidate is left, and the
+            // test that goes on is predicted
+            let at = |j: usize| -> u64 {
+                let k = (seq[j] & 15) as usize;
+                (cur[k] >> j) | (next[k] << (64 - j))
+            };
+            let l = seq.len();
             let mut m = cur[(seq[0] & 15) as usize];
-            for (j, &k) in seq.iter().enumerate().skip(1) {
+            if l > 1 {
+                m &= at(1);
+            }
+            if l > 2 {
+                m &= at(2);
+            }
+            if l > 3 {
+                m &= at(3);
+            }
+            if l > 4 {
+                m &= at(4);
+            }
+            if l > 5 {
+                m &= at(5);
+            }
+            for (j, &k) in seq.iter().enumerate().skip(6) {
                 if m == 0 {
                     break;
                 }
@@ -2677,6 +2908,18 @@ pub mod rx {
             /// characters) up to the first one that starts at `until` or
             /// after, that one included (as `bounds_from`).
             pub fn bounds_from(&self, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
+                if let Some(fx) = &self.fixed {
+                    return match fx.nb {
+                        1 => fx.bounds::<1>(self, s, from, until),
+                        2 => fx.bounds::<2>(self, s, from, until),
+                        3 => fx.bounds::<3>(self, s, from, until),
+                        4 => fx.bounds::<4>(self, s, from, until),
+                        5 => fx.bounds::<5>(self, s, from, until),
+                        6 => fx.bounds::<6>(self, s, from, until),
+                        7 => fx.bounds::<7>(self, s, from, until),
+                        _ => fx.bounds::<8>(self, s, from, until),
+                    };
+                }
                 let b = s.as_bytes();
                 let n = b.len();
                 let na = self.alts.len();
@@ -2798,6 +3041,45 @@ pub mod rx {
                 }
                 for v in ["ig/k", "ig/ks", "g/a*", "g/^ab", "g/ab$", "g/é", "g/", "g/[^a]", "g/.b"] {
                     assert!(of(v).is_none(), "{} has a shape", v);
+                }
+            }
+
+            /// D275: the fixed alternatives over few bytes (the plan without
+            /// a branch per place) find the matches of the automaton: the
+            /// patterns of regex-redux and others, over a text of random
+            /// bases with upper cases and other bytes, matches across the
+            /// blocks, from any start, up to any `until`.
+            #[test]
+            fn fixed_alternatives_find_the_matches_of_the_automaton() {
+                let mut h = 0x9e3779b97f4a7c15u64;
+                let text: alloc::string::String = (0..20000)
+                    .map(|_| {
+                        h ^= h << 13;
+                        h ^= h >> 7;
+                        h ^= h << 17;
+                        b"acgtacgtacgtACGTNBDHKMRSVWYx\n<>|"[(h % 32) as usize] as char
+                    })
+                    .collect();
+                let text = text + "agggtaaatttaccctagggtaaa";
+                let pats = [
+                    "ig/agggtaaa|tttaccct", "ig/[cgt]gggtaaa|tttaccc[acg]", "ig/a[act]ggtaaa|tttacc[agt]t", "ig/ag[act]gtaaa|tttac[agt]ct",
+                    "ig/agg[act]taaa|ttta[agt]cct", "ig/aggg[acg]aaa|ttt[cgt]ccct", "ig/agggt[cgt]aa|tt[acg]accct", "ig/agggta[cgt]a|t[acg]taccct",
+                    "ig/agggtaa[cgt]|[acg]ttaccct", "g/tHa[Nt]", "g/aND|caN|Ha[DS]|WaS", "g/a[NSt]|BY", "g/ac|a", "g/a|ac", "ig/acgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgt",
+                ];
+                for v in pats {
+                    let sm = of(v).unwrap();
+                    assert!(sm.fixed.is_some(), "{} has no fixed plan", v);
+                    let re = super::super::of(v);
+                    for from in [0usize, 1, 62, 63, 64, 65, 127, 4097] {
+                        assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
+                    }
+                    for until in [0usize, 64, 1000, 19999] {
+                        assert_eq!(sm.bounds_from(&text, 0, until), super::super::bounds_from(&re, &text, 0, until), "{} until {}", v, until);
+                    }
+                }
+                // a stop byte or a start of line: the general search
+                for v in ["g/<[^>]*>", "mg/^>.*\\n|\\n", "mg/^a|t"] {
+                    assert!(of(v).unwrap().fixed.is_none(), "{}", v);
                 }
             }
 
