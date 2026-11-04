@@ -46,17 +46,36 @@ The reference is the machine, not another language: a program at the level
 of the fastest of another language can still be far from its floor (the
 fastest fasta, in Rust, is 326 times its floor).
 
+## Where the time above each floor goes
+
+Measured at commit `c77e61b` (D263): the sizes of the publication, 4
+threads, `perf stat` and `perf record` on the host at fixed frequency (the
+same code as in Docker); CPU times summed over the threads; n-body with the
+sibling thread of its core offline (D261). Each gap is the part of a
+measured component above the term of the floor that does the same work.
+
+| benchmark | Isocron / floor | where the rest goes |
+| :-- | :-: | :-- |
+| **regex-redux** | 9.7 | Of 877 ms of CPU: the engine of masks (`bounds_from`) 394 ms, where the floor scans for pairs of literals in 34 ms (9 passes at 0.074 ns a byte); the copies 140 ms against 59 ms for the floor's 6: those of the substitutions (about 99 ms) write new pages (`clear_page` 56 ms), the vector of the bounds of matches grows by copies (about 27 ms); the threads of the pool waiting while a step runs on one (`worker`, `parallel_for`) 165 ms. |
+| **fasta** | 7.8 | Every number of the generator computed (2e8, 3.5 instructions and 0.33 ns of CPU each: 65 ms of CPU), where the floor computes one period (3 x 139968 numbers) and copies the 254 MB of lines from tables: 9.3 ms of CPU. |
+| **k-nucleotide** | 4.0 | Of 3727 ms of CPU: the counts (`add_block`, `count_round`) 2255 ms against 964 ms for the floor's (409 ms in tables of 4096, 555 ms in the tables of 12 and 18 bases): 87 instructions a key of the large frames, about 28 needed (the scatter by rounds, D253); the lines of the text (`isc_task_29`) 520 ms, the refills of the small blocks (`refill`) 233 ms, where the floor only reads the file (108 ms of CPU). |
+| **reverse-complement** | 3.6 | Of 242 ms of CPU against 68 ms (the file read twice by blocks): the lines, about 19 ms against about 6 (170 instructions a line of 61 bytes, D199); the output written into new pages (`clear_page` 8 %); the threads waiting at the end of the writing passes of the second and third records (about 2 ms each, D259); the count of the headers at 31.7 GB/s from the pages of the file, against 47.3 GB/s from memory. |
+| **pidigits** | 2.5 | Of 504 ms: the product of a number by a word (`mul_word`) 300 ms, a loop of the runtime at the speed of the same loop in C (0.761 ns a word), 2.27 times the chain of `mulx` and `adc` of the floor (0.335 ns); the other operations of the numbers (`op`, `sub`) 181 ms. |
+| **fannkuch-redux** | 1.9 | 5.62 cycles a flip, 14.9 instructions with those of the permutations, against 2.21 cycles a flip and 6.25 a permutation: each permutation a number of 64 bits (16 digits of 4 bits), a flip its digits reversed by shifts and masks, the ports 0 and 5 busy 91.5 % and 93.5 % of the cycles; the floor flips 4 permutations of 16 bytes with one byte shuffle. |
+| **spectral-norm** | 1.8 | Every element of the matrix divided: the divider active 97.4 % of the cycles, 2.07 cycles an element on 4 cores (0.189 s for 1.21e9 elements at the throughput of the floor); the floor reads 48 % of them from a matrix stored once, at the bandwidth of the memory. |
+| **binary-trees** | 1.7 | 12.9 cycles and 43.1 instructions a node, 3.97 ns of CPU: the cost of the recursive primitive (3.494 ns at depth 12, 4.476 at depth 20), for the tree made and for the tree checked (`isc_fn_0_rg` 44 %, `isc_fn_1` 50 %); the floor counts the loop with an explicit stack (1.466 ns at depth 12) for the 4.0e8 nodes of the trees of depth 14 at most. |
+| **mandelbrot** | 1.5 | 5.75e10 operations of lanes against 4.45e10 (1.29): the 64 pixels of a group iterate until the last escapes, the lanes already out compute for nothing; the port of the vectors of 512 bits busy 94.2 % of the cycles, 6.6 % of its operations compares and masks. |
+| **n-body** | 1.4 | 118.8 cycles a step against 84.0 (the chain of a step, 26.3 ns): a model of the loop (each instruction when its operands are ready, the divider one unit, 4.5 cycles a root and 4 a division held, latencies 18 and 14) gives 98.0 cycles of latency (two shuffles a pair of pairs, the 4 additions in order of each speed) and 101.5 with the divider; the remaining 17 cycles are the ports and the window of the scheduler, which the model leaves out (issue stalls 75 cycles of 128 before D261). |
+
 ## Order of the work
 
-By the gap to the floor: regex-redux (the engine of masks still several
-times its primitive, the vectors of the bounds of dense matches),
-fasta (the lines made by vector code where copies from tables would do),
-reverse-complement (the input read into new pages, a filter in two
-passes), k-nucleotide (by the rules since D242: every k-mer counted, the
-tables of its large frames overflow the L3 on 4 threads, D245), pidigits
-(the dividends of the digit made whole), then fannkuch-redux,
-spectral-norm, binary-trees, n-body and mandelbrot, all below twice their
-floor.
+By the gap to the floor: regex-redux (the engine of masks, the threads of
+the pool idle during its sequential steps), fasta (one period of the
+generator and copies from tables would do), k-nucleotide (the instructions
+of a key of the large frames, the lines), reverse-complement (the lines,
+the new pages of the output), pidigits (the word loop in `mulx` and
+`adc`), then fannkuch-redux, spectral-norm, binary-trees (a recursion
+made a loop), mandelbrot and n-body, all below twice their floor.
 
 ## How the floors are made
 

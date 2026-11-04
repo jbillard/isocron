@@ -4719,11 +4719,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     runs in turn, the conditions of the publication): Isocron 1.892 s at
     best (1.905 s median) against gcc-9 1.945 s (1.952 s) and rust-9
     1.947 s (1.948 s).
-  - The model does not predict the gain (107.0 -> 108.5 cycles: its two
-    shuffles add latency, its divider is held about as long): what it
-    leaves out, the ports and the window of the scheduler (the issue of
-    instructions stalls 75 cycles of 128), is where the rest of the step
-    goes (TODO: a model with them).
+  - The model with the latencies of these chains of 1.0 (13 and 13.5
+    cycles) did not predict the gain (107.0 -> 108.5 cycles). Measured again
+    on values that do not converge (D263: 18 cycles a root, 14 a division,
+    for 2.6 to 517 and 0.037; 13 only for 1.0), it does: 110.5 -> 101.5
+    cycles (latency alone 93.0 -> 98.0, the two shuffles); the rest of the
+    step, about 16 cycles in both, is what it leaves out, the ports and the
+    window of the scheduler (the issue of instructions stalls 75 cycles of
+    128; TODO: a model with them).
   - The variance of n-body (TODO of D233): the same binary took 128.0 to
     138.8 cycles a step from one series to the next, sometimes changing
     within a run, with the sibling of its core (CPU 15) idle. Not the
@@ -4746,3 +4749,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   0.490 s, regex-redux 0.289 s, each the same within its noise. Before
   it: the full suite green (82 runs), the tests of the Windows target on
   the VM (3, the ten programs among them).
+- **D263 — The time above each floor attributed (2026-11-04).** For the
+  goal of D249's successor: each program's gap to its floor given to the
+  components that make it, measured at `c77e61b` with the sizes of the
+  publication on 4 threads (`perf stat`, `perf record`, LBR call graphs),
+  against the terms of the floor that do the same work: the table "Where
+  the time above each floor goes" of `results/floors.md`, and the order of
+  the work after it. Among them:
+  - mandelbrot: 7.18e9 operations of 512 bits, 5.75e10 of lanes against the
+    4.45e10 the floor counts (the lanes of a group of 64 pixels iterate
+    until its last escapes), the port of the vectors busy 94.2 %;
+  - spectral-norm: the divider active 97.4 % of the cycles, every element
+    divided (the floor reads 48 % of them from memory);
+  - fannkuch-redux: 5.62 cycles and 14.9 instructions a flip, the ports 0
+    and 5 at 91.5 % and 93.5 %;
+  - binary-trees: 3.97 ns and 43.1 instructions a node, the cost of the
+    recursive primitive, not of its loop;
+  - regex-redux: the copies are those of the substitutions into new pages
+    and the vector of the bounds of matches grown by copies (LBR: 11.3 %
+    and 3.1 % of the samples).
+  - The divider measured on fixed values (`divcal2`): a root 4.5 cycles
+    held and 18 of latency, a division 4 and 14, for 2.618 to 517 and
+    0.0371; for 1.0, 13 and 13. The floor of n-body (latencies measured by
+    a chain `x + 1.0`, about 2.6) holds.
+  - The first measure of the TODO of the runtime given to LLVM: the time in
+    the runtime is in functions that loop over a block or a number
+    (`add_block` 34 % and `count_round` 26 % of k-nucleotide, `bounds_from`
+    45 % of regex-redux, `mul_word` 60 % of pidigits), whose calls cost
+    little; binary-trees spends its time in the generated code. Inlining
+    them would save little; kept as a TODO, behind the causes of the table.
+  - A first run after `machine.sh apply` reads its input from the disk (the
+    page cache dropped): k-nucleotide 2.150 s, regex-redux 0.514 s; the
+    profiles run each program once before (as `measure.sh` keeps the
+    lowest of 3).
