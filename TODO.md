@@ -35,12 +35,12 @@
   - [x] sum types and `match` (D71); recursive types with phase 3
   - [x] `size` parameters (D72)
   - arrays of arrays `[n][m]T`: with views, in phase 5 (D73)
-- [ ] 2. Fusion F2 to F4, materialization rules M1 to M3, memory report
-- [ ] 3. Complete uniqueness analysis, fallback reference counting, `require_unique`; histogram without allocation; no leak (AddressSanitizer)
+- [x] 2. Fusion F2 to F4, materialization rules M1 to M3, memory report (D97 to D101; its open points below)
+- [x] 3. Complete uniqueness analysis, fallback reference counting, `require_unique`; histogram without allocation; no leak (AddressSanitizer) (D96, D102, D103, D105; reference counting of arrays: a question, below)
 - [x] 4. `require_no_alloc`, `require_fused`, `require_tail`, with positive and negative tests (D106)
 - [x] 5. `filter`, `scan`, `window`, `zip`, slices, IEEE 754-2019 `min`/`max`, canonical NaN (sections 6 and 10) (D88 to D95, D97; a `map` building rows: below)
 - [x] 6. Block parallelism, thread pool: identical results with 1, 2, 4, 8 cores (D49, D50, D63, D64)
-- [ ] 7. Complete benchmark suite (section 14), comparisons A and B
+- [x] 7. Complete benchmark suite (section 14), comparisons A and B (phase 7, D124, `results/stage2-summary.md`)
 - [x] Start-up cost of the thread pool: the tasks of rule P no longer allocate (D77); first call as costly as OpenMP's
 - [x] Histogram: the fastest of Isocron, OpenMP and Rust in the eight cases (1 and 8 threads, small and large, uniform and skewed) (D78)
 - [x] Regenerate results/xeon.md and results/xeon-single.md with D77 and D78 (histograms measured again and merged, bench/merge_hist.py)
@@ -54,9 +54,9 @@
 - [x] The test suite hung in `tests/parallel.rs`: LLVM's targets registered once per process (D85)
 - [x] Small `std_dev` against Zig, large `sum` against Rust: block results of `reduce` on the stack, last elements of a block through memory, four rows per iteration from memory (D86); `tests/reduce_paths.rs`; compilation time recovered, runtime built with LTO (D87)
 - [x] Official campaign with D83 to D87: Isocron has the lowest median in the 10 cases on one core and the 40 cases with 1, 2, 4 and 8 threads; compilation times not degraded (D87); `results/xeon-summary.md`
-- [ ] Stage 2, phases 2, 3, 4, 5 and 7, and `allow_reassoc` (SPEC sections 10 and 15), in the order their dependencies impose:
-  - [ ] Phase 5 (`zip` D88, `min`, `max` D89, `count` D90, slices D91, `scan` D92, `filter` D93: done; slices are copies until F4; parallel `scan` not faster yet; `filter` sequential; existential result sizes of functions D94; arrays of arrays and `window` D95, without a `map` building rows yet): `zip`, slices `x[a..b]`, `window`, arrays of arrays `[n][m]T` with views; `filter` and bounded arrays `[k <= n]T`; `scan` (parallel for the predefined associative operators on integers and booleans); `count`, `min`, `max` (IEEE 754-2019), canonical NaN
-  - [ ] Phase 2: fusion F2 (filter), F3 (independent `reduce` of one array), F4 (views never materialized); materialization M1 to M3; the memory report (`--report`, text and JSON)
+- [x] Stage 2, phases 2, 3, 4, 5 and 7, and `allow_reassoc` (SPEC sections 10 and 15), in the order their dependencies impose: (done; their open points below)
+  - [x] Phase 5 (`zip` D88, `min`, `max` D89, `count` D90, slices D91, `scan` D92, `filter` D93: done; slices are copies until F4; parallel `scan` not faster yet; `filter` sequential; existential result sizes of functions D94; arrays of arrays and `window` D95, without a `map` building rows yet): `zip`, slices `x[a..b]`, `window`, arrays of arrays `[n][m]T` with views; `filter` and bounded arrays `[k <= n]T`; `scan` (parallel for the predefined associative operators on integers and booleans); `count`, `min`, `max` (IEEE 754-2019), canonical NaN (all done: `filter` in parallel D178, a `map` building rows D126, `scan` in parallel for the associative operators D112, D116)
+  - [x] Phase 2: fusion F2 (filter), F3 (independent `reduce` of one array), F4 (views never materialized); materialization M1 to M3; the memory report (`--report`, text and JSON) (F2 D99, F3 D100, F4 D97, M1 to M3 D101, the report D98; its open points below)
     - [x] F4: slices of arrays of scalars and zips are views, never materialized, even shared (D97)
     - [ ] Open question (D97): a view of a part of an array of tuples needs a stride in the representation; until then such a slice is a copy
     - [x] Views of producers: a slice of a producer computes only its elements; a window of a producer materializes it by M1 (D101)
@@ -74,7 +74,7 @@
     - [x] Recursive sum types on the heap with reference counting (non-atomic outside tasks, atomic inside) (D103)
     - [x] `==` on recursive values (D129)
     - [x] Arrays of a recursive type (D130)
-    - [ ] A constructor without payload (`Nil`) without an allocation (a shared node, or a null pointer with its tag)
+    - [x] A constructor without payload (`Nil`) without an allocation (a shared node, or a null pointer with its tag) (D169)
     - [ ] Question (D103): fallback reference counting for arrays; decided provisionally: arrays are copied, each copy in the report
     - [x] Defunctionalization: a function chosen at run time (`let f = if c then g else h`) becomes a branch on its condition (D107)
     - [x] A function chosen by `match` (D127), reading the variables of a pattern of one level (D132)
@@ -90,39 +90,39 @@
     - [x] Comparison B (moving average in O(n)) in every language; Isocron's B is the windows themselves (D118)
     - [x] Lost cases found by quick measurements and fixed: integer `scan` in vectors (D116), output pages touched before the timer in every language (D117), filter compacted by chunks (D119), parallel `reduce` of a filter (D120), `map` of loops cut per thread (D121), non-temporal stores for results larger than the caches (D122)
     - [x] Campaign on the tuned machine (D124, `results/stage2-summary.md`): the lowest median in 20/20 cases on one core, 12/12 with `allow_reassoc`, 79/80 with threads; the 80th (large `filter_sum`, 8 threads, within the dispersion) explained in D120
-    - [ ] Compilation time of a `reduce` of a filter (0.28 s for `filter_sum`, about 0.1 s for the others): the sequential and parallel streams are both emitted
-- [ ] The points of SPEC section 16 deferred to v1 or after phase 7 (`require_vectorized`, parallel fixed-form float `scan`, `scatter`, functions stored in structures, mutual tail recursion, automatic layout)
+    - [ ] Compilation time of a `reduce` of a filter (0.28 s for `filter_sum`, about 0.1 s for the others; on 2026-11-04 0.210 s, the others of phase 7 0.088 to 0.107 s): the sequential and parallel streams are both emitted
+- [x] The points of SPEC section 16 deferred to v1 or after phase 7 (`require_vectorized`, parallel fixed-form float `scan`, `scatter`, functions stored in structures, mutual tail recursion, automatic layout) (done but `require_vectorized` and the automatic layout, below)
   - [x] `scatter` in the prelude, collisions in the order of k (D111); parallel `scatter` in general: not yet
   - [x] Parallel fixed-form float `scan` by blocks of 4096 (D112)
   - [x] Mutual tail recursion with `tailcc` (D113)
   - [x] Functions stored in tuples, records and arrays; an array of functions indexed at run time is a branch (D114)
-  - [ ] Functions in sum types, functions returned by functions
+  - [x] Functions in sum types, functions returned by functions (D152, D153; the cases left in "Not implemented yet" of the guide)
   - [ ] `require_vectorized` (outside the specification for now), automatic layout
 - [x] `extern` (SPEC section 12, D125)
 - [x] A `map` building arrays of arrays (D126)
 - [x] String literals and comparison (not in SPEC v0's grammar: part 3; D134)
 - [ ] The ARM64 target (SPEC section 1: "x86-64, then ARM64"; not a phase of stage 2)
-- [ ] Part 3 (designs decided provisionally in D133, to be confirmed by the author)
+- [x] Part 3 (designs decided provisionally in D133, to be confirmed by the author) (decided for v1, SPEC section 16, D161)
   - [x] Strings: literals, `++`, order by bytes, `len`, `bytes`, `string_of`, `to_string`, `parse_f64`; owned and freed as arrays; `reduce` and `scan` of owned values (D134)
   - [x] Text input/output: `read_text`, `write_text`, `lines`, `split`, `trim`, `join`; `len` of arrays (D135)
   - [x] CSV: `parse_csv_f64`, `read_csv_f64` with header lines skipped (D135)
   - [x] `Result` and the fallible actions; components of new tuples taken without copies (D138)
   - [x] Modules: `import`, qualified names, `$ISC_PATH` (D139)
-  - [ ] Arrays of arrays of strings (refused at compile time for now)
-- [ ] Benchmarks Game programs written idiomatically (D136)
+  - [x] Arrays of arrays of strings (refused at compile time for now) (D154)
+- [x] Benchmarks Game programs written idiomatically (D136) (the ten, D160)
   - [x] `++` on arrays, bitwise operators, `print_bytes`; `examples/benchmarks_game/mandelbrot.isc` (D137)
   - [x] `mandelbrot` vectorized without changing the program: SPMD calls of tail-recursive functions (D140); `--isa avx` (D141)
   - [x] Their fastest C++, C, Rust and Go `mandelbrot` built and checked in a Docker image of ours (`bench/benchmarks_game/`, D142); 8 chunks per thread for maps of loops (D143); cheaper SPMD loops (D144)
   - [x] The gap in `ivybridge` mode: dynamic chunks (D145), uniform branches in SPMD bodies (D146), the program testing every 4 iterations as theirs do (D147): first on one thread in both modes, first with threads in native mode
-  - [ ] Their measurement with the protocol of SPEC section 14 (machine.sh at a fixed frequency, the container in `isc-bench.slice`): the ranking with threads in `ivybridge` mode is within the noise of the turbo
-  - [ ] Their architecture emulated: `--isa avx` (Ivy Bridge: AVX without AVX2 or FMA) for Isocron, `-march=ivybridge` / `target-cpu=ivybridge` / `GOAMD64=v2` for the others, 4 physical cores, lowest of 12 runs as they report it; a real i5-3330 only to compare with their published numbers
-  - [ ] `spectral-norm`, `n-body`, `binary-trees`, `fannkuch-redux`; `fasta`, `k-nucleotide`, `reverse-complement` with text
+  - [x] Their measurement with the protocol of SPEC section 14 (machine.sh at a fixed frequency, the container in `isc-bench.slice`): the ranking with threads in `ivybridge` mode is within the noise of the turbo (replaced by the measurement against the fastest in Docker, `machine.sh apply`, D177, D262)
+  - [x] Their architecture emulated: `--isa avx` (Ivy Bridge: AVX without AVX2 or FMA) for Isocron, `-march=ivybridge` / `target-cpu=ivybridge` / `GOAMD64=v2` for the others, 4 physical cores, lowest of 12 runs as they report it; a real i5-3330 only to compare with their published numbers (not done: replaced by D177, the fastest programs on the same machine)
+  - [x] `spectral-norm`, `n-body`, `binary-trees`, `fannkuch-redux`; `fasta`, `k-nucleotide`, `reverse-complement` with text (D160)
 - [x] Syntax 2, inspired by TypeScript (D148, decided by the author)
   - [x] Lexer and parser lowered to the same AST; method calls, `.length`, `.slice`, `.with`, `{ ...r, f: v }`, decorators, `import * as m from "./m";`, `declare function` (D148)
   - [x] Every program of the repository converted with the same AST checked (380 programs), the old parser and the converter then removed (D149)
   - [x] Messages and the memory report in syntax 2; a value given by `return`, in actions too (D149)
   - [x] SPEC section 3 (grammar, precedence of JavaScript) and the guide rewritten; examples written idiomatically (D149)
-  - [ ] Named imports `import { f } from "./m";`, template literals
+  - [x] Named imports `import { f } from "./m";`, template literals (D150)
 
 ## v1 — the language finalized (goal of 2026-11-02)
 
@@ -143,11 +143,11 @@
 
 Method: every optimization from a profile and a model of cost of the primitive, never from a difference with another language alone; every gap left explained by a measurement. First survey (4 threads, the sizes of the Benchmarks Game): binarytrees 34.4 s, fannkuchredux 29.9 s, knucleotide 29.2 s, pidigits 29.7 s, nbody 19.2 s, regexredux 2.62 s. Measured against the fastest on the same machine (D177, `results/benchmarks_game.md`), Isocron over the fastest: mandelbrot 0.81, fasta 1.54, fannkuchredux 1.75, knucleotide 2.32, binarytrees 2.34, spectralnorm 2.61, nbody 3.33, pidigits 3.49, regexredux 3.74, revcomp 7.47.
 
-- [ ] (1) Allocation
+- [x] (1) Allocation (its open points below)
   - [x] Components of a tuple accumulator owned, fields in the order of the program: nbody 27.6 s -> 9.9 s (D164)
   - [x] An array of at most one block filled without a task: nbody 8.1 s -> 6.9 s (D172)
   - [x] An array literal of scalar constants is data of the program: nbody 6.9 s -> 6.4 s (D173)
-  - [ ] Parameters of a tail-recursive function owned (nbody: 3 copies per step)
+  - [x] Parameters of a tail-recursive function owned (nbody: 3 copies per step) (no copy a step since D206 to D208; the 3 copies of the report are those of `start`, once)
   - [x] Fast path of the allocator: 63 -> 25 instructions per allocation, 43 -> 28 per free; nbody 9.9 s -> 8.4 s (D165)
   - [ ] Small arrays of a fixed size without the heap
     - [x] Array literals only read by their scope on the stack: nbody 6.441 s -> 6.111 s (D191)
@@ -155,17 +155,17 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] A constructor without payload of a recursive type without allocation: binarytrees 21 on 4 threads 4.3 s -> 2.5 s (D169)
   - [x] Non-atomic reference counts in a task none of whose nodes can leave it: binarytrees 2.7 s -> 2.4 s (D175)
   - [x] The free list of nodes in the compiled code: binarytrees 2.4 s -> 2.1 s on 4 threads (D176)
-  - [ ] Allocation by regions (binarytrees)
+  - [x] Allocation by regions (binarytrees) (D200)
 - [x] (2) `Map` and `countBy` by a table of hashes: knucleotide 36.9 s -> 3.4 s on 4 threads (D167)
   - [x] Integer keys in a small range by a table: knucleotide 2.108 s -> 1.591 s (D194)
-- [ ] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128)
+- [x] (3) `bigint` in limbs of 64 bits (pidigits: 78 % in the conversion of base 128) (words D168, D171, D196, D239, D240; pidigits the fastest, D262)
   - [x] Stored in bytes in the compiled programs, converted by words: pidigits 10000 42.6 s -> 11.6 s (D168)
   - [x] The common operations (add, subtract, multiply, divide, compare) on the bytes themselves: pidigits 10000 11.6 s -> 2.5 s (D171)
   - [x] The division whose quotient is one word, results built once: pidigits 2.232 s -> 0.888 s (D196)
-- [ ] (4) Code of scalar recursions (fannkuchredux)
+- [x] (4) Code of scalar recursions (fannkuchredux) (D170, D197; fannkuch-redux the fastest, D262; its floor below)
   - [x] The program by chunks, without divisions, one pass: 41.7 s -> 4.3 s on 4 threads (D170)
   - [x] The flips of a chunk as a `map`, one permutation per lane: 4.413 s -> 1.663 s (D197)
-- [ ] (5) Copies of strings, cache of regular expressions (regexredux)
+- [x] (5) Copies of strings, cache of regular expressions (regexredux) (D174, D188, D189; regex-redux the fastest, D262; its open point below)
   - [x] Replacements by the bounds of the matches, ECMAScript's empty matches, searches shared out among threads: regexredux 3.7 s -> 3.0 s (D174)
   - [x] Teddy in AVX2: a runtime built for x86-64-v3, linked for the targets that have it: regexredux 3.013 s -> 2.684 s (D188)
   - [x] Global searches split among the threads, a replacement searched once: regexredux 2.686 s -> 1.146 s (D189)
@@ -254,7 +254,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
-- [ ] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement
+- [x] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement (both the fastest since D262)
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)
   - [x] The standard input read in a buffer of its size when it is a file: readStdin 0.104 s -> 0.056 s, revcomp 0.414 s -> 0.365 s (D179)
   - [x] Quotient and remainder of the index by a constant carried by the loop: revcomp 0.369 s -> 0.356 s (D180)
