@@ -250,19 +250,32 @@ fn a_mapped_input_keeps_its_bytes_when_the_file_is_written() {
     let sum: u64 = big.iter().map(|&b| b as u64).sum();
     let want = format!("{}\ntrue\n", sum);
     let bin = compile(MAPPED_SRC, "stdin_mapped");
-    // written while it runs
-    let path = tmp("stdin_mapped.bin");
-    std::fs::write(&path, &big).unwrap();
-    let p = path.clone();
-    let (first, rest, code) = run_mapped(&bin, &path, &|pid| {
-        let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid)).unwrap();
-        assert!(maps.contains(p.to_str().unwrap()), "the input is not mapped:\n{}", maps);
-        let t = std::time::Instant::now();
-        let mut f = std::fs::File::create(&p).unwrap();
-        assert!(t.elapsed() < std::time::Duration::from_secs(10), "the writer waited {:?}", t.elapsed());
-        f.write_all(&vec![7u8; n / 2]).unwrap();
-    });
-    assert_eq!((first.as_str(), rest.as_str(), code), (format!("{}\n", n).as_str(), want.as_str(), Some(0)));
+    // written while it runs. The kernel refuses the lease while any
+    // process has the file open for writing, a child of another test of
+    // this process too, between its `clone` and its `exec` (it holds a copy
+    // of every descriptor; once in a run of the complete suite): the file is
+    // then read, which this checks as well; up to 3 tries, one mapped.
+    let mut mapped = 0;
+    for k in 0..3 {
+        let path = tmp(&format!("stdin_mapped_{}.bin", k));
+        std::fs::write(&path, &big).unwrap();
+        let p = path.clone();
+        let seen = std::cell::Cell::new(false);
+        let (first, rest, code) = run_mapped(&bin, &path, &|pid| {
+            let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid)).unwrap();
+            seen.set(maps.contains(p.to_str().unwrap()));
+            let t = std::time::Instant::now();
+            let mut f = std::fs::File::create(&p).unwrap();
+            assert!(t.elapsed() < std::time::Duration::from_secs(10), "the writer waited {:?}", t.elapsed());
+            f.write_all(&vec![7u8; n / 2]).unwrap();
+        });
+        assert_eq!((first.as_str(), rest.as_str(), code), (format!("{}\n", n).as_str(), want.as_str(), Some(0)), "try {}", k);
+        if seen.get() {
+            mapped += 1;
+            break;
+        }
+    }
+    assert!(mapped == 1, "the input was never mapped");
     // a file open for writing: read, the same bytes
     let path2 = tmp("stdin_mapped_open.bin");
     std::fs::write(&path2, &big).unwrap();

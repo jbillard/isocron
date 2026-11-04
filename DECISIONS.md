@@ -4625,3 +4625,11 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     open for writing: not mapped), `a_mapped_input_freed_early_gives_the_file_back`,
     `a_mapped_input_changed_in_place` (the copy on a write, 1 and 4
     threads); the tests of D221 read files of 20 MB mapped.
+  - In a run of the complete suite the first test once found its input
+    read, not mapped (the same test 5 times alone and 3 times beside the
+    other allocator: mapped each time). The kernel refuses the lease while
+    any process has the file open for writing, and a child of another test
+    of the same process holds a copy of every descriptor between its
+    `clone` and its `exec` (the most likely cause, not shown). The program
+    then reads the file, as it should: the test checks the bytes on each of
+    up to 3 tries, and that one try was mapped.
