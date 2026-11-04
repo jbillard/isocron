@@ -205,14 +205,59 @@ pub extern "C" fn rust_eh_personality() {}
 // ---------------------------------------------------------------------
 // output
 
-/// Standard output, buffered and flushed at each newline (the generated code
-/// ends every `print` with `isc_print_newline`) and before a panic.
+/// Standard output, buffered, flushed at the end of `main`, before a panic,
+/// before the standard input is read and before a function of C is called;
+/// and at each newline (the generated code ends every `print` with
+/// `isc_print_newline`) when it is read as it comes (`out_by_lines`).
 struct OutBuf {
-    data: [u8; 8192],
+    data: [u8; 1 << 16],
     len: usize,
 }
 
-static mut OUT: OutBuf = OutBuf { data: [0; 8192], len: 0 };
+static mut OUT: OutBuf = OutBuf { data: [0; 1 << 16], len: 0 };
+
+/// The standard output flushed at each newline (1) or when its buffer is
+/// full (2), decided at the first newline (0 before): by blocks into a
+/// file or a device that is not a terminal (`> file`, `> /dev/null`: no one
+/// reads them as they come), at each newline into a terminal, a pipe or a
+/// socket (D299: a write of the system for each `print`, 187 ns a line of
+/// one number written into `/dev/null`).
+static OUT_LINES: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+fn out_by_lines() -> bool {
+    match OUT_LINES.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => {
+            let lines = stdout_read_as_it_comes();
+            OUT_LINES.store(if lines { 1 } else { 2 }, core::sync::atomic::Ordering::Relaxed);
+            lines
+        }
+    }
+}
+
+/// The standard output is read as it comes (`out_by_lines`).
+#[cfg(target_os = "linux")]
+fn stdout_read_as_it_comes() -> bool {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFREG: u32 = 0o100000;
+    const S_IFCHR: u32 = 0o020000;
+    match linux::file_mode(1) {
+        Some(m) if m & S_IFMT == S_IFREG => false,
+        Some(m) if m & S_IFMT == S_IFCHR => linux::is_terminal(1),
+        _ => true,
+    }
+}
+
+#[cfg(windows)]
+fn stdout_read_as_it_comes() -> bool {
+    windows::stdout_read_as_it_comes()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn stdout_read_as_it_comes() -> bool {
+    true
+}
 
 fn write_all(fd: c_int, mut p: *const u8, mut n: usize) {
     while n > 0 {
@@ -608,6 +653,8 @@ fn os_error<'a>(code: c_int) -> (&'a str, c_int) {
 /// the file closed.
 /// The whole standard input (D155), read until end of file.
 unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
+    // what the program wrote first is out (a question before its answer)
+    flush_stdout();
     // a regular file (`< file`): the bytes left in it, the size of the
     // buffer, read without copies (D179); a pipe: a guess that grows
     let cur = lseek(0, 0, SEEK_CUR);
@@ -1068,7 +1115,9 @@ pub unsafe extern "C" fn isc_print_bytes(p: *const u8, n: i64) {
 #[no_mangle]
 pub extern "C" fn isc_print_newline() {
     out(b"\n");
-    flush_stdout();
+    if out_by_lines() {
+        flush_stdout();
+    }
 }
 
 #[no_mangle]

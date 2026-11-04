@@ -71,6 +71,7 @@ extern "system" {
     fn CloseHandle(h: HANDLE) -> BOOL;
     fn SetFilePointerEx(h: HANDLE, distance: i64, new: *mut i64, method: u32) -> BOOL;
     fn GetFileType(h: HANDLE) -> u32;
+    fn GetConsoleMode(h: HANDLE, mode: *mut u32) -> BOOL;
     fn GetLastError() -> u32;
     fn SetLastError(code: u32);
     fn MultiByteToWideChar(cp: u32, flags: u32, s: *const u8, n: i32, w: *mut u16, wn: i32) -> i32;
@@ -122,6 +123,21 @@ pub const O_WRONLY: c_int = 1;
 pub const O_CREAT: c_int = 0o100;
 pub const O_TRUNC: c_int = 0o1000;
 pub const O_CLOEXEC: c_int = 0;
+
+/// The standard output is read as it comes (D299): a console or a pipe,
+/// not a file on a disk nor a character device that is not a console (NUL).
+pub fn stdout_read_as_it_comes() -> bool {
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_CHAR: u32 = 2;
+    let h = handle(1);
+    let mut mode = 0u32;
+    // SAFETY: a handle of the process and a place for its mode
+    match unsafe { GetFileType(h) } {
+        FILE_TYPE_DISK => false,
+        FILE_TYPE_CHAR => unsafe { GetConsoleMode(h, &mut mode) != 0 },
+        _ => true,
+    }
+}
 
 fn handle(fd: c_int) -> HANDLE {
     unsafe {

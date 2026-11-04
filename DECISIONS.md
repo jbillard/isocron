@@ -5642,3 +5642,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `lines_kept_in_one_block_freed_with_the_last` (lines kept in another
   array and sorted after the array of all the lines is gone, empty and
   `\r\n` lines; 1, 3, 4 and 8 threads; valgrind with glibc's allocator).
+- **D299 — The standard output written by blocks into files (2026-11-04).**
+  The first step of the audit of every form of the language against the
+  machine (asked by the author: the basic functions, `print` among them):
+  each `print` ended with a write of the system (`isc_print_newline`
+  flushed the buffer), 1000 writes for 1000 lines; a million lines of one
+  number into `/dev/null` took 185.5 ms, of a short string 169.8 ms, where
+  the bytes cost a few nanoseconds a line. Now the standard output is
+  written at each newline only when it is read as it comes (a terminal, a
+  pipe, a socket: a program that prints a line and then computes still
+  shows it), by blocks of 64 KiB into a regular file or a character device
+  that is not a terminal (`fstat`, then `ioctl(TCGETS)` under Linux;
+  `GetFileType`, then `GetConsoleMode` under Windows; at each newline
+  under WASI), as C's standard output does; all of it is written at the
+  end of `main`, before a panic, before the standard input is read and
+  before a C function is called (whose own buffer stays C's). At fixed
+  frequency: a million lines of a number into `/dev/null` 185.5 -> 22.2
+  ms, of a string 169.8 -> 6.5 ms, one line of a million numbers 25.6 ->
+  25.2 ms (the formatting of the numbers, next); 1000 lines into a pipe:
+  still 1000 writes. The ten programs, alternated rounds: pidigits -0.08 %
+  [-0.13 %, -0.04 %], the others between -0.36 % and +0.34 %, every
+  interval across 0 but n-body's (+0.02 % [+0.01 %, +0.68 %] in 11 rounds,
+  -0.16 % [-0.76 %, +0.73 %] in 31). Test
+  `output_by_blocks_into_files_and_by_lines_into_pipes` (more than a buffer
+  of lines and `printBytes` into a file, a pipe and `/dev/null`, and a
+  panic after them: the bytes of the interpreter).

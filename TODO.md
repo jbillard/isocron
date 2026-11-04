@@ -269,6 +269,14 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Quotient and remainder of the index by a constant carried by the loop: revcomp 0.369 s -> 0.356 s (D180)
   - [x] Indexing in vector code: spectralnorm 0.527 s -> 0.195 s on 4 threads, 1.03 times the floor of the divider (D181)
 
+## The audit of every form of the language (the remark of the author, 2026-11-04)
+
+Every form of the IR (40), every primitive (73: 32 operations of strings, 19 actions) and the functions of the runtime (130): a microbenchmark of each against its floor from the costs of the machine, a table `results/primitives.md` ranked by the gap, then the largest gaps first.
+
+- [x] `print`: the standard output by blocks into files, at each newline into terminals and pipes: a million lines of a number 185.5 -> 22.2 ms (D299)
+- [ ] The formatting of the numbers (`print`, `toString`): about 22 ns a number
+- [ ] The microbenchmarks of every form and `results/primitives.md`
+
 ## The trusted base (the remarks of the author, 2026-11-04)
 
 - [ ] The `unsafe` of the runtime justified and checked at compile time (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`), confined to a few modules (`sys`, `heap`, `simd`) behind safe interfaces; the tests of `isc-runtime-core` under Miri

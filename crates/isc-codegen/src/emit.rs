@@ -10498,6 +10498,9 @@ impl<'p> Gen<'p> {
     /// copy freed after the call, an array of scalars as a pointer to its
     /// elements and its length.
     fn call_extern(&mut self, i: u32, vals: &[V], e: &Expr) -> R<V> {
+        // what the program wrote is out before the function writes its own
+        // output (D299)
+        self.emit("call void @isc_flush()");
         // the same code for WebAssembly: its C ABI passes these scalars and
         // pointers directly (WASI's C library for libc and libm)
         let f = self.p.externs[i as usize].clone();

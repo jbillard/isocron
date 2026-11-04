@@ -47,11 +47,13 @@ pub unsafe fn syscall6(n: usize, a: usize, b: usize, c: usize, d: usize, e: usiz
 const SYS_READ: usize = 0;
 const SYS_WRITE: usize = 1;
 const SYS_CLOSE: usize = 3;
+const SYS_FSTAT: usize = 5;
 const SYS_LSEEK: usize = 8;
 const SYS_MMAP: usize = 9;
 const SYS_MPROTECT: usize = 10;
 const SYS_MUNMAP: usize = 11;
 const SYS_RT_SIGACTION: usize = 13;
+const SYS_IOCTL: usize = 16;
 const SYS_PREAD64: usize = 17;
 const SYS_MREMAP: usize = 25;
 const SYS_MADVISE: usize = 28;
@@ -101,6 +103,25 @@ pub unsafe fn write(fd: c_int, buf: *const c_void, n: usize) -> isize {
 pub unsafe fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize {
     // SAFETY: the kernel writes at most `n` bytes at `buf`
     unsafe { syscall6(SYS_PREAD64, fd as usize, buf as usize, n, off as usize, 0, 0) }
+}
+
+/// The type and the permissions of the file of `fd` (`st_mode` of `fstat`),
+/// or None.
+pub fn file_mode(fd: c_int) -> Option<u32> {
+    // `struct stat` of x86-64: 144 bytes, `st_mode` at byte 24
+    let mut st = [0u64; 18];
+    // SAFETY: `fstat` writes the 144 bytes of `st`
+    let r = unsafe { syscall6(SYS_FSTAT, fd as usize, st.as_mut_ptr() as usize, 0, 0, 0, 0) };
+    (r >= 0).then_some(st[3] as u32)
+}
+
+/// `fd` is a terminal (`ioctl(TCGETS)` succeeds, as `isatty`).
+pub fn is_terminal(fd: c_int) -> bool {
+    const TCGETS: usize = 0x5401;
+    // `struct termios`: 60 bytes
+    let mut t = [0u32; 16];
+    // SAFETY: `TCGETS` writes at most the 60 bytes of a `struct termios`
+    unsafe { syscall6(SYS_IOCTL, fd as usize, TCGETS, t.as_mut_ptr() as usize, 0, 0, 0) == 0 }
 }
 
 pub fn close(fd: c_int) -> c_int {

@@ -1860,9 +1860,13 @@ action main(args: string[k]): i32 {
 0
 ```
 
-`printBytes` writes bytes as they are, without a newline; files are read
-and written whole (this example needs a writable directory, so the guide
-only type-checks it):
+`printBytes` writes bytes as they are, without a newline. The standard
+output of a compiled program is written by blocks into a file or a device
+that is not a terminal (`> out.txt`, `> /dev/null`), and at each newline
+into a terminal or a pipe, read as it comes; all of it is written at the
+end of `main`, before a panic, before the standard input is read and
+before a C function is called. Files are read and written whole (this
+example needs a writable directory, so the guide only type-checks it):
 
 ```isc
 action main(args: string[k]): i32 {
