@@ -2173,29 +2173,40 @@ pub mod rx {
     /// `merge_bounds` with `find(at)`, the first match of a search from
     /// `at`, for any engine (D224).
     pub fn merge_bounds_with(s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>], mut find: impl FnMut(usize) -> Option<(usize, usize)>) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
         // the part whose search went on from `at` (the part `c` with
         // `starts[c] <= at`: its start, or after one of its matches), and
-        // the index of its next match
+        // the index of its next match: its matches are in order, the one
+        // that ends the search at `at` found by halving (D276)
         let follow = |at: usize| -> Option<(usize, usize)> {
             let c = match starts.binary_search(&at) {
                 Ok(c) => return Some((c, 0)),
                 Err(0) => return None,
                 Err(c) => c - 1,
             };
-            parts[c].iter().position(|&(a, b)| next_at(s, a, b) == at).map(|j| (c, j + 1))
+            let p = &parts[c];
+            let j = p.partition_point(|&(a, b)| next_at(s, a, b) < at);
+            (j < p.len() && next_at(s, p[j].0, p[j].1) == at).then_some((c, j + 1))
         };
         let mut at = 0;
         let mut cur = follow(0);
         while at <= s.len() {
             match cur {
                 Some((k, j)) if j < parts[k].len() => {
-                    let (a, b) = parts[k][j];
+                    // the matches of the part before the next part starts,
+                    // all at once (D276): they follow each other in it
+                    let p = &parts[k];
+                    let e = if k + 1 < starts.len() { p[j..].partition_point(|&(a, _)| a < starts[k + 1]) + j } else { p.len() };
+                    if e > j + 1 {
+                        out.extend_from_slice(&p[j..e - 1]);
+                    }
+                    let i = if e > j { e - 1 } else { j };
+                    let (a, b) = p[i];
                     out.push((a, b));
                     at = next_at(s, a, b);
                     // the last match of a part starts in a following one:
                     // its search stopped there
-                    cur = if k + 1 < starts.len() && a >= starts[k + 1] { follow(at) } else { Some((k, j + 1)) };
+                    cur = if k + 1 < starts.len() && a >= starts[k + 1] { follow(at) } else { Some((k, i + 1)) };
                 }
                 // a part stops only at a match in a following part: this
                 // one met no more match up to the end of `s`
@@ -3041,6 +3052,42 @@ pub mod rx {
                 }
                 for v in ["ig/k", "ig/ks", "g/a*", "g/^ab", "g/ab$", "g/é", "g/", "g/[^a]", "g/.b"] {
                     assert!(of(v).is_none(), "{} has a shape", v);
+                }
+            }
+
+            /// D276: the matches of a search split into parts, merged, are
+            /// those of one search: parts cut anywhere (inside matches, at
+            /// their ends), patterns of many matches, of overlapping
+            /// candidates (`aa` in `aaa`), of empty ones, delimited.
+            #[test]
+            fn merged_parts_are_one_search() {
+                let mut h = 0x2545f4914f6cdd1du64;
+                let text: alloc::string::String = (0..30000)
+                    .map(|_| {
+                        h ^= h << 13;
+                        h ^= h >> 7;
+                        h ^= h << 17;
+                        b"aaacgt<x>|tHaNaND"[(h % 17) as usize] as char
+                    })
+                    .collect();
+                for v in ["g/aa", "g/a[NSt]|BY|aa", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/tHa[Nt]", "g/x*"] {
+                    let re = super::super::of(v);
+                    let whole = super::super::bounds_from(&re, &text, 0, usize::MAX);
+                    for k in [2usize, 3, 7, 64] {
+                        let mut starts: Vec<usize> = (0..k).map(|i| text.len() * i / k).collect();
+                        starts.dedup();
+                        // a cut inside a match, at its end
+                        if let Some(&(a, b)) = whole.get(whole.len() / 2) {
+                            starts.push(a + (b - a) / 2);
+                            starts.push(b);
+                        }
+                        starts.sort();
+                        starts.dedup();
+                        let parts: Vec<Vec<(usize, usize)>> = (0..starts.len())
+                            .map(|i| super::super::bounds_from(&re, &text, starts[i], starts.get(i + 1).copied().unwrap_or(usize::MAX)))
+                            .collect();
+                        assert_eq!(super::super::merge_bounds(&re, &text, &starts, &parts), whole, "{} in {} parts", v, starts.len());
+                    }
                 }
             }
 

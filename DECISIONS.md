@@ -5043,3 +5043,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   2). The same output. Test `fixed_alternatives_find_the_matches_of_the_automaton`
   (the 9 patterns and others over random bases with upper cases and other
   bytes, from and until anywhere; also built for AVX2 and AVX-512).
+- **D276 — The matches of the parts of a search merged by runs
+  (2026-11-04).** After D275 the timeline of regex-redux (4 threads)
+  showed the main thread alone 15 to 20 ms after each replacement
+  searched in parts (D189), the three others waiting: the merge of the
+  parts (`merge_bounds_with`) pushed every match one by one into a vector
+  grown by copies, and found where a part goes on after a match that
+  crosses into it by a walk of its matches. The vector now has the room of
+  all the matches of the parts; the matches of a part before the start of
+  the next one are copied at once (they follow each other in it), only the
+  one that crosses the next start handled alone; the place where a part
+  goes on is found by halving (its matches are in order). The same
+  matches. In alternation, best of 9, 4 threads: regex-redux 260.4 ms ->
+  208.2 ms. Test `merged_parts_are_one_search` (parts cut anywhere, inside
+  a match and at its end, patterns of many matches, of overlapping
+  candidates, of empty matches, delimited ones).
