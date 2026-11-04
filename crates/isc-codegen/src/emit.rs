@@ -2615,8 +2615,13 @@ impl<'p> Gen<'p> {
             }
             Type::Array(e, _) => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
-                // each node of the elements: one owner less (D130)
-                if holds_owned(e) {
+                // each node of the elements: one owner less (D130); the
+                // strings by the runtime, those of one block at once (D305)
+                if **e == Type::Str {
+                    let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", x.r));
+                    self.decls.insert("declare void @isc_free_strs(ptr, i64)".into());
+                    self.emit(format!("call void @isc_free_strs(ptr {}, i64 {})", p, n));
+                } else if holds_owned(e) {
                     let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", x.r));
                     let et = (**e).clone();
                     self.for_range_scalar("0", &n, 1, &mut |g, i| {

@@ -281,7 +281,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Case, padding and replacement written once: `replaceAll` 825.43 -> 55.10 ns, `toUpperCase` 186.64 -> 18.29 ns (D302)
 - [x] A slice or the bytes of a string read where it is: a view, `slice` 10.11 -> 2.17 ns, `bytes` 8.39 -> 1.96 ns, k-nucleotide -1.50 % (D303)
 - [x] Reductions of integers from their neutral value in one accumulator, not V in memory: `equal` 5.66 -> 4.94 ns, `bytes` 1.96 -> 1.63 ns (D304)
-- [ ] The strings still above their floor: `lines` (5.5), `split` (5.3), `padStart` (its allocations), templates (3.6)
+- [x] Lines and parts of a text in one block, found by masks of 32 bytes, freed by blocks: `lines` 47.21 -> 15.34 ns, `split` 170.23 -> 75.87 ns, k-nucleotide -2.78 % (D305)
+- [ ] The strings still above their floor: `padStart` (5.7, its allocations), templates (3.6), `concat` (2.9)
 - [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
 
 ## The trusted base (the remarks of the author, 2026-11-04)

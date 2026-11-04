@@ -5787,3 +5787,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `max`, `count`; wrapping sums and products; 8 to 64 bits, signed and
   unsigned; 1 to 300000 elements; neutral and other initial values; 1, 3
   and 8 threads; against the interpreter).
+- **D305 — Lines and parts of a text in one block (2026-11-05).** In the
+  audit, `lines` of a text took 47.21 ns a line of 60 bytes against 8.51
+  in C, `split` of a line of 6 parts of 5 bytes 170.23 ns against 32.09.
+  Each part was a block of the heap of its own (an allocation, then its
+  free), the text was split twice (to count, then to make) by `str::split`
+  (a character: 29 ns a line; a text: the general search, prepared at each
+  call), and an array of strings was freed by a call for each. Now the
+  parts of `lines` and `split` are strings of one block, as the lines of a
+  large text (D298), whatever its size: one allocation, each part freed
+  with the last; a separator of one byte (and the `\n` of the lines) is
+  found 32 bytes at a time, compared into the bits of a mask (written so
+  that LLVM makes it one vector comparison, no unsafe code), the last
+  bytes of the text read again in its last 32 (copied into 32 bytes on the
+  stack, they were read before their stores were done: 37 % of a `split`),
+  a longer one by `find_bytes`; the parts are found in a generic function
+  compiled with their writer, a short one copied by 16 bytes. The block
+  holds its size: an array of strings is freed by the runtime
+  (`isc_free_strs`), the strings of a block one after the other counted
+  down at once, by their address, without reading them (an atomic
+  operation, and a line of cache, for each before). Tried and not kept:
+  the end of the text as one more place of the mask, for one call of the
+  writer (inlined, but more instructions: `split` 75.26 -> 83.75 ns);
+  `memchr_iter` (`split` 120.67 ns, a call for each part). On one CPU,
+  medians of 5 runs of 200 rounds: `lines` 47.21 -> 15.34 ns, `split`
+  170.23 -> 75.87. What remains of `split` (2.4 times its floor), by
+  instructions: the two passes and the writes 61 %, the free of the
+  strings 20 %, `memcpy` of the last part of each line 9 %, the
+  allocations about 6 %; the floor allocates nothing and frees nothing.
+  The ten programs, alternated rounds: k-nucleotide -2.78 % [-3.56 %,
+  -2.07 %] (the 4166671 lines of its input freed by blocks, not one by one); the
+  others between -1.66 % and +0.08 %, every interval across 0, the same
+  outputs. Test `lines_and_parts_in_one_block` (empty texts, lines and
+  parts, `\r\n`, separators of one and several bytes at both ends and one
+  after the other, characters of several bytes; parts kept after their
+  array, sorted, filtered, two blocks in one array, strings of a block
+  among others; a text of 3 MiB; 1, 3 and 8 threads; valgrind).

@@ -1374,9 +1374,7 @@ pub unsafe extern "C" fn isc_lines(out: *mut IscArray, p: *const u8, n: i64) {
 fn lines(b: &[u8]) -> IscArray {
     let threads = thread_count();
     if b.len() < LINES_PARALLEL_MIN || threads <= 1 {
-        let s = utf8_text(b);
-        let count = sem::text_lines(s).count();
-        return str_array(&mut sem::text_lines(s), count);
+        return block_strs(&Lines(b));
     }
     // the text without its final `\n`: its lines are `split('\n')`
     let body = &b[..b.len() - (b[b.len() - 1] == b'\n') as usize];
@@ -1448,13 +1446,15 @@ fn lines(b: &[u8]) -> IscArray {
             idx += 1;
         }
     });
-    // every line alive: the block freed with the last of them
+    // every line alive: the block freed with the last of them; its size
+    // (`isc_free_strs`)
     head[..8].write_copy_of_slice(&(total as u64).to_le_bytes());
+    head[8..16].write_copy_of_slice(&(place[parts] as u64).to_le_bytes());
     IscArray { ptr: ptr as *mut u8, len: len as i64 }
 }
 
 /// The bytes of the block of the lines of `lines` before the lines: the
-/// count of the lines alive (one cache line).
+/// count of the lines alive, the size of the block (one cache line).
 const ARENA_HEAD: usize = 64;
 
 /// The bytes a line of `m` bytes takes in the block of the lines: the
@@ -1479,12 +1479,21 @@ fn arena_bound(range: (usize, usize), count: (usize, usize), extra: usize) -> us
 /// # Safety
 /// `p` the bytes of a line made by `lines`, not freed before.
 unsafe fn arena_free(p: *mut u8) {
-    // SAFETY: the 8 bytes before a line hold the address of its block,
-    // whose first 8 bytes count the lines alive (see `lines`)
+    // SAFETY: the 8 bytes before a line hold the address of its block (see
+    // `lines`)
+    unsafe { arena_free_many((p.sub(8) as *const u64).read_unaligned() as usize, 1) }
+}
+
+/// `k` lines of the block of lines at `block` freed: the block with the
+/// last of them.
+///
+/// # Safety
+/// `k` lines of that block, not freed before.
+unsafe fn arena_free_many(block: usize, k: u64) {
+    // SAFETY: the first 8 bytes of the block count its lines alive
     unsafe {
-        let block = (p.sub(8) as *const u64).read_unaligned() as usize;
         let alive = &*(block as *const core::sync::atomic::AtomicU64);
-        if alive.fetch_sub(1, Ordering::AcqRel) == 1 {
+        if alive.fetch_sub(k, Ordering::AcqRel) == k {
             isc_free(block as *mut u8);
         }
     }
@@ -1497,8 +1506,207 @@ pub unsafe extern "C" fn isc_split(out: *mut IscArray, p: *const u8, n: i64, q: 
     if sep.is_empty() {
         die(line, col, &Panic::SplitEmpty)
     }
-    let count = s.split(sep).count();
-    *out = str_array(&mut s.split(sep), count);
+    // the separators found by `find_bytes` (`str::split` searched with the
+    // general search, prepared at each call), the parts in one block
+    // (D305)
+    let (b, t) = (s.as_bytes(), sep.as_bytes());
+    *out = if t.len() == 1 { block_strs(&ByteParts(b, t[0])) } else { block_strs(&SepParts(b, t)) };
+}
+
+/// Each `i` where `b[i] == c`, in order (D305): 32 bytes compared at a
+/// time into the bits of a mask (written so that LLVM makes it one vector
+/// comparison and `vpmovmskb`), then its bits one by one. No call for each
+/// (`memchr` for each part of a `split` cost more than the part: 120.67 ns
+/// a line of 6 parts of 5 bytes against 32.02 in C).
+#[inline(always)]
+fn each_byte(b: &[u8], c: u8, mut f: impl FnMut(usize)) {
+    let n = b.len();
+    let mut base = 0;
+    // `f` called from one place, so that it is compiled into the loop
+    while base < n {
+        let mut m = if base + 32 <= n {
+            byte_mask(b[base..base + 32].try_into().expect("32 bytes"), c)
+        } else if n >= 32 {
+            // the last bytes: the last 32 bytes of the text read again, those
+            // already seen left out (copied into 32 bytes on the stack, then
+            // read as one vector, they waited for their stores to be done:
+            // 37 % of a `split` of a line of 35 bytes)
+            byte_mask(b[n - 32..].try_into().expect("32 bytes"), c) >> (32 - (n - base))
+        } else {
+            // a text of fewer than 32 bytes, one byte at a time
+            b.iter().enumerate().fold(0u32, |m, (j, &x)| m | (((x == c) as u32) << j))
+        };
+        while m != 0 {
+            f(base + m.trailing_zeros() as usize);
+            m &= m - 1;
+        }
+        base += 32;
+    }
+}
+
+/// The bit j set where `ch[j] == c`: one vector comparison and
+/// `vpmovmskb` (LLVM recognizes this loop).
+#[inline(always)]
+fn byte_mask(ch: &[u8; 32], c: u8) -> u32 {
+    let mut m = 0u32;
+    for (j, &x) in ch.iter().enumerate() {
+        m |= ((x == c) as u32) << j;
+    }
+    m
+}
+
+/// The parts of a text, in order, each given to `part` as its place in the
+/// text (start and end), for `block_strs` (D305): a generic function, so
+/// that each kind of parts is compiled with its writer (through `dyn`, two
+/// calls for each part).
+trait Parts {
+    fn text(&self) -> &[u8];
+    fn each(&self, part: impl FnMut(usize, usize));
+}
+
+/// The parts of a text between its bytes `c`, from the left.
+struct ByteParts<'a>(&'a [u8], u8);
+
+impl Parts for ByteParts<'_> {
+    fn text(&self) -> &[u8] {
+        self.0
+    }
+    #[inline(always)]
+    fn each(&self, mut part: impl FnMut(usize, usize)) {
+        let mut start = 0;
+        each_byte(self.0, self.1, |i| {
+            part(start, i);
+            start = i + 1;
+        });
+        part(start, self.0.len());
+    }
+}
+
+/// The lines of a text, as `sem::text_lines`: separated by `\n`, a `\r`
+/// before it removed, none after a final `\n` (D305: `str::split` by a
+/// character, 29 ns a line of 60 bytes).
+struct Lines<'a>(&'a [u8]);
+
+impl Parts for Lines<'_> {
+    fn text(&self) -> &[u8] {
+        self.0
+    }
+    #[inline(always)]
+    fn each(&self, mut part: impl FnMut(usize, usize)) {
+        let b = self.0;
+        if b.is_empty() {
+            return;
+        }
+        let body = &b[..b.len() - (b[b.len() - 1] == b'\n') as usize];
+        ByteParts(body, b'\n').each(|s, e| part(s, if e > s && b[e - 1] == b'\r' { e - 1 } else { e }));
+    }
+}
+
+/// The parts of a text between the occurrences of a text of more than one
+/// byte, from the left, as `str::split`: found by `find_bytes`.
+struct SepParts<'a>(&'a [u8], &'a [u8]);
+
+impl Parts for SepParts<'_> {
+    fn text(&self) -> &[u8] {
+        self.0
+    }
+    #[inline(always)]
+    fn each(&self, mut part: impl FnMut(usize, usize)) {
+        let (b, sep) = (self.0, self.1);
+        let mut start = 0;
+        while let Some(i) = sem::find_bytes(&b[start..], sep) {
+            part(start, start + i);
+            start += i + sep.len();
+        }
+        part(start, b.len());
+    }
+}
+
+/// The parts `parts` as strings of one block, as the lines of a large text
+/// (D298): one allocation for all of them, each freed with the last (D305:
+/// a block of the heap for each, 47.21 ns a line of 60 bytes against 8.51
+/// in C). The parts are found twice: to count them and their bytes, then
+/// to write them.
+fn block_strs(parts: &impl Parts) -> IscArray {
+    let (mut count, mut place) = (0, 0);
+    parts.each(|s, e| {
+        count += 1;
+        place += arena_step(e - s);
+    });
+    let text = parts.text();
+    let q = new_str_array(count);
+    let ptr = q.as_mut_ptr();
+    if count > 0 {
+        let size = ARENA_HEAD + place;
+        let block = isc_alloc(size as i64);
+        // SAFETY: a block of `size` bytes of this call alone, not read before
+        // it is written (as bytes that may not be initialized)
+        let arena = unsafe { core::slice::from_raw_parts_mut(block as *mut core::mem::MaybeUninit<u8>, size) };
+        let base = (block as u64).to_le_bytes();
+        let (head, area) = arena.split_at_mut(ARENA_HEAD);
+        let (mut at, mut k) = (0, 0);
+        parts.each(|s, e| {
+            let n = e - s;
+            // the address of the block, then the bytes (`arena_free`); a
+            // short part by 16 bytes, the bytes past it in the place of the
+            // next part, written after it (a call of `memcpy` for each
+            // part: 8.69 % of a `split` of parts of 5 bytes)
+            area[at..at + 8].write_copy_of_slice(&base);
+            if n <= 16 && s + 16 <= text.len() && at + 24 <= area.len() {
+                area[at + 8..at + 24].write_copy_of_slice(&text[s..s + 16]);
+            } else {
+                area[at + 8..at + 8 + n].write_copy_of_slice(&text[s..e]);
+            }
+            q[k] = IscStr { ptr: area[at + 8..].as_ptr() as *const u8, len: n as i64 };
+            at += arena_step(n);
+            k += 1;
+        });
+        head[..8].write_copy_of_slice(&(count as u64).to_le_bytes());
+        head[8..16].write_copy_of_slice(&(size as u64).to_le_bytes());
+    }
+    IscArray { ptr: ptr as *mut u8, len: count as i64 }
+}
+
+/// The `n` strings at `p` freed (an array of strings freed by the generated
+/// code, then its block): those of one block of strings one after the other
+/// (`block_strs`, `lines`) counted down at once (D305: an atomic operation
+/// for each).
+///
+/// # Safety
+/// `p` the `n` strings of an array the caller owns, freed only here.
+#[no_mangle]
+pub unsafe extern "C" fn isc_free_strs(p: *const IscStr, n: i64) {
+    if n <= 0 {
+        return;
+    }
+    // SAFETY: the `n` strings of the caller's array
+    let strs = unsafe { core::slice::from_raw_parts(p, n as usize) };
+    let mut i = 0;
+    while i < strs.len() {
+        let s = strs[i].ptr as *mut u8;
+        if s as usize % 16 != 8 {
+            isc_free(s);
+            i += 1;
+            continue;
+        }
+        // SAFETY: a string of a block of strings: its block's address in the
+        // 8 bytes before it, the size of the block in the second 8 bytes of
+        // the block (see `block_strs`)
+        let (block, size) = unsafe {
+            let b = (s.sub(8) as *const u64).read_unaligned() as usize;
+            (b, (b as *const u64).add(1).read())
+        };
+        // the next strings of the same block: inside it, their bytes not
+        // read (a line of cache for each)
+        let inside = |t: *const u8| t as usize % 16 == 8 && t as usize > block && t as usize - block < size as usize;
+        let mut k = 1;
+        while i + k < strs.len() && inside(strs[i + k].ptr) {
+            k += 1;
+        }
+        // SAFETY: `k` strings of that block, not freed before
+        unsafe { arena_free_many(block, k as u64) };
+        i += k;
+    }
 }
 
 #[no_mangle]

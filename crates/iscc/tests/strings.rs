@@ -792,3 +792,52 @@ fn integer_reductions_of_strings_in_one_accumulator() {
         }
     }
 }
+
+/// D305: the lines of a text and the parts of a split in one block, freed
+/// with the last of them; an array of strings freed at once by the runtime,
+/// those of one block counted down together. Empty texts, empty lines and
+/// parts, `\r\n`, no final `\n`, separators of one and several bytes, at
+/// both ends, one after the other, characters of several bytes; parts kept
+/// after their array is gone, sorted, filtered, two blocks in one array
+/// (`concat`), strings of a block among others; small texts and one of 3
+/// MiB (in parallel); on 1, 3 and 8 threads, as the interpreter; nothing
+/// lost, nothing freed twice (valgrind).
+#[test]
+fn lines_and_parts_in_one_block() {
+    let src = r#"action kept(t: string, sep: string): string[k] {
+    const parts = t.split(sep);
+    print(parts.length);
+    return filter(parts, (p) => p.length % 3 != 1);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const big = join(map(iota(n), (i) => i % 9 == 0 ? "" : toString(i * 7919) + (i % 11 == 0 ? "\r" : "") + (i % 13 == 0 ? "é,;" : ",")), "\n");
+    const texts = ["", "\n", "a", "a\n", "\n\nb\r\n\r\nc", "x,,y,", ",a,b,", "é;;é;", big];
+    print(texts.map((t) => lines(t).length));
+    print(texts.map((t) => lines(t).map((l) => toString(l.length)).join(".")).join("|").length);
+    print(texts.map((t) => t.split(",").join("+")).join("|").length);
+    print(texts.map((t) => t.split(";;").length));
+    print(texts.map((t) => t.split("é").map((p) => toString(p.length)).join(".")).join("|").length);
+    const a = kept(big, ",");
+    const b = kept(big, "\n");
+    const both = concat(a, b);
+    const sorted = sortBy(both, (s) => s);
+    print([both.length, sum(map(both, (s) => s.length))]);
+    print([sorted[0], sorted[sorted.length - 1], sorted[sorted.length / 2]]);
+    const mixed = concat(lines("p\nq\nr"), [big.slice(0, 3) + "!", "s"]);
+    print(mixed);
+    return 0;
+}
+"#;
+    let bin = compile(src, "str_block_parts");
+    for n in ["40", "400000"] {
+        let want = interp_ok(src, &[n]);
+        for threads in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[n], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} numbers, {} threads: {}", n, threads, r.stderr);
+        }
+    }
+    valgrind_clean(src, "str_block_parts", &["40"]);
+    valgrind_clean(src, "str_block_parts", &["200000"]);
+}
