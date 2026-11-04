@@ -1340,10 +1340,97 @@ impl RxEngine {
         }
     }
 
-    fn merge(&self, s: &str, starts: &[usize], parts: &[alloc::vec::Vec<(usize, usize)>]) -> alloc::vec::Vec<(usize, usize)> {
+    fn merge(&self, s: &str, starts: &[usize], parts: &[alloc::vec::Vec<(usize, usize)>]) -> alloc::vec::Vec<sem::rx::Run> {
         match self {
-            RxEngine::Simple(sm) => sem::rx::merge_bounds_with(s, starts, parts, |at| sm.find_at(s, at)),
-            RxEngine::Meta(re) => sem::rx::merge_bounds(re, s, starts, parts),
+            RxEngine::Simple(sm) => sem::rx::merge_runs_with(s, starts, parts, |at| sm.find_at(s, at)),
+            RxEngine::Meta(re) => sem::rx::merge_runs(re, s, starts, parts),
+        }
+    }
+}
+
+/// The matches of a global search (D281): the matches of its parts, their
+/// runs (`merge_runs_with`) as slices of them, those found alone at a cut in
+/// `extra`; never copied into one vector unless a caller needs it.
+struct Found {
+    parts: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>>,
+    extra: alloc::vec::Vec<(usize, usize)>,
+    /// each run: its part (`usize::MAX` for `extra`), its first and its end
+    runs: alloc::vec::Vec<(usize, usize, usize)>,
+}
+
+impl Found {
+    fn one(v: alloc::vec::Vec<(usize, usize)>) -> Found {
+        let n = v.len();
+        Found { parts: alloc::vec![v], extra: alloc::vec::Vec::new(), runs: alloc::vec![(0, 0, n)] }
+    }
+
+    fn of(parts: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>>, runs: &[sem::rx::Run]) -> Found {
+        let mut f = Found { parts, extra: alloc::vec::Vec::new(), runs: alloc::vec::Vec::with_capacity(runs.len()) };
+        for r in runs {
+            match *r {
+                sem::rx::Run::Part(k, lo, hi) => f.runs.push((k, lo, hi)),
+                sem::rx::Run::One(a, b) => {
+                    f.extra.push((a, b));
+                    let n = f.extra.len();
+                    f.runs.push((usize::MAX, n - 1, n));
+                }
+            }
+        }
+        f
+    }
+
+    fn run(&self, r: usize) -> &[(usize, usize)] {
+        let (k, lo, hi) = self.runs[r];
+        if k == usize::MAX {
+            &self.extra[lo..hi]
+        } else {
+            &self.parts[k][lo..hi]
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.runs.iter().map(|&(_, lo, hi)| hi - lo).sum()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        (0..self.runs.len()).flat_map(move |r| self.run(r).iter().copied())
+    }
+
+    fn to_vec(&self) -> alloc::vec::Vec<(usize, usize)> {
+        let mut out = alloc::vec::Vec::with_capacity(self.len());
+        out.extend(self.iter());
+        out
+    }
+
+    /// The place (run, index in it) of the first match that starts at `at`
+    /// or after: by halving over the runs, then in the run.
+    fn first_at(&self, at: usize) -> (usize, usize) {
+        let r = (0..self.runs.len()).collect::<alloc::vec::Vec<_>>().partition_point(|&r| self.run(r).last().map_or(true, |&(a, _)| a < at));
+        if r == self.runs.len() {
+            return (r, 0);
+        }
+        (r, self.run(r).partition_point(|&(a, _)| a < at))
+    }
+
+    /// The match before the place `(r, j)`, if any.
+    fn before(&self, (r, j): (usize, usize)) -> Option<(usize, usize)> {
+        if j > 0 {
+            return Some(self.run(r)[j - 1]);
+        }
+        (0..r).rev().find_map(|q| self.run(q).last().copied())
+    }
+
+    /// The matches from the place `from` to the place `to`, in order.
+    fn between(&self, from: (usize, usize), to: (usize, usize), f: &mut dyn FnMut(usize, usize)) {
+        let (mut r, mut j) = from;
+        while (r, j) < to && r < self.runs.len() {
+            let run = self.run(r);
+            let end = if r == to.0 { to.1 } else { run.len() };
+            for &(a, b) in &run[j..end.min(run.len())] {
+                f(a, b);
+            }
+            r += 1;
+            j = 0;
         }
     }
 }
@@ -1357,7 +1444,7 @@ fn rx_engine(v: &str, s: &str) -> RxEngine {
     }
 }
 
-unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
+unsafe fn rx_bounds(re: &RxEngine, s: &str) -> Found {
     let threads = thread_count();
     // inside a task (the pool busy) the parts of the automaton would run
     // one after the other, each with a new cache of the lazy DFA to fill
@@ -1367,7 +1454,7 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
     // 4 threads, now on the 4)
     let busy = BUSY.load(Ordering::Relaxed);
     if threads <= 1 || s.len() < 2 * RX_PART || (busy && !matches!(re, RxEngine::Simple(_))) {
-        return re.bounds_from(s, 0, usize::MAX);
+        return Found::one(re.bounds_from(s, 0, usize::MAX));
     }
     // one part per thread: each one fills one cache
     let parts = (s.len() / RX_PART).min(threads);
@@ -1403,7 +1490,8 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
     }
     let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr() };
     parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, false);
-    re.merge(s, &starts, &found)
+    let runs = re.merge(s, &starts, &found);
+    Found::of(found, &runs)
 }
 
 /// `n` bytes from `src` to `dst` (D280): a few bytes, as most texts between
@@ -1445,29 +1533,35 @@ const REPLACE_PARALLEL_MIN: usize = 1 << 20;
 /// result known before (its text between its matches, then `to` per match),
 /// each part written at its place. The bytes of `replace_bounds`. None with
 /// one thread, a short text or a busy pool.
-unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Option<IscStr> {
+unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     let threads = thread_count();
     if threads <= 1 || s.len() < REPLACE_PARALLEL_MIN || BUSY.load(Ordering::Relaxed) {
         return None;
     }
     let parts = threads.min(64);
     // part k: the text cut[k] .. cut[k + 1] and the matches that start in it,
-    // first[k] .. first[k + 1] (a cut is never inside a match)
+    // from the place first[k] to first[k + 1] (a cut is never inside a match)
     let mut cut = [0usize; 65];
-    let mut first = [0usize; 65];
+    let mut first = [(0usize, 0usize); 65];
     for k in 1..parts {
         let c = s.len() * k / parts;
-        let i = bounds.partition_point(|&(a, _)| a < c);
-        let c = if i > 0 && bounds[i - 1].1 > c { bounds[i - 1].1 } else { c };
+        let at = found.first_at(c);
+        let c = match found.before(at) {
+            Some((_, b)) if b > c => b,
+            _ => c,
+        };
         cut[k] = c.max(cut[k - 1]);
-        first[k] = bounds.partition_point(|&(a, _)| a < cut[k]);
+        first[k] = found.first_at(cut[k]);
     }
     cut[parts] = s.len();
-    first[parts] = bounds.len();
+    first[parts] = (found.runs.len(), 0);
     let mut at = [0usize; 65];
     for k in 0..parts {
-        let removed: usize = bounds[first[k]..first[k + 1]].iter().map(|&(a, b)| b - a).sum();
-        let count = first[k + 1] - first[k];
+        let (mut removed, mut count) = (0usize, 0usize);
+        found.between(first[k], first[k + 1], &mut |a, b| {
+            removed += b - a;
+            count += 1;
+        });
         at[k + 1] = at[k] + (cut[k + 1] - cut[k]) - removed + count * to.len();
     }
     let total = at[parts];
@@ -1477,9 +1571,9 @@ unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Opti
         s: *const u8,
         to: *const u8,
         tn: usize,
-        bounds: *const (usize, usize),
+        found: *const Found,
         cut: *const usize,
-        first: *const usize,
+        first: *const (usize, usize),
         at: *const usize,
         out: *mut u8,
     }
@@ -1487,17 +1581,15 @@ unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Opti
         unsafe {
             let c = &*(ctx as *const Ctx);
             let k = k as usize;
-            let (i0, i1) = (*c.first.add(k), *c.first.add(k + 1));
             let mut last = *c.cut.add(k);
             let mut o = c.out.add(*c.at.add(k));
-            for i in i0..i1 {
-                let (a, b) = *c.bounds.add(i);
+            (*c.found).between(*c.first.add(k), *c.first.add(k + 1), &mut |a, b| {
                 copy_short(c.s.add(last), o, a - last);
                 o = o.add(a - last);
                 copy_short(c.to, o, c.tn);
                 o = o.add(c.tn);
                 last = b;
-            }
+            });
             let end = *c.cut.add(k + 1);
             core::ptr::copy_nonoverlapping(c.s.add(last), o, end - last);
         }
@@ -1506,7 +1598,7 @@ unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Opti
         s: s.as_ptr(),
         to: to.as_ptr(),
         tn: to.len(),
-        bounds: bounds.as_ptr(),
+        found: found as *const Found,
         cut: cut.as_ptr(),
         first: first.as_ptr(),
         at: at.as_ptr(),
@@ -1577,9 +1669,9 @@ fn rx_for(v: &str, s: &str) -> sem::rx::Regex {
 #[no_mangle]
 pub unsafe extern "C" fn isc_rx_matches(out: *mut IscArray, s: *const u8, n: i64, v: *const u8, m: i64) {
     let (t, re) = (text(s, n), text(v, m));
-    let bounds = rx_bounds(&rx_engine(re, t), t);
-    let count = bounds.len();
-    *out = str_array(&mut bounds.into_iter().map(|(a, b)| &t[a..b]), count);
+    let found = rx_bounds(&rx_engine(re, t), t);
+    let count = found.len();
+    *out = str_array(&mut found.iter().map(|(a, b)| &t[a..b]), count);
 }
 
 #[no_mangle]
@@ -1593,14 +1685,14 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
     // in parallel, and the result built once (D189; `written` would search
     // twice, to count the bytes and to write them)
     if (all != 0 || flags.contains('g')) && sem::rx::without_groups(to) {
-        let bounds = rx_bounds(&rx_engine(re, t), t);
+        let found = rx_bounds(&rx_engine(re, t), t);
         if !to.contains('$') {
-            if let Some(r) = replace_parallel(t, to, &bounds) {
+            if let Some(r) = replace_parallel(t, to, &found) {
                 *out = r;
                 return;
             }
         }
-        *out = adopt(sem::rx::replace_bounds(t, to, &bounds));
+        *out = adopt(sem::rx::replace_bounds(t, to, &found.to_vec()));
         return;
     }
     *out = written(&|w| {

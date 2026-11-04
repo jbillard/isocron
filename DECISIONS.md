@@ -5112,3 +5112,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   192.5 ms -> 182.7 ms. Test `short_copies_of_a_replacement` (every length
   of text from 0 to 64 between the matches, replacements of 0 to 33 bytes,
   in a text written in parallel; 1 and 4 threads).
+- **D281 — The matches of a search in parts kept as runs of the parts
+  (2026-11-04).** After D276 the merge of the parts of a search still made
+  one vector of all the matches: for the 3.5 million matches of a
+  replacement of regex-redux, 56 MB copied by the main thread alone (the
+  timeline: about 4 ms each, the three other threads waiting), then read
+  again by the replacement. The merge now gives runs (`merge_runs_with`):
+  the matches of a part from where the global search goes on in it to the
+  one that crosses into the next part, and the matches found alone at a
+  cut; a search keeps its parts and their runs (`Found`). A count adds the
+  lengths of the runs; the list of matches is made from them; a replacement
+  written in parallel (D279) finds its cuts in the runs by halving and
+  writes the matches of each part from them; the other replacements make
+  the vector as before. The same matches and texts. In alternation, best
+  of 9, 4 threads: regex-redux 184.8 ms -> 167.9 ms. Tests: the merge
+  (`merged_parts_are_one_search`), and the searches split among threads,
+  the replacements written in parallel by matches and by bytes, the short
+  copies (`strings.rs`, 1 to 16 threads).

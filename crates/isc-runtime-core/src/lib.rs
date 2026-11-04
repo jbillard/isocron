@@ -2170,14 +2170,64 @@ pub mod rx {
         merge_bounds_with(s, starts, parts, |at| re.search_with(&mut cache, &regex_automata::Input::new(s).range(at..)).map(|m| (m.start(), m.end())))
     }
 
+    /// `merge_bounds` as runs of the matches of the parts (D281).
+    pub fn merge_runs(re: &Regex, s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>]) -> Vec<Run> {
+        let mut cache = re.create_cache();
+        merge_runs_with(s, starts, parts, |at| re.search_with(&mut cache, &regex_automata::Input::new(s).range(at..)).map(|m| (m.start(), m.end())))
+    }
+
+    /// A run of the matches of a search merged from its parts (D281): the
+    /// matches `lo .. hi` of part `k`, or one match found alone at a cut.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Run {
+        Part(usize, usize, usize),
+        One(usize, usize),
+    }
+
+    /// The matches of `runs` over `parts`, in order.
+    pub fn runs_iter<'a>(parts: &'a [Vec<(usize, usize)>], runs: &'a [Run]) -> impl Iterator<Item = (usize, usize)> + 'a {
+        runs.iter().flat_map(move |r| {
+            let (slice, one): (&[(usize, usize)], Option<(usize, usize)>) = match *r {
+                Run::Part(k, lo, hi) => (&parts[k][lo..hi], None),
+                Run::One(a, b) => (&[], Some((a, b))),
+            };
+            slice.iter().copied().chain(one)
+        })
+    }
+
+    /// The number of matches of `runs`.
+    pub fn runs_len(runs: &[Run]) -> usize {
+        runs.iter().map(|r| match *r {
+            Run::Part(_, lo, hi) => hi - lo,
+            Run::One(..) => 1,
+        }).sum()
+    }
+
     /// `merge_bounds` with `find(at)`, the first match of a search from
     /// `at`, for any engine (D224).
-    pub fn merge_bounds_with(s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>], mut find: impl FnMut(usize) -> Option<(usize, usize)>) -> Vec<(usize, usize)> {
-        let mut out = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
+    pub fn merge_bounds_with(s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>], find: impl FnMut(usize) -> Option<(usize, usize)>) -> Vec<(usize, usize)> {
+        let runs = merge_runs_with(s, starts, parts, find);
+        let mut out = Vec::with_capacity(runs_len(&runs));
+        for r in &runs {
+            match *r {
+                Run::Part(k, lo, hi) => out.extend_from_slice(&parts[k][lo..hi]),
+                Run::One(a, b) => out.push((a, b)),
+            }
+        }
+        out
+    }
+
+    /// The matches of the search split into the parts that start at
+    /// `starts` (each searched up to the first match at or after the next
+    /// start, that one included), as runs of the matches of the parts (D281:
+    /// no copy of them): where a part goes on after a match that crosses
+    /// into it, found by halving (D276), or the matches found by `find`
+    /// until it does.
+    pub fn merge_runs_with(s: &str, starts: &[usize], parts: &[Vec<(usize, usize)>], mut find: impl FnMut(usize) -> Option<(usize, usize)>) -> Vec<Run> {
+        let mut out = Vec::new();
         // the part whose search went on from `at` (the part `c` with
         // `starts[c] <= at`: its start, or after one of its matches), and
-        // the index of its next match: its matches are in order, the one
-        // that ends the search at `at` found by halving (D276)
+        // the index of its next match
         let follow = |at: usize| -> Option<(usize, usize)> {
             let c = match starts.binary_search(&at) {
                 Ok(c) => return Some((c, 0)),
@@ -2194,26 +2244,22 @@ pub mod rx {
             match cur {
                 Some((k, j)) if j < parts[k].len() => {
                     // the matches of the part before the next part starts,
-                    // all at once (D276): they follow each other in it
+                    // then the one that crosses into it (if any): they follow
+                    // each other in it
                     let p = &parts[k];
                     let e = if k + 1 < starts.len() { p[j..].partition_point(|&(a, _)| a < starts[k + 1]) + j } else { p.len() };
-                    if e > j + 1 {
-                        out.extend_from_slice(&p[j..e - 1]);
-                    }
-                    let i = if e > j { e - 1 } else { j };
-                    let (a, b) = p[i];
-                    out.push((a, b));
+                    let last = if e < p.len() { e + 1 } else { e };
+                    out.push(Run::Part(k, j, last));
+                    let (a, b) = p[last - 1];
                     at = next_at(s, a, b);
-                    // the last match of a part starts in a following one:
-                    // its search stopped there
-                    cur = if k + 1 < starts.len() && a >= starts[k + 1] { follow(at) } else { Some((k, i + 1)) };
+                    cur = if k + 1 < starts.len() && a >= starts[k + 1] { follow(at) } else { Some((k, last)) };
                 }
                 // a part stops only at a match in a following part: this
                 // one met no more match up to the end of `s`
                 Some(_) => break,
                 None => {
                     let Some((a, b)) = find(at) else { break };
-                    out.push((a, b));
+                    out.push(Run::One(a, b));
                     at = next_at(s, a, b);
                     cur = follow(at);
                 }
