@@ -5490,3 +5490,54 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   index of 8 bits, a window too wide, elements of 8 bytes on the heap, an
   index past the end and nothing kept with their panics, sizes around the
   blocks, 1 to 8 threads, the interpreter, valgrind).
+- **D294 — The small blocks carved from spans of huge pages, one per
+  thread (2026-11-04).** Part 1 of the goal of 2026-11-04: k-nucleotide
+  took 1083 ms, 4.04 times its floor. Variants of the program, each with
+  one of its counts (medians of 7 runs): the reading, the lines, the join
+  and the codes alone 262.0 ms; with the 1-mers 297.6, the 2-mers 301.6,
+  the 3-mers 305.4, the 4-mers 305.9, the 6-mers 311.2, the 12-mers 556.9,
+  the 18-mers 571.9 ms (the floor reads the file in 27 ms). The codes are
+  not an array of `i64` read again by each count (codes of 8 bits gave the
+  same times: 297.8 against 297.7 ms, 560.8 against 557.9 ms): they are
+  fused with their reads. In the profile of the reading alone, `refill`
+  (the small blocks of the 4.2 million lines) had 33.97 % of the samples,
+  83 % of them in the wait for the lock of the chunks (`pause` 32.13 %,
+  `lock cmpxchg` 50.75 %), the clearing of new pages 11.36 %: `carve_many`
+  wrote the headers of its blocks under the lock, and with them the first
+  writes into the new huge pages, cleared by the kernel 2 MiB at a time,
+  while the other threads waited. The headers written after the lock
+  (only the range reserved under it) made it slower: 262219 -> 281571 µs
+  (+7.25 % [+6.81 %, +7.74 %]), the wait gone (`refill` 6.42 %) but the
+  clearing 36.55 % of the samples for the same 402 huge pages a run. A
+  program of 4 threads writing 512 MiB of new memory in huge pages shows
+  why: taking the next 16 KiB of one pointer each (the threads in the
+  same huge pages at once) 89.1 ms and 350 ms of CPU, each its own 128
+  MiB 39.3 ms and 150 ms, the same 256 huge pages. Now each thread carves
+  its small blocks of less than 16 KiB from a span of its own, taken under
+  the lock from the chunks and ending at the end of a huge page, so that
+  each huge page is written first by one thread; the first chunk of the
+  process, in pages of 4 KiB (D289), is still carved by all the threads
+  one block after the other under the lock (a page touched by two threads
+  at once is cleared twice at most 4 KiB), then an atomic flag sends every
+  later carving to the spans without the lock. Two steps were measured on
+  the way: the spans alone (each one from the start of its huge page)
+  made binary-trees 3.58 % slower ([+3.32 %, +4.67 %]): the same
+  instructions (26.43 against 26.47 billion), as many misses of the L1
+  cache, twice the clears of the pipeline for the order of memory (1.10
+  and 1.30 million against 2.71 and 2.39), all in the making of the
+  trees, with 4 threads only (on one thread the same cycles) and no line
+  shared between the cores (6 and 9 loads hitting a line modified by
+  another core in `perf c2c`): the blocks the threads carve in the same
+  order were at the same places of their huge pages. Spans starting at
+  colors (8, by steps of 8 KiB and 192 bytes) took the clears back to 1.68
+  and 1.42 million, binary-trees +0.50 % [-0.43 %, +1.29 %] then +1.22 %
+  [+0.09 %, +2.21 %]; with the first chunk shared as before, none left.
+  Which way through the caches the same places make these clears is not
+  shown (TODO). At fixed frequency, alternated rounds, against D293: the
+  reading of k-nucleotide alone 262472 -> 228813 µs (-12.77 % [-13.39 %,
+  -12.34 %], 21 rounds; 695.36 -> 563.27 ms of CPU, medians of 15);
+  k-nucleotide 1085220 -> 1048271 µs (-3.40 % [-4.30 %, -2.71 %]);
+  binary-trees -0.13 % [-0.36 %, -0.01 %]; the eight others between
+  -0.14 % and +0.03 %, every interval across 0. Test
+  `lines_of_a_large_text_made_in_parallel` (also 40 MiB of lines, many
+  spans and chunks for each thread, and 8 threads).

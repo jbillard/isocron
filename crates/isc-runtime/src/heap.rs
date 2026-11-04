@@ -204,6 +204,11 @@ struct ThreadCache {
     /// The medium blocks of at most MEDIUM_CACHED bytes the thread freed
     /// last (state CACHED), the older one first.
     medium: [*mut Header; 2],
+    /// The span of the thread (`span .. span_end`, whole huge pages of the
+    /// chunks of the small blocks of less than ALIGNED_MIN bytes) that its
+    /// new small blocks are carved from (D294).
+    span: usize,
+    span_end: usize,
 }
 
 const _: () = assert!(core::mem::size_of::<ThreadCache>() <= 1024);
@@ -663,6 +668,11 @@ unsafe extern "C" fn thread_end(p: *mut c_void) {
 
 /// The chunks made (under CHUNK_LOCK).
 static mut CHUNKS_MADE: usize = 0;
+/// The start of the first chunk, in pages of 4 KiB (`chunk_start`).
+static mut FIRST_CHUNK: usize = 0;
+/// The small blocks of less than ALIGNED_MIN bytes carved from the spans of
+/// the threads (`carve_many`), once the first chunk can hold no more.
+static SMALL_SPANS: AtomicBool = AtomicBool::new(false);
 
 /// The start of a new chunk mapped at `base` (with a huge page more, to
 /// align it): in huge pages, except the first chunk of the process, in
@@ -676,6 +686,9 @@ unsafe fn chunk_start(base: *mut u8) -> usize {
     let start = (base as usize).next_multiple_of(HUGE);
     // SAFETY: see above
     unsafe {
+        if CHUNKS_MADE == 0 {
+            FIRST_CHUNK = start;
+        }
         let advice = if CHUNKS_MADE == 0 { MADV_NOHUGEPAGE } else { MADV_HUGEPAGE };
         madvise(start as *mut c_void, CHUNK, advice);
         CHUNKS_MADE += 1;
@@ -728,12 +741,15 @@ unsafe fn carve(class: usize, size: usize) -> *mut Header {
     h
 }
 
-/// Up to `count` new small blocks of class `class`, carved under one lock of
-/// the chunks, as a list (by `next`); null if none could be had.
-unsafe fn carve_many(class: usize, size: usize, count: usize) -> *mut Header {
-    // the blocks of ALIGNED_MIN bytes or more keep the placement of `carve`
-    if size >= ALIGNED_MIN || count <= 1 {
-        let mut list: *mut Header = null_mut();
+/// Up to `count` new small blocks of class `class` for the thread of `tc`,
+/// as a list (by `next`); null if none could be had. Those of ALIGNED_MIN
+/// bytes or more keep the placement of `carve`; the others come from the
+/// first chunk while it holds them (in pages of 4 KiB, the blocks of all
+/// the threads one after the other under one lock), then from the span of
+/// the thread, without a lock (`take_span`, D294).
+unsafe fn carve_many(tc: *mut ThreadCache, class: usize, size: usize, count: usize) -> *mut Header {
+    let mut list: *mut Header = null_mut();
+    if size >= ALIGNED_MIN || count == 0 {
         for _ in 0..count {
             let h = carve(class, size);
             if h.is_null() {
@@ -745,21 +761,53 @@ unsafe fn carve_many(class: usize, size: usize, count: usize) -> *mut Header {
         return list;
     }
     let need = HEADER + size;
-    let g = group(size);
-    let mut list: *mut Header = null_mut();
-    spin_lock(&CHUNK_LOCK);
-    for _ in 0..count {
-        if BUMP[g] + need > BUMP_END[g] {
+    // in the first chunk, in pages of 4 KiB, the blocks of all the threads
+    // carved one after the other under one lock, as before the spans (a
+    // page touched by two threads at once is cleared twice at most 4 KiB):
+    // the few blocks of a small program stay together
+    if !SMALL_SPANS.load(Ordering::Relaxed) {
+        spin_lock(&CHUNK_LOCK);
+        if BUMP_END[0] == 0 && CHUNKS_MADE == 0 {
             let base = map(CHUNK + HUGE, 0);
-            if base.is_null() {
+            if !base.is_null() {
+                let start = chunk_start(base);
+                BUMP[0] = start;
+                BUMP_END[0] = start + CHUNK;
+            }
+        }
+        let first = FIRST_CHUNK != 0 && BUMP_END[0] == FIRST_CHUNK + CHUNK && BUMP[0] + count * need <= BUMP_END[0];
+        if first {
+            for _ in 0..count {
+                let h = BUMP[0] as *mut Header;
+                BUMP[0] += need;
+                (*h).class = class as u32;
+                (*h).state = FREE;
+                (*h).contents = ZERO;
+                (*h).idle = 0;
+                (*h).next = list;
+                list = h;
+            }
+        } else {
+            // the first chunk full (or not the one of these blocks): spans
+            // from now on, without this lock
+            SMALL_SPANS.store(true, Ordering::Relaxed);
+        }
+        CHUNK_LOCK.store(false, Ordering::Release);
+        if first {
+            return list;
+        }
+    }
+    for _ in 0..count {
+        if (*tc).span + need > (*tc).span_end {
+            let (start, end) = take_span(need);
+            if start == 0 {
                 break;
             }
-            let start = chunk_start(base);
-            BUMP[g] = start;
-            BUMP_END[g] = start + CHUNK;
+            (*tc).span = start;
+            (*tc).span_end = end;
         }
-        let h = BUMP[g] as *mut Header;
-        BUMP[g] += need;
+        let h = (*tc).span as *mut Header;
+        (*tc).span += need;
         (*h).class = class as u32;
         (*h).state = FREE;
         (*h).contents = ZERO;
@@ -767,9 +815,58 @@ unsafe fn carve_many(class: usize, size: usize, count: usize) -> *mut Header {
         (*h).next = list;
         list = h;
     }
-    CHUNK_LOCK.store(false, Ordering::Release);
     list
 }
+
+/// A new span for the small blocks of less than ALIGNED_MIN bytes of one
+/// thread, of at least `need` bytes: the chunk from where its last span
+/// ended to the end of the huge page that holds `need` bytes more (a new
+/// chunk when they do not fit), under the lock of the chunks; (0, 0) if the
+/// system has no memory left. The spans end at the ends of huge pages, so
+/// that each huge page belongs to one thread: the first write into it,
+/// which makes the kernel clear its 2 MiB, is never made by two threads at
+/// once, each clearing a page of its own and all but one for nothing
+/// (D294: 4 threads writing the same new huge pages took 2.3 times the time
+/// and the CPU of each writing its own; carved under the lock, they waited
+/// for it). Each span starts at its color (`SPAN_COLORS`).
+unsafe fn take_span(need: usize) -> (usize, usize) {
+    spin_lock(&CHUNK_LOCK);
+    if BUMP[0] + need > BUMP_END[0] {
+        // the rest of the current chunk is lost (less than ALIGNED_MIN)
+        let base = map(CHUNK + HUGE, 0);
+        if base.is_null() {
+            CHUNK_LOCK.store(false, Ordering::Release);
+            return (0, 0);
+        }
+        let start = chunk_start(base);
+        BUMP[0] = start;
+        BUMP_END[0] = start + CHUNK;
+    }
+    let start = BUMP[0];
+    let end = (start + need).next_multiple_of(HUGE).min(BUMP_END[0]);
+    BUMP[0] = end;
+    // the colors of the spans (D294): each one starts SPAN_COLOR bytes
+    // further into its huge page than the one before, modulo SPAN_COLORS of
+    // them, when that leaves room for the block
+    let color = SPANS % SPAN_COLORS * SPAN_COLOR;
+    SPANS += 1;
+    CHUNK_LOCK.store(false, Ordering::Release);
+    if start + color + need <= end {
+        (start + color, end)
+    } else {
+        (start, end)
+    }
+}
+
+/// The spans taken (under CHUNK_LOCK), for their colors.
+static mut SPANS: usize = 0;
+/// The colors of the spans: offsets of 0, SPAN_COLOR, ... into their first
+/// huge page, so that the blocks that threads carve in the same order from
+/// their spans are not at the same places of their huge pages (D294: at the
+/// same places, binary-trees on 4 threads had twice the clears of the
+/// pipeline for the order of memory, 3.6 % slower).
+const SPAN_COLORS: usize = 8;
+const SPAN_COLOR: usize = (8 << 10) + 64 * 3;
 
 /// A free small block goes to the global list of its class. The lock of the
 /// class held.
@@ -807,10 +904,11 @@ unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header
         got += 1;
     }
     unlock_small(class);
-    // the rest new, carved under one lock of the chunks (D252: one lock per
-    // block before)
+    // the rest new, carved from the span of the thread (D294; under one lock
+    // of the chunks for all of them before, D252, and one lock per block
+    // before that)
     if got < batch {
-        let mut h = carve_many(class, size, batch - got);
+        let mut h = carve_many(tc, class, size, batch - got);
         while !h.is_null() {
             let next = (*h).next;
             keep(h);

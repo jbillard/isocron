@@ -221,6 +221,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] `countBy` groups its keys as they are made, by blocks; an `iota` read in place never made: k-nucleotide 2.563 s -> 1.659 s (D244)
   - [x] The keys of a block hashed once, the table in registers: k-nucleotide 1.666 s -> 1.601 s (D245; the tables split by key and a load of 3/4 measured, not kept)
   - [x] The lines of a text in parallel, the small blocks refilled by batches: k-nucleotide 1.607 s -> 1.453 s, regex-redux 0.303 s -> 0.291 s (D252)
+  - [x] The small blocks carved from spans of huge pages, one per thread, the first chunk shared: the reading of k-nucleotide 262472 -> 228813 µs, k-nucleotide 1085220 -> 1048271 µs (D294)
+  - [ ] The clears of the pipeline for the order of memory of binary-trees when the blocks of the threads are at the same places of their huge pages (D294): the way through the caches not shown
   - [ ] The headers of 64 bytes of small blocks: a line of 60 bytes takes 128 (the first writes of `refill`)
   - [x] The large tables of `countBy` scattered by rounds, the keys of a block in two passes: k-nucleotide 1.454 s -> 1.115 s (D253)
   - [ ] k-nucleotide: 87 instructions a large key against about 28 needed (the scatter, the rounds), the base still 300 ms (lines, headers, join)
