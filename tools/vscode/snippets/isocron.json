@@ -1,0 +1,104 @@
+{
+  "main": {
+    "prefix": "main",
+    "description": "The action of the program",
+    "body": [
+      "action main(args: string[k]): i32 {",
+      "\t${1:print(\"hello\");}",
+      "\treturn 0;",
+      "}"
+    ]
+  },
+  "function": {
+    "prefix": "function",
+    "description": "A function",
+    "body": [
+      "function ${1:name}(${2:x}: ${3:f64}): ${4:f64} {",
+      "\treturn ${0:$2};",
+      "}"
+    ]
+  },
+  "generic function": {
+    "prefix": "functiont",
+    "description": "A generic function",
+    "body": [
+      "function ${1:name}<${2:T} extends ${3:Num}>(${4:x}: ${2:T}): ${2:T} {",
+      "\treturn ${0:$4};",
+      "}"
+    ]
+  },
+  "action": {
+    "prefix": "action",
+    "description": "An action (input and output)",
+    "body": [
+      "action ${1:name}(${2:path}: ${3:string}): ${4:void} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "record type": {
+    "prefix": "typer",
+    "description": "A record type",
+    "body": ["type ${1:Name} = { ${2:x}: ${3:f64}, ${4:y}: ${5:f64} };"]
+  },
+  "sum type": {
+    "prefix": "types",
+    "description": "A sum type",
+    "body": ["type ${1:Shape} = ${2:Circle}(${3:f64}) | ${4:Square}(${5:f64});"]
+  },
+  "match": {
+    "prefix": "match",
+    "description": "A match on a sum type",
+    "body": [
+      "match (${1:value}) {",
+      "\t${2:Some}(${3:x}) => ${4:x},",
+      "\t${5:None} => ${6:0},",
+      "}"
+    ]
+  },
+  "const": {
+    "prefix": "const",
+    "description": "A constant",
+    "body": ["const ${1:name} = ${0:value};"]
+  },
+  "map": {
+    "prefix": "map",
+    "description": "map(xs, f)",
+    "body": ["map(${1:xs}, (${2:x}) => ${0:$2})"]
+  },
+  "map over indices": {
+    "prefix": "mapi",
+    "description": "map over iota(n)",
+    "body": ["map(iota(${1:n}), (${2:i}) => ${0:$2})"]
+  },
+  "reduce": {
+    "prefix": "reduce",
+    "description": "reduce(xs, op, identity)",
+    "body": ["reduce(${1:xs}, (${2:a}, ${3:b}) => ${2:a} + ${3:b}, ${4:0.0})"]
+  },
+  "fold": {
+    "prefix": "fold",
+    "description": "fold(xs, init, f), in order",
+    "body": ["fold(${1:xs}, ${2:0.0}, (${3:acc}, ${4:x}) => ${0:$3 + $4})"]
+  },
+  "filter": {
+    "prefix": "filter",
+    "description": "filter(xs, keep)",
+    "body": ["filter(${1:xs}, (${2:x}) => ${0:$2 > 0})"]
+  },
+  "scan": {
+    "prefix": "scan",
+    "description": "scan(xs, op, identity)",
+    "body": ["scan(${1:xs}, (${2:a}, ${3:b}) => ${2:a} + ${3:b}, ${4:0})"]
+  },
+  "import": {
+    "prefix": "import",
+    "description": "Import names of a module",
+    "body": ["import { ${2:name} } from \"./${1:module}\";"]
+  },
+  "import all": {
+    "prefix": "importall",
+    "description": "Import a module under a name",
+    "body": ["import * as ${2:m} from \"./${1:module}\";"]
+  }
+}

@@ -4816,3 +4816,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   archives, `gh` logged in, main ahead of `origin/main`, no tag of that
   version on another commit, no release of it on GitHub. `--dry-run`: the
   checks and the commands it would run.
+- **D267 — An extension of VS Code (2026-11-04).** Asked for: the tools
+  for VS Code. `tools/vscode`, without npm or a build step (plain
+  JavaScript on the API of VS Code 1.75): the language `isocron` (`.isc`),
+  a TextMate grammar (keywords, the types, the literals with their
+  suffixes, strings, templates and their `${}`, comments, the functions of
+  the standard library and of `Math`) also injected into the ` ```isc `
+  blocks of Markdown; the configuration of the language (comments, pairs,
+  indentation); snippets; the errors of `iscc check FILE --color never`
+  (`PATH:LINE:COLUMN: error: MESSAGE`, a path of Windows too) as
+  diagnostics when a file is opened or saved, in the file they are in; the
+  commands that check, run (`iscc run`, the arguments asked), build and
+  run, and show the IR; the outline and the definitions (the file and the
+  modules it imports); the problem matcher `$iscc` for tasks. The compiler:
+  `isocron.iscc` (a name in the PATH, a path, `${workspaceFolder}`), run
+  where the files are (`extensionKind` workspace: with Remote - SSH, on the
+  server). The errors come from the file on disk: checked when saved, not
+  while typed (a module is read next to its importer, so a copy of the
+  buffer elsewhere would not resolve its imports). `package.py` writes the
+  `.vsix` vsce would (`[Content_Types].xml`, `extension.vsixmanifest`,
+  `extension/`), dates fixed. Tests (`test/run.sh`, in a container of
+  Node.js): the functions of `lib.js`, and every Isocron file of the
+  repository and every ` ```isc ` block of `docs/language.md` tokenized by
+  vscode-textmate with nothing left open, the scopes of chosen tokens.
+  `.vscode/` of the repository: the `iscc` of `target/release`,
+  rust-analyzer on both workspaces (the runtime is its own) in a target of
+  its own, the builds and inputs out of the watchers and the searches, the
+  tasks that build, test and check.

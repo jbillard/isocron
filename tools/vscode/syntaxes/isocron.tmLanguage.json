@@ -1,0 +1,384 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Isocron",
+  "scopeName": "source.isocron",
+  "fileTypes": [
+    "isc"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#template"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#builtins"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#calls"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.isocron",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.isocron"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.isocron"
+            }
+          }
+        },
+        {
+          "name": "comment.line.double-slash.isocron",
+          "begin": "//",
+          "end": "$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.isocron"
+            }
+          }
+        }
+      ]
+    },
+    "escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.isocron",
+          "match": "\\\\(?:[ntr0\\\\\\\"'`$]|u\\{[0-9A-Fa-f]{1,6}\\})"
+        },
+        {
+          "name": "invalid.illegal.escape.isocron",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.isocron",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.isocron"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.isocron"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.isocron",
+          "begin": "'",
+          "end": "'",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.isocron"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.isocron"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        }
+      ]
+    },
+    "template": {
+      "name": "string.template.isocron",
+      "begin": "`",
+      "end": "`",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.template.begin.isocron"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.template.end.isocron"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#escapes"
+        },
+        {
+          "name": "meta.template.expression.isocron",
+          "contentName": "meta.embedded.line.isocron",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.template-expression.begin.isocron"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.template-expression.end.isocron"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#braces"
+            },
+            {
+              "include": "$self"
+            }
+          ]
+        }
+      ]
+    },
+    "braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "#braces"
+        },
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.isocron",
+          "match": "\\b0[xX][0-9A-Fa-f][0-9A-Fa-f_]*(?:n|[iu](?:8|16|32|64))?\\b"
+        },
+        {
+          "name": "constant.numeric.float.isocron",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?(?:f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.isocron",
+          "match": "\\b[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*(?:f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.isocron",
+          "match": "\\b[0-9][0-9_]*(?:n|[iu](?:8|16|32|64)|f32|f64)?\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(?:(export)\\s+)?(?:(declare)\\s+)?(function|action)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.isocron"
+            },
+            "2": {
+              "name": "storage.modifier.declare.isocron"
+            },
+            "3": {
+              "name": "storage.type.function.isocron"
+            },
+            "4": {
+              "name": "entity.name.function.isocron"
+            }
+          }
+        },
+        {
+          "match": "\\b(?:(export)\\s+)?(type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.isocron"
+            },
+            "2": {
+              "name": "storage.type.type.isocron"
+            },
+            "3": {
+              "name": "entity.name.type.isocron"
+            }
+          }
+        },
+        {
+          "match": "\\b(?:(export)\\s+)?(const|let|var)\\b",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.isocron"
+            },
+            "2": {
+              "name": "storage.type.isocron"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.isocron",
+          "match": "\\b(?:if|else|return|match)\\b"
+        },
+        {
+          "name": "keyword.control.import.isocron",
+          "match": "\\b(?:import|export|from)\\b"
+        },
+        {
+          "name": "keyword.other.isocron",
+          "match": "\\bas\\s+const\\b"
+        },
+        {
+          "name": "keyword.other.isocron",
+          "match": "\\b(?:as|declare|extends|with|size|fn)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.isocron",
+          "match": "\\b(?:i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|boolean|bigint|string|void)\\b"
+        },
+        {
+          "name": "support.type.isocron",
+          "match": "\\b(?:Option|Result|Map)\\b"
+        },
+        {
+          "name": "support.function.constructor.isocron",
+          "match": "\\b(?:Some|None|Ok|Err)\\b"
+        },
+        {
+          "name": "variable.other.constant.isocron",
+          "match": "\\b[A-Z][A-Z0-9_]+\\b"
+        },
+        {
+          "name": "entity.name.type.isocron",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.isocron",
+          "match": "\\b(?:true|false)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "match": "\\b(Math)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "support.class.math.isocron"
+            },
+            "2": {
+              "name": "punctuation.accessor.isocron"
+            },
+            "3": {
+              "name": "support.function.math.isocron"
+            }
+          }
+        },
+        {
+          "name": "support.function.builtin.isocron",
+          "match": "\\b(?:BigInt|Number|String|argsort|bench|bytes|clock|concat|count|countBy|countMatches|delete|doneOr|dot|endsWith|entries|fill|filter|fold|get|has|includes|indexOf|iota|join|keys|len|lines|map|matches|max|mean|min|padEnd|padStart|parseF64|parseFloat|parseI64|parseInt|print|printBytes|product|random|randomInt|readBytes|readStdin|readStdinLines|readStdinText|readText|reduce|repeat|replace|replaceAll|resultOf|scan|scatter|search|set|slice|sort|sortBy|split|splitMix|startsWith|stringOf|sum|test|toFixed|toLowerCase|toReversed|toString|toUpperCase|trim|trimEnd|trimStart|tryParseF64|tryParseI64|values|window|writeBytes|writeText|zeros|zip)\\b(?=\\s*[(<])"
+        },
+        {
+          "name": "support.variable.property.isocron",
+          "match": "(?<=\\.)\\s*length\\b"
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "match": "(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.isocron"
+            },
+            "2": {
+              "name": "entity.name.function.method.isocron"
+            }
+          }
+        },
+        {
+          "name": "entity.name.function.call.isocron",
+          "match": "\\b[a-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "storage.type.function.arrow.isocron",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.spread.isocron",
+          "match": "\\.\\.\\."
+        },
+        {
+          "name": "keyword.operator.isocron",
+          "match": "\\?\\?|&&|\\|\\||===|!==|==|!=|<=|>=|\\*\\*|[-+*/%&|^!<>=?@]"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.isocron",
+          "match": "[;,]"
+        },
+        {
+          "name": "punctuation.separator.key-value.isocron",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.accessor.isocron",
+          "match": "\\."
+        }
+      ]
+    }
+  }
+}

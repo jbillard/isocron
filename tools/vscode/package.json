@@ -1,0 +1,106 @@
+{
+  "name": "isocron",
+  "displayName": "Isocron",
+  "description": "The Isocron language: colors, the errors of iscc check in the editor, run, build, the IR, outline and definitions.",
+  "version": "0.2.0",
+  "publisher": "isocron",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/jbillard/isocron" },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Snippets"],
+  "keywords": ["isocron", "iscc", "array language"],
+  "extensionKind": ["workspace"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:isocron"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "isocron",
+        "aliases": ["Isocron", "isocron", "isc"],
+        "extensions": [".isc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "isocron",
+        "scopeName": "source.isocron",
+        "path": "./syntaxes/isocron.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.isocron.codeblock",
+        "path": "./syntaxes/isocron.markdown.tmLanguage.json",
+        "injectTo": ["text.html.markdown"],
+        "embeddedLanguages": { "meta.embedded.block.isocron": "isocron" }
+      }
+    ],
+    "snippets": [{ "language": "isocron", "path": "./snippets/isocron.json" }],
+    "commands": [
+      { "command": "isocron.check", "title": "Check this file", "category": "Isocron" },
+      { "command": "isocron.run", "title": "Run this file (interpreter)", "category": "Isocron" },
+      { "command": "isocron.build", "title": "Build this file", "category": "Isocron" },
+      { "command": "isocron.buildAndRun", "title": "Build and run this file", "category": "Isocron", "icon": "$(play)" },
+      { "command": "isocron.showIr", "title": "Show the IR of this file", "category": "Isocron" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "isocron.check", "when": "editorLangId == isocron" },
+        { "command": "isocron.run", "when": "editorLangId == isocron" },
+        { "command": "isocron.build", "when": "editorLangId == isocron" },
+        { "command": "isocron.buildAndRun", "when": "editorLangId == isocron" },
+        { "command": "isocron.showIr", "when": "editorLangId == isocron" }
+      ],
+      "editor/title/run": [{ "command": "isocron.buildAndRun", "when": "resourceLangId == isocron" }]
+    },
+    "configuration": {
+      "title": "Isocron",
+      "properties": {
+        "isocron.iscc": {
+          "type": "string",
+          "default": "iscc",
+          "description": "The compiler: `iscc` from the PATH, or its path (iscc.exe on Windows); `${workspaceFolder}` is the folder opened (`${workspaceFolder}/target/release/iscc` in this repository).",
+          "scope": "machine-overridable"
+        },
+        "isocron.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check a file with `iscc check` when it is saved."
+        },
+        "isocron.checkOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check a file with `iscc check` when it is opened."
+        },
+        "isocron.buildArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "More options of `iscc build`, e.g. [\"--isa\", \"avx2\"] or [\"--target\", \"x86_64-windows\"]."
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "isocron",
+        "required": ["task"],
+        "properties": { "task": { "type": "string", "description": "What the task does." } }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "iscc",
+        "owner": "isocron",
+        "source": "iscc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d+): (error|warning|note): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ]
+  }
+}

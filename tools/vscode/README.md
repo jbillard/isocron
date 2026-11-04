@@ -1,0 +1,55 @@
+# Isocron for VS Code
+
+The extension of VS Code for the Isocron language (`.isc` files, DECISIONS
+D267). It uses the compiler `iscc` of the machine where the files are: the
+one of a release (`isocron-VERSION-x86_64-linux.tar.gz`,
+`isocron-VERSION-x86_64-windows.zip`) or one built from this repository.
+
+| Feature | How |
+| --- | --- |
+| colors | the keywords, types, literals (`42u8`, `0xffn`, `2.5e-3`), strings and templates, comments; also the ` ```isc ` blocks of Markdown files (`docs/language.md`) |
+| errors in the editor | `iscc check` when a file is opened and saved: the error at its line and column, in the file it is in (an imported module too) |
+| run | **Isocron: Run this file (interpreter)**: `iscc run FILE ARGS`, the arguments asked (the last ones proposed) |
+| build | **Isocron: Build this file**: `iscc build FILE -o FILE-without-.isc` and the options of `isocron.buildArgs`; **Build and run this file** (also the ▷ button of the editor) runs the program after |
+| the IR | **Isocron: Show the IR of this file**: `iscc ir FILE` beside the source |
+| outline, definitions | the functions, actions, types, constructors and constants of a file (outline, breadcrumbs, `Ctrl+Shift+O`); **Go to Definition** in the file and in the modules it imports (`./geom`, or `$ISC_PATH`) |
+| snippets | `main`, `function`, `functiont` (generic), `action`, `typer` (record), `types` (sum), `match`, `map`, `mapi`, `reduce`, `fold`, `filter`, `scan`, `import`, `importall` |
+| tasks | the problem matcher `$iscc`, for the `iscc` commands of a `tasks.json` |
+
+The errors come from the file on disk: a file is checked when it is saved,
+not while it is typed.
+
+## Install
+
+Make the package (Python 3 only, no npm):
+
+```sh
+python3 tools/vscode/package.py          # tools/vscode/isocron-0.2.0.vsix
+```
+
+then in VS Code: Extensions, `...`, **Install from VSIX...**, or
+`code --install-extension isocron-0.2.0.vsix`.
+
+* **On the machine of the files**: put `iscc` (or `iscc.exe`) in the PATH,
+  or set `isocron.iscc` to its path.
+* **With Remote - SSH** (the files on a server): install the package in the
+  window connected to the server (the extension runs there, by
+  `extensionKind`); `iscc` is the one of the server.
+
+## Settings
+
+| Setting | Default | |
+| --- | --- | --- |
+| `isocron.iscc` | `iscc` | the compiler: a name in the PATH or a path; `${workspaceFolder}` is the folder opened (this repository sets `${workspaceFolder}/target/release/iscc` in `.vscode/settings.json`) |
+| `isocron.checkOnSave` | `true` | check a file when it is saved |
+| `isocron.checkOnOpen` | `true` | check a file when it is opened |
+| `isocron.buildArgs` | `[]` | more options of `iscc build`: `["--isa", "avx2"]`, `["--target", "x86_64-windows"]` |
+
+## Tests
+
+`tools/vscode/test/run.sh` runs `test/test.js` in a Docker image of Node.js:
+the functions of `lib.js` (the messages of `iscc`, the declarations, the
+imports, the arguments), and every Isocron file of the repository and every
+` ```isc ` block of `docs/language.md` tokenized by the grammar with
+`vscode-textmate` (the engine of VS Code), with the scopes of chosen
+tokens checked.

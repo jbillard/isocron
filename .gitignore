@@ -17,4 +17,5 @@ __pycache__/
 /bench/benchmarks_game/upstream/
 
 # local files
+/tools/vscode/*.vsix
 /run.log

@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "iscc: build the compiler",
+      "type": "shell",
+      "command": "cargo build --release",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "iscc: tests",
+      "type": "shell",
+      "command": "cargo test --release",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "isocron: check this file",
+      "type": "process",
+      "command": "${workspaceFolder}/target/release/iscc",
+      "args": ["check", "${file}", "--color", "never"],
+      "problemMatcher": "$iscc"
+    },
+    {
+      "label": "isocron: run this file (interpreter)",
+      "type": "process",
+      "command": "${workspaceFolder}/target/release/iscc",
+      "args": ["run", "${file}"],
+      "problemMatcher": "$iscc"
+    },
+    {
+      "label": "vscode extension: tests",
+      "type": "shell",
+      "command": "tools/vscode/test/run.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "vscode extension: package",
+      "type": "shell",
+      "command": "python3 tools/vscode/package.py",
+      "problemMatcher": []
+    }
+  ]
+}

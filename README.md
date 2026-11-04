@@ -120,6 +120,18 @@ the error output is a terminal and `NO_COLOR` is not set; `--color always`
 or `--color never` (anywhere on the command line) forces the choice. Piped,
 the text is the same as without colors.
 
+### In VS Code
+
+`tools/vscode` is an extension of VS Code for `.isc` files: colors (also the
+` ```isc ` blocks of Markdown), the errors of `iscc check` in the editor when
+a file is opened or saved, the commands that run, build and show the IR of
+a file, the outline and the definitions of a file. `python3
+tools/vscode/package.py` makes `tools/vscode/isocron-0.2.0.vsix` (no npm),
+installed by Extensions, `...`, **Install from VSIX...** (with Remote - SSH,
+in the window of the server): see [`tools/vscode/README.md`](tools/vscode/README.md).
+`.vscode/` sets up this repository: the `iscc` of `target/release`,
+rust-analyzer on both workspaces, the tasks that build, test and check.
+
 ## Tests
 
 ```sh
@@ -165,4 +177,4 @@ bench/floor/run.sh > results/machine_floor.txt                                  
 | `crates/iscc` | the `iscc` driver and the end-to-end tests |
 | `examples` | the programs of the proof of concept (`poc`) and of the Benchmarks Game (`benchmarks_game`) |
 | `bench` | reference programs, the protocols, the floors of the machine (`bench/floor`) |
-| `tools` | `suite.py`: the complete suite in a few minutes |
+| `tools` | `suite.py`: the complete suite in a few minutes; `release/`: the compilers and archives of a release, `publish.sh`; `vscode/`: the extension of VS Code |
