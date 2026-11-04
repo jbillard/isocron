@@ -407,6 +407,29 @@ fn global_searches_split_among_threads_find_the_matches_of_one_search() {
     }
 }
 
+/// D277: global searches by masks inside the tasks of a parallel `map` (9
+/// patterns of a large text, as the counts of regex-redux) are cut into
+/// parts too, shared with the threads that have finished theirs: the
+/// counts and the matches of one search, with matches across the cuts,
+/// against the interpreter, 1 to 4 threads.
+#[test]
+fn searches_inside_tasks_are_shared_with_idle_threads() {
+    let src = "action main(args: string[k]): i32 {
+    const s = \"agggtaaattTACCCTaNaggctaaatttaccctBY\\n\".repeat(40000);
+    const pats = [\"agggtaaa|tttaccct\", \"[cgt]gggtaaa|tttaccc[acg]\", \"a[act]ggtaaa|tttacc[agt]t\", \"ag[act]gtaaa|tttac[agt]ct\", \"aa\", \"a[NSt]|BY\", \"t\", \"ct|at\", \"aggct\"];
+    print(pats.map((p) => countMatches(s, RegExp(p, \"ig\"))));
+    print(pats.map((p) => matches(s, RegExp(p, \"g\")).length));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let bin = compile(src, "rx_in_tasks");
+    for t in [1, 2, 3, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}
+
 /// D219: a global search of a large text (4 MiB and more) takes its engine,
 /// with the prefilter of its literals or without, from a sample: the same
 /// matches either way. Counts of dense patterns (the automaton alone wins),

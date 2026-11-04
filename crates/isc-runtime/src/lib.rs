@@ -1359,9 +1359,14 @@ fn rx_engine(v: &str, s: &str) -> RxEngine {
 
 unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
     let threads = thread_count();
-    // inside a task (the pool busy) the parts would run one after the
-    // other, each with a new cache of the lazy DFA to fill again: one search
-    if threads <= 1 || s.len() < 2 * RX_PART || BUSY.load(Ordering::Relaxed) {
+    // inside a task (the pool busy) the parts of the automaton would run
+    // one after the other, each with a new cache of the lazy DFA to fill
+    // again: one search. The masks of a simple shape have no cache: their
+    // parts are shared with the threads that have finished their tasks
+    // (D201, D277: the last of the 9 counts of regex-redux, alone on one of
+    // 4 threads, now on the 4)
+    let busy = BUSY.load(Ordering::Relaxed);
+    if threads <= 1 || s.len() < 2 * RX_PART || (busy && !matches!(re, RxEngine::Simple(_))) {
         return re.bounds_from(s, 0, usize::MAX);
     }
     // one part per thread: each one fills one cache

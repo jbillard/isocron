@@ -5058,3 +5058,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   208.2 ms. Test `merged_parts_are_one_search` (parts cut anywhere, inside
   a match and at its end, patterns of many matches, of overlapping
   candidates, of empty matches, delimited ones).
+- **D277 — The searches by masks inside a task cut into parts too
+  (2026-11-04).** The 9 counts of regex-redux are the tasks of a parallel
+  `map`; inside a task a search ran whole on its thread (the parts of the
+  automaton would each fill a cache of its lazy DFA again), so with 4
+  threads the last count ran alone, the three others waiting (about 20 ms
+  of the timeline). The masks of a simple shape have no cache: inside a
+  task their search is now cut into parts as outside, the parts shared
+  with the threads that have finished their tasks (D201); with every
+  thread busy the task runs its parts itself (only the merge more, D276).
+  In alternation, best of 9, 4 threads, the machine loaded (load average
+  16): regex-redux 207.9 ms -> 202.6 ms; the timeline shows the four
+  threads busy to the end of the counts. The same output. Test
+  `searches_inside_tasks_are_shared_with_idle_threads` (9 patterns in the
+  tasks of a `map`, 1 to 4 threads).
