@@ -229,7 +229,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The runtime aligned (D256); a large file as the standard input mapped, held by a read lease: reverse-complement 84.1 -> 64.0 ms, k-nucleotide 1095.4 -> 1076.6 ms (D257)
   - [x] The mapped input given back by every thread at the end: reverse-complement 0.065 -> 0.061 s (D258)
   - [x] The Benchmarks Game measured again at d1e3586: the fastest on 9 of 10, k-nucleotide 1.074 s against 1.174 s, reverse-complement 0.062 s against 0.068 s; n-body 2.040 s against 1.945 s (D260)
-  - [ ] reverse-complement: the threads idle at the end of the writing passes of records 2 and 3 (about 2 ms each, not explained: ranges taken in turn did not help, D259); the lines and the output about 19 ms against about 6 (170 instructions a line of 61 bytes); in Docker 2-3 ms ahead of Rust only
+  - [ ] reverse-complement: the threads idle at the end of the writing passes of records 2 and 3 (explained, D286: the new pages at the end of a grown block, cleared by the thread of the last range; their clearing shared by all threads moved it, saved nothing); the lines and the output about 19 ms against about 6 (170 instructions a line of 61 bytes); in Docker 2-3 ms ahead of Rust only
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
   - [ ] Windows: the runtimes for x86-64-v3 and v4, the console in UTF-8, the MSVC ABI, timings
@@ -259,3 +259,11 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The standard input read in a buffer of its size when it is a file: readStdin 0.104 s -> 0.056 s, revcomp 0.414 s -> 0.365 s (D179)
   - [x] Quotient and remainder of the index by a constant carried by the loop: revcomp 0.369 s -> 0.356 s (D180)
   - [x] Indexing in vector code: spectralnorm 0.527 s -> 0.195 s on 4 threads, 1.03 times the floor of the divider (D181)
+
+## The trusted base (the remarks of the author, 2026-11-04)
+
+- [ ] The `unsafe` of the runtime justified and checked at compile time (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`), confined to a few modules (`sys`, `heap`, `simd`) behind safe interfaces; the tests of `isc-runtime-core` under Miri
+- [ ] Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread
+- [ ] The step HTTPS of the standard library decided again: it relies on C libraries (SChannel, OpenSSL), which the author does not want
+- [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron
+

@@ -5178,3 +5178,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   inputs of the publication are, not in the tmpfs, where their pages
   change with the memory of the machine. Tests: the standard input mapped
   (D257, `stdin.rs`).
+- **D286 — The threads of reverse-complement waiting at the end of its
+  writing passes: explained, nothing to gain (2026-11-04).** TODO.md held
+  them as not explained (about 2 ms each, D259). The timeline (4 threads,
+  input on the disk) shows the thread or two that end the passes of the
+  filters of records 2 and 3 clearing pages half of their time while the
+  others wait. The array of each filter is a cached large block grown
+  (D211, D220: 50, then 74, then 123 MB): its first pages are those of the
+  block before, written; its end is new memory that the system clears at
+  its first write; the threads write contiguous ranges (D254), so the
+  thread of the last range gets every new page. Measured: the new memory
+  of a large block (from 8 MiB) given by every thread before it is written
+  (`madvise(MADV_POPULATE_WRITE)` by shares of huge pages): the waiting is
+  gone from the timeline, the clearing now a phase of its own on the four
+  threads; in alternation, best of 9 (5 for k-nucleotide), 4 threads:
+  reverse-complement 59.2 -> 59.5 ms, regex-redux 147.3 -> 148.2 ms,
+  k-nucleotide 1077.3 -> 1067.0 ms. The clearing is moved, not saved (the
+  new pages of 123 MB are what that array costs): not kept.
