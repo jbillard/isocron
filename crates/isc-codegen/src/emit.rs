@@ -504,6 +504,10 @@ pub struct Gen<'p> {
     stream: Option<String>,
     /// Loops of `for_range_scalar` so far (their metadata ends the module).
     scalar_loops: u32,
+    /// The arrays of `windowed_filter` (D293) in the body of their `let`: a
+    /// copy of the `filter`; the variable holds the places of the blocks and
+    /// the length.
+    windowed: HashMap<VarId, Expr>,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -862,6 +866,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         task_shared: None,
         stream: None,
         scalar_loops: 0,
+        windowed: HashMap::new(),
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -1376,6 +1381,121 @@ fn group_kind(t: &Type) -> i32 {
     }
 }
 
+/// `let x = filter(...) in body` made by windows (D293): `init` is a
+/// `filter` of scalars, behind `let`s of scalars or of views (`slice`), and
+/// `body` reads `x` only by its length and, in the function of a `map`
+/// over an `iota` written by blocks (`print_stream`), by indices whose
+/// interval over a range of the index of the `map` follows from it
+/// (`interval_ok`). Returns the `let`s before the `filter` and the `filter`.
+fn windowed_filter<'a>(x: VarId, init: &'a Expr, body: &Expr) -> Option<(Vec<(VarId, &'a Expr)>, &'a Expr)> {
+    let mut lets = Vec::new();
+    let mut e = init;
+    while let ExprKind::Let { var, init: i, body: b, stmt: false, drop: false } = &e.kind {
+        if !(i.ty.is_scalar() || (i.ty.is_array() && i.ty.slice_is_view() && matches!(i.kind, ExprKind::Slice(..)))) {
+            return None;
+        }
+        lets.push((*var, &**i));
+        e = b;
+    }
+    let ExprKind::Filter(src, l) = &e.kind else { return None };
+    let scalar = |t: &Type| matches!(t, Type::Int(_) | Type::F64 | Type::F32 | Type::Bool);
+    if !scalar(src.ty.elem()) || l.params.len() != 1 || !windowed_uses(body, x) {
+        return None;
+    }
+    Some((lets, e))
+}
+
+/// `x` is read in `e` only by its length, and by the indices of the maps
+/// that `print_stream` writes (`windowed_filter`): what `print_stream_any`
+/// does with the `let`s it writes.
+fn windowed_uses(e: &Expr, x: VarId) -> bool {
+    let is_x = |a: &Expr| matches!(a.kind, ExprKind::Var(v, _) if v == x);
+    match &e.kind {
+        ExprKind::Len(a) if is_x(a) => true,
+        ExprKind::Var(v, _) => *v != x,
+        ExprKind::Let { var, init, body, .. } if print_stream_ok(*var, init, body) => windowed_stream(init, x) && windowed_uses(body, x),
+        _ => e.children().into_iter().all(|c| windowed_uses(c, x)),
+    }
+}
+
+/// `windowed_uses` in an array written by `print_stream_any`.
+fn windowed_stream(e: &Expr, x: VarId) -> bool {
+    match &e.kind {
+        ExprKind::If(c, a, b) => windowed_uses(c, x) && windowed_stream(a, x) && windowed_stream(b, x),
+        ExprKind::Let { init, body, .. } => windowed_uses(init, x) && windowed_stream(body, x),
+        ExprKind::CheckNonNegative(k, body) => windowed_uses(k, x) && windowed_stream(body, x),
+        ExprKind::Map(ins, l) if stream_map_ok(e) => match ins.as_slice() {
+            [n] if matches!(n.kind, ExprKind::Iota(_)) => {
+                let (mut bound, mut outer) = (HashSet::new(), Vec::new());
+                free_vars(e, &mut bound, &mut outer);
+                let outer: HashSet<VarId> = outer.into_iter().collect();
+                windowed_uses(n, x) && windowed_lambda(&l.body, x, l.params[0], &outer, &mut Vec::new())
+            }
+            _ => windowed_uses(e, x),
+        },
+        _ => windowed_uses(e, x),
+    }
+}
+
+/// `windowed_uses` in the function of a written `map` of index `q`: `x[i]`
+/// with `interval_ok(i)`; `outer` the variables bound outside the `map`,
+/// `scope` the `let`s around the read.
+fn windowed_lambda<'a>(e: &'a Expr, x: VarId, q: VarId, outer: &HashSet<VarId>, scope: &mut Vec<(VarId, &'a Expr)>) -> bool {
+    let is_x = |a: &Expr| matches!(a.kind, ExprKind::Var(v, _) if v == x);
+    match &e.kind {
+        ExprKind::Index(a, i) if is_x(a) => !mentions(i, &HashSet::from([x])) && interval_ok(i, q, outer, scope),
+        ExprKind::Len(a) if is_x(a) => true,
+        ExprKind::Var(v, _) => *v != x,
+        ExprKind::Let { var, init, body, .. } => {
+            if !windowed_lambda(init, x, q, outer, scope) {
+                return false;
+            }
+            scope.push((*var, &**init));
+            let ok = windowed_lambda(body, x, q, outer, scope);
+            scope.pop();
+            ok
+        }
+        // inside another function (a `reduce`, a `map` of its own): only
+        // the length
+        ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => windowed_uses(e, x),
+        _ => e.children().into_iter().all(|c| windowed_lambda(c, x, q, outer, scope)),
+    }
+}
+
+/// The integer `e`, of the index `q` of a `map`, of the variables `outer`
+/// bound outside it (one value each) and of the `let`s of `scope`, has an
+/// interval that `index_interval` computes from the one of `q`: sums,
+/// differences, products and quotients by literals, remainders by positive
+/// literals, negations, choices, conversions; any integer of fewer than 64
+/// bits by the range of its type.
+fn interval_ok(e: &Expr, q: VarId, outer: &HashSet<VarId>, scope: &[(VarId, &Expr)]) -> bool {
+    let Type::Int(k) = e.ty else { return false };
+    if k.bits() < 64 {
+        return true;
+    }
+    if k != IntKind::I64 {
+        return false;
+    }
+    let lit = |a: &Expr| matches!(a.kind, ExprKind::Lit(Lit::Int(_)));
+    let positive = |a: &Expr| matches!(a.kind, ExprKind::Lit(Lit::Int(c)) if c > 0);
+    match &e.kind {
+        ExprKind::Var(v, _) if *v == q => true,
+        ExprKind::Var(v, _) => match scope.iter().rposition(|(w, _)| w == v) {
+            Some(at) => interval_ok(scope[at].1, q, outer, &scope[..at]),
+            None => outer.contains(v),
+        },
+        ExprKind::Lit(Lit::Int(_)) => true,
+        ExprKind::Binary(BinOp::Add | BinOp::Sub, a, b) => interval_ok(a, q, outer, scope) && interval_ok(b, q, outer, scope),
+        ExprKind::Binary(BinOp::Mul, a, b) if lit(b) => interval_ok(a, q, outer, scope),
+        ExprKind::Binary(BinOp::Mul, a, b) if lit(a) => interval_ok(b, q, outer, scope),
+        ExprKind::Binary(BinOp::Div | BinOp::Rem, a, b) if positive(b) => interval_ok(a, q, outer, scope),
+        ExprKind::Unary(UnOp::Neg, a) => interval_ok(a, q, outer, scope),
+        ExprKind::If(_, a, b) => interval_ok(a, q, outer, scope) && interval_ok(b, q, outer, scope),
+        ExprKind::Convert(a) => interval_ok(a, q, outer, scope),
+        _ => false,
+    }
+}
+
 fn print_stream_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
     streamable(init) && matches!(&body.kind, ExprKind::Action(ActionOp::PrintBytes, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
 }
@@ -1431,6 +1551,18 @@ fn lookup_tables(l: &Lambda) -> Vec<VarId> {
     walk(&l.body, &mut out);
     out
 }
+
+/// The blocks of the source of a `filter` made by windows (D293): its
+/// elements counted by blocks of this many, each window the blocks of its
+/// part filtered again (about 1.25 times the elements of a task of BLOCK).
+const WINDOW_BLOCK: i64 = 1024;
+/// The bytes of a window on the stack of a task; more on the heap.
+const WINDOW_STACK: i64 = 32 << 10;
+/// The indices a task of BLOCK elements may read past each of its ends
+/// (lanes of vectors) counted in its window.
+const WINDOW_MARGIN: i64 = 64;
+/// The widest window of the first task that keeps the windows.
+const WINDOW_WIDE: i64 = 4 * BLOCK;
 
 /// At most this many elements in a table copied by `period_tables`: the
 /// copy made before each vector loop, on the stack.
@@ -3131,6 +3263,12 @@ impl<'p> Gen<'p> {
             }
             // keys made only to be grouped: grouped as they are made (D244)
             Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body) => self.group_stream(init),
+            // a `filter` read only by the blocks of an array written by
+            // blocks: each block makes the part it reads (D293)
+            Let { var, init, body, drop, .. } if w == 1 && !self.in_task && windowed_filter(*var, init, body).is_some() => {
+                let (lets, filter) = windowed_filter(*var, init, body).unwrap();
+                self.windowed_let(*var, &lets, filter, body, *drop)
+            }
             // a literal array of scalars that its body only reads: on the
             // stack, never freed (D191)
             Let { var, init, body, .. } if literal_tail(init).is_some() && init.ty.elem().is_scalar() && stack_array(*var, body) => {
@@ -4904,10 +5042,14 @@ impl<'p> Gen<'p> {
             (true, None) => 2 * MAP_WIDTH,
         };
         let (src, n) = self.prepare_src(e)?;
+        let in_task = self.in_task;
+        // the arrays of `windowed_let` it reads: by windows, or made whole
+        // here for this array (`windowed_stream_start`)
+        let reads = self.windowed_reads(e);
+        let (ok, wins) = self.windowed_stream_start(e, &reads, &n)?;
         let small = self.ins(format!("icmp slt i64 {}, {}", n, STREAM));
         let size = self.ins(format!("select i1 {}, i64 {}, i64 {}", small, n, STREAM));
         let buf = self.ins(format!("call ptr @isc_alloc(i64 {})", size));
-        let in_task = self.in_task;
         // by the number of the block (`for_range` takes whole steps only)
         let nb0 = self.ins(format!("add i64 {}, {}", n, STREAM - 1));
         let nb = self.ins(format!("sdiv i64 {}, {}", nb0, STREAM));
@@ -4924,16 +5066,31 @@ impl<'p> Gen<'p> {
                 let len = g.ins(format!("sub i64 {}, {}", hi, lo));
                 let c0 = g.ins(format!("add i64 {}, {}", len, BLOCK - 1));
                 let c = g.ins(format!("sdiv i64 {}, {}", c0, BLOCK));
-                let extra = [v(dst.clone(), "ptr"), v(lo.to_string(), "i64"), v(hi.clone(), "i64")];
+                let mut extra = vec![v(dst.clone(), "ptr"), v(lo.to_string(), "i64"), v(hi.clone(), "i64")];
+                if !wins.is_empty() {
+                    extra.push(v(ok.clone(), "i1"));
+                    extra.extend(wins.iter().map(|(_, xw, _)| xw.clone()));
+                }
                 let et2 = et.clone();
-                let (task, ctx, ctx_bytes) = g.outline_task(&[e], &extra, &mut |t, x, i| {
+                let filters: Vec<Expr> = reads.iter().map(|(x, _)| g.windowed[x].clone()).collect();
+                let mut scope: Vec<&Expr> = vec![e];
+                scope.extend(filters.iter());
+                let (task, ctx, ctx_bytes) = g.outline_task(&scope, &extra, &mut |t, x, i| {
                     let (src, n) = t.prepare_src(e)?;
                     let off = t.ins(format!("mul i64 {}, {}", i, BLOCK));
                     let start = t.ins(format!("add i64 {}, {}", x[1].r, off));
                     let lim = t.ins(format!("add i64 {}, {}", start, BLOCK));
                     let short = t.ins(format!("icmp slt i64 {}, {}", x[2].r, lim));
                     let end = t.ins(format!("select i1 {}, i64 {}, i64 {}", short, x[2].r, lim));
-                    t.fill_range(&src, &x[0].r, &n, &et2, &start, &end, w)
+                    let heaps = match x.get(3) {
+                        Some(ok) => t.windowed_task(e, &reads, &filters, &ok.r, &x[4..], &n, &start, &end)?,
+                        None => Vec::new(),
+                    };
+                    t.fill_range(&src, &x[0].r, &n, &et2, &start, &end, w)?;
+                    for hp in heaps {
+                        t.free_if(&hp);
+                    }
+                    Ok(())
                 })?;
                 // each thread its range of the blocks of the chunk (D254)
                 g.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
@@ -4943,7 +5100,476 @@ impl<'p> Gen<'p> {
             Ok(())
         })?;
         self.emit(format!("call void @isc_free(ptr {})", buf));
+        // the arrays made whole for it freed; their variables again the
+        // places and the length
+        for (x, xw, whole) in wins {
+            self.free_if(&whole);
+            self.bind(x, xw);
+        }
         Ok(())
+    }
+
+    /// `free(p)` unless `p` is null.
+    fn free_if(&mut self, p: &str) {
+        let null = self.ins(format!("icmp eq ptr {}, null", p));
+        let (lfree, ldone) = (self.label(), self.label());
+        self.cbr(&null, &ldone, &lfree);
+        self.block(&lfree);
+        self.emit(format!("call void @isc_free(ptr {})", p));
+        self.br(&ldone);
+        self.block(&ldone);
+    }
+
+    /// Before the blocks of `print_stream` of the `map` `e` (`n` elements)
+    /// that reads the arrays of `windowed_let` (`reads`): whether its blocks
+    /// read them by windows (`ok`, an `i1`): the bounds of the indices over
+    /// the whole `map` without an overflow, and those of its first task at
+    /// most WINDOW_WIDE apart; never in a task. Otherwise each array is made
+    /// whole here (`windowed_whole`) and its variable holds it. Returns `ok`
+    /// and, for each array, its variable, its places and length, and the
+    /// array made whole (or null).
+    #[allow(clippy::type_complexity)]
+    fn windowed_stream_start(&mut self, e: &Expr, reads: &[(VarId, Vec<(&Expr, Vec<(VarId, &Expr)>)>)], n: &str) -> R<(String, Vec<(VarId, V, String)>)> {
+        if reads.is_empty() {
+            return Ok(("false".into(), Vec::new()));
+        }
+        let bad = self.alloca("i1");
+        self.emit(format!("store i1 {}, ptr {}", self.in_task, bad));
+        let last = self.ins(format!("sub i64 {}, 1", n));
+        let first = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, BLOCK + WINDOW_MARGIN));
+        let first = self.ins(format!("sub i64 {}, 1", first));
+        for (_, rs) in reads {
+            self.windowed_bounds(e, rs, "0", &last, &bad)?;
+            let (a, b) = self.windowed_bounds(e, rs, "0", &first, &bad)?;
+            let width = self.checked("sub", &b, &a, &bad);
+            let wide = self.ins(format!("icmp sgt i64 {}, {}", width, WINDOW_WIDE));
+            let was = self.ins(format!("load i1, ptr {}", bad));
+            let now = self.ins(format!("or i1 {}, {}", was, wide));
+            self.emit(format!("store i1 {}, ptr {}", now, bad));
+        }
+        let bad_v = self.ins(format!("load i1, ptr {}", bad));
+        let ok = self.ins(format!("xor i1 {}, true", bad_v));
+        let mut wins = Vec::new();
+        for (x, _) in reads {
+            let xw = self.env[x].clone();
+            let f = self.windowed[x].clone();
+            let (lwhole, lskip, ljoin) = (self.label(), self.label(), self.label());
+            self.cbr(&ok, &lskip, &lwhole);
+            self.block(&lwhole);
+            let whole = self.windowed_whole(&f, &xw)?;
+            let lfrom = self.current_label(&lwhole);
+            self.br(&ljoin);
+            self.block(&lskip);
+            self.br(&ljoin);
+            self.block(&ljoin);
+            let wp = self.ins(format!("phi ptr [ {}, %{} ], [ null, %{} ]", whole, lfrom, lskip));
+            let k = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xw.r));
+            let wv = self.arr(&wp, &k);
+            let xs = self.ins(format!("select i1 {}, {{ ptr, i64 }} {}, {{ ptr, i64 }} {}", ok, xw.r, wv.r));
+            self.bind(*x, V { r: xs, t: "{ ptr, i64 }".into(), uni: true });
+            wins.push((*x, xw, wp));
+        }
+        Ok((ok, wins))
+    }
+
+    /// In a task of `print_stream` (elements `start .. end` of the `map`
+    /// `e` of `n` elements), when `ok`: each array of `windowed_let` read by
+    /// `e` (its places and length in `xws`) filled for the bounds of its
+    /// indices over `start - WINDOW_MARGIN ..= end - 1 + WINDOW_MARGIN` (in
+    /// `0 .. n`: what the vectors of the loop may read past its ends) and
+    /// its variable bound to it. Returns the blocks of the heap to free.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn windowed_task(&mut self, e: &Expr, reads: &[(VarId, Vec<(&Expr, Vec<(VarId, &Expr)>)>)], filters: &[Expr], ok: &str, xws: &[V], n: &str, start: &str, end: &str) -> R<Vec<String>> {
+        let mut heaps = Vec::new();
+        if reads.is_empty() {
+            return Ok(heaps);
+        }
+        let (lwin, lgo) = (self.label(), self.label());
+        let lentry = self.current_label("entry");
+        let mut bound = Vec::new();
+        for (x, _) in reads {
+            bound.push(self.env[x].clone());
+        }
+        self.cbr(ok, &lwin, &lgo);
+        self.block(&lwin);
+        let qa = self.ins(format!("sub i64 {}, {}", start, WINDOW_MARGIN));
+        let qa = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", qa));
+        let qb = self.ins(format!("add i64 {}, {}", end, WINDOW_MARGIN - 1));
+        let nm1 = self.ins(format!("sub i64 {}, 1", n));
+        let qb = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", qb, nm1));
+        let bad = self.alloca("i1");
+        self.emit(format!("store i1 false, ptr {}", bad));
+        let mut filled = Vec::new();
+        for (((_, rs), xw), f) in reads.iter().zip(xws).zip(filters) {
+            let (lo, hi) = self.windowed_bounds(e, rs, &qa, &qb, &bad)?;
+            let buf = self.alloca(&format!("[{} x i8], align 64", WINDOW_STACK));
+            let (xv, hp) = self.windowed_fill(f, xw, &lo, &hi, &buf)?;
+            filled.push((xv, hp));
+        }
+        let lwin_end = self.current_label(&lwin);
+        self.br(&lgo);
+        self.block(&lgo);
+        for (((x, _), b), (xv, hp)) in reads.iter().zip(bound).zip(filled) {
+            let r = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", b.r, lentry, xv.r, lwin_end));
+            self.bind(*x, V { r, t: "{ ptr, i64 }".into(), uni: true });
+            heaps.push(self.ins(format!("phi ptr [ null, %{} ], [ {}, %{} ]", lentry, hp, lwin_end)));
+        }
+        Ok(heaps)
+    }
+
+    /// `let x = filter(src, p) in body` by windows (`windowed_filter`,
+    /// D293): the elements of `src` that `p` keeps counted by blocks of
+    /// WINDOW_BLOCK in parallel (tasks of WINDOW_GROUP blocks), the place of
+    /// each block in the result (the sum of the counts before it, `places[c]`
+    /// the length `k` after the last one) into one block of memory; `x` holds
+    /// it and `k` (its length is `k`; freed with `x`), and each block of an
+    /// array written by blocks makes the part of `x` it reads
+    /// (`windowed_fill`), never the whole array.
+    fn windowed_let(&mut self, x: VarId, lets: &[(VarId, &Expr)], filter: &Expr, body: &Expr, drop: bool) -> R<V> {
+        const WINDOW_GROUP: i64 = 16;
+        for (t, i) in lets {
+            let iv = self.ex(i, 1)?;
+            self.bind(*t, iv);
+        }
+        let ExprKind::Filter(input, l) = &filter.kind else { unreachable!() };
+        let (_, n) = self.prepare_src(input)?;
+        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+        let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
+        let c1 = self.ins(format!("add i64 {}, 1", c));
+        let bytes = self.ins(format!("mul i64 {}, 8", c1));
+        let places = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+        // 1. the elements each block keeps
+        let g0 = self.ins(format!("add i64 {}, {}", c, WINDOW_GROUP - 1));
+        let groups = self.ins(format!("sdiv i64 {}, {}", g0, WINDOW_GROUP));
+        let extra = [v(places.clone(), "ptr"), v(c.clone(), "i64")];
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        let (task, ctx, ctx_bytes) = self.outline_task(&[filter], &extra, &mut |g, xs, j| {
+            let (src, n) = g.prepare_src(input)?;
+            let w = g.filter_width(input, l, input.ty.elem());
+            let b0 = g.ins(format!("mul i64 {}, {}", j, WINDOW_GROUP));
+            let b1 = g.ins(format!("add i64 {}, {}", b0, WINDOW_GROUP));
+            let b1 = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", b1, xs[1].r));
+            g.for_range_scalar(&b0, &b1, 1, &mut |g, b| {
+                let start = g.ins(format!("mul i64 {}, {}", b, WINDOW_BLOCK));
+                let end = g.ins(format!("add i64 {}, {}", start, WINDOW_BLOCK));
+                let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+                let k = g.count_kept(&src, l, &start, &end, w)?;
+                let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", xs[0].r, b));
+                g.emit(format!("store i64 {}, ptr {}", k, slot));
+                Ok(())
+            })
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", groups, task, ctx, ctx_bytes));
+        // 2. the place of each block: the sum of the counts before it
+        let run = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", run));
+        self.for_range_scalar("0", &c, 1, &mut |g, b| {
+            let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, b));
+            let cb = g.ins(format!("load i64, ptr {}", slot));
+            let before = g.ins(format!("load i64, ptr {}", run));
+            g.emit(format!("store i64 {}, ptr {}", before, slot));
+            let after = g.ins(format!("add i64 {}, {}", before, cb));
+            g.emit(format!("store i64 {}, ptr {}", after, run));
+            Ok(())
+        })?;
+        let k = self.ins(format!("load i64, ptr {}", run));
+        let last = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, c));
+        self.emit(format!("store i64 {}, ptr {}", k, last));
+        let xv = self.arr(&places, &k);
+        self.bind(x, xv.clone());
+        self.windowed.insert(x, filter.clone());
+        let r = self.ex(body, 1);
+        self.windowed.remove(&x);
+        let r = r?;
+        if drop {
+            self.emit(format!("call void @isc_free(ptr {})", places));
+        }
+        Ok(r)
+    }
+
+    /// The reads of the arrays of `windowed_let` in the function of the
+    /// `map` `e`: for each array, its indices and the `let`s around each.
+    fn windowed_reads<'a>(&self, e: &'a Expr) -> Vec<(VarId, Vec<(&'a Expr, Vec<(VarId, &'a Expr)>)>)> {
+        fn walk<'a>(e: &'a Expr, ws: &HashMap<VarId, Expr>, scope: &mut Vec<(VarId, &'a Expr)>, out: &mut Vec<(VarId, Vec<(&'a Expr, Vec<(VarId, &'a Expr)>)>)>) {
+            match &e.kind {
+                ExprKind::Index(a, i) if matches!(a.kind, ExprKind::Var(x, _) if ws.contains_key(&x)) => {
+                    let ExprKind::Var(x, _) = a.kind else { unreachable!() };
+                    match out.iter_mut().find(|(y, _)| *y == x) {
+                        Some((_, is)) => is.push((&**i, scope.clone())),
+                        None => out.push((x, vec![(&**i, scope.clone())])),
+                    }
+                    walk(i, ws, scope, out);
+                }
+                ExprKind::Let { var, init, body, .. } => {
+                    walk(init, ws, scope, out);
+                    scope.push((*var, &**init));
+                    walk(body, ws, scope, out);
+                    scope.pop();
+                }
+                _ => {
+                    for c in e.children() {
+                        walk(c, ws, scope, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let ExprKind::Map(_, l) = &e.kind {
+            if !self.windowed.is_empty() {
+                walk(&l.body, &self.windowed, &mut Vec::new(), &mut out);
+            }
+        }
+        out
+    }
+
+    /// `a op b` (`add`, `sub`, `mul` of `i64`), its overflow added to the
+    /// `i1` in the slot `bad`.
+    fn checked(&mut self, op: &str, a: &str, b: &str, bad: &str) -> String {
+        self.decls.insert(format!("declare {{ i64, i1 }} @llvm.s{}.with.overflow.i64(i64, i64)", op));
+        let r = self.ins(format!("call {{ i64, i1 }} @llvm.s{}.with.overflow.i64(i64 {}, i64 {})", op, a, b));
+        let o = self.ins(format!("extractvalue {{ i64, i1 }} {}, 1", r));
+        let was = self.ins(format!("load i1, ptr {}", bad));
+        let now = self.ins(format!("or i1 {}, {}", was, o));
+        self.emit(format!("store i1 {}, ptr {}", now, bad));
+        self.ins(format!("extractvalue {{ i64, i1 }} {}, 0", r))
+    }
+
+    /// The bounds `lo <= e <= hi` of the integer `e` for `q` in `qlo ..=
+    /// qhi` (`interval_ok`: the variables bound outside the `map` read as
+    /// they are, those of `scope` by their value), as `i64`; when a bound
+    /// overflows, `bad` is set. From bounds of the operands without an
+    /// overflow, each operation gives bounds of its results.
+    #[allow(clippy::too_many_arguments)]
+    fn index_interval(&mut self, e: &Expr, q: VarId, qlo: &str, qhi: &str, scope: &[(VarId, &Expr)], bad: &str) -> R<(String, String)> {
+        let Type::Int(k) = e.ty else { return Err("codegen: an interval of a non-integer".into()) };
+        if k.bits() < 64 {
+            let bits = k.bits();
+            let (lo, hi) = if k.signed() { (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1) } else { (0, (1i64 << bits) - 1) };
+            return Ok((lo.to_string(), hi.to_string()));
+        }
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        let lit = |a: &Expr| match a.kind {
+            ExprKind::Lit(Lit::Int(c)) => Some(c),
+            _ => None,
+        };
+        Ok(match &e.kind {
+            ExprKind::Var(v, _) if *v == q => (qlo.to_string(), qhi.to_string()),
+            ExprKind::Var(v, _) => match scope.iter().rposition(|(w, _)| w == v) {
+                Some(at) => self.index_interval(scope[at].1, q, qlo, qhi, &scope[..at], bad)?,
+                None => {
+                    let x = self.ex(e, 1)?;
+                    (x.r.clone(), x.r)
+                }
+            },
+            ExprKind::Lit(Lit::Int(c)) => (c.to_string(), c.to_string()),
+            ExprKind::Binary(BinOp::Add, a, b) => {
+                let (al, ah) = self.index_interval(a, q, qlo, qhi, scope, bad)?;
+                let (bl, bh) = self.index_interval(b, q, qlo, qhi, scope, bad)?;
+                (self.checked("add", &al, &bl, bad), self.checked("add", &ah, &bh, bad))
+            }
+            ExprKind::Binary(BinOp::Sub, a, b) => {
+                let (al, ah) = self.index_interval(a, q, qlo, qhi, scope, bad)?;
+                let (bl, bh) = self.index_interval(b, q, qlo, qhi, scope, bad)?;
+                (self.checked("sub", &al, &bh, bad), self.checked("sub", &ah, &bl, bad))
+            }
+            ExprKind::Binary(BinOp::Mul, a, b) if lit(a).is_some() || lit(b).is_some() => {
+                let (x, c) = if let Some(c) = lit(b) { (a, c) } else { (b, lit(a).unwrap()) };
+                let (xl, xh) = self.index_interval(x, q, qlo, qhi, scope, bad)?;
+                let (l, h) = if c >= 0 { (xl, xh) } else { (xh, xl) };
+                (self.checked("mul", &l, &c.to_string(), bad), self.checked("mul", &h, &c.to_string(), bad))
+            }
+            ExprKind::Binary(BinOp::Div, a, b) if lit(b).is_some_and(|c| c > 0) => {
+                let c = lit(b).unwrap();
+                let (al, ah) = self.index_interval(a, q, qlo, qhi, scope, bad)?;
+                (self.ins(format!("sdiv i64 {}, {}", al, c)), self.ins(format!("sdiv i64 {}, {}", ah, c)))
+            }
+            // the remainder has the sign of `a` and is smaller than both in size
+            ExprKind::Binary(BinOp::Rem, a, b) if lit(b).is_some_and(|c| c > 0) => {
+                let c = lit(b).unwrap();
+                let (al, ah) = self.index_interval(a, q, qlo, qhi, scope, bad)?;
+                let lpos = self.ins(format!("icmp sge i64 {}, 0", al));
+                let lneg = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", al, -(c - 1)));
+                let lo = self.ins(format!("select i1 {}, i64 0, i64 {}", lpos, lneg));
+                let hpos = self.ins(format!("icmp sge i64 {}, 0", ah));
+                let hmin = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", ah, c - 1));
+                let hi = self.ins(format!("select i1 {}, i64 {}, i64 0", hpos, hmin));
+                (lo, hi)
+            }
+            ExprKind::Unary(UnOp::Neg, a) => {
+                let (al, ah) = self.index_interval(a, q, qlo, qhi, scope, bad)?;
+                (self.checked("sub", "0", &ah, bad), self.checked("sub", "0", &al, bad))
+            }
+            ExprKind::If(_, a, b) => {
+                let (al, ah) = self.index_interval(a, q, qlo, qhi, scope, bad)?;
+                let (bl, bh) = self.index_interval(b, q, qlo, qhi, scope, bad)?;
+                (
+                    self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", al, bl)),
+                    self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", ah, bh)),
+                )
+            }
+            ExprKind::Convert(a) => self.index_interval(a, q, qlo, qhi, scope, bad)?,
+            _ => return Err("codegen: an interval not checked by interval_ok".into()),
+        })
+    }
+
+    /// The bounds of the indices of `x` read by the `map` `e` (`reads`, of
+    /// `windowed_reads`) for its index in `qlo ..= qhi`: the smallest and
+    /// the largest of the bounds of each read.
+    #[allow(clippy::type_complexity)]
+    fn windowed_bounds(&mut self, e: &Expr, reads: &[(&Expr, Vec<(VarId, &Expr)>)], qlo: &str, qhi: &str, bad: &str) -> R<(String, String)> {
+        let ExprKind::Map(_, l) = &e.kind else { unreachable!() };
+        let q = l.params[0];
+        let (mut lo, mut hi) = (String::new(), String::new());
+        for (i, scope) in reads {
+            let (a, b) = self.index_interval(i, q, qlo, qhi, scope, bad)?;
+            if lo.is_empty() {
+                (lo, hi) = (a, b);
+            } else {
+                lo = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", lo, a));
+                hi = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", hi, b));
+            }
+        }
+        Ok((lo, hi))
+    }
+
+    /// The last block `j` of `places` (`c` blocks, `places[c]` after the
+    /// last) with `places[j] <= t`, from `j >= from` (`places[from] <= t <
+    /// places[c]`), by halves.
+    fn place_search(&mut self, places: &str, from: &str, c: &str, t: &str) -> String {
+        let (lo, hi) = (self.alloca("i64"), self.alloca("i64"));
+        self.emit(format!("store i64 {}, ptr {}", from, lo));
+        self.emit(format!("store i64 {}, ptr {}", c, hi));
+        let (head, body, done) = (self.label(), self.label(), self.label());
+        self.br(&head);
+        self.block(&head);
+        let a = self.ins(format!("load i64, ptr {}", lo));
+        let b = self.ins(format!("load i64, ptr {}", hi));
+        let gap = self.ins(format!("sub i64 {}, {}", b, a));
+        let more = self.ins(format!("icmp sgt i64 {}, 1", gap));
+        self.cbr(&more, &body, &done);
+        self.block(&body);
+        let half = self.ins(format!("lshr i64 {}, 1", gap));
+        let mid = self.ins(format!("add i64 {}, {}", a, half));
+        let slot = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, mid));
+        let pm = self.ins(format!("load i64, ptr {}", slot));
+        let below = self.ins(format!("icmp sle i64 {}, {}", pm, t));
+        let a2 = self.ins(format!("select i1 {}, i64 {}, i64 {}", below, mid, a));
+        let b2 = self.ins(format!("select i1 {}, i64 {}, i64 {}", below, b, mid));
+        self.emit(format!("store i64 {}, ptr {}", a2, lo));
+        self.emit(format!("store i64 {}, ptr {}", b2, hi));
+        self.scalar_loops += 1;
+        self.emit(format!("br label %{}, !llvm.loop !{}", head, self.scalar_loops + 1));
+        self.block(&done);
+        self.ins(format!("load i64, ptr {}", lo))
+    }
+
+    /// The part of the array `xw` of `windowed_let` (of the `filter` `f`)
+    /// that holds its elements `lo ..= hi` (bounds of the reads, cut to the
+    /// array): the blocks of `src` that hold them, from the block of `lo` to
+    /// the one of `hi`, filtered again into `buf` (WINDOW_STACK bytes on the
+    /// stack) or into a block of the heap when they need more; the array
+    /// read through the result at the same indices, of the same length.
+    /// Returns it and the block of the heap to free (or null).
+    fn windowed_fill(&mut self, f: &Expr, xw: &V, lo: &str, hi: &str, buf: &str) -> R<(V, String)> {
+        let ExprKind::Filter(input, l) = &f.kind else { unreachable!() };
+        let et = input.ty.elem().clone();
+        let size = esize(&et);
+        let (src, n) = self.prepare_src(input)?;
+        let w = self.filter_width(input, l, &et);
+        let places = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xw.r));
+        let k = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xw.r));
+        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+        let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
+        let a = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", lo));
+        let km1 = self.ins(format!("sub i64 {}, 1", k));
+        let b = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", hi, km1));
+        let out = self.alloca("{ ptr, i64 }");
+        let heap = self.alloca("ptr");
+        self.emit(format!("store ptr null, ptr {}", heap));
+        // no index of the array: every read is out of bounds and fails first
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", xw.r, out));
+        let some = self.ins(format!("icmp sle i64 {}, {}", a, b));
+        let (lfill, ldone) = (self.label(), self.label());
+        self.cbr(&some, &lfill, &ldone);
+        self.block(&lfill);
+        let j0 = self.place_search(&places, "0", &c, &a);
+        let jb = self.place_search(&places, &j0, &c, &b);
+        let j1 = self.ins(format!("add i64 {}, 1", jb));
+        let s0 = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j0));
+        let base = self.ins(format!("load i64, ptr {}", s0));
+        let s1 = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j1));
+        let top = self.ins(format!("load i64, ptr {}", s1));
+        let need = self.ins(format!("sub i64 {}, {}", top, base));
+        let bytes = self.ins(format!("mul i64 {}, {}", need, size));
+        let big = self.ins(format!("icmp sgt i64 {}, {}", bytes, WINDOW_STACK));
+        let (lheap, lstack, lgo) = (self.label(), self.label(), self.label());
+        self.cbr(&big, &lheap, &lstack);
+        self.block(&lheap);
+        let hp = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+        self.emit(format!("store ptr {}, ptr {}", hp, heap));
+        self.br(&lgo);
+        self.block(&lstack);
+        self.br(&lgo);
+        self.block(&lgo);
+        let dst = self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", hp, lheap, buf, lstack));
+        let pos = self.alloca("i64");
+        self.for_range_scalar(&j0, &j1, 1, &mut |g, j| {
+            let start = g.ins(format!("mul i64 {}, {}", j, WINDOW_BLOCK));
+            let end = g.ins(format!("add i64 {}, {}", start, WINDOW_BLOCK));
+            let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+            let sj = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j));
+            let pj = g.ins(format!("load i64, ptr {}", sj));
+            let at = g.ins(format!("sub i64 {}, {}", pj, base));
+            g.emit(format!("store i64 {}, ptr {}", at, pos));
+            g.write_kept(&src, l, &start, &end, &dst, &need, &pos, &et, w)
+        })?;
+        // the element `i` of the array at `dst + (i - base)`
+        let off = self.ins(format!("mul i64 {}, -{}", base, size));
+        let p = self.ins(format!("getelementptr i8, ptr {}, i64 {}", dst, off));
+        let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", p));
+        let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, k));
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r, out));
+        self.br(&ldone);
+        self.block(&ldone);
+        let xv = self.ins(format!("load {{ ptr, i64 }}, ptr {}", out));
+        let hp = self.ins(format!("load ptr, ptr {}", heap));
+        Ok((V { r: xv, t: "{ ptr, i64 }".into(), uni: true }, hp))
+    }
+
+    /// The whole array `xw` of `windowed_let` (of the `filter` `f`): each
+    /// block of its source written from its place, in parallel (here in a
+    /// task); for the arrays written by blocks whose reads are not in
+    /// windows (`print_stream`).
+    fn windowed_whole(&mut self, f: &Expr, xw: &V) -> R<String> {
+        let ExprKind::Filter(input, l) = &f.kind else { unreachable!() };
+        let et = input.ty.elem().clone();
+        let places = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xw.r));
+        let k = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xw.r));
+        let out = self.alloc_elems(&k, &et);
+        let (_, n) = self.prepare_src(input)?;
+        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+        let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
+        let block = |g: &mut Self, j: &str, places: &str, out: &str, k: &str| -> R<()> {
+            let (src, n) = g.prepare_src(input)?;
+            let w = g.filter_width(input, l, &et);
+            let start = g.ins(format!("mul i64 {}, {}", j, WINDOW_BLOCK));
+            let end = g.ins(format!("add i64 {}, {}", start, WINDOW_BLOCK));
+            let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+            let sj = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j));
+            let pj = g.ins(format!("load i64, ptr {}", sj));
+            let pos = g.alloca("i64");
+            g.emit(format!("store i64 {}, ptr {}", pj, pos));
+            g.write_kept(&src, l, &start, &end, out, k, &pos, &et, w)
+        };
+        if self.in_task {
+            self.for_range_scalar("0", &c, 1, &mut |g, j| block(g, j, &places, &out, &k))?;
+        } else {
+            let extra = [v(places.clone(), "ptr"), v(out.clone(), "ptr"), v(k.clone(), "i64")];
+            let (task, ctx, ctx_bytes) = self.outline_task(&[f], &extra, &mut |g, xs, j| block(g, j, &xs[0].r, &xs[1].r, &xs[2].r))?;
+            self.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+        }
+        Ok(out)
     }
 
     /// `map(rows, (w) -> ... reduce(w, op, z) ...)` over windows (a view of

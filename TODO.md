@@ -229,6 +229,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The runtime aligned (D256); a large file as the standard input mapped, held by a read lease: reverse-complement 84.1 -> 64.0 ms, k-nucleotide 1095.4 -> 1076.6 ms (D257)
   - [x] The mapped input given back by every thread at the end: reverse-complement 0.065 -> 0.061 s (D258)
   - [x] The Benchmarks Game measured again at d1e3586: the fastest on 9 of 10, k-nucleotide 1.074 s against 1.174 s, reverse-complement 0.062 s against 0.068 s; n-body 2.040 s against 1.945 s (D260)
+  - [x] A `filter` read only by arrays written by blocks made by windows, never whole: reverse-complement 57764 -> 41443 µs, 2.46 times its floor (D293)
   - [ ] reverse-complement: the threads idle at the end of the writing passes of records 2 and 3 (explained, D286: the new pages at the end of a grown block, cleared by the thread of the last range; their clearing shared by all threads moved it, saved nothing); the lines and the output about 19 ms against about 6 (170 instructions a line of 61 bytes); in Docker 2-3 ms ahead of Rust only
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
@@ -252,6 +253,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Release 0.2.1: `isc-lsp` beside `iscc` in the archives (D270)
   - [x] The `.vsix` of the extension of VS Code in the releases, attached to 0.2.1 (D271)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
+  - [ ] The memory report counts as allocated whole the arrays made by blocks (D225) and by windows (D293)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)

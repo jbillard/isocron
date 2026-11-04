@@ -5451,3 +5451,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   value far above m, the paths of the loop chosen at compilation and when
   running, the panic of an update out of bounds, in the tasks of a `map`;
   1 to 8 threads).
+- **D293 — A `filter` read only by arrays written by blocks, made by
+  windows (2026-11-04).** Part 1 of the goal of 2026-11-04:
+  reverse-complement took 57764 µs, 3.43 times its floor of 16.832 ms
+  (the file read twice by blocks in the caches). In a profile of 20 runs
+  the bases of each record (`filter` of the newlines, up to 125 MB) were
+  written by 24.9 % of the samples and counted by 11.5 %, the lines that
+  read them back reversed took 23.1 %, the clearing of new pages 8.3 %, the
+  count of the headers 11.6 %, the pool waiting 11.2 %: the bases go to
+  new pages and to memory and come back from it, where the floor never
+  stores them. Now `let x = filter(src, p) in body`, when `body` reads `x`
+  only by its length and, in the function of a `map` over an `iota`
+  written by blocks (D225), by indices whose bounds over a range of the
+  index of the `map` follow from interval arithmetic (sums, differences,
+  products and quotients by literals, remainders by positive literals,
+  negations, choices, conversions; an integer of fewer than 64 bits by the
+  range of its type; the variables bound outside the `map` as they are):
+  the elements that `p` keeps are counted by blocks of 1024 in parallel and
+  the place of each block in the result (the sum of the counts before it)
+  is kept with the length; each task of the output (4096 elements) computes
+  the bounds of the indices it reads over its range widened by 64 at each
+  end (the lanes of its vectors), finds the blocks that hold them (by
+  halves in the places) and filters them again into a buffer on its stack
+  (32 KiB, the heap beyond), read at the same indices: the array is never
+  made whole, its parts stay in the caches. Each read keeps its check
+  against the length (the same panic). Before the blocks, the bounds over
+  the whole `map` are computed with checks of overflow: with an overflow,
+  or a window of the first task wider than 4 x 4096, the array is made
+  whole for that output (each block written from its place, in parallel).
+  At fixed frequency, alternated rounds, median and 95 % interval by
+  bootstrap: reverse-complement 57764 -> 41443 µs (-28.33 % [-28.69 %,
+  -28.06 %], 31 rounds), 2.46 times its floor; medians of 15 runs: 229.65
+  -> 164.47 ms of CPU, 1442 -> 63 page faults. What remains (profile): the
+  lines with their windows 52.8 % of the samples, the count of the headers
+  16.1 %, the count of the bases 14.2 %, the pool waiting 6.6 %. The LLVM
+  IR of the nine other programs is unchanged. The same outputs. Test
+  `filters_read_by_windows` (reversed lines, a stride and an offset, an
+  index of 8 bits, a window too wide, elements of 8 bytes on the heap, an
+  index past the end and nothing kept with their panics, sizes around the
+  blocks, 1 to 8 threads, the interpreter, valgrind).

@@ -248,3 +248,84 @@ action main(args: string[k]): i32 {
     let text = std::fs::read_to_string(&ll).unwrap();
     assert!(text.contains("i64 1048576"), "no buffer of 1 MiB: the bytes are not written by blocks");
 }
+
+/// D293: a `filter` read only by arrays written by blocks (D225), each
+/// block making the part of it that it reads: the elements of the source
+/// counted by blocks, then filtered again for each block of the output from
+/// the bounds of its indices. Reversed in lines of 60 (reverse-complement),
+/// forward with a stride and an offset, by an index of 8 bits (the range of
+/// its type), too wide for windows (the whole array made for that output),
+/// elements of 8 bytes (windows on the heap), an index past the end (the
+/// panic of the program), nothing kept; sizes around the blocks of the
+/// count, of the tasks and of the output; 1 to 8 threads; the same bytes as
+/// computed here and as the interpreter; nothing lost (valgrind).
+#[test]
+fn filters_read_by_windows() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const data = map(iota(n), (i) => i % 61 == 60 ? 10u8 : u8(65 + (i * 7 + i / 13) % 26));
+    const bases = data.slice(3, n).filter((b) => b != 10u8);
+    const m = bases.length;
+    print(m);
+    printBytes(map(iota(m + (m + 59) / 60), (q) => q % 61 == 60 || q == m + (m + 59) / 60 - 1 ? 10u8 : bases[m - 1 - (q / 61 * 60 + q % 61)]));
+    printBytes(map(iota(m / 2), (q) => bases[2 * q + 1]));
+    printBytes(map(iota(m >= 256 ? m : 0), (q) => bases[u8(q % 200)]));
+    printBytes(map(iota(m / 1000), (q) => bases[q * 997]));
+    const v = map(iota(n), (i) => (i * 7919) % 1000);
+    const big = v.filter((x) => x % 3 != 0);
+    const k = big.length;
+    printBytes(map(iota(k), (q) => u8(65 + big[k - 1 - q] % 26)));
+    print(\"end\");
+    return 0;
+}
+";
+    let want = |n: usize| -> Vec<u8> {
+        let data: Vec<u8> = (0..n).map(|i| if i % 61 == 60 { 10 } else { 65 + ((i * 7 + i / 13) % 26) as u8 }).collect();
+        let bases: Vec<u8> = data[3.min(n)..].iter().copied().filter(|&b| b != 10).collect();
+        let m = bases.len();
+        let mut out = format!("{}\n", m).into_bytes();
+        let len = m + m.div_ceil(60);
+        out.extend((0..len).map(|q| if q % 61 == 60 || q + 1 == len { 10 } else { bases[m - 1 - (q / 61 * 60 + q % 61)] }));
+        out.extend((0..m / 2).map(|q| bases[2 * q + 1]));
+        out.extend((0..if m >= 256 { m } else { 0 }).map(|q| bases[q % 200]));
+        out.extend((0..m / 1000).map(|q| bases[q * 997]));
+        let big: Vec<usize> = (0..n).map(|i| (i * 7919) % 1000).filter(|x| x % 3 != 0).collect();
+        let k = big.len();
+        out.extend((0..k).map(|q| 65 + (big[k - 1 - q] % 26) as u8));
+        out.extend_from_slice(b"end\n");
+        out
+    };
+    let bin = compile(src, "filter_windows");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("alloca [32768 x i8], align 64"), "no windows");
+    for n in [4usize, 1030, 5000, 70001, (1 << 20) + 9, (3 << 20) + 12345] {
+        for t in ["1", "2", "3", "4", "8"] {
+            let o = std::process::Command::new(&bin).arg(n.to_string()).env("ISC_THREADS", t).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "n {}: {}", n, String::from_utf8_lossy(&o.stderr));
+            assert!(o.stdout == want(n), "n {}, {} threads: {} bytes, {} expected", n, t, o.stdout.len(), want(n).len());
+        }
+    }
+    let p = iscc::frontend("filter_windows.isc", src).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(isc_interp::run(&p, &["70001".to_string()], &mut out).unwrap(), 0);
+    assert!(out == want(70001), "interpreter");
+    valgrind_clean(src, "filter_windows", &["70001"]);
+    // past the end, and nothing kept: the panics of the program
+    for (name, body) in [
+        ("past", "printBytes(map(iota(m), (q) => bases[q + 1]));"),
+        ("none", "printBytes(map(iota(5), (q) => bases[q * 0 + 2]));"),
+    ] {
+        let fill = if name == "none" { "10u8" } else { "u8(65 + i % 26)" };
+        let src = format!(
+            "action main(args: string[k]): i32 {{\n    const n = parseI64(args[0]);\n    const data = map(iota(n), (i) => {});\n    const bases = data.filter((b) => b != 10u8);\n    const m = bases.length;\n    {}\n    return 0;\n}}\n",
+            fill, body
+        );
+        let bin = compile(&src, &format!("filter_windows_{}", name));
+        let Outcome::Panic(msg, _) = interp(&src, &["9000"]) else { panic!("{}: no panic in the interpreter", name) };
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &["9000"], Some(t));
+            assert_eq!(r.code, 101, "{} T={}: {}", name, t, r.stderr);
+            assert_eq!(r.stderr.trim_end(), msg, "{} T={}", name, t);
+        }
+    }
+}
