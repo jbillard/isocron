@@ -8,8 +8,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jbillard/isocron/releases/latest"><img src="https://img.shields.io/github/v/release/jbillard/isocron?label=release" alt="The latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/jbillard/isocron" alt="License: MIT"></a>
+  <a href="https://github.com/jbillard/isocron/releases/latest"><img src="https://img.shields.io/github/v/release/jbillard/isocron?label=release&cacheSeconds=3600" alt="The latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/jbillard/isocron?cacheSeconds=3600" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/targets-Linux%20%C2%B7%20Windows%20%C2%B7%20WebAssembly-informational" alt="Targets: Linux, Windows, WebAssembly">
 </p>
 
