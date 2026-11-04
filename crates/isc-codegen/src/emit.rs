@@ -802,6 +802,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @llvm.stackrestore.p0(ptr)",
     "declare void @isc_parallel_for(i64, ptr, ptr, i64)",
     "declare void @isc_parallel_for_dynamic(i64, ptr, ptr, i64)",
+    "declare void @isc_parallel_for_fill(i64, ptr, ptr, i64)",
     "declare i64 @isc_thread_count()",
     "declare ptr @isc_cstr(ptr, i64, ptr, i64, i32, i32)",
 ];
@@ -4472,7 +4473,8 @@ impl<'p> Gen<'p> {
         })?;
         // the chunks of elements that are loops: taken by the threads as they
         // finish the one before (D145)
-        let pf = if heavy { "isc_parallel_for_dynamic" } else { "isc_parallel_for" };
+        // the blocks of the array: each thread its range of them (D254)
+        let pf = if heavy { "isc_parallel_for_dynamic" } else { "isc_parallel_for_fill" };
         self.emit(format!("call void @{}(i64 {}, ptr {}, ptr {}, i64 {})", pf, c, task, ctx, ctx_bytes));
         if let Some(l) = ldone {
             self.br(&l);
@@ -4655,7 +4657,8 @@ impl<'p> Gen<'p> {
                     let end = t.ins(format!("select i1 {}, i64 {}, i64 {}", short, x[2].r, lim));
                     t.fill_range(&src, &x[0].r, &n, &et2, &start, &end, w)
                 })?;
-                g.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+                // each thread its range of the blocks of the chunk (D254)
+                g.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
             }
             let len = g.ins(format!("sub i64 {}, {}", hi, lo));
             g.emit(format!("call void @isc_print_bytes(ptr {}, i64 {})", buf, len));
@@ -6507,7 +6510,8 @@ impl<'p> Gen<'p> {
             let (out, k) = (extra[1].r.clone(), extra[2].r.clone());
             g.write_kept(&src, l, &start, &end, &out, &k, &pos, &elem_ty, w)
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        // each thread its range of the blocks (D254)
+        self.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
         self.emit(format!("call void @isc_free(ptr {})", counts));
         Ok(self.arr(&out, &k))
     }

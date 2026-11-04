@@ -218,3 +218,46 @@ fn loops_in_tasks_are_shared_and_do_not_depend_on_threads() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+/// The arrays of a `map` and of a `filter` of more than two huge pages, and
+/// the chunks of a printed `map` (D254): each thread fills a contiguous
+/// range of their blocks (`isc_parallel_for_fill`); new arrays (the first
+/// round) and arrays from the cache of the allocator (the second); the
+/// same elements and output for any number of threads.
+#[test]
+fn arrays_filled_by_ranges_do_not_depend_on_threads() {
+    let src = r#"function round(r: i64): i64[3] {
+    const n = 1500017 + r;
+    const a = map(iota(n), (i) => (i * 7919 + r) % 1000003);
+    const b = filter(a, (x) => x % 3 != 0);
+    const c = map(iota(6 * n), (i) => u8((i * 37 + r) % 251));
+    const d = c.filter((x) => x != 10u8);
+    return [sum(b) + b[b.length - 1], i64(sum(map(d, (x) => u64(x)))), b.length * 1000000 + d.length % 1000000];
+}
+action main(args: string[k]): i32 {
+    print(round(0));
+    print(round(5));
+    const text = map(iota(3000017), (i) => i % 61 == 60 ? 10u8 : u8(65 + (i * 7) % 26));
+    printBytes(map(iota(text.length), (i) => text[text.length - 1 - i]));
+    return 0;
+}
+"#;
+    let mut want = String::new();
+    for r in [0i64, 5] {
+        let n = 1500017 + r;
+        let b: Vec<i64> = (0..n).map(|i| (i * 7919 + r) % 1000003).filter(|x| x % 3 != 0).collect();
+        let d: Vec<u8> = (0..6 * n).map(|i| ((i * 37 + r) % 251) as u8).filter(|&x| x != 10).collect();
+        let sb: i64 = b.iter().sum::<i64>() + b[b.len() - 1];
+        let sd: i64 = d.iter().map(|&x| x as i64).sum();
+        want += &format!("[{}, {}, {}]\n", sb, sd, b.len() as i64 * 1000000 + d.len() as i64 % 1000000);
+    }
+    let text: Vec<u8> = (0..3000017i64).map(|i| if i % 61 == 60 { 10 } else { 65 + ((i * 7) % 26) as u8 }).collect();
+    want += &String::from_utf8(text.iter().rev().copied().collect()).unwrap();
+    let bin = compile(src, "p_new_arrays");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.matches("call void @isc_parallel_for_fill").count() >= 6, "the arrays are not filled by isc_parallel_for_fill");
+    for t in THREADS {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

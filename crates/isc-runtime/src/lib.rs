@@ -1303,7 +1303,7 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
         }
     }
     let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr() };
-    parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true);
+    parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, false);
     re.merge(s, &starts, &found)
 }
 
@@ -1381,7 +1381,7 @@ unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Opti
         parts,
         out: buf,
     };
-    parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, false);
+    parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, false, false);
     Some(IscStr { ptr: buf, len: total as i64 })
 }
 
@@ -2291,14 +2291,16 @@ pub struct JobLine {
 }
 
 /// The next task of a dynamic job (`isc_parallel_for_dynamic`, D145), in a
-/// line of its own: the threads take it in turn while they work.
+/// line of its own: the threads take it in turn while they work. With
+/// `contiguous`, each thread its range of the tasks (D254).
 #[repr(C, align(128))]
 pub struct NextLine {
     next: AtomicI64,
     dynamic: core::sync::atomic::AtomicBool,
+    contiguous: core::sync::atomic::AtomicBool,
 }
 
-static NEXT: NextLine = NextLine { next: AtomicI64::new(0), dynamic: core::sync::atomic::AtomicBool::new(false) };
+static NEXT: NextLine = NextLine { next: AtomicI64::new(0), dynamic: core::sync::atomic::AtomicBool::new(false), contiguous: core::sync::atomic::AtomicBool::new(false) };
 
 #[repr(C, align(128))]
 pub struct SleepLine {
@@ -2372,6 +2374,15 @@ fn run_share(k: usize, threads: usize) {
             task(ctx, i);
         }
     }
+    // the tasks that fill an array: its contiguous range (D254)
+    if NEXT.contiguous.load(Ordering::Acquire) {
+        for i in sem::static_share(n, threads as i64, k as i64) {
+            task(ctx, i);
+        }
+        return;
+    }
+    // every `threads`-th task: the threads read close places of memory
+    // (D65, D254)
     let mut i = k as i64;
     while i < n {
         task(ctx, i);
@@ -2566,7 +2577,22 @@ fn nested_for(n: i64, task: Task, ctx: *mut c_void) {
 /// runs it; no task is taken twice.
 #[no_mangle]
 pub extern "C" fn isc_parallel_for_dynamic(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64) {
-    parallel_for(n, task, ctx, ctx_bytes, true)
+    parallel_for(n, task, ctx, ctx_bytes, true, false)
+}
+
+/// `isc_parallel_for` whose tasks fill an array, each its own part (D254):
+/// each thread takes a contiguous range of the tasks. Its writes go to its
+/// own pages, where every `threads`-th task has the threads write the same
+/// pages at once: a new array has them fault the same huge page together,
+/// the others waiting for the one that clears it (reverse-complement, its
+/// filter of 250 MB with 4 threads: 43 ms -> 31 ms); its reads, of the
+/// sources of the elements, are one stream per thread (the reversed bases
+/// of reverse-complement). Loops that only read keep every `threads`-th
+/// task, close places of memory for all threads (D65: the large `dot` 1.3 %
+/// slower by ranges with 4 threads).
+#[no_mangle]
+pub extern "C" fn isc_parallel_for_fill(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64) {
+    parallel_for(n, task, ctx, ctx_bytes, false, true)
 }
 
 /// Runs `task(ctx, i)` for `i` in `0..n` on the thread pool; returns when all
@@ -2574,10 +2600,10 @@ pub extern "C" fn isc_parallel_for_dynamic(n: i64, task: Task, ctx: *mut c_void,
 /// inside a task, its tasks are shared with the idle threads (D201).
 #[no_mangle]
 pub extern "C" fn isc_parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64) {
-    parallel_for(n, task, ctx, ctx_bytes, false)
+    parallel_for(n, task, ctx, ctx_bytes, false, false)
 }
 
-fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: bool) {
+fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: bool, contiguous: bool) {
     if n <= 0 {
         return;
     }
@@ -2610,6 +2636,7 @@ fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: b
     JOB.finished.store(0, Ordering::Relaxed);
     NEXT.next.store(0, Ordering::Relaxed);
     NEXT.dynamic.store(dynamic, Ordering::Relaxed);
+    NEXT.contiguous.store(contiguous, Ordering::Relaxed);
     // Published by a plain write: only the caller writes `gen`. A locked
     // add would ask for its line only once every earlier write is done; a
     // write lets the processor fetch it while the line of the job is still

@@ -310,6 +310,42 @@ pub const fn alloc_class_size(i: usize) -> usize {
     m << (k - 3)
 }
 
+/// The tasks of thread `k` of `threads` in a parallel loop of `n` tasks of
+/// the same cost (D254): a contiguous range, the ranges of the threads in
+/// their order, their lengths within one of each other. Contiguous rather
+/// than every `threads`-th task: a thread reads and writes one stream (the
+/// prefetchers of the cache follow it), and the threads do not fault the
+/// same huge page of a new array at the same time.
+pub fn static_share(n: i64, threads: i64, k: i64) -> core::ops::Range<i64> {
+    let at = |j: i64| (n as i128 * j as i128 / threads.max(1) as i128) as i64;
+    at(k)..at(k + 1)
+}
+
+#[cfg(test)]
+mod shares {
+    /// Each task once, in order, by contiguous ranges of lengths within one
+    /// of each other; more threads than tasks: empty ranges.
+    #[test]
+    fn contiguous_ranges_of_the_tasks() {
+        for n in [0i64, 1, 2, 3, 7, 64, 1000, 62_053, 1 << 40] {
+            for t in [1i64, 2, 3, 4, 7, 8, 64] {
+                let mut next = 0;
+                let (mut lo, mut hi) = (i64::MAX, 0);
+                for k in 0..t {
+                    let r = super::static_share(n, t, k);
+                    assert_eq!(r.start, next, "n={} t={} k={}", n, t, k);
+                    assert!(r.end >= r.start);
+                    lo = lo.min(r.end - r.start);
+                    hi = hi.max(r.end - r.start);
+                    next = r.end;
+                }
+                assert_eq!(next, n, "n={} t={}", n, t);
+                assert!(hi - lo <= 1, "n={} t={}: {}..{}", n, t, lo, hi);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod replacements {
     extern crate std;

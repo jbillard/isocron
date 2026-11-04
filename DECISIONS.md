@@ -4498,3 +4498,43 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     Test `keys_scattered_by_their_hash` (3 million keys, about 200 000
     large ones, small and negative ones; 1 and 4 threads; the order of the
     first occurrences and the counts).
+- **D254 — The loops that fill an array give each thread a contiguous range
+  of their blocks (2026-11-04).** reverse-complement after D253, 4 threads:
+  104.3 ms; by phase (the program stopped after each): the read 29.6 ms,
+  the headers 12.9 ms, the filter of the bases 42.8 ms, the lines and the
+  output 20 ms. The filter, by its cost model (two reads of 254 MB at 47.3
+  GB/s, 250 MB of new pages at 18.0 GB/s): 25 ms; one thread 54 ms, so 4
+  threads barely helped; 2788 page faults against 1761 with one thread;
+  `clear_page_erms` 30 % of the cycles. The static share gave task k to
+  thread k mod T: with blocks of 4096 bytes, the 4 threads wrote the same
+  huge page of the new array at once, its first write faulting it while
+  the others waited for the 2 MiB to be cleared.
+  - `isc_parallel_for_fill`: thread k takes the tasks `n k / T .. n (k +
+    1) / T` (`static_share`, in isc-runtime-core, with its test). Used by
+    the blocks of a `map` (not those whose elements are loops: dynamic,
+    D145), the writing pass of a `filter`, and the chunks of a printed
+    `map` (`print_stream`). The other loops (reductions, the counting pass
+    of a `filter`, scans) keep every T-th task: reading arrays already
+    there, the threads stay close in memory (D65).
+  - Every static loop by ranges was measured too: reverse-complement 89.4
+    ms, but the large `sum`, `dot` and `std_dev` 0.6, 1.3 and 1.1 % slower
+    with 4 threads, 0.9, 2.2 and 2.5 % with 8 (DRAM pages, as D65 found;
+    `dot` with 8 threads would fall behind C in `results/xeon.md`). By
+    ranges only when the new array had no page written yet (a flag of the
+    allocator): 103.2 ms, the bases of a record taking the block of the
+    shorter record before (not new, its end new): not kept.
+  - Measured (fixed frequency, best of 11, 4 threads): reverse-complement
+    103.5 -> 89.9 ms (stopped after its filter 85.3 -> 74.3 ms, the
+    faults 2706 -> 1780),
+    k-nucleotide 1121.2 -> 1107.4 ms; the 8 others within their noise
+    (regex-redux 293.0 -> 294.7 ms: its loops are in the runtime, the same
+    in both). The kernels, large arrays, 4 threads: `sum` +0.2 %, `dot`
+    -0.1 %, `moving_average` -0.5 % and -1.1 % (B), `filter_sum` +0.7 %,
+    `prefix_sum` -0.3 %. Test `arrays_filled_by_ranges_do_not_depend_on_threads`
+    (maps and filters of 12 to 54 MB, new and from the cache, a printed
+    reversed map; 1 to 8 threads; the calls in the IR).
+  - A run of the kernels gave baselines up to 1.8 times slower (the small
+    `histogram` 42856 ns against 23993 ns) for both versions alike: a
+    service scanning media on the sibling hardware threads of the cores
+    measured (`machine.sh apply parallel` confines every other process to
+    them). Remeasured once it had stopped: 24061 ns.
