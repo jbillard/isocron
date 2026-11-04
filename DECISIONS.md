@@ -5589,3 +5589,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   rounds). The same outputs. Test `small_keys_counted_in_one_loop` (keys
   that grow along the indices, then blocks with large keys among them; 1
   and 4 threads).
+- **D297 — The reads of the index of a `fold` in vector code checked
+  before its loop (2026-11-04).** Part 1 of the goal of 2026-11-04:
+  k-nucleotide after D296. The loop of its keys (`fold(iota(k), 0, (c, j)
+  => c * 4 + codes[i + j])` in vector code, 16 keys a step) took 16
+  instructions a step, 7 of them the check of the first and the last
+  index of its vector (D217), again at every `j`. Now, in a `fold` over an
+  `iota` in vector code (not under a mask), the reads `a[p + j]`, `a[j +
+  p]` and `a[j]` of its index `j` (`a` and `p` bound before the `fold`, an
+  index of 64 bits) are checked in every lane at `j = 0` and `j = n - 1`
+  before the loop: `p + j` grows with `j`, so that every index of the
+  loop is between two in bounds, and the loop reads them without a check
+  (9 instructions a step); when one of them is not, the loop as written,
+  with its checks and its panic. Measured and not kept: the pass `irce` of
+  LLVM after `default<O3>`, k-nucleotide -1.33 % [-1.89 %, -1.27 %] (7
+  rounds) while the check of this loop was still there, a gain not
+  explained. At fixed frequency, alternated rounds, median and 95 %
+  interval by bootstrap: k-nucleotide 976336 -> 954270 µs (-2.51 % [-3.73
+  %, -1.37 %], 11 rounds); the LLVM IR of the nine other programs
+  unchanged. With D296, against D295: k-nucleotide 987547 -> 955004 µs
+  (-3.26 % [-4.10 %, -1.90 %]), the nine others between -0.26 % and +0.56
+  %, every interval across 0. Test `fold_reads_checked_before_their_loop`
+  (the results of the interpreter, an empty `fold`, an index past the end
+  at the last `j` only and before the start at the first `j` only, with
+  their panics; 1 and 4 threads).

@@ -224,6 +224,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The small blocks carved from spans of huge pages, one per thread, the first chunk shared: the reading of k-nucleotide 262472 -> 228813 µs, k-nucleotide 1085220 -> 1048271 µs (D294)
   - [x] The rounds of scatter of a grouping bounded together (128 MiB), larger for few parts: k-nucleotide 1050076 -> 991264 µs (D295)
   - [x] The blocks of small keys counted in one loop: k-nucleotide 989988 -> 967269 µs (D296)
+  - [x] The reads of the index of a `fold` in vector code checked before its loop: k-nucleotide 976336 -> 954270 µs (D297)
   - [ ] The clears of the pipeline for the order of memory of binary-trees when the blocks of the threads are at the same places of their huge pages (D294): the way through the caches not shown
   - [ ] The headers of 64 bytes of small blocks: a line of 60 bytes takes 128 (the first writes of `refill`)
   - [x] The large tables of `countBy` scattered by rounds, the keys of a block in two passes: k-nucleotide 1.454 s -> 1.115 s (D253)

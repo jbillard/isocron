@@ -130,6 +130,46 @@ fn folds_over_a_size_of_every_lane_and_shifted_indices_are_vector_code() {
     }
 }
 
+/// D296: the reads `a[p + j]` of the index `j` of a `fold` over an `iota`
+/// in vector code, checked at the first and the last `j` before the loop;
+/// the loop without its checks when both are in bounds, the loop as written
+/// otherwise: the results and the panics of the interpreter (an index past
+/// the end at the last `j` only, a negative one at the first only, an empty
+/// `fold`), the check before the loop there.
+#[test]
+fn fold_reads_checked_before_their_loop() {
+    let want = interp_ok(KMERS, &[]);
+    let bin = compile(KMERS, "vector_fold_precheck");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("@llvm.vector.reduce.and.v"), "no check before the loop of the fold");
+    for t in [1, 4] {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+    // the empty `fold`: k = 0 in the lanes
+    let src = KMERS.replace("[1, 3, 6, 12][q]", "[1, 3, 6, 12][q] * (q % 2)");
+    let want = interp_ok(&src, &[]);
+    let bin = compile(&src, "vector_fold_precheck_empty");
+    let run = run_bin_threads(&bin, &[], Some(4));
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "empty: {}", run.stderr);
+    // past the end at the last `j`; before the start at the first `j`
+    for (name, from, to) in [
+        ("end", "count(iota(n - k + 1)", "count(iota(n - k + 2)"),
+        ("start", "codes[i + j]", "codes[i + j - 1]"),
+    ] {
+        let src = KMERS.replace(from, to);
+        let want = match interp(&src, &[]) {
+            Outcome::Panic(m, _) => m,
+            Outcome::Exit(c, out) => panic!("{}: no panic ({} {})", name, c, out),
+        };
+        let bin = compile(&src, &format!("vector_fold_precheck_{}", name));
+        for t in [1, 4] {
+            let run = run_bin_threads(&bin, &[], Some(t));
+            assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{} {} threads", name, t);
+        }
+    }
+}
+
 const MASKED: &str = "function pick(p: f64[n], codes: u8[n], r: f64): u8 {
     return codes[Math.min(count(p, (c) => c <= r), n - 1)];
 }

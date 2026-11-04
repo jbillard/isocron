@@ -508,6 +508,9 @@ pub struct Gen<'p> {
     /// copy of the `filter`; the variable holds the places of the blocks and
     /// the length.
     windowed: HashMap<VarId, Expr>,
+    /// The indices of vector code checked before the loop of their `fold`
+    /// (`fold_vec`, D296): read without a check of their bounds.
+    prechecked: HashSet<*const Expr>,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -867,6 +870,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         stream: None,
         scalar_loops: 0,
         windowed: HashMap::new(),
+        prechecked: HashSet::new(),
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -4161,35 +4165,40 @@ impl<'p> Gen<'p> {
         // lane out, for the message). Under a mask too (a branch of an `if`,
         // D226): every lane in bounds, the active ones are; the lanes left
         // out may be past the end, then the test of the active lanes.
-        if let (Some((first, d)), true) = (self.f.contig.get(&iv.r).cloned(), idx == iv.r) {
-            let last = self.ins(format!("add i64 {}, {}", first, d * (w as i64 - 1)));
-            let a1 = self.ins(format!("icmp ult i64 {}, {}", first, n));
-            let a2 = self.ins(format!("icmp ult i64 {}, {}", last, n));
-            let fine = self.ins(format!("and i1 {}, {}", a1, a2));
-            let lslow = self.label();
-            self.cbr(&fine, &lok, &lslow);
-            self.block(&lslow);
-        }
-        let nv = self.widen(&v(n.clone(), "i64"), w);
-        let bad0 = self.ins(format!("icmp uge <{} x i64> {}, {}", w, idx, nv.r));
-        let bad = match self.mask.clone() {
-            Some(m) => self.ins(format!("and <{} x i1> {}, {}", w, bad0, m)),
-            None => bad0,
-        };
-        let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, bad, w));
-        let ok = self.ins(format!("icmp eq i{} {}, 0", w, bits));
-        if let Some(lf) = self.vec_fail.clone() {
-            // the elements of the vector again, one at a time (D185)
-            self.cbr(&ok, &lok, &lf);
+        // checked before the loop of its `fold` (D296): no check here
+        if self.mask.is_none() && self.prechecked.contains(&(i as *const Expr)) {
+            self.br(&lok);
         } else {
-            let lfail = self.label();
-            self.cbr(&ok, &lok, &lfail);
-            self.block(&lfail);
-            let first = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {bits}, i1 true)", w = w, bits = bits));
-            self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
-            let at = self.ins(format!("extractelement <{} x i64> {}, i{} {}", w, idx, w, first));
-            self.emit(format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", at, n, unsigned, Self::pos(span)));
-            self.emit("unreachable");
+            if let (Some((first, d)), true) = (self.f.contig.get(&iv.r).cloned(), idx == iv.r) {
+                let last = self.ins(format!("add i64 {}, {}", first, d * (w as i64 - 1)));
+                let a1 = self.ins(format!("icmp ult i64 {}, {}", first, n));
+                let a2 = self.ins(format!("icmp ult i64 {}, {}", last, n));
+                let fine = self.ins(format!("and i1 {}, {}", a1, a2));
+                let lslow = self.label();
+                self.cbr(&fine, &lok, &lslow);
+                self.block(&lslow);
+            }
+            let nv = self.widen(&v(n.clone(), "i64"), w);
+            let bad0 = self.ins(format!("icmp uge <{} x i64> {}, {}", w, idx, nv.r));
+            let bad = match self.mask.clone() {
+                Some(m) => self.ins(format!("and <{} x i1> {}, {}", w, bad0, m)),
+                None => bad0,
+            };
+            let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, bad, w));
+            let ok = self.ins(format!("icmp eq i{} {}, 0", w, bits));
+            if let Some(lf) = self.vec_fail.clone() {
+                // the elements of the vector again, one at a time (D185)
+                self.cbr(&ok, &lok, &lf);
+            } else {
+                let lfail = self.label();
+                self.cbr(&ok, &lok, &lfail);
+                self.block(&lfail);
+                let first = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {bits}, i1 true)", w = w, bits = bits));
+                self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+                let at = self.ins(format!("extractelement <{} x i64> {}, i{} {}", w, idx, w, first));
+                self.emit(format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 {}, {})", at, n, unsigned, Self::pos(span)));
+                self.emit("unreachable");
+            }
         }
         self.block(&lok);
         let m = mt(&elem);
@@ -7909,17 +7918,128 @@ impl<'p> Gen<'p> {
         let at = iv.t.clone();
         let acc = self.alloca(&at);
         self.emit(format!("store {} {}, ptr {}", at, iv.r, acc));
-        self.for_range_scalar("0", &n, 1, &mut |g, i| {
-            let a = V { r: g.ins(format!("load {}, ptr {}", at, acc)), t: at.clone(), uni: false };
-            let el = g.elem(&src, i, 1)?;
+        // the reads `a[p + j]` of its index `j` over an `iota` checked at
+        // `j = 0` and `j = n - 1` before the loop (D296): `p + j` grows with
+        // `j`, so that every index of the loop is between those in bounds,
+        // and the loop reads them without a check; when one is not, the loop
+        // as written (its checks, its panic)
+        let reads = if matches!(x.kind, ExprKind::Iota(_)) && self.mask.is_none() { self.fold_index_reads(l) } else { Vec::new() };
+        if reads.is_empty() {
+            self.fold_vec_loop(&src, &n, &acc, &at, l, w)?;
+        } else {
+            let ok = self.fold_precheck(&reads, l.params[1], &n, w)?;
+            let (lfast, lslow, ljoin) = (self.label(), self.label(), self.label());
+            self.cbr(&ok, &lfast, &lslow);
+            self.block(&lfast);
+            for (_, i) in &reads {
+                self.prechecked.insert(*i as *const Expr);
+            }
+            let fast = self.fold_vec_loop(&src, &n, &acc, &at, l, w);
+            for (_, i) in &reads {
+                self.prechecked.remove(&(*i as *const Expr));
+            }
+            fast?;
+            self.br(&ljoin);
+            self.block(&lslow);
+            self.fold_vec_loop(&src, &n, &acc, &at, l, w)?;
+            self.br(&ljoin);
+            self.block(&ljoin);
+        }
+        Ok(V { r: self.ins(format!("load {}, ptr {}", at, acc)), t: at, uni: false })
+    }
+
+    /// The loop of `fold_vec`.
+    fn fold_vec_loop(&mut self, src: &Src, n: &str, acc: &str, at: &str, l: &Lambda, w: u32) -> R<()> {
+        self.for_range_scalar("0", n, 1, &mut |g, i| {
+            let a = V { r: g.ins(format!("load {}, ptr {}", at, acc)), t: at.to_string(), uni: false };
+            let el = g.elem(src, i, 1)?;
             g.bind(l.params[0], a);
             g.bind(l.params[1], el);
             let r = g.ex(&l.body, w)?;
             let r = g.widen(&r, w);
             g.emit(format!("store {} {}, ptr {}", at, r.r, acc));
             Ok(())
-        })?;
-        Ok(V { r: self.ins(format!("load {}, ptr {}", at, acc)), t: at, uni: false })
+        })
+    }
+
+    /// The reads `a[p + j]`, `a[j + p]` or `a[j]` of the function `l` of a
+    /// `fold` over an `iota` (its index `j`), as (`a`, the index): `a` a
+    /// variable bound before the `fold`, `p` an `i64` of variables bound
+    /// before it (neither `j` nor the accumulator nor a variable of `l`).
+    fn fold_index_reads<'a>(&self, l: &'a Lambda) -> Vec<(&'a Expr, &'a Expr)> {
+        fn binders(e: &Expr, out: &mut HashSet<VarId>) {
+            match &e.kind {
+                ExprKind::Let { var, .. } => {
+                    out.insert(*var);
+                }
+                ExprKind::Map(_, f) | ExprKind::Reduce(_, f, _) | ExprKind::Fold(_, _, f) | ExprKind::Scan(_, f, _) | ExprKind::Filter(_, f) => out.extend(f.params.iter().copied()),
+                _ => {}
+            }
+            for c in e.children() {
+                binders(c, out);
+            }
+        }
+        let (c, j) = (l.params[0], l.params[1]);
+        let mut inner = HashSet::from([c, j]);
+        binders(&l.body, &mut inner);
+        let outer = |e: &Expr| -> bool {
+            let (mut bound, mut free) = (HashSet::new(), Vec::new());
+            free_vars(e, &mut bound, &mut free);
+            free.iter().all(|v| !inner.contains(v) && self.env.contains_key(v))
+        };
+        let is_j = |e: &Expr| matches!(e.kind, ExprKind::Var(v, _) if v == j);
+        let i64t = Type::Int(IntKind::I64);
+        let mut out = Vec::new();
+        fn walk<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Expr), stop: &dyn Fn(&Expr) -> bool) {
+            f(e);
+            if stop(e) {
+                return;
+            }
+            for c in e.children() {
+                walk(c, f, stop);
+            }
+        }
+        // not inside another function (its own loop, its own index)
+        let nested = |e: &Expr| matches!(e.kind, ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..));
+        walk(
+            &l.body,
+            &mut |e: &'a Expr| {
+                if let ExprKind::Index(a, i) = &e.kind {
+                    let affine = is_j(i)
+                        || matches!(&i.kind, ExprKind::Binary(BinOp::Add, u, v) if (is_j(u) && outer(v)) || (is_j(v) && outer(u)));
+                    if affine && i.ty == i64t && matches!(a.kind, ExprKind::Var(..)) && outer(a) && !out.iter().any(|(_, k): &(&Expr, &Expr)| std::ptr::eq(*k, &**i)) {
+                        out.push((&**a, &**i));
+                    }
+                }
+            },
+            &nested,
+        );
+        out
+    }
+
+    /// `fold_index_reads` in bounds at `j = 0` and `j = n - 1`, every lane
+    /// (an `i1`).
+    fn fold_precheck(&mut self, reads: &[(&Expr, &Expr)], j: VarId, n: &str, w: u32) -> R<String> {
+        let last = self.ins(format!("sub i64 {}, 1", n));
+        let mut ok = "true".to_string();
+        for (a, i) in reads {
+            let (_, len) = self.prepare_src(a)?;
+            for at in ["0".to_string(), last.clone()] {
+                self.bind(j, v(at, "i64"));
+                let x = self.ex(i, w)?;
+                let fine = if uni(&x) {
+                    self.ins(format!("icmp ult i64 {}, {}", x.r, len))
+                } else {
+                    let nv = self.widen(&v(len.clone(), "i64"), w);
+                    let lanes = self.ins(format!("icmp ult <{} x i64> {}, {}", w, x.r, nv.r));
+                    let name = format!("llvm.vector.reduce.and.v{}i1", w);
+                    self.decls.insert(format!("declare i1 @{}(<{} x i1>)", name, w));
+                    self.ins(format!("call i1 @{}(<{} x i1> {})", name, w, lanes))
+                };
+                ok = self.ins(format!("and i1 {}, {}", ok, fine));
+            }
+        }
+        Ok(ok)
     }
 
     /// A `reduce` in vector code (D185): its operator order free, over an
