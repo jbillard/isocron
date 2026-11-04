@@ -5687,3 +5687,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `integers_written_as_the_interpreter` (every count of digits around the
   powers of ten, both signs, the extremes of `i64` and `u64`, integers of
   8 and 32 bits, `print`, `toString`, a template).
+- **D301 — String literals read where they are; searches of short
+  needles (2026-11-04).** The first group of the audit of every form
+  (`bench/primitives/`, `results/primitives.md`: each form in Isocron and
+  the same work in C the cheapest way known, on one CPU at fixed
+  frequency): of 20 functions of strings on lines of 60 bytes, `startsWith`
+  took 18.60 ns against 1.17 in C, `endsWith` 18.31 against 0.94,
+  `indexOf` of a byte 56.87 against 3.79, `includes` 47.04 against 12.65.
+  Two causes. Each evaluation of a string literal made a new string
+  (`isc_str_new`) freed after its use: `l.startsWith("Z")` in a loop
+  allocated and freed "Z" at each line. And the searches went through the
+  general search of `str` (`find`, `contains`), prepared at each call. Now
+  a string literal is borrowed data of the program, read where it is, as
+  an array of constants (D173): the ownership pass and its checker take it
+  as borrowed, a consumer that keeps it gets a copy; a direct tail call
+  that passes one keeps it in its loop without owning it (the first
+  version made the call of pidigits with `""` a recursion: +7.17 %
+  [+6.80 %, +7.22 %]). `startsWith` and `endsWith` against a literal of at
+  most 16 bytes are compared in the generated code (its length, then one
+  or two integers); a search of a byte is `memchr`, of 2 to 16 bytes their
+  first byte by `memchr` then the others, longer `memmem`. On one CPU,
+  medians of 5 runs of 200 rounds, before and after: `startsWith` of 1
+  byte 18.60 -> 1.90 ns, of 8 bytes 18.10 -> 1.88, `endsWith` 18.31 ->
+  1.99, `indexOf` 56.87 -> 7.66, `includes` 47.04 -> 25.94, a
+  concatenation with a literal 17.32 -> 9.83, a template 45.85 -> 38.20.
+  The ten programs, alternated rounds: k-nucleotide -1.12 % [-1.44 %, -1.01
+  %]; regex-redux +0.26 % [+0.11 %, +0.61 %] (31 rounds), +0.20 % [+0.06 %,
+  +0.39 %] (61), with the same instructions (49.494 to 49.507 billion for
+  10 runs of each) and cycles within their variation from a run to the
+  next (16.84 to 16.98 billion for both): not a cost of the change;
+  binary-trees +0.59 % in 11 rounds, +0.07 % [-0.18 %, +0.33 %] in 31; the
+  others between -0.56 % and +0.26 %, every interval across 0. Tests
+  `searches_of_short_needles` (literals of 0 to 17 bytes, texts shorter
+  and longer, characters of several bytes, needles of 1, 2 to 16 and more
+  bytes, overlapping candidates) and `literals_given_to_tail_calls` (a
+  million calls, valgrind).

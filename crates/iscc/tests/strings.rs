@@ -614,3 +614,65 @@ fn alternations_of_shapes_found_by_masks() {
         }
     }
 }
+
+/// D301: `startsWith` and `endsWith` against literals of 0 to 17 bytes (up
+/// to 16 compared in the generated code, as one or two integers), strings
+/// shorter, as long and longer, of several bytes a character; `includes`
+/// and `indexOf` by needles of 1 byte (`memchr`), 2 to 16 (their first
+/// byte, then the others) and more (`memmem`): at the start, at the end,
+/// overlapping candidates, none, empty. The text of the interpreter.
+#[test]
+fn searches_of_short_needles() {
+    let src = r#"function affixes(s: string): i64[21] {
+    return [s.startsWith("") ? 1 : 0, s.startsWith("a") ? 1 : 0, s.startsWith("ab") ? 1 : 0, s.startsWith("abc") ? 1 : 0,
+        s.startsWith("abcdefg") ? 1 : 0, s.startsWith("abcdefgh") ? 1 : 0, s.startsWith("abcdefghi") ? 1 : 0,
+        s.startsWith("abcdefghijklmno") ? 1 : 0, s.startsWith("abcdefghijklmnop") ? 1 : 0, s.startsWith("abcdefghijklmnopq") ? 1 : 0,
+        s.startsWith("é") ? 1 : 0, s.startsWith("abd") ? 1 : 0,
+        s.endsWith("") ? 1 : 0, s.endsWith("q") ? 1 : 0, s.endsWith("pq") ? 1 : 0, s.endsWith("jklmnopq") ? 1 : 0,
+        s.endsWith("ijklmnopq") ? 1 : 0, s.endsWith("bcdefghijklmnopq") ? 1 : 0, s.endsWith("abcdefghijklmnopq") ? 1 : 0,
+        s.endsWith("ù") ? 1 : 0, s.endsWith("xq") ? 1 : 0];
+}
+
+function finds(s: string, t: string): i64[2] {
+    return [s.indexOf(t), s.includes(t) ? 1 : 0];
+}
+
+action main(args: string[k]): i32 {
+    const texts = ["", "a", "ab", "abc", "abcdefg", "abcdefgh", "abcdefghi", "abcdefghijklmnop", "abcdefghijklmnopq",
+        "abcdefghijklmnopqr", "éabc", "abcù", "xabcdefghijklmnopq", "aaab", "abababac"];
+    for_each(texts);
+    const needles = ["a", "q", "é", "ù", "ab", "aab", "abac", "bab", "pq", "defghijklmnopq", "abcdefghijklmnopq",
+        "bcdefghijklmnopqr", "zz", "", "aaab"];
+    print(map(texts, (s) => map(iota(needles.length * 2), (k) => finds(s, needles[k / 2])[k % 2])));
+    return 0;
+}
+
+action for_each(texts: string[n]): void {
+    print(map(texts, affixes));
+}
+"#;
+    let want = interp_ok(src, &[]);
+    agree(src, "str_short_needles", &[], &want);
+}
+
+/// D301: a string literal given to a direct tail call is kept by its loop
+/// without being owned (borrowed data of the program), between strings
+/// that the loop owns and frees: a loop (a million calls), the text of the
+/// interpreter, nothing lost nor freed twice (valgrind).
+#[test]
+fn literals_given_to_tail_calls() {
+    let src = r#"function build(i: i64, n: i64, acc: string, longest: i64): i64 {
+    if (i == n) return longest + acc.length;
+    if (i % 7 == 0) return build(i + 1, n, "", longest > acc.length ? longest : acc.length);
+    if (i % 5 == 0) return build(i + 1, n, "ab", longest);
+    return build(i + 1, n, acc + "x", longest);
+}
+
+action main(args: string[k]): i32 {
+    print(build(0, parseI64(args[0]), "start", 0));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &["1000000"]);
+    agree(src, "str_literal_tail_calls", &["1000000"], &want);
+}

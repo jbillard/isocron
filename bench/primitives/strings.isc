@@ -1,0 +1,63 @@
+// The audit of every form against the machine (TODO, D299): the functions
+// of strings on short strings, 4096 lines of 60 bytes (a text in lines),
+// in the caches. Each line of the output: a name and the nanoseconds of one
+// call, the mean over `rounds` rounds (`bench`); run on one thread
+// (ISC_THREADS=1), against `strings.c` (the same work in C, the floor).
+// usage: strings <rounds>
+
+// the line i: 60 letters
+function line(i: i64): string {
+    return stringOf(map(iota(60), (j) => u8(65 + (i * 7 + j * 13 + j * j) % 26)));
+}
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    const ls = map(iota(n), line);
+    const csv = map(iota(n), (i) => join(map(iota(6), (f) => toString(i * 31 + f * 1000)), ","));
+    const nums = map(iota(n), (i) => toString(1000000 + i * 997));
+    const padded = map(ls, (l) => "   " + l + "  ");
+    const text = join(ls, "\n");
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => count(ls, (l) => l.startsWith("Z")));
+    print(`startsWith.1 ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => count(ls, (l) => l.startsWith("ABCDEFGH")));
+    print(`startsWith.8 ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => count(ls, (l) => l.endsWith("XY")));
+    print(`endsWith.2 ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => count(ls, (l) => l.includes("QQQ")));
+    print(`includes.3 ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    const [a5, t5] = bench(r, () => sum(map(ls, (l) => l.indexOf("M"))));
+    print(`indexOf.1 ${(f64(t5) / each).toFixed(3)} ${a5}`);
+    const [a6, t6] = bench(r, () => count(iota(n), (i) => ls[i] == ls[i ^ 1]));
+    print(`equal ${(f64(t6) / each).toFixed(3)} ${a6}`);
+    const [a7, t7] = bench(r, () => count(iota(n), (i) => ls[i] < ls[i ^ 1]));
+    print(`less ${(f64(t7) / each).toFixed(3)} ${a7}`);
+    const [a8, t8] = bench(r, () => sum(map(ls, (l) => (l + "!").length)));
+    print(`concat ${(f64(t8) / each).toFixed(3)} ${a8}`);
+    const [a9, t9] = bench(r, () => sum(map(ls, (l) => l.slice(5, 25).length)));
+    print(`slice ${(f64(t9) / each).toFixed(3)} ${a9}`);
+    const [a10, t10] = bench(r, () => sum(map(ls, (l) => l.toUpperCase().length)));
+    print(`toUpperCase ${(f64(t10) / each).toFixed(3)} ${a10}`);
+    const [a11, t11] = bench(r, () => sum(map(csv, (l) => l.split(",").length)));
+    print(`split.6 ${(f64(t11) / each).toFixed(3)} ${a11}`);
+    const [a12, t12] = bench(r, () => join(ls, ",").length);
+    print(`join.line ${(f64(t12) / each).toFixed(3)} ${a12}`);
+    const [a13, t13] = bench(r, () => lines(text).length);
+    print(`lines.line ${(f64(t13) / each).toFixed(3)} ${a13}`);
+    const [a14, t14] = bench(r, () => sum(map(nums, parseI64)));
+    print(`parseI64.7 ${(f64(t14) / each).toFixed(3)} ${a14}`);
+    const [a15, t15] = bench(r, () => sum(map(iota(n), (i) => toString(i * 7919).length)));
+    print(`toString.i64 ${(f64(t15) / each).toFixed(3)} ${a15}`);
+    const [a16, t16] = bench(r, () => sum(map(padded, (l) => l.trim().length)));
+    print(`trim ${(f64(t16) / each).toFixed(3)} ${a16}`);
+    const [a17, t17] = bench(r, () => sum(map(ls, (l) => l.replaceAll("A", "aa").length)));
+    print(`replaceAll.1 ${(f64(t17) / each).toFixed(3)} ${a17}`);
+    const [a18, t18] = bench(r, () => sum(map(iota(n), (i) => `${i}-${ls[i].length}`.length)));
+    print(`template ${(f64(t18) / each).toFixed(3)} ${a18}`);
+    const [a19, t19] = bench(r, () => sum(map(ls, (l) => l.slice(0, 10).padStart(20, "0").length)));
+    print(`padStart ${(f64(t19) / each).toFixed(3)} ${a19}`);
+    const [a20, t20] = bench(r, () => sum(map(ls, (l) => i64(bytes(l)[7]))));
+    print(`bytes ${(f64(t20) / each).toFixed(3)} ${a20}`);
+    return 0;
+}

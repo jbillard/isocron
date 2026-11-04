@@ -264,6 +264,9 @@ impl<'p> Checker<'p> {
             ConstArray(_) => Ok(Val::View(Vec::new())),
             // a literal: a new string; the operands of an operation on
             // strings are only read (D134)
+            // a string literal: borrowed data of the program (D301); a
+            // `bigint` literal is made
+            StrLit(_) if e.ty == Type::Str => Ok(Val::View(Vec::new())),
             StrLit(_) => Ok(Val::Fresh),
             StrOp(op, es) => {
                 for x in es {

@@ -511,6 +511,8 @@ pub struct Gen<'p> {
     /// The indices of vector code checked before the loop of their `fold`
     /// (`fold_vec`, D296): read without a check of their bounds.
     prechecked: HashSet<*const Expr>,
+    /// The variables bound to a string literal (borrowed, D301): their text.
+    str_lits: HashMap<VarId, String>,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -871,6 +873,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         scalar_loops: 0,
         windowed: HashMap::new(),
         prechecked: HashSet::new(),
+        str_lits: HashMap::new(),
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -2189,6 +2192,20 @@ impl<'p> Gen<'p> {
         for (k, x) in vals.iter().enumerate() {
             let (s, owned, ty) = &tl.slots[k];
             let t = lt(ty);
+            // a string literal (D301): kept by the loop without owning it,
+            // the old value freed if the loop owned it
+            if let (true, Some(o)) = (tc.literals.contains(&k), owned.as_ref()) {
+                let own = self.ins(format!("load i1, ptr {}", o));
+                let lf = self.label();
+                let ld = self.label();
+                self.cbr(&own, &lf, &ld);
+                self.block(&lf);
+                let old = self.ins(format!("load {}, ptr {}", t, s));
+                self.drop_value(&v(old, t.clone()), ty);
+                self.br(&ld);
+                self.block(&ld);
+                self.emit(format!("store i1 false, ptr {}", o));
+            }
             if let (Some((_, _)), Some(o)) = (tc.moved.iter().find(|(j, _)| *j == k), owned.as_ref()) {
                 let own = self.ins(format!("load i1, ptr {}", o));
                 let lf = self.label();
@@ -3199,6 +3216,14 @@ impl<'p> Gen<'p> {
         }
         match &e.kind {
             // a new string of the bytes of a constant (D134)
+            // a string literal: borrowed data of the program, read where it
+            // is (D301); a consumer that keeps it gets a copy (the ownership
+            // pass)
+            StrLit(s) if e.ty == Type::Str => {
+                let (g, n) = self.str_const(s);
+                let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", g));
+                Ok(v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, n)), "{ ptr, i64 }"))
+            }
             StrLit(s) => {
                 // a `bigint`: its bytes in the form of the compiled code
                 // (base 256, D168), from the form of the IR (base 128)
@@ -3286,6 +3311,9 @@ impl<'p> Gen<'p> {
                 self.ex(body, w)
             }
             Let { var, init, body, stmt, drop } => {
+                if let (StrLit(t), Type::Str) = (&init.kind, &init.ty) {
+                    self.str_lits.insert(*var, t.clone());
+                }
                 let iv = self.ex(init, w)?;
                 self.bind(*var, iv.clone());
                 if *stmt && w == 1 {
@@ -9982,6 +10010,60 @@ impl<'p> Gen<'p> {
 
     /// The operations on strings (D134): each in the runtime; a result
     /// string is new, the operands are only read.
+    /// The text of `e` when it is a string literal, or a variable bound to
+    /// one (D301).
+    fn literal_of(&self, e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::StrLit(t) if e.ty == Type::Str => Some(t.clone()),
+            ExprKind::Var(v, _) => self.str_lits.get(v).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The string `p`, `n` starts (`start`) or ends with the bytes `t` (at
+    /// most 16): at least as long, and its first or last bytes, read as
+    /// one integer (up to 8) or two that overlap, equal to those of `t`.
+    fn literal_affix(&mut self, p: &str, n: &str, t: &[u8], start: bool) -> V {
+        if t.is_empty() {
+            return v("true", "i1");
+        }
+        let l = t.len();
+        let word = |b: &[u8]| -> String {
+            let mut x: u128 = 0;
+            for (k, &c) in b.iter().enumerate() {
+                x |= (c as u128) << (8 * k);
+            }
+            x.to_string()
+        };
+        let long = self.ins(format!("icmp sge i64 {}, {}", n, l));
+        let (lcheck, ljoin) = (self.label(), self.label());
+        let lfrom = self.current_label("entry");
+        self.cbr(&long, &lcheck, &ljoin);
+        self.block(&lcheck);
+        let base = if start {
+            p.to_string()
+        } else {
+            let off = self.ins(format!("sub i64 {}, {}", n, l));
+            self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, off))
+        };
+        let same = if l <= 8 {
+            let ty = format!("i{}", 8 * l);
+            let x = self.ins(format!("load {}, ptr {}, align 1", ty, base));
+            self.ins(format!("icmp eq {} {}, {}", ty, x, word(t)))
+        } else {
+            let x0 = self.ins(format!("load i64, ptr {}, align 1", base));
+            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, l - 8));
+            let x1 = self.ins(format!("load i64, ptr {}, align 1", at));
+            let c0 = self.ins(format!("icmp eq i64 {}, {}", x0, word(&t[..8])));
+            let c1 = self.ins(format!("icmp eq i64 {}, {}", x1, word(&t[l - 8..])));
+            self.ins(format!("and i1 {}, {}", c0, c1))
+        };
+        let lend = self.current_label(&lcheck);
+        self.br(&ljoin);
+        self.block(&ljoin);
+        v(self.ins(format!("phi i1 [ false, %{} ], [ {}, %{} ]", lfrom, same, lend)), "i1")
+    }
+
     fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
         use isc_ir::StrOp as S;
         if op == S::Group && group_stream_ok(&es[0]) {
@@ -10059,6 +10141,13 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 v(self.ins(format!("call i64 @isc_index_of(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m)), "i64")
+            }
+            // against a literal of at most 16 bytes: its length, then its
+            // bytes compared as one or two integers, without a call (D301)
+            S::StartsWith | S::EndsWith if self.literal_of(&es[1]).is_some_and(|t| t.len() <= 16) => {
+                let t = self.literal_of(&es[1]).unwrap();
+                let (p, n) = self.str_parts(&vals[0]);
+                self.literal_affix(&p, &n, t.as_bytes(), op == S::StartsWith)
             }
             S::Includes | S::StartsWith | S::EndsWith => {
                 let (p, n) = self.str_parts(&vals[0]);

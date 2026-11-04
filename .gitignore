@@ -13,6 +13,7 @@ __pycache__/
 /bench/benchmarks_game/build/
 /bench/benchmarks_game/isocron/
 /bench/benchmarks_game/iscc
+/bench/primitives/build/
 # the programs of the Benchmarks Game (BSD 3-clause), downloaded by fetch.sh
 /bench/benchmarks_game/upstream/
 

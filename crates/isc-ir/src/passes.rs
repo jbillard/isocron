@@ -484,25 +484,41 @@ fn check_require_tail(p: &Program) -> R<()> {
 // ---------------------------------------------------------------------
 // direct tail calls (SPEC section 11, D102)
 
+thread_local! {
+    /// The variables bound to a string literal around the expression that
+    /// `tail_calls` walks (D301).
+    static LITERALS: core::cell::RefCell<Vec<VarId>> = const { core::cell::RefCell::new(Vec::new()) };
+}
+
 /// A direct tail call: the parameters that receive a temporary (moved into
-/// the loop), the temporaries freed before the jump.
+/// the loop), those that receive a string literal (borrowed, D301), the
+/// temporaries freed before the jump.
 pub struct TailCall {
     pub moved: Vec<(usize, VarId)>,
+    pub literals: Vec<usize>,
     pub free_first: Vec<VarId>,
 }
 
 /// The direct tail calls of function `fi` that can be jumps: each array
-/// argument is the same parameter, or a temporary freed after the call
-/// (then moved into the loop); the other temporaries freed after the call
-/// are freed before the jump.
+/// argument is the same parameter, a temporary freed after the call (then
+/// moved into the loop), or a variable bound to a string literal (borrowed
+/// data of the program, D301: the loop keeps it without owning it); the
+/// other temporaries freed after the call are freed before the jump.
 pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
     fn walk(e: &Expr, fi: u32, f: &Function, pending: &mut Vec<VarId>, out: &mut HashMap<*const Expr, TailCall>) {
         match &e.kind {
-            ExprKind::Let { var, body, drop, .. } => {
+            ExprKind::Let { var, init, body, drop, .. } => {
                 if *drop {
                     pending.push(*var);
                 }
+                let literal = matches!(init.kind, ExprKind::StrLit(_)) && init.ty == Type::Str && !*drop;
+                if literal {
+                    LITERALS.with(|l| l.borrow_mut().push(*var));
+                }
                 walk(body, fi, f, pending, out);
+                if literal {
+                    LITERALS.with(|l| l.borrow_mut().pop());
+                }
                 if *drop {
                     pending.pop();
                 }
@@ -519,6 +535,7 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
             }
             ExprKind::Call(g, args) if *g == fi => {
                 let mut moved = Vec::new();
+                let mut literals = Vec::new();
                 for (k, a) in args.iter().enumerate() {
                     if !a.ty.has_heap() {
                         continue;
@@ -526,11 +543,12 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
                     match a.kind {
                         ExprKind::Var(v, _) if v == f.params[k] => {}
                         ExprKind::Var(v, _) if pending.contains(&v) && !moved.iter().any(|(_, w)| *w == v) => moved.push((k, v)),
+                        ExprKind::Var(v, _) if LITERALS.with(|l| l.borrow().contains(&v)) => literals.push(k),
                         _ => return,
                     }
                 }
                 let free_first = pending.iter().copied().filter(|v| !moved.iter().any(|(_, w)| w == v)).collect();
-                out.insert(e as *const Expr, TailCall { moved, free_first });
+                out.insert(e as *const Expr, TailCall { moved, literals, free_first });
             }
             _ => {}
         }
@@ -1857,8 +1875,10 @@ impl Info {
         }
         match &e.kind {
             ExprKind::Var(v, _) => Some(self.base(*v)),
-            // data of the program (D173): borrowed from no variable
+            // data of the program (D173): borrowed from no variable; a
+            // string literal too (D301)
             ExprKind::ConstArray(_) => Some(Vec::new()),
+            ExprKind::StrLit(_) if e.ty == Type::Str => Some(Vec::new()),
             ExprKind::Proj(x, _) | ExprKind::Unbox(x) => self.borrows(x),
             // views of an array of arrays: its windows, its rows (D95);
             // slices (rule F4, D97)
@@ -2023,8 +2043,11 @@ impl<'a> Rewriter<'a> {
                 self.index += 1;
                 return Ok(if heap { Own::Borrowed(self.info.base(*v), Some(i)) } else { Own::Scalar });
             }
-            // data of the program (D173): a consumer gets a copy
+            // data of the program (D173): a consumer gets a copy; a string
+            // literal too, read where it is (D301: made and freed at each
+            // evaluation before, a test against a literal in a loop)
             ExprKind::ConstArray(_) => return Ok(Own::Borrowed(Vec::new(), None)),
+            ExprKind::StrLit(_) if e.ty == Type::Str => return Ok(Own::Borrowed(Vec::new(), None)),
             ExprKind::Let { var, init, body, .. } => {
                 let v = *var;
                 self.walk(init)?;

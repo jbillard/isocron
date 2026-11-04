@@ -883,7 +883,31 @@ pub fn order_f64(a: f64, b: f64) -> core::cmp::Ordering {
 
 /// `s.indexOf(t)`: the byte index of the first `t` in `s`, -1 if none.
 pub fn index_of(s: &str, t: &str) -> i64 {
-    s.find(t).map(|i| i as i64).unwrap_or(-1)
+    find_bytes(s.as_bytes(), t.as_bytes()).map(|i| i as i64).unwrap_or(-1)
+}
+
+/// The index of the first `t` in `s` (D301): a byte by `memchr`; up to 16
+/// bytes, their first byte by `memchr`, then the others compared; longer,
+/// `memmem`. In UTF-8 the bytes of a text match only at the start of its
+/// characters: the index of `str::find`, whose general search prepares
+/// itself at each call (57 ns for a byte in 60, 3.8 in C).
+pub fn find_bytes(s: &[u8], t: &[u8]) -> Option<usize> {
+    match t.len() {
+        0 => Some(0),
+        1 => memchr::memchr(t[0], s),
+        m if m <= 16 => {
+            let mut at = 0;
+            while at + m <= s.len() {
+                let i = at + memchr::memchr(t[0], &s[at..=s.len() - m])?;
+                if s[i + 1..i + m] == t[1..] {
+                    return Some(i);
+                }
+                at = i + 1;
+            }
+            None
+        }
+        _ => memchr::memmem::find(s, t),
+    }
 }
 
 /// `s.replace(from, to)` (the first `from`) and `s.replaceAll(from, to)`

@@ -276,7 +276,10 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `print`: the standard output by blocks into files, at each newline into terminals and pipes: a million lines of a number 185.5 -> 22.2 ms (D299)
 - [x] The decimal text of integers written directly (`print`, `toString`, templates): a million lines of a number 22195 -> 12975 µs (D300)
 - [ ] The text of floats (`print`, `toString`, `toFixed`)
-- [ ] The microbenchmarks of every form and `results/primitives.md`
+- [x] The audit: `bench/primitives/` (each group of forms in Isocron and in C, the floor), `run.py`, `results/primitives.md`; the strings first (D301)
+- [x] String literals read where they are; `startsWith`/`endsWith` against literals in the generated code; searches of short needles by `memchr`: `startsWith` 18.60 -> 1.90 ns, `indexOf` 56.87 -> 7.66 ns (D301)
+- [ ] The strings still above their floor: `padStart` (31.0), `toUpperCase` (17.8), `replaceAll` (16.9), `slice` (6.2), `lines` (5.6), `split` (5.2)
+- [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
 
 ## The trusted base (the remarks of the author, 2026-11-04)
 
