@@ -81,6 +81,18 @@ for level, need in (("", ""), ("x86-64-v3", "avx2"), ("x86-64-v4", "avx512bw")):
     out.write("isc-mem %-10s       %s\n" % (level or "x86-64", res[0] if res else "code %d" % p.returncode))
     if p.returncode != 0:
         failed.append(("isc-mem", level or "x86-64")); out.write(p.stdout[-4000:] + "\n")
+# isc-runtime-core for x86-64-v4 when the processor has it (D306): its
+# searches of AVX-512 (VBMI, GFNI) against its general ones, compiled only
+# there
+if " avx512bw " in cpu:
+    e = dict(env)
+    e["RUSTFLAGS"] = "-C target-cpu=x86-64-v4"
+    e["CARGO_TARGET_DIR"] = os.path.join(target, "core-x86-64-v4")
+    p = subprocess.run(["cargo", "test", "-q", "-p", "isc-runtime-core"], cwd=wt, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    res = [l for l in p.stdout.splitlines() if l.startswith("test result")]
+    out.write("isc-runtime-core x86-64-v4  %s\n" % (res[0] if res else "code %d" % p.returncode))
+    if p.returncode != 0:
+        failed.append(("isc-runtime-core", "x86-64-v4")); out.write(p.stdout[-4000:] + "\n")
 with open(log + ".times", "w") as f:
     for n, d in times.items():
         f.write("%s %.1f\n" % (n, d))

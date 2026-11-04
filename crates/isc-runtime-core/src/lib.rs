@@ -2369,6 +2369,9 @@ pub mod rx {
             /// classes of each ASCII byte (a bit each), looked up for the 64
             /// bytes of a block by one permutation (D278)
             table: Option<[u8; 128]>,
+            /// with the table, on a processor with GFNI, alternatives of at
+            /// most 16 places: the search by lanes (`bounds_lanes`, D306)
+            lanes: bool,
         }
 
         /// At most this many distinct bytes for `Fixed`.
@@ -2676,7 +2679,7 @@ pub mod rx {
                 if ncl > CLASSES {
                     return None;
                 }
-                let mut fx = Fixed { bytes: [(0, false); FIXED_BYTES], nb: bytes.len(), classes: [0; CLASSES], ncl, table: None };
+                let mut fx = Fixed { bytes: [(0, false); FIXED_BYTES], nb: bytes.len(), classes: [0; CLASSES], ncl, table: None, lanes: false };
                 let mut table = [0u8; 128];
                 for (i, &(v, cl, fold)) in bytes.iter().enumerate() {
                     fx.bytes[i] = (v, fold);
@@ -2694,6 +2697,7 @@ pub mod rx {
                 }
                 if ncl <= 8 && bytes.iter().all(|&(v, _, _)| v < 128) && vbmi() {
                     fx.table = Some(table);
+                    fx.lanes = gfni() && alts.iter().all(|a| a.seq.len() <= 16);
                 }
                 Some(fx)
             }
@@ -2804,6 +2808,170 @@ pub mod rx {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512bw")))]
         fn vbmi() -> bool {
             false
+        }
+
+        /// The processor has GFNI (`gf2p8affineqb`, with AVX-512: on 64
+        /// bytes), where it has AVX-512 VBMI.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        fn gfni() -> bool {
+            // SAFETY: cpuid exists on every x86-64
+            vbmi() && unsafe { core::arch::x86_64::__cpuid_count(7, 0).ecx >> 8 & 1 == 1 }
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512bw")))]
+        fn gfni() -> bool {
+            false
+        }
+
+        /// The 64 bytes of `s` from `at` (those past its end zero, not read)
+        /// and the mask of those of the text.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[target_feature(enable = "avx512f,avx512bw")]
+        fn block_at(s: &[u8], at: usize) -> (core::arch::x86_64::__m512i, u64) {
+            use core::arch::x86_64::*;
+            if at + 64 <= s.len() {
+                let b: &[u8; 64] = s[at..at + 64].try_into().expect("64 bytes");
+                // SAFETY: 64 readable bytes
+                (unsafe { _mm512_loadu_si512(b.as_ptr().cast()) }, !0)
+            } else {
+                let rest = &s[at.min(s.len())..];
+                let valid = (1u64 << rest.len()) - 1;
+                // SAFETY: the bytes of `rest` only (`valid`): a masked load
+                // reads no byte outside its mask
+                (unsafe { _mm512_maskz_loadu_epi8(valid, rest.as_ptr().cast()) }, valid)
+            }
+        }
+
+        /// The masks of the classes of the 64 bytes `x` (`valid` those of the
+        /// text) as lanes, lane c the mask of class c (D306): the classes of
+        /// each byte looked up in `t` (a bit each), the bytes of each lane of
+        /// 8 reversed, their bits transposed (`gf2p8affineqb`: byte i of a
+        /// lane gets bit i of its 8 bytes), then byte c of each lane into
+        /// lane c. Five instructions for every class, where one test each
+        /// and their stores took 54 instructions a block.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni")]
+        fn class_lanes(x: core::arch::x86_64::__m512i, valid: u64, lo: core::arch::x86_64::__m512i, hi: core::arch::x86_64::__m512i) -> core::arch::x86_64::__m512i {
+            use core::arch::x86_64::*;
+            let ascii = !_mm512_movepi8_mask(x) & valid;
+            let cls = _mm512_maskz_permutex2var_epi8(ascii, lo, x, hi);
+            let rev = _mm512_set_epi64(
+                0x3839_3a3b_3c3d_3e3f,
+                0x3031_3233_3435_3637,
+                0x2829_2a2b_2c2d_2e2f,
+                0x2021_2223_2425_2627,
+                0x1819_1a1b_1c1d_1e1f,
+                0x1011_1213_1415_1617,
+                0x0809_0a0b_0c0d_0e0f,
+                0x0001_0203_0405_0607,
+            );
+            let r = _mm512_permutexvar_epi8(rev, cls);
+            let t = _mm512_gf2p8affine_epi64_epi8(_mm512_set1_epi64(0x8040_2010_0804_0201u64 as i64), r, 0);
+            // lane c: byte c of each lane, in order
+            let gather = _mm512_set_epi64(
+                0x3f37_2f27_1f17_0f07,
+                0x3e36_2e26_1e16_0e06,
+                0x3d35_2d25_1d15_0d05,
+                0x3c34_2c24_1c14_0c04,
+                0x3b33_2b23_1b13_0b03,
+                0x3a32_2a22_1a12_0a02,
+                0x3931_2921_1911_0901,
+                0x3830_2820_1810_0800,
+            );
+            _mm512_permutexvar_epi8(gather, t)
+        }
+
+        /// The places of an alternative from `j0` (8 of them, `used` those
+        /// it has) in a block: the masks of their classes in this block
+        /// (`cur`) and the next, each shifted by its place, and together.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[target_feature(enable = "avx512f,avx512bw")]
+        fn places(idx: core::arch::x86_64::__m512i, used: u8, j0: i64, cur: core::arch::x86_64::__m512i, next: core::arch::x86_64::__m512i) -> u64 {
+            use core::arch::x86_64::*;
+            let sh = _mm512_add_epi64(_mm512_set_epi64(7, 6, 5, 4, 3, 2, 1, 0), _mm512_set1_epi64(j0));
+            let back = _mm512_sub_epi64(_mm512_set1_epi64(64), sh);
+            let a = _mm512_permutexvar_epi64(idx, cur);
+            let b = _mm512_permutexvar_epi64(idx, next);
+            // a shift by 64 (the place 0) gives 0
+            let v = _mm512_or_si512(_mm512_srlv_epi64(a, sh), _mm512_sllv_epi64(b, back));
+            _mm512_mask_reduce_and_epi64(used, v) as u64
+        }
+
+        /// `Fixed::bounds` by lanes (D306): per block of 64 bytes the masks of
+        /// the classes as the lanes of one vector (`class_lanes`), each
+        /// alternative its places at once (`places`, 8 a vector): about 30
+        /// instructions a block for two alternatives of 8 places, where
+        /// `starts` read the class of each place and tested its length (283
+        /// a block in all). The matches, their choice and their order as
+        /// `Fixed::bounds`.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[target_feature(enable = "avx512f,avx512bw,avx512vbmi,gfni")]
+        fn bounds_lanes(t: &[u8; 128], sm: &Simple, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
+            use core::arch::x86_64::*;
+            let b = s.as_bytes();
+            let n = b.len();
+            let (lo, _) = block_at(t, 0);
+            let (hi, _) = block_at(t, 64);
+            let lane = |seq: &[u8], j0: usize| -> (__m512i, u8) {
+                let mut idx = [0i64; 8];
+                let mut used = 0u8;
+                for (j, x) in idx.iter_mut().enumerate() {
+                    if let Some(&k) = seq.get(j0 + j) {
+                        *x = (k & 7) as i64;
+                        used |= 1 << j;
+                    }
+                }
+                (_mm512_set_epi64(idx[7], idx[6], idx[5], idx[4], idx[3], idx[2], idx[1], idx[0]), used)
+            };
+            let alts: Vec<((__m512i, u8), (__m512i, u8))> = sm.alts.iter().map(|a| (lane(&a.seq, 0), lane(&a.seq, 8))).collect();
+            let masks = |at: usize| -> __m512i {
+                if at >= n {
+                    return _mm512_setzero_si512();
+                }
+                let (x, valid) = block_at(b, at);
+                class_lanes(x, valid, lo, hi)
+            };
+            let mut out = Vec::new();
+            let mut base = from;
+            let mut cur = masks(base);
+            let mut allowed = from;
+            let mut st = [0u64; ALTS];
+            while base < n {
+                let next = masks(base + 64);
+                let mut any = 0u64;
+                for (a, &((il, ul), (ih, uh))) in alts.iter().enumerate() {
+                    let mut m = places(il, ul, 0, cur, next);
+                    if uh != 0 {
+                        m &= places(ih, uh, 8, cur, next);
+                    }
+                    st[a & (ALTS - 1)] = m;
+                    any |= m;
+                }
+                while any != 0 {
+                    let j = any.trailing_zeros();
+                    any &= any - 1;
+                    let p = base + j as usize;
+                    if p < allowed {
+                        continue;
+                    }
+                    // the first alternative that matches at p
+                    let Some(a) = (0..sm.alts.len()).find(|&a| st[a & (ALTS - 1)] >> j & 1 == 1) else { continue };
+                    let e = p + sm.alts[a].seq.len();
+                    push_match(&mut out, (p, e), from, base + 64, until.min(n));
+                    allowed = e;
+                    if p >= until {
+                        return out;
+                    }
+                }
+                base += 64;
+                cur = next;
+                // inside a long match: on from its end
+                if allowed > base + 64 {
+                    base = allowed;
+                    cur = masks(base);
+                }
+            }
+            out
         }
 
         /// The masks of the `ncl` classes over the 64 bytes at `p` (`valid`
@@ -3075,6 +3243,12 @@ pub mod rx {
             /// after, that one included (as `bounds_from`).
             pub fn bounds_from(&self, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
                 if let Some(fx) = &self.fixed {
+                    #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+                    if let (true, Some(t)) = (fx.lanes, &fx.table) {
+                        // SAFETY: `lanes` is set only where `vbmi()` and
+                        // `gfni()` saw the instructions
+                        return unsafe { bounds_lanes(t, self, s, from, until) };
+                    }
                     return match fx.nb {
                         1 => fx.bounds::<1>(self, s, from, until),
                         2 => fx.bounds::<2>(self, s, from, until),
@@ -3314,6 +3488,8 @@ pub mod rx {
                     // the lookup of the classes where the processor has it (D278)
                     let fx = sm.fixed.as_ref().unwrap();
                     assert_eq!(fx.table.is_some(), vbmi() && fx.ncl <= 8, "{}", v);
+                    // the search by lanes where it has GFNI (D306)
+                    assert_eq!(fx.lanes, fx.table.is_some() && gfni() && sm.alts.iter().all(|a| a.seq.len() <= 16), "{}", v);
                     let re = super::super::of(v);
                     for from in [0usize, 1, 62, 63, 64, 65, 127, 4097] {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
@@ -3325,6 +3501,49 @@ pub mod rx {
                 // a stop byte or a start of line: the general search
                 for v in ["g/<[^>]*>", "mg/^>.*\\n|\\n", "mg/^a|t"] {
                     assert!(of(v).unwrap().fixed.is_none(), "{}", v);
+                }
+            }
+
+            /// D306: the search by lanes finds the matches of the search by
+            /// masks: alternatives of 1 to 16 places, of classes, with upper
+            /// cases, texts of every length around the blocks with bytes
+            /// outside ASCII, from any start, up to any `until`.
+            #[test]
+            fn lanes_find_the_matches_of_the_masks() {
+                let mut h = 0x2545_f491_4f6c_dd1du64;
+                let mut rnd = |k: u64| {
+                    h ^= h << 13;
+                    h ^= h >> 7;
+                    h ^= h << 17;
+                    h % k
+                };
+                let pats = [
+                    "g/a", "g/ac|ca", "ig/a[cg]t|tt", "ig/agggtaaa|tttaccct", "g/[ac][gt][ac][gt][ac]|gggggggg", "ig/acgtacgtacgtacgt|tgcatgca",
+                    "ig/acgtacgtacgtacg|c[at]g", "g/aaaaaaaaa|aaaa", "g/a|aa|aaa", "ig/tHa[Nt]", "g/aND|caN|Ha[DS]|WaS", "g/a[NSt]|BY",
+                ];
+                for len in [0usize, 1, 15, 63, 64, 65, 127, 128, 129, 200, 1000, 4099] {
+                    let text: alloc::string::String =
+                        (0..len).map(|_| ['a', 'c', 'g', 't', 'A', 'C', 'G', 'T', 'é', 'N', 'H', 'D', 'S', 'W', 'B', 'Y'][rnd(16) as usize]).collect();
+                    for v in pats {
+                        let sm = of(v).unwrap();
+                        let fx = sm.fixed.as_ref().unwrap();
+                        let general = |from: usize, until: usize| match fx.nb {
+                            1 => fx.bounds::<1>(&sm, &text, from, until),
+                            2 => fx.bounds::<2>(&sm, &text, from, until),
+                            3 => fx.bounds::<3>(&sm, &text, from, until),
+                            4 => fx.bounds::<4>(&sm, &text, from, until),
+                            5 => fx.bounds::<5>(&sm, &text, from, until),
+                            6 => fx.bounds::<6>(&sm, &text, from, until),
+                            7 => fx.bounds::<7>(&sm, &text, from, until),
+                            _ => fx.bounds::<8>(&sm, &text, from, until),
+                        };
+                        let starts: alloc::vec::Vec<usize> = [0usize, 1, 63, 64, 65, 130].into_iter().filter(|&f| f <= text.len() && text.is_char_boundary(f)).collect();
+                        for &from in &starts {
+                            for until in [usize::MAX, from + 1, from + 64, from + 500] {
+                                assert_eq!(sm.bounds_from(&text, from, until), general(from, until), "{} over {} bytes from {} until {}", v, len, from, until);
+                            }
+                        }
+                    }
                 }
             }
 

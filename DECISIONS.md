@@ -5823,3 +5823,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   after the other, characters of several bytes; parts kept after their
   array, sorted, filtered, two blocks in one array, strings of a block
   among others; a text of 3 MiB; 1, 3 and 8 threads; valgrind).
+- **D306 — The fixed alternatives searched by lanes (2026-11-05).** Of
+  the 150.21 ms of regex-redux, the 9 counts took 41.1 ms: one count, on
+  one thread, 0.29 ns a byte, where the floor's scan for its two literals
+  takes 0.074 (`bench/floor/floor.c`, `literal_pair_scan`). The fixed plan
+  (D275) took 288 instructions a block of 64 bytes (225 million for a
+  count of the 50000000 bytes of the cleaned text, 4.8 a cycle): a test per class and its store, then
+  for each place of each alternative its class read, its length tested,
+  two masks loaded. Now, with the table of classes (D278) on a processor
+  with GFNI and alternatives of at most 16 places, the masks of the classes
+  of a block are the lanes of one vector, in five instructions: the
+  classes of each byte looked up, the bytes of each lane of 8 reversed,
+  their bits transposed by `gf2p8affineqb`, byte c of each lane into lane
+  c; each alternative takes its places 8 at once (a permutation of the
+  lanes by its classes, for this block and the next, the shifts of their
+  places, an `and` of the lanes); the matches, their choice and order as
+  before. The intrinsics are safe in their functions of `target_feature`;
+  the loads of 64 bytes and the call, after the test of the processor, are
+  the only unsafe code, as for D278. On one thread, a count: 0.29 -> 0.20
+  ns a byte, 111 instructions a block. Tried and not kept: the general
+  plan compiled for each length of 2 to 12 places, 0.71 ns a byte: fewer
+  instructions (4150 against 4498 million for 20 counts), 2.8 times the
+  cycles, stalled at the front of the processor (uops not delivered 126.5
+  -> 2014.1 million, switches of the cache of decoded uops to the decoders
+  0.34 -> 48.8 million cycles; the code of 11 cases in each of the 8
+  variants no longer fits in that cache). regex-redux -13.31 % [-13.63 %,
+  -13.02 %] (the counts 41.1 -> 26.8 ms); the others between -1.83 % and
+  +0.12 %, the intervals across 0 except fasta at -1.26 % [-1.84 %,
+  -0.09 %]: its binary the same before and after, measured again over 121
+  rounds -0.03 % [-0.49 %, +0.44 %] (the interval of 61 rounds is not a
+  proof alone). The tests of `isc-runtime-core` now also run for
+  x86-64-v4 in the suite, the only build where its searches of AVX-512 are
+  compiled (D278 was tested only through compiled programs against the
+  interpreter). Test `lanes_find_the_matches_of_the_masks` (alternatives of
+  1 to 16 places, texts of 0 to 4099 bytes, bytes outside ASCII, every
+  start and end).
