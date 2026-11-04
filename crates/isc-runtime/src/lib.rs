@@ -1555,14 +1555,34 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     }
     cut[parts] = s.len();
     first[parts] = (found.runs.len(), 0);
+    // the bytes of each part of the result, counted by every thread (D284:
+    // a walk of millions of matches by the caller alone, the others waiting)
+    let mut size = [0usize; 64];
+    #[repr(C)]
+    struct Sizes {
+        found: *const Found,
+        cut: *const usize,
+        first: *const (usize, usize),
+        tn: usize,
+        size: *mut usize,
+    }
+    extern "C" fn sizes(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Sizes);
+            let k = k as usize;
+            let (mut removed, mut count) = (0usize, 0usize);
+            (*c.found).between(*c.first.add(k), *c.first.add(k + 1), &mut |a, b| {
+                removed += b - a;
+                count += 1;
+            });
+            *c.size.add(k) = (*c.cut.add(k + 1) - *c.cut.add(k)) - removed + count * c.tn;
+        }
+    }
+    let mut sctx = Sizes { found: found as *const Found, cut: cut.as_ptr(), first: first.as_ptr(), tn: to.len(), size: size.as_mut_ptr() };
+    parallel_for(parts as i64, sizes, &mut sctx as *mut Sizes as *mut c_void, core::mem::size_of::<Sizes>() as i64, false, false);
     let mut at = [0usize; 65];
     for k in 0..parts {
-        let (mut removed, mut count) = (0usize, 0usize);
-        found.between(first[k], first[k + 1], &mut |a, b| {
-            removed += b - a;
-            count += 1;
-        });
-        at[k + 1] = at[k] + (cut[k + 1] - cut[k]) - removed + count * to.len();
+        at[k + 1] = at[k] + size[k];
     }
     let total = at[parts];
     let buf = isc_alloc(total.max(1) as i64);

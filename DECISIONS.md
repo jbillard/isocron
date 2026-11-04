@@ -5152,3 +5152,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   The same matches. The third replacement of regex-redux alone (best of 3,
   4 threads): 24.2 ms -> 20.4 ms; in alternation, best of 9: 164.8 ms ->
   153.8 ms. Tests: the searches of `rx::simple` and `strings.rs`.
+- **D284 — The sizes of the parts of a replacement counted by every
+  thread (2026-11-04).** Before writing a replacement in parallel (D279,
+  D281), the caller alone walked its matches to count the bytes of each
+  part of the result: 3.5 million matches in the third replacement of
+  regex-redux, the three other threads waiting. Each thread now counts the
+  bytes of its part (a first parallel loop), the places of the parts are
+  their sums, then each writes its part (the second). The same texts. The
+  third replacement of regex-redux alone (best of 3, 4 threads): 20.4 ms
+  -> 19.3 ms; in alternation, best of 9: 153.8 ms -> 150.6 ms. Tests: the
+  replacements written in parallel (`strings.rs`, 1 to 16 threads).
