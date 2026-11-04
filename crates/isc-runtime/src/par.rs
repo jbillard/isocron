@@ -84,3 +84,14 @@ pub fn parts_mut<T: Send, F: Fn(usize, &mut [T]) + Sync + Copy>(parts: &Parts<'_
         f(k, part)
     });
 }
+
+/// `f(k, part_a, part_b)` for each part `k` of two slices cut in as many
+/// parts (`parts_mut` of both at once); returns when all are done.
+pub fn parts_mut2<T: Send, U: Send, F: Fn(usize, &mut [T], &mut [U]) + Sync + Copy>(a: &Parts<'_, T>, b: &Parts<'_, U>, order: Order, f: F) {
+    assert_eq!(a.len(), b.len());
+    run(a.len(), order, |k| {
+        // SAFETY: `run` calls each `k` once
+        let (x, y) = unsafe { (a.part(k), b.part(k)) };
+        f(k, x, y)
+    });
+}

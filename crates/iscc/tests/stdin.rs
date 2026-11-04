@@ -202,6 +202,82 @@ fn lines_of_a_large_text_made_in_parallel() {
     }
 }
 
+/// D298: the lines of a large text made in parallel are kept in one block,
+/// freed with the last of them: lines kept in another array and sorted
+/// after the array of all the lines is gone, empty lines, `\r\n` lines;
+/// on 1 (each line its own block), 3, 4 and 8 threads, the same lines as
+/// Rust's rules; nothing lost, nothing read or freed out of place
+/// (valgrind, glibc's allocator).
+#[test]
+fn lines_kept_in_one_block_freed_with_the_last() {
+    let src = "action kept(): string[k] {
+    const lines = readStdinLines();
+    print(lines.length);
+    print(lines.slice(lines.length / 2, lines.length / 2 + 3).join(\"|\"));
+    return filter(lines, (l) => l.length % 7 == 3);
+}
+action main(args: string[k]): i32 {
+    const keep = kept();
+    const sorted = sortBy(keep, (l) => l);
+    print(keep.length);
+    print(sum(map(keep, (l) => l.length)));
+    print([sorted[0], sorted[sorted.length - 1]]);
+    return 0;
+}
+";
+    let mut x = 777u64;
+    let mut text = Vec::new();
+    while text.len() < 3 << 20 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let len = if x % 9 == 0 { 0 } else { (x >> 8) as usize % 90 };
+        text.extend((0..len).map(|j| b'a' + ((x >> (j % 40)) % 26) as u8));
+        if x % 11 == 0 {
+            text.push(b'\r');
+        }
+        text.push(b'\n');
+    }
+    let st = std::str::from_utf8(&text).unwrap();
+    let lines: Vec<&str> = st.strip_suffix('\n').unwrap().split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let n = lines.len();
+    let keep: Vec<&str> = lines.iter().copied().filter(|l| l.len() % 7 == 3).collect();
+    let mut sorted = keep.clone();
+    sorted.sort();
+    let want = format!(
+        "{}\n{}\n{}\n{}\n[{}, {}]\n",
+        n,
+        lines[n / 2..n / 2 + 3].join("|"),
+        keep.len(),
+        keep.iter().map(|l| l.len()).sum::<usize>(),
+        sorted[0],
+        sorted[sorted.len() - 1]
+    );
+    let path = tmp("stdin_lines_block.txt");
+    std::fs::write(&path, &text).unwrap();
+    let bin = compile(src, "stdin_lines_block");
+    for threads in ["1", "3", "4", "8"] {
+        let o = std::process::Command::new(&bin).env("ISC_THREADS", threads).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads: {}", threads, String::from_utf8_lossy(&o.stderr));
+    }
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    if !vg.is_file() {
+        eprintln!("valgrind not installed: stdin_lines_block skipped");
+        return;
+    }
+    let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+    let bin = compile_glibc(src, "stdin_lines_block_vg", opts);
+    let o = std::process::Command::new(vg)
+        .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
+        .arg(&bin)
+        .env("ISC_ALLOC", "glibc")
+        .env("ISC_THREADS", "2")
+        .stdin(std::fs::File::open(&path).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "under valgrind:\n{}", String::from_utf8_lossy(&o.stderr));
+}
+
 /// A program that reads a large file as its standard input, prints its
 /// length, computes for a while (the checksum then depends on it), and
 /// prints the sum of its bytes.

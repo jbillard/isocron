@@ -5613,3 +5613,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (the results of the interpreter, an empty `fold`, an index past the end
   at the last `j` only and before the start at the first `j` only, with
   their panics; 1 and 4 threads).
+- **D298 — The lines of a text made in parallel in one block, freed with
+  the last of them (2026-11-04).** Part 1 of the goal of 2026-11-04:
+  k-nucleotide after D297, 954 ms. Its reading alone (the lines of the
+  input, the headers, the join, the codes) took 228 ms where the floor
+  reads the file in 27 ms: each of its 4.2 million lines a small block of
+  its own, 128 bytes for a line of 60 (64 of header), carved, cleared by
+  the kernel, then freed one by one (D294 profile: the clearing of pages
+  19.5 % of its cycles, `refill` 8.9 %, `isc_free` 6.4 %, `spill` 2.5 %).
+  Now `lines` (on several threads, from 1 MiB of text) makes its strings
+  in one block: before each line the address of the block (8 bytes),
+  then its bytes, to the next multiple of 16, 80 bytes for a line of 60;
+  each line starts 8 bytes past a multiple of 16, where no block of the
+  heap (64), of glibc (16) or of the system starts, so that `isc_free`
+  knows it before reading any header; the first 8 bytes of the block
+  count the lines alive, the block freed with the last of them (an atomic
+  count). The place of each part in the block is bounded in the first
+  pass (its bytes, those of its last line past its end, 23 for each line);
+  the strings and the parts of the block are given to their tasks as
+  slices (`par::parts_mut2`, safe). A line kept after the others keeps
+  the whole block (at most the size of the text) until it is freed. At
+  fixed frequency, alternated rounds, median and 95 % interval by
+  bootstrap: the reading alone 228273 -> 185735 µs (-18.61 % [-19.13 %,
+  -18.06 %], 21 rounds); k-nucleotide 953830 -> 904084 µs (-4.96 % [-5.71
+  %, -4.22 %], 11 rounds), the nine others between -0.24 % and +0.14 %,
+  every interval across 0; the peak of resident memory of k-nucleotide
+  1301496 -> 1115492 KiB. The same outputs. Test
+  `lines_kept_in_one_block_freed_with_the_last` (lines kept in another
+  array and sorted after the array of all the lines is gone, empty and
+  `\r\n` lines; 1, 3, 4 and 8 threads; valgrind with glibc's allocator).

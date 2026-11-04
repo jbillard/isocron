@@ -538,6 +538,13 @@ fn free_cold(p: *mut u8) {
         unsafe { mapped::free(zap_pages) };
         return;
     }
+    // a line of the block of the lines of a text (D298): 8 bytes past a
+    // multiple of 16, where no other block starts
+    if p as usize % 16 == 8 {
+        // SAFETY: only `lines` gives such strings (see `arena_step`)
+        unsafe { arena_free(p) };
+        return;
+    }
     #[cfg(not(target_os = "wasi"))]
     if isc_heap() {
         unsafe { heap::free(p) };
@@ -1281,38 +1288,56 @@ fn lines(b: &[u8]) -> IscArray {
     let body = &b[..b.len() - (b[b.len() - 1] == b'\n') as usize];
     let parts = (threads * 4).min(256);
     let range = move |k: usize| (body.len() * k / parts, body.len() * (k + 1) / parts);
-    // the `\n` of each part, each in its own counter
+    // the `\n` of each part, and the bytes its last line takes past its end
+    // (to its `\n`), each in its own counter
     let unit: [usize; 257] = core::array::from_fn(|i| i);
-    let mut counts = [0usize; 256];
+    let mut counts = [(0usize, 0usize); 256];
     par::parts_mut(&par::Parts::new(&mut counts[..parts], &unit[..=parts]), par::Order::Interleaved, |k, c| {
         let (a, e) = range(k);
-        c[0] = memchr::memchr_iter(b'\n', &body[a..e]).count();
+        let past = memchr::memchr(b'\n', &body[e..]).unwrap_or(body.len() - e);
+        c[0] = (memchr::memchr_iter(b'\n', &body[a..e]).count(), past);
     });
     // the lines of part k from `first[k]` on: a line starts at the start of
     // the text (part 0's) and after each `\n` (the part of the `\n` has it)
     let mut first = [0usize; 257];
+    // the place of part k in the block of the lines from `place[k]` on: a
+    // line of `m` bytes takes `ARENA_STEP(m)`, at most `m + 23`, so that a
+    // part takes at most its bytes, those of its last line past its end and
+    // 23 for each line (D298)
+    let mut place = [0usize; 257];
     // part 0: line 0, then the lines after its `\n`
-    let mut total = 1 + counts[0];
+    let mut total = 1 + counts[0].0;
+    place[0] = ARENA_HEAD;
+    place[1] = place[0] + arena_bound(range(0), counts[0], 1);
     for k in 1..parts {
         first[k] = total;
-        total += counts[k];
+        total += counts[k].0;
+        place[k + 1] = place[k] + arena_bound(range(k), counts[k], 0);
     }
     first[parts] = total;
     let q = new_str_array(total);
     let len = q.len();
     let ptr = q.as_mut_ptr();
-    par::parts_mut(&par::Parts::new(q, &first[..=parts]), par::Order::Interleaved, |k, out| {
+    let block = isc_alloc(place[parts] as i64);
+    // SAFETY: a block of `place[parts]` bytes of this call alone, not read
+    // before it is written (as bytes that may not be initialized)
+    let arena = unsafe { core::slice::from_raw_parts_mut(block as *mut core::mem::MaybeUninit<u8>, place[parts]) };
+    let base = block as usize;
+    let (head, lines_area) = arena.split_at_mut(ARENA_HEAD);
+    let bounds: [usize; 257] = core::array::from_fn(|k| place[k.min(parts)] - ARENA_HEAD);
+    par::parts_mut2(&par::Parts::new(q, &first[..=parts]), &par::Parts::new(lines_area, &bounds[..=parts]), par::Order::Interleaved, |k, out, area| {
         let (a, e) = range(k);
         let mut idx = 0;
+        let mut at = 0;
         let mut start = if k == 0 { Some(0usize) } else { None };
-        let mut at = a;
+        let mut from = a;
         loop {
             let s = match start.take() {
                 Some(s) => s,
-                None => match memchr::memchr(b'\n', &body[at..e]) {
+                None => match memchr::memchr(b'\n', &body[from..e]) {
                     Some(o) => {
-                        at = at + o + 1;
-                        at
+                        from = from + o + 1;
+                        from
                     }
                     None => break,
                 },
@@ -1320,11 +1345,55 @@ fn lines(b: &[u8]) -> IscArray {
             let end = memchr::memchr(b'\n', &body[s..]).map(|o| s + o).unwrap_or(body.len());
             let line = &body[s..end];
             let line = if line.last() == Some(&b'\r') { &line[..line.len() - 1] } else { line };
-            out[idx] = new_str(line);
+            // the block of the lines, then the bytes (`arena_free`)
+            area[at..at + 8].write_copy_of_slice(&(base as u64).to_le_bytes());
+            area[at + 8..at + 8 + line.len()].write_copy_of_slice(line);
+            let p = area[at + 8..].as_ptr() as *const u8;
+            out[idx] = IscStr { ptr: p, len: line.len() as i64 };
+            at += arena_step(line.len());
             idx += 1;
         }
     });
+    // every line alive: the block freed with the last of them
+    head[..8].write_copy_of_slice(&(total as u64).to_le_bytes());
     IscArray { ptr: ptr as *mut u8, len: len as i64 }
+}
+
+/// The bytes of the block of the lines of `lines` before the lines: the
+/// count of the lines alive (one cache line).
+const ARENA_HEAD: usize = 64;
+
+/// The bytes a line of `m` bytes takes in the block of the lines: the
+/// address of the block, then its bytes, to the next multiple of 16 (so
+/// that each line starts 8 bytes past a multiple of 16, where no block of
+/// the heap, of glibc or of the system starts: `free_cold`).
+fn arena_step(m: usize) -> usize {
+    (8 + m).next_multiple_of(16)
+}
+
+/// The bytes the lines starting in a part of the text (`range`, its count
+/// of `\n` and the bytes of its last line past its end, `extra` more lines:
+/// the first line of the text) take at most (`arena_step`), a multiple of
+/// 16.
+fn arena_bound(range: (usize, usize), count: (usize, usize), extra: usize) -> usize {
+    (range.1 - range.0 + count.1 + 23 * (count.0 + extra)).next_multiple_of(16)
+}
+
+/// A line of the block of the lines of `lines` freed (D298): the block
+/// freed with the last of them.
+///
+/// # Safety
+/// `p` the bytes of a line made by `lines`, not freed before.
+unsafe fn arena_free(p: *mut u8) {
+    // SAFETY: the 8 bytes before a line hold the address of its block,
+    // whose first 8 bytes count the lines alive (see `lines`)
+    unsafe {
+        let block = (p.sub(8) as *const u64).read_unaligned() as usize;
+        let alive = &*(block as *const core::sync::atomic::AtomicU64);
+        if alive.fetch_sub(1, Ordering::AcqRel) == 1 {
+            isc_free(block as *mut u8);
+        }
+    }
 }
 
 #[no_mangle]
