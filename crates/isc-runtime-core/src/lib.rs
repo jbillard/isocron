@@ -2350,6 +2350,20 @@ pub mod rx {
         /// At most this many distinct bytes for `Fixed`.
         const FIXED_BYTES: usize = 8;
 
+        /// A match added to `out`, which a search fills from `from` and has
+        /// read up to `at` of a text of `n` bytes (D283): when full, room for
+        /// the matches of the rest at the density seen so far, once, rather
+        /// than by doublings each a copy of all the matches (3.5 million in
+        /// a replacement of regex-redux: 56 MB copied about 20 times).
+        #[inline(always)]
+        fn push_match(out: &mut Vec<(usize, usize)>, m: (usize, usize), from: usize, at: usize, n: usize) {
+            if out.len() == out.capacity() && out.len() >= 1024 {
+                let seen = (at - from).max(1);
+                let rest = (n.saturating_sub(at) as u128 * out.len() as u128 / seen as u128) as usize;
+                out.reserve(rest + rest / 8 + 1024);
+            }
+            out.push(m);
+        }
 
         /// The ASCII bytes of a class or literal of one character (a bit
         /// each); None if it has a member outside ASCII.
@@ -2726,7 +2740,7 @@ pub mod rx {
                         // the first alternative that matches at p
                         let Some(a) = (0..sm.alts.len()).find(|&a| st[a & (ALTS - 1)] >> j & 1 == 1) else { continue };
                         let e = p + sm.alts[a].seq.len();
-                        out.push((p, e));
+                        push_match(&mut out, (p, e), from, base + 64, until.min(n));
                         allowed = e;
                         if p >= until {
                             return out;
@@ -3127,7 +3141,7 @@ pub mod rx {
                             }
                         }
                         let Some(e) = found else { continue };
-                        out.push((p, e));
+                        push_match(&mut out, (p, e), from, base + 64, until.min(n));
                         allowed = e;
                         if p >= until {
                             return out;

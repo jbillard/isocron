@@ -5142,3 +5142,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   9: 167.9 ms -> 165.1 ms. Test `stops_found_in_the_masks_of_the_blocks`
   (stops at every distance from 0 to 300 bytes of their heads, too close
   for `mid`, missing at the end).
+- **D283 — Room for the matches of a search reserved from their density
+  (2026-11-04).** The vector of the matches of a part of a search grew by
+  doublings, each a copy of all its matches: for the 3.5 million matches
+  of a replacement of regex-redux, 56 MB copied about 20 times (the
+  allocator of the runtime has no growing in place). A search whose vector
+  is full (from 1024 matches) now reserves at once the room of the matches
+  of the rest of its range at the density seen so far, and an eighth more.
+  The same matches. The third replacement of regex-redux alone (best of 3,
+  4 threads): 24.2 ms -> 20.4 ms; in alternation, best of 9: 164.8 ms ->
+  153.8 ms. Tests: the searches of `rx::simple` and `strings.rs`.
