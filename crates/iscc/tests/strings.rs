@@ -757,3 +757,38 @@ action main(args: string[k]): i32 {
         assert_eq!(r.stderr.trim_end(), m.trim_end(), "slice({}, {})", a, b);
     }
 }
+
+/// D304: a reduction of integers by `+`, `*`, `min` or `max` from its
+/// neutral value, over elements the vector loops do not take (strings):
+/// one accumulator instead of the V of the fixed form, the same value for
+/// any order (modular, associative, commutative). Several blocks of B,
+/// sums and products that wrap, narrow integers, signed and unsigned; from
+/// another value the fixed form (V copies of it in each block). The value
+/// of the interpreter on 1, 3 and 8 threads.
+#[test]
+fn integer_reductions_of_strings_in_one_accumulator() {
+    let src = r#"action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const ws = map(iota(n), (i) => toString(i * 7919 % 100003) + "x");
+    print(sum(map(ws, (w) => i64(bytes(w)[0]) * 1000000000000000)));
+    print(count(ws, (w) => w.startsWith("1")));
+    print(reduce(map(ws, (w) => w.length * 7 + 1), (a, b) => a * b, 1));
+    print(reduce(map(ws, (w) => u8(w.length * 37)), (a, b) => a + b, 0u8));
+    print(reduce(map(ws, (w) => i32(bytes(w)[0]) * 100000000i32), (a, b) => a + b, 0i32));
+    print(reduce(map(ws, (w) => i64(bytes(w)[1 % w.length]) - 70), (a, b) => min(a, b), 9223372036854775807));
+    print(reduce(map(ws, (w) => u64(w.length)), (a, b) => max(a, b), 0u64));
+    print(reduce(map(ws, (w) => i16(w.length) - 9i16), (a, b) => max(a, b), -32768i16));
+    print(reduce(map(ws, (w) => w.length), (a, b) => a + b, 5));
+    print(reduce(map(ws, (w) => w.length), (a, b) => min(a, b), 3));
+    return 0;
+}
+"#;
+    let bin = compile(src, "str_int_reductions");
+    for n in ["1", "100", "4096", "10000", "300000"] {
+        let want = interp_ok(src, &[n]);
+        for threads in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[n], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} elements, {} threads: {}", n, threads, r.stderr);
+        }
+    }
+}

@@ -5766,3 +5766,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   results, concatenations, tail calls, the accumulator of a fold, a map in
   parallel; bounds out of the string and inside characters, against the
   interpreter; valgrind).
+- **D304 — Reductions of integers in one accumulator (2026-11-04).** After
+  D303, `sum(map(ls, (l) => i64(bytes(l)[7])))` took 1.96 ns an element
+  against 0.86 in C: the elements of a map of strings are not taken by the
+  vector loops, and the scalar loop of the fixed form (section 10) kept its
+  V accumulators in memory, `acc[i mod V]`, a load and a store for each
+  element. For `+`, `*`, `min` and `max` of integers (modular: associative
+  and commutative, the argument of rule P) from their neutral value, every
+  order of the elements gives the value of the fixed form; that loop has
+  now one accumulator, a register. From another value (V copies of it in
+  each block) the fixed form as before. With one accumulator LLVM
+  vectorized the `count` of a `startsWith` by gathers, 4.09 ns an element
+  against 1.95: the loop is not vectorized by LLVM (its elements are behind
+  pointers). On one CPU, medians of 5 runs of 200 rounds, before and after:
+  `bytes` 1.96 -> 1.63 ns, `slice` 2.17 -> 1.98, `equal` 5.66 -> 4.94,
+  `less` 5.57 -> 4.90, `startsWith` 1.97 -> 1.75, `endsWith` 2.07 -> 1.78,
+  `indexOf` 7.65 -> 6.82. Of the ten programs, only binary-trees is
+  another binary: +0.13 % [-0.13 %, +0.31 %], the same output. Test
+  `integer_reductions_of_strings_in_one_accumulator` (`+`, `*`, `min`,
+  `max`, `count`; wrapping sums and products; 8 to 64 bits, signed and
+  unsigned; 1 to 300000 elements; neutral and other initial values; 1, 3
+  and 8 threads; against the interpreter).

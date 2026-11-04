@@ -6784,6 +6784,28 @@ impl<'p> Gen<'p> {
             cur.uni = true;
             return Ok(cur);
         }
+        // scalar version of an associative and commutative operator on
+        // integers (`+`, `*`, `min`, `max`, modular) from its neutral value:
+        // every order of the elements gives the value of the fixed form, so
+        // one accumulator, a register (D304: the V accumulators in memory
+        // cost a load and a store for each element: `sum` of the lengths of
+        // slices 2.17 ns an element against 1.32 in C)
+        if int_scan_op(l, t).is_some_and(|(_, neutral)| z.r.parse::<i128>().ok() == Some(neutral)) {
+            let acc = self.alloca(&st);
+            self.emit(format!("store {} {}, ptr {}", st, z.r, acc));
+            // not vectorized by LLVM: an element of this loop is not one of
+            // a vector (its strings behind pointers: `count` of a
+            // `startsWith` gathered 4.09 ns an element against 1.95)
+            self.for_range_scalar("0", m, 1, &mut |g, i| {
+                let idx = g.ins(format!("add i64 {}, {}", start, i));
+                let x = g.elem(src, &idx, 1)?;
+                let a = g.ins(format!("load {}, ptr {}", st, acc));
+                let r = g.apply2(l, V { r: a, t: st.clone(), uni: false }, x, 1)?;
+                g.emit(format!("store {} {}, ptr {}", st, r.r, acc));
+                Ok(())
+            })?;
+            return Ok(v(self.ins(format!("load {}, ptr {}", st, acc)), st));
+        }
         // scalar version: V accumulators in memory
         let lanes = self.opts.lanes;
         let aty = format!("[{} x {}]", lanes, st);
