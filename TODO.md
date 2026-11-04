@@ -245,6 +245,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] A model of the loop of n-body with the ports and the window of the scheduler: the model of D261 (latency and divider) gives 108.5 cycles a step, 118.8 measured
   - [ ] The runtime given to LLVM with the program, so that the generated code inlines its fast paths (allocation, ...): first the share of time in the `isc_*` functions of each program; rustc 1.9x emits LLVM 23 bitcode, iscc reads LLVM 21 (a rustc on LLVM 21, iscc on LLVM 23, or the fast paths emitted as IR by iscc); measured on the ten programs and the kernels, with compile time and size (D263: the time in the runtime is in loops over blocks and numbers, `add_block`, `count_round`, `bounds_from`, `mul_word`; little to gain from inlining)
   - [x] The gap of each program to its floor attributed to its components (D263, `results/floors.md`)
+  - [x] Release 0.2.0: the fastest on 10 of 10 (D264)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)

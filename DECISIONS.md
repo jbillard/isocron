@@ -4749,13 +4749,12 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   0.490 s, regex-redux 0.289 s, each the same within its noise. Before
   it: the full suite green (82 runs), the tests of the Windows target on
   the VM (3, the ten programs among them).
-- **D263 — The time above each floor attributed (2026-11-04).** For the
-  goal of D249's successor: each program's gap to its floor given to the
-  components that make it, measured at `c77e61b` with the sizes of the
-  publication on 4 threads (`perf stat`, `perf record`, LBR call graphs),
-  against the terms of the floor that do the same work: the table "Where
-  the time above each floor goes" of `results/floors.md`, and the order of
-  the work after it. Among them:
+- **D263 — The time above each floor attributed (2026-11-04).** Each
+  program's gap to its floor given to the components that make it,
+  measured at `c77e61b` with the sizes of the publication on 4 threads
+  (`perf stat`, `perf record`, LBR call graphs), against the terms of the
+  floor that do the same work: the table "Where the time above each floor
+  goes" of `results/floors.md`, and the order of the work after it. Among them:
   - mandelbrot: 7.18e9 operations of 512 bits, 5.75e10 of lanes against the
     4.45e10 the floor counts (the lanes of a group of 64 pixels iterate
     until its last escapes), the port of the vectors busy 94.2 %;
@@ -4782,3 +4781,8 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     page cache dropped): k-nucleotide 2.150 s, regex-redux 0.514 s; the
     profiles run each program once before (as `measure.sh` keeps the
     lowest of 3).
+- **D264 — Release 0.2.0 (2026-11-04).** The programs of the Benchmarks
+  Game the fastest on 10 of 10 (D262), the time above each floor attributed
+  (D263). The version of the workspace and of the runtime 0.2.0; the
+  compilers for Linux and Windows built in the images of D248
+  (`build_iscc.sh`), the archives by `package.sh`.
