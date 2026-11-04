@@ -248,6 +248,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Release 0.2.0: the fastest on 10 of 10 (D264)
   - [x] The README laid out again; the logo and the icons of the project, in the README and the extension of VS Code (D268)
   - [x] The language server `isc-lsp` for every editor: the hover (types, comments, documentation), the errors as typed, the definitions, the outline; in VS Code and Neovim (D269)
+  - [x] Release 0.2.1: `isc-lsp` beside `iscc` in the archives (D270)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)

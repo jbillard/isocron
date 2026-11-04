@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.1 — 2026-11-04
+
+The editors: `isc-lsp`, the language server, beside the compiler. The
+compiler and the programs it makes are those of 0.2.0.
+
+### The language server
+
+* `isc-lsp`, beside `iscc` in the archives: the language server of
+  Isocron, for every editor that speaks the Language Server Protocol. On
+  the text as it is typed: the errors of the checker at their place, on
+  hover the type of a name and the signature of a function with the
+  comments above its declaration, the documentation of the functions of
+  the standard library with a link to it, the definitions (also in an
+  imported module), the outline (`docs/language.md`, "Editors").
+* VS Code: the extension of `tools/vscode` (colors, the errors of `iscc
+  check`, run, build, the IR, outline, definitions, the hover of
+  `isc-lsp`); `python3 tools/vscode/package.py` makes its `.vsix`.
+* Neovim 0.10: `tools/neovim/isocron.lua`.
+
+### The repository
+
+* The README laid out again, with the logo and the icons of the project.
+* `tools/release/publish.sh`: a release pushed, tagged and published on
+  GitHub by one command, checked first.
+
 ## 0.2.0 — 2026-11-04
 
 Isocron is the fastest on the 10 programs of the Benchmarks Game, measured

@@ -4,7 +4,7 @@ The extension of VS Code for the Isocron language (`.isc` files, DECISIONS
 D267). It uses the compiler `iscc` of the machine where the files are, and
 for the hover the language server `isc-lsp` beside it (D269): those of a
 release (`isocron-VERSION-x86_64-linux.tar.gz`,
-`isocron-VERSION-x86_64-windows.zip`; `isc-lsp` in those after 0.2.0) or
+`isocron-VERSION-x86_64-windows.zip`; `isc-lsp` in those from 0.2.1) or
 built from this repository (`cargo build --release` makes both).
 
 | Feature | How |
@@ -27,11 +27,11 @@ not while it is typed.
 Make the package (Python 3 only, no npm):
 
 ```sh
-python3 tools/vscode/package.py          # tools/vscode/isocron-0.2.0.vsix
+python3 tools/vscode/package.py          # tools/vscode/isocron-0.2.1.vsix
 ```
 
 then in VS Code: Extensions, `...`, **Install from VSIX...**, or
-`code --install-extension isocron-0.2.0.vsix`.
+`code --install-extension isocron-0.2.1.vsix`.
 
 * **On the machine of the files**: put `iscc` (or `iscc.exe`) in the PATH,
   or set `isocron.iscc` to its path; `isc-lsp` beside it (or in the PATH)

@@ -4928,3 +4928,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `tools/vscode/test/run.sh`: 42 tests; in VS Code on Windows (an
     `iscc.exe` and an `isc-lsp.exe` of these sources), 14 steps, the
     hovers among them.
+- **D270 — Release 0.2.1: `isc-lsp` beside `iscc` (2026-11-04).** Asked
+  for: the executables of the language server (D269) to download. A
+  release of its own, not files added to that of 0.2.0: the files of a
+  release are built from its tag (`v0.2.0` has no `isc-lsp`) and its
+  `SHA256SUMS` covers them all. 0.2.1 (a version compatible with 0.2.0,
+  as Cargo counts: a tool added, the compiler and the programs it makes
+  unchanged since 0.2.0). The archives as for 0.2.0 (`build_iscc.sh`, now
+  with `isc-lsp`; `package.sh`, now copying it beside `iscc`), from the
+  sources of the commit of the release; the extension of VS Code at 0.2.1
+  too.
+  - The compiler unchanged, checked: the ten programs of the Benchmarks
+    Game (11 files) built by `iscc` 0.2.0 and 0.2.1 give the same LLVM IR,
+    to the byte; their executables differ (same sizes, 3931 bytes of
+    `.text` for nbody) by the number of the version alone: the sources of
+    0.2.1 built under the number 0.2.0 give the 22 files of 0.2.0, to the
+    byte. Rust writes in the names of the symbols of the runtime a hash of
+    its crate that counts the version (`Cs8quoeD7URSa_` /
+    `CsdlsRN8XvvpF_`), and the linker places the functions by them.
+  - Tried: the archive for Linux on Debian 12 slim without network
+    (`iscc --version`, nbody built and run, `isc-lsp` answering), its
+    `isc-lsp` in Neovim (8 steps); the archive for Windows in VS Code (the
+    extension 0.2.1, 14 steps) and by `selftest_windows.py` (the ten
+    programs, the same outputs; `iscc run`, WebAssembly).
