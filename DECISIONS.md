@@ -4427,3 +4427,9 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     5 such lines with the old `run.py`, none now: the commands around the
     program (`mkdir`, `scp`) keep their messages, shown only on failure,
     and a session whose connection died is closed first.
+- **D251 — Release 0.1.1 (2026-11-04).** The programs for Windows of D250,
+  and `iscc --version` (also `-V`, `version`): `iscc 0.1.1 (x86_64-linux)`
+  or `(x86_64-windows)`, the version of the workspace. The programs for
+  Linux and WebAssembly are those of 0.1.0 (the flags changed only for the
+  runtimes of Windows): the measurements of D249 stand. Test
+  `version_of_the_compiler`.

@@ -2318,6 +2318,7 @@ available yet (the compiler reports `... is not supported in the POC`):
 ## The `iscc` command
 
 ```
+iscc --version                              the version of iscc and its system
 iscc check <file.isc> [--report]            type-check (and print the memory report)
 iscc ir    <file.isc>                       print the optimized IR
 iscc run   <file.isc> [args...]             run with the reference interpreter

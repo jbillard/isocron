@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1 — 2026-11-04
+
+* Programs for Windows keep only the functions of the runtime they use: a
+  hello was 1.5 MB, it is 54 KB (regex-redux, which uses the engine of
+  regular expressions: 1.52 MB -> 1.23 MB). The runtime for Windows is now
+  built with one section per function, which the linker can drop one by
+  one, as on Linux.
+* `iscc --version`.
+* Programs for Linux and WebAssembly are the same as with 0.1.0: the
+  measurements of 0.1.0 stand.
+
 ## 0.1.0 — 2026-11-04
 
 The first release of Isocron: a purely functional, strict array language for

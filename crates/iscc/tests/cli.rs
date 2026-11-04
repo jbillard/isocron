@@ -104,3 +104,12 @@ fn completion_of_the_shell() {
         assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), *want, "{:?}: {}", words, String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// `iscc --version` (D251): the version of the workspace.
+#[test]
+fn version_of_the_compiler() {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_iscc")).arg("--version").output().unwrap();
+    assert_eq!(o.status.code(), Some(0));
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(out.starts_with(&format!("iscc {} (", env!("CARGO_PKG_VERSION"))), "{}", out);
+}

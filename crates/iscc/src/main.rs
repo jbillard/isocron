@@ -188,7 +188,7 @@ impl Style {
 
 fn usage() -> ! {
     eprintln!(
-        "usage (--color auto|always|never anywhere):\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows] [--link lib]..."
+        "usage (--color auto|always|never anywhere):\n  iscc --version\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows] [--link lib]..."
     );
     exit(2)
 }
@@ -207,6 +207,11 @@ fn main() {
     let started = std::time::Instant::now();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let style = Style::from_args(&mut args);
+    // `iscc --version` (D251): the version of the release, its system
+    if matches!(args.first().map(|a| a.as_str()), Some("--version" | "-V" | "version")) {
+        println!("iscc {} ({})", env!("CARGO_PKG_VERSION"), if cfg!(windows) { "x86_64-windows" } else { "x86_64-linux" });
+        return;
+    }
     if args.first().map(|a| a.as_str()) == Some("completions") {
         match args.get(1).map(|a| a.as_str()) {
             Some("bash") => print!("{}", BASH_COMPLETION),
