@@ -5375,3 +5375,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     that run, not found again in the next (-0.04 % [-0.93, +0.24], 15
     rounds, the machine noisier: intervals of about 1.5 %); its code is the
     same: to be measured again on a quiet machine (TODO.md).
+- **D290 — The parallel loops of the runtime, safe (2026-11-04).** The
+  tasks of the pool take a pointer to their context, which each task of
+  the runtime turned back into its context by hand and wrote its results
+  through (the most of the code outside the checks of the compiler in
+  `lib.rs`). `par.rs`: `run(n, order, closure)` and `parts_mut(Parts,
+  order, closure)`, which gives each task its own `&mut` part of a slice
+  cut at increasing bounds (checked), as rayon; the only code that turns
+  the context into the closure and the bounds into slices is there. The
+  closures are `Copy` (references and numbers): the copy of a context of
+  at most 64 bytes in the job line (D201) is a copy of the closure. First
+  use: `lines` (`isc_lines`), its parts counted and filled through
+  `parts_mut`, its array of strings made zero (a new large block is zero
+  already, D79), `str_array` safe; `IscStr` is `Send` (it owns its bytes or
+  points to constant ones). The lines of `lib.rs` outside the checks: 1378,
+  then 1310. reverse-complement +0.10 % [-0.53, +0.53], fasta -0.15 %
+  [-1.07, +0.77] (41 rounds each): no difference.
+  - The question of the author (a runtime written in Isocron now): its
+    pure parts can be (`lines`, `split`, `replace`, sorting, parsing), as
+    modules shipped with the compiler, the interpreter then running the
+    same code; its core cannot yet: the allocator, the pool, the start and
+    the system calls need primitives the language does not have (regions
+    of memory, state shared between threads, atomics, typed system calls),
+    to be designed in SPEC first. So the effort in Rust goes to what stays
+    in Rust (the allocator, the pool, the system), not to the functions
+    that will move to Isocron.
