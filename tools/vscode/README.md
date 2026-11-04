@@ -24,7 +24,9 @@ not while it is typed.
 
 ## Install
 
-Make the package (Python 3 only, no npm):
+Download `isocron-VERSION.vsix` from the
+[releases](https://github.com/jbillard/isocron/releases) (from 0.2.1, beside
+the archives), or make it (Python 3 only, no npm):
 
 ```sh
 python3 tools/vscode/package.py          # tools/vscode/isocron-0.2.1.vsix

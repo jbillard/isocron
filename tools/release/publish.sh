@@ -5,7 +5,8 @@
 # and its notes:
 #   publish.sh VERSION DIR [--dry-run]
 # DIR: the output of package.sh (isocron-VERSION-x86_64-linux.tar.gz,
-# isocron-VERSION-x86_64-windows.zip, SHA256SUMS) and notes.md, the text of
+# isocron-VERSION-x86_64-windows.zip, isocron-VERSION.vsix, SHA256SUMS) and
+# notes.md, the text of
 # the release. Checked first: main checked out with nothing to commit, the
 # commit of the release with that version in Cargo.toml and a section in
 # CHANGELOG.md, the sums of the archives, `gh` logged in, no tag or release
@@ -36,7 +37,7 @@ git show "$commit:Cargo.toml" | grep -qx "version = \"$v\"" || fail "Cargo.toml 
 git show "$commit:CHANGELOG.md" | grep -q "^## $v " || fail "CHANGELOG.md of $commit has no section $v"
 
 # the files of the release
-assets=("$dir/isocron-$v-x86_64-linux.tar.gz" "$dir/isocron-$v-x86_64-windows.zip" "$dir/SHA256SUMS")
+assets=("$dir/isocron-$v-x86_64-linux.tar.gz" "$dir/isocron-$v-x86_64-windows.zip" "$dir/isocron-$v.vsix" "$dir/SHA256SUMS")
 for f in "${assets[@]}" "$dir/notes.md"; do
     [ -s "$f" ] || fail "missing: $f"
 done

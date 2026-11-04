@@ -16,7 +16,9 @@ compiler and the programs it makes are those of 0.2.0.
   imported module), the outline (`docs/language.md`, "Editors").
 * VS Code: the extension of `tools/vscode` (colors, the errors of `iscc
   check`, run, build, the IR, outline, definitions, the hover of
-  `isc-lsp`); `python3 tools/vscode/package.py` makes its `.vsix`.
+  `isc-lsp`): `isocron-0.2.1.vsix`, beside the archives
+  (`code --install-extension isocron-0.2.1.vsix`, or **Install from
+  VSIX...**).
 * Neovim 0.10: `tools/neovim/isocron.lua`.
 
 ### The repository

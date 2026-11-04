@@ -4951,3 +4951,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `isc-lsp` in Neovim (8 steps); the archive for Windows in VS Code (the
     extension 0.2.1, 14 steps) and by `selftest_windows.py` (the ten
     programs, the same outputs; `iscc run`, WebAssembly).
+- **D271 — The extension of VS Code in the releases (2026-11-04).** Asked
+  for: the `.vsix` with the release. `isocron-VERSION.vsix`, a file of the
+  release beside the two archives (one for both systems, installed as it
+  is downloaded), in `SHA256SUMS`: made by `package.sh` with
+  `tools/vscode/package.py` (refused when `tools/vscode/package.json` is
+  at another version), published by `publish.sh`. For 0.2.1, added to the
+  release already published: made from the sources of the tag `v0.2.1`
+  (the same bytes as the `.vsix` tried on Windows), `SHA256SUMS` made
+  again with it and the notes saying it; the four files downloaded again,
+  their sums right.

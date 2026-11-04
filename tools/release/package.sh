@@ -5,7 +5,8 @@
 # each with the compiler, the language server (isc-lsp, beside the compiler
 # built by build_iscc.sh, D269), LICENSE, THIRD_PARTY_LICENSES.md and the texts of
 # the licenses, README.md, CHANGELOG.md, docs/language.md and the examples;
-# OUT/SHA256SUMS. The texts: $ISC_LLVM_SRC (llvm-project sources),
+# OUT/isocron-VERSION.vsix, the extension of VS Code of the same version
+# (D271); OUT/SHA256SUMS. The texts: $ISC_LLVM_SRC (llvm-project sources),
 # $ISC_MINGW_DIR (MinGW-w64, with its share/doc), $ISC_GLIBC_LICENSE (the
 # COPYING.LIB of glibc), and the licenses of the Rust toolchain.
 set -euo pipefail
@@ -47,5 +48,9 @@ with zipfile.ZipFile(name + '.zip', 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(files):
             z.write(os.path.join(base, f))
 " "isocron-$v-x86_64-windows")
-(cd "$out" && sha256sum "isocron-$v-x86_64-linux.tar.gz" "isocron-$v-x86_64-windows.zip" > SHA256SUMS)
+# the extension of VS Code, for both systems (its version that of the release)
+ext=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$root/tools/vscode/package.json")
+[ "$ext" = "$v" ] || { echo "package.sh: tools/vscode/package.json is at $ext, not $v" >&2; exit 1; }
+python3 "$root/tools/vscode/package.py" "$out/isocron-$v.vsix" > /dev/null
+(cd "$out" && sha256sum "isocron-$v-x86_64-linux.tar.gz" "isocron-$v-x86_64-windows.zip" "isocron-$v.vsix" > SHA256SUMS)
 cat "$out/SHA256SUMS"
