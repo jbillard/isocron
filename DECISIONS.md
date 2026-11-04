@@ -4683,3 +4683,56 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - The floors are the same; reverse-complement's (the file read twice
     by blocks at 30.2 GB/s, 0.017 s) still holds with the mapped input of
     D257, which maps the pages of the file instead of copying them.
+- **D261 — A `fold` split: the roots and divisions that do not depend on
+  the accumulator computed first, two elements at a time; the variance of
+  n-body found (2026-11-04).**
+  - The profile of n-body: one step is a loop of 258 instructions, 6 roots
+    and 6 divisions of the divider (LLVM pairs 8 of the 10 pairs, 2 stay
+    scalar), 39 accesses to the stack. Measured on this machine (a program
+    of 8 independent chains, then one): a root holds the divider 4.5
+    cycles, a division 4, the same for 1 or 2 lanes, twice for 4 lanes;
+    latencies 13 and 13.5 cycles. A model of the loop (each instruction
+    when its operands are ready, the divider one unit): 87.5 cycles of
+    latency alone, 107.0 with the divider, whose queue is on the chain of a
+    step (a root waits for it before its 13 cycles); measured 126.4.
+  - The `fold` of `split_plan` (an `iota` of an even constant of at most
+    16, `let`s at the head of its body that read neither the accumulator
+    nor what depends on it, a root or a division of floats among them):
+    those `let`s computed before the loop into slots on the stack, then the
+    loop of the accumulator, which reads them. The `let`s that use the
+    divider, or a value that does, for two elements at a time in vectors of
+    2 lanes, their parts that do not use the divider computed per element
+    and put into a vector just before it (`pack_leaves`: one shuffle in,
+    one out); the others per element. The same operations on the same
+    values: the same bits. A check of an index that fails before the loop
+    jumps to the `fold` as written (`split_fail`), whose panic is then the
+    one of the program, in its order; constant indices remove that path.
+  - A first form, every such `let` in vectors (the elements of arrays
+    gathered into vectors): 5 roots and 5 divisions of 2 lanes, but 263
+    instructions with permutations across lanes of 256 bits (LLVM merged
+    the vectors): 126.4 -> 129.9 cycles a step, not kept.
+  - Measured (the sibling thread offline, 5 runs in turn): n-body 1.979 ->
+    1.861 s, 126.4 -> 118.8 cycles a step, the divider active 76.8 -> 59.4
+    cycles a step, a loop of 239 instructions, 5 roots and 5 divisions of 2
+    lanes, 30 accesses to the stack. The same output; the 9 other programs
+    and the 9 kernels the same binaries. In Docker (`build/spotnb.sh`, 7
+    runs in turn, the conditions of the publication): Isocron 1.892 s at
+    best (1.905 s median) against gcc-9 1.945 s (1.952 s) and rust-9
+    1.947 s (1.948 s).
+  - The model does not predict the gain (107.0 -> 108.5 cycles: its two
+    shuffles add latency, its divider is held about as long): what it
+    leaves out, the ports and the window of the scheduler (the issue of
+    instructions stalls 75 cycles of 128), is where the rest of the step
+    goes (TODO: a model with them).
+  - The variance of n-body (TODO of D233): the same binary took 128.0 to
+    138.8 cycles a step from one series to the next, sometimes changing
+    within a run, with the sibling of its core (CPU 15) idle. Not the
+    interrupts (about 550 ticks and 10 of the network a run, the same in
+    both), not the physical pages of the stack (moved at each run, the
+    same cycles), not the disambiguation of loads (SSBD by `prctl`: the
+    same), not the programs run before on the core. With the sibling awake
+    (a loop of `pause`): 165.8 cycles in every run (the core shared); with
+    the sibling offline: 126.3 to 126.4 in every run. The core of one
+    thread has states of different speed while its sibling sleeps and
+    wakes; without the sibling, one. The measurements of this decision
+    are made with the sibling offline.

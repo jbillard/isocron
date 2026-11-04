@@ -239,7 +239,10 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Programs for Windows with only the functions they use: a hello 1.5 MB -> 54 KB (D250)
   - [x] Release 0.1.1: the programs for Windows of D250, `iscc --version` (D251)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
-  - [ ] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why
+  - [x] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why (D261: the sibling thread of its core; offline, 126.3 to 126.4 cycles a step in every run)
+  - [x] The roots and divisions of a `fold` that do not depend on its accumulator, two elements at a time: n-body 1.979 -> 1.861 s, in Docker 1.892 s against C 1.945 s (D261)
+  - [ ] A model of the loop of n-body with the ports and the window of the scheduler: the model of D261 (latency and divider) gives 108.5 cycles a step, 118.8 measured
+  - [ ] The runtime given to LLVM with the program, so that the generated code inlines its fast paths (allocation, ...): first the share of time in the `isc_*` functions of each program; rustc 1.9x emits LLVM 23 bitcode, iscc reads LLVM 21 (a rustc on LLVM 21, iscc on LLVM 23, or the fast paths emitted as IR by iscc); measured on the ten programs and the kernels, with compile time and size
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)

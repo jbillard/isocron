@@ -341,3 +341,98 @@ action main(args: string[k]): i32 {
     let run = run_bin(&bin, &[]);
     assert_eq!((run.code, run.stdout.as_str()), (0, "10\n"), "{}", run.stderr);
 }
+
+/// D260: a `fold` over `iota` of an even constant whose body computes roots
+/// and divisions that do not depend on the accumulator: those computed
+/// first, two elements at a time (vectors of 2 lanes), then the loop of the
+/// accumulator. The same bits as the interpreter, for pairs of bodies as in
+/// n-body, a `fold` of 6 elements, and one of 9 (odd: not split).
+#[test]
+fn split_folds_match_interpreter() {
+    let src = "type S = { x: f64[5], y: f64[5], v: f64[5] };
+function pairI(): i64[10] { return [0, 0, 0, 0, 1, 1, 1, 2, 2, 3]; }
+function pairJ(): i64[10] { return [1, 2, 3, 4, 2, 3, 4, 3, 4, 4]; }
+function start(): S {
+    return { x: [0.0, 1.5, 2.25, 3.125, 4.0625], y: [1.0, -0.5, 0.75, -2.0, 3.5], v: [0.0, 0.1, -0.2, 0.3, -0.4] };
+}
+function step(s: S): S {
+    const pi = pairI();
+    const pj = pairJ();
+    const v = fold(iota(10), s.v, (v, k) => {
+        const i = pi[k];
+        const j = pj[k];
+        const dx = s.x[i] - s.x[j];
+        const dy = s.y[i] - s.y[j];
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const f = 0.01 / (d * d * d);
+        const g = f * dx + 1.0 / dy;
+        return v.with(i, v[i] - f * dy).with(j, v[j] + g);
+    });
+    return { x: s.x + 0.01 * v, y: s.y - 0.01 * v, v: v };
+}
+function steps(s: S, n: i64): S {
+    if (n == 0) return s;
+    return steps(step(s), n - 1);
+}
+action main(args: string[k]): i32 {
+    const s = steps(start(), parseI64(args[0]));
+    print(s.x);
+    print(s.y);
+    print(s.v);
+    const t = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    print(fold(iota(6), 0.0, (a, k) => {
+        const q = 1.0 / t[k];
+        const r = Math.sqrt(t[k] + q);
+        return a * 0.5 + q * r;
+    }));
+    print(fold(iota(9), 0.0, (a, k) => {
+        const r = Math.sqrt(t[k]) / 3.0;
+        return a * 0.25 + r;
+    }));
+    return 0;
+}
+";
+    let bin = compile(src, "split_fold");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call <2 x double> @llvm.sqrt.v2f64("), "no root in a vector of 2 lanes");
+    assert!(ll.contains("fdiv <2 x double>"), "no division in a vector of 2 lanes");
+    for n in ["0", "1", "7", "1000"] {
+        let want = interp_ok(src, &[n]);
+        let run = run_bin(&bin, &[n]);
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} steps: {}", n, run.stderr);
+    }
+}
+
+/// D260: a split `fold` panics as written. Its values computed before the
+/// loop read an index out of bounds at element 3 (`idx[3]` is the argument);
+/// when the accumulator is short, the loop itself fails first, at element 2:
+/// that panic, not the later one; when it is long, the panic of element 3,
+/// at its place in the source.
+#[test]
+fn split_folds_panic_as_written() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const len = parseI64(args[1]);
+    const t = [4.0, 9.0, 16.0, 25.0, 36.0];
+    const idx = [0, 1, 2, n, 4, 0];
+    const r = fold(iota(6), map(iota(len), (i) => 0.0), (acc, k) => {
+        const root = Math.sqrt(t[idx[k]]);
+        return acc.with(2 * k, acc[k] + root);
+    });
+    print(r);
+    return 0;
+}
+";
+    let bin = compile(src, "split_fold_panic");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call <2 x double> @llvm.sqrt.v2f64("), "the fold is not split");
+    for args in [["7", "3"], ["7", "12"], ["9", "5"]] {
+        let m = interp_panic(src, &args);
+        let run = run_bin(&bin, &args);
+        assert_eq!(run.code, 101, "{:?}: {}", args, run.stderr);
+        assert!(run.stderr.contains(&m), "{:?}: {} / {}", args, run.stderr, m);
+    }
+    let want = interp_ok(src, &["3", "12"]);
+    let run = run_bin(&bin, &["3", "12"]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+}

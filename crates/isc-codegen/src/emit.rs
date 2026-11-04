@@ -465,6 +465,16 @@ pub struct Gen<'p> {
     /// elements of the vector again one at a time, where a failed check
     /// jumps, so that the panic is the one of the scalar loop (D185).
     vec_fail: Option<String>,
+    /// The `let`s of a split `fold` (D260): the values of each element
+    /// computed before its loop, in a slot on the stack, its type, and the
+    /// variable of the element (the index into the slot).
+    split_vars: HashMap<VarId, (String, String, VarId)>,
+    /// While the values of a split `fold` are computed (D260): the block of
+    /// the `fold` as written, where a failed check of an index jumps.
+    split_fail: Option<String>,
+    /// The last variable made for the parts of a split `fold` put into
+    /// vectors (D260), counted down from the top of the identifiers.
+    split_fresh: VarId,
     /// The array literals put on the stack (D191): never freed.
     stack_vars: HashSet<VarId>,
     /// While the sizes of a `CheckSize` are computed: no length fixed by a
@@ -852,6 +862,9 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         env: HashMap::new(),
         divmod: Vec::new(),
         vec_fail: None,
+        split_vars: HashMap::new(),
+        split_fail: None,
+        split_fresh: VarId::MAX,
         stack_vars: HashSet::new(),
         no_fix: false,
         builders: if opts.isa.is_wasm() { HashSet::new() } else { builders(p) },
@@ -1527,6 +1540,108 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
 fn lam_ok(l: &Lambda) -> bool {
     let mut varying: HashSet<VarId> = l.params.iter().copied().collect();
     vec_ok(&l.body, &mut varying)
+}
+
+/// What a split `fold` may compute before its loop (D260): arithmetic on
+/// scalars (no integer division), roots, `fma`, elements of arrays of
+/// variables; no call, no loop, nothing that allocates. Its only checks are
+/// those of the indices, which jump to the `fold` as written when they fail.
+fn splittable(e: &Expr) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Lit(_) | Var(..) => true,
+        Unary(_, a) | Sqrt(a) => splittable(a),
+        Binary(op, a, b) => {
+            !(matches!(op, BinOp::Div | BinOp::Rem) && matches!(a.ty, Type::Int(_))) && splittable(a) && splittable(b)
+        }
+        Index(a, i) => matches!(a.kind, Var(..)) && splittable(i),
+        Math(MathFn::Fma, xs) => xs.iter().all(splittable),
+        _ => false,
+    }
+}
+
+/// A root or a division of floats: what the divider of the machine does,
+/// one operation for a scalar or a vector of 2 lanes (D260).
+fn divides(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Sqrt(_))
+        || matches!(&e.kind, ExprKind::Binary(BinOp::Div, a, _) if matches!(a.ty, Type::F64 | Type::F32))
+        || e.children().into_iter().any(divides)
+}
+
+/// `e`, a value of a split `fold` computed in vectors (D260), its largest
+/// parts that neither use the divider nor read a value in vectors replaced
+/// by new variables (`leaves`: each computed for every lane as a scalar,
+/// then put into a vector): only the roots and divisions, and what follows
+/// them, are vector code.
+fn pack_leaves(e: &Expr, vec_vars: &HashSet<VarId>, leaves: &mut Vec<(VarId, Expr)>, fresh: &mut VarId) -> Expr {
+    use ExprKind::*;
+    if matches!(e.kind, Lit(_)) {
+        return e.clone();
+    }
+    if !divides(e) && !mentions(e, vec_vars) {
+        *fresh -= 1;
+        leaves.push((*fresh, e.clone()));
+        return Expr::new(Var(*fresh, isc_ir::Use::Borrow), e.ty.clone(), e.span);
+    }
+    let mut r = e.clone();
+    match &mut r.kind {
+        Unary(_, a) | Sqrt(a) => {
+            let na = pack_leaves(a, vec_vars, leaves, fresh);
+            **a = na;
+        }
+        Binary(_, a, b) => {
+            let na = pack_leaves(a, vec_vars, leaves, fresh);
+            let nb = pack_leaves(b, vec_vars, leaves, fresh);
+            **a = na;
+            **b = nb;
+        }
+        Math(_, xs) => {
+            for x in xs.iter_mut() {
+                let nx = pack_leaves(x, vec_vars, leaves, fresh);
+                *x = nx;
+            }
+        }
+        _ => {}
+    }
+    r
+}
+
+/// A `fold` over `iota(n)`, n an even constant of at most `UNROLL_FULL`,
+/// whose body begins with `let`s that read neither the accumulator nor what
+/// depends on it, a root or a division among them (D260): n and the
+/// variables of the `let`s computed before the loop.
+fn split_plan(x: &Expr, l: &Lambda) -> Option<(i64, Vec<VarId>)> {
+    let ExprKind::Iota(n) = &x.kind else { return None };
+    let ExprKind::Lit(isc_ir::Lit::Int(n)) = n.kind else { return None };
+    if *x.ty.elem() != Type::Int(IntKind::I64) || !(2..=UNROLL_FULL).contains(&n) || n % 2 != 0 {
+        return None;
+    }
+    let before = REPLAY.with(|r| r.replace(true));
+    let mut varying: HashSet<VarId> = HashSet::from([l.params[1]]);
+    let mut avoid: HashSet<VarId> = HashSet::from([l.params[0]]);
+    let mut vars = Vec::new();
+    let mut costly = false;
+    let mut e = &*l.body;
+    while let ExprKind::Let { var, init, body, stmt, drop } = &e.kind {
+        let ok = !*stmt
+            && !*drop
+            && matches!(init.ty, Type::F64 | Type::F32 | Type::Int(_))
+            && !mentions(init, &avoid)
+            && splittable(init)
+            && vec_ok_given(init, &mut varying.clone(), std::ptr::null());
+        if ok {
+            if mentions(init, &varying) {
+                varying.insert(*var);
+            }
+            costly |= divides(init);
+            vars.push(*var);
+        } else {
+            avoid.insert(*var);
+        }
+        e = body;
+    }
+    REPLAY.with(|r| r.set(before));
+    costly.then_some((n, vars))
 }
 
 fn src_vec_ok(e: &Expr) -> bool {
@@ -2852,6 +2967,16 @@ impl<'p> Gen<'p> {
                 isc_ir::Lit::Unit => v("false", "i1"),
             }),
             Var(x, _) => self.env.get(x).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", x)),
+            // a `let` of a split `fold` (D260): its value for this element,
+            // computed before the loop
+            Let { var, body, .. } if w == 1 && self.split_vars.contains_key(var) => {
+                let (slot, t, kvar) = self.split_vars[var].clone();
+                let k = self.env.get(&kvar).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", kvar))?;
+                let p = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", t, slot, k.r));
+                let x = self.ins(format!("load {}, ptr {}", t, p));
+                self.bind(*var, v(x, t));
+                self.ex(body, w)
+            }
             // a tree of new nodes (a builder's) that its body only lends to
             // functions whose results hold no tree: made in a region, freed
             // at once (D200)
@@ -3211,7 +3336,16 @@ impl<'p> Gen<'p> {
                 let (src, n) = self.prepare_src(a)?;
                 let iv = self.ex(i, 1)?;
                 let idx = self.index64(&iv, &i.ty);
-                self.bounds(&idx, &n, &i.ty, span);
+                match self.split_fail.clone() {
+                    // before the loop of a split `fold` (D260)
+                    Some(lf) => {
+                        let ok = self.ins(format!("icmp ult i64 {}, {}", idx, n));
+                        let lok = self.label();
+                        self.cbr(&ok, &lok, &lf);
+                        self.block(&lok);
+                    }
+                    None => self.bounds(&idx, &n, &i.ty, span),
+                }
                 self.elem(&src, &idx, 1)
             }
             Window(x, k) => {
@@ -3344,7 +3478,10 @@ impl<'p> Gen<'p> {
             Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
             Fold(x, init, l) => match additive_update(l) {
                 Some((gi, h, read)) if !self.in_task => self.fold_private(e, x, init, l, gi, h, read),
-                _ => self.fold(x, init, l),
+                _ => match split_plan(x, l) {
+                    Some((n, vars)) => self.fold_split(x, init, l, n, &vars),
+                    None => self.fold(x, init, l),
+                },
             },
             CheckSize(a, b, body) => {
                 // the real sizes, not those the types expect (D204)
@@ -7136,6 +7273,115 @@ impl<'p> Gen<'p> {
         })?;
         let r = self.ins(format!("load {}, ptr {}", alt, acc));
         Ok(v(r, alt))
+    }
+
+    /// A `fold` of `split_plan` (D260): the `let`s that do not depend on the
+    /// accumulator computed first for every element, into slots on the
+    /// stack; then the loop of the accumulator, which reads them. Those that
+    /// use the divider (roots, divisions of floats) or a value that does are
+    /// computed for two elements at once, in vectors of 2 lanes, the others
+    /// one element at a time: in the loop, LLVM pairs some roots and
+    /// divisions and leaves the others scalar, while a vector of 2 lanes
+    /// holds the divider as long as a scalar (4.5 cycles a root, 4 a
+    /// division on the Xeon E-2388G); n / 2 of them instead of up to n. The
+    /// parts of these values that do not use the divider stay scalar, put
+    /// into vectors just before it. The same operations on the same values:
+    /// the same bits. A check of an index that fails before the loop jumps to
+    /// the `fold` as written, whose panic is then the one of the program;
+    /// with constant indices, LLVM removes that path.
+    fn fold_split(&mut self, x: &Expr, init: &Expr, l: &Lambda, n: i64, vars: &[VarId]) -> R<V> {
+        const W: u32 = 2;
+        // the `let`s in their order: (variable, value, in vectors: the value
+        // with its leaves replaced, and the leaves)
+        let mut parts: Vec<(VarId, &Expr, Option<(Expr, Vec<(VarId, Expr)>)>)> = Vec::new();
+        let mut vec_vars: HashSet<VarId> = HashSet::new();
+        let mut e = &*l.body;
+        while let ExprKind::Let { var, init, body, .. } = &e.kind {
+            if vars.contains(var) {
+                if divides(init) || mentions(init, &vec_vars) {
+                    let mut leaves = Vec::new();
+                    let mut fresh = self.split_fresh;
+                    let packed = pack_leaves(init, &vec_vars, &mut leaves, &mut fresh);
+                    self.split_fresh = fresh;
+                    parts.push((*var, &**init, Some((packed, leaves))));
+                    vec_vars.insert(*var);
+                } else {
+                    parts.push((*var, &**init, None));
+                }
+            }
+            e = body;
+        }
+        let slots: Vec<String> = parts.iter().map(|(_, e, _)| self.alloca(&format!("[{} x {}]", n, lt(&e.ty)))).collect();
+        let lslow = self.label();
+        let lfast = self.label();
+        let ljoin = self.label();
+        let saved = self.split_fail.replace(lslow.clone());
+        let r = self.for_range("0", &n.to_string(), W as i64, &mut |g, i| {
+            // each lane: the scalar values, and the leaves of the others
+            let mut lanes: Vec<Vec<Vec<V>>> = parts.iter().map(|(_, _, p)| vec![Vec::new(); p.as_ref().map_or(0, |p| p.1.len())]).collect();
+            for j in 0..W {
+                let k = if j == 0 { i.to_string() } else { g.ins(format!("add i64 {}, {}", i, j)) };
+                g.bind(l.params[1], V { r: k.clone(), t: "i64".into(), uni: false });
+                for (q, (var, e, p)) in parts.iter().enumerate() {
+                    match p {
+                        None => {
+                            let xv = g.ex(e, 1)?;
+                            g.bind(*var, xv.clone());
+                            let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&e.ty), slots[q], k));
+                            g.emit(format!("store {} {}, ptr {}", xv.t, xv.r, at));
+                        }
+                        Some((_, leaves)) => {
+                            for (f, (_, le)) in leaves.iter().enumerate() {
+                                let xv = g.ex(le, 1)?;
+                                lanes[q][f].push(xv);
+                            }
+                        }
+                    }
+                }
+            }
+            // the values in vectors, from their leaves
+            for (q, (var, e, p)) in parts.iter().enumerate() {
+                let Some((packed, leaves)) = p else { continue };
+                for (f, (fv, le)) in leaves.iter().enumerate() {
+                    let st = lt(&le.ty);
+                    let vt = format!("<{} x {}>", W, st);
+                    let mut r = "poison".to_string();
+                    for (j, xv) in lanes[q][f].iter().enumerate() {
+                        r = g.ins(format!("insertelement {} {}, {} {}, i32 {}", vt, r, st, xv.r, j));
+                    }
+                    g.bind(*fv, V { r, t: vt, uni: false });
+                }
+                let xv = g.ex(packed, W)?;
+                let xv = g.widen(&xv, W);
+                g.bind(*var, xv.clone());
+                let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", lt(&e.ty), slots[q], i));
+                g.emit(format!("store {} {}, ptr {}", xv.t, xv.r, at));
+            }
+            Ok(())
+        });
+        self.split_fail = saved;
+        r?;
+        self.br(&lfast);
+        // the loop of the accumulator, the values of the `let`s read
+        self.block(&lfast);
+        for (q, (var, e, _)) in parts.iter().enumerate() {
+            self.split_vars.insert(*var, (slots[q].clone(), lt(&e.ty), l.params[1]));
+        }
+        let fast = self.fold(x, init, l);
+        for (var, _, _) in &parts {
+            self.split_vars.remove(var);
+        }
+        let fast = fast?;
+        let fend = self.current_label(&lfast);
+        self.br(&ljoin);
+        // a check failed: the `fold` as written
+        self.block(&lslow);
+        let slow = self.fold(x, init, l)?;
+        let send = self.current_label(&lslow);
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", fast.t, fast.r, fend, slow.r, send));
+        Ok(v(r, fast.t))
     }
 
     // -----------------------------------------------------------------
