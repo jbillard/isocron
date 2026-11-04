@@ -4406,3 +4406,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (D241), the others within their noise. The C++ program mandelbrot gpp-4
   still gives another image than the reference at N = 200 (D227), the
   same as Isocron at N = 16000.
+- **D250 — The programs for Windows keep only the functions they use
+  (2026-11-04).** A hello for Windows was 1 517 568 bytes, the same hello
+  for Linux 38 512: its code (`.text`, 1.04 MB) held the engine of regular
+  expressions, the big integers and most of the runtime, which the linker
+  removes on Linux (`--gc-sections`). Rust puts the code of a crate in one
+  section on the targets `*-windows-gnu` (the object of `isc_runtime`: 1
+  section `.text`, against 1193 for Linux): the linker keeps all of it or
+  nothing. The runtimes for Windows are now built with
+  `-Zfunction-sections=yes` (an unstable flag, allowed on the stable
+  compiler for this build only by `RUSTC_BOOTSTRAP=1`): the hello 54 272
+  bytes, regex-redux 1 522 176 -> 1 226 240 (it uses the engine). The
+  precompiled `core` and `alloc` of Rust keep their sections as built.
+  - A failure of `programs_on_windows` (its standard error) in the first
+    series after a long pause, not in the three next: `run.py` shares one
+    SSH session (ControlMaster); with none open, the `run.py` started at
+    once by the tests race to open it, and the losers print `ControlSocket
+    ... already exists, disabling multiplexing` on their standard error,
+    taken for the program's. Reproduced: 6 runs at once without a session,
+    5 such lines with the old `run.py`, none now: the commands around the
+    program (`mkdir`, `scp`) keep their messages, shown only on failure,
+    and a session whose connection died is closed first.

@@ -29,11 +29,24 @@ fn main() {
         // gives `wasm32-wasip1` and `wasm32-wasip1-threads` the same `cfg`
         // (`atomics` is an unstable target feature, never in `cfg` on stable)
         cmd.env_remove("CARGO_ENCODED_RUSTFLAGS");
+        let mut rustflags: Vec<&str> = Vec::new();
         if triple == Some("wasm32-wasip1-threads") {
-            cmd.env("CARGO_ENCODED_RUSTFLAGS", "--cfg=isc_wasm_threads");
+            rustflags.push("--cfg=isc_wasm_threads");
         }
         if let Some(f) = flags {
-            cmd.env("CARGO_ENCODED_RUSTFLAGS", f);
+            rustflags.push(f);
+        }
+        // Rust puts the code of a crate in one section on the targets
+        // `*-windows-gnu`: the linker then keeps all of the runtime or
+        // nothing (a hello of 1.5 MB). One section per function, so that
+        // only the functions used stay (D250); the flag is unstable,
+        // allowed on a stable compiler for this build only.
+        if triple.map(|t| t.contains("windows-gnu")).unwrap_or(false) {
+            rustflags.push("-Zfunction-sections=yes");
+            cmd.env("RUSTC_BOOTSTRAP", "1");
+        }
+        if !rustflags.is_empty() {
+            cmd.env("CARGO_ENCODED_RUSTFLAGS", rustflags.join("\x1f"));
         }
         cmd
             .env_remove("RUSTFLAGS")

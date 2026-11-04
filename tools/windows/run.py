@@ -58,12 +58,18 @@ def main():
     def ssh(command, **kw):
         return subprocess.run(["ssh", "-p", port] + ssh_opts + [host, command], **kw)
 
-    if ssh('mkdir "%s"' % remote.replace("/", "\\"), stdout=subprocess.DEVNULL).returncode != 0:
-        sys.exit("run.py: cannot reach the Windows machine")
+    # a shared session whose connection died (the machine restarted) is
+    # closed first: its errors would mix with the program's (D250)
+    if subprocess.run(["ssh", "-p", port] + ssh_opts + ["-O", "check", host], capture_output=True).returncode != 0:
+        subprocess.run(["ssh", "-p", port] + ssh_opts + ["-O", "exit", host], capture_output=True)
+    # the commands around the program keep their messages, shown on failure
+    r = ssh('mkdir "%s"' % remote.replace("/", "\\"), capture_output=True)
+    if r.returncode != 0:
+        sys.exit("run.py: cannot reach the Windows machine: " + r.stderr.decode(errors="replace"))
     try:
-        r = subprocess.run(["scp", "-q", "-P", port] + ssh_opts + files + ["%s:%s/" % (host, remote)])
+        r = subprocess.run(["scp", "-q", "-P", port] + ssh_opts + files + ["%s:%s/" % (host, remote)], capture_output=True)
         if r.returncode != 0:
-            sys.exit("run.py: cannot copy the files")
+            sys.exit("run.py: cannot copy the files: " + r.stderr.decode(errors="replace"))
         # cmd.exe: the variables, then the program with its arguments quoted
         # as the C library of the program parses them
         line = "cd /d %s && " % remote.replace("/", "\\")
