@@ -34,7 +34,7 @@ Intel Xeon E-2388G at fixed frequency (`bench/machine.sh apply parallel`).
 Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$.
 
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Isocron time / its floor (1: at the floor)"
     x-axis ["regex-redux", "fasta", "k-nucleotide", "reverse-complement", "pidigits", "fannkuch-redux", "spectral-norm", "binary-trees", "mandelbrot", "n-body"]
     y-axis "times the floor" 0 --> 11

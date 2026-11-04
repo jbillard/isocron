@@ -4852,3 +4852,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     error fixed and saved gone, the outline, the definitions (a module
     imported, the file), the IR, `ok.exe` built and printing 45: all
     passed.
+- **D268 — The README laid out again; the logo and the icons of the
+  project (2026-11-04).** Asked for: a main page less austere. The README
+  opens on the logo (`<picture>`: `docs/media/isocron-logo.svg` on a light
+  page, `isocron-logo-dark.svg` on a dark one), a line, three badges and
+  links; a first program with its real outputs (the harmonic series, 1e9
+  terms: 628 ms on one core, 80 ms on eight, 21.30048150234794 both times);
+  then four sections (fast: the block `report.py` writes; exact; parallel
+  without threads; checked before it runs, with a real error of sizes at
+  compile time and its run-time form), the floors, how to start (the
+  archives of 0.2.0, a first program, where to read on), the documents of
+  the project, and in `<details>` the build from source, the tests, the
+  benchmarks and the layout. Its programs are fenced as `ts`: GitHub knows
+  no `isc` and would show them without colors.
+  - The chart of the README is an image, `docs/media/benchmarks.svg`,
+    written by `report.py` beside the table from the same rows
+    (`mdstyle.ratio_svg`): one row a program, the value in its bar, the
+    colors of the marks of the table, a dashed line at 1. A Mermaid chart
+    is drawn by each viewer: its ten names under vertical bars overlapped,
+    and an option of orientation is not taken by all. The Mermaid charts
+    of `results/benchmarks_game.md` and `results/floors.md` are
+    horizontal (a row a name), their titles shortened (one was cut at
+    700 px).
+  - The logo, the icon, the marks in one color and the PNGs of 16 to 512
+    px in `docs/media`, as delivered (two archives) but for their names, in
+    English, and for the C2PA manifests the SVG files carried (credentials
+    naming the tool that made them; this repository keeps no such
+    reference): the drawings are unchanged.
+  - The extension of VS Code: its icon (`icon.png`) and the icons of the
+    `.isc` files for light and dark themes (`icons/`), packed by
+    `package.py` (the types PNG and SVG, the icon among the assets of the
+    manifest); tried again in VS Code on Windows, the 10 steps passed.

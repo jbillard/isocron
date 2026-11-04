@@ -10,6 +10,7 @@
   "categories": ["Programming Languages", "Snippets"],
   "keywords": ["isocron", "iscc", "array language"],
   "extensionKind": ["workspace"],
+  "icon": "icon.png",
   "main": "./extension.js",
   "activationEvents": ["onLanguage:isocron"],
   "contributes": {
@@ -18,7 +19,8 @@
         "id": "isocron",
         "aliases": ["Isocron", "isocron", "isc"],
         "extensions": [".isc"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": { "light": "./icons/isocron-file-light.svg", "dark": "./icons/isocron-file-dark.svg" }
       }
     ],
     "grammars": [

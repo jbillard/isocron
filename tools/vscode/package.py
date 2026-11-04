@@ -20,9 +20,11 @@ from xml.sax.saxutils import escape
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 FILES = ["package.json", "extension.js", "lib.js", "language-configuration.json", "README.md",
-         "syntaxes/isocron.tmLanguage.json", "syntaxes/isocron.markdown.tmLanguage.json", "snippets/isocron.json"]
+         "syntaxes/isocron.tmLanguage.json", "syntaxes/isocron.markdown.tmLanguage.json", "snippets/isocron.json",
+         "icon.png", "icons/isocron-file-light.svg", "icons/isocron-file-dark.svg"]
 TYPES = {".json": "application/json", ".js": "application/javascript", ".md": "text/markdown",
-         ".txt": "text/plain", ".vsixmanifest": "text/xml", ".xml": "text/xml"}
+         ".txt": "text/plain", ".vsixmanifest": "text/xml", ".xml": "text/xml", ".png": "image/png",
+         ".svg": "image/svg+xml"}
 
 
 def manifest(p):
@@ -59,6 +61,7 @@ def manifest(p):
               '    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />',
               '    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />',
               '    <Asset Type="Microsoft.VisualStudio.Services.Content.License" Path="extension/LICENSE.txt" Addressable="true" />',
+              '    <Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/%s" Addressable="true" />' % p["icon"],
               "  </Assets>",
               "</PackageManifest>"]
     return "\n".join(lines) + "\n"
@@ -78,7 +81,8 @@ def check(p):
         if f.endswith(".json"):
             with open(os.path.join(HERE, f), encoding="utf-8") as h:
                 json.load(h)
-    named = [p["main"]] + [l["configuration"] for l in p["contributes"]["languages"]]
+    named = [p["main"], p["icon"]] + [l["configuration"] for l in p["contributes"]["languages"]]
+    named += [i for l in p["contributes"]["languages"] for i in l.get("icon", {}).values()]
     named += [g["path"] for g in p["contributes"]["grammars"]] + [s["path"] for s in p["contributes"]["snippets"]]
     packed = [os.path.normpath(x) for x in FILES]
     for f in named:

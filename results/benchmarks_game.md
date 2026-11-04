@@ -21,8 +21,8 @@
 🟢 Isocron the fastest · 🟡 within 5 % of the fastest · 🔴 behind. Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$. The fastest of the four other languages in **bold**, or Isocron when it is faster.
 
 ```mermaid
-xychart-beta
-    title "Isocron time / the fastest of C, C++, Rust and Go (below 1: Isocron is faster)"
+xychart-beta horizontal
+    title "Isocron time / fastest of C, C++, Rust, Go (below 1: faster)"
     x-axis ["binary-trees", "fannkuch-redux", "fasta", "k-nucleotide", "mandelbrot", "n-body", "pidigits", "regex-redux", "reverse-complement", "spectral-norm"]
     y-axis "ratio" 0 --> 1.2
     bar [0.77, 0.67, 0.02, 0.91, 0.80, 0.98, 0.72, 0.38, 0.91, 0.95]

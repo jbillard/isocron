@@ -130,7 +130,7 @@ def main():
             chart.append((md.name(bench), r))
     out.append("")
     out.append(md.LEGEND + " The fastest of the four other languages in **bold**, or Isocron when it is faster.\n")
-    out.append(md.bar_chart("Isocron time / the fastest of C, C++, Rust and Go (below 1: Isocron is faster)",
+    out.append(md.bar_chart("Isocron time / fastest of C, C++, Rust, Go (below 1: faster)",
                             [c[0] for c in chart], [c[1] for c in chart], "ratio", "%.1f" % (max(c[1] for c in chart) * 1.1 + 0.1), [1.0] * len(chart)))
     out.append("")
     out.append("<details>\n<summary><b>Against the programs without intrinsics nor libraries</b>: the fastest of the four "
@@ -196,7 +196,19 @@ def readme(rows, fl, commit, decision, ahead, md):
         lines.append("| %s | %s | %s ms | %s %s ms | %s | %s | %s |" % (
             md.status(r), md.name(bench), ms(iso), best[0], ms(best[2]), md.vs_fastest(r),
             "%.1f ms" % (f * 1000) if f else "–", md.vs_floor(iso / 1000 / f) if f else "–"))
-    lines += ["", md.LEGEND, "", end]
+    lines += ["", md.LEGEND, ""]
+    # the same ratios drawn, an image written beside (docs/media/benchmarks.svg)
+    shown = [(md.name(bench), iso / best[2]) for bench, iso, cells, best, plain in rows if iso and best]
+    if shown:
+        media = os.path.join(HERE, "..", "..", "docs", "media")
+        os.makedirs(media, exist_ok=True)
+        with open(os.path.join(media, "benchmarks.svg"), "w") as h:
+            h.write(md.ratio_svg("Time of Isocron / time of the fastest other program",
+                                 "Lower is faster: 0.5 is twice as fast. Commit %s, 4 threads, Intel Xeon E-2388G." % commit,
+                                 shown, "the fastest of C, C++, Rust, Go"))
+        lines += ['<p align="center"><img src="docs/media/benchmarks.svg" width="720" '
+                  'alt="Time of Isocron over the time of the fastest other program, for each of the ten programs"></p>', ""]
+    lines += [end]
     a = text.index(begin)
     b = text.index(end) + len(end)
     open(path, "w").write(text[:a] + "\n".join(lines) + text[b:])
