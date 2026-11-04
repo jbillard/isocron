@@ -5722,3 +5722,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   and longer, characters of several bytes, needles of 1, 2 to 16 and more
   bytes, overlapping candidates) and `literals_given_to_tail_calls` (a
   million calls, valgrind).
+- **D302 — Case, padding and replacement written once (2026-11-04).** The
+  audit of the strings after D301: `replaceAll` of one byte took 825.43 ns
+  for a line of 60 bytes against 48.82 in C, `toUpperCase` 186.64 against
+  10.48, `padStart` 61.64 against 1.99. Their strings were written through
+  `fmt` (`write_char` at each character, into a `String` that grows), and
+  `replace`/`replaceAll` of a text went through the engine of patterns,
+  the text escaped into a pattern compiled at each call. Now an ASCII text
+  is mapped byte by byte into a string of its length; a fill of one byte
+  pads into a string of the final length; a replacement without `$`
+  patterns of a non-empty text finds its places by `find_bytes` (D301) and
+  writes the string of its final length once. The other cases as before
+  (Unicode, longer fills, `$` patterns, an empty text: the code of the
+  interpreter). On one CPU, medians of 5 runs of 200 rounds: `replaceAll`
+  825.43 -> 55.10 ns, `toUpperCase` 186.64 -> 18.29, `padStart` (after a
+  `slice`) 61.64 -> 20.57. The ten programs, alternated rounds: between
+  -0.82 % and +1.09 %, every interval across 0. Test
+  `direct_writes_of_case_padding_and_replacement` (ASCII and Unicode,
+  fills of one byte and longer ones, replacements without and with `$`,
+  of an empty text, at the ends, overlapping; valgrind).

@@ -1547,7 +1547,45 @@ pub unsafe extern "C" fn isc_str_test(p: *const u8, n: i64, q: *const u8, m: i64
 #[no_mangle]
 pub unsafe extern "C" fn isc_replace_all(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64, r: *const u8, k: i64, all: i32) {
     let (s, from, to) = (text(p, n), text(q, m), text(r, k));
+    // a text without `$` patterns for a non-empty text (D302): its places
+    // found by `find_bytes`, the string of their final length written once
+    // (through the engine of patterns, 848 ns for a line of 60 bytes)
+    if !from.is_empty() && !to.contains('$') {
+        let (b, f) = (s.as_bytes(), from.as_bytes());
+        let mut at = alloc::vec::Vec::new();
+        let mut i = 0;
+        while let Some(j) = sem::find_bytes(&b[i..], f) {
+            at.push(i + j);
+            i += j + f.len();
+            if all == 0 {
+                break;
+            }
+        }
+        let len = b.len() - at.len() * f.len() + at.len() * to.len();
+        *out = made(len, |d| {
+            let (mut from_s, mut to_d) = (0, 0);
+            for &j in &at {
+                d[to_d..to_d + j - from_s].write_copy_of_slice(&b[from_s..j]);
+                to_d += j - from_s;
+                d[to_d..to_d + to.len()].write_copy_of_slice(to.as_bytes());
+                to_d += to.len();
+                from_s = j + f.len();
+            }
+            d[to_d..].write_copy_of_slice(&b[from_s..]);
+        });
+        return;
+    }
     *out = written(&|w| sem::replace_text(w, s, from, to, all != 0));
+}
+
+/// A new string of `len` bytes, every one of them written by `fill` (D302).
+fn made(len: usize, fill: impl FnOnce(&mut [core::mem::MaybeUninit<u8>])) -> IscStr {
+    let p = isc_alloc(len as i64);
+    // SAFETY: a block of `len` bytes of this call alone, written by `fill`
+    // before it is read (as bytes that may not be initialized)
+    let d = unsafe { core::slice::from_raw_parts_mut(p as *mut core::mem::MaybeUninit<u8>, len) };
+    fill(d);
+    IscStr { ptr: p, len: len as i64 }
 }
 
 // regular expressions (D157): the code of isc-runtime-core
@@ -1971,12 +2009,38 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
 #[no_mangle]
 pub unsafe extern "C" fn isc_to_case(out: *mut IscStr, p: *const u8, n: i64, upper: i32) {
     let s = text(p, n);
+    // an ASCII text (D302): each byte mapped, the string of the same length
+    // (a character at a time through `fmt`, 187 ns for 60 bytes)
+    if s.is_ascii() {
+        let b = s.as_bytes();
+        *out = made(b.len(), |d| {
+            for (o, &c) in d.iter_mut().zip(b) {
+                o.write(if upper != 0 { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() });
+            }
+        });
+        return;
+    }
     *out = written(&|w| sem::to_case(w, s, upper != 0));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
     let (s, fill) = (text(p, n), text(q, m));
+    // a fill of one byte (D302): the string of `len` bytes, the fill then
+    // the text or the text then the fill (a character at a time through
+    // `fmt`, 67 ns for 20 bytes)
+    if fill.len() == 1 && len > s.len() as i64 {
+        let (b, c, total) = (s.as_bytes(), fill.as_bytes()[0], len as usize);
+        let gap = total - b.len();
+        *out = made(total, |d| {
+            let (t, f) = if start != 0 { (gap, 0) } else { (0, b.len()) };
+            d[t..t + b.len()].write_copy_of_slice(b);
+            for o in &mut d[f..f + gap] {
+                o.write(c);
+            }
+        });
+        return;
+    }
     *out = written(&|w| sem::pad(w, s, len, fill, start != 0));
 }
 

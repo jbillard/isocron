@@ -676,3 +676,23 @@ action main(args: string[k]): i32 {
     let want = interp_ok(src, &["1000000"]);
     agree(src, "str_literal_tail_calls", &["1000000"], &want);
 }
+
+/// D302: the case of ASCII texts (each byte mapped) and of others (Unicode),
+/// padding by a fill of one byte (the string written once) and by longer
+/// fills, the replacement of a text without `$` patterns (its places found,
+/// the string written once) and with them: none, one, several, overlapping,
+/// at both ends, longer, shorter and empty replacements. The text of the
+/// interpreter, nothing lost (valgrind).
+#[test]
+fn direct_writes_of_case_padding_and_replacement() {
+    let src = r#"action main(args: string[k]): i32 {
+    const texts = ["", "abc", "Hello, World 42", "straße é", "aaaa", "abababab", "xabx"];
+    print(texts.map((s) => s.toUpperCase() + "|" + s.toLowerCase()).join(";"));
+    print(texts.map((s) => s.padStart(0, "-") + "|" + s.padStart(3, "0") + "|" + s.padStart(12, "*") + "|" + s.padEnd(12, ".") + "|" + s.padStart(9, "ab") + "|" + s.padEnd(10, "é")).join(";"));
+    print(texts.map((s) => s.replace("a", "<>") + "|" + s.replaceAll("a", "") + "|" + s.replaceAll("ab", "xyz") + "|" + s.replaceAll("aa", "b") + "|" + s.replace("x", "") + "|" + s.replaceAll("é", "e") + "|" + s.replaceAll("a", "[$&]") + "|" + s.replaceAll("", "_")).join(";"));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    agree(src, "str_direct_writes", &[], &want);
+}
