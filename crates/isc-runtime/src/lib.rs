@@ -1406,6 +1406,34 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> alloc::vec::Vec<(usize, usize)> {
     re.merge(s, &starts, &found)
 }
 
+/// `n` bytes from `src` to `dst` (D280): a few bytes, as most texts between
+/// the matches of a replacement and its replacements are (regex-redux: 3.5
+/// million matches 14 bytes apart), by two moves that overlap, without a
+/// call; a call of the copy of the system from 32 bytes on.
+#[inline(always)]
+unsafe fn copy_short(src: *const u8, dst: *mut u8, n: usize) {
+    use core::ptr::{read_unaligned as rd, write_unaligned as wr};
+    if n >= 32 {
+        core::ptr::copy_nonoverlapping(src, dst, n);
+    } else if n >= 16 {
+        let (a, b) = (rd(src as *const u128), rd(src.add(n - 16) as *const u128));
+        wr(dst as *mut u128, a);
+        wr(dst.add(n - 16) as *mut u128, b);
+    } else if n >= 8 {
+        let (a, b) = (rd(src as *const u64), rd(src.add(n - 8) as *const u64));
+        wr(dst as *mut u64, a);
+        wr(dst.add(n - 8) as *mut u64, b);
+    } else if n >= 4 {
+        let (a, b) = (rd(src as *const u32), rd(src.add(n - 4) as *const u32));
+        wr(dst as *mut u32, a);
+        wr(dst.add(n - 4) as *mut u32, b);
+    } else if n > 0 {
+        *dst = *src;
+        *dst.add(n / 2) = *src.add(n / 2);
+        *dst.add(n - 1) = *src.add(n - 1);
+    }
+}
+
 /// From this many bytes of text on, a replacement writes its result in
 /// parallel (D279).
 const REPLACE_PARALLEL_MIN: usize = 1 << 20;
@@ -1464,9 +1492,9 @@ unsafe fn replace_parallel(s: &str, to: &str, bounds: &[(usize, usize)]) -> Opti
             let mut o = c.out.add(*c.at.add(k));
             for i in i0..i1 {
                 let (a, b) = *c.bounds.add(i);
-                core::ptr::copy_nonoverlapping(c.s.add(last), o, a - last);
+                copy_short(c.s.add(last), o, a - last);
                 o = o.add(a - last);
-                core::ptr::copy_nonoverlapping(c.to, o, c.tn);
+                copy_short(c.to, o, c.tn);
                 o = o.add(c.tn);
                 last = b;
             }

@@ -560,6 +560,35 @@ fn replacements_of_large_texts_cut_by_bytes() {
     }
 }
 
+/// D280: the texts between the matches and the replacements copied by
+/// moves that overlap below 32 bytes: every length of text from 0 to 64
+/// between the matches, replacements of 0 to 33 bytes, in a large text
+/// (written in parallel). The interpreter's texts, 1 and 4 threads.
+#[test]
+fn short_copies_of_a_replacement() {
+    let src = "action main(args: string[k]): i32 {
+    const unit = map(iota(65), (n) => \"acgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgtacgt\".slice(0, n) + \"Q\").join(\"\");
+    const s = unit.repeat(500);
+    print(s.replace(/Q/g, \"\"));
+    print(s.replace(/Q/g, \"a\"));
+    print(s.replace(/Q/g, \"<2>\"));
+    print(s.replace(/Q/g, \"abcdefg\"));
+    print(s.replace(/Q/g, \"abcdefgh\"));
+    print(s.replace(/Q/g, \"abcdefghijklmno\"));
+    print(s.replace(/Q/g, \"abcdefghijklmnop\"));
+    print(s.replace(/Q/g, \"abcdefghijklmnopqrstuvwxyz012345\"));
+    print(s.replace(/Q/g, \"abcdefghijklmnopqrstuvwxyz0123456\"));
+    return 0;
+}
+";
+    let bin = compile(src, "short_copies");
+    let want = interp_ok(src, &[]);
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert!(r.code == 0 && r.stdout == want, "{} threads: {} bytes, {} expected: {}", t, r.stdout.len(), want.len(), r.stderr);
+    }
+}
+
 /// D237: an alternation of simple shapes of other lengths and kinds, at
 /// the start of a line or anywhere, searched by masks: at a place the first
 /// alternative that matches (`a|ab` matches `a`), as the automaton of the

@@ -5100,3 +5100,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Test `replacements_of_large_texts_cut_by_bytes` (few matches, a match
   longer than a part across the cuts, empty matches, `$&`; 1 to 16
   threads).
+- **D280 — The short copies of a replacement without a call (2026-11-04).**
+  The last three replacements of regex-redux have 3522378, 3544465 and
+  1690880 matches in about 50 MB, about 14 bytes apart: the parts of a
+  replacement written in parallel (D236) called the copy of the system
+  twice a match (the text before it, then its replacement of 1 to 3
+  bytes), its call and its dispatch on the size costing more than the
+  bytes. Below 32 bytes the copy is now two moves that overlap (of 16, 8
+  or 4 bytes, or three bytes), inline; from 32 bytes on, the copy of the
+  system. The same bytes. In alternation, best of 9, 4 threads: regex-redux
+  192.5 ms -> 182.7 ms. Test `short_copies_of_a_replacement` (every length
+  of text from 0 to 64 between the matches, replacements of 0 to 33 bytes,
+  in a text written in parallel; 1 and 4 threads).
