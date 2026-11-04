@@ -7,6 +7,7 @@ members = [
     "crates/isc-codegen",
     "crates/isc-runtime-core",
     "crates/iscc",
+    "crates/isc-lsp",
 ]
 resolver = "2"
 # built by crates/iscc/build.rs with panic = "abort"

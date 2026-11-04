@@ -3533,8 +3533,9 @@ fn certain_panics(e: &TExpr) -> Result<()> {
     res
 }
 
-/// Each direct sub-expression of `e`.
-fn for_each_child(e: &TExpr, f: &mut dyn FnMut(&TExpr)) {
+/// Each direct sub-expression of `e` (also for the tools that read the
+/// typed tree, such as the language server).
+pub fn for_each_child(e: &TExpr, f: &mut dyn FnMut(&TExpr)) {
     match &e.kind {
         TExprKind::Lit(_) | TExprKind::Local(_) | TExprKind::SizeVal(_) | TExprKind::FnRef { .. } | TExprKind::PrimRef(_) | TExprKind::OpRef(_) => {}
         TExprKind::Tuple(es) | TExprKind::Array(es) | TExprKind::Construct { args: es, .. } => es.iter().for_each(f),

@@ -46,6 +46,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "isc-lsp"
+version = "0.2.0"
+dependencies = [
+ "isc-syntax",
+ "isc-types",
+]
+
+[[package]]
 name = "isc-runtime-core"
 version = "0.2.0"
 dependencies = [

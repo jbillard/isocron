@@ -104,6 +104,43 @@ exports.run = async function () {
         if (where !== "main.isc:3") throw new Error(where);
         return where;
     });
+    // the text of the hovers at the first `word` of the line that holds `text`
+    const hoverAt = async (name, text, word) => {
+        const d = await open(name);
+        const line = d.getText().split("\n").findIndex((l) => l.includes(text));
+        const col = d.lineAt(line).text.indexOf(word, d.lineAt(line).text.indexOf(text)) + 1;
+        const hs = (await vscode.commands.executeCommand("vscode.executeHoverProvider", d.uri, new vscode.Position(line, col))) || [];
+        return hs.map((h) => h.contents.map((c) => (typeof c === "string" ? c : c.value)).join("\n")).join("\n");
+    };
+    await step("the hover of a function of an imported module: its signature, its comment", async () => {
+        const t = await hoverAt("main.isc", "print(area(", "area");
+        if (!t.includes("function area(r: f64): f64") || !t.includes("what it exports is imported")) throw new Error(t);
+        return "function area(r: f64): f64 + its comment";
+    });
+    await step("the hover of a parameter: its type", async () => {
+        const t = await hoverAt("main.isc", "return 2.0 * x", "x");
+        if (!t.includes("x: f64") || !t.includes("parameter")) throw new Error(t);
+        return "x: f64";
+    });
+    await step("the hover of a function of the standard library: its documentation", async () => {
+        const t = await hoverAt("main.isc", "print(area(", "print");
+        if (!t.includes("`print(") || !t.includes("docs/language.md#")) throw new Error(t);
+        return t.split("\n")[0];
+    });
+    await step("the hover of a text typed, not saved: the type of a new constant", async () => {
+        const d = await open("main.isc");
+        const line = d.getText().split("\n").findIndex((l) => l.includes("return 2.0 * x"));
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(d.uri, new vscode.Position(line, 0), "    const q = x * 3.0;\n");
+        await vscode.workspace.applyEdit(edit);
+        try {
+            const t = await hoverAt("main.isc", "const q = x", "q");
+            if (!d.isDirty || !t.includes("q: f64")) throw new Error(t);
+            return "q: f64 (unsaved)";
+        } finally {
+            await vscode.commands.executeCommand("workbench.action.files.revert");
+        }
+    });
     await step("the IR of a file", async () => {
         await open("ok.isc");
         await vscode.commands.executeCommand("isocron.showIr");

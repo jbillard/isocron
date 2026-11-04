@@ -2387,3 +2387,35 @@ iscc completions bash|zsh|fish              the completion of the shell
   accumulators for `reduce`; results depend on V, so such a program is not a
   conforming Isocron program; for `run`, it comes right after `run`) and
   `--isa native|sse|avx|avx2|avx512` (instruction set of `build`).
+
+## Editors: the language server `isc-lsp`
+
+`isc-lsp`, beside `iscc` in the archives of a release (built from
+`crates/isc-lsp`), is the language server of Isocron: an editor that speaks
+the Language Server Protocol starts it and talks to it on its standard
+input and output. It reads a program as `iscc check` does (the same parser,
+checker and modules), on the text as the editor has it, saved or not, and
+gives:
+
+* the error of the checker at its place, while the text is typed (an error
+  in an imported module is put on that module);
+* on hover, the type of a name (a constant, a parameter of a function or of
+  a lambda, a size, a field: `m: f64`), the signature of a function where it
+  is declared or called and the comments `//` above its declaration, the
+  documentation of a function of the standard library (from this file,
+  built into the server) with a link to its section;
+* the definition of a local or of a function, also in an imported module;
+* the outline of a file: its functions, actions and types.
+
+The compiler has none of this: `iscc` compiles, `isc-lsp` serves the
+editors, from the same libraries.
+
+* **VS Code**: the extension of [`tools/vscode`](../tools/vscode/README.md)
+  starts the `isc-lsp` beside the compiler it uses, for the hover.
+* **Neovim** (0.10 or later): [`tools/neovim/isocron.lua`](../tools/neovim/isocron.lua)
+  in `~/.config/nvim/plugin/` (`isc-lsp` from the PATH, or its path in
+  `vim.g.isocron_lsp`); `K` shows the hover, `CTRL-]` goes to a definition.
+* **Another editor** (Helix, Zed, Emacs, Sublime Text, Kate...): the command
+  `isc-lsp`, no argument, for the files `*.isc` (the language `isocron`).
+  The server is tried in VS Code and Neovim (`tools/vscode/test`,
+  `tools/neovim/test`).

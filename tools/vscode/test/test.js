@@ -84,6 +84,24 @@ async function libTests() {
         assert.strictEqual(lib.outputPath("/a/nbody.isc", false), "/a/nbody");
         assert.strictEqual(lib.outputPath("C:\\a\\nbody.isc", true), "C:\\a\\nbody.exe");
     });
+    await test("the messages of the language server, in chunks of any size", () => {
+        const msgs = [{ jsonrpc: "2.0", id: 1, result: { contents: { kind: "markdown", value: "`é` 😀" } } }, { jsonrpc: "2.0", method: "x", params: {} }];
+        const bytes = Buffer.concat(msgs.map(lib.encodeMessage));
+        assert.ok(lib.encodeMessage(msgs[0]).toString("utf8").startsWith("Content-Length: " + Buffer.byteLength(JSON.stringify(msgs[0])) + "\r\n\r\n"));
+        for (const size of [1, 7, bytes.length]) {
+            const got = [];
+            const r = new lib.MessageReader((m) => got.push(m));
+            for (let i = 0; i < bytes.length; i += size) r.push(bytes.slice(i, i + size));
+            assert.deepStrictEqual(got, msgs, "chunks of " + size);
+        }
+    });
+    await test("the path of the language server", () => {
+        assert.strictEqual(lib.serverPath("", "iscc", "linux"), "isc-lsp");
+        assert.strictEqual(lib.serverPath("", "/opt/isocron/iscc", "linux"), "/opt/isocron/isc-lsp");
+        assert.strictEqual(lib.serverPath("", "C:\\isocron\\iscc.exe", "win32"), "C:\\isocron\\isc-lsp.exe");
+        assert.strictEqual(lib.serverPath("", "iscc.exe", "win32"), "isc-lsp.exe");
+        assert.strictEqual(lib.serverPath("/x/my-lsp", "/opt/isocron/iscc", "linux"), "/x/my-lsp");
+    });
     await test("the folder of the workspace in the setting of the compiler", () => {
         assert.strictEqual(lib.expandFolder("${workspaceFolder}/target/release/iscc", "/w"), "/w/target/release/iscc");
         assert.strictEqual(lib.expandFolder("iscc", "/w"), "iscc");

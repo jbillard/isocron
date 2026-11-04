@@ -1,6 +1,7 @@
 //! Isocron type checker (POC subset).
 
 pub mod check;
+pub mod modules;
 pub mod tast;
 pub mod types;
 

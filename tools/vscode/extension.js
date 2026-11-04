@@ -2,8 +2,11 @@
 // The extension of VS Code for Isocron (D267): the errors of `iscc check` in
 // the editor when a file is opened or saved, the commands that check, run,
 // build and show the IR of a file, the outline of a file and the definition
-// of a name (in the file and in the modules it imports). The compiler is
-// `iscc` from the PATH, or the setting `isocron.iscc`.
+// of a name (in the file and in the modules it imports); the hover from the
+// language server `isc-lsp` (D269: the type of a name, the comments of a
+// declaration, the documentation of the standard library). The compiler is
+// `iscc` from the PATH, or the setting `isocron.iscc`; the server, the
+// `isc-lsp` beside it, or the setting `isocron.languageServer`.
 
 const vscode = require("vscode");
 const cp = require("child_process");
@@ -263,6 +266,118 @@ const definitions = {
     },
 };
 
+// ---- the language server (D269): the hover, from `isc-lsp`, the server of
+// every editor; the other features of this extension work without it
+
+let server = null;
+
+function folder() {
+    return ((vscode.workspace.workspaceFolders || [])[0] || {}).uri;
+}
+
+/** `isc-lsp` started once (again after a crash or a change of the settings). */
+function startServer() {
+    if (server) return server;
+    const ws = folder();
+    const cmd = lib.serverPath(lib.expandFolder(config().get("languageServer") || "", ws && ws.fsPath), compiler(), process.platform);
+    const s = { cmd, pending: new Map(), next: 1, opened: new Map(), dead: false, initialized: false };
+    server = s;
+    const gone = (why) => {
+        if (s.dead) return;
+        s.dead = true;
+        channel.appendLine(`isc-lsp (${cmd}): ${why}`);
+        for (const done of s.pending.values()) done(null);
+        s.pending.clear();
+        // a server that worked starts again at the next hover; one that
+        // could not start, at a change of the settings
+        if (s.initialized && server === s) server = null;
+    };
+    try {
+        s.proc = cp.spawn(cmd, [], { cwd: ws && ws.fsPath, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e) {
+        gone(e.message);
+        s.ready = Promise.resolve(false);
+        return s;
+    }
+    const reader = new lib.MessageReader((m) => {
+        // the answers; the notifications (its diagnostics) are those of iscc check here
+        if (m.method === undefined && s.pending.has(m.id)) {
+            const done = s.pending.get(m.id);
+            s.pending.delete(m.id);
+            done(m.error ? null : m.result);
+        }
+    });
+    s.proc.stdout.on("data", (c) => reader.push(c));
+    s.proc.stderr.on("data", (c) => channel.append(String(c)));
+    s.proc.stdin.on("error", () => {});
+    s.proc.on("error", (e) => gone(e.code === "ENOENT" ? "not found: the hover needs isc-lsp, beside iscc or on the PATH (setting isocron.languageServer)" : e.message));
+    s.proc.on("exit", (code) => gone("exited with the code " + code));
+    s.send = (msg) => {
+        if (!s.dead) s.proc.stdin.write(lib.encodeMessage(msg));
+    };
+    s.request = (method, params) =>
+        new Promise((resolve) => {
+            if (s.dead) return resolve(null);
+            const id = s.next++;
+            const timer = setTimeout(() => {
+                s.pending.delete(id);
+                resolve(null);
+            }, 10000);
+            s.pending.set(id, (r) => {
+                clearTimeout(timer);
+                resolve(r);
+            });
+            s.send({ jsonrpc: "2.0", id, method, params });
+        });
+    s.notify = (method, params) => s.send({ jsonrpc: "2.0", method, params });
+    s.ready = s.request("initialize", { processId: process.pid, rootUri: ws ? ws.toString() : null, capabilities: {} }).then((r) => {
+        if (!r) return false;
+        s.initialized = true;
+        s.notify("initialized", {});
+        return true;
+    });
+    return s;
+}
+
+function stopServer() {
+    const s = server;
+    server = null;
+    if (!s || s.dead) return Promise.resolve();
+    const kill = () => {
+        if (!s.dead) s.proc.kill();
+    };
+    return Promise.race([s.request("shutdown", null), new Promise((r) => setTimeout(r, 2000))]).then(() => {
+        s.notify("exit", null);
+        setTimeout(kill, 1000);
+    });
+}
+
+/** The text of `document` given to the server, as the editor has it (saved or not). */
+function sync(s, document) {
+    const uri = document.uri.toString();
+    const v = s.opened.get(uri);
+    if (v === undefined) {
+        s.notify("textDocument/didOpen", { textDocument: { uri, languageId: "isocron", version: document.version, text: document.getText() } });
+    } else if (v !== document.version) {
+        s.notify("textDocument/didChange", { textDocument: { uri, version: document.version }, contentChanges: [{ text: document.getText() }] });
+    }
+    s.opened.set(uri, document.version);
+    return uri;
+}
+
+const hovers = {
+    async provideHover(document, position) {
+        const s = startServer();
+        if (!(await s.ready)) return undefined;
+        const uri = sync(s, document);
+        const r = await s.request("textDocument/hover", { textDocument: { uri }, position: { line: position.line, character: position.character } });
+        if (!r || !r.contents) return undefined;
+        const md = new vscode.MarkdownString(typeof r.contents === "string" ? r.contents : r.contents.value);
+        const range = r.range && new vscode.Range(r.range.start.line, r.range.start.character, r.range.end.line, r.range.end.character);
+        return new vscode.Hover(md, range);
+    },
+};
+
 function activate(context) {
     diagnostics = vscode.languages.createDiagnosticCollection("isocron");
     channel = vscode.window.createOutputChannel("Isocron");
@@ -277,14 +392,19 @@ function activate(context) {
         vscode.commands.registerCommand("isocron.showIr", commandShowIr),
         vscode.languages.registerDocumentSymbolProvider(selector, symbols),
         vscode.languages.registerDefinitionProvider(selector, definitions),
+        vscode.languages.registerHoverProvider(selector, hovers),
         vscode.workspace.onDidSaveTextDocument((d) => {
             if (config().get("checkOnSave")) check(d);
         }),
         vscode.workspace.onDidOpenTextDocument((d) => {
             if (config().get("checkOnOpen")) check(d);
         }),
+        vscode.workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration("isocron.iscc") || e.affectsConfiguration("isocron.languageServer")) stopServer();
+        }),
         vscode.workspace.onDidCloseTextDocument((d) => {
             if (!isIsocron(d)) return;
+            if (server && server.opened.delete(d.uri.toString())) server.notify("textDocument/didClose", { textDocument: { uri: d.uri.toString() } });
             for (const f of reported.get(d.uri.fsPath) || []) diagnostics.delete(vscode.Uri.file(f));
             reported.delete(d.uri.fsPath);
         })
@@ -292,6 +412,8 @@ function activate(context) {
     if (config().get("checkOnOpen")) vscode.workspace.textDocuments.forEach((d) => check(d));
 }
 
-function deactivate() {}
+function deactivate() {
+    return stopServer();
+}
 
 module.exports = { activate, deactivate };

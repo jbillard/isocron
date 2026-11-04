@@ -179,7 +179,12 @@ iscc build hello.isc --target wasm32-wasi      # hello.wasm
 * [`examples/benchmarks_game`](examples/benchmarks_game): the ten programs of
   the Benchmarks Game.
 * **VS Code**: [`tools/vscode`](tools/vscode/README.md), colors, the errors of
-  `iscc check` in the editor, run, build, the IR, outline and definitions.
+  `iscc check` in the editor, the types and the documentation on hover, run,
+  build, the IR, outline and definitions.
+* **Any editor**: `isc-lsp`, the language server (the errors as the text is
+  typed, the types and the documentation on hover, the definitions, the
+  outline), [for Neovim](tools/neovim/isocron.lua) and the others
+  ([editors](docs/language.md#editors-the-language-server-isc-lsp)).
 * **The shell**: `source <(iscc completions bash)` (or `zsh`, `fish`) completes
   the commands, their options and the `.isc` files.
 
@@ -287,9 +292,10 @@ bench/floor/run.sh > results/machine_floor.txt                                  
 | `crates/isc-runtime` | runtime of compiled programs, without the Rust standard library: its allocator, the thread pool, I/O actions, printing, clock, panics (its own workspace, built and embedded by `crates/iscc/build.rs`) |
 | `crates/isc-runtime-core` | texts, formatting, big integers and regular expressions shared by the runtime and the interpreter (`no_std`) |
 | `crates/iscc` | the `iscc` driver and the end-to-end tests |
+| `crates/isc-lsp` | the language server of the editors (`isc-lsp`): the parser and the checker as libraries, the protocol on stdio |
 | `examples` | the programs of the proof of concept (`poc`) and of the Benchmarks Game (`benchmarks_game`) |
 | `bench` | reference programs, the protocols, the floors of the machine (`bench/floor`) |
-| `tools` | `suite.py`: the complete suite in a few minutes; `release/`: the compilers and archives of a release, `publish.sh`; `vscode/`: the extension of VS Code |
+| `tools` | `suite.py`: the complete suite in a few minutes; `release/`: the compilers and archives of a release, `publish.sh`; `vscode/`: the extension of VS Code; `neovim/`: the configuration of Neovim |
 
 </details>
 

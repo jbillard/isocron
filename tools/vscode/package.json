@@ -1,7 +1,7 @@
 {
   "name": "isocron",
   "displayName": "Isocron",
-  "description": "The Isocron language: colors, the errors of iscc check in the editor, run, build, the IR, outline and definitions.",
+  "description": "The Isocron language: colors, the errors of iscc check in the editor, the types and the documentation on hover, run, build, the IR, outline and definitions.",
   "version": "0.2.0",
   "publisher": "isocron",
   "license": "MIT",
@@ -72,6 +72,12 @@
           "type": "boolean",
           "default": true,
           "description": "Check a file with `iscc check` when it is opened."
+        },
+        "isocron.languageServer": {
+          "type": "string",
+          "default": "",
+          "description": "The language server, for the hover (the type of a name, the documentation): empty for the `isc-lsp` beside the compiler (or from the PATH), else its path; `${workspaceFolder}` is the folder opened.",
+          "scope": "machine-overridable"
         },
         "isocron.buildArgs": {
           "type": "array",

@@ -2,7 +2,8 @@
 # The archives of a release (D249):
 #   package.sh VERSION ISCC_LINUX ISCC_WINDOWS OUT
 # OUT/isocron-VERSION-x86_64-linux.tar.gz and OUT/isocron-VERSION-x86_64-windows.zip,
-# each with the compiler, LICENSE, THIRD_PARTY_LICENSES.md and the texts of
+# each with the compiler, the language server (isc-lsp, beside the compiler
+# built by build_iscc.sh, D269), LICENSE, THIRD_PARTY_LICENSES.md and the texts of
 # the licenses, README.md, CHANGELOG.md, docs/language.md and the examples;
 # OUT/SHA256SUMS. The texts: $ISC_LLVM_SRC (llvm-project sources),
 # $ISC_MINGW_DIR (MinGW-w64, with its share/doc), $ISC_GLIBC_LICENSE (the
@@ -33,9 +34,11 @@ stage() {
 }
 d=$(stage linux)
 cp "$linux" "$d/iscc"
+cp "$(dirname "$linux")/isc-lsp" "$d/isc-lsp"
 tar -C "$out" -czf "$out/isocron-$v-x86_64-linux.tar.gz" "isocron-$v-x86_64-linux"
 d=$(stage windows)
 cp "$windows" "$d/iscc.exe"
+cp "$(dirname "$windows")/isc-lsp.exe" "$d/isc-lsp.exe"
 (cd "$out" && python3 -c "
 import os, sys, zipfile
 name = sys.argv[1]

@@ -9,7 +9,8 @@ ISCC_EXE as the compiler.
     windows.py VSCODE_ZIP ISCC_EXE
 
 VSCODE_ZIP: the "win32-x64-archive" of a version of VS Code (1.75 or later);
-ISCC_EXE: an iscc.exe (of a release, or built by tools/release/build_iscc.sh).
+ISCC_EXE: an iscc.exe (of a release, or built by tools/release/build_iscc.sh),
+with the isc-lsp.exe beside it, the language server (the hover).
 The machine: as for run.py (ISC_WINDOWS_SSH, ISC_WINDOWS_PORT,
 ISC_WINDOWS_KEY). The directory of a run is removed afterwards.
 """
@@ -82,6 +83,12 @@ def main():
                     with open(dst, "wb") as h:
                         h.write(z.read(n))
         shutil.copy(iscc, os.path.join(stage, "iscc.exe"))
+        # the language server beside it (the hover, D269), as in an archive
+        lsp = os.path.join(os.path.dirname(os.path.abspath(iscc)), "isc-lsp.exe")
+        if os.path.exists(lsp):
+            shutil.copy(lsp, os.path.join(stage, "isc-lsp.exe"))
+        else:
+            print("windows.py: no isc-lsp.exe beside %s: the steps of the hover fail" % iscc)
         for f in ["index.js", "run.ps1"]:
             shutil.copy(os.path.join(HERE, "integration", f), stage)
         shutil.copytree(os.path.join(HERE, "integration", "workspace"), os.path.join(stage, "workspace"))

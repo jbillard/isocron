@@ -4883,3 +4883,48 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `.isc` files for light and dark themes (`icons/`), packed by
     `package.py` (the types PNG and SVG, the icon among the assets of the
     manifest); tried again in VS Code on Windows, the 10 steps passed.
+- **D269 — The language server `isc-lsp`: the hover, the errors as the
+  text is typed, the definitions, the outline, for every editor
+  (2026-11-04).** Asked for: help on hover over the code, in the
+  extension of VS Code. A first version added `iscc hover FILE LINE
+  COLUMN` to the compiler, its JSON read by the extension only; not kept
+  (never pushed): a command of the compiler for the editors, and in
+  practice for VS Code alone. The standard way, the same for every editor,
+  is a language server, a program of its own (as rust-analyzer, gopls).
+  - `crates/isc-lsp`, the binary `isc-lsp`: the Language Server Protocol
+    on stdio (its JSON in `json.rs`: the workspace has no dependency for
+    it). It depends on `isc-syntax` and `isc-types` only: no code
+    generation, no runtime (`isc-lsp.exe` about 2 MB, `iscc.exe` about
+    114 MB). It reads a program as `iscc check` does: the loading of the
+    modules moved, unchanged, from `iscc` into `isc_types::modules`, so
+    that both load them the same way; `for_each_child` of the checker
+    public. The compiler `iscc` has no new command.
+  - What it gives, on the text as the editor has it (saved or not): the
+    error of the checker at its place (in an imported module: on that
+    module, cleared when it is gone); on hover, from the typed tree, the
+    type of a local or a parameter (of a function or of a lambda) where it
+    is declared or read, of a size, of a field (at its `.`), the signature
+    of a function where it is declared or called (at its `(`) or passed
+    as a value, with the comments `//` above its declaration (also in a
+    module), else the documentation of a function of the standard library
+    from `docs/language.md` built into the server (each row of a table
+    whose first cell writes a call, each section titled by a function: 69
+    names), with a link to its section; while the program does not check,
+    a declaration of the file by its name. The definition of a local or a
+    function (also in a module); the outline (functions, actions, types).
+    Positions in UTF-16 as the protocol counts; a panic of the checker on
+    a text being typed gives no answer, not a dead server.
+  - The editors: the extension of VS Code starts the `isc-lsp` beside the
+    compiler it uses (setting `isocron.languageServer`), for the hover
+    only, its client in `extension.js` (no npm); its other features stay
+    as they were, with `iscc`, also without the server. Neovim 0.10:
+    `tools/neovim/isocron.lua`. The archives of a release carry `isc-lsp`
+    beside `iscc` (`build_iscc.sh`, `package.sh`).
+  - Tests: `crates/isc-lsp/tests/lsp.rs` drives the server as an editor
+    does (15 places of a program and a module, the documentation, the
+    definitions, the outline, an error typed and fixed, a constant typed
+    and not saved, an error in a module, the end of the protocol);
+    `tools/neovim/test/run.sh`: 8 steps in Neovim 0.10.4 (Docker);
+    `tools/vscode/test/run.sh`: 42 tests; in VS Code on Windows (an
+    `iscc.exe` and an `isc-lsp.exe` of these sources), 14 steps, the
+    hovers among them.

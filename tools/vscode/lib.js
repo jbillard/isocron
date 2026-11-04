@@ -1,7 +1,10 @@
 "use strict";
 // The parts of the extension that do not need VS Code (tested by
 // test/test.js): the messages of `iscc check`, the declarations and the
-// imports of a file, the path of a program built, the arguments of a run.
+// imports of a file, the path of a program built, the arguments of a run,
+// the messages of the language server and its path.
+
+const path = require("path");
 
 /**
  * The diagnostics of the output of `iscc check FILE --color never`: lines
@@ -99,6 +102,54 @@ function declarations(text) {
     return out;
 }
 
+/** A message of the Language Server Protocol: its header, then its JSON. */
+function encodeMessage(msg) {
+    const body = Buffer.from(JSON.stringify(msg), "utf8");
+    return Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, "ascii"), body]);
+}
+
+/**
+ * The messages of a stream of the protocol, given in chunks of any size:
+ * `push(chunk)` calls `onMessage` with each complete one.
+ */
+class MessageReader {
+    constructor(onMessage) {
+        this.onMessage = onMessage;
+        this.buf = Buffer.alloc(0);
+    }
+    push(chunk) {
+        this.buf = Buffer.concat([this.buf, chunk]);
+        for (;;) {
+            const end = this.buf.indexOf("\r\n\r\n");
+            if (end < 0) return;
+            const m = /content-length:\s*(\d+)/i.exec(this.buf.slice(0, end).toString("ascii"));
+            const len = m ? Number(m[1]) : 0;
+            if (this.buf.length < end + 4 + len) return;
+            const body = this.buf.slice(end + 4, end + 4 + len).toString("utf8");
+            this.buf = this.buf.slice(end + 4 + len);
+            let msg;
+            try {
+                msg = JSON.parse(body);
+            } catch (e) {
+                continue;
+            }
+            this.onMessage(msg);
+        }
+    }
+}
+
+/**
+ * The language server: the setting `isocron.languageServer` when given,
+ * else the `isc-lsp` beside the compiler when it is a path, else `isc-lsp`
+ * from the PATH.
+ */
+function serverPath(setting, iscc, platform) {
+    if (setting) return setting;
+    const p = platform === "win32" ? path.win32 : path.posix;
+    const exe = platform === "win32" ? "isc-lsp.exe" : "isc-lsp";
+    return /[\\/]/.test(iscc || "") ? p.join(p.dirname(iscc), exe) : exe;
+}
+
 /** The modules a file imports: the texts of `from "..."` (`./geom`, `util`). */
 function imports(text) {
     const out = [];
@@ -129,4 +180,15 @@ function splitArgs(s) {
     return out;
 }
 
-module.exports = { parseDiagnostics, blankComments, declarations, imports, outputPath, expandFolder, splitArgs };
+module.exports = {
+    parseDiagnostics,
+    blankComments,
+    declarations,
+    imports,
+    outputPath,
+    expandFolder,
+    splitArgs,
+    encodeMessage,
+    MessageReader,
+    serverPath,
+};
