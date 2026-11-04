@@ -1,8 +1,6 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/isocron-logo-dark.svg">
-    <img src="docs/media/isocron-logo.svg" width="420" alt="Isocron">
-  </picture>
+  <img src="docs/media/isocron-logo.svg#gh-light-mode-only" width="420" alt="Isocron">
+  <img src="docs/media/isocron-logo-dark.svg#gh-dark-mode-only" width="420" alt="Isocron">
 </p>
 
 <p align="center">
