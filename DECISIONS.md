@@ -5541,3 +5541,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   -0.14 % and +0.03 %, every interval across 0. Test
   `lines_of_a_large_text_made_in_parallel` (also 40 MiB of lines, many
   spans and chunks for each thread, and 8 threads).
+- **D295 — The rounds of scatter of a grouping bounded together, larger
+  for few parts (2026-11-04).** Part 1 of the goal of 2026-11-04:
+  k-nucleotide after D294, 1048 ms, 3.9 times its floor. The variant of
+  the program with the 12-mers alone costs about 87 instructions and 27
+  cycles a key over the reading alone (`add_block` 41 instructions,
+  `count_round` 30, the keys 13.7). The traffic of memory measured by the
+  counters of the memory controllers: 6754 MiB read and 4295 MiB written
+  for the reading and the 12-mers against 3549 and 2694 MiB for the
+  reading alone, about 38 bytes a key: the lists of a round (2^20 entries
+  of 8 bytes a part, 32 MiB for 4 parts) do not stay in the L3 cache with
+  the tables of the lists (24 bytes a slot, 3.3 MB a part). Measured and
+  not kept: the table of the next list prefetched while one is counted
+  (527.2 -> 524.8 ms for the 12-mers, 539.6 -> 536.5 for the 18-mers);
+  the slots and their mask held in locals in `count_round` (525.6 -> 522.3,
+  537.4 -> 534.2); slots of 16 bytes, the key and the count in one word
+  (531.7 against 524.4 by rounds of 2^20, and still 752.9 by 2^17); one
+  table a part without scatter, grown at 60 % (612.5 and 615.2 ms); in a
+  separate program, the keys of each thread's quarter of the positions
+  into its own table (1019.8 ms) or each thread owning a quarter of the
+  keys, the keys exchanged by rounds between barriers (610.1 to 643.6 ms),
+  both slower than the scatter of the runtime with its keys made (about
+  295 ms a pass). The rounds measured (the 12-mers, the 18-mers, ms): 2^17
+  825.7 and 824.6, 2^18 667.7 and 668.6, 2^19 572.5 and 587.4, 2^20 523.0
+  and 538.1, 2^21 504.9 and 518.8, 2^22 495.2 and 508.7, 2^23 521.0 and
+  537.1: each round reads again the table of every list of its part, and
+  rounds of 64 MiB a part cost more in new pages than they save. The round
+  of a part is now `2^24 / parts` entries (128 MiB for all the parts
+  together, between 2^16 and 2^22 entries): 2^22 for 4 parts, 2^20 as
+  before for 16. At fixed frequency, alternated rounds, against D294:
+  k-nucleotide 1050076 -> 991264 µs (-5.74 % [-6.62 %, -4.95 %], 11
+  rounds), the nine others between -0.31 % and +0.42 %, every interval
+  across 0. Its peak of resident memory 1098740 -> 1297400 KiB. Test
+  `keys_scattered_by_their_hash` (also 40 million keys on 16 threads, 16
+  parts whose rounds end twice in each).

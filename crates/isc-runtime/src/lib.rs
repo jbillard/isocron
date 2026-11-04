@@ -2041,7 +2041,7 @@ pub extern "C" fn isc_groups_new(n: i64, parts: i64) -> *mut c_void {
     const GROUP_DIRECT_MIN: i64 = 1 << 16;
     let direct = n >= GROUP_DIRECT_MIN;
     // several tables at once: their large ones scattered (D253)
-    let tables: alloc::vec::Vec<sem::WordGroups> = (0..parts.max(1)).map(|_| sem::WordGroups::new_for(direct, n.max(0) as usize, parts > 1)).collect();
+    let tables: alloc::vec::Vec<sem::WordGroups> = (0..parts.max(1)).map(|_| sem::WordGroups::new_for(direct, n.max(0) as usize, parts > 1, parts.max(1) as usize)).collect();
     alloc::boxed::Box::into_raw(alloc::boxed::Box::new(GroupsState { tables })) as *mut c_void
 }
 

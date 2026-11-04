@@ -3651,21 +3651,25 @@ pub struct WordGroups {
     /// that fit with their index in 64 bits scattered (`Scatter`)
     scatter: Option<alloc::boxed::Box<Scatter>>,
     /// the keys of a chunk to hash, with their hashes and indices
+    /// the entries of a round of scatter (`new_for`)
+    round: usize,
     work: alloc::vec::Vec<(u64, u64, u32)>,
 }
 
 /// The keys a `WordGroups` scatters (D253): lists by the high bits of their
 /// hash, of `key << bits | index` in the order of the indices, in pieces
-/// reused from a round to the next; every ROUND entries, each list counted
-/// at once in the small table of its list (a few thousand entries into a
-/// table that stays in the L1 cache), the pieces then free for the next
-/// round.
+/// reused from a round to the next; at the end of each round of entries
+/// (`SCATTER_TOTAL`), each list counted at once in the small table of its
+/// list (a few thousand entries into a table that stays in the L1 cache),
+/// the pieces then free for the next round.
 pub struct Scatter {
     pieces: alloc::vec::Vec<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
     /// per list: the next entry of its last piece and its end (null: none)
     cursor: [(*mut u64, *mut u64); SCATTER_BUCKETS],
     spare: alloc::vec::Vec<alloc::vec::Vec<u64>>,
     entries: usize,
+    /// the entries of a round (`SCATTER_TOTAL`)
+    round: usize,
     bits: u32,
     /// the groups of each list
     tables: alloc::vec::Vec<ListTable>,
@@ -3741,16 +3745,24 @@ impl ListTable {
     }
 }
 
-/// The entries of a round of scatter (8 MB a part).
-const SCATTER_ROUND: usize = 1 << 20;
+/// The entries of the rounds of scatter of all the parts of a grouping
+/// together (128 MiB): each part's round `SCATTER_TOTAL / parts` entries,
+/// between SCATTER_ROUND_MIN and SCATTER_ROUND_MAX (D295: k-nucleotide on 4
+/// parts, the pass of the 12-mers 523.0 ms by rounds of 2^20 entries, 495.2
+/// ms by 2^22, 521.0 ms by 2^23; each round reads again the table of every
+/// list of the part, and the new pages of larger rounds cost more than that).
+pub const SCATTER_TOTAL: usize = 1 << 24;
+const SCATTER_ROUND_MIN: usize = 1 << 16;
+const SCATTER_ROUND_MAX: usize = 1 << 22;
 
 impl Scatter {
-    fn new(bits: u32) -> Scatter {
+    fn new(bits: u32, round: usize) -> Scatter {
         Scatter {
             pieces: (0..SCATTER_BUCKETS).map(|_| alloc::vec::Vec::new()).collect(),
             cursor: [(core::ptr::null_mut(), core::ptr::null_mut()); SCATTER_BUCKETS],
             spare: alloc::vec::Vec::new(),
             entries: 0,
+            round,
             bits,
             tables: (0..SCATTER_BUCKETS).map(|_| ListTable::new()).collect(),
         }
@@ -3769,7 +3781,7 @@ impl Scatter {
             self.cursor[b].0 = c.add(1);
         }
         self.entries += 1;
-        if self.entries == SCATTER_ROUND {
+        if self.entries == self.round {
             self.count_round();
         }
     }
@@ -3857,16 +3869,19 @@ impl WordGroups {
             index_bits: 0,
             scatter: None,
             work: alloc::vec::Vec::new(),
+            round: 1 << 20,
         }
     }
 
-    /// `new` for the indices below `n`; with `scatter`, its keys may be
-    /// scattered (D253) once its table is large (for several tables at
-    /// once: one table alone stays in the L3 cache).
-    pub fn new_for(direct: bool, n: usize, scatter: bool) -> WordGroups {
+    /// `new` for the indices below `n`, one of the tables of `parts` parts;
+    /// with `scatter`, its keys may be scattered (D253) once its table is
+    /// large (for several tables at once: one table alone stays in the L3
+    /// cache), by rounds of `SCATTER_TOTAL / parts` entries.
+    pub fn new_for(direct: bool, n: usize, scatter: bool, parts: usize) -> WordGroups {
         let mut g = Self::new(direct);
         let bits = usize::BITS - n.max(1).leading_zeros();
         g.index_bits = if bits <= 32 && scatter { bits } else { 0 };
+        g.round = (SCATTER_TOTAL / parts.max(1)).clamp(SCATTER_ROUND_MIN, SCATTER_ROUND_MAX);
         g
     }
 
@@ -4072,7 +4087,7 @@ impl WordGroups {
                         }
                         // a large table: the next keys scattered (D253)
                         if self.hashed > SCATTER_AFTER && self.scatter.is_none() && self.index_bits > 0 {
-                            self.scatter = Some(alloc::boxed::Box::new(Scatter::new(self.index_bits)));
+                            self.scatter = Some(alloc::boxed::Box::new(Scatter::new(self.index_bits, self.round)));
                         }
                         break;
                     }

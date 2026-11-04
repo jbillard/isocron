@@ -490,7 +490,7 @@ const GROUPS_SCATTERED: &str = r##"function key(i: i64): i64 {
 }
 
 action main(args: string[k]): i32 {
-    const n = 3000000;
+    const n = parseI64(args[0]);
     const ks = countBy(iota(n), key);
     const keys = ks.keys();
     const m = keys.length;
@@ -508,10 +508,12 @@ action main(args: string[k]): i32 {
 /// list; with small keys (counted by their value), negative ones (too large
 /// to fit with their index in 64 bits: kept in the tables) among them. The
 /// groups in the order of their first occurrence, their counts, on 1 and 4
-/// threads.
+/// threads; and 40 million keys on 16 threads, 16 parts whose rounds of
+/// 2^20 entries (D295) end twice in each.
 #[test]
 fn keys_scattered_by_their_hash() {
-    let n = 3_000_000i64;
+    let bin = compile(GROUPS_SCATTERED, "std_groups_scattered");
+    for (n, threads) in [(3_000_000i64, &[1, 4][..]), (40_000_000, &[16][..])] {
     let key = |i: i64| {
         let r = (i * 7919) % 200003;
         if i % 11 == 0 {
@@ -538,11 +540,11 @@ fn keys_scattered_by_their_hash() {
     let by_count: i64 = order.iter().enumerate().map(|(j, k)| (j as i64 % 97) * counts[k]).sum();
     let get = |k: i64| counts.get(&k).copied().unwrap_or(-1);
     let want = format!("{}\n[{}]\n{}\n{}\n[{}, {}, {}]\n", m, first6.join(", "), weighted, by_count, get(70000), get(-5), get(999));
-    let bin = compile(GROUPS_SCATTERED, "std_groups_scattered");
-    for t in [1, 4] {
-        let r = run_bin_threads(&bin, &[], Some(t));
+    for &t in threads {
+        let r = run_bin_threads(&bin, &[&n.to_string()], Some(t));
         assert_eq!(r.code, 0, "{}", r.stderr);
-        assert_eq!(r.stdout, want, "{} threads", t);
+        assert_eq!(r.stdout, want, "{} keys, {} threads", n, t);
+    }
     }
 }
 
