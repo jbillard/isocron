@@ -4980,3 +4980,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   lengths a multiple of the row or not, an element depending on one place
   of the row around each place of the vectors, 64-bit elements; 1, 3 and
   4 threads).
+- **D273 — A table read at a remainder copied with its period continued
+  (2026-11-04).** After D272 the line of ALU of fasta (`alu[i % 287]`,
+  `i` consecutive in the 32 lanes) still crossed the end of its table in
+  about 31 of 287 vectors, each then the general code of D229 (a gather of
+  32 lanes and their checks). Before a vector loop, each table read at
+  `x % c` in its body (an array of scalars bound outside it, c a literal of
+  at least the lanes and at most 4096: the copy is on the stack, once per
+  loop) is copied with its first `w - 1` elements after its `c` when it
+  has at least `c` elements; every vector of consecutive `x >= 0` then
+  reads its lanes by one load from the remainder of its first lane. A
+  table shorter than c, or a negative `x`, takes the code of before (its
+  panic). At fixed frequency, best of 9, 4 threads: fasta 14.17 ms ->
+  11.21 ms (469 -> 407 million instructions, 51.7 -> 39.0 ms of CPU); the
+  same output. Test `tables_read_at_a_remainder_are_copied_with_their_period`
+  (bytes in lines as fasta, `f64`, booleans, c = 4096 and 4097, under a
+  mask, a table shorter than c, a negative `x`).

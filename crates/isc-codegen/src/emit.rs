@@ -443,6 +443,10 @@ struct Func {
     /// The tables of bytes of the vector loop being emitted, their 8 parts
     /// of 32 bytes loaded once before it (D198).
     table_parts: HashMap<VarId, Vec<String>>,
+    /// The tables read at `x % c` by the vector loop being emitted, copied
+    /// before it with their first `w - 1` elements after their `c` (D273):
+    /// the copy, and whether it was made (the table has `c` elements).
+    period_tables: HashMap<(VarId, i64), (String, String)>,
 }
 
 pub struct Gen<'p> {
@@ -1418,6 +1422,36 @@ fn lookup_tables(l: &Lambda) -> Vec<VarId> {
     }
     let mut out = Vec::new();
     walk(&l.body, &mut out);
+    out
+}
+
+/// At most this many elements in a table copied by `period_tables`: the
+/// copy made before each vector loop, on the stack.
+const PERIOD_MAX: i64 = 4096;
+
+/// The reads `a[x % c]` of the body of `l` (D273): `a` an array of scalars
+/// bound outside it, `c` an integer literal of at least `w` and at most
+/// PERIOD_MAX. With `x` consecutive in the lanes, their remainders cross a
+/// multiple of `c` in about `w / c` of the vectors (D229: then a gather);
+/// `a[0 .. c]` followed by `a[0 .. w - 1]` reads them all by one load.
+fn period_tables(l: &Lambda, w: u32) -> Vec<(VarId, i64, Type)> {
+    fn walk(e: &Expr, params: &[VarId], w: u32, out: &mut Vec<(VarId, i64, Type)>) {
+        if let ExprKind::Index(x, i) = &e.kind {
+            if let (ExprKind::Var(v, _), ExprKind::Binary(BinOp::Rem, _, c)) = (&x.kind, &i.kind) {
+                if let ExprKind::Lit(Lit::Int(c)) = c.kind {
+                    let scalar = matches!(x.ty.elem(), Type::Int(_) | Type::F64 | Type::F32 | Type::Bool);
+                    if !params.contains(v) && scalar && i.ty == Type::Int(IntKind::I64) && c >= w as i64 && c <= PERIOD_MAX && !out.iter().any(|(u, d, _)| u == v && *d == c) {
+                        out.push((*v, c, x.ty.elem().clone()));
+                    }
+                }
+            }
+        }
+        for ch in e.children() {
+            walk(ch, params, w, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&l.body, &l.params, w, &mut out);
     out
 }
 
@@ -3799,6 +3833,30 @@ impl<'p> Gen<'p> {
                     if let (false, Some((first, 1))) = (uni(&xv), self.f.contig.get(&xv.r).cloned()) {
                         let r0 = self.ins(format!("srem i64 {}, {}", first, c));
                         let nonneg = self.ins(format!("icmp sge i64 {}, 0", first));
+                        // the table copied with its period continued (D273):
+                        // every remainder of a lane in it, whatever the first
+                        let period = match &a.kind {
+                            ExprKind::Var(t, _) => self.f.period_tables.get(&(*t, c)).cloned(),
+                            _ => None,
+                        };
+                        if let (Some((buf, made)), Src::Mat { elem, .. }) = (period, &src) {
+                            let elem = elem.clone();
+                            let ok = self.ins(format!("and i1 {}, {}", nonneg, made));
+                            let (lfast, lslow, ljoin) = (self.label(), self.label(), self.label());
+                            self.cbr(&ok, &lfast, &lslow);
+                            self.block(&lfast);
+                            let x1 = self.load_elem(&buf, &n, &r0, &elem, w);
+                            let l1 = self.current_label(&lfast);
+                            self.br(&ljoin);
+                            self.block(&lslow);
+                            let iv = self.ex(i, w)?;
+                            let x2 = self.index_vec_with(a, i, iv, &src, &n, w, span)?;
+                            let l2 = self.current_label(&lslow);
+                            self.br(&ljoin);
+                            self.block(&ljoin);
+                            let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", x1.t, x1.r, l1, x2.r, l2));
+                            return Ok(V { r, t: x1.t, uni: false });
+                        }
                         let room = self.ins(format!("icmp sle i64 {}, {}", r0, c - w as i64));
                         let ok = self.ins(format!("and i1 {}, {}", nonneg, room));
                         let lfast = self.label();
@@ -5343,6 +5401,32 @@ impl<'p> Gen<'p> {
                 self.f.table_parts.insert(*t, parts);
             }
         }
+        // the tables read at `x % c`, copied with their period continued
+        // (D273), once before the vector loops
+        let periods = match src {
+            Src::Map(_, l) if w > 1 => period_tables(l, w),
+            _ => Vec::new(),
+        };
+        for (t, c, elem) in &periods {
+            let Some(tv) = self.env.get(t).cloned() else { continue };
+            if tv.t != "{ ptr, i64 }" {
+                continue;
+            }
+            let es = esize(elem);
+            let tp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", tv.r));
+            let tn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", tv.r));
+            let buf = self.alloca(&format!("[{} x i8], align 64", (c + w as i64 - 1) * es));
+            let enough = self.ins(format!("icmp sge i64 {}, {}", tn, c));
+            let (lcopy, lj) = (self.label(), self.label());
+            self.cbr(&enough, &lcopy, &lj);
+            self.block(&lcopy);
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", buf, tp, c * es));
+            let after = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", buf, c * es));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", after, tp, (w as i64 - 1) * es));
+            self.br(&lj);
+            self.block(&lj);
+            self.f.period_tables.insert((*t, *c), (buf, enough));
+        }
         if let (true, Some((c, divs, rems))) = (w > 1, row_split(src, w)) {
             // by rows of the constant that divides the index (D214)
             self.fill_rows(src, p, n, et, start, end, w, c, &divs, &rems)?;
@@ -5367,6 +5451,9 @@ impl<'p> Gen<'p> {
                 self.f.table_parts.remove(t);
             }
             tail_start = vend;
+        }
+        for (t, c, _) in &periods {
+            self.f.period_tables.remove(&(*t, *c));
         }
         let ljoin = lscalar.as_ref().map(|_| self.label());
         let tail = match (&lscalar, &ljoin) {

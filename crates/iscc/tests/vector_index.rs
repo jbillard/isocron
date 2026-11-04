@@ -461,6 +461,56 @@ fn whole_rows_by_vectors_at_constant_places() {
     }
 }
 
+/// D273: a table read at `x % c` (c a literal from the lanes to 4096) is
+/// copied before the vector loop with its period continued, every vector
+/// then one load wherever its remainders start: bytes in lines written as
+/// fasta writes them, `f64` and booleans, c = 4096 and 4097 (not copied),
+/// under a mask, a table shorter than c (not copied: the panic of the
+/// scalar code), a negative `x`. The interpreter's results, 1 and 4
+/// threads.
+#[test]
+fn tables_read_at_a_remainder_are_copied_with_their_period() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const k = parseI64(args[1]);
+    const alu = bytes(\"GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA\");
+    const m = n + (n + 59) / 60;
+    printBytes(map(iota(m), (q) => q % 61 == 60 || q == m - 1 ? 10u8 : alu[(q / 61 * 60 + q % 61 + k) % 287]));
+    const big = map(iota(5000), (i) => (i * 13) % 241);
+    print(sum(map(iota(n), (i) => big[(i + k) % 4096])));
+    print(sum(map(iota(n), (i) => big[(i + k) % 4097])));
+    const fs = map(iota(300), (i) => f64(i) * 0.25);
+    print(sum(map(iota(n), (i) => fs[(i + k) % 300])));
+    const bs = map(iota(100), (i) => i % 3 == 0);
+    print(sum(map(iota(n), (i) => bs[(i + k) % 100] ? 1 : 0)));
+    print(sum(map(iota(n), (i) => i % 5 == 0 ? big[(i + k) % 999] : 0)));
+    const short = map(iota(parseI64(args[2])), (i) => i);
+    print(sum(map(iota(n), (i) => short[(i + k) % 60])));
+    return 0;
+}
+";
+    let bin = compile(src, "period_tables");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("alloca [318 x i8], align 64"), "the bytes of alu are not copied with their period");
+    let cases = [["5000", "0", "60"], ["100000", "3", "60"], ["999", "4", "60"], ["64", "4000", "60"], ["31", "0", "60"], ["5000", "0", "50"], ["999", "-7", "60"]];
+    for (i, args) in cases.iter().enumerate() {
+        let want = interp(src, args);
+        // the last two panic: a table shorter than c, a negative `x`
+        assert_eq!(matches!(want, Outcome::Panic(..)), i >= 5, "{:?}", args);
+        for th in [1, 4] {
+            let r = run_bin_threads(&bin, args, Some(th));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, th, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    let site = if th == 1 { m.as_str() } else { m.split(": the index is").next().unwrap() };
+                    assert!(r.stderr.contains(site), "{:?} {} threads: {} / {}", args, th, r.stderr, m);
+                }
+            }
+        }
+    }
+}
+
 /// D217: vectors of consecutive indices compared with a value of every lane
 /// (a mask of at most one bit from the first index), and their bounds
 /// checked from their first and last lanes (every lane only when those
