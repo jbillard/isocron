@@ -529,6 +529,37 @@ fn replacements_written_in_parallel() {
     }
 }
 
+/// D279: a replacement of a large text (1 MiB and more) written by every
+/// thread whatever its number of matches: the text cut into parts of about
+/// the same bytes, a cut inside a match moved to its end. Few matches, one
+/// match longer than a part (across the cuts), empty matches, `$&` (not in
+/// parallel), on 1 to 16 threads: the texts of the interpreter, whole.
+#[test]
+fn replacements_of_large_texts_cut_by_bytes() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const s = \"acgt\".repeat(n) + \"<\" + \"tHaN\".repeat(n) + \">q\" + \"gt\".repeat(n);
+    print(s.replace(/q/g, \"QQ\").length);
+    print(s.replace(/tHa[Nt]/g, \"<4>\").slice(4 * n - 3, 4 * n + 12));
+    const r = s.replace(/<[^>]*>/g, \"|\");
+    print([r.length, r.slice(4 * n - 2, 4 * n + 4)] as const);
+    print(s.replace(/x*/g, \"_\").length);
+    print(s.replace(/q|>/g, \"[$&]\").length);
+    const t = s.replace(/acgt|gt/g, \"\");
+    print([t.length, t.slice(0, 12)] as const);
+    return 0;
+}
+";
+    let bin = compile(src, "replace_by_bytes");
+    for n in ["10", "300000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 2, 3, 4, 16] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+}
+
 /// D237: an alternation of simple shapes of other lengths and kinds, at
 /// the start of a line or anywhere, searched by masks: at a place the first
 /// alternative that matches (`a|ab` matches `a`), as the automaton of the

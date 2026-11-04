@@ -5087,3 +5087,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   best of 9, 4 threads, the machine loaded: regex-redux 202.4 ms -> 194.4
   ms. The same output. Test `fixed_alternatives_find_the_matches_of_the_automaton`
   (the table chosen where the processor has it; built for x86-64-v4).
+- **D279 — A replacement of a large text written in parallel whatever its
+  number of matches, cut by bytes (2026-11-04).** `replace_parallel`
+  (D236) wrote in parallel only from 16384 matches on, its parts cut by
+  matches: a replacement of a text of 50 MB with 6220 matches (the first
+  of regex-redux) was written by one thread, and parts cut by matches can
+  hold very different numbers of bytes. A text of 1 MiB and more is now
+  cut into one part of about the same bytes per thread, a cut inside a
+  match moved to its end; each part, its text and its matches, written at
+  its place (its size known before). The bytes of `replace_bounds`. In
+  alternation, best of 9, 4 threads: regex-redux 195.4 ms -> 193.4 ms.
+  Test `replacements_of_large_texts_cut_by_bytes` (few matches, a match
+  longer than a part across the cuts, empty matches, `$&`; 1 to 16
+  threads).
