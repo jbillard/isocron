@@ -4584,3 +4584,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     run during which commands ran (a kernel bound by its ports, the most
     sensitive to a busy sibling). The versions alternate within a run, so
     their comparison holds; no command now runs during a measurement.
+- **D257 — A large regular file as the standard input is mapped, held by
+  a read lease (2026-11-04).** reverse-complement after D255: reading its
+  input of 254 MB into new pages took 29.4 ms with 4 threads (the copy out
+  of the page cache, and the clearing of the pages it fills: 9.4 GB/s,
+  `file_read_new`), a third of the program. A prototype in C on the same
+  file, 4 threads: read in parallel 28.9 ms (and 0.6 ms to free); mapped,
+  its pages touched by every thread, 2.4 ms (and 4.7 ms to unmap: the
+  pages of the page cache, one by one); `MAP_POPULATE` 8.0 ms; writable and
+  populated (a copy of each page) 65.1 ms.
+  - `readStdin` of a regular file, opened read-only, of 8 MiB or more from
+    an offset that is a multiple of a page (Linux, x86-64): the file mapped
+    read-only, after a page that holds the header the allocator reads at
+    free (a class no block has), its pages touched by the threads of the
+    pool. The array must keep the bytes the file had, as `read` gives
+    them: a read lease (`F_SETLEASE`), which the kernel gives only when no
+    one has the file open for writing; a process that opens it for writing
+    or truncates it waits while the handler of `SIGIO` copies the bytes
+    into memory of the process and puts it at the place of the mapping
+    (`mremap`, one call), then gives the lease back. Made private page by
+    page (`MADV_POPULATE_WRITE`), the bytes were lost to a truncation: the
+    kernel unmaps every page past the new end, the private ones included
+    (a SIGBUS at 12 MB, the new length, in the first test). The mapping is
+    read-only so that no write is lost during the copy: an array changed in
+    place (D207) faults, the handler of `SIGSEGV` makes the same copy, and
+    the write is done again; any other fault gets the handler from before.
+    No lease (another owner, a file open for writing), or a handler of
+    `SIGIO` or `SIGSEGV` already there: the file is read (`docs/language.md`).
+  - The allocator bounds its cache of large blocks and its idle bytes by
+    the bytes in use; the mapped array counts with them (`held_outside`):
+    without it, regex-redux (its input of 50.8 MB) faulted 1820 -> 3696
+    pages, 294.1 -> 313.1 ms, freed blocks given back sooner.
+  - Measured (fixed frequency, 4 threads, best of 7, against D256): the read
+    of reverse-complement 29.4 -> 8.3 ms; reverse-complement 84.1 -> 64.0
+    ms, k-nucleotide 1095.4 -> 1076.6 ms, regex-redux 292.0 -> 290.1 ms;
+    the 7 others the same within their noise. Tests
+    `a_mapped_input_keeps_its_bytes_when_the_file_is_written` (24 MB,
+    mapped (`/proc/<pid>/maps`), truncated and written while the program
+    runs: the same sum, the writer waits less than 10 s; a file already
+    open for writing: not mapped), `a_mapped_input_freed_early_gives_the_file_back`,
+    `a_mapped_input_changed_in_place` (the copy on a write, 1 and 4
+    threads); the tests of D221 read files of 20 MB mapped.

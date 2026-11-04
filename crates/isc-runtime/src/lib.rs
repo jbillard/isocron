@@ -22,6 +22,9 @@ use isc_runtime_core::{self as sem, Panic, ARRAY_ALIGN, PANIC_EXIT_CODE};
 #[cfg(not(target_os = "wasi"))]
 mod heap;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod mapped;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IscArray {
@@ -469,6 +472,12 @@ pub extern "C" fn isc_free(p: *mut u8) {
 #[cold]
 #[inline(never)]
 fn free_cold(p: *mut u8) {
+    // the standard input mapped from its file (D257)
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if mapped::owns(p) {
+        unsafe { mapped::free() };
+        return;
+    }
     #[cfg(not(target_os = "wasi"))]
     if isc_heap() {
         unsafe { heap::free(p) };
@@ -540,6 +549,15 @@ unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
         lseek(0, cur, SEEK_SET);
     }
     let hint = if cur >= 0 && end > cur && end - cur < (1i64 << 44) { (end - cur) as usize } else { 1 << 16 };
+    // a large file: mapped (D257), its pages touched by every thread
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if cur >= 0 && end - cur >= mapped::MAP_MIN as i64 && end - cur < (1i64 << 44) {
+        if let Some(p) = mapped::map_stdin(cur, (end - cur) as usize) {
+            touch_pages(p, (end - cur) as usize);
+            lseek(0, end, SEEK_SET);
+            return IscArray { ptr: p, len: end - cur };
+        }
+    }
     match read_fd(0, hint, if hint > 1 << 16 || end > cur { cur } else { -1 }) {
         Ok(a) => a,
         Err(e) => {
@@ -547,6 +565,39 @@ unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
             die(line, col, &Panic::Read { path: "<standard input>", detail, code })
         }
     }
+}
+
+/// The pages of the `n` bytes from `p` read once, by every thread of the
+/// pool, each its part (D257: the pages of a mapped file, given by the
+/// kernel by groups of 16 at each fault); nothing when the pool is busy or
+/// has one thread (they are then given as they are read).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+unsafe fn touch_pages(p: *mut u8, n: usize) {
+    let threads = thread_count();
+    if threads <= 1 || BUSY.load(Ordering::Relaxed) {
+        return;
+    }
+    #[repr(C)]
+    struct Ctx {
+        p: *mut u8,
+        n: usize,
+        parts: usize,
+    }
+    extern "C" fn part(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let k = k as usize;
+            let (lo, hi) = (c.n * k / c.parts, c.n * (k + 1) / c.parts);
+            let mut a = lo & !4095;
+            while a < hi {
+                core::ptr::read_volatile(c.p.add(a));
+                a += 4096;
+            }
+        }
+    }
+    let parts = threads.min(64);
+    let mut ctx = Ctx { p, n, parts };
+    isc_parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64);
 }
 
 /// From this size on, a file is read by several threads (D221).

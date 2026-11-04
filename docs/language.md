@@ -1801,7 +1801,14 @@ action.
 | `bench(r, f)` | `(i64, () => T) => [T, u64]` | calls `f` `r` times (`r >= 1`), returns the last result and the total time in nanoseconds |
 
 The standard input is read once, whole: after `readStdinLines()`, a
-`readStdinText()` finds its end.
+`readStdinText()` finds its end. On Linux, a regular file of 8 MiB or more
+given as the standard input (`program < file`) is mapped rather than
+copied, held by a read lease: the program keeps the bytes the file had
+when it was read, even if another process then writes or truncates it
+(that process waits a moment while the program copies them). The program
+then has handlers for `SIGIO` and `SIGSEGV`; when it already has its own
+(through C functions), or when the file is open for writing elsewhere, the
+file is read.
 
 ```isc
 action main(args: string[k]): i32 {

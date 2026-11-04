@@ -198,3 +198,138 @@ fn lines_of_a_large_text_made_in_parallel() {
         }
     }
 }
+
+/// A program that reads a large file as its standard input, prints its
+/// length, computes for a while (the checksum then depends on it), and
+/// prints the sum of its bytes.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const MAPPED_SRC: &str = "action main(args: string[k]): i32 {
+    const data = readStdin();
+    print(data.length);
+    const x = fold(iota(300000000), 1, (a, i) => (a * 31 + i) % 1000003);
+    const off = x == -1 ? 1 : 0;
+    print(i64(sum(map(data.slice(off, data.length), (b) => u64(b)))));
+    print(x >= 0);
+    return 0;
+}
+";
+
+/// The program of MAPPED_SRC on `path`: its first line, then what `during`
+/// does while it computes, then the rest of its output and its exit code.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn run_mapped(bin: &std::path::Path, path: &std::path::Path, during: &dyn Fn(u32)) -> (String, String, Option<i32>) {
+    use std::io::{BufRead, Read};
+    let mut c = std::process::Command::new(bin)
+        .env("ISC_THREADS", "4")
+        .stdin(std::fs::File::open(path).unwrap())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(c.stdout.take().unwrap());
+    let mut first = String::new();
+    out.read_line(&mut first).unwrap();
+    during(c.id());
+    let mut rest = String::new();
+    out.read_to_string(&mut rest).unwrap();
+    let status = c.wait().unwrap();
+    (first, rest, status.code())
+}
+
+/// D257: a large file as the standard input is mapped, held by a read
+/// lease; written and truncated while the program runs, the program still
+/// sees the bytes it had (the pages made private before the lease is given
+/// back), and the writer does not wait for the end of the lease (45 s). A
+/// file already open for writing is read (no lease); the bytes freed
+/// early give the lease back.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn a_mapped_input_keeps_its_bytes_when_the_file_is_written() {
+    let n = 24_000_000usize;
+    let big: Vec<u8> = (0..n as u32).map(|i| (i.wrapping_mul(2654435761) >> 11) as u8).collect();
+    let sum: u64 = big.iter().map(|&b| b as u64).sum();
+    let want = format!("{}\ntrue\n", sum);
+    let bin = compile(MAPPED_SRC, "stdin_mapped");
+    // written while it runs
+    let path = tmp("stdin_mapped.bin");
+    std::fs::write(&path, &big).unwrap();
+    let p = path.clone();
+    let (first, rest, code) = run_mapped(&bin, &path, &|pid| {
+        let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid)).unwrap();
+        assert!(maps.contains(p.to_str().unwrap()), "the input is not mapped:\n{}", maps);
+        let t = std::time::Instant::now();
+        let mut f = std::fs::File::create(&p).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "the writer waited {:?}", t.elapsed());
+        f.write_all(&vec![7u8; n / 2]).unwrap();
+    });
+    assert_eq!((first.as_str(), rest.as_str(), code), (format!("{}\n", n).as_str(), want.as_str(), Some(0)));
+    // a file open for writing: read, the same bytes
+    let path2 = tmp("stdin_mapped_open.bin");
+    std::fs::write(&path2, &big).unwrap();
+    let writer = std::fs::OpenOptions::new().write(true).open(&path2).unwrap();
+    let p2 = path2.clone();
+    let (first, rest, code) = run_mapped(&bin, &path2, &|pid| {
+        let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid)).unwrap();
+        assert!(!maps.contains(p2.to_str().unwrap()), "a file open for writing is mapped");
+    });
+    drop(writer);
+    assert_eq!((first.as_str(), rest.as_str(), code), (format!("{}\n", n).as_str(), want.as_str(), Some(0)));
+}
+
+/// D257: the mapped input freed before the end of the program gives the
+/// lease back: a writer does not wait, the program goes on.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn a_mapped_input_freed_early_gives_the_file_back() {
+    let src = "action main(args: string[k]): i32 {
+    const data = readStdin();
+    print([data.length, i64(sum(map(data, (b) => u64(b))))] as const);
+    print(fold(iota(300000000), 1, (a, i) => (a * 31 + i) % 1000003) >= 0);
+    return 0;
+}
+";
+    let n = 16_000_000usize;
+    let big: Vec<u8> = (0..n as u32).map(|i| (i % 253) as u8).collect();
+    let sum: u64 = big.iter().map(|&b| b as u64).sum();
+    let path = tmp("stdin_mapped_freed.bin");
+    std::fs::write(&path, &big).unwrap();
+    let bin = compile(src, "stdin_mapped_freed");
+    let p = path.clone();
+    let (first, rest, code) = run_mapped(&bin, &path, &|_| {
+        let t = std::time::Instant::now();
+        let mut f = std::fs::File::create(&p).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "the writer waited {:?}", t.elapsed());
+        f.write_all(b"x").unwrap();
+    });
+    assert_eq!((first, rest.as_str(), code), (format!("({}, {})\n", n, sum), "true\n", Some(0)));
+}
+
+/// D257: the mapped input changed in place (a `map` of the same bytes at
+/// its last use writes into it, D207): the write faults on the read-only
+/// mapping, its bytes are copied into memory of the program, the write is
+/// done again; on 1 and 4 threads.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn a_mapped_input_changed_in_place() {
+    // (the input moved into the `map` of `flip`: `(move)` in the IR)
+    let src = "function flip(d: u8[n]): u8[n] {
+    return map(d, (b) => b ^ 1u8);
+}
+action main(args: string[k]): i32 {
+    const flipped = flip(readStdin());
+    print([flipped.length, i64(sum(map(flipped, (b) => u64(b)))), i64(flipped[0]), i64(flipped[flipped.length - 1])] as const);
+    return 0;
+}
+";
+    let n = 20_000_000usize;
+    let big: Vec<u8> = (0..n as u32).map(|i| (i.wrapping_mul(40503) >> 7) as u8).collect();
+    let sum: u64 = big.iter().map(|&b| (b ^ 1) as u64).sum();
+    let want = format!("({}, {}, {}, {})\n", n, sum, big[0] ^ 1, big[n - 1] ^ 1);
+    let path = tmp("stdin_mapped_in_place.bin");
+    std::fs::write(&path, &big).unwrap();
+    let bin = compile(src, "stdin_mapped_in_place");
+    for t in ["1", "4"] {
+        let o = std::process::Command::new(&bin).env("ISC_THREADS", t).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads: {}", t, String::from_utf8_lossy(&o.stderr));
+    }
+}

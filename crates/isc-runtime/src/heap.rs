@@ -1222,6 +1222,23 @@ unsafe fn trim_large(st: &mut State) {
     }
 }
 
+/// `bytes` of memory that the program holds outside the allocator (the
+/// standard input mapped from its file, D257) counted with the large blocks
+/// in use (`held`), or no longer: the cache of large blocks and the idle
+/// bytes are bounded by them, and keep what they would have kept had the
+/// allocator given that memory (regex-redux, its input of 50.8 MB mapped
+/// and not counted: 1820 -> 3696 page faults, 294.1 -> 313.1 ms).
+pub fn held_outside(bytes: usize, held: bool) {
+    lock();
+    let st = unsafe { state() };
+    if held {
+        st.large_in_use += bytes;
+    } else {
+        st.large_in_use -= bytes;
+    }
+    unlock();
+}
+
 #[cold]
 unsafe fn free_large(h: *mut Header) {
     let class = (*h).class as usize;
