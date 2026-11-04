@@ -228,7 +228,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The writing pass of a filter skips the blocks that keep nothing: reverse-complement 90.9 -> 85.5 ms, k-nucleotide 1115.3 -> 1103.6 ms (D255)
   - [x] The runtime aligned (D256); a large file as the standard input mapped, held by a read lease: reverse-complement 84.1 -> 64.0 ms, k-nucleotide 1095.4 -> 1076.6 ms (D257)
   - [x] The mapped input given back by every thread at the end: reverse-complement 0.065 -> 0.061 s (D258)
-  - [ ] reverse-complement: the threads idle at the end of the writing passes (a block taken from the cache, its end new), the lines and the output about 19 ms against about 6
+  - [ ] reverse-complement: the threads idle at the end of the writing passes of records 2 and 3 (about 2 ms each, not explained: ranges taken in turn did not help, D259); the lines and the output about 19 ms against about 6 (170 instructions a line of 61 bytes); in Docker 2-3 ms ahead of Rust only
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
   - [ ] Windows: the runtimes for x86-64-v3 and v4, the console in UTF-8, the MSVC ABI, timings

@@ -4651,3 +4651,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     threads, released at the end) and
     `a_mapped_input_freed_early_gives_the_file_back` (freed during the
     program) cover both ways.
+- **D259 — Not kept: the ranges of a filling loop taken in turn
+  (2026-11-04).** In the timeline of reverse-complement (D258), three of
+  the four threads waited about 2 ms at the end of the writing passes of
+  its second and third records: their arrays take the block of the record
+  before (D53: a cached block grown), whose start is already written and
+  whose end faults new pages, so equal ranges do not cost the same. Four
+  ranges per thread taken in turn (`isc_parallel_for_fill`): measured
+  (best of 7, 4 threads) reverse-complement 61.1 -> 61.5 ms, the 9 others
+  the same within their noise, the kernels that fill an array -1.3 % to
+  +0.2 %. No gain: not kept. The wait is not explained yet (TODO).
+  - In Docker (`build/spot.sh`, not the protocol: the Isocron programs of
+    D258, the others of the publication of D249, best of 9): reverse-
+    complement 63.4 and 62.6 ms against Rust's 65.6 and 65.3 ms;
+    k-nucleotide 1073.6 ms against C++'s 1177.4 ms.
