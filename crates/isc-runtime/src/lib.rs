@@ -589,6 +589,14 @@ unsafe fn touch_pages(p: *mut u8, n: usize) {
             let k = k as usize;
             let (lo, hi) = (c.n * k / c.parts, c.n * (k + 1) / c.parts);
             let mut a = lo & !4095;
+            // the pages of the part mapped by the kernel in one call (D285:
+            // pages of 4 KiB of the page cache, a tmpfs, one fault each when
+            // read: 63631 faults for the 254 MB of reverse-complement); read
+            // one by one where the system does not have it (before 5.14)
+            const MADV_POPULATE_READ: c_int = 22;
+            if a < hi && mapped::advise(c.p.add(a), hi - a, MADV_POPULATE_READ) == 0 {
+                return;
+            }
             while a < hi {
                 core::ptr::read_volatile(c.p.add(a));
                 a += 4096;

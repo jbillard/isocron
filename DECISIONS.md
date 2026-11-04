@@ -5162,3 +5162,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   third replacement of regex-redux alone (best of 3, 4 threads): 20.4 ms
   -> 19.3 ms; in alternation, best of 9: 153.8 ms -> 150.6 ms. Tests: the
   replacements written in parallel (`strings.rs`, 1 to 16 threads).
+- **D285 — The pages of the mapped standard input given by the kernel in
+  one call per thread (2026-11-04).** A large file given as the standard
+  input is mapped (D257), its pages touched by every thread, one read per
+  page (`touch_pages`): where the page cache holds the file in pages of 4
+  KiB (a tmpfs, here after the memory of the machine was short), each page
+  is a fault, 63629 for the 254 MB of reverse-complement, 29 % of its CPU
+  in their handling. Each thread now asks the kernel for the pages of its
+  part in one call (`madvise(MADV_POPULATE_READ)`, Linux 5.14), touching
+  them one by one only where the system refuses it. Input in a tmpfs, in
+  alternation, best of 9, 4 threads: reverse-complement 75.1 ms -> 65.3
+  ms, 63629 -> 1552 faults; input on ext4 (large pages of the page cache,
+  5459 faults): 58.6 ms either way. The same output. Measured on the way:
+  the inputs of the measurements are now on the disk (`target`), as the
+  inputs of the publication are, not in the tmpfs, where their pages
+  change with the memory of the machine. Tests: the standard input mapped
+  (D257, `stdin.rs`).

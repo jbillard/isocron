@@ -140,6 +140,11 @@ pub unsafe fn map_stdin(cur: i64, len: usize) -> Option<*mut u8> {
 }
 
 /// The pages of `span` bytes from `p` (a part of the mapping) given back.
+/// `madvise` on `len` bytes from `p` (`p` on a page): 0 when done.
+pub unsafe fn advise(p: *mut u8, len: usize, advice: c_int) -> c_int {
+    madvise(p as *mut c_void, len, advice)
+}
+
 pub unsafe fn give_pages(p: *mut u8, span: usize) {
     madvise(p as *mut c_void, span, MADV_DONTNEED);
 }
