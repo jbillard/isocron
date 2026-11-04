@@ -243,7 +243,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The roots and divisions of a `fold` that do not depend on its accumulator, two elements at a time: n-body 1.979 -> 1.861 s, in Docker 1.892 s against C 1.945 s (D261)
   - [x] The Benchmarks Game measured again at c77e61b: the fastest on 10 of 10, n-body 1.897 s against C 1.945 s (D262)
   - [ ] A model of the loop of n-body with the ports and the window of the scheduler: the model of D261 (latency and divider) gives 108.5 cycles a step, 118.8 measured
-  - [ ] The runtime given to LLVM with the program, so that the generated code inlines its fast paths (allocation, ...): first the share of time in the `isc_*` functions of each program; rustc 1.9x emits LLVM 23 bitcode, iscc reads LLVM 21 (a rustc on LLVM 21, iscc on LLVM 23, or the fast paths emitted as IR by iscc); measured on the ten programs and the kernels, with compile time and size (D263: the time in the runtime is in loops over blocks and numbers, `add_block`, `count_round`, `bounds_from`, `mul_word`; little to gain from inlining)
+  - [x] The runtime given to LLVM with the program, so that the generated code inlines its fast paths: measured, at most about 0.4 % (pidigits: 0.22 calls into the runtime a thousand instructions), not done (D263, D265)
   - [x] The gap of each program to its floor attributed to its components (D263, `results/floors.md`)
   - [x] Release 0.2.0: the fastest on 10 of 10 (D264)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

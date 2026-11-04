@@ -4786,3 +4786,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (D263). The version of the workspace and of the runtime 0.2.0; the
   compilers for Linux and Windows built in the images of D248
   (`build_iscc.sh`), the archives by `package.sh`.
+- **D265 — The runtime inlined into the program: measured, not done
+  (2026-11-04).** Asked for: test not compiling the runtime apart, so that
+  the generated code inlines its fast paths. What it can save is bounded by
+  the calls of the generated code into the runtime (callgrind, `--isa
+  avx2`, `ISC_ALLOC=glibc`, 4 threads, small sizes; pidigits also at its
+  size, 10000 digits): pidigits 1.138e6 calls for 5.172e9 instructions
+  (0.22 a thousand), k-nucleotide 0.11 a thousand at its small size (the
+  frees and strings of its groups, a number that does not grow with the
+  input), binary-trees about 65000 calls of its regions for 1.84e9
+  instructions, the 7 others under 0.001 a thousand. At 20 instructions of
+  call, prologue and return each, at most about 0.4 % (pidigits), less for
+  the others: the time of the runtime is in functions called rarely that
+  loop over a block or a number (`isc_big_op` 4.70e9 instructions for
+  341000 calls). The other gain of a runtime compiled with the program, the
+  instructions of its CPU, is already there: `iscc` links a runtime built
+  for x86-64-v4 (AVX-512) or v3 when the CPU has them. Linking the runtime
+  as bitcode would also need the LLVM of rustc (23.1.1) read by that of
+  `iscc` (21.1.8), which reads only older bitcode. Not done; to do again if
+  a program calls the runtime per element.
