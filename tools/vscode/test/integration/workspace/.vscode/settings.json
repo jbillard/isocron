@@ -1,0 +1,3 @@
+{
+  "isocron.iscc": "${workspaceFolder}\\..\\iscc.exe"
+}

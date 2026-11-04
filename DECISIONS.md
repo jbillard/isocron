@@ -4843,3 +4843,12 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   rust-analyzer on both workspaces (the runtime is its own) in a target of
   its own, the builds and inputs out of the watchers and the searches, the
   tasks that build, test and check.
+  - Tried in a real VS Code (`test/windows.py`): VS Code 1.95.3 portable
+    on the Windows 11 VM, the `.vsix` installed by its command line
+    (`isocron.isocron@0.2.0` in its list), the 10 steps of
+    `test/integration/index.js` run inside it on the files of the package
+    with the `iscc.exe` of 0.2.0 (named through `${workspaceFolder}`): the
+    language, the error of `err.isc` at 2:16, none in a correct file, an
+    error fixed and saved gone, the outline, the definitions (a module
+    imported, the file), the IR, `ok.exe` built and printing 45: all
+    passed.

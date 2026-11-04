@@ -53,3 +53,12 @@ imports, the arguments), and every Isocron file of the repository and every
 ` ```isc ` block of `docs/language.md` tokenized by the grammar with
 `vscode-textmate` (the engine of VS Code), with the scopes of chosen
 tokens checked.
+
+`tools/vscode/test/windows.py VSCODE_ZIP ISCC_EXE` tries it in a real VS
+Code on the Windows machine of `tools/windows/run.py` (a portable VS Code
+from its `win32-x64-archive`, kept there): the `.vsix` installed by the
+command line of VS Code, then `test/integration/index.js` run inside it on
+the files of the package (`--extensionTestsPath`): the language of a
+`.isc` file, an error at its place and gone once fixed and saved, none in a
+correct file, the outline, the definitions in the file and in a module it
+imports, the IR, a file built and its program run.

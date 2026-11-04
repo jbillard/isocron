@@ -1,0 +1,7 @@
+function f(x: f64): f64 {
+    return x + y;
+}
+action main(args: string[k]): i32 {
+    print(f(1.0));
+    return 0;
+}

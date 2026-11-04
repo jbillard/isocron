@@ -1,0 +1,4 @@
+// a module: what it exports is imported by main.isc
+export function area(r: f64): f64 {
+    return 3.0 * r * r;
+}

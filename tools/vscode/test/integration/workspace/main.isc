@@ -1,0 +1,10 @@
+import { area } from "./geom";
+
+function twice(x: f64): f64 {
+    return 2.0 * x;
+}
+
+action main(args: string[k]): i32 {
+    print(area(twice(1.0)));
+    return 0;
+}
