@@ -579,6 +579,9 @@ thread_local! {
     static BYTE_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The target has the 52-bit products of AVX-512 IFMA (D192).
     static IFMA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The target loads and stores bytes under a mask (AVX-512 BW and VL):
+    /// a row of 33 to 64 bytes in one vector (D274).
+    static BYTE_MASKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The target compresses vectors of 32 and 64 bits (AVX-512 F and VL),
     /// and of bytes (VBMI2): the elements a `filter` keeps (D195).
     static COMPRESS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
@@ -838,6 +841,10 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     IFMA.with(|b| {
         let f = crate::backend::host_features();
         b.set(matches!(opts.isa, Isa::Native | Isa::Avx512) && ["+avx512ifma", "+avx512vl"].iter().all(|x| f.split(',').any(|y| y == *x)))
+    });
+    BYTE_MASKS.with(|b| {
+        let f = crate::backend::host_features();
+        b.set(matches!(opts.isa, Isa::Native | Isa::Avx512) && ["+avx512bw", "+avx512vl"].iter().all(|x| f.split(',').any(|y| y == *x)))
     });
     COMPRESS.with(|b| {
         let f = crate::backend::host_features();
@@ -5323,6 +5330,13 @@ impl<'p> Gen<'p> {
     /// element and its site); if none panics (a check of a lane that the
     /// scalar code would not have made), their values make the vector.
     fn elem_replayed(&mut self, src: &Src, idx: &str, w: u32) -> R<V> {
+        self.elem_replayed_lanes(src, idx, w, w)
+    }
+
+    /// `elem_replayed` whose replay computes only the first `lanes` elements
+    /// (a row narrower than the vector, D274: the lanes after it are not
+    /// elements of the row, the last row may end the array).
+    fn elem_replayed_lanes(&mut self, src: &Src, idx: &str, w: u32, lanes: u32) -> R<V> {
         if w == 1 || !src_checks(src) {
             return self.elem(src, idx, w);
         }
@@ -5336,7 +5350,7 @@ impl<'p> Gen<'p> {
         self.br(&lcont);
         self.block(&lfail);
         let slot = self.alloca(&xv.t);
-        self.for_range_scalar("0", &w.to_string(), 1, &mut |g, j| {
+        self.for_range_scalar("0", &lanes.to_string(), 1, &mut |g, j| {
             let k = g.ins(format!("add i64 {}, {}", idx, j));
             let x = g.elem(src, &k, 1)?;
             let cur = g.ins(format!("load {}, ptr {}", xv.t, slot));
@@ -5401,10 +5415,20 @@ impl<'p> Gen<'p> {
                 self.f.table_parts.insert(*t, parts);
             }
         }
+        // the whole rows of 33 to 64 bytes each in one vector of 64 lanes,
+        // the lanes after the row masked (D274): the work of a row that does
+        // not depend on its places (a remainder, the checks) once, not twice
+        let rows = if w > 1 { row_split(src, w) } else { None };
+        let wide = matches!(&rows, Some((c, _, _)) if *c > w as i64 && *c <= 2 * w as i64)
+            && w == 2 * MAP_WIDTH
+            && matches!(et, Type::Int(k) if k.bits() == 8)
+            && tables.is_empty()
+            && BYTE_MASKS.with(|b| b.get());
+        let pw = if wide { 2 * w } else { w };
         // the tables read at `x % c`, copied with their period continued
         // (D273), once before the vector loops
         let periods = match src {
-            Src::Map(_, l) if w > 1 => period_tables(l, w),
+            Src::Map(_, l) if w > 1 => period_tables(l, pw),
             _ => Vec::new(),
         };
         for (t, c, elem) in &periods {
@@ -5415,21 +5439,21 @@ impl<'p> Gen<'p> {
             let es = esize(elem);
             let tp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", tv.r));
             let tn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", tv.r));
-            let buf = self.alloca(&format!("[{} x i8], align 64", (c + w as i64 - 1) * es));
+            let buf = self.alloca(&format!("[{} x i8], align 64", (c + pw as i64 - 1) * es));
             let enough = self.ins(format!("icmp sge i64 {}, {}", tn, c));
             let (lcopy, lj) = (self.label(), self.label());
             self.cbr(&enough, &lcopy, &lj);
             self.block(&lcopy);
             self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", buf, tp, c * es));
             let after = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", buf, c * es));
-            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", after, tp, (w as i64 - 1) * es));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", after, tp, (pw as i64 - 1) * es));
             self.br(&lj);
             self.block(&lj);
             self.f.period_tables.insert((*t, *c), (buf, enough));
         }
-        if let (true, Some((c, divs, rems))) = (w > 1, row_split(src, w)) {
+        if let Some((c, divs, rems)) = rows {
             // by rows of the constant that divides the index (D214)
-            self.fill_rows(src, p, n, et, start, end, w, c, &divs, &rems)?;
+            self.fill_rows(src, p, n, et, start, end, w, c, &divs, &rems, wide)?;
             for t in &tables {
                 self.f.table_parts.remove(t);
             }
@@ -5502,6 +5526,7 @@ impl<'p> Gen<'p> {
         c: i64,
         divs: &[*const Expr],
         rems: &[*const Expr],
+        wide: bool,
     ) -> R<()> {
         self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
         self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
@@ -5529,6 +5554,9 @@ impl<'p> Gen<'p> {
         self.for_range(&ff, &lf, 1, &mut |g, row| {
             let bq = g.ins(format!("mul i64 {}, {}", row, c));
             let rowv = V { r: row.to_string(), t: "i64".into(), uni: true };
+            if wide {
+                return g.row_vector_wide(src, p, 2 * w, c, &rowv, &bq, divs, rems);
+            }
             for k in &places {
                 g.row_vector(src, p, n, et, w, &rowv, &bq, &k.to_string(), divs, rems)?;
             }
@@ -5596,6 +5624,35 @@ impl<'p> Gen<'p> {
             g.block(&lj);
             Ok(())
         })
+    }
+
+    /// A whole row of `c` bytes (`w / 2 < c <= w`) of `fill_rows` in one
+    /// vector of `w` lanes (D274): the lanes from `c` on masked (their
+    /// checks and their gathers skipped, the replay of a failed check
+    /// computing the `c` elements only), the row stored under the mask.
+    #[allow(clippy::too_many_arguments)]
+    fn row_vector_wide(&mut self, src: &Src, p: &str, w: u32, c: i64, row: &V, bq: &str, divs: &[*const Expr], rems: &[*const Expr]) -> R<()> {
+        let places = self.elem(&Src::Iota, "0", w)?;
+        for d in divs {
+            self.pre.insert(*d, row.clone());
+        }
+        for m in rems {
+            self.pre.insert(*m, places.clone());
+        }
+        let lanes: Vec<String> = (0..w as i64).map(|j| format!("i1 {}", if j < c { "true" } else { "false" })).collect();
+        let mask = format!("<{}>", lanes.join(", "));
+        let saved = self.mask.replace(mask.clone());
+        let x = self.elem_replayed_lanes(src, bq, w, c as u32);
+        self.mask = saved;
+        for e in divs.iter().chain(rems) {
+            self.pre.remove(e);
+        }
+        let x = self.widen(&x?, w);
+        let name = format!("llvm.masked.store.v{}i8.p0", w);
+        self.decls.insert(format!("declare void @{}(<{} x i8>, ptr, i32 immarg, <{} x i1>)", name, w, w));
+        let g = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, bq));
+        self.emit(format!("call void @{}(<{} x i8> {}, ptr {}, i32 1, <{} x i1> {})", name, w, x.r, g, w, mask));
+        Ok(())
     }
 
     /// One vector of a row of `fill_rows`: the elements `bq + r ..

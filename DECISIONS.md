@@ -4996,3 +4996,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   same output. Test `tables_read_at_a_remainder_are_copied_with_their_period`
   (bytes in lines as fasta, `f64`, booleans, c = 4096 and 4097, under a
   mask, a table shorter than c, a negative `x`).
+- **D274 — A whole row of 33 to 64 bytes in one vector (2026-11-04).**
+  After D273 a line of fasta (61 bytes) still took two vectors of 32
+  lanes (at its places 0 and 29), each with its own remainder by 139968
+  (two products), its checks and its masks: about 35 instructions a
+  vector. On a target that loads and stores bytes under a mask (AVX-512
+  BW and VL), a `map` of bytes by rows of 33 to 64 (without tables of
+  bytes permuted in registers, D198) now makes each whole row in one
+  vector of 64 lanes, the lanes after the row masked (their checks and
+  gathers skipped as in a branch of an `if`; the replay of a failed check
+  computes the elements of the row only, the last row may end the array)
+  and stored under the mask; the tables of D273 are then copied for 64
+  lanes. At fixed frequency, best of 9, 4 threads: fasta 11.19 ms ->
+  8.16 ms (407 -> 230 million instructions, 40.9 -> 26.9 ms of CPU, about
+  45 instructions a line); reverse-complement, whose lines read a table
+  permuted in registers, unchanged (58.1 and 57.6 ms). The same outputs.
+  Test `rows_narrower_than_the_vector_are_masked` (a table exactly as long
+  as the row: the masked lanes would read past it; rows of 33, 40, 61 and
+  64; the panic of the last place of a row past its table; 1 and 4
+  threads).
+  - Measured on the way: reverse-complement took 74.8 ms with both
+    binaries on a copy of its input made earlier, 58 ms on a new copy of
+    the same bytes: 63631 page faults against 5454 (the input is mapped,
+    D257, and the pages of that copy in the page cache were small ones).
+    The inputs of a measurement are made again before it.

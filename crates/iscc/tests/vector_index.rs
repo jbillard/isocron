@@ -461,6 +461,50 @@ fn whole_rows_by_vectors_at_constant_places() {
     }
 }
 
+/// D274: a whole row of 33 to 64 bytes in one vector of 64 lanes, the
+/// lanes after the row masked: a table of exactly the row read at the
+/// place (the masked lanes would read past it: no panic), rows of 33, 40,
+/// 61 and 64, a row whose last place reads past its table (the panic of
+/// the scalar code, its element), lengths cut in the middle of a row. The
+/// interpreter's results, 1 and 4 threads.
+#[test]
+fn rows_narrower_than_the_vector_are_masked() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const t = parseI64(args[1]);
+    const tab = map(iota(40), (i) => u8(65 + i % 26));
+    printBytes(map(iota(n), (q) => tab[q % 40]));
+    printBytes(map(iota(n), (q) => q % 33 == 32 ? 10u8 : u8(97 + (q / 33 + q % 33) % 26)));
+    printBytes(map(iota(n), (q) => q % 61 == 60 || q == n - 1 ? 10u8 : tab[(q / 61 * 60 + q % 61) % 40]));
+    printBytes(map(iota(n), (q) => u8(48 + (q / 64 * 3 + q % 64) % 10)));
+    const short = map(iota(t), (i) => u8(65 + i % 26));
+    printBytes(map(iota(n), (q) => short[q % 40]));
+    return 0;
+}
+";
+    let bin = compile(src, "masked_rows");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let f = isc_codegen::backend::host_features();
+    if ["+avx512bw", "+avx512vl"].iter().all(|x| f.split(',').any(|y| y == *x)) {
+        assert!(ll.contains("masked.store.v64i8"), "the rows are not in one vector");
+    }
+    for args in [["0", "40"], ["40", "40"], ["1000", "40"], ["100003", "40"], ["5000", "39"]] {
+        let want = interp(src, &args);
+        assert_eq!(matches!(want, Outcome::Panic(..)), args[1] == "39", "{:?}", args);
+        for th in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(th));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, th, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    let site = if th == 1 { m.as_str() } else { m.split(": the index is").next().unwrap() };
+                    assert!(r.stderr.contains(site), "{:?} {} threads: {} / {}", args, th, r.stderr, m);
+                }
+            }
+        }
+    }
+}
+
 /// D273: a table read at `x % c` (c a literal from the lanes to 4096) is
 /// copied before the vector loop with its period continued, every vector
 /// then one load wherever its remainders start: bytes in lines written as
