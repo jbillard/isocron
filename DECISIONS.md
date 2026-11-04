@@ -4554,3 +4554,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (large, 4 and 8 threads), -2.9 % (small). Test
     `sparse_filters_skip_the_empty_blocks` (elements kept at the edges of
     the blocks and in the last one, none, nearly all; 1 to 8 threads).
+- **D256 — The functions and loops of the runtime aligned on 64 bytes
+  (2026-11-04).** The mapping of the standard input (D257) made regex-redux
+  slower, 293.6 -> 306.5 ms; with its input given by a pipe, where nothing
+  is mapped, it was still slower: 318.76 -> 323.29 ms, best of 15. The new
+  module had moved the code of the runtime after it, its hot loops (the
+  engine of regular expressions) at other places of the 32-byte windows of
+  the decoders (`perf`: the same functions at other addresses, their share
+  of the cycles changed). The runtime is now built with
+  `-align-all-functions=6 -align-loops=64` (LLVM): a function and its loops
+  keep their place in those windows whatever code comes before them.
+  - Measured (fixed frequency, 4 threads, best of 15): regex-redux by a
+    pipe, D255 and D255 with D257 aligned: 318.74 and 317.15 ms; from its
+    file: 0.294 and 0.289 s. The functions alone aligned: 321.67 and 321.05
+    ms, slower than D255 unaligned (317.76 ms): the loops too.
+  - The 10 programs, D255 aligned against D255 (best of 7): within their
+    noise but k-nucleotide, 1097.5 -> 1108.4 ms; remeasured (best of 15,
+    twice): 1.093 and 1.096 -> 1.098 and 1.098 s, 0.3 % (its loops placed
+    otherwise; not measured further). The kernels of `results/xeon.md`
+    (their loops are compiled code, not the runtime's): -0.6 % to +0.4 %
+    at 4 and 8 threads but `histogram_skewed`, large, 4 threads, +2.1 %.
+  - Size (padding): a hello for Linux 51432 -> 55528 bytes, for Windows
+    54272 -> 57344; regex-redux 1485144 -> 1567064, k-nucleotide 272808 ->
+    293288.
+  - The noise of these measurements: `machine.sh apply parallel` confines
+    every other process to the sibling threads of the cores measured, the
+    commands run meanwhile (this session's own) included; the same binary
+    of the large `histogram` gave 879741 ns in one run and 1595674 ns in a
+    run during which commands ran (a kernel bound by its ports, the most
+    sensitive to a busy sibling). The versions alternate within a run, so
+    their comparison holds; no command now runs during a measurement.

@@ -36,6 +36,12 @@ fn main() {
         if let Some(f) = flags {
             rustflags.push(f);
         }
+        // Functions and loops of the runtime on 64 bytes (D256): the place
+        // of its hot loops in the windows of the decoders no longer depends
+        // on the code before them (regex-redux 1.4 % slower when another
+        // module was added to the runtime, with no change to its own code).
+        rustflags.push("-Cllvm-args=-align-all-functions=6");
+        rustflags.push("-Cllvm-args=-align-loops=64");
         // Rust puts the code of a crate in one section on the targets
         // `*-windows-gnu`: the linker then keeps all of the runtime or
         // nothing (a hello of 1.5 MB). One section per function, so that
