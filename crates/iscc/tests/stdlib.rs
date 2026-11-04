@@ -548,6 +548,54 @@ fn keys_scattered_by_their_hash() {
     }
 }
 
+const GROUPS_SMALL: &str = r##"action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const ks = countBy(iota(n), (i) => i < n - 3000 ? (i / 7) % 60000 : (i % 3 == 0 ? i * 1000003 : i % 5));
+    const keys = ks.keys();
+    const m = keys.length;
+    print(m);
+    print(keys.slice(0, 6));
+    print(sum(map(iota(m), (j) => (j + 1) * (keys[j] % 1000003))));
+    print(sum(map(iota(m), (j) => (j % 97) * (ks.get(keys[j]) ?? 0))));
+    print([ks.get(0) ?? -1, ks.get(59999) ?? -1, ks.get(4) ?? -1]);
+    return 0;
+}
+"##;
+
+/// D296: `countBy` of small keys (counted by their value), the blocks whose
+/// keys are all small in one loop, the table grown first to the largest key
+/// of the block (the keys grow along the indices); then blocks with large
+/// keys among them. The groups in the order of their first occurrence and
+/// their counts, on 1 and 4 threads.
+#[test]
+fn small_keys_counted_in_one_loop() {
+    let bin = compile(GROUPS_SMALL, "std_groups_small");
+    for n in [70_000i64, 2_000_000] {
+        let key = |i: i64| if i < n - 3000 { (i / 7) % 60000 } else if i % 3 == 0 { i * 1000003 } else { i % 5 };
+        let mut order: Vec<i64> = Vec::new();
+        let mut counts: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        for i in 0..n {
+            let k = key(i);
+            let c = counts.entry(k).or_insert(0);
+            if *c == 0 {
+                order.push(k);
+            }
+            *c += 1;
+        }
+        let m = order.len() as i64;
+        let first6: Vec<String> = order[..6].iter().map(|k| k.to_string()).collect();
+        let weighted: i64 = order.iter().enumerate().map(|(j, k)| (j as i64 + 1) * (k % 1000003)).sum();
+        let by_count: i64 = order.iter().enumerate().map(|(j, k)| (j as i64 % 97) * counts[k]).sum();
+        let get = |k: i64| counts.get(&k).copied().unwrap_or(-1);
+        let want = format!("{}\n[{}]\n{}\n{}\n[{}, {}, {}]\n", m, first6.join(", "), weighted, by_count, get(0), get(59999), get(4));
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[&n.to_string()], Some(t));
+            assert_eq!(r.code, 0, "{}", r.stderr);
+            assert_eq!(r.stdout, want, "{} keys, {} threads", n, t);
+        }
+    }
+}
+
 const TAGGED: &str = r##"type List = Nil | Cons(i64, List);
 type Tree = Leaf | Empty | Node(Tree, i64, Tree);
 

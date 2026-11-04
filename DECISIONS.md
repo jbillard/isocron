@@ -5575,3 +5575,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   across 0. Its peak of resident memory 1098740 -> 1297400 KiB. Test
   `keys_scattered_by_their_hash` (also 40 million keys on 16 threads, 16
   parts whose rounds end twice in each).
+- **D296 — The blocks of small keys counted in one loop (2026-11-04).**
+  Part 1 of the goal of 2026-11-04: k-nucleotide after D295, 991 ms. Its
+  profile: `add_block` 41.02 % of the cycles, `count_round` 21.94 %, the
+  keys (`isc_task_29`) 15.73 %; in `add_block`, the counting of the small
+  keys (by their value, the k-mers of fewer than 9 bases) about 31 % of
+  its samples, behind a test of each key (small or not) and of the length
+  of the table of the small keys. Now a block of keys whose largest is
+  small (found first, the table grown once to it) is counted in a loop of
+  its own, without those tests; the other blocks as before. At fixed
+  frequency, alternated rounds, median and 95 % interval by bootstrap:
+  k-nucleotide 989988 -> 967269 µs (-2.34 % [-3.80 %, -1.51 %], 11
+  rounds). The same outputs. Test `small_keys_counted_in_one_loop` (keys
+  that grow along the indices, then blocks with large keys among them; 1
+  and 4 threads).

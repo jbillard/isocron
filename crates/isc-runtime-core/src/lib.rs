@@ -4023,6 +4023,27 @@ impl WordGroups {
         let direct = self.direct;
         for (c, chunk) in keys.chunks(CHUNK).enumerate() {
             let base = (start + c * CHUNK) as u32;
+            // every key of the chunk small (the keys of fewer than 9 bases):
+            // counted by their value in one loop, the table grown first to
+            // the largest of them (D296: the test of each key and of the
+            // length of the table were half of the instructions of a key)
+            let top = chunk.iter().copied().max().unwrap_or(0);
+            if direct && top < Self::DIRECT_MAX {
+                if top as usize >= self.small.len() {
+                    self.grow_small(top as usize);
+                }
+                let small = &mut self.small[..];
+                for (j, &k) in chunk.iter().enumerate() {
+                    let i = base + j as u32;
+                    let e = &mut small[k as usize];
+                    if e.1 == 0 {
+                        self.first.push(i);
+                        self.keys.push(k);
+                    }
+                    *e = (i, e.1 + 1);
+                }
+                continue;
+            }
             // the small keys counted here; the scattered ones put in their
             // list (one pass, D253); the others kept to be hashed
             let mut m = 0usize;
