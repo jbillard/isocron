@@ -279,7 +279,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The audit: `bench/primitives/` (each group of forms in Isocron and in C, the floor), `run.py`, `results/primitives.md`; the strings first (D301)
 - [x] String literals read where they are; `startsWith`/`endsWith` against literals in the generated code; searches of short needles by `memchr`: `startsWith` 18.60 -> 1.90 ns, `indexOf` 56.87 -> 7.66 ns (D301)
 - [x] Case, padding and replacement written once: `replaceAll` 825.43 -> 55.10 ns, `toUpperCase` 186.64 -> 18.29 ns (D302)
-- [ ] The strings still above their floor: a new string for a slice or the bytes only read (`slice` 5.7, `bytes` 2.7), `lines` (5.5), `split` (5.3), `padStart` (9.7, its allocations), templates (3.6)
+- [x] A slice or the bytes of a string read where it is: a view, `slice` 10.11 -> 2.17 ns, `bytes` 8.39 -> 1.96 ns, k-nucleotide -1.50 % (D303)
+- [ ] The strings still above their floor: `lines` (5.5), `split` (5.3), `padStart` (its allocations), templates (3.6)
 - [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
 
 ## The trusted base (the remarks of the author, 2026-11-04)

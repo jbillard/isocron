@@ -262,12 +262,23 @@ impl<'p> Checker<'p> {
             // data of the program (D173): borrowed from no variable, never
             // given away nor freed
             ConstArray(_) => Ok(Val::View(Vec::new())),
-            // a literal: a new string; the operands of an operation on
-            // strings are only read (D134)
             // a string literal: borrowed data of the program (D301); a
             // `bigint` literal is made
             StrLit(_) if e.ty == Type::Str => Ok(Val::View(Vec::new())),
             StrLit(_) => Ok(Val::Fresh),
+            // a slice or the bytes of a string read where it is: a view of
+            // it (D303), which cannot free a new string
+            StrOp(op, es) if crate::passes::str_view(*op, es, &e.ty) => {
+                let v = self.eval(&es[0])?;
+                for x in &es[1..] {
+                    self.eval(x)?;
+                }
+                if v == Val::Fresh {
+                    return fail(e.span, "a part of a new string, which nothing can free".into());
+                }
+                Ok(v)
+            }
+            // the operands of an operation on strings are only read (D134)
             StrOp(op, es) => {
                 for x in es {
                     let v = self.eval(x)?;

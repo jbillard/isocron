@@ -696,3 +696,64 @@ fn direct_writes_of_case_padding_and_replacement() {
     let want = interp_ok(src, &[]);
     agree(src, "str_direct_writes", &[], &want);
 }
+
+/// D303: a slice or the bytes of a string read where it is (a variable, a
+/// field, an element, a parameter, another slice, a literal) are a view of
+/// it, neither copied nor freed; a consumer that keeps one gets a copy: an
+/// array, a field, a result, a variable that outlives its source, a
+/// concatenation, a parameter of a tail call, the accumulator of a fold, a
+/// map read in parallel. The text of the interpreter, nothing lost nor read
+/// after its end (valgrind); a bound out of the string or inside a
+/// character stops the program as the interpreter, at the same place.
+#[test]
+fn parts_of_strings_read_where_they_are() {
+    let src = r#"type Entry = { name: string, n: i64 };
+
+function head(s: string): string {
+    return s.slice(0, 2);
+}
+
+function count(s: string, c: u8): i64 {
+    return sum(map(bytes(s), (b) => b == c ? 1 : 0));
+}
+
+function shrink(s: string, k: i64): i64 {
+    if (s.length <= 1) return k;
+    return shrink(s.slice(1, s.length), k + i64(bytes(s)[0]));
+}
+
+action main(args: string[k]): i32 {
+    const s = args[0];
+    const e: Entry = { name: s + "/" + s, n: 3 };
+    const words = ["alpha", "béta", "gamma", "", "δέλτα"];
+    const inner = s.slice(1, 6).slice(1, 3);
+    print(inner + "|" + e.name.slice(2, 5) + "|" + "constant".slice(2, 5));
+    print([s.slice(0, 1), e.name.slice(0, 3), head(s)]);
+    const kept: Entry = { name: s.slice(2, 4), n: e.name.slice(0, 4).length };
+    print(kept.name + " " + toString(kept.n));
+    const fresh = (s + "!").slice(1, 4);
+    print(fresh);
+    print(words.map((w) => w.slice(0, w.length > 4 ? 4 : w.length).length + count(w, 97u8)));
+    print(words.map((w) => w.length > 4 && w.slice(0, 4) == "alph"));
+    print(fold(iota(5), "start", (acc, i) => acc.slice(0, 3) + toString(i)));
+    print(shrink(e.name, 0));
+    const bs = bytes(s);
+    print(bs.length + i64(bs[0]) + count(e.name, 108u8));
+    print(stringOf(bytes(e.name)) == e.name);
+    print(sum(map(iota(200000), (i) => i64(bytes(words[i % 5]).length) + words[i % 3].slice(1, 3).length)));
+    print(words[1].slice(parseI64(args[1]), parseI64(args[2])));
+    return 0;
+}
+"#;
+    let args = ["hello-world", "1", "3"];
+    let want = interp_ok(src, &args);
+    agree(src, "str_parts_views", &args, &want);
+    let bin = compile(src, "str_parts_views_bad");
+    for (a, b) in [("3", "2"), ("-1", "2"), ("2", "20"), ("1", "2"), ("2", "4")] {
+        let args = ["hello-world", a, b];
+        let m = interp_panic(src, &args);
+        let r = run_bin(&bin, &args);
+        assert_eq!(r.code, 101, "{} {}: {}", a, b, r.stderr);
+        assert_eq!(r.stderr.trim_end(), m.trim_end(), "slice({}, {})", a, b);
+    }
+}

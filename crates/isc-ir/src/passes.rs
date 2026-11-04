@@ -1753,6 +1753,18 @@ fn is_borrowed_expr(e: &Expr) -> bool {
     }
 }
 
+/// `s.slice(a, b)` and `bytes(s)` of a string read where it is (a variable
+/// or a component of one, as every operand after `bind_temporaries`): a
+/// view of its bytes, as a slice of an array (rule F4), neither copied nor
+/// freed; a consumer that keeps it gets a copy (D303).
+pub fn str_view(op: crate::StrOp, es: &[Expr], ty: &Type) -> bool {
+    match op {
+        crate::StrOp::Slice => *ty == Type::Str && is_borrowed_expr(&es[0]),
+        crate::StrOp::Bytes => es.len() == 1 && is_borrowed_expr(&es[0]),
+        _ => false,
+    }
+}
+
 /// Indices (in `children_mut` order) of the slots that only read their
 /// argument.
 fn borrowing_slots(e: &Expr) -> Vec<usize> {
@@ -1884,6 +1896,8 @@ impl Info {
             // slices (rule F4, D97)
             ExprKind::Window(x, _) | ExprKind::Index(x, _) => self.borrows(x),
             ExprKind::Slice(x, _, _) if e.ty.slice_is_view() => self.borrows(x),
+            // a slice or the bytes of a string (D303)
+            ExprKind::StrOp(op, es) if str_view(*op, es, &e.ty) => self.borrows(&es[0]),
             ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => self.borrows(b),
             ExprKind::Let { var, body, .. } => match self.borrows(body) {
                 Some(s) if s.contains(var) => None,
@@ -2037,6 +2051,7 @@ impl<'a> Rewriter<'a> {
         let heap = e.ty.has_heap();
         // a slice of an array of tuples is a copy, not a view (D97)
         let view = !matches!(&e.kind, ExprKind::Slice(..)) || e.ty.slice_is_view();
+        let str_part = matches!(&e.kind, ExprKind::StrOp(op, es) if str_view(*op, es, &e.ty));
         match &mut e.kind {
             ExprKind::Var(v, _) => {
                 let i = self.index;
@@ -2066,8 +2081,21 @@ impl<'a> Rewriter<'a> {
                 self.walk(b)?;
                 return self.walk(body);
             }
-            // views: of the memory of their source (D95, D97)
+            // views: of the memory of their source (D95, D97); a slice or
+            // the bytes of a string (D303)
             ExprKind::Window(..) | ExprKind::Index(..) | ExprKind::Slice(..) if heap && view => {
+                let mut first = None;
+                for c in e.children_mut() {
+                    let o = self.walk(c)?;
+                    first.get_or_insert(o);
+                }
+                return Ok(match first {
+                    Some(Own::Borrowed(s, _)) => Own::Borrowed(s, None),
+                    Some(Own::Fresh) => Own::Fresh,
+                    _ => Own::Scalar,
+                });
+            }
+            ExprKind::StrOp(..) if str_part => {
                 let mut first = None;
                 for c in e.children_mut() {
                     let o = self.walk(c)?;

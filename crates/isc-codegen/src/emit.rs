@@ -10064,6 +10064,42 @@ impl<'p> Gen<'p> {
         v(self.ins(format!("phi i1 [ false, %{} ], [ {}, %{} ]", lfrom, same, lend)), "i1")
     }
 
+    /// `s.slice(a, b)` of a string read where it is (D303): `a` and `b`
+    /// checked as the runtime does (`0 <= a <= b <= n`, each at the start of
+    /// a character or at the end), then the string at `p + a` of `b - a`
+    /// bytes, its pointer inside `s`; a failed check calls the slice of the
+    /// runtime, which stops the program with its message.
+    fn str_slice_view(&mut self, p: &str, n: &str, a: &str, b: &str, span: Span) -> V {
+        let c0 = self.ins(format!("icmp sge i64 {}, 0", a));
+        let c1 = self.ins(format!("icmp sle i64 {}, {}", a, b));
+        let c2 = self.ins(format!("icmp sle i64 {}, {}", b, n));
+        let c01 = self.ins(format!("and i1 {}, {}", c0, c1));
+        let ok = self.ins(format!("and i1 {}, {}", c01, c2));
+        let (la, lload_a, lb, lload_b, lbad, lview) =
+            (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        self.cbr(&ok, &la, &lbad);
+        // a byte of continuation (0x80 to 0xBF) is inside a character
+        for (i, here, load, next) in [(a, &la, &lload_a, &lb), (b, &lb, &lload_b, &lview)] {
+            self.block(here);
+            let inside = self.ins(format!("icmp slt i64 {}, {}", i, n));
+            self.cbr(&inside, load, next);
+            self.block(load);
+            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, i));
+            let byte = self.ins(format!("load i8, ptr {}, align 1", at));
+            let starts = self.ins(format!("icmp sge i8 {}, -64", byte));
+            self.cbr(&starts, next, &lbad);
+        }
+        self.block(&lbad);
+        let out = self.alloca("{ ptr, i64 }");
+        self.emit(format!("call void @isc_str_slice(ptr {}, ptr {}, i64 {}, i64 {}, i64 {}, {})", out, p, n, a, b, Self::pos(span)));
+        self.emit("unreachable");
+        self.block(&lview);
+        let q = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, a));
+        let len = self.ins(format!("sub i64 {}, {}", b, a));
+        let s0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", q));
+        v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", s0, len)), "{ ptr, i64 }")
+    }
+
     fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
         use isc_ir::StrOp as S;
         if op == S::Group && group_stream_ok(&es[0]) {
@@ -10089,6 +10125,9 @@ impl<'p> Gen<'p> {
                 v(n, "i64")
             }
             // the bytes: an array of `u8`, the same layout
+            // the bytes of a string read where it is: the same pointer and
+            // length (D303)
+            S::Bytes if isc_ir::passes::str_view(op, es, &e.ty) => v(vals[0].r.clone(), "{ ptr, i64 }"),
             S::Bytes => {
                 let (p, n) = self.str_parts(&vals[0]);
                 new_str(self, format!("call void @isc_str_new(ptr OUT, ptr {}, i64 {})", p, n))
@@ -10223,6 +10262,10 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 let end = (op == S::TrimEnd) as i32;
                 new_str(self, format!("call void @isc_trim_side(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, end))
+            }
+            S::Slice if isc_ir::passes::str_view(op, es, &e.ty) => {
+                let (p, n) = self.str_parts(&vals[0]);
+                self.str_slice_view(&p, &n, &vals[1].r, &vals[2].r, e.span)
             }
             S::Slice => {
                 let (p, n) = self.str_parts(&vals[0]);

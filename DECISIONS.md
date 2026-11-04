@@ -5741,3 +5741,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `direct_writes_of_case_padding_and_replacement` (ASCII and Unicode,
   fills of one byte and longer ones, replacements without and with `$`,
   of an empty text, at the ends, overlapping; valgrind).
+- **D303 — Parts of strings read where they are (2026-11-04).** In the
+  audit, `l.slice(5, 25).length` took 10.11 ns for a line of 60 bytes and
+  `bytes(l)[7]` 8.39 ns: each made a new string (an allocation, a copy,
+  then its free) only to read it. A slice of an array is a view of its
+  source (rule F4); a slice of a string, or its bytes, is now one too when
+  the string is read where it is (a variable or a component of one, as
+  every operand of an operation on strings after `bind_temporaries`): the
+  ownership pass and its checker take it as borrowed from its source, the
+  generated code checks `0 <= a <= b <= n` and that each bound starts a
+  character or ends the string, as the runtime does (a failed check calls
+  the runtime, which stops the program with its message, at the same
+  place), then reads the string at `p + a`; `bytes(s)` is the same pointer
+  and length. A consumer that keeps one gets a copy, as for every borrowed
+  value. The floors of these two forms copied too; the cheapest known is
+  the check, then the read: rewritten. On one CPU, medians of 5 runs of
+  200 rounds: `slice` 10.11 -> 2.17 ns (its floor with the checks of
+  characters 1.32), `bytes` 8.39 -> 1.96 (floor 0.86), `padStart` of a
+  slice 20.57 -> 12.24. The ten programs, alternated rounds: k-nucleotide
+  -1.50 % [-2.29 %, -0.54 %] (`bytes(sequence)` copied the whole
+  sequence); the others between -1.12 % and +0.10 %, every interval across
+  0. Test `parts_of_strings_read_where_they_are` (variables, fields,
+  elements, parameters, slices of slices, literals; kept in arrays, fields,
+  results, concatenations, tail calls, the accumulator of a fold, a map in
+  parallel; bounds out of the string and inside characters, against the
+  interpreter; valgrind).

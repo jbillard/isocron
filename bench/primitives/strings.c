@@ -123,10 +123,14 @@ int main(int argc, char **argv) {
         p[ls[i].n] = '!';
         acc += ls[i].n + 1 + (p[3] == 0);
     });
+    // a part only read: its bounds checked, each at the start of a
+    // character or at the end (a byte of continuation is 0x80 to 0xBF), no
+    // copy (D303)
     TIME("slice", for (long i = 0; i < N; i++) {
-        char *p = take(20);
-        memcpy(p, ls[i].p + 5, 20);
-        acc += 20 + (p[3] == 0);
+        long a = 5, b = 25, n = ls[i].n;
+        const signed char *p = (const signed char *)ls[i].p;
+        int ok = a <= b && b <= n && (a == n || p[a] >= -64) && (b == n || p[b] >= -64);
+        acc += ok ? b - a : -1;
     });
     TIME("toUpperCase", for (long i = 0; i < N; i++) {
         char *p = take(ls[i].n);
@@ -220,10 +224,7 @@ int main(int argc, char **argv) {
         memcpy(p + 10, ls[i].p, 10);
         acc += 20 + (p[11] == 0);
     });
-    TIME("bytes", for (long i = 0; i < N; i++) {
-        char *p = take(ls[i].n);
-        memcpy(p, ls[i].p, ls[i].n);
-        acc += (unsigned char)p[7];
-    });
+    // the bytes only read: read where they are (D303)
+    TIME("bytes", for (long i = 0; i < N; i++) acc += 7 < ls[i].n ? (unsigned char)ls[i].p[7] : -1);
     return 0;
 }
