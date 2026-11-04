@@ -416,6 +416,51 @@ action main(args: string[k]): i32 {
     }
 }
 
+/// D272: the rows wholly inside the range of a loop (all but the first and
+/// the last) by vectors at constant places: rows of bytes as wide as the
+/// vectors, one lane wider, twice as wide and wider still, lengths that are
+/// a multiple of the row or not, elements that depend on one place of the
+/// row (`q % c == k` for each k at or around the places of the vectors),
+/// 64-bit elements; ranges cut by the chunks of the threads. The
+/// interpreter's results, any number of threads.
+#[test]
+fn whole_rows_by_vectors_at_constant_places() {
+    // one `map` a row width and a place, the width a literal (by rows)
+    let mut body = String::new();
+    for k in [0, 1, 28, 29, 30, 31, 32, 33, 60, 61, 62, 63] {
+        for c in [32, 33, 64, 95] {
+            body.push_str(&format!("    printBytes(map(iota(n), (q) => q % {c} == {k} ? 10u8 : u8(65 + (q / {c} * 7 + q % {c}) % 26)));\n"));
+        }
+    }
+    let src = format!(
+        "action main(args: string[k]): i32 {{
+    const n = parseI64(args[0]);
+{body}    const lines = map(iota(n), (q) => q % 61 == 60 ? 10u8 : u8(48 + q / 61 % 10));
+    print(sum(map(lines, (b) => i64(b))));
+    printBytes(lines);
+    const grid = map(iota(n), (q) => (q / 17) * 1000 + q % 17 * 3 + (q % 17 == 16 ? 7 : 0));
+    print(sum(grid));
+    print(grid.slice(0, Math.min(n, 40)));
+    return 0;
+}}
+"
+    );
+    let src = src.as_str();
+    let bin = compile(src, "whole_rows");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains(", i64 61)") && ll.contains(", i64 95)"), "the maps are not by rows");
+    for n in ["0", "31", "32", "64", "95", "190", "1000", "6080", "100003"] {
+        let want = interp(src, &[n]);
+        for t in [1, 3, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            match &want {
+                Outcome::Exit(c, out) => assert_eq!((r.code, r.stdout.as_str()), (*c, out.as_str()), "n = {} {} threads: {}", n, t, r.stderr),
+                Outcome::Panic(m, _) => panic!("n = {}: the interpreter panics: {}", n, m),
+            }
+        }
+    }
+}
+
 /// D217: vectors of consecutive indices compared with a value of every lane
 /// (a mask of at most one bit from the first index), and their bounds
 /// checked from their first and last lanes (every lane only when those

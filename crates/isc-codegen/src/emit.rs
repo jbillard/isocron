@@ -5426,7 +5426,53 @@ impl<'p> Gen<'p> {
         let em1 = self.ins(format!("sub i64 {}, 1", end));
         let rhi = self.ins(format!("sdiv i64 {}, {}", em1, c));
         let rend = self.ins(format!("add i64 {}, 1", rhi));
-        self.for_range(&rlo, &rend, 1, &mut |g, row| {
+        // the rows wholly inside `start .. end` (all but the first and the
+        // last, D272): their bounds the constants 0 and c, their vectors at
+        // constant places (0, w, ..., then c - w), so that what depends on
+        // the place in the row (`q % c == k`) folds; the rows cut by `start`
+        // or `end` as before
+        let sc = self.ins(format!("add i64 {}, {}", start, c - 1));
+        let ff = self.ins(format!("sdiv i64 {}, {}", sc, c));
+        let lf0 = self.ins(format!("sdiv i64 {}, {}", end, c));
+        let lf = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", lf0, ff));
+        let mut places: Vec<i64> = (0..c / w as i64).map(|k| k * w as i64).collect();
+        if c % w as i64 != 0 {
+            places.push(c - w as i64);
+        }
+        self.for_range(&ff, &lf, 1, &mut |g, row| {
+            let bq = g.ins(format!("mul i64 {}, {}", row, c));
+            let rowv = V { r: row.to_string(), t: "i64".into(), uni: true };
+            for k in &places {
+                g.row_vector(src, p, n, et, w, &rowv, &bq, &k.to_string(), divs, rems)?;
+            }
+            Ok(())
+        })?;
+        self.row_range(src, p, n, et, start, end, w, c, divs, rems, &rlo, &ff)?;
+        let lf1 = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", lf, rlo));
+        self.row_range(src, p, n, et, start, end, w, c, divs, rems, &lf1, &rend)?;
+        self.br(&ldone);
+        self.block(&ldone);
+        Ok(())
+    }
+
+    /// The rows `from .. to` of `fill_rows`, each cut to `start .. end`.
+    #[allow(clippy::too_many_arguments)]
+    fn row_range(
+        &mut self,
+        src: &Src,
+        p: &str,
+        n: &str,
+        et: &Type,
+        start: &str,
+        end: &str,
+        w: u32,
+        c: i64,
+        divs: &[*const Expr],
+        rems: &[*const Expr],
+        from: &str,
+        to: &str,
+    ) -> R<()> {
+        self.for_range(from, to, 1, &mut |g, row| {
             let bq = g.ins(format!("mul i64 {}, {}", row, c));
             let a = g.ins(format!("sub i64 {}, {}", start, bq));
             let r_lo = g.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", a));
@@ -5462,10 +5508,7 @@ impl<'p> Gen<'p> {
             g.br(&lj);
             g.block(&lj);
             Ok(())
-        })?;
-        self.br(&ldone);
-        self.block(&ldone);
-        Ok(())
+        })
     }
 
     /// One vector of a row of `fill_rows`: the elements `bq + r ..

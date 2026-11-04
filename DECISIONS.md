@@ -4961,3 +4961,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (the same bytes as the `.vsix` tried on Windows), `SHA256SUMS` made
   again with it and the notes saying it; the four files downloaded again,
   their sums right.
+- **D272 — The whole rows of a `map` by rows at constant places
+  (2026-11-04).** Part 1 of the goal of 2026-11-04 (each of the ten
+  programs under 3 times its floor). fasta was 7.8 times its floor: 702
+  million instructions for its 254 MB, about 2.1 a byte of the lines where
+  the floor copies them from tables. The profile of the loop of the lines
+  (D214): each row of 61 computed its bounds in the range (`smax`, `smin`,
+  its length, a test of its width) and ran a loop of vectors from them,
+  about 50 instructions a row before its two vectors. Only the first and
+  the last row of a range can be cut; the rows wholly inside it now run by
+  vectors at the constant places 0, w, ..., c - w, their bounds 0 and c,
+  so that what depends on the place in the row folds (`q % 61 == 60`, a
+  constant mask); the two cut rows as before. At fixed frequency, best of
+  9, 4 threads on the host: fasta 18.07 ms -> 14.12 ms (702 -> 469 million
+  instructions, 66.4 -> 50.8 ms of CPU), reverse-complement 60.7 ms ->
+  59.2 ms. The same outputs. Test `whole_rows_by_vectors_at_constant_places`
+  (rows as wide as the vectors, one lane wider, twice as wide and more,
+  lengths a multiple of the row or not, an element depending on one place
+  of the row around each place of the vectors, 64-bit elements; 1, 3 and
+  4 threads).
