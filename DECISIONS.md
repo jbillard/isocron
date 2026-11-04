@@ -5400,3 +5400,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     to be designed in SPEC first. So the effort in Rust goes to what stays
     in Rust (the allocator, the pool, the system), not to the functions
     that will move to Isocron.
+- **D291 — The design of the runtime written in Isocron (SPEC section 17,
+  2026-11-04).** The author asked why the runtime is not written in
+  Isocron now. Its pure parts can be; its core needs primitives the
+  language lacks. The design: modules shipped with the compiler, the only
+  ones that may import `isocron:sys`; a closed list of primitives (typed
+  system calls on arrays, regions of raw memory as unique values, the two
+  primitives that turn a block of a region into the memory of an array and
+  back, shared memory with atomic accesses only and the futex, threads and
+  their local region, the start in assembly), each with its contract, in
+  the compiler and in the interpreter (the same results everywhere); the
+  rest of the runtime checked as any program. The order of the work, and
+  three questions added to section 16: linear values (uniqueness as a
+  guarantee, not an optimisation), the engine of regular expressions and
+  the big integers (rewritten or kept in Rust), the access to explicit
+  vector instructions from the modules of the runtime.

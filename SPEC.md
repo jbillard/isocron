@@ -801,6 +801,9 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 | Disposition automatique (lignes ou colonnes) | aujourd'hui toujours en colonnes | après la phase 7 |
 | Comportement FMA par défaut de Rust, Go, Zig, Fortran | équité de la variante stricte | P5 du POC |
 | Unicité du nom « Isocron » | deux recherches web n'ont trouvé aucun langage de ce nom ; pas une preuve | avant publication |
+| Valeurs linéaires (`Region`, `Shared`, blocs) : l'unicité de la section 8 en garantie, et non plus en optimisation | sans elle, le runtime en Isocron (section 17) pourrait utiliser une région rendue | avant l'allocateur en Isocron |
+| Moteur des expressions régulières et grands entiers : réécrits en Isocron ou gardés en Rust | des dizaines de milliers de lignes, très optimisées | avant la fin de la section 17 |
+| Accès aux instructions vectorielles explicites (masques, comparaisons d'octets) depuis les modules du runtime | les recherches du runtime en dépendent pour leur vitesse | avant le portage des fonctions de texte |
 
 ### Questions tranchées pour la v1 (D161)
 
@@ -812,7 +815,39 @@ Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider s
 - **`scan` flottant parallèle à forme fixe** (D112) : le premier bloc de B éléments cumulé depuis l'élément neutre, chaque bloc suivant depuis son premier élément puis combiné à la retenue du bloc précédent ; les mêmes valeurs pour tout nombre de threads.
 - **`scatter` et règle de collision** (D111) : les valeurs d'un même indice combinées dans l'ordre de k, quel que soit l'opérateur.
 
-## 17. Références
+## 17. Le runtime écrit en Isocron
+
+Le runtime des programmes compilés (allocateur, pool de threads, démarrage, entrées et sorties, fonctions de chaînes et de texte) est aujourd'hui écrit en Rust, et une partie de ce code n'est pas vérifiée par le compilateur Rust (`unsafe`). But : le runtime écrit en Isocron, vérifié comme tout programme (types, bornes, unicité), au-dessus d'une liste fermée de **primitives du système** fournies par le compilateur, seule base de confiance. C'est aussi le chemin vers un `iscc` construit par `iscc` (D290).
+
+### Principes
+
+1. Les modules du runtime sont livrés avec le compilateur (`isocron:sys`, `isocron:heap`, `isocron:pool`, `isocron:text`). Seuls ces modules peuvent importer `isocron:sys` ; un programme qui l'importe est refusé à la compilation.
+2. Les primitives sont énumérées ci-dessous, sans exception implicite. Chacune a un contrat écrit, une implémentation dans le compilateur (et dans l'interpréteur, pour le même résultat partout) et ses tests.
+3. Une primitive ne reçoit jamais d'adresse : un tableau ou une région, dont le compilateur passe lui-même l'adresse et la taille. Le noyau ne peut donc ni lire ni écrire hors de ce qui lui est donné.
+4. La mémoire brute est une valeur **unique** (section 8) : consommée exactement une fois, le vérificateur de l'IR (D96) le contrôle. Une région rendue au système ne peut plus être lue.
+5. L'état partagé entre threads n'existe que dans une région partagée, dont chaque accès est atomique : aucune course de données n'est possible, même dans le runtime.
+
+### Primitives
+
+| Famille | Primitives | Contrat |
+| --- | --- | --- |
+| Appels système | `sysRead(fd, buf: u8[n])`, `sysWrite(fd, data: u8[n])`, `sysOpen(path, flags, mode)`, `sysClose(fd)`, `sysSeek`, `sysExit(code)`, `sysClock(id)` | les numéros et sens de Linux ; un tableau reçu est la seule mémoire que le noyau lit ou écrit ; le résultat est le code du noyau (négatif en cas d'erreur) ; `buf` est consommé et rendu (mis à jour en place, section 8) |
+| Régions | `regionMap(bytes) => Region`, `regionUnmap(r)`, `regionAdvise(r, advice)` ; `load64(r, at)`, `store64(r, at, v)` et leurs variantes de 1, 2, 4 octets, bornés | une `Region` est unique ; `regionUnmap` la consomme ; chaque lecture et écriture est vérifiée contre sa taille |
+| Blocs | `arrayOf<T>(r, at, count) => T[count]`, `blockOf<T>(x: T[n]) => [Region, i64]` | les deux seules primitives qui relient la mémoire brute aux tableaux du langage : un bloc d'une région devient la mémoire d'un tableau, et un tableau libéré redevient un bloc ; c'est l'allocateur qui les appelle, et elles seules |
+| Mémoire partagée | `sharedMap(bytes) => Shared`, `atomicLoad`, `atomicStore`, `atomicAdd`, `atomicCas`, `wait(s, at, expected)`, `wake(s, at, count)` | une `Shared` n'a que des accès atomiques ; `wait` et `wake` sont le futex de Linux |
+| Threads | `spawn(stackBytes, task: action)`, `join(t)`, `threadLocal() => Region` | utilisés par `isocron:pool` seul ; la région locale d'un thread n'est lue que par lui |
+| Démarrage | `isc_start` (assembleur du compilateur) | les relocalisations, le stockage local du thread principal, puis le `main` du runtime en Isocron, qui appelle celui du programme |
+
+### Ordre de travail
+
+1. Les primitives dans le compilateur et l'interpréteur, avec leurs tests.
+2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente, mesuré sur les dix programmes.
+3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads.
+4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
+5. Les entrées et sorties (fichiers, entrée standard projetée).
+6. Restent hors d'Isocron, à décider (section 16) : le moteur des expressions régulières (aujourd'hui `regex-automata`, en Rust) et les grands entiers (`num-bigint`).
+
+## 18. Références
 
 - Blelloch, G. E. *Prefix Sums and Their Applications*. Rapport technique, Carnegie Mellon University, 1990.
 - Blelloch, G. E. *Programming Parallel Algorithms*. Communications of the ACM, 1996.
