@@ -136,3 +136,65 @@ fn large_files_read_by_several_threads() {
     writer.join().unwrap();
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want_of(&big)), "from a pipe");
 }
+
+/// The lines of a large text made by parts in parallel (D252): lines of 0
+/// to 300 bytes, empty ones, `\r\n` ones, runs of `\n` across the cuts of
+/// the parts, with and without a final `\n`; the same lines as Rust's rules
+/// (`text_lines`), on 1, 3 and 4 threads (other cuts).
+#[test]
+fn lines_of_a_large_text_made_in_parallel() {
+    let src = "action main(args: string[k]): i32 {
+    const lines = readStdinLines();
+    const n = lines.length;
+    print(n);
+    print(sum(map(iota(n), (i) => (i + 1) * lines[i].length)));
+    print(sum(map(iota(n), (i) => lines[i].length > 0 ? i64(bytes(lines[i])[0]) * (i % 7) : 0)));
+    print([lines[0], lines[n / 2], lines[n - 1]]);
+    return 0;
+}
+";
+    let bin = compile(src, "stdin_lines_parallel");
+    let mut x = 12345u64;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut text = Vec::new();
+    while text.len() < 3 << 20 {
+        let r = next();
+        let len = match r % 10 {
+            0 => 0,
+            1 => (r >> 8) as usize % 300,
+            _ => (r >> 8) as usize % 70,
+        };
+        text.extend((0..len).map(|j| b'a' + ((r >> (j % 50)) % 26) as u8));
+        if r % 13 == 0 {
+            text.push(b'\r');
+        }
+        text.push(b'\n');
+        if r % 97 == 0 {
+            text.extend(std::iter::repeat(b'\n').take((r >> 20) as usize % 40));
+        }
+    }
+    for final_newline in [true, false] {
+        let mut t = text.clone();
+        if !final_newline {
+            t.extend_from_slice(b"last line without its newline");
+        }
+        let s = std::str::from_utf8(&t).unwrap();
+        let body = s.strip_suffix('\n').unwrap_or(s);
+        let lines: Vec<&str> = body.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+        let n = lines.len();
+        let weighted: i64 = lines.iter().enumerate().map(|(i, l)| (i as i64 + 1) * l.len() as i64).sum();
+        let firsts: i64 = lines.iter().enumerate().map(|(i, l)| if l.is_empty() { 0 } else { l.as_bytes()[0] as i64 * (i as i64 % 7) }).sum();
+        let want = format!("{}\n{}\n{}\n[{}, {}, {}]\n", n, weighted, firsts, lines[0], lines[n / 2], lines[n - 1]);
+        let path = tmp(&format!("stdin_lines_{}.txt", final_newline));
+        std::fs::write(&path, &t).unwrap();
+        for threads in ["1", "3", "4"] {
+            let o = std::process::Command::new(&bin).env("ISC_THREADS", threads).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+            assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads, final newline {}", threads, final_newline);
+        }
+    }
+}

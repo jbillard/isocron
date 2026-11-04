@@ -79,8 +79,14 @@ const SMALL_MAX: usize = 256 << 10;
 /// The small classes are 0..SMALL_CLASSES (the last one is SMALL_MAX).
 const SMALL_CLASSES: usize = 80;
 const CHUNK: usize = 4 << 20;
-/// Bytes of free blocks a thread keeps per small class (from 1 to 32 blocks).
+/// Bytes of free blocks a thread keeps per small class (from 1 to
+/// THREAD_BLOCKS_MAX blocks).
 const THREAD_CLASS_BYTES: usize = 128 << 10;
+/// The most blocks a thread keeps per class: half of it taken at each
+/// refill, so that threads that make many small blocks at once take the lock
+/// of their class rarely (D252: 32, the lines of a text made by 4 threads
+/// spent 83 % of their time in `refill`).
+const THREAD_BLOCKS_MAX: usize = 256;
 
 const MEDIUM_MAX: usize = 32 << 20;
 /// The class of the medium blocks.
@@ -131,8 +137,8 @@ const THREAD_LIMIT: [u32; SMALL_CLASSES] = {
         let n = THREAD_CLASS_BYTES / alloc_class_size(i);
         t[i] = if n < 1 {
             1
-        } else if n > 32 {
-            32
+        } else if n > THREAD_BLOCKS_MAX {
+            THREAD_BLOCKS_MAX as u32
         } else {
             n as u32
         };
@@ -673,6 +679,50 @@ unsafe fn carve(class: usize, size: usize) -> *mut Header {
     h
 }
 
+/// Up to `count` new small blocks of class `class`, carved under one lock of
+/// the chunks, as a list (by `next`); null if none could be had.
+unsafe fn carve_many(class: usize, size: usize, count: usize) -> *mut Header {
+    // the blocks of ALIGNED_MIN bytes or more keep the placement of `carve`
+    if size >= ALIGNED_MIN || count <= 1 {
+        let mut list: *mut Header = null_mut();
+        for _ in 0..count {
+            let h = carve(class, size);
+            if h.is_null() {
+                break;
+            }
+            (*h).next = list;
+            list = h;
+        }
+        return list;
+    }
+    let need = HEADER + size;
+    let g = group(size);
+    let mut list: *mut Header = null_mut();
+    spin_lock(&CHUNK_LOCK);
+    for _ in 0..count {
+        if BUMP[g] + need > BUMP_END[g] {
+            let base = map(CHUNK + HUGE, 0);
+            if base.is_null() {
+                break;
+            }
+            let start = (base as usize).next_multiple_of(HUGE);
+            madvise(start as *mut c_void, CHUNK, MADV_HUGEPAGE);
+            BUMP[g] = start;
+            BUMP_END[g] = start + CHUNK;
+        }
+        let h = BUMP[g] as *mut Header;
+        BUMP[g] += need;
+        (*h).class = class as u32;
+        (*h).state = FREE;
+        (*h).contents = ZERO;
+        (*h).idle = 0;
+        (*h).next = list;
+        list = h;
+    }
+    CHUNK_LOCK.store(false, Ordering::Release);
+    list
+}
+
 /// A free small block goes to the global list of its class. The lock of the
 /// class held.
 unsafe fn give_small(h: *mut Header) {
@@ -686,19 +736,10 @@ unsafe fn give_small(h: *mut Header) {
 /// its limit from the global list (or new blocks), returns one of them.
 #[cold]
 unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header {
-    let batch = (THREAD_LIMIT[class] / 2).max(1);
+    let batch = (THREAD_LIMIT[class] / 2).max(1) as usize;
     let mut first: *mut Header = null_mut();
-    lock_small(class);
-    for _ in 0..batch {
-        let mut h = *small_head(class);
-        if h.is_null() {
-            h = carve(class, size);
-            if h.is_null() {
-                break;
-            }
-        } else {
-            *small_head(class) = (*h).next;
-        }
+    let mut got = 0usize;
+    let mut keep = |h: *mut Header| {
         if first.is_null() {
             first = h;
         } else {
@@ -706,8 +747,28 @@ unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header
             (*tc).heads[class] = h;
             (*tc).counts[class] += 1;
         }
+    };
+    lock_small(class);
+    while got < batch {
+        let h = *small_head(class);
+        if h.is_null() {
+            break;
+        }
+        *small_head(class) = (*h).next;
+        keep(h);
+        got += 1;
     }
     unlock_small(class);
+    // the rest new, carved under one lock of the chunks (D252: one lock per
+    // block before)
+    if got < batch {
+        let mut h = carve_many(class, size, batch - got);
+        while !h.is_null() {
+            let next = (*h).next;
+            keep(h);
+            h = next;
+        }
+    }
     first
 }
 

@@ -1063,11 +1063,90 @@ unsafe fn str_array<'a>(items: &mut dyn Iterator<Item = &'a str>, count: usize) 
     IscArray { ptr: q as *mut u8, len: count as i64 }
 }
 
+/// From this many bytes on, the lines of a text are made by parts in
+/// parallel (D252).
+const LINES_PARALLEL_MIN: usize = 1 << 20;
+
+/// `lines(text)` (`sem::text_lines`: separated by `\n`, a `\r` before it
+/// removed, no empty last line after a final `\n`). A large text by parts
+/// in parallel (D252): each part counts its `\n` (a line starts at the
+/// start of the text and after each `\n`: the part of a `\n` owns the line
+/// after it), the counts give the index of the first line of each part,
+/// then each part makes the strings of its lines (its own allocations). The
+/// same array for any number of threads.
 #[no_mangle]
 pub unsafe extern "C" fn isc_lines(out: *mut IscArray, p: *const u8, n: i64) {
-    let s = core::str::from_utf8_unchecked(bytes_of(p, n));
-    let count = sem::text_lines(s).count();
-    *out = str_array(&mut sem::text_lines(s), count);
+    let b = bytes_of(p, n);
+    let threads = thread_count();
+    if b.len() < LINES_PARALLEL_MIN || threads <= 1 {
+        let s = core::str::from_utf8_unchecked(b);
+        let count = sem::text_lines(s).count();
+        *out = str_array(&mut sem::text_lines(s), count);
+        return;
+    }
+    // the text without its final `\n`: its lines are `split('\n')`
+    let body = &b[..b.len() - (b[b.len() - 1] == b'\n') as usize];
+    let parts = (threads * 4).min(256);
+    struct Ctx {
+        body: *const u8,
+        len: usize,
+        parts: usize,
+        counts: [usize; 257],
+        q: *mut IscStr,
+    }
+    // (the parts write their counts through the pointer: each its own)
+    extern "C" fn count(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = ctx as *mut Ctx;
+            let (len, parts) = ((*c).len, (*c).parts);
+            let (a, e) = (len * k as usize / parts, len * (k as usize + 1) / parts);
+            let s = core::slice::from_raw_parts((*c).body.add(a), e - a);
+            (*c).counts.as_mut_ptr().add(k as usize + 1).write(memchr::memchr_iter(b'\n', s).count());
+        }
+    }
+    let mut ctx = Ctx { body: body.as_ptr(), len: body.len(), parts, counts: [0; 257], q: core::ptr::null_mut() };
+    isc_parallel_for(parts as i64, count, &mut ctx as *mut Ctx as *mut c_void, -1);
+    // the first line of part k: 1 + the `\n` before it (line 0 is part 0's)
+    let mut total = 1usize;
+    for k in 0..parts {
+        let nl = ctx.counts[k + 1];
+        ctx.counts[k + 1] = total;
+        total += nl;
+    }
+    ctx.counts[0] = 0;
+    ctx.q = isc_alloc((total * core::mem::size_of::<IscStr>()) as i64) as *mut IscStr;
+    extern "C" fn make(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let k = k as usize;
+            let (a, e) = (c.len * k / c.parts, c.len * (k + 1) / c.parts);
+            let body = core::slice::from_raw_parts(c.body, c.len);
+            // the lines that start in [a, e): at 0 for part 0, and after each
+            // `\n` of [a, e)
+            let mut idx = if k == 0 { 0 } else { c.counts[k + 1] };
+            let mut start = if k == 0 { Some(0usize) } else { None };
+            let mut at = a;
+            loop {
+                let s = match start.take() {
+                    Some(s) => s,
+                    None => match memchr::memchr(b'\n', &body[at..e]) {
+                        Some(o) => {
+                            at = at + o + 1;
+                            at
+                        }
+                        None => break,
+                    },
+                };
+                let end = memchr::memchr(b'\n', &body[s..]).map(|o| s + o).unwrap_or(c.len);
+                let line = &body[s..end];
+                let line = if line.last() == Some(&b'\r') { &line[..line.len() - 1] } else { line };
+                *c.q.add(idx) = new_str(line);
+                idx += 1;
+            }
+        }
+    }
+    isc_parallel_for(parts as i64, make, &mut ctx as *mut Ctx as *mut c_void, -1);
+    *out = IscArray { ptr: ctx.q as *mut u8, len: total as i64 };
 }
 
 #[no_mangle]

@@ -4433,3 +4433,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Linux and WebAssembly are those of 0.1.0 (the flags changed only for the
   runtimes of Windows): the measurements of D249 stand. Test
   `version_of_the_compiler`.
+- **D252 — The lines of a text in parallel, the small blocks refilled by
+  batches (2026-11-04).** k-nucleotide spent 473 ms before its first
+  count: reading 30 ms, `readStdinLines` 323 ms more (4.2 million lines,
+  one new string each, on one thread, in two passes), the headers 54, the
+  join 38, the codes 19 (4 threads).
+  - `isc_lines` of a text of 1 MiB or more by parts in parallel: each part
+    counts its `\n` (memchr), a line starts at the start of the text and
+    after each `\n` (the part of the `\n` owns the line after it), the
+    counts give the index of the first line of each part, each part makes
+    its strings; the same array for any number of threads. Alone, slower
+    (355 -> 605 ms): `heap::refill` 83 % of the cycles. The blocks of a
+    refill were carved one by one, each under the lock of the chunks
+    (one for all classes), at most 16 per refill.
+  - The allocator: a thread keeps up to 256 blocks of a class (32 before;
+    still at most 128 KiB), half of them taken per refill; the new blocks
+    of a refill carved under one lock of the chunks (`carve_many`; the
+    blocks of 16 KiB or more keep the placement of `carve`). The lines of
+    k-nucleotide: 354 -> 190 ms. What is left of `refill` (39 %) is the
+    first write of the headers of new blocks: a line of 60 bytes takes a
+    block of 128 with its header of 64 bytes.
+  - At fixed frequency, 4 threads, the ten programs built before and after
+    (one series): k-nucleotide 1.607 s -> 1.453 s, regex-redux 0.303 s ->
+    0.291 s, the eight others unchanged (within 2 ms). Test
+    `lines_of_a_large_text_made_in_parallel` (lines of 0 to 300 bytes,
+    empty, `\r\n`, runs of `\n` across the cuts of the parts, with and
+    without a final `\n`; 1, 3 and 4 threads).

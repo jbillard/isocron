@@ -18,6 +18,7 @@ doctest = false
 
 [dependencies]
 isc-runtime-core = { path = "../isc-runtime-core" }
+memchr = { version = "2", default-features = false }
 
 [profile.release]
 opt-level = 3
