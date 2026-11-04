@@ -18,7 +18,7 @@ fn clean(src: &str, name: &str, args: &[&str]) {
         return;
     };
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
-    let bin = compile_with(src, name, opts);
+    let bin = compile_glibc(src, name, opts);
     let out = std::process::Command::new(vg)
         .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
         .arg(&bin)

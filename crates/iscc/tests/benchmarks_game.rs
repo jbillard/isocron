@@ -58,9 +58,12 @@ fn output(name: &str, arg: &str, input: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     assert_eq!(isc_interp::run(&p, &[arg.to_string()], &mut out).unwrap(), 0, "{}", name);
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
-    let bin = compile_with(&src, &format!("bg_{}", name), opts);
+    let bin = compile_with(&src, &format!("bg_{}", name), opts.clone());
     assert_eq!(run(&bin, &[arg], input), out, "{}: compiled and interpreted", name);
-    valgrind_clean(&bin, &[arg], input);
+    // under Valgrind, linked with glibc (its allocator, D289)
+    let vg = compile_glibc(&src, &format!("bg_{}_glibc", name), opts);
+    assert_eq!(run(&vg, &[arg], input), out, "{}: compiled with glibc and interpreted", name);
+    valgrind_clean(&vg, &[arg], input);
     out
 }
 

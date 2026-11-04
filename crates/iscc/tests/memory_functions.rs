@@ -3,8 +3,8 @@
 //! every length up to 300 and of some larger ones (past the caches among
 //! them), at places of every alignment, compiled for each instruction set
 //! (each its variant of the runtime) and run on threads: the same result
-//! as the interpreter. A program takes none of these functions from the C
-//! library.
+//! as the interpreter. A program is static, without a C library (D289):
+//! no dynamic loader, nothing imported.
 
 mod common;
 use common::*;
@@ -47,10 +47,17 @@ fn copies_and_comparisons_of_every_length() {
         let r = run_bin_threads(&bin, &[], Some(4));
         assert_eq!(r.code, 0, "{:?}: {}", isa, r.stderr);
         assert_eq!(r.stdout, want, "{:?}", isa);
-        // the program defines them (and may export them), imports none
-        let imported = imports(&std::fs::read(&bin).unwrap());
+        // the functions of memory its own, never imported; a static program
+        // (D289: no dynamic loader, nothing imported) unless built to run
+        // with glibc's allocator (the second run of the suite)
+        let elf = std::fs::read(&bin).unwrap();
+        let imported = imports(&elf);
         for f in ["memcpy", "memmove", "memset", "memcmp", "bcmp", "strlen"] {
             assert!(!imported.iter().any(|n| n == f), "{:?} imports {}", isa, f);
+        }
+        if std::env::var("ISC_ALLOC").as_deref() != Ok("glibc") {
+            assert!(!has_interpreter(&elf), "{:?}: a dynamic loader", isa);
+            assert_eq!(imported, Vec::<String>::new(), "{:?}", isa);
         }
     }
 }
@@ -83,6 +90,13 @@ fn imports(elf: &[u8]) -> Vec<String> {
             names.push(String::from_utf8_lossy(&elf[start..end]).into_owned());
         }
     }
-    assert!(!names.is_empty(), "no imported symbol found: the table was not read");
     names
+}
+
+/// Whether an ELF64 executable names a dynamic loader (`PT_INTERP`).
+fn has_interpreter(elf: &[u8]) -> bool {
+    let u16_at = |o: usize| u16::from_le_bytes(elf[o..o + 2].try_into().unwrap()) as usize;
+    let u32_at = |o: usize| u32::from_le_bytes(elf[o..o + 4].try_into().unwrap());
+    let phoff = u64::from_le_bytes(elf[0x20..0x28].try_into().unwrap()) as usize;
+    (0..u16_at(0x38)).any(|k| u32_at(phoff + k * u16_at(0x36)) == 3)
 }

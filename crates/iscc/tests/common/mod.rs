@@ -132,6 +132,16 @@ pub fn compile_with(src: &str, name: &str, codegen: isc_codegen::Options) -> Pat
 
 /// `compile_with` and the libraries of the `extern` functions (`--link`).
 pub fn compile_linked(src: &str, name: &str, codegen: isc_codegen::Options, link: &[&str]) -> PathBuf {
+    compile_built(src, name, codegen, link, false)
+}
+
+/// `compile_with`, the program linked with glibc (D289): for Valgrind,
+/// which sees the blocks of glibc's allocator (`ISC_ALLOC=glibc`).
+pub fn compile_glibc(src: &str, name: &str, codegen: isc_codegen::Options) -> PathBuf {
+    compile_built(src, name, codegen, &[], true)
+}
+
+fn compile_built(src: &str, name: &str, codegen: isc_codegen::Options, link: &[&str], glibc: bool) -> PathBuf {
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(name);
     let opts = iscc::BuildOptions {
@@ -141,6 +151,7 @@ pub fn compile_linked(src: &str, name: &str, codegen: isc_codegen::Options, link
         debug: false,
         codegen,
         link: link.iter().map(|s| s.to_string()).collect(),
+        glibc,
     };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
     out
@@ -195,7 +206,7 @@ pub fn compile_wasm_isa(src: &str, name: &str, isa: isc_codegen::Isa) -> PathBuf
     o.isa = isa;
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(&format!("{}.wasm", name));
-    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new() };
+    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
     out
 }

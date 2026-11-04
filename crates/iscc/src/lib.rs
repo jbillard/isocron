@@ -28,6 +28,23 @@ pub struct BuildOptions {
     /// The libraries of the `extern` functions (`--link`, D125): a name
     /// (`-lname`) or the path of a library or an object file.
     pub link: Vec<String>,
+    /// Linked with glibc under Linux even without C functions (the tests
+    /// under Valgrind, which sees the blocks of glibc's allocator, D289).
+    pub glibc: bool,
+}
+
+/// Whether a program for Linux is linked with glibc (D289): when it
+/// declares C functions or is given libraries (their code needs the C
+/// library), when it is built to run with glibc's allocator
+/// (`ISC_ALLOC=glibc` at its build, the second run of the tests) or by a C
+/// compiler (`ISC_CC`), or when asked; otherwise it is a static program
+/// without a C library.
+fn with_glibc(p: &isc_ir::Program, opts: &BuildOptions) -> bool {
+    !p.externs.is_empty()
+        || !opts.link.is_empty()
+        || opts.glibc
+        || std::env::var("ISC_ALLOC").map(|v| v == "glibc").unwrap_or(false)
+        || std::env::var("ISC_CC").is_ok()
 }
 
 /// Compiles the IR to a native executable.
@@ -76,6 +93,8 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
         link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link)
     } else if wasm {
         link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link)
+    } else if !with_glibc(p, opts) {
+        link_linux_static(&obj, &rt, &opts.output, opts.debug)
     } else {
         link(&obj, &rt, &opts.output, opts.debug, &opts.link)
     };
@@ -224,6 +243,19 @@ fn run_linker(argv0: &str, flavor: &str, args: Vec<std::ffi::OsString>, external
     Ok(())
 }
 
+/// The LLD of the Rust toolchain (`rust-lld`, which needs `-flavor`), for an
+/// iscc without LLD in it (a build of development).
+fn rust_lld() -> Result<(PathBuf, bool), String> {
+    let rustlib = rust_sysroot()?.join("lib/rustlib");
+    let lld = std::fs::read_dir(&rustlib)
+        .map_err(|e| format!("cannot read `{}`: {}", rustlib.display(), e))?
+        .filter_map(|d| d.ok())
+        .map(|d| d.path().join("bin/rust-lld"))
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("no `rust-lld` under `{}`", rustlib.display()))?;
+    Ok((lld, true))
+}
+
 /// The path or `-lname` of a library given by `--link`.
 fn lib_arg(l: &str) -> std::ffi::OsString {
     if l.contains('/') || l.contains('\\') || l.ends_with(".a") || l.ends_with(".o") || l.ends_with(".lib") || l.ends_with(".so") || l.contains(".so.") {
@@ -319,17 +351,7 @@ fn link_wasm(obj: &Path, rt: &Path, out: &Path, debug: bool, triple: &str, threa
     if !debug {
         a.push("--strip-all".into());
     }
-    let external = || -> Result<(PathBuf, bool), String> {
-        let rustlib = rust_sysroot()?.join("lib/rustlib");
-        let lld = std::fs::read_dir(&rustlib)
-            .map_err(|e| format!("cannot read `{}`: {}", rustlib.display(), e))?
-            .filter_map(|d| d.ok())
-            .map(|d| d.path().join("bin/rust-lld"))
-            .find(|p| p.is_file())
-            .ok_or_else(|| format!("no `rust-lld` under `{}`", rustlib.display()))?;
-        Ok((lld, true))
-    };
-    let r = run_linker("wasm-ld", "wasm", a, &external);
+    let r = run_linker("wasm-ld", "wasm", a, &rust_lld);
     let _ = std::fs::remove_dir_all(&tmp);
     r
 }
@@ -358,7 +380,8 @@ fn link_linux_lld(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String
     let sys = glibc_libraries()?;
     let tmp = out.with_extension("crt");
     write_files(&tmp, GLIBC_FILES)?;
-    let mut a: Vec<std::ffi::OsString> = ["-pie", "-m", "elf_x86_64", "--hash-style=gnu", "--build-id", "--eh-frame-hdr", "-z", "relro", "-z", "now", "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2", "--gc-sections", "--allow-shlib-undefined", "-o"].iter().map(|x| x.into()).collect();
+    // the functions of glibc for the threads of the runtime (D289)
+    let mut a: Vec<std::ffi::OsString> = ["-pie", "-m", "elf_x86_64", "--hash-style=gnu", "--build-id", "--eh-frame-hdr", "-z", "relro", "-z", "now", "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2", "--gc-sections", "--allow-shlib-undefined", "--defsym=isc_os=isc_os_glibc", "-o"].iter().map(|x| x.into()).collect();
     a.push(out.into());
     a.push(tmp.join("Scrt1.o").into());
     a.push(tmp.join("crti.o").into());
@@ -395,6 +418,47 @@ fn link_linux_lld(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String
     r
 }
 
+/// Links a static program for Linux without a C library (D289) with LLD in
+/// iscc: position-independent (`-static -pie`: its addresses random, as a
+/// program of glibc's), its entry `isc_start` of the runtime, which applies
+/// its relocations and makes its thread-local storage, the functions of
+/// the runtime for its threads (`isc_os_own`); nothing else than its object
+/// and the runtime.
+fn link_linux_static(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
+    let mut a: Vec<std::ffi::OsString> = [
+        "-static",
+        "-pie",
+        "--no-dynamic-linker",
+        "-m",
+        "elf_x86_64",
+        "--build-id",
+        "--eh-frame-hdr",
+        "-z",
+        "relro",
+        "-z",
+        "now",
+        "-z",
+        "text",
+        "-z",
+        "noexecstack",
+        "--gc-sections",
+        "-e",
+        "isc_start",
+        "--defsym=isc_os=isc_os_own",
+        "-o",
+    ]
+    .iter()
+    .map(|x| x.into())
+    .collect();
+    a.push(out.into());
+    a.push(obj.into());
+    a.push(rt.into());
+    if !debug {
+        a.push("-s".into());
+    }
+    run_linker("ld.lld", "gnu", a, &rust_lld)
+}
+
 /// Links the program with the runtime (which needs only the C library, and
 /// `libm` for `fmod`). Unused sections are dropped and, unless `debug`, the
 /// symbols are stripped: the code that runs is the same, the file is smaller.
@@ -406,7 +470,7 @@ fn link(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Resu
     }
     let cc = std::env::var("ISC_CC").unwrap_or_else(|_| "cc".into());
     let mut cmd = std::process::Command::new(&cc);
-    cmd.arg("-o").arg(out).arg(obj).arg("-Wl,--gc-sections");
+    cmd.arg("-o").arg(out).arg(obj).arg("-Wl,--gc-sections").arg("-Wl,--defsym=isc_os=isc_os_glibc");
     // the libraries of the `extern` functions, then the C library, before
     // the runtime: the runtime's archive holds weak copies of C functions
     // (Rust's `compiler_builtins`, `cbrt` among them) that would otherwise

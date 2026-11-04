@@ -183,11 +183,11 @@ unsafe fn install_handler() -> bool {
         return false;
     }
     OLD_SEGV = segv;
-    let act = SigAction { handler: on_sigio as usize, mask: 0, flags: SA_RESTART, restorer: 0 };
+    let act = SigAction { handler: on_sigio as *const () as usize, mask: 0, flags: SA_RESTART, restorer: 0 };
     if sigaction(SIGIO, &act, core::ptr::null_mut()) != 0 {
         return false;
     }
-    let act = SigAction { handler: on_sigsegv as usize, mask: 0, flags: SA_SIGINFO | SA_RESTART | SA_ONSTACK, restorer: 0 };
+    let act = SigAction { handler: on_sigsegv as *const () as usize, mask: 0, flags: SA_SIGINFO | SA_RESTART | SA_ONSTACK, restorer: 0 };
     if sigaction(SIGSEGV, &act, core::ptr::null_mut()) != 0 {
         return false;
     }

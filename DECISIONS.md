@@ -5302,3 +5302,76 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     program copying and comparing strings of every length, for each
     instruction set, the result of the interpreter, and none of these
     functions imported.
+- **D289 — Static programs without a C library under Linux (2026-11-04;
+  the steps B2 and B3 of D287).** A program that declares no C function
+  (and is built without `--link`, `ISC_CC`, `ISC_ALLOC=glibc`, or the
+  option `glibc` of `BuildOptions`) is a static position-independent
+  executable (`-static -pie --no-dynamic-linker`: its addresses random, as
+  before), its object and the runtime only, its entry `isc_start`
+  (`process.rs`).
+  - `isc_start`, in assembly: the relocations of the program
+    (`R_X86_64_RELATIVE` of `DT_RELA`, the only kind of a static PIE) to its
+    load address (`__ehdr_start`), before any code that reads an address
+    from memory; then `start`: the program headers (`PT_TLS` noted,
+    `PT_GNU_RELRO` made read-only, as the loader does), the thread-local
+    storage of the main thread (a static buffer of 4 KiB, a mapping if it
+    does not fit; the block below the thread pointer, as the linker counts
+    it for x86-64, the control block above it, its first word pointing to
+    itself: `%fs:0`, the only word of it the code reads), the bounds of its
+    stack (from above `AT_EXECFN` down by `RLIMIT_STACK`), `main`,
+    `exit_group`.
+  - The threads by `clone`: one mapping each (a guard page, the stack
+    reserved, not committed, `MAP_STACK`, the thread-local storage and the
+    record of the thread at its top); the new thread starts in the block of
+    assembly of `spawn`, which it never leaves, calls `thread_main` (the
+    bounds of its stack, its function, its cache of the heap given back),
+    then `exit`; `join` waits on the word the kernel clears and wakes at
+    the end of the thread (`CLONE_CHILD_CLEARTID`, a futex that is not
+    private), then unmaps. No key of pthread: the threads of the runtime
+    give their cache back themselves.
+  - glibc kept for the programs that declare C functions (their code needs
+    it: its start, its threads, its allocator for `ISC_ALLOC=glibc`):
+    `isc_os`, the table of these functions, is defined at the link
+    (`--defsym=isc_os=isc_os_own` or `isc_os_glibc`), and the other table,
+    with the C functions it calls, is dropped by `--gc-sections` (an
+    undefined symbol of a dropped section is no error for LLD, tried first).
+  - Valgrind (the tests of SPEC section 15, no leak) follows only the
+    blocks of glibc's allocator: those tests build their programs with
+    glibc (`compile_glibc`); the second run of the suite (`ISC_ALLOC=glibc`
+    in the environment of the builds) links all its programs with glibc:
+    both kinds of programs tested. In a static program `ISC_ALLOC=glibc`
+    does nothing. An `iscc` without LLD inside (a build of development)
+    links the static programs with the `rust-lld` of the Rust toolchain.
+  - The first chunk of the heap in pages of 4 KiB (`MADV_NOHUGEPAGE`): this
+    machine gives huge pages to any mapping (`transparent_hugepage`
+    `[always]`), and the first touch of the chunk cleared a page of 2 MiB
+    at every start: 100 huge pages for 100 starts of the empty program, 0
+    after. Tried first and wrong: the chunk without `MADV_HUGEPAGE` only
+    (0.19 ms of processor as before: the kernel gives the huge page
+    anyway). The later chunks keep their huge pages (D79).
+  - The empty program (`print(1)`, `perf stat -r 500`, the creation of the
+    process by `perf` counted): with glibc 0.684 ms, 0.37 ms of processor,
+    68 page faults (200482 cycles in the program, 947357 in the kernel);
+    static 0.463 ms, 0.19 ms, 15 faults (17002 cycles in the program, 4637
+    instructions, 577362 in the kernel); with the first chunk in pages of 4
+    KiB 0.327 ms, 0.05 ms, 18 faults (143503 cycles in the kernel); an
+    executable that does nothing but end: 0.296 ms. The binaries are
+    smaller (fasta 209184 bytes against 231744).
+  - Safety as `isc-mem` (D288): the stack of the kernel, the headers of the
+    program, the image of the thread-local storage, the buffer of the main
+    thread and the mapping of each thread become slices once; the rest is
+    safe code on them; left in `unsafe` blocks: the system calls, the block
+    of `clone` (the new thread starts inside it), the thread pointer, the
+    record of a thread. 87 lines of code inside `unsafe` blocks in
+    `process.rs`, against 156 in its first version.
+  - The ten programs, linked with glibc (8c30abd) against static, the
+    median of the differences of alternated rounds and its interval at 95
+    % by bootstrap: fasta -5.81 % [-6.19, -5.07], reverse-complement -1.16
+    % [-1.46, -0.71], binary-trees -0.54 % [-1.16, -0.11], spectral-norm
+    -0.22 % [-0.34, -0.17], mandelbrot -0.12 % [-0.14, -0.04]; no
+    measurable difference for regex-redux +0.16 % [-0.09, +0.42],
+    k-nucleotide -1.09 % [-1.58, +0.41], pidigits -0.03 % [-0.18, +0.08],
+    fannkuch-redux +0.10 % [-0.10, +0.38]. n-body +0.06 % [+0.06, +0.07] in
+    that run, not found again in the next (-0.04 % [-0.93, +0.24], 15
+    rounds, the machine noisier: intervals of about 1.5 %); its code is the
+    same: to be measured again on a quiet machine (TODO.md).

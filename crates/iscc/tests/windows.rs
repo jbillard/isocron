@@ -17,7 +17,7 @@ fn compile_windows(src: &str, name: &str) -> PathBuf {
     let o = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(&format!("{}.exe", name));
-    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new() };
+    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
     out
 }

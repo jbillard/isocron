@@ -1921,9 +1921,11 @@ NUL-terminated copy, `const char *`) and arrays of scalars (passed as two
 C parameters: a pointer to the elements, read only, and their number, an
 `int64_t`); it returns a scalar or `void`. At most six parameters go in
 integer registers (an array takes two) and eight in floating-point
-registers; variadic C functions are not supported. A program is linked
-with the C library and `libm`; `iscc build --link name` adds `-lname` (or
-a library given by its path), and `iscc run --link name` loads the same
+registers; variadic C functions are not supported. A program that
+declares C functions is linked with the C library and `libm` (on Linux,
+the other programs have no C library: they are static programs that call
+the system themselves); `iscc build --link name` adds `-lname` (or a
+library given by its path), and `iscc run --link name` loads the same
 library into the interpreter.
 
 ```isc
@@ -2305,8 +2307,10 @@ action main(args: string[k]): i32 {
   On Linux the compiled programs use the allocator of Isocron: each thread
   keeps its own freed blocks, and a temporary array freed by one call of a
   kernel is given again, already mapped, to the next call; memory the
-  program no longer uses goes back to the system. `ISC_ALLOC=glibc ./prog`
-  uses glibc's allocator instead (WebAssembly always uses wasi-libc's).
+  program no longer uses goes back to the system. A program that declares C
+  functions runs with glibc's allocator under `ISC_ALLOC=glibc ./prog`
+  (one built with `ISC_ALLOC=glibc` in the environment of `iscc` is linked
+  with glibc for that); WebAssembly always uses wasi-libc's.
 
 ## Not implemented yet
 
@@ -2371,11 +2375,14 @@ iscc completions bash|zsh|fish              the completion of the shell
   with the messages of Linux.
 * The `iscc` of a release needs nothing else, on Linux (any glibc from 2.28
   on) and on Windows: LLVM and its linker (LLD) are inside, with the start
-  files and C libraries of each target (glibc's start files: a program is
-  linked with the `libc.so.6` of the machine, as with `cc`; MinGW-w64;
-  WASI). An `iscc` built from the sources without `ISC_LLVM_STATIC` uses
-  the LLVM 21 shared library and the linkers of the system (`cc`, or
-  `$ISC_CC`; `rust-lld` or `ld.lld` for Windows and WebAssembly).
+  files and C libraries of each target. On Linux a program is a static
+  executable without a C library (its start, its threads and its functions
+  of memory are the runtime's), unless it declares C functions: then it is
+  linked with glibc's start files and the `libc.so.6` of the machine, as
+  with `cc`; MinGW-w64 for Windows; WASI. An `iscc` built from the sources
+  without `ISC_LLVM_STATIC` uses the LLVM 21 shared library and the linkers
+  of the Rust toolchain or of the system (`rust-lld` for the static programs,
+  Windows and WebAssembly; `cc`, or `$ISC_CC`, for the programs with C).
 * Native (Linux and Windows), WebAssembly with or without threads, and the
   interpreter give the same results to the bit, and the same panic
   messages. Linking WebAssembly

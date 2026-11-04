@@ -57,7 +57,8 @@ use super::windows::{madvise, mmap, mremap, munmap, pthread_key_create, pthread_
 #[cfg(not(windows))]
 use super::linux::{madvise, mmap, mremap, munmap};
 
-// the end of a thread (to go with the threads of glibc, D287)
+// the end of a thread of glibc (the programs that declare C functions,
+// D289): a key of pthread
 #[cfg(not(windows))]
 extern "C" {
     fn pthread_key_create(key: *mut c_uint, destructor: Option<unsafe extern "C" fn(*mut c_void)>) -> c_int;
@@ -552,10 +553,37 @@ unsafe fn trim_idle(st: &mut State) {
 // ---------------------------------------------------------------------
 // small blocks
 
-/// Makes the end of the calling thread give its cache back.
+/// Makes the end of the calling thread give its cache back: by a key of
+/// the threads of Windows or glibc; the threads of the runtime under Linux
+/// give it back themselves (`thread_exit`, D289).
 #[cold]
 unsafe fn register(tc: *mut ThreadCache) {
     (*tc).registered = 1;
+    #[cfg(windows)]
+    register_with_key(tc as *mut c_void);
+    #[cfg(not(windows))]
+    (super::process::os().register)(tc as *mut c_void);
+}
+
+/// The end of the calling thread of the runtime (D289): its cache given
+/// back to the global lists, if it has one.
+#[cfg(not(windows))]
+pub fn thread_exit() {
+    // SAFETY: the cache of the calling thread, which ends
+    unsafe {
+        let tc = thread_cache();
+        if (*tc).registered != 0 {
+            thread_end(tc as *mut c_void);
+            (*tc).registered = 0;
+        }
+    }
+}
+
+/// `register` by a key whose destructor gives the cache back.
+///
+/// # Safety
+/// `tc` is the cache of the calling thread.
+pub unsafe fn register_with_key(tc: *mut c_void) {
     loop {
         match KEY_STATE.load(Ordering::Acquire) {
             2 => break,
@@ -633,6 +661,28 @@ unsafe extern "C" fn thread_end(p: *mut c_void) {
     }
 }
 
+/// The chunks made (under CHUNK_LOCK).
+static mut CHUNKS_MADE: usize = 0;
+
+/// The start of a new chunk mapped at `base` (with a huge page more, to
+/// align it): in huge pages, except the first chunk of the process, in
+/// pages of 4 KiB even where the kernel gives huge pages to any mapping
+/// (`transparent_hugepage=always`): a small program touches a few pages of
+/// it, and the first fault of a huge page clears 2 MiB (D289).
+///
+/// # Safety
+/// Under CHUNK_LOCK; `base` a new mapping of `CHUNK + HUGE` bytes.
+unsafe fn chunk_start(base: *mut u8) -> usize {
+    let start = (base as usize).next_multiple_of(HUGE);
+    // SAFETY: see above
+    unsafe {
+        let advice = if CHUNKS_MADE == 0 { MADV_NOHUGEPAGE } else { MADV_HUGEPAGE };
+        madvise(start as *mut c_void, CHUNK, advice);
+        CHUNKS_MADE += 1;
+    }
+    start
+}
+
 /// A new small block, carved from the current chunk.
 unsafe fn carve(class: usize, size: usize) -> *mut Header {
     let need = HEADER + size;
@@ -645,8 +695,7 @@ unsafe fn carve(class: usize, size: usize) -> *mut Header {
             CHUNK_LOCK.store(false, Ordering::Release);
             return null_mut();
         }
-        let start = (base as usize).next_multiple_of(HUGE);
-        madvise(start as *mut c_void, CHUNK, MADV_HUGEPAGE);
+        let start = chunk_start(base);
         BUMP[g] = start;
         BUMP_END[g] = start + CHUNK;
     }
@@ -705,8 +754,7 @@ unsafe fn carve_many(class: usize, size: usize, count: usize) -> *mut Header {
             if base.is_null() {
                 break;
             }
-            let start = (base as usize).next_multiple_of(HUGE);
-            madvise(start as *mut c_void, CHUNK, MADV_HUGEPAGE);
+            let start = chunk_start(base);
             BUMP[g] = start;
             BUMP_END[g] = start + CHUNK;
         }

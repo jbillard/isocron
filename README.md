@@ -221,7 +221,8 @@ More options:
 
 ```sh
 target/release/iscc build examples/poc/sum.isc -o sum --emit-asm sum.s --emit-llvm sum.ll   # --debug keeps symbols
-ISC_ALLOC=glibc ./sum in.f64 out.f64 100 # glibc's allocator instead of Isocron's
+ISC_ALLOC=glibc target/release/iscc build examples/poc/sum.isc -o sum-glibc   # linked with glibc (a program without C functions is static, without it)
+ISC_ALLOC=glibc ./sum-glibc in.f64 out.f64 100   # glibc's allocator instead of Isocron's
 target/release/iscc build examples/poc/sum.isc -o sum64 --lanes 64 --isa sse   # experiment: V = 64 (the language fixes 32), SSE4.2 code
 target/release/iscc build examples/poc/sum.isc --target wasm32-wasi   # sum.wasm, a WASI module
 wasmtime run --dir=/::/ sum.wasm $PWD/in.f64 $PWD/out.f64 100

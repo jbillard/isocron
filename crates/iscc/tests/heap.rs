@@ -20,6 +20,9 @@ fn build(name: &str) -> PathBuf {
         .arg(&src)
         .arg(env!("ISC_RUNTIME_LIB"))
         .arg("-lpthread")
+        // the runtime with the threads of glibc (D289)
+        .arg("-Wl,--gc-sections")
+        .arg("-Wl,--defsym=isc_os=isc_os_glibc")
         .status()
         .expect("cannot run the C compiler");
     assert!(st.success(), "cannot build {}", src.display());

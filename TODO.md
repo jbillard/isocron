@@ -268,7 +268,10 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The functions of memory (`memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`, `strlen`): the crate `isc-mem`, safe code on slices (D288)
   - [ ] `memcmp` of 384 to 2048 bytes 6 to 9 % slower than glibc's (51.68 cycles against 48.62 for 1 KiB, 96.53 against 88.81 for 2 KiB): its loop is at parity (89.49 cycles against 89.54 on the same places), the 7 cycles are in its fixed part (the first and the last 4 vectors), still to be located by measure (D288)
   - [ ] The copies and fills of 2 bytes 2 to 3 cycles slower than glibc's (9.08 against 7.08, 10.07 against 7.25): the chain of branches of the short lengths, which LLVM lays out with taken branches where glibc's assembly has none; at 7 bytes ours are faster (7.24 against 8.09); to be laid out without assembly, or shown not to matter in the programs (D288)
-  - [ ] The start of the programs, their threads (`clone`) and their thread-local storage, static programs without glibc (`isc_start`); the glibc kept for the programs that declare C functions (D288)
+  - [x] The start of the programs, their threads (`clone`) and their thread-local storage, static programs without glibc (`isc_start`); the glibc kept for the programs that declare C functions (D289)
+  - [ ] The tests of the allocator in C (`tests/c/heap_stress.c`, `heap_double_free.c`) rewritten in Rust or Isocron; a mode of checks of the allocator (leaks, uses after free) so that the static programs are checked as Valgrind checks those of glibc
+  - [ ] n-body static against glibc measured again on a quiet machine: +0.06 % [+0.06, +0.07] in one run, -0.04 % [-0.93, +0.24] in the next (D289)
+  - [ ] WASI without wasi-libc; Windows with `kernel32` only
 - [ ] The step HTTPS of the standard library decided again: it relies on C libraries (SChannel, OpenSSL), which the author does not want
 - [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron
 

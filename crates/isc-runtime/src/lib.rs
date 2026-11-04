@@ -82,12 +82,29 @@ use isc_mem::symbols::strlen;
 #[cfg(target_os = "linux")]
 use linux::{abort, close, exit, lseek, open, pread, read, strerror, write};
 
-// the allocator of glibc, for `ISC_ALLOC=glibc` (the second run of the
-// tests; to go with the C library, D287)
+// The start of the programs, their threads and their thread-local storage
+// without a C library, or glibc's for the programs that declare C functions
+// (D289): `process::os()`, which also gives glibc's allocator to those
+// (`ISC_ALLOC=glibc`)
 #[cfg(target_os = "linux")]
-extern "C" {
-    fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
-    fn free(p: *mut c_void);
+mod process;
+
+/// The allocator of glibc (`ISC_ALLOC=glibc`) when the program has glibc.
+#[cfg(target_os = "linux")]
+unsafe fn aligned_alloc(align: usize, size: usize) -> *mut c_void {
+    match process::os().alloc {
+        // SAFETY: glibc's `aligned_alloc`
+        Some(f) => unsafe { f(align, size) },
+        None => core::ptr::null_mut(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn free(p: *mut c_void) {
+    if let Some(f) = process::os().free {
+        // SAFETY: glibc's `free`, of a block of its `aligned_alloc`
+        unsafe { f(p) }
+    }
 }
 
 // Windows (D246): the same functions over the Win32 API
@@ -338,7 +355,12 @@ fn isc_heap() -> bool {
 #[inline(never)]
 fn heap_mode() -> bool {
     let v = unsafe { getenv(b"ISC_ALLOC\0".as_ptr() as *const c_char) };
-    let isc = v.is_null() || unsafe { c_str(v) } != "glibc";
+    let mut isc = v.is_null() || unsafe { c_str(v) } != "glibc";
+    // a program without glibc has only its own (D289)
+    #[cfg(target_os = "linux")]
+    if process::os().alloc.is_none() {
+        isc = true;
+    }
     HEAP_MODE.store(if isc { 2 } else { 1 }, Ordering::Relaxed);
     isc
 }
@@ -2440,9 +2462,8 @@ unsafe fn getenv(name: *const c_char) -> *const c_char {
     core::ptr::null()
 }
 
-// `pthread_t` is an `unsigned long` on Linux, a pointer in wasi-libc: one
-// machine word in both cases.
-#[cfg(all(any(not(target_os = "wasi"), isc_wasm_threads), not(windows)))]
+// `pthread_t` is a pointer in wasi-libc (the threads of Linux: `process`)
+#[cfg(all(target_os = "wasi", isc_wasm_threads))]
 extern "C" {
     fn pthread_create(tid: *mut usize, attr: *const c_void, f: extern "C" fn(*mut c_void) -> *mut c_void, arg: *mut c_void) -> c_int;
 }
@@ -2450,12 +2471,6 @@ extern "C" {
 #[cfg(all(not(target_os = "wasi"), not(windows)))]
 use linux::{futex, nanosleep, sched_getaffinity};
 
-#[cfg(all(not(target_os = "wasi"), not(windows)))]
-extern "C" {
-    fn pthread_attr_init(attr: *mut c_void) -> c_int;
-    fn pthread_attr_setstacksize(attr: *mut c_void, size: usize) -> c_int;
-    fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
-}
 
 /// The stack of the threads that run the body of `main` and the tasks: a
 /// recursion inside a task reaches the same depth on any thread (D102,
@@ -2473,20 +2488,10 @@ fn start_worker(k: usize) {
     }
 }
 
-#[cfg(all(not(target_os = "wasi"), not(windows)))]
+/// (Linux: the workers are never joined; they end with the process.)
+#[cfg(target_os = "linux")]
 fn start_worker(k: usize) {
-    let mut attr = [0u64; 16];
-    let a = attr.as_mut_ptr() as *mut c_void;
-    let mut tid = 0usize;
-    unsafe {
-        let big = pthread_attr_init(a) == 0
-            && pthread_attr_setstacksize(a, BIG_STACK) == 0
-            && pthread_create(&mut tid, a, worker, k as *mut c_void) == 0;
-        pthread_attr_destroy(a);
-        if !big {
-            pthread_create(&mut tid, core::ptr::null(), worker, k as *mut c_void);
-        }
-    }
+    (process::os().spawn)(BIG_STACK, worker, k as *mut c_void);
 }
 
 #[cfg(all(target_os = "wasi", isc_wasm_threads))]
@@ -2994,32 +2999,15 @@ pub extern "C" fn isc_stack_floor() -> i64 {
     (low + MARGIN) as i64
 }
 
-#[cfg(all(not(target_os = "wasi"), not(windows)))]
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn isc_stack_floor() -> i64 {
-    extern "C" {
-        fn pthread_self() -> usize;
-        fn pthread_getattr_np(t: usize, attr: *mut c_void) -> c_int;
-        fn pthread_attr_getstack(attr: *const c_void, addr: *mut *mut c_void, size: *mut usize) -> c_int;
-        fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
-    }
     const MARGIN: usize = 256 << 10;
-    // pthread_attr_t: 56 bytes with glibc on x86-64
-    let mut attr = [0u64; 16];
-    let a = attr.as_mut_ptr() as *mut c_void;
-    let mut addr: *mut c_void = core::ptr::null_mut();
-    let mut size = 0usize;
-    unsafe {
-        if pthread_getattr_np(pthread_self(), a) != 0 {
-            return 0;
-        }
-        let ok = pthread_attr_getstack(a, &mut addr, &mut size) == 0;
-        pthread_attr_destroy(a);
-        if !ok || size <= 2 * MARGIN {
-            return 0;
-        }
+    let (low, size) = (process::os().stack)();
+    if size <= 2 * MARGIN {
+        return 0;
     }
-    (addr as usize + MARGIN) as i64
+    (low + MARGIN) as i64
 }
 
 /// Runs `f(argc, argv)` on a thread with a stack of `BIG_STACK` bytes and
@@ -3051,12 +3039,9 @@ pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_in
     }
 }
 
-#[cfg(all(not(target_os = "wasi"), not(windows)))]
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_int, argc: c_int, argv: *mut c_void) -> c_int {
-    extern "C" {
-        fn pthread_join(t: usize, ret: *mut *mut c_void) -> c_int;
-    }
     struct Start {
         f: extern "C" fn(c_int, *mut c_void) -> c_int,
         argc: c_int,
@@ -3069,22 +3054,14 @@ pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_in
         core::ptr::null_mut()
     }
     let mut s = Start { f, argc, argv, ret: 0 };
-    let mut attr = [0u64; 16];
-    let a = attr.as_mut_ptr() as *mut c_void;
-    let mut tid = 0usize;
-    let started = unsafe {
-        pthread_attr_init(a) == 0
-            && pthread_attr_setstacksize(a, BIG_STACK) == 0
-            && pthread_create(&mut tid, a, run, &mut s as *mut Start as *mut c_void) == 0
-    };
-    unsafe { pthread_attr_destroy(a) };
-    if !started {
+    let t = (process::os().spawn)(BIG_STACK, run, &mut s as *mut Start as *mut c_void);
+    if t == 0 {
         let r = f(argc, argv);
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         release_at_end();
         return r;
     }
-    unsafe { pthread_join(tid, core::ptr::null_mut()) };
+    (process::os().join)(t);
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     release_at_end();
     s.ret
