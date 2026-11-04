@@ -26,32 +26,14 @@
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-extern "C" {
-    fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
-    fn munmap(addr: *mut c_void, len: usize) -> c_int;
-    fn mremap(old: *mut c_void, old_len: usize, new_len: usize, flags: c_int, new: *mut c_void) -> *mut c_void;
-    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
-    fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
-    fn raise(sig: c_int) -> c_int;
-    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
-    fn sigaction(sig: c_int, act: *const SigAction, old: *mut SigAction) -> c_int;
-    fn __errno_location() -> *mut c_int;
-}
-
-/// `struct sigaction` of Linux on x86-64 (glibc).
-#[repr(C)]
-struct SigAction {
-    handler: usize,
-    mask: [u64; 16],
-    flags: c_int,
-    restorer: usize,
-}
+// the system called directly (D287)
+use super::linux::{fcntl, madvise, mmap, mprotect, mremap, munmap, raise, sigaction, SigAction};
 
 const SIGIO: c_int = 29;
 const SIGSEGV: c_int = 11;
-const SA_RESTART: c_int = 0x1000_0000;
-const SA_SIGINFO: c_int = 4;
-const SA_ONSTACK: c_int = 0x0800_0000;
+const SA_RESTART: u64 = 0x1000_0000;
+const SA_SIGINFO: u64 = 4;
+const SA_ONSTACK: u64 = 0x0800_0000;
 const F_GETFL: c_int = 3;
 const O_ACCMODE: c_int = 3;
 const O_RDONLY: c_int = 0;
@@ -93,7 +75,7 @@ static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static BROKEN: AtomicBool = AtomicBool::new(false);
 static HANDLER: AtomicBool = AtomicBool::new(false);
 /// The handler of SIGSEGV before ours (put back for a fault elsewhere).
-static mut OLD_SEGV: SigAction = SigAction { handler: 0, mask: [0; 16], flags: 0, restorer: 0 };
+static mut OLD_SEGV: SigAction = SigAction { handler: 0, mask: 0, flags: 0, restorer: 0 };
 
 /// The `len` bytes of the standard input from its offset `cur` (a multiple
 /// of a page), mapped, its pages not yet read; None when it cannot be (the
@@ -102,7 +84,7 @@ pub unsafe fn map_stdin(cur: i64, len: usize) -> Option<*mut u8> {
     if len < MAP_MIN || cur < 0 || cur as usize % PAGE != 0 || STATE.load(Ordering::Acquire) != NONE {
         return None;
     }
-    if fcntl(0, F_GETFL) & O_ACCMODE != O_RDONLY || !install_handler() {
+    if fcntl(0, F_GETFL, 0) & O_ACCMODE != O_RDONLY || !install_handler() {
         return None;
     }
     BROKEN.store(false, Ordering::SeqCst);
@@ -201,11 +183,11 @@ unsafe fn install_handler() -> bool {
         return false;
     }
     OLD_SEGV = segv;
-    let act = SigAction { handler: on_sigio as usize, mask: [0; 16], flags: SA_RESTART, restorer: 0 };
+    let act = SigAction { handler: on_sigio as usize, mask: 0, flags: SA_RESTART, restorer: 0 };
     if sigaction(SIGIO, &act, core::ptr::null_mut()) != 0 {
         return false;
     }
-    let act = SigAction { handler: on_sigsegv as usize, mask: [0; 16], flags: SA_SIGINFO | SA_RESTART | SA_ONSTACK, restorer: 0 };
+    let act = SigAction { handler: on_sigsegv as usize, mask: 0, flags: SA_SIGINFO | SA_RESTART | SA_ONSTACK, restorer: 0 };
     if sigaction(SIGSEGV, &act, core::ptr::null_mut()) != 0 {
         return false;
     }
@@ -218,7 +200,6 @@ unsafe fn install_handler() -> bool {
 /// default one: the program stops as it would have), and faults again.
 extern "C" fn on_sigsegv(_sig: c_int, info: *const SigInfo, _ctx: *mut c_void) {
     unsafe {
-        let e = *__errno_location();
         let addr = (*info).addr;
         let data = DATA.load(Ordering::Relaxed);
         let inside = addr >= data && addr < data + SPAN.load(Ordering::Relaxed);
@@ -231,7 +212,6 @@ extern "C" fn on_sigsegv(_sig: c_int, info: *const SigInfo, _ctx: *mut c_void) {
                 raise(SIGSEGV);
             }
         }
-        *__errno_location() = e;
     }
 }
 
@@ -246,13 +226,11 @@ struct SigInfo {
 }
 
 /// A writer waits for the lease: the pages made private, then the lease
-/// given back. The errno of the interrupted code is kept.
+/// given back (no `errno` to keep: the system is called directly, D287).
 extern "C" fn on_sigio(_sig: c_int) {
     unsafe {
-        let e = *__errno_location();
         BROKEN.store(true, Ordering::SeqCst);
         give_back();
-        *__errno_location() = e;
     }
 }
 

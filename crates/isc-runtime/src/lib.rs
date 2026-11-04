@@ -12,6 +12,10 @@
 //! by `memory.atomic.wait32` / `memory.atomic.notify`).
 
 #![no_std]
+// the functions of the system that are safe under Linux (D287) are unsafe
+// declarations of the C library elsewhere: their callers keep `unsafe`
+// blocks (until the unsafe of the runtime is confined, TODO.md)
+#![cfg_attr(target_os = "linux", allow(unused_unsafe))]
 // without threads the pool is not compiled: its constants and statics are unused
 #![cfg_attr(all(target_os = "wasi", not(isc_wasm_threads)), allow(dead_code))]
 
@@ -46,13 +50,14 @@ struct Timespec {
     tv_nsec: core::ffi::c_long,
 }
 
+#[cfg(not(target_os = "linux"))]
 extern "C" {
     fn strlen(s: *const c_char) -> usize;
     fn exit(code: c_int) -> !;
     fn abort() -> !;
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "wasi")]
 extern "C" {
     fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
     fn free(p: *mut c_void);
@@ -63,8 +68,20 @@ extern "C" {
     fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
     fn close(fd: c_int) -> c_int;
     fn lseek(fd: c_int, off: i64, whence: c_int) -> i64;
-    #[cfg(not(target_os = "wasi"))]
-    fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize;
+}
+
+// Linux (D287): the system called directly, no C library
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux::{abort, close, exit, lseek, open, pread, read, strerror, strlen, write};
+
+// the allocator of glibc, for `ISC_ALLOC=glibc` (the second run of the
+// tests; to go with the C library, D287)
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
 }
 
 // Windows (D246): the same functions over the Win32 API
@@ -80,7 +97,7 @@ mod sys {
     pub use super::windows::{monotonic, O_CLOEXEC, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 }
 
-#[cfg(all(not(target_os = "wasi"), not(windows)))]
+#[cfg(target_os = "linux")]
 mod sys {
     use core::ffi::c_int;
     pub const O_RDONLY: c_int = 0;
@@ -88,11 +105,11 @@ mod sys {
     pub const O_CREAT: c_int = 0o100;
     pub const O_TRUNC: c_int = 0o1000;
     pub const O_CLOEXEC: c_int = 0o2000000;
-    extern "C" {
-        fn clock_gettime(clk: c_int, ts: *mut super::Timespec) -> c_int;
-    }
+    /// # Safety
+    /// `ts` is a valid `Timespec`.
     pub unsafe fn monotonic(ts: *mut super::Timespec) {
-        clock_gettime(1, ts);
+        // SAFETY: the kernel writes one Timespec at `ts` (see above)
+        unsafe { super::linux::clock_gettime(1, ts) };
     }
 }
 
@@ -170,7 +187,7 @@ fn write_all(fd: c_int, mut p: *const u8, mut n: usize) {
     while n > 0 {
         let r = unsafe { write(fd, p as *const c_void, n) };
         if r < 0 {
-            if errno() == EINTR {
+            if fail(r) == EINTR {
                 continue;
             }
             return;
@@ -258,13 +275,20 @@ fn die(line: i32, col: i32, msg: &dyn fmt::Display) -> ! {
     }
 }
 
-#[cfg(not(windows))]
-fn errno() -> c_int {
+/// The code of the failed call that gave `r` (negative): its negative
+/// result under Linux (D287), the `errno` of the C library elsewhere.
+#[cfg(target_os = "linux")]
+fn fail(r: isize) -> c_int {
+    linux::fail_code(r)
+}
+
+#[cfg(target_os = "wasi")]
+fn fail(_r: isize) -> c_int {
     unsafe { *__errno_location() }
 }
 
 #[cfg(windows)]
-fn errno() -> c_int {
+fn fail(_r: isize) -> c_int {
     windows::errno()
 }
 
@@ -689,7 +713,7 @@ unsafe fn read_parallel(fd: c_int, buf: *mut u8, n: usize, at: i64) -> Result<us
             while done < hi {
                 let r = pread(c.fd, c.buf.add(done) as *mut c_void, hi - done, c.at + done as i64);
                 if r < 0 {
-                    let e = errno();
+                    let e = fail(r);
                     if e == EINTR {
                         continue;
                     }
@@ -754,7 +778,7 @@ unsafe fn read_fd(fd: c_int, hint: usize, at: i64) -> Result<IscArray, c_int> {
             let mut probe = [0u8; 64];
             let r = read(fd, probe.as_mut_ptr() as *mut c_void, probe.len());
             if r < 0 {
-                let e = errno();
+                let e = fail(r);
                 if e == EINTR {
                     continue;
                 }
@@ -775,7 +799,7 @@ unsafe fn read_fd(fd: c_int, hint: usize, at: i64) -> Result<IscArray, c_int> {
         }
         let r = read(fd, buf.add(len) as *mut c_void, cap - len);
         if r < 0 {
-            let e = errno();
+            let e = fail(r);
             if e == EINTR {
                 continue;
             }
@@ -817,7 +841,7 @@ unsafe fn try_read_file(path: &str) -> Result<IscArray, Panic<'_>> {
     // it is reported as Linux does (`EISDIR`)
     let read_error = |code: c_int| open_error(if cfg!(target_os = "wasi") && code == 8 { 31 } else { code });
     if fd < 0 {
-        return Err(open_error(errno()));
+        return Err(open_error(fail(fd as isize)));
     }
     // the size is a hint; the file is read until end of file
     let end = lseek(fd, 0, SEEK_END);
@@ -846,7 +870,7 @@ unsafe fn try_write_file<'a>(path: &'a str, total: usize, fill: &dyn Fn(usize, &
         Panic::Write { path, detail, code }
     };
     if fd < 0 {
-        return Err(error(errno()));
+        return Err(error(fail(fd as isize)));
     }
     let mut chunk = [0u8; 8192];
     let mut done = 0usize;
@@ -856,7 +880,7 @@ unsafe fn try_write_file<'a>(path: &'a str, total: usize, fill: &dyn Fn(usize, &
         while off < n {
             let r = write(fd, chunk.as_ptr().add(off) as *const c_void, n - off);
             if r < 0 {
-                let e = errno();
+                let e = fail(r);
                 if e == EINTR {
                     continue;
                 }
@@ -867,8 +891,9 @@ unsafe fn try_write_file<'a>(path: &'a str, total: usize, fill: &dyn Fn(usize, &
         }
         done += n;
     }
-    if close(fd) < 0 {
-        return Err(error(errno()));
+    let c = close(fd);
+    if c < 0 {
+        return Err(error(fail(c as isize)));
     }
     Ok(())
 }
@@ -1023,6 +1048,10 @@ pub unsafe extern "C" fn isc_parse_i64(p: *const u8, len: i64, line: i32, col: i
 /// a copy, owned by the array (a string is freed as an array, D134).
 #[no_mangle]
 pub unsafe extern "C" fn isc_args(out: *mut IscArray, argc: i32, argv: *const *const u8) {
+    // the environment after the arguments (D287), before any allocation
+    // (which reads `ISC_ALLOC`)
+    #[cfg(target_os = "linux")]
+    ENVIRON.store(argv.add(argc.max(0) as usize + 1) as usize, Ordering::Relaxed);
     let n = (argc.max(1) - 1) as usize;
     let p = isc_alloc((n * core::mem::size_of::<IscStr>()) as i64) as *mut IscStr;
     for i in 0..n {
@@ -2367,8 +2396,42 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
 type Task = extern "C" fn(ctx: *mut c_void, i: i64);
 
+#[cfg(not(target_os = "linux"))]
 extern "C" {
     fn getenv(name: *const c_char) -> *const c_char;
+}
+
+/// The environment of the process (D287): the strings after the arguments
+/// on the stack the kernel made (`argv[argc + 1 ..]`, until a null),
+/// noted by `isc_args`, the first call of a program.
+#[cfg(target_os = "linux")]
+static ENVIRON: AtomicUsize = AtomicUsize::new(0);
+
+/// The value of the variable `name` (a string ending with a zero byte), a
+/// string ending with a zero byte, or null.
+#[cfg(target_os = "linux")]
+unsafe fn getenv(name: *const c_char) -> *const c_char {
+    let mut e = ENVIRON.load(Ordering::Relaxed) as *const *const c_char;
+    if e.is_null() {
+        return core::ptr::null();
+    }
+    // SAFETY: `name` ends with a zero byte (see above); `e` the array of the
+    // environment, ending with a null, each a string ending with a zero byte
+    unsafe {
+        let n = strlen(name);
+        while !(*e).is_null() {
+            let v = *e;
+            let mut i = 0;
+            while i < n && *v.add(i) == *name.add(i) {
+                i += 1;
+            }
+            if i == n && *v.add(n) == b'=' as c_char {
+                return v.add(n + 1);
+            }
+            e = e.add(1);
+        }
+    }
+    core::ptr::null()
 }
 
 // `pthread_t` is an `unsigned long` on Linux, a pointer in wasi-libc: one
@@ -2379,10 +2442,10 @@ extern "C" {
 }
 
 #[cfg(all(not(target_os = "wasi"), not(windows)))]
+use linux::{futex, nanosleep, sched_getaffinity};
+
+#[cfg(all(not(target_os = "wasi"), not(windows)))]
 extern "C" {
-    fn syscall(n: i64, ...) -> i64;
-    fn sched_getaffinity(pid: c_int, size: usize, mask: *mut u8) -> c_int;
-    fn nanosleep(req: *const [i64; 2], rem: *mut [i64; 2]) -> c_int;
     fn pthread_attr_init(attr: *mut c_void) -> c_int;
     fn pthread_attr_setstacksize(attr: *mut c_void, size: usize) -> c_int;
     fn pthread_attr_destroy(attr: *mut c_void) -> c_int;
@@ -2439,13 +2502,13 @@ fn wake_all() {
 /// Sleeps while `GEN` is `seen` (spurious wake-ups are allowed).
 #[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn wait_gen(seen: u32) {
-    unsafe { syscall(SYS_FUTEX, GEN.gen.as_ptr(), FUTEX_WAIT_PRIVATE, seen, core::ptr::null::<c_void>()) };
+    futex(&GEN.gen, FUTEX_WAIT_PRIVATE, seen);
 }
 
 /// Wakes every thread sleeping in `wait_gen`.
 #[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn wake_all() {
-    unsafe { syscall(SYS_FUTEX, GEN.gen.as_ptr(), FUTEX_WAKE_PRIVATE, i32::MAX) };
+    futex(&GEN.gen, FUTEX_WAKE_PRIVATE, i32::MAX as u32);
 }
 
 // `memory.atomic.wait32` and `memory.atomic.notify` are unstable in Rust
@@ -2478,7 +2541,8 @@ fn default_threads() -> usize {
 #[cfg(all(not(target_os = "wasi"), not(windows)))]
 fn default_threads() -> usize {
     let mut mask = [0u8; 128];
-    if unsafe { sched_getaffinity(0, mask.len(), mask.as_mut_ptr()) } == 0 {
+    // the bytes of the mask written (the system call, not 0 as in glibc)
+    if unsafe { sched_getaffinity(0, mask.len(), mask.as_mut_ptr()) } > 0 {
         mask.iter().map(|b| b.count_ones() as usize).sum()
     } else {
         1
@@ -2498,7 +2562,6 @@ fn thread_count() -> usize {
 }
 
 #[cfg(not(windows))]
-const SYS_FUTEX: i64 = 202;
 #[cfg(not(windows))]
 const FUTEX_WAIT_PRIVATE: c_int = 128;
 #[cfg(not(windows))]

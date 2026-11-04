@@ -5195,3 +5195,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   reverse-complement 59.2 -> 59.5 ms, regex-redux 147.3 -> 148.2 ms,
   k-nucleotide 1077.3 -> 1067.0 ms. The clearing is moved, not saved (the
   new pages of 123 MB are what that array costs): not kept.
+- **D287 — No C called by the runtime: the system of Linux called directly
+  (2026-11-04; the decision of the author, its priority before the rest of
+  the goal of the day).** The author: « pas d'unsafe et pas d'appels C »,
+  first, since it touches every program. Not all of it is possible in
+  Rust: a system call, raw memory, a pointer from the generated code need
+  `unsafe` there; none at all means a runtime that is not in Rust (in
+  Isocron, with primitives checked by the compiler: the way to `iscc`
+  built by `iscc`). The plan, in this order: (B) Linux without the C
+  library: the system called directly; then the start of the programs,
+  their threads and their thread-local storage, the functions of memory
+  LLVM calls, static programs without glibc; the second run of the tests
+  (`ISC_ALLOC=glibc`) and the leaks seen by Valgrind replaced by a mode of
+  checks of the allocator of the runtime; each step measured on the ten
+  programs (the start of a program without the dynamic loader is cheaper);
+  (A) the `unsafe` left confined to the module of the system, the
+  allocator and the SIMD, each block justified (`SAFETY`), checked at
+  compile time; then the design of a runtime written in Isocron.
+  - B1, this commit: `linux.rs`, the functions of the C library the
+    runtime called (`open`, `read`, `write`, `pread`, `close`, `lseek`,
+    `fcntl`, `mmap`, `munmap`, `mremap`, `madvise`, `mprotect`,
+    `nanosleep`, `sched_getaffinity`, `clock_gettime`, the futex,
+    `rt_sigaction` with its restorer, `tgkill` for `raise` and `abort`,
+    `exit_group`), with their names and meanings, by the instruction
+    `syscall` (one function, `syscall6`, the only one that enters the
+    kernel). An error is the negative code of the kernel (no `errno`
+    without a C library): `fail(r)` gives the callers its code; the texts
+    are those of glibc (`oserr`, as under Windows). The environment is read
+    from the stack the kernel made (`argv[argc + 1 ..]`), noted by
+    `isc_args`. Left in glibc for the next steps: the threads (pthread),
+    the start, the thread-local storage, the functions of memory, and its
+    allocator for `ISC_ALLOC=glibc`. The same outputs; the tests of the
+    standard input mapped (its lease, SIGIO and SIGSEGV), the texts, the
+    files, `Result`, the threads, the heap.

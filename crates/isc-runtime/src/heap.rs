@@ -55,11 +55,11 @@ use isc_runtime_core::{alloc_class, alloc_class_size, Panic, ALLOC_CLASSES as CL
 use super::windows::{madvise, mmap, mremap, munmap, pthread_key_create, pthread_setspecific};
 
 #[cfg(not(windows))]
+use super::linux::{madvise, mmap, mremap, munmap};
+
+// the end of a thread (to go with the threads of glibc, D287)
+#[cfg(not(windows))]
 extern "C" {
-    fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
-    fn munmap(addr: *mut c_void, len: usize) -> c_int;
-    fn mremap(old: *mut c_void, old_len: usize, new_len: usize, flags: c_int, ...) -> *mut c_void;
-    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
     fn pthread_key_create(key: *mut c_uint, destructor: Option<unsafe extern "C" fn(*mut c_void)>) -> c_int;
     fn pthread_setspecific(key: c_uint, value: *const c_void) -> c_int;
 }
