@@ -264,6 +264,11 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 
 - [ ] The `unsafe` of the runtime justified and checked at compile time (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`), confined to a few modules (`sys`, `heap`, `simd`) behind safe interfaces; the tests of `isc-runtime-core` under Miri
 - [ ] Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread
+  - [x] The system called directly: `linux.rs` (D287, B1)
+  - [x] The functions of memory (`memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`, `strlen`): the crate `isc-mem`, safe code on slices (D288)
+  - [ ] `memcmp` of 384 to 2048 bytes 6 to 9 % slower than glibc's (51.68 cycles against 48.62 for 1 KiB, 96.53 against 88.81 for 2 KiB): its loop is at parity (89.49 cycles against 89.54 on the same places), the 7 cycles are in its fixed part (the first and the last 4 vectors), still to be located by measure (D288)
+  - [ ] The copies and fills of 2 bytes 2 to 3 cycles slower than glibc's (9.08 against 7.08, 10.07 against 7.25): the chain of branches of the short lengths, which LLVM lays out with taken branches where glibc's assembly has none; at 7 bytes ours are faster (7.24 against 8.09); to be laid out without assembly, or shown not to matter in the programs (D288)
+  - [ ] The start of the programs, their threads (`clone`) and their thread-local storage, static programs without glibc (`isc_start`); the glibc kept for the programs that declare C functions (D288)
 - [ ] The step HTTPS of the standard library decided again: it relies on C libraries (SChannel, OpenSSL), which the author does not want
 - [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron
 

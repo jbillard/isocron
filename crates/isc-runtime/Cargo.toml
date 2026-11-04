@@ -20,6 +20,10 @@ doctest = false
 isc-runtime-core = { path = "../isc-runtime-core" }
 memchr = { version = "2", default-features = false }
 
+# the functions of memory (`memcpy`...) of the runtime under Linux (D288)
+[target.'cfg(target_os = "linux")'.dependencies]
+isc-mem = { path = "../isc-mem", features = ["symbols"] }
+
 [profile.release]
 opt-level = 3
 panic = "abort"

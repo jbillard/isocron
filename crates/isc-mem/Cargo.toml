@@ -1,0 +1,15 @@
+[package]
+name = "isc-mem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The functions of memory that LLVM calls (`memcpy`, `memmove`, `memset`,
+# `memcmp`, `bcmp`, `strlen`), for the runtime of programs without a C
+# library (D288). Without std; tested on its own (`cargo test -p isc-mem`,
+# and for x86-64-v3 and v4 by `tools/suite.py`).
+
+[features]
+# the symbols themselves (`#[no_mangle]`), for the runtime only: a test
+# binary keeps those of its C library
+symbols = []

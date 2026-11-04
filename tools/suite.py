@@ -1,4 +1,5 @@
-"""The complete suite (`cargo test`, then `ISC_ALLOC=glibc cargo test`) in
+"""The complete suite (`cargo test`, then `ISC_ALLOC=glibc cargo test`, then
+the tests of isc-mem in its variants of x86-64) in
 a few minutes instead of a quarter of an hour (D223): one build, then every
 test binary run twice (Isocron's allocator, then glibc's), JOBS at a time,
 the longest first (their times of the previous run, in LOG.times), each
@@ -64,6 +65,22 @@ for alloc in ("", "glibc"):
     out.write("doc tests %-6s code %d\n" % (alloc or "isc", p.returncode))
     if p.returncode != 0:
         failed.append(("doc", alloc)); out.write(p.stdout[-4000:] + "\n")
+# isc-mem in its variants (D288): its tests with its own symbols, so that
+# the whole test process copies, fills and compares with them, for x86-64
+# and, when the processor has them, x86-64-v3 and v4, each built apart
+cpu = open("/proc/cpuinfo").read() if os.path.exists("/proc/cpuinfo") else ""
+for level, need in (("", ""), ("x86-64-v3", "avx2"), ("x86-64-v4", "avx512bw")):
+    if need and (" " + need + " ") not in cpu:
+        continue
+    e = dict(env)
+    if level:
+        e["RUSTFLAGS"] = "-C target-cpu=" + level
+        e["CARGO_TARGET_DIR"] = os.path.join(target, "mem-" + level)
+    p = subprocess.run(["cargo", "test", "-q", "-p", "isc-mem", "--features", "symbols"], cwd=wt, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    res = [l for l in p.stdout.splitlines() if l.startswith("test result")]
+    out.write("isc-mem %-10s       %s\n" % (level or "x86-64", res[0] if res else "code %d" % p.returncode))
+    if p.returncode != 0:
+        failed.append(("isc-mem", level or "x86-64")); out.write(p.stdout[-4000:] + "\n")
 with open(log + ".times", "w") as f:
     for n, d in times.items():
         f.write("%s %.1f\n" % (n, d))

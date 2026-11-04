@@ -5228,3 +5228,77 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     allocator for `ISC_ALLOC=glibc`. The same outputs; the tests of the
     standard input mapped (its lease, SIGIO and SIGSEGV), the texts, the
     files, `Result`, the threads, the heap.
+- **D288 — The functions of memory of the runtime: the crate `isc-mem`,
+  safe code on slices (2026-11-04).** Without a C library (D287), the
+  functions LLVM and `core` call (`memcpy`, `memmove`, `memset`, `memcmp`,
+  `bcmp`, `strlen`) are the runtime's (under Linux; a program linked with
+  glibc takes them too: the definitions of an executable come first). The
+  author's demand: the code as clean and safe as can be, and no loss.
+  - The way of glibc on this processor, read in its code
+    (`__memmove_evex_unaligned_erms`, `__memcmp_evex_movbe`,
+    `__memset_evex_unaligned_erms`, its thresholds: `rep movsb` from 0x840
+    bytes, `rep stosb` above 0x800, past the caches from half the
+    last-level cache, here 0x800000): from both ends without a loop up to 8
+    vectors, the loop of 4 vectors to aligned places, `rep movsb` aligned
+    on 64 bytes, 4 pages at a time past the caches (their 16 vectors read
+    before any is written: otherwise a load waits for the store of the
+    same 12 low bits of address; the stores on lines of 64 bytes: a line
+    half written goes to memory in parts when 3 others come between, 1.23
+    ms against 0.70 for 16 MiB before), `memcmp` by masked loads up to 32
+    bytes, its loop of 4 vectors by 2 ternary operations (LLVM made the
+    form of AVX2 4 comparisons into masks, on one port of this processor).
+    The threshold past the caches read by CPUID (half the L3), not fixed.
+  - Safety: the pointers LLVM gives become slices once, at the entry of
+    each symbol (`symbols.rs`) and of each long path (`raw`), by the
+    contract of the function; all the rest is safe code on slices; the
+    few things Rust cannot say safely are in small functions with a safe
+    interface: the instructions of the vectors (`vec`, the set enabled by
+    `cfg`), `rep movsb` and `rep stosb`, the stores past the caches (their
+    alignment checked), the masked loads, `strlen`. 61 lines of code inside
+    `unsafe` blocks, against 494 in the first version (raw pointers
+    everywhere); every block with its `SAFETY`, `deny(unsafe_op_in_unsafe_fn,
+    clippy::undocumented_unsafe_blocks)`, Clippy clean for the 3 variants.
+    The accesses of the short paths by `get` (no panic possible there: a
+    function that may call one aligns the stack, 2 instructions more for
+    every length); a place outside, a fault of the algorithm, stops the
+    tests (built with the assertions of debugging), and in the runtime
+    reads zeros or writes nothing, never outside.
+  - Two traps of LLVM: a loop that moves, fills or measures bytes becomes
+    a call of `memcpy`, `memset` or `strlen`, that is of itself: the index
+    of such loops goes through `opaque` (an empty `asm!`); `#![no_builtins]`
+    would forbid it, but takes the crate out of the optimisation at the
+    link of the runtime, whose `core` then lacks `panic_bounds_check`
+    (a link error). Unoptimised, a copy of a fixed size is a call of
+    `memcpy`: the crate is built optimised in the profile of development
+    too, and its tests run with its own symbols (the whole test process
+    copies with them: a recursion would overflow the stack, seen once).
+  - The short lengths straight on, as glibc (32 to 64 bytes without a
+    taken branch, the long paths reached by a jump to a function of the C
+    convention: with a call, `memcpy` saved a register for every length;
+    LLVM had seen that the long path returns `d`, hence `opaque` on it).
+    Measured and not kept: `vzeroupper` (0.0 cycle: 7.14 and 7.06 for 32
+    bytes), `vptest` against `vptestmb` (98.47 and 98.36 cycles for 2 KiB).
+  - Measures (Xeon E-2388G, cycles per call, glibc against ours): copy 7
+    bytes 8.09 / 7.24, 32 bytes 6.08 / 6.61, 192 bytes 20.07 / 19.80, 1 KiB
+    46.40 / 46.53, 2 KiB 81.22 / 80.66; fill 1 KiB 29.69 / 25.66, 2 KiB
+    45.73 / 42.65; past the caches, 16 MiB copied 698186 / 681454 ns, 256
+    MiB 15418082 / 15418126 ns. Still slower (TODO.md): 2 bytes copied or
+    filled (7.08 / 9.08, 7.25 / 10.07: the chain of branches, which LLVM
+    lays out with taken branches), `memcmp` of 384 to 2048 bytes (22.39 /
+    24.49, 88.81 / 96.53; its loop at parity, 89.54 / 89.49 on the same
+    places: the cycles are in its fixed part, still to be located).
+  - The programs, A (glibc's functions) against B (ours), the median of
+    the differences of alternated rounds and its interval at 95 % by
+    bootstrap: k-nucleotide -0.71 % [-1.26, -0.10], fasta -0.23 % [-0.79,
+    +1.21], reverse-complement +0.35 % [-0.38, +0.80], regex-redux +0.02 %
+    [-0.22, +0.10], pidigits +0.05 % [-0.02, +0.11], fannkuch-redux -0.04 %
+    [-0.12, +0.21]; the 4 others spend nothing in these functions. The
+    ceiling of this step was their share of the programs (4.24 % of
+    regex-redux at most); its gain is the end of glibc for them.
+  - Tests: `isc-mem` against the standard library for every length to
+    600 and larger ones, every alignment, the moves that overlap at every
+    distance to 40 and more, the paths past the caches called themselves,
+    for x86-64, v3 and v4 (`tools/suite.py`); `memory_functions.rs`: a
+    program copying and comparing strings of every length, for each
+    instruction set, the result of the interpreter, and none of these
+    functions imported.

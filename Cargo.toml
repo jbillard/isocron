@@ -6,6 +6,7 @@ members = [
     "crates/isc-interp",
     "crates/isc-codegen",
     "crates/isc-runtime-core",
+    "crates/isc-mem",
     "crates/iscc",
     "crates/isc-lsp",
 ]
@@ -24,3 +25,8 @@ debug = false
 
 [profile.dev]
 opt-level = 1
+
+# isc-mem is `memcpy` itself: unoptimised, its copies of a fixed size are
+# calls of `memcpy` (D288); its tests run the code of the runtime
+[profile.dev.package.isc-mem]
+opt-level = 3

@@ -207,17 +207,6 @@ pub fn strerror(code: c_int) -> *const c_char {
     isc_runtime_core::oserr::text_c(code).as_ptr() as *const c_char
 }
 
-/// # Safety
-/// `s` is a string ending with a zero byte.
-pub unsafe fn strlen(s: *const c_char) -> usize {
-    let mut n = 0;
-    // SAFETY: every byte up to the zero is part of the string (see above)
-    while unsafe { *s.add(n) } != 0 {
-        n += 1;
-    }
-    n
-}
-
 /// The end of the process (every thread) with `code`.
 pub fn exit(code: c_int) -> ! {
     loop {

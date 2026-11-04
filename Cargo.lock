@@ -54,6 +54,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "isc-mem"
+version = "0.2.1"
+
+[[package]]
 name = "isc-runtime-core"
 version = "0.2.1"
 dependencies = [

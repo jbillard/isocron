@@ -11,7 +11,7 @@ fn main() {
     let here = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let manifest = here.join("../isc-runtime/Cargo.toml");
     let target = PathBuf::from(env::var("OUT_DIR").unwrap()).join("runtime");
-    for p in ["../isc-runtime/src", "../isc-runtime/Cargo.toml", "../isc-runtime-core/src", "../isc-runtime-core/Cargo.toml"] {
+    for p in ["../isc-runtime/src", "../isc-runtime/Cargo.toml", "../isc-runtime-core/src", "../isc-runtime-core/Cargo.toml", "../isc-mem/src", "../isc-mem/Cargo.toml"] {
         println!("cargo:rerun-if-changed={}", p);
     }
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());

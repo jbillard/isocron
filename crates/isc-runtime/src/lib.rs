@@ -73,8 +73,14 @@ extern "C" {
 // Linux (D287): the system called directly, no C library
 #[cfg(target_os = "linux")]
 mod linux;
+// The functions of memory that LLVM and `core` call (D288): those of
+// `isc-mem`, the runtime's own under Linux; in a program linked with glibc,
+// they are the ones of the program too (the definitions of an executable
+// come first).
 #[cfg(target_os = "linux")]
-use linux::{abort, close, exit, lseek, open, pread, read, strerror, strlen, write};
+use isc_mem::symbols::strlen;
+#[cfg(target_os = "linux")]
+use linux::{abort, close, exit, lseek, open, pread, read, strerror, write};
 
 // the allocator of glibc, for `ISC_ALLOC=glibc` (the second run of the
 // tests; to go with the C library, D287)
