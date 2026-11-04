@@ -4655,7 +4655,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (2026-11-04).** In the timeline of reverse-complement (D258), three of
   the four threads waited about 2 ms at the end of the writing passes of
   its second and third records: their arrays take the block of the record
-  before (D53: a cached block grown), whose start is already written and
+  before (D211: a cached block grown), whose start is already written and
   whose end faults new pages, so equal ranges do not cost the same. Four
   ranges per thread taken in turn (`isc_parallel_for_fill`): measured
   (best of 7, 4 threads) reverse-complement 61.1 -> 61.5 ms, the 9 others
