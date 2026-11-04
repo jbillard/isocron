@@ -241,6 +241,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
   - [x] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why (D261: the sibling thread of its core; offline, 126.3 to 126.4 cycles a step in every run)
   - [x] The roots and divisions of a `fold` that do not depend on its accumulator, two elements at a time: n-body 1.979 -> 1.861 s, in Docker 1.892 s against C 1.945 s (D261)
+  - [x] The Benchmarks Game measured again at c77e61b: the fastest on 10 of 10, n-body 1.897 s against C 1.945 s (D262)
   - [ ] A model of the loop of n-body with the ports and the window of the scheduler: the model of D261 (latency and divider) gives 108.5 cycles a step, 118.8 measured
   - [ ] The runtime given to LLVM with the program, so that the generated code inlines its fast paths (allocation, ...): first the share of time in the `isc_*` functions of each program; rustc 1.9x emits LLVM 23 bitcode, iscc reads LLVM 21 (a rustc on LLVM 21, iscc on LLVM 23, or the fast paths emitted as IR by iscc); measured on the ten programs and the kernels, with compile time and size
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)

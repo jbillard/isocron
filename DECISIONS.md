@@ -4736,3 +4736,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     thread has states of different speed while its sibling sleeps and
     wakes; without the sibling, one. The measurements of this decision
     are made with the sibling offline.
+- **D262 — The Benchmarks Game measured again at `c77e61b`: the fastest
+  on 10 of 10 (2026-11-04).** The protocol of D249 and D260, the Isocron
+  programs built by the compiler of D261, the Windows VM stopped. Against
+  D260: n-body 2.040 -> 1.897 s, now ahead of C (1.945 s) and Rust (1.946
+  s); k-nucleotide 1.070 s (C++ 1.176 s), reverse-complement 0.061 s (Rust
+  0.067 s), spectral-norm 0.195 s (Rust 0.205 s), binary-trees 0.669 s,
+  fannkuch-redux 1.663 s, fasta 0.018 s, mandelbrot 0.639 s, pidigits
+  0.490 s, regex-redux 0.289 s, each the same within its noise. Before
+  it: the full suite green (82 runs), the tests of the Windows target on
+  the VM (3, the ten programs among them).
