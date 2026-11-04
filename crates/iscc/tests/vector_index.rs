@@ -535,7 +535,9 @@ fn tables_read_at_a_remainder_are_copied_with_their_period() {
 ";
     let bin = compile(src, "period_tables");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(ll.contains("alloca [318 x i8], align 64"), "the bytes of alu are not copied with their period");
+    // 287 bytes and 31 more for 32 lanes, 63 more where a line is one
+    // vector of 64 (D274)
+    assert!(ll.contains("alloca [318 x i8], align 64") || ll.contains("alloca [350 x i8], align 64"), "the bytes of alu are not copied with their period");
     let cases = [["5000", "0", "60"], ["100000", "3", "60"], ["999", "4", "60"], ["64", "4000", "60"], ["31", "0", "60"], ["5000", "0", "50"], ["999", "-7", "60"]];
     for (i, args) in cases.iter().enumerate() {
         let want = interp(src, args);
