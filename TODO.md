@@ -239,6 +239,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Programs for Windows with only the functions they use: a hello 1.5 MB -> 54 KB (D250)
   - [x] Release 0.1.1: the programs for Windows of D250, `iscc --version` (D251)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
+  - [x] An affine recurrence modulo a constant (`fold` over `iota`, rule R) computed in parts from powers of its step: the generator 14.50 -> 2.99 cycles a value, fasta 7196 -> 6615 µs, 2.86 times its floor (D292)
   - [x] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why (D261: the sibling thread of its core; offline, 126.3 to 126.4 cycles a step in every run)
   - [x] The roots and divisions of a `fold` that do not depend on its accumulator, two elements at a time: n-body 1.979 -> 1.861 s, in Docker 1.892 s against C 1.945 s (D261)
   - [x] The Benchmarks Game measured again at c77e61b: the fastest on 10 of 10, n-body 1.897 s against C 1.945 s (D262)

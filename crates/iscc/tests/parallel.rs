@@ -298,3 +298,68 @@ fn sparse_filters_skip_the_empty_blocks() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+/// Rule R (D292): an affine recurrence modulo a constant written as a
+/// `fold` over `iota` computed in parts from powers of its step. The same
+/// integers as the interpreter for every form of the step (the product and
+/// the sum in either order, without the sum, without the product, a
+/// multiplier above the modulus, the largest modulus allowed), for the
+/// paths that keep the loop as written (fewer than 64 steps, a first value
+/// outside `0 .. m`, a modulus too large for the powers, a negative
+/// multiplier, an update out of bounds and its panic), in a task, and for
+/// any number of threads.
+#[test]
+fn affine_recurrences_match_the_interpreter() {
+    let fold = |n: &str, init: &str, step: &str| format!("fold(iota({}), {}, (v, t) => v.with(t + 1, {}))", n, init, step);
+    let cases = [
+        // the generator of fasta: the parallel parts
+        (fold("139967", "fill(139968, 42)", "(v[t] * 3877 + 29573) % 139968"), true),
+        (fold("200003", "fill(200010, 7)", "(29573 + 3877 * v[t]) % 139968"), true),
+        (fold("50021", "fill(50022, 1)", "(v[t] * 48271) % 2147483647"), true),
+        (fold("30011", "fill(30012, 5)", "(v[t] + 999) % 1000003"), true),
+        (fold("70001", "fill(70002, 3)", "(v[t] * 1000000000000 + 12345) % 1000003"), true),
+        (fold("90001", "fill(90002, 2)", "(v[t] * 3 + 1) % 3037000499"), true),
+        // the first value far above m: v[1] in 0 .. m, then the parts
+        (fold("40000", "fill(40001, 1000000000000)", "(v[t] * 3 + 1) % 1000003"), true),
+        // the loop as written, chosen when the program runs: 63 steps; v[1]
+        // negative; the update of v[n] and its panic
+        (fold("63", "fill(64, 9)", "(v[t] * 3877 + 29573) % 139968"), true),
+        (fold("40000", "fill(40001, -6)", "(v[t] * 3 + 1) % 7"), true),
+        (fold("40000", "fill(40000, 5)", "(v[t] * 3 + 1) % 1000003"), true),
+        // the loop alone, the rule refused at compilation: m * (m - 1) too
+        // large; a negative multiplier
+        (fold("40000", "fill(40001, 5)", "(v[t] * 2 + 1) % 4000000000"), false),
+        (fold("40000", "fill(40001, 5)", "(v[t] * -3 + 1) % 1000003"), false),
+    ];
+    for (i, (expr, rule)) in cases.iter().enumerate() {
+        let src = format!(
+            "function f(): i64[k] {{\n    return {};\n}}\n\naction main(args: string[k]): i32 {{\n    const v = f();\n    print(v);\n    return 0;\n}}\n",
+            expr
+        );
+        let bin = compile(&src, &format!("p_rule_r{}", i));
+        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        assert_eq!(ll.contains("call void @isc_parallel_for("), *rule, "case {}: rule R applied or not", i);
+        let want = interp(&src, &[]);
+        for t in THREADS {
+            let run = run_bin_threads(&bin, &[], Some(t));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((run.code, &run.stdout), (*code, out), "case {} T={}", i, t),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(run.code, 101, "case {} T={}", i, t);
+                    assert_eq!(run.stderr.trim_end(), m, "case {} T={}", i, t);
+                }
+            }
+        }
+    }
+    // in the tasks of a `map`: the parts on the thread of each task
+    let src = format!(
+        "function g(r: i64): i64 {{\n    const v = {};\n    return v[1] + v[5000 + r] * 3 + v[20000 + r];\n}}\n\naction main(args: string[k]): i32 {{\n    print(map(iota(40), (r) => g(r)));\n    return 0;\n}}\n",
+        fold("20000 + r", "fill(20001 + r, r)", "(v[t] * 3877 + 29573) % 139968")
+    );
+    let bin = compile(&src, "p_rule_r_tasks");
+    let want = interp_ok(&src, &[]);
+    for t in THREADS {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "tasks T={}: {}", t, run.stderr);
+    }
+}

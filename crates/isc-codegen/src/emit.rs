@@ -1758,6 +1758,78 @@ fn additive_update(l: &Lambda) -> Option<(&Expr, &Expr, Span)> {
     Some((index, h, read))
 }
 
+/// The step `y -> (a * y + c) % m` of an affine recurrence modulo a constant
+/// (rule R, D292).
+#[derive(Clone, Copy, Debug)]
+struct Affine {
+    a: i64,
+    c: i64,
+    m: i64,
+}
+
+/// `e` as the step `(y * a + c) % m` of the value `y` (`is_y`) for rule R
+/// (D292): the product and the sum in either order, the product (`a` = 1)
+/// or the sum (`c` = 0) possibly absent, integer literals with `a >= 0`,
+/// `c >= 0` and `m >= 2`, of type `i64`. From `0 <= y < m` the step then
+/// never wraps (`(m - 1) * a + c` fits) and its result is again in `0 .. m`;
+/// a power of the step (`affine_power`) never wraps either (`m * (m - 1)`
+/// fits).
+fn affine_step(e: &Expr, is_y: &dyn Fn(&Expr) -> bool) -> Option<Affine> {
+    let i64t = Type::Int(IntKind::I64);
+    if e.ty != i64t {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Rem, p, mm) = &e.kind else { return None };
+    let ExprKind::Lit(Lit::Int(m)) = mm.kind else { return None };
+    let lit = |x: &Expr| match x.kind {
+        ExprKind::Lit(Lit::Int(k)) if x.ty == i64t => Some(k),
+        _ => None,
+    };
+    let product = |x: &Expr| -> Option<i64> {
+        if is_y(x) {
+            return Some(1);
+        }
+        match &x.kind {
+            ExprKind::Binary(BinOp::Mul, u, w) if is_y(u) => lit(w),
+            ExprKind::Binary(BinOp::Mul, u, w) if is_y(w) => lit(u),
+            _ => None,
+        }
+    };
+    let (a, c) = match &p.kind {
+        ExprKind::Binary(BinOp::Add, u, w) => match (product(u), lit(w)) {
+            (Some(a), Some(c)) => (a, c),
+            _ => (product(w)?, lit(u)?),
+        },
+        _ => (product(p)?, 0),
+    };
+    let fits = |x: i128| x <= i64::MAX as i128;
+    let (a1, c1, m1) = (a as i128, c as i128, m as i128);
+    (a >= 0 && c >= 0 && m >= 2 && fits((m1 - 1) * a1 + c1) && fits(m1 * (m1 - 1))).then_some(Affine { a, c, m })
+}
+
+/// Rule R (D292): `fold(iota(n), init, (v, t) => v.with(t + 1, f(v[t])))`
+/// (or `1 + t`), `f` an affine step modulo a constant of `v[t]` alone
+/// (`affine_step`): `v[t + 1] = f(v[t])`, so `v[s] = f^(s - 1)(v[1])`, and a
+/// power of `f` is again an affine step. Returns the step and the value of
+/// the update (`f(v[t])` as written).
+fn affine_recurrence<'a>(x: &Expr, l: &'a Lambda) -> Option<(Affine, &'a Expr)> {
+    if !matches!(x.kind, ExprKind::Iota(_)) || l.params.len() != 2 || l.drop_params.first() != Some(&false) {
+        return None;
+    }
+    let (v, t) = (l.params[0], l.params[1]);
+    let ExprKind::Update { target, index, value, .. } = &l.body.kind else { return None };
+    if !matches!(target.kind, ExprKind::Var(u, _) if u == v) {
+        return None;
+    }
+    let is_t = |e: &Expr| matches!(e.kind, ExprKind::Var(u, _) if u == t);
+    let one = |e: &Expr| matches!(e.kind, ExprKind::Lit(Lit::Int(1)));
+    if !matches!(&index.kind, ExprKind::Binary(BinOp::Add, a, b) if (is_t(a) && one(b)) || (one(a) && is_t(b))) {
+        return None;
+    }
+    let is_y = |e: &Expr| matches!(&e.kind, ExprKind::Index(a, i) if matches!(a.kind, ExprKind::Var(u, _) if u == v) && is_t(i));
+    Some((affine_step(value, &is_y)?, value))
+}
+
 impl<'p> Gen<'p> {
     // ----- emission helpers ------------------------------------------------
 
@@ -3517,6 +3589,10 @@ impl<'p> Gen<'p> {
             Filter(x, l) => self.filter(e, x, l),
             Fold(x, init, l) if w > 1 => self.fold_vec(x, init, l, w),
             Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
+            Fold(x, init, l) if affine_recurrence(x, l).is_some() => {
+                let (f, value) = affine_recurrence(x, l).unwrap();
+                self.fold_affine(x, init, l, f, value)
+            }
             Fold(x, init, l) => match additive_update(l) {
                 Some((gi, h, read)) if !self.in_task => self.fold_private(e, x, init, l, gi, h, read),
                 _ => match split_plan(x, l) {
@@ -7441,14 +7517,19 @@ impl<'p> Gen<'p> {
     fn fold(&mut self, x: &Expr, init: &Expr, l: &Lambda) -> R<V> {
         let (src, n) = self.prepare_src(x)?;
         let iv = self.ex(init, 1)?;
-        let at = init.ty.clone();
+        self.fold_loop(&src, &n, &iv, &init.ty, l)
+    }
+
+    /// The loop of a `fold` from its initial value `iv` (of type `at`).
+    fn fold_loop(&mut self, src: &Src, n: &str, iv: &V, at: &Type, l: &Lambda) -> R<V> {
+        let at = at.clone();
         let alt = lt(&at);
         let acc = self.alloca(&alt);
         self.emit(format!("store {} {}, ptr {}", alt, iv.r, acc));
-        self.for_range("0", &n, 1, &mut |g, i| {
+        self.for_range("0", n, 1, &mut |g, i| {
             let a = g.ins(format!("load {}, ptr {}", alt, acc));
             let av = v(a, alt.clone());
-            let el = g.elem(&src, i, 1)?;
+            let el = g.elem(src, i, 1)?;
             g.bind(l.params[0], av.clone());
             g.bind(l.params[1], el);
             let r = g.ex(&l.body, 1)?;
@@ -7460,6 +7541,194 @@ impl<'p> Gen<'p> {
         })?;
         let r = self.ins(format!("load {}, ptr {}", alt, acc));
         Ok(v(r, alt))
+    }
+
+    /// A `fold` of rule R (`affine_recurrence`, D292), `v[t + 1] = f(v[t])`
+    /// for `t` in `0 .. n`: `v[1]` computed as written, then, when it is in
+    /// `0 .. m` and `v` has the `n + 1` elements written, `v[s] =
+    /// f^(s - 1)(v[1])` for `s` in `2 .. n + 1` by `affine_fill` (each part
+    /// from its first value, a power of `f` applied to `v[1]`). The same
+    /// integers as the loop: from `0 <= y < m` no step and no power wraps
+    /// (`affine_step`). Otherwise (fewer than RECUR_MIN steps, an update out
+    /// of bounds and its panic, `v[1]` outside `0 .. m`) the loop as written.
+    fn fold_affine(&mut self, x: &Expr, init: &Expr, l: &Lambda, f: Affine, value: &Expr) -> R<V> {
+        const RECUR_MIN: i64 = 64;
+        let (src, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, 1)?;
+        let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", iv.r));
+        let len = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", iv.r));
+        let out = self.alloca("{ ptr, i64 }");
+        let (lfirst, lfast, lslow, ljoin) = (self.label(), self.label(), self.label(), self.label());
+        let many = self.ins(format!("icmp sge i64 {}, {}", n, RECUR_MIN));
+        let inside = self.ins(format!("icmp slt i64 {}, {}", n, len));
+        let both = self.ins(format!("and i1 {}, {}", many, inside));
+        self.cbr(&both, &lfirst, &lslow);
+        self.block(&lfirst);
+        self.bind(l.params[0], iv.clone());
+        self.bind(l.params[1], v("0", "i64"));
+        let y1 = self.ex(value, 1)?;
+        let ok = self.ins(format!("icmp ult i64 {}, {}", y1.r, f.m));
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        let at1 = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 1", p));
+        self.emit(format!("store i64 {}, ptr {}", y1.r, at1));
+        let end = self.ins(format!("add i64 {}, 1", n));
+        self.affine_fill(&p, "1", &y1.r, &end, f)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", iv.r, out));
+        self.br(&ljoin);
+        self.block(&lslow);
+        let r = self.fold_loop(&src, &n, &iv, &init.ty, l)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, out));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
+    }
+
+    /// `p[s] = f^(s - from)(y)` for `s` in `from + 1 .. end` (`p[from]` is
+    /// `y`, in `0 .. m`): in parts of consecutive indices on the pool, one
+    /// per thread with at least RECUR_PART values each, or here in a task or
+    /// with one part (`affine_range`).
+    fn affine_fill(&mut self, p: &str, from: &str, y: &str, end: &str, f: Affine) -> R<()> {
+        const RECUR_PART: i64 = 8192;
+        let lo = self.ins(format!("add i64 {}, 1", from));
+        if self.in_task {
+            return self.affine_range(p, from, y, &lo, end, f);
+        }
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        let count = self.ins(format!("sub i64 {}, {}", end, lo));
+        let thr = self.ins("call i64 @isc_thread_count()".into());
+        let most = self.ins(format!("sdiv i64 {}, {}", count, RECUR_PART));
+        let most = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 1)", most));
+        let parts = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", thr, most));
+        let several = self.ins(format!("icmp sgt i64 {}, 1", parts));
+        let (lpar, lone, ljoin) = (self.label(), self.label(), self.label());
+        self.cbr(&several, &lpar, &lone);
+        self.block(&lpar);
+        // the part k: lo + count * k / parts .. lo + count * (k + 1) / parts
+        let extra = [v(p.to_string(), "ptr"), v(from.to_string(), "i64"), v(y.to_string(), "i64"), v(lo.clone(), "i64"), v(count.clone(), "i64"), v(parts.clone(), "i64")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[], &extra, &mut |g, x, k| {
+            let a = g.ins(format!("mul i64 {}, {}", x[4].r, k));
+            let a = g.ins(format!("sdiv i64 {}, {}", a, x[5].r));
+            let k1 = g.ins(format!("add i64 {}, 1", k));
+            let b = g.ins(format!("mul i64 {}, {}", x[4].r, k1));
+            let b = g.ins(format!("sdiv i64 {}, {}", b, x[5].r));
+            let start = g.ins(format!("add i64 {}, {}", x[3].r, a));
+            let stop = g.ins(format!("add i64 {}, {}", x[3].r, b));
+            g.affine_range(&x[0].r, &x[1].r, &x[2].r, &start, &stop, f)
+        })?;
+        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", parts, task, ctx, ctx_bytes));
+        self.br(&ljoin);
+        self.block(&lone);
+        self.affine_range(p, from, y, &lo, end, f)?;
+        self.br(&ljoin);
+        self.block(&ljoin);
+        Ok(())
+    }
+
+    /// `p[s] = f^(s - from)(y)` for `s` in `lo .. hi` (`from < lo`, `y` in
+    /// `0 .. m`): RECUR_CHAINS chains of `q = (hi - lo) / RECUR_CHAINS`
+    /// consecutive values, advanced together so that their steps overlap
+    /// (one step is a chain of multiplications, about 14 cycles), each from
+    /// its first value (a power of `f`: the first chain from `y`, each next
+    /// one `q` steps after it); then the last chain goes on to `hi`.
+    fn affine_range(&mut self, p: &str, from: &str, y: &str, lo: &str, hi: &str, f: Affine) -> R<()> {
+        const RECUR_CHAINS: i64 = 8;
+        let len = self.ins(format!("sub i64 {}, {}", hi, lo));
+        let q = self.ins(format!("sdiv i64 {}, {}", len, RECUR_CHAINS));
+        let s0 = self.ins(format!("sub i64 {}, {}", lo, from));
+        let (a0, c0) = self.affine_power(&s0, f);
+        let mut first = self.affine_apply(&a0, &c0, y, f);
+        let (aq, cq) = self.affine_power(&q, f);
+        let mut chains = Vec::new();
+        for j in 0..RECUR_CHAINS {
+            if j > 0 {
+                first = self.affine_apply(&aq, &cq, &first, f);
+            }
+            let slot = self.alloca("i64");
+            self.emit(format!("store i64 {}, ptr {}", first, slot));
+            let jq = self.ins(format!("mul i64 {}, {}", q, j));
+            let at = self.ins(format!("add i64 {}, {}", lo, jq));
+            let base = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", p, at));
+            chains.push((slot, base));
+        }
+        self.for_range_scalar("0", &q, 1, &mut |g, i| {
+            for (slot, base) in &chains {
+                let yv = g.ins(format!("load i64, ptr {}", slot));
+                let at = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", base, i));
+                g.emit(format!("store i64 {}, ptr {}", yv, at));
+                let next = g.affine_once(&yv, f);
+                g.emit(format!("store i64 {}, ptr {}", next, slot));
+            }
+            Ok(())
+        })?;
+        let (last, _) = chains.last().unwrap().clone();
+        let cq8 = self.ins(format!("mul i64 {}, {}", q, RECUR_CHAINS));
+        let rest = self.ins(format!("add i64 {}, {}", lo, cq8));
+        self.for_range_scalar(&rest, hi, 1, &mut |g, s| {
+            let yv = g.ins(format!("load i64, ptr {}", last));
+            let at = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", p, s));
+            g.emit(format!("store i64 {}, ptr {}", yv, at));
+            let next = g.affine_once(&yv, f);
+            g.emit(format!("store i64 {}, ptr {}", next, last));
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// `f(y)`, `y` in `0 .. m`: `(a * y + c) % m`, without a wrap (`affine_step`).
+    fn affine_once(&mut self, y: &str, f: Affine) -> String {
+        let t = self.ins(format!("mul nuw nsw i64 {}, {}", y, f.a));
+        let t = self.ins(format!("add nuw nsw i64 {}, {}", t, f.c));
+        self.ins(format!("urem i64 {}, {}", t, f.m))
+    }
+
+    /// `(a * y + c) % m`, `a`, `c` and `y` in `0 .. m` (a power of `f`).
+    fn affine_apply(&mut self, a: &str, c: &str, y: &str, f: Affine) -> String {
+        let t = self.ins(format!("mul nuw nsw i64 {}, {}", a, y));
+        let t = self.ins(format!("add nuw nsw i64 {}, {}", t, c));
+        self.ins(format!("urem i64 {}, {}", t, f.m))
+    }
+
+    /// `f^s` as `(A, C)`, `f^s(y) = (A * y + C) % m`, by squarings: the
+    /// powers of two of `f` (`f^(2k) = f^k . f^k`), those of the bits of `s`
+    /// composed; every product of two values below `m` (`affine_step`).
+    fn affine_power(&mut self, s: &str, f: Affine) -> (String, String) {
+        let m = f.m;
+        let slots: Vec<String> = (0..5).map(|_| self.alloca("i64")).collect();
+        let (ra, rc, ba, bc, ss) = (&slots[0], &slots[1], &slots[2], &slots[3], &slots[4]);
+        for (slot, init) in [(ra, 1), (rc, 0), (ba, f.a % m), (bc, f.c % m)] {
+            self.emit(format!("store i64 {}, ptr {}", init, slot));
+        }
+        self.emit(format!("store i64 {}, ptr {}", s, ss));
+        let (head, body, done) = (self.label(), self.label(), self.label());
+        self.br(&head);
+        self.block(&head);
+        let sv = self.ins(format!("load i64, ptr {}", ss));
+        let more = self.ins(format!("icmp sgt i64 {}, 0", sv));
+        self.cbr(&more, &body, &done);
+        self.block(&body);
+        let [rav, rcv, bav, bcv] = [ra, rc, ba, bc].map(|x| self.ins(format!("load i64, ptr {}", x)));
+        // the bit: f^bit . R
+        let bit = self.ins(format!("and i64 {}, 1", sv));
+        let on = self.ins(format!("icmp ne i64 {}, 0", bit));
+        let na = self.affine_apply(&bav, "0", &rav, f);
+        let nc = self.affine_apply(&bav, &bcv, &rcv, f);
+        let ra2 = self.ins(format!("select i1 {}, i64 {}, i64 {}", on, na, rav));
+        let rc2 = self.ins(format!("select i1 {}, i64 {}, i64 {}", on, nc, rcv));
+        // B . B
+        let ba2 = self.affine_apply(&bav, "0", &bav, f);
+        let bc2 = self.affine_apply(&bav, &bcv, &bcv, f);
+        let s2 = self.ins(format!("lshr i64 {}, 1", sv));
+        for (slot, val) in [(ra, &ra2), (rc, &rc2), (ba, &ba2), (bc, &bc2), (ss, &s2)] {
+            self.emit(format!("store i64 {}, ptr {}", val, slot));
+        }
+        self.scalar_loops += 1;
+        self.emit(format!("br label %{}, !llvm.loop !{}", head, self.scalar_loops + 1));
+        self.block(&done);
+        let a = self.ins(format!("load i64, ptr {}", ra));
+        let c = self.ins(format!("load i64, ptr {}", rc));
+        (a, c)
     }
 
     /// A `fold` of `split_plan` (D260): the `let`s that do not depend on the

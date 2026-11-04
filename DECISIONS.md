@@ -5415,3 +5415,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   guarantee, not an optimisation), the engine of regular expressions and
   the big integers (rewritten or kept in Rust), the access to explicit
   vector instructions from the modules of the runtime.
+- **D292 — An affine recurrence modulo a constant computed in parts from
+  powers of its step (2026-11-04).** Part 1 of the goal of 2026-11-04
+  (each of the ten programs under 3 times its floor): fasta was 7196 µs,
+  3.11 times its floor of 2.313 ms. With N = 1 it still took 1420 µs: in a
+  profile of 200 runs, `main` had 17.7 % of the samples, 99.9 % of them in
+  the loop of `generator()` (`fold(iota(IM - 1), fill(IM, 42), (v, t) =>
+  v.with(t + 1, (v[t] * IA + IC) % IM))`), and the workers waiting for it
+  57 %. The model of a step: one chain of `imul` by a (3 cycles), `add`,
+  the multiplication of the remainder by its constant (4), its shifts (2),
+  `imul` by m (3) and `sub`, about 14 cycles a value, 14.50 measured (one
+  thread), while the three other threads wait; the floor computes the
+  period in lanes, 1.029 ns a value with its symbol. A power of an affine
+  step modulo m is again one, f^s(y) = (A y + C) % m, its (A, C) found by
+  squarings. Rule R (SPEC section 6, `docs/language.md`): a `fold(iota(n),
+  init, (v, t) => v.with(t + 1, (v[t] * a + c) % m))` (the product and the
+  sum in either order, either of them possibly absent), with integer
+  literals a >= 0, c >= 0, m >= 2 such that (m - 1) a + c and m (m - 1)
+  fit in an `i64`, computes v[1] as written; when v[1] is in 0 .. m and v
+  has the n + 1 elements written, v[s] = f^(s - 1)(v[1]) for s in 2 .. n + 1
+  in one part of consecutive indices per thread (at least 8192 values a
+  part, on the pool; in a task, on its thread), each part as 8 chains
+  advanced together, each from its power of f, so that their steps
+  overlap. From 0 <= y < m no step and no power wraps: the same integers as
+  the loop. Otherwise (fewer than 64 steps, an update out of bounds and its
+  panic, v[1] outside 0 .. m) the loop as written. At fixed frequency: the
+  generator alone 14.50 -> 2.99 cycles a value on one thread (the model:
+  three multiplications a step on one port, 3 cycles), 0.633 -> 0.023 ms on
+  4 threads; alternated rounds, medians, 95 % intervals by bootstrap:
+  fasta N = 1 1420 -> 810 µs (-44.45 % [-46.72 %, -40.44 %], 61 rounds),
+  fasta N = 25000000 7196 -> 6615 µs (-7.39 % [-8.41 %, -6.89 %], 61
+  rounds), 2.86 times its floor. The LLVM IR of the nine other programs is
+  unchanged. The same outputs. Test `affine_recurrences_match_the_interpreter`
+  (each form of the step, a multiplier above m, the largest m, a first
+  value far above m, the paths of the loop chosen at compilation and when
+  running, the panic of an update out of bounds, in the tasks of a `map`;
+  1 to 8 threads).

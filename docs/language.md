@@ -1723,6 +1723,35 @@ parallel: each thread accumulates a chunk of `x` into a private copy of zeros,
 and the copies are added to `init`. Integer addition modulo 2^bits is
 associative and commutative, so the result is the one of the sequential
 `fold`, whatever the number of threads. The histogram above follows rule P.
+
+**Rule R (affine recurrence modulo a constant).** A `fold(iota(n), init, f)`
+whose function has the shape `(v, t) => v.with(t + 1, (v[t] * a + c) % m)`
+(the product and the sum in either order, the sum or the product possibly
+absent), with integer literals `a >= 0`, `c >= 0` and `m >= 2` of type `i64`
+small enough that `(m - 1) * a + c` and `m * (m - 1)` fit, is computed in
+parallel. A power of the step `y -> (a * y + c) % m` is again such a step,
+found by squarings, so each thread starts its part of `v` from a power of the
+step applied to `v[1]`. From a value in `0 .. m` no step and no power wraps:
+the integers are those of the sequential `fold`. When `v[1]` is outside
+`0 .. m`, when an update is out of bounds, or for fewer than 64 steps, the
+loop runs as written. This is a linear congruential generator:
+
+```isc
+function generator(): i64[k] {
+    return fold(iota(139967), fill(139968, 42), (v, t) => v.with(t + 1, (v[t] * 3877 + 29573) % 139968));
+}
+
+action main(args: string[k]): i32 {
+    const v = generator();
+    print([v[1], v[2], v[100000], v[139967]]);
+    return 0;
+}
+```
+
+```output
+[52439, 102040, 79178, 104833]
+```
+
 Any other `fold` runs sequentially.
 
 ## Functions as arguments and generics
