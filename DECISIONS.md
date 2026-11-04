@@ -5129,3 +5129,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`merged_parts_are_one_search`), and the searches split among threads,
   the replacements written in parallel by matches and by bytes, the short
   copies (`strings.rs`, 1 to 16 threads).
+- **D282 — The stop of a delimited alternative found in the masks of the
+  blocks (2026-11-04).** The replacements `<[^>]*>` and `\|[^|][^|]*\|`
+  of regex-redux (3544465 and 1690880 matches) called `memchr` for the
+  stop byte of each match, a few bytes after its head. The stop byte of a
+  delimited alternative now has a class of its own, its mask made with the
+  others; its first place after the head is found in the masks of the
+  block and the next one (the head ends before the end of the next), the
+  text after them searched only when it is not there. The same matches.
+  The phases of regex-redux (best of 3, 4 threads): `<[^>]*>` 31.5 ms ->
+  29.6 ms, `\|[^|][^|]*\|` 15.6 ms -> 14.1 ms; in alternation, best of
+  9: 167.9 ms -> 165.1 ms. Test `stops_found_in_the_masks_of_the_blocks`
+  (stops at every distance from 0 to 300 bytes of their heads, too close
+  for `mid`, missing at the end).

@@ -2306,6 +2306,9 @@ pub mod rx {
             seq: Vec<u8>,
             line: bool,
             stop: Option<(u8, usize)>,
+            /// the class of its stop byte alone: found in the masks of the
+            /// blocks (D282)
+            stop_class: u8,
         }
 
         pub struct Simple {
@@ -2346,6 +2349,7 @@ pub mod rx {
 
         /// At most this many distinct bytes for `Fixed`.
         const FIXED_BYTES: usize = 8;
+
 
         /// The ASCII bytes of a class or literal of one character (a bit
         /// each); None if it has a member outside ASCII.
@@ -2587,7 +2591,12 @@ pub mod rx {
                     }
                     seq.push(index(&mut classes, m)?);
                 }
-                alts.push(Alt { seq, line: *line, stop: *stop });
+                alts.push(Alt { seq, line: *line, stop: *stop, stop_class: 0 });
+            }
+            for a in alts.iter_mut() {
+                if let Some((b, _)) = a.stop {
+                    a.stop_class = index(&mut classes, 1u128 << b)?;
+                }
             }
             let nl = if alts.iter().any(|a| a.line) { Some(index(&mut classes, 1u128 << b'\n')? as usize) } else { None };
             let class_of = |b: u8| -> u16 {
@@ -3092,7 +3101,22 @@ pub mod rx {
                                     found = Some(h);
                                     break;
                                 }
-                                Some((stop, mid)) => match memchr::memchr(stop, &b[h..]) {
+                                // the stop in the masks of this block and the
+                                // next (`h` is before the end of the next), a
+                                // search of the text after them only when it is
+                                // not there (D282)
+                                Some((stop, mid)) => match {
+                                    let k = alt.stop_class as usize & (CLASSES - 1);
+                                    let off = h - base;
+                                    let w = (((x[k] as u128) << 64) | c[k] as u128) >> off;
+                                    if w != 0 {
+                                        Some(w.trailing_zeros() as usize)
+                                    } else if base + 128 < n {
+                                        memchr::memchr(stop, &b[base + 128..]).map(|q| base + 128 + q - h)
+                                    } else {
+                                        None
+                                    }
+                                } {
                                     None => dead |= 1 << a,
                                     Some(q) if q < mid => {}
                                     Some(q) => {
@@ -3160,6 +3184,31 @@ pub mod rx {
                 }
                 for v in ["ig/k", "ig/ks", "g/a*", "g/^ab", "g/ab$", "g/é", "g/", "g/[^a]", "g/.b"] {
                     assert!(of(v).is_none(), "{} has a shape", v);
+                }
+            }
+
+            /// D282: the stop of a delimited alternative found in the masks of
+            /// the block and the next one, else searched after them: stops at
+            /// every distance from 0 to 300 bytes of their heads (in the
+            /// block, in the next, beyond), too close for `mid`, missing at
+            /// the end; the matches of the automaton from any start.
+            #[test]
+            fn stops_found_in_the_masks_of_the_blocks() {
+                let mut text = alloc::string::String::new();
+                for d in 0..300usize {
+                    text.push('<');
+                    text.push_str(&"a|".repeat(d / 2));
+                    text.push_str(if d % 2 == 0 { "" } else { "|" });
+                    text.push('>');
+                    text.push_str(&"x".repeat(d % 7));
+                }
+                text.push_str("<open|never closed");
+                for v in ["g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/<[^>]+>", "g/<[^>]*>|a"] {
+                    let sm = of(v).unwrap();
+                    let re = super::super::of(v);
+                    for from in [0usize, 1, 63, 64, 100, 5000] {
+                        assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
+                    }
                 }
             }
 
