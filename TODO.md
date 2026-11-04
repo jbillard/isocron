@@ -225,7 +225,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The large tables of `countBy` scattered by rounds, the keys of a block in two passes: k-nucleotide 1.454 s -> 1.115 s (D253)
   - [ ] k-nucleotide: 87 instructions a large key against about 28 needed (the scatter, the rounds), the base still 300 ms (lines, headers, join)
   - [x] The loops that fill an array by contiguous ranges of their blocks: reverse-complement 103.5 -> 89.9 ms (D254)
-  - [ ] reverse-complement: the read into new pages 29.6 ms, the headers in two passes 12.9 ms, the filter 31 ms against 25 by its model
+  - [x] The writing pass of a filter skips the blocks that keep nothing: reverse-complement 90.9 -> 85.5 ms, k-nucleotide 1115.3 -> 1103.6 ms (D255)
+  - [ ] reverse-complement: the read into new pages 29.6 ms, the filter 31 ms against 25 by its model
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
   - [ ] Windows: the runtimes for x86-64-v3 and v4, the console in UTF-8, the MSVC ABI, timings

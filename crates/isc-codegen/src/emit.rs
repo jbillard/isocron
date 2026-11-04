@@ -6505,10 +6505,27 @@ impl<'p> Gen<'p> {
             let (start, end) = range(g, &n, j);
             let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, j));
             let first = g.ins(format!("load i64, ptr {}", slot));
+            // the place of the next block (`k` after the last one): a block
+            // that keeps nothing is not read again (D255: the headers of a
+            // file, a few blocks out of thousands)
+            let last = g.ins(format!("icmp sge i64 {}, {}", end, n));
+            let j1 = g.ins(format!("add i64 {}, 1", j));
+            let jn = g.ins(format!("select i1 {}, i64 {}, i64 {}", last, j, j1));
+            let nslot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, jn));
+            let nx = g.ins(format!("load i64, ptr {}", nslot));
+            let next = g.ins(format!("select i1 {}, i64 {}, i64 {}", last, extra[2].r, nx));
+            let none = g.ins(format!("icmp eq i64 {}, {}", next, first));
+            let lwork = g.label();
+            let ldone = g.label();
+            g.cbr(&none, &ldone, &lwork);
+            g.block(&lwork);
             let pos = g.alloca("i64");
             g.emit(format!("store i64 {}, ptr {}", first, pos));
             let (out, k) = (extra[1].r.clone(), extra[2].r.clone());
-            g.write_kept(&src, l, &start, &end, &out, &k, &pos, &elem_ty, w)
+            g.write_kept(&src, l, &start, &end, &out, &k, &pos, &elem_ty, w)?;
+            g.br(&ldone);
+            g.block(&ldone);
+            Ok(())
         })?;
         // each thread its range of the blocks (D254)
         self.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));

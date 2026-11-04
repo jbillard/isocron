@@ -261,3 +261,40 @@ action main(args: string[k]): i32 {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
     }
 }
+
+/// A `filter` that keeps few elements (D255): the blocks that keep nothing
+/// are not read again; the elements kept at the edges of the blocks, in the
+/// last block, none at all, and a filter that keeps almost everything; the
+/// same results for any number of threads.
+#[test]
+fn sparse_filters_skip_the_empty_blocks() {
+    let src = r#"action main(args: string[k]): i32 {
+    const n = 40 * 4096 + 123;
+    const marks = map(iota(n), (i) => i == 0 || i == 4095 || i == 4096 || i == 9 * 4096 + 17 || i == 31 * 4096 - 1 || i == n - 1 ? 62u8 : 65u8);
+    print(filter(iota(n), (i) => marks[i] == 62u8));
+    print(filter(iota(n), (i) => marks[i] == 10u8).length);
+    const most = filter(marks, (b) => b != 62u8);
+    print([most.length, i64(sum(map(most, (b) => u64(b))))] as const);
+    const late = filter(iota(n), (i) => i >= n - 3);
+    print(late);
+    return 0;
+}
+"#;
+    let n: i64 = 40 * 4096 + 123;
+    let want = format!(
+        "[0, 4095, 4096, {}, {}, {}]\n0\n({}, {})\n[{}, {}, {}]\n",
+        9 * 4096 + 17,
+        31 * 4096 - 1,
+        n - 1,
+        n - 6,
+        (n - 6) * 65,
+        n - 3,
+        n - 2,
+        n - 1
+    );
+    let bin = compile(src, "p_sparse_filters");
+    for t in THREADS {
+        let run = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+}

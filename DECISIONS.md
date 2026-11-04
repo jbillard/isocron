@@ -4538,3 +4538,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     service scanning media on the sibling hardware threads of the cores
     measured (`machine.sh apply parallel` confines every other process to
     them). Remeasured once it had stopped: 24061 ns.
+- **D255 — The writing pass of a filter skips the blocks that keep nothing
+  (2026-11-04).** The headers of reverse-complement, `filter(iota(n), (i)
+  => data[i] == 62u8)` over 254 MB, took 12.4 ms with 4 threads for 3
+  elements: the counting pass and the writing pass each read every block
+  (two reads at 47.3 GB/s: 10.8 ms by the model). A block keeps the
+  elements between its place and the place of the next block (the number
+  of elements kept after the last one): when they are equal, its writing
+  task returns at once.
+  - Measured (fixed frequency, 4 threads): the headers of
+    reverse-complement 12.4 -> 6.8 ms (one read: 5.4 ms by the model); the
+    program 90.9 -> 85.5 ms (2.06e8 instructions fewer); k-nucleotide, its
+    headers among 4.2 million lines, 1115.3 -> 1103.6 ms (7.0e8 fewer). The
+    8 others the same within their noise; the `filter_sum` kernel +0.1 %
+    (large, 4 and 8 threads), -2.9 % (small). Test
+    `sparse_filters_skip_the_empty_blocks` (elements kept at the edges of
+    the blocks and in the last one, none, nearly all; 1 to 8 threads).
