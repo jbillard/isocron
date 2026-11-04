@@ -3106,6 +3106,191 @@ pub struct WordGroups {
     keys: alloc::vec::Vec<u64>,
     /// the groups in `slots`
     hashed: usize,
+    /// the bits of an index (`new_for`), 0: never scattered
+    index_bits: u32,
+    /// after more than SCATTER_AFTER groups in `slots` (D253): the keys
+    /// that fit with their index in 64 bits scattered (`Scatter`)
+    scatter: Option<alloc::boxed::Box<Scatter>>,
+    /// the keys of a chunk to hash, with their hashes and indices
+    work: alloc::vec::Vec<(u64, u64, u32)>,
+}
+
+/// The keys a `WordGroups` scatters (D253): lists by the high bits of their
+/// hash, of `key << bits | index` in the order of the indices, in pieces
+/// reused from a round to the next; every ROUND entries, each list counted
+/// at once in the small table of its list (a few thousand entries into a
+/// table that stays in the L1 cache), the pieces then free for the next
+/// round.
+pub struct Scatter {
+    pieces: alloc::vec::Vec<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
+    /// per list: the next entry of its last piece and its end (null: none)
+    cursor: [(*mut u64, *mut u64); SCATTER_BUCKETS],
+    spare: alloc::vec::Vec<alloc::vec::Vec<u64>>,
+    entries: usize,
+    bits: u32,
+    /// the groups of each list
+    tables: alloc::vec::Vec<ListTable>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ListSlot {
+    key: u64,
+    first: u32,
+    last: u32,
+    count: u32,
+}
+
+/// The groups of one list of scatter of a part (D253): a small table of
+/// slots holding the key, its first and last indices and its count; the
+/// keys of a list share the high bits of their hash, its slots take the low
+/// ones. Indices added in increasing order.
+pub struct ListTable {
+    slots: alloc::vec::Vec<ListSlot>,
+    used: usize,
+}
+
+impl Default for ListTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ListTable {
+    pub fn new() -> ListTable {
+        ListTable { slots: alloc::vec![ListSlot::default(); 64], used: 0 }
+    }
+
+    /// The key `k` (hash `h`): `count` more, first at `first` if new, last
+    /// at `last`.
+    #[inline(always)]
+    pub fn add(&mut self, k: u64, h: u64, first: u32, last: u32, count: u32) {
+        let mask = self.slots.len() - 1;
+        let mut s = (h as usize) & mask;
+        loop {
+            // SAFETY: `s` is masked by the length less one (a power of two)
+            let e = unsafe { self.slots.get_unchecked_mut(s) };
+            if e.count == 0 {
+                *e = ListSlot { key: k, first, last, count };
+                self.used += 1;
+                if self.used * 2 > self.slots.len() {
+                    self.grow();
+                }
+                return;
+            }
+            if e.key == k {
+                e.last = last;
+                e.count += count;
+                return;
+            }
+            s = (s + 1) & mask;
+        }
+    }
+
+    #[cold]
+    fn grow(&mut self) {
+        let old = core::mem::take(&mut self.slots);
+        self.slots = alloc::vec![ListSlot::default(); old.len() * 2];
+        self.used = 0;
+        for e in old.into_iter().filter(|e| e.count > 0) {
+            self.add(e.key, hash_word(e.key), e.first, e.last, e.count);
+        }
+    }
+
+    /// Its groups: (first, key, last, count), in no order.
+    pub fn groups(&self) -> impl Iterator<Item = (u32, u64, u32, u32)> + '_ {
+        self.slots.iter().filter(|e| e.count > 0).map(|e| (e.first, e.key, e.last, e.count))
+    }
+}
+
+/// The entries of a round of scatter (8 MB a part).
+const SCATTER_ROUND: usize = 1 << 20;
+
+impl Scatter {
+    fn new(bits: u32) -> Scatter {
+        Scatter {
+            pieces: (0..SCATTER_BUCKETS).map(|_| alloc::vec::Vec::new()).collect(),
+            cursor: [(core::ptr::null_mut(), core::ptr::null_mut()); SCATTER_BUCKETS],
+            spare: alloc::vec::Vec::new(),
+            entries: 0,
+            bits,
+            tables: (0..SCATTER_BUCKETS).map(|_| ListTable::new()).collect(),
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, b: usize, e: u64) {
+        let (cur, end) = self.cursor[b];
+        if cur == end {
+            self.new_piece(b);
+        }
+        // SAFETY: the cursor is inside the last piece of the list `b`
+        unsafe {
+            let c = self.cursor[b].0;
+            c.write(e);
+            self.cursor[b].0 = c.add(1);
+        }
+        self.entries += 1;
+        if self.entries == SCATTER_ROUND {
+            self.count_round();
+        }
+    }
+
+    #[cold]
+    fn new_piece(&mut self, b: usize) {
+        if let Some(last) = self.pieces[b].last_mut() {
+            // SAFETY: written to its capacity (its cursor reached its end)
+            unsafe { last.set_len(last.capacity()) };
+        }
+        let mut piece = self.spare.pop().unwrap_or_else(|| alloc::vec::Vec::with_capacity(SCATTER_PIECE));
+        piece.clear();
+        let p = piece.as_mut_ptr();
+        // SAFETY: the piece has room for its capacity
+        self.cursor[b] = (p, unsafe { p.add(piece.capacity()) });
+        self.pieces[b].push(piece);
+    }
+
+    /// The entries of the round counted, list by list; the pieces spare.
+    fn count_round(&mut self) {
+        let bits = self.bits;
+        let mask = (1u64 << bits) - 1;
+        for b in 0..SCATTER_BUCKETS {
+            let n = self.pieces[b].len();
+            if n == 0 {
+                continue;
+            }
+            let (cur, _) = self.cursor[b];
+            let t = &mut self.tables[b];
+            for (k, mut piece) in core::mem::take(&mut self.pieces[b]).into_iter().enumerate() {
+                // SAFETY: the full pieces are written to their capacity, the
+                // last one up to the cursor
+                let used = if k + 1 < n { piece.capacity() } else { unsafe { cur.offset_from(piece.as_ptr()) as usize } };
+                unsafe { piece.set_len(used) };
+                for &e in piece.iter() {
+                    let k = e >> bits;
+                    let i = (e & mask) as u32;
+                    t.add(k, hash_word(k), i, i, 1);
+                }
+                self.spare.push(piece);
+            }
+            self.cursor[b] = (core::ptr::null_mut(), core::ptr::null_mut());
+        }
+        self.entries = 0;
+    }
+}
+
+/// More groups in its table than this: a `WordGroups` scatters its keys
+/// (D253; a table of 2^15 keys and more is beyond the L2 cache).
+pub const SCATTER_AFTER: usize = 1 << 15;
+/// The lists of scattered keys, by the high bits of their hash.
+pub const SCATTER_BUCKETS: usize = 256;
+/// The entries of a piece of a list of scattered keys.
+const SCATTER_PIECE: usize = 1024;
+
+/// The list of the scattered key `k` (its hash `h`): the high bits of the
+/// hash, the slots of a table taking the low ones.
+#[inline(always)]
+pub fn scatter_bucket(h: u64) -> usize {
+    (h >> 56) as usize
 }
 
 impl Default for WordGroups {
@@ -3130,7 +3315,65 @@ impl WordGroups {
             first: alloc::vec::Vec::new(),
             keys: alloc::vec::Vec::new(),
             hashed: 0,
+            index_bits: 0,
+            scatter: None,
+            work: alloc::vec::Vec::new(),
         }
+    }
+
+    /// `new` for the indices below `n`; with `scatter`, its keys may be
+    /// scattered (D253) once its table is large (for several tables at
+    /// once: one table alone stays in the L3 cache).
+    pub fn new_for(direct: bool, n: usize, scatter: bool) -> WordGroups {
+        let mut g = Self::new(direct);
+        let bits = usize::BITS - n.max(1).leading_zeros();
+        g.index_bits = if bits <= 32 && scatter { bits } else { 0 };
+        g
+    }
+
+    /// Its keys are scattered (some of them).
+    pub fn scattered(&self) -> bool {
+        self.scatter.is_some()
+    }
+
+    /// The groups of its scattered keys, by list; empty when not scattered.
+    /// The last round counted.
+    pub fn scattered_tables(&mut self) -> &[ListTable] {
+        match &mut self.scatter {
+            Some(sc) => {
+                sc.count_round();
+                &sc.tables
+            }
+            None => &[],
+        }
+    }
+
+    /// The key `k` counted by its value (not hashed).
+    pub fn is_small_key(&self, k: u64) -> bool {
+        self.is_small(k)
+    }
+
+    /// The group of the key `k`, first at `first`, last at `last`, `count`
+    /// times, after every index added before.
+    pub fn add_aggregate(&mut self, k: u64, first: u32, last: u32, count: u32) {
+        self.add_count(k, first, last, count)
+    }
+
+    /// The number of groups.
+    pub fn len(&self) -> usize {
+        self.first.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.first.is_empty()
+    }
+
+    /// The group `g` (in the order of its first occurrence): its first
+    /// index, its key, its last index and its count.
+    pub fn group(&self, g: usize) -> (u32, u64, u32, u32) {
+        let k = self.keys[g];
+        let (l, c) = self.entry(k);
+        (self.first[g], k, l, c)
     }
 
     #[inline(always)]
@@ -3217,19 +3460,53 @@ impl WordGroups {
     pub fn add_block(&mut self, keys: &[u64], start: usize) {
         const CHUNK: usize = 1024;
         const AHEAD: usize = 16;
-        let mut h = [0u64; CHUNK];
+        // the keys of a chunk to hash, their hashes and indices: allocated
+        // once (zeroing them at each call cost 24 bytes a key)
+        let mut work = core::mem::take(&mut self.work);
+        if work.is_empty() {
+            work = alloc::vec![(0u64, 0u64, 0u32); CHUNK];
+        }
         let direct = self.direct;
         for (c, chunk) in keys.chunks(CHUNK).enumerate() {
-            let base = start + c * CHUNK;
-            let m = chunk.len();
-            for j in 0..m {
-                h[j] = hash_word(chunk[j]);
+            let base = (start + c * CHUNK) as u32;
+            // the small keys counted here; the scattered ones put in their
+            // list (one pass, D253); the others kept to be hashed
+            let mut m = 0usize;
+            if let Some(sc) = &mut self.scatter {
+                let bits = self.index_bits;
+                for (j, &k) in chunk.iter().enumerate() {
+                    let i = base + j as u32;
+                    if direct && k < Self::DIRECT_MAX {
+                        Self::small_add(&mut self.small, &mut self.first, &mut self.keys, k, i);
+                    } else {
+                        let h = hash_word(k);
+                        if k >> (64 - bits) == 0 {
+                            sc.push(scatter_bucket(h), k << bits | i as u64);
+                        } else {
+                            work[m] = (k, h, i);
+                            m += 1;
+                        }
+                    }
+                }
+            } else {
+                for (j, &k) in chunk.iter().enumerate() {
+                    let i = base + j as u32;
+                    if direct && k < Self::DIRECT_MAX {
+                        Self::small_add(&mut self.small, &mut self.first, &mut self.keys, k, i);
+                    } else {
+                        work[m] = (k, hash_word(k), i);
+                        m += 1;
+                    }
+                }
+            }
+            if m == 0 {
+                continue;
             }
             let mut sp = self.slots.as_mut_ptr();
             let mut mask = self.slots.len() - 1;
-            for j in 0..m {
-                if j + AHEAD < m {
-                    let a = (h[j + AHEAD] as usize) & mask;
+            for u in 0..m {
+                if u + AHEAD < m {
+                    let a = (work[u + AHEAD].1 as usize) & mask;
                     #[cfg(target_arch = "x86_64")]
                     // SAFETY: a prefetch reads nothing; `a` is a slot
                     unsafe {
@@ -3238,13 +3515,8 @@ impl WordGroups {
                     #[cfg(not(target_arch = "x86_64"))]
                     let _ = a;
                 }
-                let k = chunk[j];
-                let i = (base + j) as u32;
-                if direct && k < Self::DIRECT_MAX {
-                    self.add_count(k, i, i, 1);
-                    continue;
-                }
-                let mut s = (h[j] as usize) & mask;
+                let (k, h, i) = work[u];
+                let mut s = (h as usize) & mask;
                 loop {
                     // SAFETY: `s` is masked by the length of the table less
                     // one (a power of two), `sp` its start
@@ -3259,6 +3531,10 @@ impl WordGroups {
                             sp = self.slots.as_mut_ptr();
                             mask = self.slots.len() - 1;
                         }
+                        // a large table: the next keys scattered (D253)
+                        if self.hashed > SCATTER_AFTER && self.scatter.is_none() && self.index_bits > 0 {
+                            self.scatter = Some(alloc::boxed::Box::new(Scatter::new(self.index_bits)));
+                        }
                         break;
                     }
                     if e.0 == k {
@@ -3270,6 +3546,25 @@ impl WordGroups {
                 }
             }
         }
+        self.work = work;
+    }
+
+    /// The small key `k` at the index `i` (`direct`, below DIRECT_MAX), on
+    /// the fields (the others borrowed apart).
+    #[inline(always)]
+    fn small_add(small: &mut alloc::vec::Vec<(u32, u32)>, first: &mut alloc::vec::Vec<u32>, keys: &mut alloc::vec::Vec<u64>, k: u64, i: u32) {
+        let j = k as usize;
+        if j >= small.len() {
+            let n = (j + 1).next_power_of_two().max(256);
+            small.resize(n, (0, 0));
+        }
+        // SAFETY: `j` is below the length of `small` (just grown if not)
+        let e = unsafe { small.get_unchecked_mut(j) };
+        if e.1 == 0 {
+            first.push(i);
+            keys.push(k);
+        }
+        *e = (i, e.1 + 1);
     }
 
     /// The line of the slot of `k` brought into the caches, for a key added
@@ -3312,11 +3607,21 @@ impl WordGroups {
     /// The three columns of `group`.
     pub fn columns(self) -> alloc::vec::Vec<i64> {
         let m = self.first.len();
-        let entries: alloc::vec::Vec<(u32, u32)> = self.keys.iter().map(|&k| self.entry(k)).collect();
+        // (first, last, count) per group, in the order of the first indices:
+        // `add_block` makes the groups of its small keys before those of the
+        // hashed keys of the same chunk (D253), so the order of making is not
+        // always that of the first occurrences
+        let mut groups: alloc::vec::Vec<(u32, u32, u32)> = self.first.iter().zip(&self.keys).map(|(&f, &k)| {
+            let (l, c) = self.entry(k);
+            (f, l, c)
+        }).collect();
+        if !groups.windows(2).all(|w| w[0].0 < w[1].0) {
+            groups.sort_unstable_by_key(|g| g.0);
+        }
         let mut out = alloc::vec::Vec::with_capacity(3 * m);
-        out.extend(self.first.iter().map(|&f| f as i64));
-        out.extend(entries.iter().map(|e| e.0 as i64));
-        out.extend(entries.iter().map(|e| e.1 as i64));
+        out.extend(groups.iter().map(|g| g.0 as i64));
+        out.extend(groups.iter().map(|g| g.1 as i64));
+        out.extend(groups.iter().map(|g| g.2 as i64));
         out
     }
 }

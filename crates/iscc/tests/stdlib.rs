@@ -484,6 +484,68 @@ fn keys_grouped_as_they_are_made() {
     assert!(!ir.lines().zip(ir.lines().skip(1)).any(|(a, b)| a.contains(": i64[] =") && b.trim() == "iota"), "an iota bound to a variable:\n{}", ir);
 }
 
+const GROUPS_SCATTERED: &str = r##"function key(i: i64): i64 {
+    const r = (i * 7919) % 200003;
+    return i % 11 == 0 ? r % 1000 : (i % 13 == 0 ? -r - 5 : r * 1000003 + 70000);
+}
+
+action main(args: string[k]): i32 {
+    const n = 3000000;
+    const ks = countBy(iota(n), key);
+    const keys = ks.keys();
+    const m = keys.length;
+    print(m);
+    print(keys.slice(0, 6));
+    print(sum(map(iota(m), (j) => (j + 1) * (keys[j] % 1000003))));
+    print(sum(map(iota(m), (j) => (j % 97) * (ks.get(keys[j]) ?? 0))));
+    print([ks.get(70000) ?? -1, ks.get(-5) ?? -1, ks.get(999) ?? -1]);
+    return 0;
+}
+"##;
+
+/// `countBy` with many distinct large keys (D253): the tables of the parts
+/// scatter their keys by their hash once large, counted by rounds list by
+/// list; with small keys (counted by their value), negative ones (too large
+/// to fit with their index in 64 bits: kept in the tables) among them. The
+/// groups in the order of their first occurrence, their counts, on 1 and 4
+/// threads.
+#[test]
+fn keys_scattered_by_their_hash() {
+    let n = 3_000_000i64;
+    let key = |i: i64| {
+        let r = (i * 7919) % 200003;
+        if i % 11 == 0 {
+            r % 1000
+        } else if i % 13 == 0 {
+            -r - 5
+        } else {
+            r * 1000003 + 70000
+        }
+    };
+    let mut order: Vec<i64> = Vec::new();
+    let mut counts: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for i in 0..n {
+        let k = key(i);
+        let c = counts.entry(k).or_insert(0);
+        if *c == 0 {
+            order.push(k);
+        }
+        *c += 1;
+    }
+    let m = order.len() as i64;
+    let first6: Vec<String> = order[..6].iter().map(|k| k.to_string()).collect();
+    let weighted: i64 = order.iter().enumerate().map(|(j, k)| (j as i64 + 1) * (k % 1000003)).sum();
+    let by_count: i64 = order.iter().enumerate().map(|(j, k)| (j as i64 % 97) * counts[k]).sum();
+    let get = |k: i64| counts.get(&k).copied().unwrap_or(-1);
+    let want = format!("{}\n[{}]\n{}\n{}\n[{}, {}, {}]\n", m, first6.join(", "), weighted, by_count, get(70000), get(-5), get(999));
+    let bin = compile(GROUPS_SCATTERED, "std_groups_scattered");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "{} threads", t);
+    }
+}
+
 const TAGGED: &str = r##"type List = Nil | Cons(i64, List);
 type Tree = Leaf | Empty | Node(Tree, i64, Tree);
 

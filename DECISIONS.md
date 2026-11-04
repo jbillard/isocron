@@ -4459,3 +4459,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `lines_of_a_large_text_made_in_parallel` (lines of 0 to 300 bytes,
     empty, `\r\n`, runs of `\n` across the cuts of the parts, with and
     without a final `\n`; 1, 3 and 4 threads).
+- **D253 — The large tables of `countBy` scattered by rounds; the keys of a
+  block added in two passes (2026-11-04).** k-nucleotide after D252: 68 %
+  of its cycles in `add_block`. Cycles and instructions per key over the
+  reading (4 threads): small keys (k = 1) 7.7 and 36, large ones (k = 12)
+  38.9 and 110.
+  - The block in two passes: the small keys counted at once (no hash, no
+    prefetch: they were hashed and prefetched as the others), the others
+    then hashed and probed; the buffers of a block allocated once per
+    table (zeroed at each call before: 24 bytes a key). The groups are no
+    longer made in the order of their first index (the small keys of a
+    chunk before its hashed ones): `columns` sorts them by it when they are
+    not (a first version without it gave other orders: test
+    `keys_grouped_as_they_are_made`).
+  - Several tables at once (the parts of a `$group` on several threads):
+    once a part's table has more than 2^15 hashed groups (beyond the L2),
+    its next keys that fit with their index in 64 bits are scattered by the
+    high 8 bits of their hash into 256 lists of `key << bits | index`, in
+    pieces of 1024 entries reused from round to round; every 2^20 entries
+    (8 MB a part) each list is counted at once into the small table of its
+    list (a few thousand entries into a table in the L1). At the end, list
+    by list in parallel, part after part (its groups of its table, then of
+    its list), then every group by its first index. A key too large to fit
+    stays in the table. One part alone does not scatter (its table stays in
+    the L3: one thread 3.457 s -> 4.426 s when it did).
+  - Measured and not kept, with a prototype in C on the keys of
+    k-nucleotide (k = 12, 4 threads, the keys computed by a scalar loop):
+    a table per thread 577 ms; every key scattered then counted 287 ms (in
+    iscc: 1 GB of new pages per frame, `clear_page_erms` 17 % of the
+    cycles); the tables split by key 802 ms; small buffers poured into
+    tables shared under locks 1.537 s for k-nucleotide in iscc (the lines
+    of the tables carried from core to core); poured into private tables
+    677 ms; slots of 8 bytes compared 8 at once (AVX2) 391 ms.
+  - k-nucleotide at fixed frequency: 4 threads 1.454 s -> 1.115 s (under
+    the 1.182 s of C++ in Docker at D249), one thread 3.478 s -> 3.156 s;
+    the same output for 1, 2, 3, 4 and 7 threads. Per key (4 threads): k =
+    1 3.5 cycles, 21 instructions; k = 12 28.8 cycles, 87 instructions.
+    Test `keys_scattered_by_their_hash` (3 million keys, about 200 000
+    large ones, small and negative ones; 1 and 4 threads; the order of the
+    first occurrences and the counts).

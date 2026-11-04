@@ -1713,8 +1713,14 @@ pub extern "C" fn isc_group_parts(n: i64) -> i64 {
 pub extern "C" fn isc_groups_new(n: i64, parts: i64) -> *mut c_void {
     const GROUP_DIRECT_MIN: i64 = 1 << 16;
     let direct = n >= GROUP_DIRECT_MIN;
-    let tables: alloc::boxed::Box<[sem::WordGroups]> = (0..parts.max(1)).map(|_| sem::WordGroups::new(direct)).collect();
-    alloc::boxed::Box::into_raw(alloc::boxed::Box::new(tables)) as *mut c_void
+    // several tables at once: their large ones scattered (D253)
+    let tables: alloc::vec::Vec<sem::WordGroups> = (0..parts.max(1)).map(|_| sem::WordGroups::new_for(direct, n.max(0) as usize, parts > 1)).collect();
+    alloc::boxed::Box::into_raw(alloc::boxed::Box::new(GroupsState { tables })) as *mut c_void
+}
+
+/// The tables of the parts of a `$group`.
+struct GroupsState {
+    tables: alloc::vec::Vec<sem::WordGroups>,
 }
 
 /// The `len` keys at `p` (of the integer kind `kind`, as for `isc_group`),
@@ -1722,8 +1728,9 @@ pub extern "C" fn isc_groups_new(n: i64, parts: i64) -> *mut c_void {
 /// blocks come in the order of their indices.
 #[no_mangle]
 pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const u8, len: i64, start: i64, kind: i32) {
-    let tables = &mut *(state as *mut alloc::boxed::Box<[sem::WordGroups]>);
-    let t = &mut tables[part as usize];
+    // (each part its own table: through the pointer)
+    let st = state as *mut GroupsState;
+    let t = &mut *(*st).tables.as_mut_ptr().add(part as usize);
     let len = len.max(0) as usize;
     let start = start as usize;
     // keys of 64 bits added where they are; narrower ones as their 64 bits
@@ -1757,20 +1764,88 @@ pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const
     }
 }
 
-/// The columns of `isc_group` from the tables of `state`, merged in the
-/// order of their parts; `state` freed.
+/// The columns of `isc_group` from the tables of `state`: merged in the
+/// order of their parts, or, when some scattered their keys (D253), every
+/// group in the order of its first index; `state` freed.
 #[no_mangle]
 pub unsafe extern "C" fn isc_groups_end(out: *mut IscArray, state: *mut c_void) {
-    let tables = *alloc::boxed::Box::from_raw(state as *mut alloc::boxed::Box<[sem::WordGroups]>);
-    let mut it = alloc::vec::Vec::from(tables).into_iter();
-    let mut all = it.next().unwrap();
-    for t in it {
-        all.merge(&t);
-    }
-    let g = all.columns();
+    let st = *alloc::boxed::Box::from_raw(state as *mut GroupsState);
+    let GroupsState { mut tables } = st;
+    let g = if tables.iter().any(|t| t.scattered()) {
+        scattered_columns(&mut tables)
+    } else {
+        let mut it = tables.into_iter();
+        let mut all = it.next().unwrap();
+        for t in it {
+            all.merge(&t);
+        }
+        all.columns()
+    };
     let q = isc_alloc((g.len() * 8) as i64) as *mut i64;
     core::ptr::copy_nonoverlapping(g.as_ptr(), q, g.len());
     *out = IscArray { ptr: q as *mut u8, len: g.len() as i64 };
+}
+
+/// The columns of `isc_group` from tables of which some scattered their
+/// keys (D253): the keys counted by their value merged in the order of the
+/// parts; the hashed ones list by list of scatter, in parallel, part after
+/// part (its groups in its table, then those of its scattered keys: the
+/// order of the indices); every group then in the order of its first index.
+unsafe fn scattered_columns(tables: &mut [sem::WordGroups]) -> alloc::vec::Vec<i64> {
+    use alloc::vec::Vec;
+    type Group = (u32, u64, u32, u32);
+    const B: usize = sem::SCATTER_BUCKETS;
+    let mut small = sem::WordGroups::new(true);
+    let mut pre: Vec<Vec<Vec<Group>>> = (0..tables.len()).map(|_| (0..B).map(|_| Vec::new()).collect()).collect();
+    for (p, t) in tables.iter().enumerate() {
+        for g in 0..t.len() {
+            let e = t.group(g);
+            if t.is_small_key(e.1) {
+                small.add_aggregate(e.1, e.0, e.2, e.3);
+            } else {
+                pre[p][sem::scatter_bucket(sem::hash_word(e.1))].push(e);
+            }
+        }
+    }
+    // the last round of each part counted
+    let lists: Vec<&[sem::ListTable]> = tables.iter_mut().map(|t| &*(t.scattered_tables() as *const [sem::ListTable])).collect();
+    struct Ctx<'a> {
+        lists: &'a [&'a [sem::ListTable]],
+        pre: &'a [Vec<Vec<Group>>],
+        out: *mut Vec<Group>,
+    }
+    extern "C" fn list(ctx: *mut c_void, b: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let b = b as usize;
+            // part after part: its groups of its table, then of its list
+            let mut t = sem::ListTable::new();
+            for p in 0..c.pre.len() {
+                for &(f, k, l, n) in &c.pre[p][b] {
+                    t.add(k, sem::hash_word(k), f, l, n);
+                }
+                if let Some(s) = c.lists[p].get(b) {
+                    for (f, k, l, n) in s.groups() {
+                        t.add(k, sem::hash_word(k), f, l, n);
+                    }
+                }
+            }
+            (*c.out.add(b)).extend(t.groups());
+        }
+    }
+    let mut outs: Vec<Vec<Group>> = (0..B).map(|_| Vec::new()).collect();
+    let mut ctx = Ctx { lists: &lists, pre: &pre, out: outs.as_mut_ptr() };
+    isc_parallel_for(B as i64, list, &mut ctx as *mut Ctx as *mut c_void, -1);
+    let mut all: Vec<Group> = (0..small.len()).map(|g| small.group(g)).collect();
+    for o in &outs {
+        all.extend_from_slice(o);
+    }
+    all.sort_unstable_by_key(|e| e.0);
+    let mut cols = Vec::with_capacity(3 * all.len());
+    cols.extend(all.iter().map(|e| e.0 as i64));
+    cols.extend(all.iter().map(|e| e.2 as i64));
+    cols.extend(all.iter().map(|e| e.3 as i64));
+    cols
 }
 
 /// `$group(keys)` (D167): see `isc_runtime_core::group`; `kind` as for
