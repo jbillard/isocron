@@ -1070,12 +1070,59 @@ pub unsafe extern "C" fn isc_write_bytes(path: *const u8, plen: i64, data: *cons
 
 #[no_mangle]
 pub extern "C" fn isc_print_i64(v: i64) {
-    let _ = write!(Stdout, "{}", v);
+    let mut b = [0u8; 20];
+    out(signed_decimal(v, &mut b));
 }
 
 #[no_mangle]
 pub extern "C" fn isc_print_u64(v: u64) {
-    let _ = write!(Stdout, "{}", v);
+    let mut b = [0u8; 20];
+    out(decimal(v, &mut b));
+}
+
+/// The pairs of decimal digits "00" to "99".
+const DIGIT_PAIRS: [u8; 200] = {
+    let mut t = [0u8; 200];
+    let mut i = 0;
+    while i < 100 {
+        t[2 * i] = b'0' + (i / 10) as u8;
+        t[2 * i + 1] = b'0' + (i % 10) as u8;
+        i += 1;
+    }
+    t
+};
+
+/// The decimal digits of `v`, written at the end of `buf`, two at a time
+/// from a table (D300: through `core::fmt`, 22 ns a number of `print`).
+fn decimal(mut v: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    while v >= 100 {
+        let r = (v % 100) as usize;
+        v /= 100;
+        at -= 2;
+        buf[at..at + 2].copy_from_slice(&DIGIT_PAIRS[2 * r..2 * r + 2]);
+    }
+    if v >= 10 {
+        let r = v as usize;
+        at -= 2;
+        buf[at..at + 2].copy_from_slice(&DIGIT_PAIRS[2 * r..2 * r + 2]);
+    } else {
+        at -= 1;
+        buf[at] = b'0' + v as u8;
+    }
+    &buf[at..]
+}
+
+/// `decimal` of `v` with its sign: the digits of its absolute value after a
+/// `-` (the 19 digits of `i64::MIN` and its sign hold in 20 bytes).
+fn signed_decimal(v: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let n = decimal(v.unsigned_abs(), buf).len();
+    let mut at = buf.len() - n;
+    if v < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    &buf[at..]
 }
 
 #[no_mangle]
@@ -1245,16 +1292,14 @@ impl Write for Small {
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_to_string_i64(out: *mut IscStr, v: i64) {
-    let mut s = Small { buf: [0; 64], len: 0 };
-    let _ = write!(s, "{}", v);
-    *out = new_str(&s.buf[..s.len]);
+    let mut b = [0u8; 20];
+    *out = new_str(signed_decimal(v, &mut b));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_to_string_u64(out: *mut IscStr, v: u64) {
-    let mut s = Small { buf: [0; 64], len: 0 };
-    let _ = write!(s, "{}", v);
-    *out = new_str(&s.buf[..s.len]);
+    let mut b = [0u8; 20];
+    *out = new_str(decimal(v, &mut b));
 }
 
 #[no_mangle]

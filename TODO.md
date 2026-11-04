@@ -274,7 +274,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
 Every form of the IR (40), every primitive (73: 32 operations of strings, 19 actions) and the functions of the runtime (130): a microbenchmark of each against its floor from the costs of the machine, a table `results/primitives.md` ranked by the gap, then the largest gaps first.
 
 - [x] `print`: the standard output by blocks into files, at each newline into terminals and pipes: a million lines of a number 185.5 -> 22.2 ms (D299)
-- [ ] The formatting of the numbers (`print`, `toString`): about 22 ns a number
+- [x] The decimal text of integers written directly (`print`, `toString`, templates): a million lines of a number 22195 -> 12975 µs (D300)
+- [ ] The text of floats (`print`, `toString`, `toFixed`)
 - [ ] The microbenchmarks of every form and `results/primitives.md`
 
 ## The trusted base (the remarks of the author, 2026-11-04)

@@ -79,3 +79,32 @@ fn output_by_blocks_into_files_and_by_lines_into_pipes() {
         assert_eq!(err.trim_end(), want_err, "a panic into a {}", to);
     }
 }
+
+const NUMBERS: &str = "action main(args: string[k]): i32 {
+    const ps = map(iota(19), (k) => fold(iota(k), 1, (p, j) => p * 10));
+    const xs = map(iota(19 * 4), (i) => ps[i / 4] + [-1, 0, 1, 7][i % 4]);
+    print(xs);
+    print(map(xs, (x) => -x));
+    print([9223372036854775807, -9223372036854775807 - 1, 0, -1]);
+    print([18446744073709551615u64, 0u64, 10000000000000000000u64, 9999999999999999999u64]);
+    print([255u8, 0u8]);
+    print([-128i8, 127i8]);
+    print([4294967295u32, 0u32]);
+    print([-2147483647i32 - 1i32, 2147483647i32]);
+    print(map(xs, (x) => toString(x)).join(\",\"));
+    print(toString(-9223372036854775807 - 1) + \" \" + toString(18446744073709551615u64));
+    print(`${-42} and ${100u64}`);
+    return 0;
+}
+";
+
+/// D300: the decimal text of integers (`print`, `toString`, templates):
+/// every count of digits around its powers of ten, both signs, the extremes
+/// of `i64` and `u64`, narrower integers: the text of the interpreter.
+#[test]
+fn integers_written_as_the_interpreter() {
+    let want = interp_ok(NUMBERS, &[]);
+    let bin = compile(NUMBERS, "output_numbers");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+}

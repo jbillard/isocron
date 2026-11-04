@@ -5667,3 +5667,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `output_by_blocks_into_files_and_by_lines_into_pipes` (more than a buffer
   of lines and `printBytes` into a file, a pipe and `/dev/null`, and a
   panic after them: the bytes of the interpreter).
+- **D300 — The decimal text of integers written directly (2026-11-04).**
+  The audit of every form, after D299: a line of `print` of a number
+  still took 22 ns, its formatting through `core::fmt` (`write!` of `{}`,
+  for `print`, `toString` and the templates). Now the digits are written
+  two at a time from a table of the pairs "00" to "99", from the end of a
+  buffer of 20 bytes, the sign before the digits of the absolute value
+  (`i64::MIN` included): the text of the interpreter. Measured since this
+  decision on the cores 4 to 7 alone (the cores of measurement of
+  `bench/machine.sh`, without their siblings): a session of a desktop
+  started on the cores 0 to 3, which the other processes keep during a
+  measurement, made the earlier runs on the cores 0 to 7 vary by up to 10
+  %. At fixed frequency, alternated rounds, medians and 95 % intervals:
+  a million lines of a number into `/dev/null` 22195 -> 12975 µs (-41.73 %
+  [-41.98 %, -41.35 %], 21 rounds), one line of a million numbers 25436 ->
+  16116 µs (-36.32 % [-36.71 %, -35.92 %]), `toString` of a million
+  numbers in a `map` 6776 -> 3540 µs (-47.92 % [-49.46 %, -46.94 %]); the
+  ten programs between -0.13 % and +0.19 %, every interval across 0. Test
+  `integers_written_as_the_interpreter` (every count of digits around the
+  powers of ten, both signs, the extremes of `i64` and `u64`, integers of
+  8 and 32 bits, `print`, `toString`, a template).
