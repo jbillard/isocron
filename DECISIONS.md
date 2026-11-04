@@ -4805,3 +4805,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   as bitcode would also need the LLVM of rustc (23.1.1) read by that of
   `iscc` (21.1.8), which reads only older bitcode. Not done; to do again if
   a program calls the runtime per element.
+- **D266 — A release published by one command (2026-11-04).** Asked for:
+  `tools/release/publish.sh VERSION DIR [--dry-run]` pushes main, tags the
+  commit "Release VERSION:" (an annotated tag `vVERSION`, "Isocron
+  VERSION", as for 0.1.0 and 0.1.1), pushes the tag and makes the release
+  on GitHub with `gh`: the two archives of `package.sh` and `SHA256SUMS`,
+  the text of `DIR/notes.md`. It checks first, and stops on the first that
+  fails: main checked out with nothing to commit, that commit with the
+  version in `Cargo.toml` and a section in `CHANGELOG.md`, the sums of the
+  archives, `gh` logged in, main ahead of `origin/main`, no tag of that
+  version on another commit, no release of it on GitHub. `--dry-run`: the
+  checks and the commands it would run.
