@@ -2292,6 +2292,10 @@ pub mod rx {
             /// for each class used, the bytes in it (a bit each)
             classes: [u8; CLASSES],
             ncl: usize,
+            /// for at most 8 classes on a processor with AVX-512 VBMI: the
+            /// classes of each ASCII byte (a bit each), looked up for the 64
+            /// bytes of a block by one permutation (D278)
+            table: Option<[u8; 128]>,
         }
 
         /// At most this many distinct bytes for `Fixed`.
@@ -2579,7 +2583,8 @@ pub mod rx {
                 if ncl > CLASSES {
                     return None;
                 }
-                let mut fx = Fixed { bytes: [(0, false); FIXED_BYTES], nb: bytes.len(), classes: [0; CLASSES], ncl };
+                let mut fx = Fixed { bytes: [(0, false); FIXED_BYTES], nb: bytes.len(), classes: [0; CLASSES], ncl, table: None };
+                let mut table = [0u8; 128];
                 for (i, &(v, cl, fold)) in bytes.iter().enumerate() {
                     fx.bytes[i] = (v, fold);
                     for c in 0..CLASSES {
@@ -2587,6 +2592,15 @@ pub mod rx {
                             fx.classes[c] |= 1 << i;
                         }
                     }
+                    // the byte, and its upper case when it stands for it
+                    for b in [v, if fold { v & !0x20 } else { v }] {
+                        if (b as usize) < 128 {
+                            table[b as usize] |= cl as u8;
+                        }
+                    }
+                }
+                if ncl <= 8 && bytes.iter().all(|&(v, _, _)| v < 128) && vbmi() {
+                    fx.table = Some(table);
                 }
                 Some(fx)
             }
@@ -2606,6 +2620,13 @@ pub mod rx {
                     tail[..n].copy_from_slice(&s[at..]);
                     (tail.as_ptr(), (1u64 << n) - 1)
                 };
+                #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+                if let Some(t) = &self.table {
+                    // SAFETY: `table` is set only where `vbmi()` saw the
+                    // instructions; `p` has 64 readable bytes
+                    unsafe { class_masks_vbmi(t, self.ncl, p, valid, cm) };
+                    return;
+                }
                 let bm: [u64; N] = byte_masks::<N>(&self.bytes, p);
                 for c in 0..self.ncl {
                     let set = self.classes[c];
@@ -2665,6 +2686,47 @@ pub mod rx {
                     }
                 }
                 out
+            }
+        }
+
+        /// The processor has AVX-512 VBMI (with the state of AVX-512 saved
+        /// by the system): `vpermi2b`, a lookup of 64 bytes in a table of 128.
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        fn vbmi() -> bool {
+            use core::arch::x86_64::{__cpuid_count, _xgetbv};
+            // SAFETY: cpuid exists on every x86-64; xgetbv when OSXSAVE says so
+            unsafe {
+                let l1 = __cpuid_count(1, 0);
+                if l1.ecx >> 27 & 1 == 0 {
+                    return false;
+                }
+                // the opmask and the upper zmm registers saved (bits 5 to 7)
+                if _xgetbv(0) & 0xe6 != 0xe6 {
+                    return false;
+                }
+                __cpuid_count(7, 0).ecx >> 1 & 1 == 1
+            }
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512bw")))]
+        fn vbmi() -> bool {
+            false
+        }
+
+        /// The masks of the `ncl` classes over the 64 bytes at `p` (`valid`
+        /// the bytes of the text): each byte's classes looked up in `t`,
+        /// bytes of 128 and more in none, then one test per class (D278).
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
+        #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+        unsafe fn class_masks_vbmi(t: &[u8; 128], ncl: usize, p: *const u8, valid: u64, cm: &mut [u64; CLASSES]) {
+            use core::arch::x86_64::*;
+            let x = _mm512_loadu_si512(p as *const __m512i);
+            let lo = _mm512_loadu_si512(t.as_ptr() as *const __m512i);
+            let hi = _mm512_loadu_si512(t.as_ptr().add(64) as *const __m512i);
+            let ascii = !_mm512_movepi8_mask(x) & valid;
+            let cls = _mm512_maskz_permutex2var_epi8(ascii, lo, x, hi);
+            for (c, m) in cm.iter_mut().enumerate().take(ncl) {
+                *m = _mm512_test_epi8_mask(cls, _mm512_set1_epi8(1 << c));
             }
         }
 
@@ -3116,6 +3178,9 @@ pub mod rx {
                 for v in pats {
                     let sm = of(v).unwrap();
                     assert!(sm.fixed.is_some(), "{} has no fixed plan", v);
+                    // the lookup of the classes where the processor has it (D278)
+                    let fx = sm.fixed.as_ref().unwrap();
+                    assert_eq!(fx.table.is_some(), vbmi() && fx.ncl <= 8, "{}", v);
                     let re = super::super::of(v);
                     for from in [0usize, 1, 62, 63, 64, 65, 127, 4097] {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);

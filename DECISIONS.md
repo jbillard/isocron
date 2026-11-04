@@ -5072,3 +5072,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   threads busy to the end of the counts. The same output. Test
   `searches_inside_tasks_are_shared_with_idle_threads` (9 patterns in the
   tasks of a `map`, 1 to 4 threads).
+- **D278 — The classes of a block looked up by one permutation
+  (2026-11-04).** After D275 the masks of the classes still took most of
+  the engine of masks: LLVM had made of the `or` of the masks of the
+  bytes of each class a vector loop with blends and horizontal `or`s
+  through the stack. On a processor with AVX-512 VBMI (seen by `cpuid` and
+  `xgetbv` when the pattern is made: the runtime for x86-64-v4 does not
+  assume it), a plan of at most 8 classes has a table of 128 bytes, the
+  classes of each ASCII byte (a bit each, upper cases of folded letters
+  included); a block of 64 bytes gives the classes of its bytes by one
+  `vpermi2b` (the bytes of 128 and more in none), then one test per class.
+  An exact lookup: the two lookups by nibbles of Teddy give a superset of
+  a class like `[cgt]` with its upper cases (`s`, `w`). In alternation,
+  best of 9, 4 threads, the machine loaded: regex-redux 202.4 ms -> 194.4
+  ms. The same output. Test `fixed_alternatives_find_the_matches_of_the_automaton`
+  (the table chosen where the processor has it; built for x86-64-v4).
