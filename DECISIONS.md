@@ -4633,3 +4633,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `clone` and its `exec` (the most likely cause, not shown). The program
     then reads the file, as it should: the test checks the bytes on each of
     up to 3 tries, and that one try was mapped.
+- **D258 — The mapped input given back by every thread (2026-11-04).**
+  The timeline of reverse-complement after D257 (`perf`, 4 threads, by 2
+  ms): its last 5 ms were the exit, the main thread in the kernel and the
+  others idle. The array of the mapped input lives to the end: the exit
+  unmaps its 254 MB of pages of the file one by one on one thread (`strace`:
+  no `munmap` of it before). In C on the same file: `munmap` 3.58 ms;
+  `MADV_DONTNEED` of a part by each of 4 threads 1.04 ms, then `munmap`
+  0.07 ms.
+  - When the program ends (`isc_run_big_stack`, after its main function),
+    and when the array is freed while the pool is idle, its pages are given
+    back by every thread of the pool, each its part, then unmapped; by one
+    thread when the pool is busy.
+  - Measured (best of 15, twice): reverse-complement 0.065 -> 0.061 s,
+    k-nucleotide 1.080 -> 1.075 s, regex-redux 0.289 s both; one thread
+    0.176 s both. The same output. The tests of D221 (files of 20 MB on 4
+    threads, released at the end) and
+    `a_mapped_input_freed_early_gives_the_file_back` (freed during the
+    program) cover both ways.

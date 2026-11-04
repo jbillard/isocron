@@ -30,6 +30,7 @@ extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> c_int;
     fn mremap(old: *mut c_void, old_len: usize, new_len: usize, flags: c_int, new: *mut c_void) -> *mut c_void;
+    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
     fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> c_int;
     fn raise(sig: c_int) -> c_int;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -62,6 +63,7 @@ const PROT_READ_WRITE: c_int = 0x1 | 0x2;
 const MAP_PRIVATE: c_int = 0x02;
 const MAP_FIXED: c_int = 0x10;
 const MAP_ANONYMOUS: c_int = 0x20;
+const MADV_DONTNEED: c_int = 4;
 const MREMAP_MAYMOVE: c_int = 1;
 const MREMAP_FIXED: c_int = 2;
 const PAGE: usize = 4096;
@@ -137,19 +139,33 @@ pub unsafe fn map_stdin(cur: i64, len: usize) -> Option<*mut u8> {
     Some(data)
 }
 
+/// The pages of `span` bytes from `p` (a part of the mapping) given back.
+pub unsafe fn give_pages(p: *mut u8, span: usize) {
+    madvise(p as *mut c_void, span, MADV_DONTNEED);
+}
+
+/// Some array is mapped.
+pub fn mapped() -> bool {
+    STATE.load(Ordering::Acquire) != NONE
+}
+
 /// `p` is the mapped array.
 #[inline]
 pub fn owns(p: *const u8) -> bool {
     STATE.load(Ordering::Acquire) != NONE && p as usize == DATA.load(Ordering::Relaxed)
 }
 
-/// The mapped array freed: unmapped, the lease given back.
-pub unsafe fn free() {
+/// The mapped array freed (or the program at its end, D258): its pages
+/// given back by `zap` (by every thread, where `munmap` alone gives the
+/// pages of a file back one by one on one thread: 254 MB in 3.58 ms, 1.11
+/// ms by 4 threads), unmapped, the lease given back.
+pub unsafe fn free(zap: unsafe fn(*mut u8, usize)) {
     loop {
         let s = STATE.load(Ordering::Acquire);
         match s {
             LEASED | PRIVATE => {
                 if STATE.compare_exchange(s, NONE, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    zap(DATA.load(Ordering::Relaxed) as *mut u8, SPAN.load(Ordering::Relaxed));
                     munmap(BASE.load(Ordering::Relaxed) as *mut c_void, TOTAL.load(Ordering::Relaxed));
                     crate::heap::held_outside(SPAN.load(Ordering::Relaxed), false);
                     if s == LEASED {

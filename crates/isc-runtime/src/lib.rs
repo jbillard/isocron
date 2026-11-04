@@ -475,7 +475,7 @@ fn free_cold(p: *mut u8) {
     // the standard input mapped from its file (D257)
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     if mapped::owns(p) {
-        unsafe { mapped::free() };
+        unsafe { mapped::free(zap_pages) };
         return;
     }
     #[cfg(not(target_os = "wasi"))]
@@ -598,6 +598,49 @@ unsafe fn touch_pages(p: *mut u8, n: usize) {
     let parts = threads.min(64);
     let mut ctx = Ctx { p, n, parts };
     isc_parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64);
+}
+
+/// The pages of the `n` bytes from `p`, a part of the mapped input, given
+/// back by every thread of the pool, each its part (D258); by this thread
+/// alone when the pool is busy or has one thread.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+unsafe fn zap_pages(p: *mut u8, n: usize) {
+    let threads = thread_count();
+    if threads <= 1 || BUSY.load(Ordering::Relaxed) {
+        mapped::give_pages(p, n);
+        return;
+    }
+    #[repr(C)]
+    struct Ctx {
+        p: *mut u8,
+        n: usize,
+        parts: usize,
+    }
+    extern "C" fn part(ctx: *mut c_void, k: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            let k = k as usize;
+            // whole pages: the part of each thread from a page boundary
+            let lo = (c.n * k / c.parts) & !4095;
+            let hi = if k + 1 == c.parts { c.n } else { (c.n * (k + 1) / c.parts) & !4095 };
+            if hi > lo {
+                mapped::give_pages(c.p.add(lo), hi - lo);
+            }
+        }
+    }
+    let parts = threads.min(64);
+    let mut ctx = Ctx { p, n, parts };
+    isc_parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64);
+}
+
+/// The end of the program: the mapped input, if it is still there, given
+/// back by every thread (D258), where the exit would unmap its pages on one
+/// thread.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn release_at_end() {
+    if mapped::mapped() {
+        unsafe { mapped::free(zap_pages) };
+    }
 }
 
 /// From this size on, a file is read by several threads (D221).
@@ -2810,9 +2853,14 @@ pub extern "C" fn isc_run_big_stack(f: extern "C" fn(c_int, *mut c_void) -> c_in
     };
     unsafe { pthread_attr_destroy(a) };
     if !started {
-        return f(argc, argv);
+        let r = f(argc, argv);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        release_at_end();
+        return r;
     }
     unsafe { pthread_join(tid, core::ptr::null_mut()) };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    release_at_end();
     s.ret
 }
 
