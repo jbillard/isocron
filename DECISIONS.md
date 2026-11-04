@@ -4665,3 +4665,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     D258, the others of the publication of D249, best of 9): reverse-
     complement 63.4 and 62.6 ms against Rust's 65.6 and 65.3 ms;
     k-nucleotide 1073.6 ms against C++'s 1177.4 ms.
+- **D260 — The Benchmarks Game measured again at `d1e3586`: the fastest
+  on 9 of 10 (2026-11-04).** The protocol of D249 (`image.sh`, `run.sh
+  build`, `check`, `measure 4 3 native` after `machine.sh apply
+  parallel`), the Isocron programs built by the compiler of D258 (D259
+  changed only DECISIONS.md). Against D249: k-nucleotide 1.603 -> 1.074 s
+  (C++ 1.174 s), reverse-complement 0.104 -> 0.062 s (Rust 0.068 s), both
+  now ahead; n-body 2.021 -> 2.040 s, still 1.05 times C (1.945 s, Rust
+  1.946 s); binary-trees 0.669 -> 0.667 s, fannkuch-redux 1.663 -> 1.661
+  s, mandelbrot 0.639 s, pidigits 0.490 s, regex-redux 0.295 -> 0.289 s,
+  spectral-norm 0.195 -> 0.199 s (Rust 0.205 s).
+  - fasta 0.018 -> 0.020 s is the noise of the lowest of 3 runs, not a
+    regression: the programs of 0.1.0 (the compiler of D249) and of now,
+    run in turn 25 times in the same container (`build/spotfasta.sh`),
+    both 17.7 ms at best, 18.2 and 18.0 ms at the median, each with runs
+    of 19 to 34 ms.
+  - The floors are the same; reverse-complement's (the file read twice
+    by blocks at 30.2 GB/s, 0.017 s) still holds with the mapped input of
+    D257, which maps the pages of the file instead of copying them.
