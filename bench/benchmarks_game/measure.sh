@@ -10,7 +10,7 @@
 set -uo pipefail
 cd /work
 t="${1:-4}"
-reps="${2:-3}"
+reps="${2:-12}"
 modes="${3:-native}"
 export OMP_NUM_THREADS=$t RAYON_NUM_THREADS=$t GOMAXPROCS=$t ISC_THREADS=$t
 mkdir -p build/inputs

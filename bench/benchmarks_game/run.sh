@@ -20,7 +20,7 @@ case "${1:-}" in
     # CPUs (the first hardware thread of T physical cores)
     measure)
         t="${2:-4}"
-        reps="${3:-3}"
+        reps="${3:-12}"
         modes="${4:-native}"
         envf="$root/bench/build/machine.env"
         [ -f "$envf" ] || { echo "run 'bench/machine.sh apply parallel' first" >&2; exit 1; }

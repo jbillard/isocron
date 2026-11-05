@@ -21,7 +21,7 @@ The fastest of each language on the site of the Benchmarks Game (2026-11-02 and 
   `bench/machine.sh apply parallel`: governor `performance`, turbo off, the
   frequency fixed, every other process on the sibling threads.
 * Every program runs in the Docker image `isocron-bg` without network
-  (`bench/benchmarks_game/run.sh measure 4 3 native`), in the slice
+  (`bench/benchmarks_game/run.sh measure 4 12 native`), in the slice
   `isc-bench.slice`, on 4 CPUs (the first hardware thread of 4 physical
   cores, as the 4 cores of the machine of the Benchmarks Game), with 4
   threads (`OMP_NUM_THREADS`, `RAYON_NUM_THREADS`, `GOMAXPROCS`,

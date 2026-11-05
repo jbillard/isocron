@@ -53,20 +53,20 @@ same Docker image on the same machine
 
 <!-- results:begin -->
 
-**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `d49c22a`, DECISIONS D307; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
+**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `c6e020e`, DECISIONS D319; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
 
 | | benchmark | Isocron | fastest other | Isocron / fastest | floor | Isocron / floor |
 | :-: | :-- | --: | :-- | :-: | --: | :-: |
-| 🟢 | binary-trees | 698 ms | Rust 877 ms | $\color{green}{\textbf{0.80}}$ | 394.7 ms | $\color{orange}{1.8}$ |
-| 🟢 | fannkuch-redux | 1677 ms | C 2475 ms | $\color{green}{\textbf{0.68}}$ | 883.5 ms | $\color{orange}{1.9}$ |
-| 🟢 | fasta | 11 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{red}{4.8}$ |
-| 🟢 | k-nucleotide | 863 ms | C++ 1210 ms | $\color{green}{\textbf{0.71}}$ | 268.0 ms | $\color{red}{3.2}$ |
-| 🟢 | mandelbrot | 640 ms | C++ 788 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
-| 🟡 | n-body | 1919 ms | C 1947 ms | $\color{orange}{\textbf{0.99}}$ | 1315.5 ms | $\color{green}{1.5}$ |
-| 🟢 | pidigits | 496 ms | C 689 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.6}$ |
-| 🟢 | regex-redux | 129 ms | Rust 763 ms | $\color{green}{\textbf{0.17}}$ | 29.7 ms | $\color{red}{4.3}$ |
-| 🟢 | reverse-complement | 42 ms | Rust 68 ms | $\color{green}{\textbf{0.62}}$ | 16.8 ms | $\color{orange}{2.5}$ |
-| 🟢 | spectral-norm | 199 ms | Rust 212 ms | $\color{green}{\textbf{0.94}}$ | 107.1 ms | $\color{orange}{1.9}$ |
+| 🟢 | binary-trees | 670 ms | Rust 851 ms | $\color{green}{\textbf{0.79}}$ | 394.7 ms | $\color{orange}{1.7}$ |
+| 🟢 | fannkuch-redux | 1663 ms | C 2467 ms | $\color{green}{\textbf{0.67}}$ | 883.5 ms | $\color{orange}{1.9}$ |
+| 🟢 | fasta | 6 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{orange}{2.6}$ |
+| 🟢 | k-nucleotide | 680 ms | C++ 1176 ms | $\color{green}{\textbf{0.58}}$ | 268.0 ms | $\color{orange}{2.5}$ |
+| 🟢 | mandelbrot | 638 ms | C++ 785 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
+| 🟡 | n-body | 1897 ms | C 1947 ms | $\color{orange}{\textbf{0.97}}$ | 1315.5 ms | $\color{green}{1.4}$ |
+| 🟢 | pidigits | 491 ms | C 683 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.5}$ |
+| 🟢 | regex-redux | 83 ms | Rust 755 ms | $\color{green}{\textbf{0.11}}$ | 29.7 ms | $\color{orange}{2.8}$ |
+| 🟢 | reverse-complement | 41 ms | Rust 65 ms | $\color{green}{\textbf{0.63}}$ | 16.8 ms | $\color{orange}{2.4}$ |
+| 🟢 | spectral-norm | 195 ms | Rust 207 ms | $\color{green}{\textbf{0.94}}$ | 107.1 ms | $\color{orange}{1.8}$ |
 
 🟢 Isocron the fastest · 🟡 within 5 % of the fastest · 🔴 behind. Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$.
 
@@ -281,7 +281,7 @@ differential testing on random programs (`ISC_DIFF_PROGRAMS` and
 ```sh
 bench/build.sh                              # the programs of the proof of concept into bench/bin
 bench/run.py                                # protocol of section 14: results/poc.md and results/poc.json
-bench/benchmarks_game/run.sh measure 4 3 native > results/benchmarks_game.tsv   # the ten programs, in Docker
+bench/benchmarks_game/run.sh measure 4 12 native > results/benchmarks_game.tsv   # the ten programs, in Docker
 bench/floor/run.sh > results/machine_floor.txt                                    # the costs of the machine
 bench/machine.sh apply && python3 bench/primitives/run.py; bench/machine.sh restore  # every form against its floor in C: results/primitives.md
 ```

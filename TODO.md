@@ -294,7 +294,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The last 2 MiB of a region of medium blocks without huge pages (its sentinel cleared 2 MiB at the start of every program): fasta -4.57 %, with N = 1 -33.15 % (D316)
 - [x] `countBy` by tables of counts only, each key with its count in one word, looked for by lines of 8 slots: k-nucleotide -19.33 % (D317)
 - [x] The whole rows of a `map` take an equality with the index and the remainders of their tables out of their loop: fasta -13.82 % (D318)
-- [ ] regex-redux at 84.5 ms (3 times its floor: 89.2): its dense replacements (millions of matches searched, listed in 16 bytes each, then written), its cleaning (12.9 ms: the zeroing of its new pages)
+- [x] The Benchmarks Game measured again at c6e020e, the lowest of 12 runs: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.79, fasta 2.59, k-nucleotide 2.54, pidigits 2.53, reverse-complement 2.44; D319)
 
 ## The trusted base (the remarks of the author, 2026-11-04)
 

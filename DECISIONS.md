@@ -6202,3 +6202,35 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     60, 7 and 1000 for c = 997, the table of 139968; a first lane below 0
     and a table shorter than c, their panics; 1, 3 and 4 threads, as the
     interpreter).
+- **D319 — The Benchmarks Game measured again at c6e020e: each of the
+  ten programs below three times its floor; the lowest of 12 runs
+  (2026-11-05).** The image `isocron-bg` made again with the `iscc` of
+  c6e020e (D318), every program built in it and its output checked (the 22
+  of Isocron the same as the references; the C++ program mandelbrot gpp-4
+  another image than the reference at N = 200, D227, the same as Isocron
+  at N = 16000), then `run.sh measure 4 12 native` after `bench/machine.sh
+  apply parallel` (the other processes on 8 to 15). The lowest of 12 runs
+  now, for every language, where it was 3: D307 saw runs of fasta alone at
+  11.9, 16.4 and 20.9 ms among runs of 7.3 to 7.9 ms (the noise of the
+  machine), and `measure.sh` counts whole milliseconds, the start of
+  `timeout` included (1.43 to 1.48 ms); with 3 runs fasta was published at
+  11 ms. A pass of the 50 programs takes about 90 s: 12 of them about 18
+  minutes. `run.sh` and `measure.sh` default to 12, the protocol, the
+  READMEs and the report say so.
+  - Isocron the fastest on 10 of 10 (`results/benchmarks_game.md`, the
+    README, `docs/media/benchmarks.svg`), and each program below three
+    times its floor (`results/floors.md`, the floors themselves unchanged):
+    regex-redux 83 ms (2.79 times its floor; 9.7 when the goal was set),
+    fasta 6 ms (2.59; 7.8), k-nucleotide 680 ms (2.54; 4.0), pidigits 491
+    ms (2.53), reverse-complement 41 ms (2.44; 3.6), fannkuch-redux 1663
+    ms (1.88), spectral-norm 195 ms (1.82), binary-trees 670 ms (1.70),
+    mandelbrot 638 ms (1.46), n-body 1897 ms (1.44). The fastest others:
+    Rust 851 ms (binary-trees), C 2467 ms (fannkuch-redux), Rust 755 ms
+    (fasta, regex-redux), C++ 1176 ms (k-nucleotide), C++ 785 ms
+    (mandelbrot), C 1947 ms (n-body), C 683 ms (pidigits), Rust 65 ms
+    (reverse-complement), Rust 207 ms (spectral-norm).
+  - `results/floors.md`: its table and chart made again, its section on
+    the order of the work written again (the four programs that were above
+    three times their floor and the decisions that took them below, the
+    gaps that are left); its attribution of the gaps stays that of
+    c77e61b (D263), marked so.

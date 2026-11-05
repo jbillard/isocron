@@ -14,7 +14,7 @@ the host.
 | build the image (Debian trixie, gcc/g++ 14.2, Rust 1.84.1, Go 1.24, iscc of the host) | `./image.sh` |
 | build every program in both modes into `bin/<mode>/` | `./run.sh build` |
 | check the outputs: the ten Isocron programs against the references (`references.txt`: the argument and the input of each), the others at N = 200 against their reference and N = 16000 against Isocron | `./run.sh check` |
-| the measurement with the protocol of SPEC section 14, after `bench/machine.sh apply parallel` (then `restore`): the container in `isc-bench.slice`, on T physical cores, T threads, the lowest of R runs; `results/benchmarks_game.md` | `./run.sh measure 4 3 native` |
+| the measurement with the protocol of SPEC section 14, after `bench/machine.sh apply parallel` (then `restore`): the container in `isc-bench.slice`, on T physical cores, T threads, the lowest of R runs (12); `results/benchmarks_game.md` | `./run.sh measure 4 12 native` |
 | rough timing (lowest of 3, not the protocol of SPEC section 14) | `docker run --rm --network none --cpuset-cpus=0-3 --user "$(id -u):$(id -g)" -v "$PWD:/work" isocron-bg bash /work/quick_time.sh 4` |
 
 `./image.sh` must run again after each `cargo build --release` of iscc.
