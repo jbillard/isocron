@@ -1,0 +1,32 @@
+import * as http from "http";
+import * as net from "net";
+
+// a server for the clients of the test (D342): its port printed, then
+// `args[0]` requests answered
+function handle(r: http.Request): http.Response {
+    if (r.path == "/echo") {
+        return { status: 200, headers: [["X-Length", `${r.body.length}`] as const], body: r.body };
+    }
+    if (r.path == "/big") {
+        const n = parseI64(r.query);
+        return { status: 200, headers: [], body: map(iota(n), (i) => u8(i % 251)) };
+    }
+    if (r.path == "/sum") {
+        return http.textResponse(200, `${sum(map(r.body, (x) => i64(x)))}`);
+    }
+    return http.textResponse(r.method == "GET" ? 200 : 405, `${r.method} ${r.path} ${r.query}`);
+}
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            print(net.port(l));
+            match (http.serveOn(l, handle, parseI64(args[0]))) {
+                Ok(_) => print("done"),
+                Err(e) => print("serve failed"),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}

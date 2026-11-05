@@ -1271,6 +1271,28 @@ unsafe fn bytes_of<'a>(p: *const u8, n: i64) -> &'a [u8] {
     }
 }
 
+/// `a + b + c`, a template literal (D342): the `n` texts at `parts` in one
+/// block.
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_concat_n(out: *mut IscStr, parts: *const IscStr, n: i64) {
+    // SAFETY: the code generator gives `n` texts at `parts`
+    let parts = core::slice::from_raw_parts(parts, n.max(0) as usize);
+    let total: i64 = parts.iter().map(|s| s.len.max(0)).sum();
+    if total == 0 {
+        *out = new_str(b"");
+        return;
+    }
+    let r = isc_alloc(total);
+    let mut at = 0usize;
+    for s in parts {
+        let len = s.len.max(0) as usize;
+        // SAFETY: each text holds `len` bytes, `r` the sum of them
+        core::ptr::copy_nonoverlapping(s.ptr, r.add(at), len);
+        at += len;
+    }
+    *out = IscStr { ptr: r, len: total };
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn isc_str_concat(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64) {
     let r = isc_alloc(n.max(0) + m.max(0));

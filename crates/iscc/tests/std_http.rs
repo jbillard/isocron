@@ -182,3 +182,182 @@ fn client_against_a_server_of_the_test() {
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "compiled: {}", r.stderr);
     valgrind_clean(src, "std_http_get", &[&port]);
 }
+
+/// D342: the server answering the clients that the same program wrote
+/// first (the kernel keeps their requests until it accepts them): two
+/// requests one after the other on a connection, a body by its length,
+/// HEAD (no body), HTTP/1.0 (closed after), a request that is not one
+/// (400), `chunked` (501), a path not known (404), no `Host` (400); the
+/// date hidden; compiled (1 and 4 threads) and interpreted, the same
+/// outputs; Valgrind.
+#[test]
+fn server_on_requests_of_every_form() {
+    let src = include_str!("data/std_http_serve.isc");
+    let want = include_str!("data/std_http_serve.out");
+    assert_eq!(interp_ok(src, &[]), want, "interpreter");
+    let bin = compile(src, "std_http_serve");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled, {} threads: {}", t, r.stderr);
+    }
+    valgrind_clean(src, "std_http_serve", &[]);
+}
+
+/// One response read from `r`: its status, its headers (names in lower
+/// case) and its body (by its length).
+fn read_response(r: &mut std::io::BufReader<std::net::TcpStream>) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    use std::io::BufRead;
+    let mut line = String::new();
+    r.read_line(&mut line).unwrap();
+    let status: u16 = line.split(' ').nth(1).unwrap_or("0").parse().unwrap_or(0);
+    let mut headers = Vec::new();
+    loop {
+        let mut h = String::new();
+        if r.read_line(&mut h).unwrap() == 0 || h == "\r\n" {
+            break;
+        }
+        let (k, v) = h.trim_end().split_once(':').unwrap();
+        headers.push((k.to_ascii_lowercase(), v.trim().to_string()));
+    }
+    let len: usize = headers.iter().find(|(k, _)| k == "content-length").map(|(_, v)| v.parse().unwrap()).unwrap_or(0);
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body).unwrap();
+    (status, headers, body)
+}
+
+/// The clients of `server_against_clients_of_the_test`, on `port`: the
+/// number of the requests they made that are answered.
+fn server_clients(port: u16) -> usize {
+    use std::io::BufReader;
+    use std::net::TcpStream;
+    let connect = move || {
+        let s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(120))).unwrap();
+        s
+    };
+    let mut threads = Vec::new();
+    // 8 connections kept alive, 25 requests each
+    for t in 0..8 {
+        threads.push(std::thread::spawn(move || {
+            let s = connect();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut w = s;
+            for i in 0..25 {
+                write!(w, "GET /keep?{}.{} HTTP/1.1\r\nHost: test\r\n\r\n", t, i).unwrap();
+                let (status, headers, body) = read_response(&mut r);
+                assert_eq!((status, String::from_utf8(body).unwrap()), (200, format!("GET /keep {}.{}", t, i)));
+                assert!(headers.iter().any(|(k, _)| k == "date"), "{:?}", headers);
+                assert!(!headers.iter().any(|(k, _)| k == "connection"), "{:?}", headers);
+            }
+            25
+        }));
+    }
+    // a body of 1 MiB sent back
+    threads.push(std::thread::spawn(move || {
+        let s = connect();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let mut w = s;
+        let body: Vec<u8> = (0..1 << 20).map(|i| (i % 253) as u8).collect();
+        write!(w, "POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        w.write_all(&body).unwrap();
+        let (status, headers, got) = read_response(&mut r);
+        assert_eq!((status, got == body), (200, true));
+        assert!(headers.contains(&("x-length".to_string(), (1 << 20).to_string())), "{:?}", headers);
+        1
+    }));
+    // a body sent slowly, in pieces
+    threads.push(std::thread::spawn(move || {
+        let s = connect();
+        s.set_nodelay(true).unwrap();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let mut w = s;
+        let body: Vec<u8> = (0..40000).map(|i| (i % 7) as u8).collect();
+        let head = format!("POST /sum HTTP/1.1\r\nHost: test\r\nContent-Length: {}\r\n\r\n", body.len());
+        let all = [head.as_bytes(), &body].concat();
+        for piece in all.chunks(9973) {
+            w.write_all(piece).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let (status, _, got) = read_response(&mut r);
+        let want: u64 = body.iter().map(|&x| x as u64).sum();
+        assert_eq!((status, String::from_utf8(got).unwrap()), (200, want.to_string()));
+        1
+    }));
+    // a response of 2000000 bytes, then two requests written at once
+    threads.push(std::thread::spawn(move || {
+        let s = connect();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let mut w = s;
+        w.write_all(b"GET /big?2000000 HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+        let (status, _, got) = read_response(&mut r);
+        assert_eq!((status, got.len()), (200, 2000000));
+        assert!(got.iter().enumerate().all(|(i, &x)| x == (i % 251) as u8));
+        w.write_all(b"GET /a HTTP/1.1\r\nHost: test\r\n\r\nDELETE /b?c HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").unwrap();
+        let a = read_response(&mut r);
+        let b = read_response(&mut r);
+        assert_eq!((a.0, a.2, b.0, b.2), (200, b"GET /a ".to_vec(), 405, b"DELETE /b c".to_vec()));
+        3
+    }));
+    // a body longer than 16 MiB: 413 at once, the connection closed
+    threads.push(std::thread::spawn(move || {
+        let s = connect();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let mut w = s;
+        w.write_all(b"POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: 17000000\r\n\r\n").unwrap();
+        let (status, headers, _) = read_response(&mut r);
+        assert_eq!(status, 413);
+        assert!(headers.contains(&("connection".to_string(), "close".to_string())), "{:?}", headers);
+        1
+    }));
+    // a client that leaves in the middle of its request: no answer
+    threads.push(std::thread::spawn(move || {
+        let mut s = connect();
+        s.write_all(b"GET /gone HTTP/1.1\r\nHo").unwrap();
+        0
+    }));
+    threads.into_iter().map(|t| t.join().unwrap()).sum()
+}
+
+/// D342: `serveOn` in a program of its own against clients of the test,
+/// at the same time: 8 connections kept alive for 25 requests each, a body
+/// of 1 MiB sent back, a body sent slowly in pieces, a response of 2000000
+/// bytes, two requests written at once, a body over the limit (413), a
+/// client that leaves in the middle of a request; the server ends after
+/// the 206 answers; compiled, interpreted (`iscc run`) and under Valgrind.
+#[test]
+fn server_against_clients_of_the_test() {
+    let src = include_str!("data/std_http_server.isc");
+    let bin = compile(src, "std_http_server");
+    let dir = tmp("std_http_server_src");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("server.isc");
+    std::fs::write(&file, src).unwrap();
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    let mut runs: Vec<(&str, std::process::Command)> = Vec::new();
+    let mut c = std::process::Command::new(&bin);
+    c.arg("206").env("ISC_THREADS", "4");
+    runs.push(("compiled", c));
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"));
+    c.arg("run").arg(&file).arg("206");
+    runs.push(("interpreted", c));
+    if vg.is_file() {
+        let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+        let vbin = compile_glibc(src, "std_http_server_vg", opts);
+        let mut c = std::process::Command::new(&vg);
+        c.args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"]).arg(&vbin).arg("206").env("ISC_ALLOC", "glibc").env("ISC_THREADS", "2");
+        runs.push(("valgrind", c));
+    }
+    for (name, mut c) in runs {
+        use std::io::BufRead;
+        let mut child = c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        let port: u16 = line.trim().parse().unwrap_or_else(|_| panic!("{}: no port: {:?}", name, line));
+        assert_eq!(server_clients(port), 206, "{}", name);
+        let o = child.wait_with_output().unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+        assert_eq!((o.status.code(), rest.as_str()), (Some(0), "done\n"), "{}: {}", name, String::from_utf8_lossy(&o.stderr));
+    }
+}

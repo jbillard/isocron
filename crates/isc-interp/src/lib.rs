@@ -161,11 +161,13 @@ impl Interp<'_> {
             v => panic!("string expected, got {:?}", v),
         };
         Ok(match op {
+            // all the parts of `a + b + c`, of a template literal (D342)
             S::Concat => {
-                let (a, b) = (s(&vs[0]), s(&vs[1]));
-                let mut t = String::with_capacity(a.len() + b.len());
-                t.push_str(&a);
-                t.push_str(&b);
+                let parts: Vec<_> = vs.iter().map(&s).collect();
+                let mut t = String::with_capacity(parts.iter().map(|p| p.len()).sum());
+                for p in &parts {
+                    t.push_str(p);
+                }
                 Value::Str(Rc::from(t))
             }
             S::Len => Value::Int(s(&vs[0]).len() as i64),

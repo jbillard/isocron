@@ -289,10 +289,23 @@ pub enum SysOp {
     /// `sysShutdown(conn) => code`: its sending side closed (the peer reads
     /// the end of the stream), the connection kept
     Shutdown,
+    /// `sysServerOpen(listener) => [server, code]` (D342): the listener
+    /// taken by a server, which holds its connections by number
+    ServerOpen,
+    /// `sysServerWait(server, max, ms) => [ids, lens, bytes, code]`: the
+    /// connections waiting accepted, then at most `max` bytes read from
+    /// each connection that has some (0: its end), within `ms` ms
+    ServerWait,
+    /// `sysServerSend(server, id, bytes) => code`: all of them
+    ServerSend,
+    /// `sysServerDrop(server, id) => code`: the connection closed
+    ServerDrop,
+    /// `sysServerClose(server) => code`: all closed
+    ServerClose,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 25] = [
+    pub const ALL: [SysOp; 30] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -318,12 +331,17 @@ impl SysOp {
         SysOp::Platform,
         SysOp::Resolve,
         SysOp::Shutdown,
+        SysOp::ServerOpen,
+        SysOp::ServerWait,
+        SysOp::ServerSend,
+        SysOp::ServerDrop,
+        SysOp::ServerClose,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
     /// D339).
     pub fn consumes(self) -> bool {
-        matches!(self, SysOp::Close | SysOp::CloseListener)
+        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose)
     }
 
     /// The target WebAssembly (WASI preview 1) has it (D324): no sockets.
@@ -342,6 +360,11 @@ impl SysOp {
                 | SysOp::UdpQuery
                 | SysOp::Resolve
                 | SysOp::Shutdown
+                | SysOp::ServerOpen
+                | SysOp::ServerWait
+                | SysOp::ServerSend
+                | SysOp::ServerDrop
+                | SysOp::ServerClose
         )
     }
 
@@ -373,6 +396,11 @@ impl SysOp {
             SysOp::Platform => "sysPlatform",
             SysOp::Resolve => "sysResolve",
             SysOp::Shutdown => "sysShutdown",
+            SysOp::ServerOpen => "sysServerOpen",
+            SysOp::ServerWait => "sysServerWait",
+            SysOp::ServerSend => "sysServerSend",
+            SysOp::ServerDrop => "sysServerDrop",
+            SysOp::ServerClose => "sysServerClose",
         }
     }
 }

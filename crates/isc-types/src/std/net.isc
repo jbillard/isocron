@@ -10,6 +10,11 @@ import { IoError, ioError } from "sys";
 
 export type Conn = sysConn;
 export type Listener = sysListener;
+// a listener and the connections it accepted, held by the runtime and
+// named by numbers (D342): linear as the others
+export type Server = sysServer;
+// bytes that a connection of a server has sent (none: its end)
+export type Arrival = { id: i64, bytes: u8[] };
 
 // a numeric address: digits and dots (IPv4), or a colon (IPv6)
 function numeric(host: string): boolean {
@@ -252,4 +257,46 @@ export action close(c: Conn): void {
 
 export action closeListener(l: Listener): void {
     sysCloseListener(l);
+}
+
+// ----- servers (D342) ----------------------------------------------------
+
+// a server on the listener `l`, which it takes: it accepts the connections
+// and reads those that have bytes, in one loop of the program
+export action serverOf(l: Listener): Result<Server, IoError> {
+    const [s, code] = sysServerOpen(l);
+    if (code == 0) {
+        return Ok(s);
+    }
+    sysServerClose(s);
+    return Err(ioError(code, "serverOf"));
+}
+
+// the bytes that the connections of `s` have sent, at most `max` of each,
+// waiting at most `ms` milliseconds (-1: until there are some), the new
+// connections accepted on the way: for each connection read, its number
+// and its bytes (none: it has ended, `closeConn` it)
+export action wait(s: Server, max: i64, ms: i64): Result<Arrival[], IoError> {
+    const [ids, lens, data, code] = sysServerWait(s, max, ms);
+    if (code != 0) {
+        return Err(ioError(code, "wait"));
+    }
+    const ends = scan(lens, (a, b) => a + b, 0);
+    return Ok(map(iota(ids.length), (i) => ({ id: ids[i], bytes: data.slice(ends[i] - lens[i], ends[i]) })));
+}
+
+// all the bytes `x` sent to the connection `id` of `s`
+export action sendTo(s: Server, id: i64, x: u8[n]): Result<void, IoError> {
+    const code = sysServerSend(s, id, x);
+    return code == 0 ? Ok(()) : Err(ioError(code, "sendTo"));
+}
+
+// the connection `id` of `s` closed
+export action closeConn(s: Server, id: i64): void {
+    const code = sysServerDrop(s, id);
+}
+
+// the server closed, its connections and its listener with it
+export action closeServer(s: Server): void {
+    const code = sysServerClose(s);
 }

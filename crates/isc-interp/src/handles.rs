@@ -10,6 +10,9 @@ use std::net::{TcpListener, TcpStream};
 pub enum Resource {
     Conn(TcpStream),
     Listener(TcpListener),
+    /// A listener and the connections it accepted (D342), all non-blocking,
+    /// by number in the order they came (a number never given twice).
+    Server { listener: TcpListener, next: i64, conns: Vec<(i64, TcpStream)> },
 }
 
 #[derive(Debug, Default)]

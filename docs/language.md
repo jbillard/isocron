@@ -2593,7 +2593,12 @@ max)` the bytes received (none at the end of the stream), `write(c, x)` and
 `writeText(c, s)` send all of them, `setTimeout(c, ms)` bounds each read
 and write (past it: `TimedOut`), `closeWrite(c)` closes the sending side
 only (the peer reads the end of the stream, `c` still reads). The errors
-are those of `sys` (`IoError`).
+are those of `sys` (`IoError`). A `Server` holds a listener and the
+connections it accepts, named by numbers: `serverOf(l)` takes the
+listener, `wait(s, max, ms)` gives the bytes that connections have sent
+(`Arrival`: `id` and `bytes`, none at the end of a stream), the new
+connections accepted on the way, `sendTo(s, id, x)` answers one,
+`closeConn(s, id)` and `closeServer(s)` close them.
 `resolve(host)` gives the addresses of a name: under Linux a numeric
 address, `localhost`, `/etc/hosts`, then the servers of `/etc/resolv.conf`
 asked by UDP; under Windows, the system. `lookup(host, server, port)` asks
@@ -2669,6 +2674,54 @@ action main(args: string[k]): i32 {
 ```output
 Ok((http, example.test, 8080, /a?b=1))
 refused: 127.0.0.1:1
+```
+
+The server: `serve(port, handler)` answers the requests to a port, with
+no end; `serveOn(l, handler, limit)` those to a listener, until `limit`
+of them (0: no end). The handler is a `function`, `(Request) => Response`
+(`Request`: `method`, `path`, `query` after `?`, `headers`, `body`): it
+cannot act, so the requests ready at once are given to it by `map`, in
+parallel, without a race. Connections are kept alive (HTTP/1.1, unless
+`Connection: close`), one request at a time each, bodies by
+`Content-Length` up to 16 MiB; a request that is not one is answered 400,
+`chunked` 501, a body too long 413, without the handler. Each response
+has `Date` and `Content-Length`; `textResponse(status, s)` makes one of
+text.
+
+```isc
+import * as http from "http";
+import * as net from "net";
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, `hello ${r.query}`);
+}
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            match (net.connect("127.0.0.1", port)) {
+                Ok(c) => {
+                    const w = net.writeText(c, "GET /?you HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+                    print(http.serveOn(l, hello, 1));
+                    match (net.read(c, 1000)) {
+                        Ok(b) => print(filter(stringOf(b).split("\r\n"), (h) => !h.startsWith("Date"))),
+                        Err(e) => print("read failed"),
+                    };
+                    net.close(c);
+                },
+                Err(e) => net.closeListener(l),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}
+```
+
+```output
+Ok(())
+[HTTP/1.1 200 OK, Content-Type: text/plain; charset=utf-8, Content-Length: 9, Connection: close, , hello you]
 ```
 
 ## Performance model

@@ -350,6 +350,7 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
         // the resources of the system (D339), named by the module `net`
         TypeKind::Named(name, args) if name == "sysConn" && args.is_empty() => Ty::Handle(crate::types::Handle::Conn),
         TypeKind::Named(name, args) if name == "sysListener" && args.is_empty() => Ty::Handle(crate::types::Handle::Listener),
+        TypeKind::Named(name, args) if name == "sysServer" && args.is_empty() => Ty::Handle(crate::types::Handle::Server),
         TypeKind::Named(name, args) => {
             if let Some(i) = cx.generics.iter().position(|g| &g.0 == name) {
                 if !args.is_empty() {
@@ -848,7 +849,7 @@ impl<'g> FnCx<'g> {
                     return fail(&t, self);
                 }
                 for c in ts.clone() {
-                    self.constrain(&c, classes, LitKind::None)?;
+                    self.constrain_part(&c, classes)?;
                 }
                 Ok(())
             }
@@ -857,7 +858,7 @@ impl<'g> FnCx<'g> {
                     return fail(&t, self);
                 }
                 for (_, c) in fs.clone() {
-                    self.constrain(&c, classes, LitKind::None)?;
+                    self.constrain_part(&c, classes)?;
                 }
                 Ok(())
             }
@@ -913,6 +914,16 @@ impl<'g> FnCx<'g> {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// A part of a tuple or a record of class `classes`: an array there is a
+    /// block of its own (D336), its elements any that an array holds (not
+    /// only those of a row), its size its own or not (D341).
+    fn constrain_part(&mut self, c: &Ty, classes: Classes) -> std::result::Result<(), UErr> {
+        match self.shallow(c) {
+            Ty::Array(_, e) if classes & class::ELEM != 0 => self.constrain(&e, (classes & class::EQ) | class::ELEM, LitKind::None),
+            _ => self.constrain(c, classes, LitKind::None),
         }
     }
 
@@ -1081,6 +1092,41 @@ impl<'g> FnCx<'g> {
                 Size::Poly(Poly::sym(k))
             }
             other => other,
+        }
+    }
+
+    /// The type parameters of a callee not yet known, bound to the parts of
+    /// the argument type `a` where the parameter type `p` names them; the
+    /// sizes left to the binding of the call. Only fresh variables are
+    /// bound: nothing can fail here.
+    fn bind_type_args(&mut self, p: &Ty, a: &Ty, type_args: &[Ty]) {
+        match (p, self.shallow(a)) {
+            (Ty::Param(i), at) => {
+                if let Some(Ty::Var(v)) = type_args.get(*i as usize).map(|t| self.shallow(t)) {
+                    if !matches!(at, Ty::Var(w) if w == v) && !self.occurs(v, &at) {
+                        let _ = self.bind(v, &at);
+                    }
+                }
+            }
+            (Ty::Array(_, pe), Ty::Array(_, ae)) => self.bind_type_args(pe, &ae, type_args),
+            (Ty::Tuple(ps), Ty::Tuple(xs)) if ps.len() == xs.len() => {
+                for (q, x) in ps.iter().zip(xs.iter()) {
+                    self.bind_type_args(q, x, type_args);
+                }
+            }
+            (Ty::Record(pf), Ty::Record(af)) => {
+                for (n, q) in pf {
+                    if let Some((_, x)) = af.iter().find(|(m, _)| m == n) {
+                        self.bind_type_args(q, x, type_args);
+                    }
+                }
+            }
+            (Ty::Sum { id: i, args: ps, .. }, Ty::Sum { id: j, args: xs, .. }) if *i == j && ps.len() == xs.len() => {
+                for (q, x) in ps.iter().zip(xs.iter()) {
+                    self.bind_type_args(q, x, type_args);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1425,7 +1471,13 @@ impl<'g> FnCx<'g> {
                 // of two sizes have a size fixed at run time (D337)
                 let hint = expected.map(|e| self.loosen(e));
                 let t = self.check(t, hint.as_ref())?;
-                let hint = self.loosen(&t.ty);
+                // the form of the first branch, or the form expected when it
+                // holds arrays of their own size (D341), which the first
+                // branch may have of a size
+                let hint = match hint {
+                    Some(h) if self.holds_own(&h) => h,
+                    _ => self.loosen(&t.ty),
+                };
                 let f = self.check(f, Some(&hint))?;
                 let ty = self.join(&t.ty, &f.ty, f.span)?;
                 Ok(self.mk(TExprKind::If(Box::new(c), Box::new(t), Box::new(f)), ty, span))
@@ -1744,7 +1796,7 @@ impl<'g> FnCx<'g> {
         let qn = self.q(name);
         let name = qn.as_str();
         if self.g.ctors.contains_key(name) {
-            return self.check_construct(name, &[], span);
+            return self.check_construct(name, &[], span, None);
         }
         if let Some(&id) = self.g.names.get(name) {
             let sig = &self.g.sigs[id];
@@ -1976,7 +2028,7 @@ impl<'g> FnCx<'g> {
             if (shadowed || self.lookup(name).is_none()) && self.sym_by_name(name).is_none() {
                 let name = &self.q(name);
                 if self.g.ctors.contains_key(name.as_str()) {
-                    return self.check_construct(name, args, span);
+                    return self.check_construct(name, args, span, expected);
                 }
                 if let Some(&id) = self.g.names.get(name.as_str()) {
                     let call = self.check_call_fn(id, args, span)?;
@@ -2028,11 +2080,16 @@ impl<'g> FnCx<'g> {
 
     /// `C` or `C(a, b)`: a value of the sum type of constructor `C`; the type
     /// arguments are inferred.
-    fn check_construct(&mut self, name: &str, args: &[ast::Expr], span: Span) -> Result<TExpr> {
+    fn check_construct(&mut self, name: &str, args: &[ast::Expr], span: Span, expected: Option<&Ty>) -> Result<TExpr> {
         let g = self.g;
         let (sum, variant) = g.ctors[name];
         let def = &g.sums[sum as usize];
-        let targs: Vec<Ty> = def.params.iter().map(|_| self.fresh(0, LitKind::None, span)).collect();
+        // the type arguments expected when they hold arrays of their own
+        // size (D341): `Ok({ body: [] })` where a `Result<Response, E>` is
+        let targs: Vec<Ty> = match expected.map(|e| self.shallow(e)) {
+            Some(Ty::Sum { id, args: ea, .. }) if id == sum && ea.iter().any(|t| self.holds_own(t)) => ea,
+            _ => def.params.iter().map(|_| self.fresh(0, LitKind::None, span)).collect(),
+        };
         // the sizes of the payload: any (D335)
         let sizes: Vec<Size> = (0..def.variants[variant as usize].sizes).map(|_| self.fresh_size(span)).collect();
         let payload = payload_sized(def, variant as usize, &targs, &sizes);
@@ -2127,6 +2184,10 @@ impl<'g> FnCx<'g> {
             let hint_sizes: Vec<Size> = (0..sig.syms.len()).map(|_| self.fresh_size(a.span)).collect();
             let hint = subst_value(p, &type_args, &hint_sizes);
             let t = self.check(a, Some(&hint))?;
+            // the type parameters that this argument fixes, known to the
+            // lambdas after it: `count(rows, (r) => r.id == 1)` reads the
+            // fields of the rows' records
+            self.bind_type_args(p, &t.ty, &type_args);
             targs.push(t);
         }
         // Bind the callee's size variables from the binding parameters.
@@ -2451,6 +2512,17 @@ impl<'g> FnCx<'g> {
             SysOp::CloseListener => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
             SysOp::SetTimeout => (vec![Ty::Handle(Handle::Conn), i64t.clone()], i64t.clone()),
             SysOp::Shutdown => (vec![Ty::Handle(Handle::Conn)], i64t.clone()),
+            SysOp::ServerOpen => (vec![Ty::Handle(Handle::Listener)], Ty::Tuple(vec![Ty::Handle(Handle::Server), i64t.clone()])),
+            SysOp::ServerWait => {
+                let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
+                (vec![Ty::Handle(Handle::Server), i64t.clone(), i64t.clone()], Ty::Tuple(vec![own(i64t.clone()), own(i64t.clone()), own(Ty::Int(IntKind::U8)), i64t.clone()]))
+            }
+            SysOp::ServerSend => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Server), i64t.clone(), Ty::Array(s, Box::new(Ty::Int(IntKind::U8)))], i64t.clone())
+            }
+            SysOp::ServerDrop => (vec![Ty::Handle(Handle::Server), i64t.clone()], i64t.clone()),
+            SysOp::ServerClose => (vec![Ty::Handle(Handle::Server)], i64t.clone()),
             SysOp::LocalPort => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
             SysOp::UdpQuery => {
                 let s = self.fresh_size(span);
@@ -3127,6 +3199,16 @@ impl<'g> FnCx<'g> {
             // the bytes of a string, the elements of an array (D135)
             Prim::StrLen => {
                 let a = self.check(&args[0], None)?;
+                // `r.length` of a record with a field `length`: the field
+                if name == "$length" {
+                    if let Ty::Record(fs) = self.shallow(&a.ty) {
+                        if fs.iter().any(|(n, _)| n == "length") {
+                            let (i, ty) = self.field_of(&a.ty, "length", a.span)?;
+                            let ty = self.open_own(&ty, span);
+                            return Ok(self.mk(TExprKind::Field(Box::new(a), i), ty, span));
+                        }
+                    }
+                }
                 match self.shallow(&a.ty) {
                     Ty::Array(..) | Ty::Str => {}
                     Ty::Var(_) => self.deferred_len.push((a.ty.clone(), a.span)),
@@ -4796,6 +4878,27 @@ fn check_linear(fns: &[TFn], sums: &[SumDef]) -> Result<()> {
                 }
             }
             if cx.walk(&f.body, Take::Move).is_err() {
+                // a recursive function that takes its parameters on every
+                // path (a loop that closes its server at its ends, D342):
+                // tried as taking them all, kept when that holds
+                let trial: Vec<bool> = f.params.iter().map(|p| cx.linear(&f.locals[*p as usize].ty)).collect();
+                if trial != consumes[i] {
+                    let mut alt = consumes.clone();
+                    alt[i] = trial.clone();
+                    let mut cx = LinCx { f, sums, consumes: &alt, st: HashMap::new(), in_lambda: Vec::new() };
+                    for &p in &f.params {
+                        if cx.linear(&f.locals[p as usize].ty) {
+                            cx.st.insert(p, Lin::Live);
+                        }
+                    }
+                    if cx.walk(&f.body, Take::Move).is_ok() {
+                        let now: Vec<bool> = f.params.iter().map(|p| matches!(cx.st.get(p), Some(Lin::Gone(_)))).collect();
+                        if now == trial {
+                            consumes[i] = trial;
+                            changed = true;
+                        }
+                    }
+                }
                 continue;
             }
             let now: Vec<bool> = f.params.iter().map(|p| matches!(cx.st.get(p), Some(Lin::Gone(_)))).collect();

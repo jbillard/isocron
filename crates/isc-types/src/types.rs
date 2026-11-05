@@ -197,6 +197,9 @@ pub enum Handle {
     Conn,
     /// A socket that listens (`net.Listener`).
     Listener,
+    /// A listener and the connections it accepted, held by the runtime
+    /// (`net.Server`, D342).
+    Server,
 }
 
 impl Handle {
@@ -204,6 +207,7 @@ impl Handle {
         match self {
             Handle::Conn => "Conn",
             Handle::Listener => "Listener",
+            Handle::Server => "Server",
         }
     }
 }

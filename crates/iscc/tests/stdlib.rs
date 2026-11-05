@@ -1016,6 +1016,86 @@ fn arrays_of_their_own_size() {
     assert_eq!((r.code, r.stderr.trim()), (101, want.trim()));
 }
 
+const RULES_OF_THE_SERVER: &str = r##"// the rules of the compiler found with the server of HTTP (D342)
+type P = { id: i64, buf: u8[] };
+type A = { id: i64, bytes: u8[] };
+type Frame = { length: i64, fault: i64 };
+type Msg = { name: string, headers: [string, string][] };
+type R = { status: i64, body: u8[] };
+type E = Bad(string) | Worse(i64);
+type H = { eols: i64[], a: i64 };
+
+// a type parameter fixed by the array before the lambda that reads fields
+function fresh(ps: P[n], xs: A[m]): i64 {
+    return filter(xs, (a) => a.bytes.length > 0 && count(ps, (p) => p.id == a.id) == 0).length;
+}
+
+function step(n: i64): Result<i64, string> {
+    return n > 3 ? Err("big") : Ok(n);
+}
+
+// an early return of a construction, then a `match` of the same type
+function f(n: i64, hs: [string, string][h]): Result<R, E> {
+    if (n >= 5) {
+        return Ok({ status: n, body: [] });
+    }
+    return match (step(n)) {
+        Ok(b) => b == 0 ? Err(Bad("zero")) : f(n + 1, hs),
+        Err(e) => Err(Worse(n)),
+    };
+}
+
+function h(k: i64): H {
+    return { eols: map(iota(k + 1), (j) => j * 10), a: k };
+}
+
+// a slice of records that hold arrays: each a copy of its own
+function cut(n: i64, take: i64): H[] {
+    const all = map(iota(n), (k) => h(k));
+    return all.slice(0, take);
+}
+
+action main(args: string[k]): i32 {
+    const ps: P[] = [{ id: 1, buf: [] }, { id: 3, buf: bytes("x") }];
+    const xs: A[] = [{ id: 2, bytes: bytes("y") }, { id: 3, bytes: bytes("z") }, { id: 4, bytes: [] }];
+    print(fresh(ps, xs));
+    print(count(ps, (p) => p.id > 1));
+    const fr: Frame[] = [{ length: 7, fault: 0 }, { length: 0, fault: 400 }];
+    print(map(fr, (x) => x.length + x.fault));
+    const ms: Msg[] = [{ name: "a", headers: [["k", "v"] as const] }, { name: "b", headers: [] }];
+    print(map(ms, (m) => `${m.name}:${m.headers.length}`));
+    print(match (f(args.length + 1, [])) {
+        Ok(r) => r.status,
+        Err(e) => -1,
+    });
+    const hs = cut(4, 2);
+    const noise = map(iota(5), (i) => map(iota(100), (j) => j + i));
+    print(hs);
+    print(noise[4][99]);
+    const n = args.length + 3;
+    print("a" + toString(n) + "b" + toString(n + 1) + "c");
+    print(`x ${n} y ${n * 2} z ${n + 1} end`);
+    return 0;
+}
+"##;
+
+/// D342: the rules found with the server of HTTP: a type parameter that
+/// the array fixes known to the lambda after it (`count(ps, (p) => p.id
+/// ...)`, behind `&&`), a field `length` read by `.length`, arrays of
+/// tuples of strings in the records of an array, an early return of a
+/// construction before a `match`, a slice of records that hold arrays (each
+/// a copy: they were freed twice), chains of strings in one block (the
+/// interpreter: all the parts); compiled and interpreted, Valgrind.
+#[test]
+fn rules_found_with_the_server() {
+    agree(
+        RULES_OF_THE_SERVER,
+        "rules_of_the_server",
+        &[],
+        "1\n1\n[7, 400]\n[a:1, b:0]\n-1\n[{a: 0, eols: [0]}, {a: 1, eols: [0, 10]}]\n103\na3b4c\nx 3 y 6 z 4 end\n",
+    );
+}
+
 const TYPE_ARGUMENTS: &str = r##"function first<T>(xs: T[n]): T {
     return xs[0];
 }

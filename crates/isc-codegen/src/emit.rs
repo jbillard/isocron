@@ -848,6 +848,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare double @isc_parse_f64(ptr, i64, i32, i32)",
     "declare void @isc_str_new(ptr, ptr, i64)",
     "declare void @isc_str_concat(ptr, ptr, i64, ptr, i64)",
+    "declare void @isc_str_concat_n(ptr, ptr, i64)",
     "declare i32 @isc_str_cmp(ptr, i64, ptr, i64)",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_to_string_i64(ptr, i64)",
@@ -3876,6 +3877,18 @@ impl<'p> Gen<'p> {
                     let from = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", s, off));
                     let bytes = self.ins(format!("mul i64 {}, {}", m, sz));
                     self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, from, bytes));
+                }
+                // the elements that own memory (strings, arrays of a tuple,
+                // nodes): each a copy of its own, as `copy_value` does, not
+                // the source's shared (D342: a slice of records that hold
+                // arrays freed them twice)
+                if holds_owned(&elem_ty) {
+                    self.for_range_scalar("0", &m, 1, &mut |g, i| {
+                        let el = g.load_elem(&dst, &m, i, &elem_ty, 1);
+                        let c = g.copy_value(&el, &elem_ty);
+                        g.store_elem(&dst, &m, i, &elem_ty, &c, 1);
+                        Ok(())
+                    })?;
                 }
                 let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", dst));
                 let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, m));
@@ -10515,10 +10528,21 @@ impl<'p> Gen<'p> {
             v(g.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }")
         };
         Ok(match op {
-            S::Concat => {
+            S::Concat if vals.len() == 2 => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 new_str(self, format!("call void @isc_str_concat(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+            }
+            // the parts of `a + b + c`, of a template literal: their texts
+            // in a table on the stack, one block made for all (D342)
+            S::Concat => {
+                let k = vals.len();
+                let table = self.alloca(&format!("[{} x {{ ptr, i64 }}]", k));
+                for (i, x) in vals.iter().enumerate() {
+                    let slot = self.ins(format!("getelementptr inbounds [{} x {{ ptr, i64 }}], ptr {}, i64 0, i64 {}", k, table, i));
+                    self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", x.r, slot));
+                }
+                new_str(self, format!("call void @isc_str_concat_n(ptr OUT, ptr {}, i64 {})", table, k))
             }
             S::Len => {
                 let (_, n) = self.str_parts(&vals[0]);

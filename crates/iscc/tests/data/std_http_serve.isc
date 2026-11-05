@@ -1,0 +1,77 @@
+import * as http from "http";
+import * as net from "net";
+
+// the handler: a pure function of the request
+function handle(r: http.Request): http.Response {
+    if (r.path == "/") {
+        return http.textResponse(200, "hello");
+    }
+    if (r.path == "/echo") {
+        return { status: 201, headers: [["X-Method", r.method] as const], body: r.body };
+    }
+    if (r.path == "/query") {
+        return http.textResponse(200, `query ${r.query}`);
+    }
+    if (r.path == "/headers") {
+        return http.textResponse(200, `${r.headers.length} ${http.headerOf(r.headers, "x-test") ?? "-"}`);
+    }
+    return http.textResponse(404, `no ${r.path}`);
+}
+
+// the bytes of `c` to the end of its stream
+action readAll(c: net.Conn, acc: string): string {
+    return match (net.read(c, 65536)) {
+        Ok(b) => b.length == 0 ? acc : readAll(c, acc + stringOf(b)),
+        Err(e) => acc + "<error>",
+    };
+}
+
+// a response printed, its date hidden
+action show(name: string, text: string): void {
+    const lines = map(text.split("\r\n"), (l) => l.startsWith("Date: ") ? "Date: -" : l);
+    print(`${name}: ${join(lines, " | ")}`);
+}
+
+// clients connected and their requests written, the server run until it
+// has answered them all, then each client's responses read
+action clients(l: net.Listener, port: i64, rs: string[n], i: i64, cs: string): void {
+    if (i >= rs.length) {
+        match (http.serveOn(l, handle, 9)) {
+            Ok(_) => print("served"),
+            Err(e) => print("serve failed"),
+        };
+        return;
+    }
+    match (net.connect("127.0.0.1", port)) {
+        Ok(c) => {
+            const w = net.writeText(c, rs[i]);
+            clients(l, port, rs, i + 1, cs);
+            show(`c${i + 1}`, readAll(c, ""));
+            net.close(c);
+        },
+        Err(e) => {
+            print("connect failed");
+            net.closeListener(l);
+        },
+    };
+}
+
+action main(args: string[k]): i32 {
+    const rs = [
+        "GET / HTTP/1.1\r\nHost: a\r\n\r\nGET /query?x=1&y=2 HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+        "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhelloHEAD / HTTP/1.1\r\nHost: a\r\nX-Test: yes\r\nConnection: close\r\n\r\n",
+        "garbage\r\n\r\n",
+        "GET /headers HTTP/1.0\r\nX-Test: one\r\n\r\n",
+        "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n",
+        "GET /missing HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+        "GET / HTTP/1.1\r\n\r\n",
+    ];
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            clients(l, port, rs, 0, "");
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}

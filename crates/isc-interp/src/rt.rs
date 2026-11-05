@@ -198,6 +198,116 @@ pub fn io_code(e: &std::io::Error) -> i64 {
     }
 }
 
+/// The primitives of a server (D342), as the runtime does them with
+/// `epoll`: here the sockets are non-blocking and a wait tries each of them
+/// until one has bytes or ends, or until its delay.
+fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
+    use crate::handles::{Cell, Resource};
+    use crate::{Array, Value};
+    use isc_ir::SysOp as S;
+    use std::io::{ErrorKind, Read, Write};
+    use std::rc::Rc;
+    let int = |v: &Value| match v {
+        Value::Int(x) => *x,
+        v => panic!("an integer expected, got {:?}", v),
+    };
+    let cell = |v: &Value| match v {
+        Value::Handle(c) => c.clone(),
+        v => panic!("a resource expected, got {:?}", v),
+    };
+    let tuple = |xs: Vec<Value>| Value::Tuple(Rc::new(xs));
+    let ints = |xs: Vec<i64>| Value::Array(Rc::new(Array::Int(xs)));
+    match o {
+        S::ServerOpen => {
+            let r = cell(&vs[0]).0.borrow_mut().take();
+            match r {
+                Some(Resource::Listener(l)) => match l.set_nonblocking(true) {
+                    Ok(()) => tuple(vec![Value::Handle(Rc::new(Cell(std::cell::RefCell::new(Some(Resource::Server { listener: l, next: 1, conns: Vec::new() }))))), Value::Int(0)]),
+                    Err(e) => tuple(vec![Value::Handle(Rc::new(Cell::default())), Value::Int(io_code(&e))]),
+                },
+                _ => tuple(vec![Value::Handle(Rc::new(Cell::default())), Value::Int(-9)]),
+            }
+        }
+        S::ServerWait => {
+            let c = cell(&vs[0]);
+            let max = int(&vs[1]).clamp(1, 1 << 24) as usize;
+            let ms = int(&vs[2]);
+            let start = std::time::Instant::now();
+            let mut guard = c.0.borrow_mut();
+            let Some(Resource::Server { listener, next, conns }) = &mut *guard else {
+                return tuple(vec![ints(Vec::new()), ints(Vec::new()), ints(Vec::new()), Value::Int(-9)]);
+            };
+            loop {
+                while let Ok((s, _)) = listener.accept() {
+                    if s.set_nonblocking(true).is_ok() && s.set_nodelay(true).is_ok() {
+                        conns.push((*next, s));
+                        *next += 1;
+                    }
+                }
+                let (mut ids, mut lens, mut data) = (Vec::new(), Vec::new(), Vec::new());
+                for (id, s) in conns.iter_mut() {
+                    let mut buf = vec![0u8; max];
+                    match s.read(&mut buf) {
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => continue,
+                        r => {
+                            let n = r.unwrap_or(0);
+                            ids.push(*id);
+                            lens.push(n as i64);
+                            data.extend(buf[..n].iter().map(|&b| b as i64));
+                        }
+                    }
+                }
+                let late = ms >= 0 && start.elapsed() >= std::time::Duration::from_millis(ms as u64);
+                if !ids.is_empty() || late {
+                    return tuple(vec![ints(ids), ints(lens), ints(data), Value::Int(0)]);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        S::ServerSend => {
+            let c = cell(&vs[0]);
+            let id = int(&vs[1]);
+            let data = byte_values(&vs[2]);
+            let mut guard = c.0.borrow_mut();
+            let r = match &mut *guard {
+                Some(Resource::Server { conns, .. }) => match conns.iter_mut().find(|x| x.0 == id) {
+                    Some((_, s)) => {
+                        // the socket blocking for the write, as the runtime
+                        // waits for a peer that reads slowly
+                        let w = s.set_nonblocking(false).and_then(|_| s.set_write_timeout(Some(std::time::Duration::from_secs(30)))).and_then(|_| s.write_all(&data));
+                        let back = s.set_nonblocking(true);
+                        w.and(back).map_or_else(|e| io_code(&e), |_| 0)
+                    }
+                    None => -9,
+                },
+                _ => -9,
+            };
+            Value::Int(r)
+        }
+        S::ServerDrop => {
+            let c = cell(&vs[0]);
+            let id = int(&vs[1]);
+            let mut guard = c.0.borrow_mut();
+            let r = match &mut *guard {
+                Some(Resource::Server { conns, .. }) => match conns.iter().position(|x| x.0 == id) {
+                    Some(i) => {
+                        drop(conns.remove(i));
+                        0
+                    }
+                    None => -9,
+                },
+                _ => -9,
+            };
+            Value::Int(r)
+        }
+        S::ServerClose => {
+            drop(cell(&vs[0]).0.borrow_mut().take());
+            Value::Int(0)
+        }
+        _ => unreachable!("not a primitive of a server: {:?}", o),
+    }
+}
+
 /// A primitive of the system (D322), as the runtime does it: its value and
 /// the code of its error in a tuple.
 pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
@@ -267,6 +377,7 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             code(r)
         }
         S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve | S::Shutdown => net(o, vs),
+        S::ServerOpen | S::ServerWait | S::ServerSend | S::ServerDrop | S::ServerClose => serve(o, vs),
     }
 }
 

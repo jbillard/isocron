@@ -1,15 +1,20 @@
-// The module `http` of the standard library (SPEC section 18, D340): a
-// client of HTTP/1.1 over `net`, written in Isocron. A request is sent on a
-// connection of its own (`Connection: close`); the body of the response is
-// read by `Content-Length`, by `chunked`, or to the end of the stream; the
-// redirections are given as they are. `https://` is the module `https`'s.
+// The module `http` of the standard library (SPEC section 18): a client of
+// HTTP/1.1 (D340) and a server (D342) over `net`, written in Isocron. A
+// request of the client is sent on a connection of its own (`Connection:
+// close`); the body of the response is read by `Content-Length`, by
+// `chunked`, or to the end of the stream; the redirections are given as
+// they are. `https://` is the module `https`'s. The server gives each
+// request to a pure function, the requests ready at once by `map` (D327).
 import { IoError, message as ioMessage } from "sys";
 import * as net from "net";
+import * as time from "time";
 
 export type HttpError = Io(IoError) | Malformed(string) | TooLarge(i64) | BadUrl(string);
-// (the sizes of an alias are those of the signatures that use it, D159:
-// names that no signature of the module uses)
-export type Response = { status: i64, headers: [string, string][responseHeaders], body: u8[responseBytes] };
+// a response, of a server to the client or of the handler of `serve`
+// (arrays of their own size, D341)
+export type Response = { status: i64, headers: [string, string][], body: u8[] };
+// a request given to the handler of `serve`: the target cut at `?`
+export type Request = { method: string, path: string, query: string, headers: [string, string][], body: u8[] };
 
 // the most bytes of the head of a response, of its body
 const HEAD_LIMIT = 65536;
@@ -462,4 +467,386 @@ export action request(method: string, url: string, headers: [string, string][k],
 // the response to `GET url`
 export action get(url: string): Result<Response, HttpError> {
     return request("GET", url, [], []);
+}
+
+// ----- the server (D342) ---------------------------------------------------
+
+// the most bytes of the body of a request, of one read of a connection
+const REQUEST_BODY_LIMIT = 16777216;
+const READ_LIMIT = 65536;
+
+// the bytes received from a connection and not yet a request
+type Pending = { id: i64, buf: u8[] };
+
+// a response ready to be sent: its connection, its bytes, whether the
+// connection is kept after it
+type Out = { id: i64, bytes: u8[], keep: boolean };
+
+function pendingOf(id: i64, buf: u8[]): Pending {
+    return { id: id, buf: buf };
+}
+
+function outOf(id: i64, x: u8[], keep: boolean): Out {
+    return { id: id, bytes: x, keep: keep };
+}
+
+// the text of a status
+function reason(status: i64): string {
+    return match (status) {
+        100 => "Continue",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        206 => "Partial Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        411 => "Length Required",
+        413 => "Content Too Large",
+        415 => "Unsupported Media Type",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Status",
+    };
+}
+
+// a response of `status` whose body is the text `s` (`text/plain`)
+export function textResponse(status: i64, s: string): Response {
+    return { status: status, headers: [["Content-Type", "text/plain; charset=utf-8"] as const], body: bytes(s) };
+}
+
+// the instant `i` as HTTP writes a date (`Sun, 06 Nov 1994 08:49:37 GMT`)
+export function httpDate(i: i64): string {
+    const d = time.toDateTime(i, 0);
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const two = (x: i64) => x < 10 ? `0${x}` : `${x}`;
+    return `${days[time.weekday(d.date) - 1]}, ${two(d.date.day)} ${months[d.date.month - 1]} ${d.date.year} ${two(d.time.hour)}:${two(d.time.minute)}:${two(d.time.second)} GMT`;
+}
+
+// the bytes of the response `r` (its body left out for HEAD), the
+// connection kept or not; a response that cannot be sent as it is (its
+// status, a header that is not a token or holds CR or LF): 500. The
+// headers that the server writes itself left out of those of `r`, their
+// names compared by bytes (no text made)
+function responseBytes(r: Response, keep: boolean, head: boolean, date: string): u8[] {
+    const ok = r.status >= 100 && r.status <= 999 && count(r.headers, (h) => {
+        const [k, v] = h;
+        return !tokenOk(k) || !valueOk(v);
+    }) == 0;
+    const x = ok ? r : textResponse(500, "the response of the handler cannot be sent (its status or a header)");
+    const extra = join(map(x.headers, (h) => {
+        const [k, v] = h;
+        const b = bytes(k);
+        const own = isName(b, 0, b.length, "content-length") || isName(b, 0, b.length, "connection") || isName(b, 0, b.length, "date") || isName(b, 0, b.length, "transfer-encoding");
+        return own ? "" : `${k}: ${v}\r\n`;
+    }), "");
+    const none = x.status == 204 || x.status == 304 || x.status < 200;
+    const top = none ? `HTTP/1.1 ${x.status} ${reason(x.status)}\r\nDate: ${date}\r\n${extra}${keep ? "" : "Connection: close\r\n"}\r\n` : `HTTP/1.1 ${x.status} ${reason(x.status)}\r\nDate: ${date}\r\n${extra}Content-Length: ${x.body.length}\r\n${keep ? "" : "Connection: close\r\n"}\r\n`;
+    return head || none ? bytes(top) : concat(bytes(top), x.body);
+}
+
+// a byte in lower case (ASCII)
+function lower(c: u8): u8 {
+    return c >= 65u8 && c <= 90u8 ? c + 32u8 : c;
+}
+
+// the bytes of `b` from `a` to `z` are `name` (in lower case), their case
+// ignored
+function isName(b: u8[], a: i64, z: i64, name: string): boolean {
+    const w = bytes(name);
+    return z - a == w.length && count(iota(w.length), (i) => lower(b[a + i]) != w[i]) == 0;
+}
+
+// the bytes of `b` from `a` to `z` hold the word `w` (in lower case), its
+// case ignored
+function holdsWord(b: u8[], a: i64, z: i64, w: string): boolean {
+    const n = bytes(w).length;
+    return count(iota(Math.max(z - a - n + 1, 0)), (i) => isName(b, a + i, a + i + n, w)) > 0;
+}
+
+// the first place from `a` to `z` of `b` that is not a space or a tab
+function spacesEnd(b: u8[], a: i64, z: i64): i64 {
+    return a >= z || (b[a] != 32u8 && b[a] != 9u8) ? a : spacesEnd(b, a + 1, z);
+}
+
+// the last place before `z` (down to `a`) after a byte that is not a space
+// or a tab
+function spacesStart(b: u8[], a: i64, z: i64): i64 {
+    return z <= a || (b[z - 1] != 32u8 && b[z - 1] != 9u8) ? z : spacesStart(b, a, z - 1);
+}
+
+// the value of the decimal digits of `b` from `a` to `z`, spaces around
+// them apart, or -1
+function decimalAt(b: u8[], a: i64, z: i64): i64 {
+    const s = spacesEnd(b, a, z);
+    const e = spacesStart(b, s, z);
+    if (e - s <= 0 || e - s > 15) {
+        return -1;
+    }
+    return fold(iota(e - s), 0, (v, j) => {
+        const c = b[s + j];
+        return v < 0 || c < 48u8 || c > 57u8 ? -1 : v * 10 + i64(c - 48u8);
+    });
+}
+
+// a byte of a token (RFC 9110)
+function tokenByte(c: u8): boolean {
+    return (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || (c >= 48u8 && c <= 57u8) || c == 45u8 || c == 33u8 || (c >= 35u8 && c <= 39u8) || c == 42u8 || c == 43u8 || c == 46u8 || c == 94u8 || c == 95u8 || c == 96u8 || c == 124u8 || c == 126u8;
+}
+
+// the head of a request in `b` from `a` to `z` (after its CR LF CR LF):
+// the places that cut it, read once and shared by its frame and its
+// request: the end of each line (the request line first), the two spaces
+// of the request line
+type Head = { eols: i64[], sp1: i64, sp2: i64 };
+
+function headOf(b: u8[], a: i64, z: i64): Head {
+    const eols = map(filter(iota(Math.max(z - 2 - a, 0)), (i) => b[a + i] == 13u8 && b[a + i + 1] == 10u8), (i) => a + i);
+    const e0 = eols.length > 0 ? eols[0] : a;
+    const sp1 = firstBefore(b, a, e0, 32u8, 32u8);
+    const sp2 = firstBefore(b, Math.min(sp1 + 1, e0), e0, 32u8, 32u8);
+    return { eols: eols, sp1: sp1, sp2: sp2 };
+}
+
+// what a server must know of a request before it answers it: the length
+// of its body, the status of its fault (0: none), whether its connection
+// is kept after it, whether its method is HEAD
+type Frame = { length: i64, fault: i64, keep: boolean, head: boolean };
+
+function fault(code: i64): Frame {
+    return { length: 0, fault: code, keep: false, head: false };
+}
+
+// the frame of the request whose head is `b` from `a` to `z`
+function frameOf(b: u8[], a: i64, z: i64, h: Head): Frame {
+    const e0 = h.eols.length > 0 ? h.eols[0] : a;
+    const v = h.sp2 + 1;
+    const versionOk = e0 - v == 8 && isName(b, v, v + 7, "http/1.") && (b[v + 7] == 48u8 || b[v + 7] == 49u8);
+    const methodOk = h.sp1 > a && count(iota(h.sp1 - a), (i) => !tokenByte(b[a + i])) == 0;
+    const targetOk = h.sp2 > h.sp1 + 1 && (b[h.sp1 + 1] == 47u8 || (h.sp2 == h.sp1 + 2 && b[h.sp1 + 1] == 42u8));
+    if (!versionOk || !methodOk || !targetOk || h.eols.length == 0 || count(b.slice(a, z), (c) => c >= 0x80u8) > 0 && !utf8(b.slice(a, z))) {
+        return fault(400);
+    }
+    // each header: [its kind (1 Content-Length, 2 Transfer-Encoding, 3
+    // Connection, 4 Host, 0 another, -1 not a header), the start and the
+    // end of its value]
+    const hs = map(iota(h.eols.length - 1), (j) => {
+        const s = h.eols[j] + 2;
+        const e = h.eols[j + 1];
+        const colon = firstBefore(b, s, e, 58u8, 58u8);
+        const ok = colon > s && colon < e && count(iota(colon - s), (i) => !tokenByte(b[s + i])) == 0;
+        const kind = !ok ? -1 : (isName(b, s, colon, "content-length") ? 1 : (isName(b, s, colon, "transfer-encoding") ? 2 : (isName(b, s, colon, "connection") ? 3 : (isName(b, s, colon, "host") ? 4 : 0))));
+        return [kind, colon + 1, e] as const;
+    });
+    const has = (k: i64) => count(hs, (x) => {
+        const [kind, vs, ve] = x;
+        return kind == k;
+    }) > 0;
+    const last = (k: i64) => fold(hs, -1, (at, x) => {
+        const [kind, vs, ve] = x;
+        return kind == k ? vs : at;
+    });
+    const http11 = b[v + 7] == 49u8;
+    if (has(-1) || (http11 && !has(4))) {
+        return fault(400);
+    }
+    if (has(2)) {
+        return fault(501);
+    }
+    const cl = last(1);
+    const length = cl < 0 ? 0 : decimalAt(b, cl, fold(hs, 0, (e, x) => {
+        const [kind, vs, ve] = x;
+        return vs == cl ? ve : e;
+    }));
+    if (length < 0) {
+        return fault(400);
+    }
+    if (length > REQUEST_BODY_LIMIT) {
+        return fault(413);
+    }
+    const close = count(hs, (x) => {
+        const [kind, vs, ve] = x;
+        return kind == 3 && holdsWord(b, vs, ve, "close");
+    }) > 0;
+    const alive = count(hs, (x) => {
+        const [kind, vs, ve] = x;
+        return kind == 3 && holdsWord(b, vs, ve, "keep-alive");
+    }) > 0;
+    return { length: length, fault: 0, keep: http11 ? !close : alive, head: isName(b, a, h.sp1, "head") && b[a] == 72u8 };
+}
+
+// the request whose head is `b` from `a` to `z`, its body after it
+function requestAt(b: u8[], a: i64, z: i64, h: Head, length: i64): Request {
+    const text = (s: i64, e: i64) => stringOf(b.slice(s, e));
+    const target = text(h.sp1 + 1, h.sp2);
+    const q = target.indexOf("?");
+    const headers = map(iota(h.eols.length - 1), (j) => {
+        const s = h.eols[j] + 2;
+        const e = h.eols[j + 1];
+        const colon = firstBefore(b, s, e, 58u8, 58u8);
+        const vs = spacesEnd(b, colon + 1, e);
+        return [text(s, colon), text(vs, spacesStart(b, vs, e))] as const;
+    });
+    return { method: text(a, h.sp1), path: q < 0 ? target : target.slice(0, q), query: q < 0 ? "" : target.slice(q + 1, target.length), headers: headers, body: b.slice(z, z + length) };
+}
+
+// the requests ready at the start of the bytes of a connection: those
+// complete up to the first that has a body, closes the connection or is a
+// fault (a pipeline of requests answered at once, in order): their places
+// and frames, the bytes they take, whether the connection is closed after
+type Ready = { starts: i64[], ends: i64[], frames: Frame[], heads: Head[], used: i64, closes: boolean };
+
+function nothingReady(): Ready {
+    return { starts: [], ends: [], frames: [], heads: [], used: 0, closes: false };
+}
+
+function tooLong(buf: u8[]): Ready {
+    return { starts: [0], ends: [buf.length], frames: [fault(431)], heads: [headOf(buf, 0, 0)], used: buf.length, closes: true };
+}
+
+function readyOf(buf: u8[]): Ready {
+    const ends = headEnds(buf);
+    if (ends.length == 0) {
+        // a head longer than the limit: 431 (all its bytes taken)
+        return buf.length > HEAD_LIMIT ? tooLong(buf) : nothingReady();
+    }
+    const starts = map(iota(ends.length), (k) => k == 0 ? 0 : ends[k - 1]);
+    const heads = map(iota(ends.length), (k) => headOf(buf, starts[k], ends[k]));
+    const frames = map(iota(ends.length), (k) => frameOf(buf, starts[k], ends[k], heads[k]));
+    // the first that stops the pipeline
+    const stop = min(map(iota(ends.length), (k) => frames[k].fault != 0 || !frames[k].keep || frames[k].length > 0 ? k : ends.length));
+    const whole = stop < ends.length && (frames[stop].fault != 0 || ends[stop] + frames[stop].length <= buf.length);
+    const take = stop == ends.length ? ends.length : (whole ? stop + 1 : stop);
+    const last = take - 1;
+    const used = take == 0 ? 0 : (frames[last].fault != 0 ? buf.length : ends[last] + frames[last].length);
+    const closes = take > 0 && (frames[last].fault != 0 || !frames[last].keep);
+    return { starts: starts.slice(0, take), ends: ends.slice(0, take), frames: frames.slice(0, take), heads: heads.slice(0, take), used: used, closes: closes };
+}
+
+// the end of each head of `buf` (after its CR LF CR LF)
+function headEnds(buf: u8[]): i64[] {
+    return map(filter(iota(Math.max(buf.length - 3, 0)), (i) => buf[i] == 13u8 && buf[i + 1] == 10u8 && buf[i + 2] == 13u8 && buf[i + 3] == 10u8), (i) => i + 4);
+}
+
+// the arrivals `xs` added to the bytes pending of each connection, those
+// of new connections after; the numbers of the connections that ended
+function arrive(ps: Pending[n], xs: net.Arrival[m]): [Pending[], i64[]] {
+    const ended = map(filter(xs, (a) => a.bytes.length == 0), (a) => a.id);
+    const known = map(filter(ps, (p) => count(ended, (e) => e == p.id) == 0), (p) => {
+        const mine = filter(xs, (a) => a.id == p.id);
+        return mine.length == 0 ? p : pendingOf(p.id, concat(p.buf, mine[0].bytes));
+    });
+    const fresh = map(filter(xs, (a) => a.bytes.length > 0 && count(ps, (p) => p.id == a.id) == 0), (a) => pendingOf(a.id, a.bytes));
+    return [concat(known, fresh), ended] as const;
+}
+
+// the connections `ids` from the `i`-th closed
+action closeAll(s: net.Server, ids: i64[], i: i64): void {
+    if (i < ids.length) {
+        net.closeConn(s, ids[i]);
+        closeAll(s, ids, i + 1);
+    }
+}
+
+// the responses `outs` from the `i`-th sent; the numbers of the
+// connections whose send failed (closed)
+action sendAll(s: net.Server, outs: Out[n], i: i64, failed: i64[]): i64[] {
+    if (i >= outs.length) {
+        return failed;
+    }
+    const o = outs[i];
+    return match (net.sendTo(s, o.id, o.bytes)) {
+        Ok(_) => sendAll(s, outs, i + 1, failed),
+        Err(e) => sendAll(s, outs, i + 1, concat(failed, [o.id])),
+    };
+}
+
+// the place of `j` among the requests counted to the end of each connection
+// by `ends` (inclusive): the first connection whose count passes it
+function owner(ends: i64[], j: i64, lo: i64, hi: i64): i64 {
+    if (lo >= hi) {
+        return lo;
+    }
+    const mid = (lo + hi) / 2;
+    return ends[mid] > j ? owner(ends, j, lo, mid) : owner(ends, j, mid + 1, hi);
+}
+
+// the loop of the server: the requests ready answered, all at once (the
+// handler by `map`, in parallel), else the bytes that come waited for;
+// `answered` requests so far, until `limit` (0: no end)
+action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], answered: i64, limit: i64): Result<void, IoError> {
+    const readies = map(ps, (p) => readyOf(p.buf));
+    const counts = map(readies, (r) => r.ends.length);
+    const upto = scan(counts, (a, b) => a + b, 0);
+    const total = upto.length == 0 ? 0 : upto[upto.length - 1];
+    if (total == 0) {
+        return match (net.wait(s, READ_LIMIT, -1)) {
+            Ok(xs) => {
+                const [next, ended] = arrive(ps, xs);
+                closeAll(s, ended, 0);
+                return serveLoop(s, handler, next, answered, limit);
+            },
+            Err(e) => {
+                net.closeServer(s);
+                return Err(e);
+            },
+        };
+    }
+    const date = httpDate(time.now());
+    const outs = map(iota(total), (j) => {
+        const i = owner(upto, j, 0, upto.length);
+        const r = readies[i];
+        const k = j - (upto[i] - counts[i]);
+        const f = r.frames[k];
+        const keep = f.fault == 0 && f.keep;
+        const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[i].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
+        return outOf(ps[i].id, responseBytes(response, keep, f.head, date), keep);
+    });
+    const failed = sendAll(s, outs, 0, []);
+    // the connections closed after their last response, or whose send
+    // failed; the bytes after the requests kept for the next ones
+    const closing = map(filter(iota(ps.length), (i) => readies[i].closes || count(failed, (x) => x == ps[i].id) > 0), (i) => ps[i].id);
+    closeAll(s, closing, 0);
+    const left = map(filter(iota(ps.length), (i) => count(closing, (x) => x == ps[i].id) == 0), (i) => readies[i].used == 0 ? ps[i] : pendingOf(ps[i].id, ps[i].buf.slice(readies[i].used, ps[i].buf.length)));
+    const all = answered + total;
+    if (limit > 0 && all >= limit) {
+        net.closeServer(s);
+        return Ok(());
+    }
+    return serveLoop(s, handler, left, all, limit);
+}
+
+// the requests to the listener `l` (taken) answered by `handler`, until
+// `limit` of them (0: no end): the server closed then
+export action serveOn(l: net.Listener, handler: (Request) => Response, limit: i64): Result<void, IoError> {
+    return match (net.serverOf(l)) {
+        Ok(s) => serveLoop(s, handler, [], 0, limit),
+        Err(e) => Err(e),
+    };
+}
+
+// the requests to `port` of every address of the machine answered by
+// `handler`, with no end
+export action serve(port: i64, handler: (Request) => Response): Result<void, IoError> {
+    return match (net.listen("0.0.0.0", port)) {
+        Ok(l) => serveOn(l, handler, 0),
+        Err(e) => Err(e),
+    };
 }

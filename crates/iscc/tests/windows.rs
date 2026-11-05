@@ -290,7 +290,7 @@ fn json_on_windows() {
     }
 }
 
-/// D339, D340: the modules `net` and `http` (its client) on Windows
+/// D339, D340, D342: the modules `net` and `http` (client and server) on Windows
 /// (Winsock): a listener, a connection,
 /// bytes both ways, a read past its delay, a connection refused; the same
 /// outputs as on Linux (the server of DNS of the test is on Linux: the
@@ -306,4 +306,7 @@ fn net_on_windows() {
     // the client of HTTP on responses of every form (D340)
     let d = dir("http");
     same_on_windows(&runner, include_str!("data/std_http.isc"), "http", &d, &[], None);
+    // the server of HTTP on requests of every form (D342: `WSAPoll`)
+    let d = dir("http_serve");
+    same_on_windows(&runner, include_str!("data/std_http_serve.isc"), "http_serve", &d, &[], None);
 }

@@ -337,7 +337,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `net`: TCP, client and server; connections and listeners linear, checked at compile time; names resolved (hosts, DNS by UDP; GetAddrInfoW under Windows); refused for WASI (D339)
 - [x] `http`: a client of HTTP/1.1; `concat` made into memory by copies; `closeWrite` in `net` (D340)
   - [ ] `concat` that grows in place an array it consumes (its block unique, at its last use): the join of the chunks of `http` in one copy (D340: 22 µs of the 29 that `exchange.chunked64` takes more than its floor, 2.5 times; the other 7.3 µs to split)
-- [ ] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool
+- [x] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool (D342)
   - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
+  - [ ] The server above its floor: `serve.pipelined` 1.5 (D342: about 1600 user cycles a request more; 10.1 blocks, 4.1 copies of literal texts, 4.0 texts of bytes checked as UTF-8 again, 2 chains and a `join` a request, none in C): literals kept without a copy, a text of bytes already checked, fewer blocks for a request
+  - [ ] Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
 - [ ] `https`: the TLS of the system
 - [ ] Release 0.3.0

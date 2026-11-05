@@ -92,6 +92,80 @@ unsafe fn bytes_read(buf: *mut u8, n: usize, max: usize) -> IscArray {
     IscArray { ptr: q, len: n as i64 }
 }
 
+/// The result of `sysServerWait` (D342): the numbers of the connections
+/// read, the bytes read from each (0: the end of its stream, or an error
+/// that ends it), and those bytes one after the other.
+#[repr(C)]
+pub struct WaitOut {
+    pub ids: IscArray,
+    pub lens: IscArray,
+    pub data: IscArray,
+    pub code: i64,
+}
+
+/// An array of the program holding a copy of `xs`.
+#[cfg(not(target_os = "wasi"))]
+unsafe fn array_of<T: Copy>(xs: &[T]) -> IscArray {
+    if xs.is_empty() {
+        return IscArray { ptr: empty_bytes(), len: 0 };
+    }
+    let bytes = core::mem::size_of_val(xs);
+    let p = isc_alloc(bytes as i64);
+    // SAFETY: `p` holds `bytes` bytes, `xs` as many
+    core::ptr::copy_nonoverlapping(xs.as_ptr() as *const u8, p, bytes);
+    IscArray { ptr: p, len: xs.len() as i64 }
+}
+
+/// The state of a server behind its handle (D342): its listener, its
+/// connections by number (given in order, never twice: a number dropped
+/// stays unknown, so a stale number never reaches another connection), and
+/// what the system needs to wait on them. `F` is a socket of the system.
+#[cfg(not(target_os = "wasi"))]
+struct ServerState<F: Copy> {
+    listener: F,
+    next: i64,
+    conns: alloc::vec::Vec<(i64, F)>,
+    /// The set of `epoll` under Linux (unused under Windows).
+    ep: F,
+}
+
+#[cfg(not(target_os = "wasi"))]
+impl<F: Copy> ServerState<F> {
+    /// The socket of the connection `id`.
+    fn fd(&self, id: i64) -> Option<F> {
+        self.conns.binary_search_by_key(&id, |c| c.0).ok().map(|i| self.conns[i].1)
+    }
+
+    /// A connection added: its number.
+    fn add(&mut self, fd: F) -> i64 {
+        let id = self.next;
+        self.next += 1;
+        self.conns.push((id, fd));
+        id
+    }
+
+    /// The connection `id` taken out: its socket.
+    fn take(&mut self, id: i64) -> Option<F> {
+        self.conns.binary_search_by_key(&id, |c| c.0).ok().map(|i| self.conns.remove(i).1)
+    }
+}
+
+/// The state behind the handle `s` of a server (none for the handle of a
+/// failure, -1).
+///
+/// # Safety
+/// `s` is a handle that `sysServerOpen` made and `sysServerClose` has not
+/// freed: the linear check of the program makes sure of it (D339).
+#[cfg(not(target_os = "wasi"))]
+unsafe fn server<'a, F: Copy>(s: i64) -> Option<&'a mut ServerState<F>> {
+    if s <= 0 {
+        None
+    } else {
+        // SAFETY: see above
+        Some(unsafe { &mut *(s as *mut ServerState<F>) })
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
@@ -263,6 +337,207 @@ mod imp {
         *out = net_code(syscall6(48, c as usize, 1, 0, 0, 0, 0).min(0));
     }
 
+    // ----- servers (D342): `epoll`, level-triggered ----------------------
+
+    const SYS_POLL: usize = 7;
+    const SYS_FCNTL: usize = 72;
+    const SYS_EPOLL_WAIT: usize = 232;
+    const SYS_EPOLL_CTL: usize = 233;
+    const SYS_EPOLL_CREATE1: usize = 291;
+    const SOCK_NONBLOCK: usize = 0o4000;
+    const F_GETFL: usize = 3;
+    const F_SETFL: usize = 4;
+    const EPOLL_CTL_ADD: usize = 1;
+    const EPOLLIN: u32 = 1;
+    const POLLOUT: i16 = 4;
+    const IPPROTO_TCP: usize = 6;
+    const TCP_NODELAY: usize = 1;
+    const EAGAIN: isize = -11;
+    /// The number of the listener in the set (no connection has it).
+    const LISTENER: u64 = u64::MAX;
+    /// How long a response waits for a peer that does not read.
+    const SEND_WAIT_MS: isize = 30_000;
+
+    /// `struct epoll_event` of x86-64 (packed).
+    #[repr(C, packed)]
+    #[derive(Clone, Copy)]
+    struct EpollEvent {
+        events: u32,
+        data: u64,
+    }
+
+    #[repr(C)]
+    struct PollFd {
+        fd: c_int,
+        events: i16,
+        revents: i16,
+    }
+
+    /// `fd` watched by the set `ep` for reading, with the number `data`.
+    unsafe fn watch(ep: c_int, fd: c_int, data: u64) -> isize {
+        let ev = EpollEvent { events: EPOLLIN, data };
+        // SAFETY: the kernel reads the event of 12 bytes
+        syscall6(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, fd as usize, &ev as *const EpollEvent as usize, 0, 0)
+    }
+
+    /// `sysServerOpen(listener)`: the listener taken by a new server (closed
+    /// with it, or now when this fails).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serveropen(out: *mut HandleCode, l: i64) {
+        let ep = syscall6(SYS_EPOLL_CREATE1, SOCK_CLOEXEC, 0, 0, 0, 0, 0);
+        let flags = if ep >= 0 { syscall6(SYS_FCNTL, l as usize, F_GETFL, 0, 0, 0, 0) } else { ep };
+        let mut r = if flags >= 0 { syscall6(SYS_FCNTL, l as usize, F_SETFL, flags as usize | SOCK_NONBLOCK, 0, 0, 0) } else { flags };
+        if r >= 0 {
+            r = watch(ep as c_int, l as c_int, LISTENER);
+        }
+        if r < 0 {
+            if ep >= 0 {
+                linux::close(ep as c_int);
+            }
+            close_socket(l);
+            *out = HandleCode { h: -1, code: net_code(r) };
+            return;
+        }
+        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int });
+        *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
+    }
+
+    /// `sysServerWait(server, max, ms)`: the connections waiting accepted,
+    /// then at most `max` bytes read from each connection that has some
+    /// (or has ended), waiting at most `ms` milliseconds (-1: no limit).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serverwait(out: *mut WaitOut, s: i64, max: i64, ms: i64) {
+        let empty = || IscArray { ptr: empty_bytes(), len: 0 };
+        let Some(st) = server::<c_int>(s) else {
+            *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: -9 };
+            return;
+        };
+        let max = max.clamp(1, 1 << 24) as usize;
+        let mut evs = [EpollEvent { events: 0, data: 0 }; 64];
+        let (mut ids, mut lens, mut data) = (alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<u8>::new());
+        // again while only connections were accepted (their bytes come with
+        // the next wait), within the delay: as the interpreter, which gives
+        // the first bytes or ends, or nothing at the end of the delay
+        let deadline = (ms >= 0).then(|| crate::isc_clock_ns().saturating_add(ms as u64 * 1_000_000));
+        loop {
+            let left = match deadline {
+                Some(d) => (d.saturating_sub(crate::isc_clock_ns()).div_ceil(1_000_000)).min(i32::MAX as u64) as isize,
+                None => -1,
+            };
+            // SAFETY: the kernel writes at most 64 events at `evs`
+            let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, 64, left as usize, 0, 0) });
+            if n < 0 {
+                *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: net_code(n) };
+                return;
+            }
+            read_ready(st, &evs[..n as usize], max, &mut ids, &mut lens, &mut data);
+            if !ids.is_empty() || n == 0 || left == 0 {
+                break;
+            }
+        }
+        *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+    }
+
+    /// The events `evs` of a wait: the connections waiting accepted, the
+    /// bytes of the others read.
+    unsafe fn read_ready(st: &mut ServerState<c_int>, evs: &[EpollEvent], max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+        for ev in evs {
+            let tag = { ev.data };
+            if tag == LISTENER {
+                loop {
+                    let c = again(|| unsafe { syscall6(SYS_ACCEPT4, st.listener as usize, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC, 0, 0) });
+                    if c < 0 {
+                        break;
+                    }
+                    let one: c_int = 1;
+                    syscall6(SYS_SETSOCKOPT, c as usize, IPPROTO_TCP, TCP_NODELAY, &one as *const c_int as usize, 4, 0);
+                    let id = st.add(c as c_int);
+                    if watch(st.ep, c as c_int, id as u64) < 0 {
+                        st.take(id);
+                        linux::close(c as c_int);
+                    }
+                }
+                continue;
+            }
+            let id = tag as i64;
+            let Some(fd) = st.fd(id) else { continue };
+            data.reserve(max);
+            let at = data.len();
+            // SAFETY: the kernel writes at most `max` bytes at the room
+            // reserved after the `at` bytes of `data`
+            let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, data.as_mut_ptr().add(at) as usize, max, 0, 0, 0) });
+            if r == EAGAIN {
+                continue;
+            }
+            let got = r.max(0) as usize;
+            // SAFETY: the kernel wrote `got` bytes there
+            data.set_len(at + got);
+            ids.push(id);
+            lens.push(got as i64);
+        }
+    }
+
+    /// `sysServerSend(server, id, bytes)`: all of them, waiting for a peer
+    /// that reads slowly (at most SEND_WAIT_MS without progress: `TimedOut`).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serversend(out: *mut i64, s: i64, id: i64, p: *const u8, n: i64) {
+        let Some(fd) = server::<c_int>(s).and_then(|st| st.fd(id)) else {
+            *out = -9;
+            return;
+        };
+        let n = n.max(0) as usize;
+        let mut at = 0usize;
+        while at < n {
+            // SAFETY: the kernel reads `n - at` bytes from `p + at`
+            let r = again(|| unsafe { syscall6(SYS_SENDTO, fd as usize, p.add(at) as usize, n - at, MSG_NOSIGNAL, 0, 0) });
+            if r == EAGAIN {
+                let mut pfd = PollFd { fd, events: POLLOUT, revents: 0 };
+                // SAFETY: one `struct pollfd`, written by the kernel
+                let w = again(|| unsafe { syscall6(SYS_POLL, &mut pfd as *mut PollFd as usize, 1, SEND_WAIT_MS as usize, 0, 0, 0) });
+                if w == 0 {
+                    *out = 6;
+                    return;
+                }
+                continue;
+            }
+            if r < 0 {
+                *out = net_code(r);
+                return;
+            }
+            at += r as usize;
+        }
+        *out = 0;
+    }
+
+    /// `sysServerDrop(server, id)`: the connection closed.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serverdrop(out: *mut i64, s: i64, id: i64) {
+        *out = match server::<c_int>(s).and_then(|st| st.take(id)) {
+            Some(fd) => {
+                linux::close(fd);
+                0
+            }
+            None => -9,
+        };
+    }
+
+    /// `sysServerClose(server)`: its connections, its listener and its set
+    /// closed, its state freed.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serverclose(out: *mut i64, s: i64) {
+        if s > 0 {
+            // SAFETY: the state that `isc_sys_serveropen` made, freed once
+            // (the handle is consumed, D339)
+            let st = unsafe { alloc::boxed::Box::from_raw(s as *mut ServerState<c_int>) };
+            for &(_, fd) in &st.conns {
+                linux::close(fd);
+            }
+            linux::close(st.listener);
+            linux::close(st.ep);
+        }
+        *out = 0;
+    }
+
     /// The delay of `ms` milliseconds of each read (`SO_RCVTIMEO`) and write
     /// of the socket `fd`: 0 for none.
     unsafe fn timeouts(fd: i64, ms: i64) -> isize {
@@ -367,6 +642,8 @@ mod imp {
         fn recvfrom(s: usize, buf: *mut u8, len: c_int, flags: c_int, from: *mut u8, fromlen: *mut c_int) -> c_int;
         fn closesocket(s: usize) -> c_int;
         fn shutdown(s: usize, how: c_int) -> c_int;
+        fn WSAPoll(fds: *mut WsaPollFd, n: u32, timeout: c_int) -> c_int;
+        fn ioctlsocket(s: usize, cmd: i32, arg: *mut u32) -> c_int;
         fn setsockopt(s: usize, level: c_int, name: c_int, value: *const u8, len: c_int) -> c_int;
         fn getsockname(s: usize, name: *mut u8, len: *mut c_int) -> c_int;
         fn GetAddrInfoW(node: *const u16, service: *const u16, hints: *const c_void, result: *mut *mut AddrInfoW) -> c_int;
@@ -516,6 +793,163 @@ mod imp {
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_shutdown(out: *mut i64, c: i64) {
         *out = if shutdown(c as usize, 1) == 0 { 0 } else { last_code() };
+    }
+
+    // ----- servers (D342): `WSAPoll` --------------------------------------
+
+    #[repr(C)]
+    struct WsaPollFd {
+        fd: usize,
+        events: i16,
+        revents: i16,
+    }
+
+    const POLLRDNORM: i16 = 0x0100;
+    const POLLWRNORM: i16 = 0x0010;
+    const POLLERR: i16 = 0x0001;
+    const POLLHUP: i16 = 0x0002;
+    const FIONBIO: i32 = 0x8004667Eu32 as i32;
+    const IPPROTO_TCP: c_int = 6;
+    const TCP_NODELAY: c_int = 1;
+    const WSAEWOULDBLOCK: c_int = 10035;
+    const SEND_WAIT_MS: c_int = 30_000;
+
+    /// `s` made non-blocking.
+    unsafe fn nonblocking(s: usize) -> c_int {
+        let mut on: u32 = 1;
+        ioctlsocket(s, FIONBIO, &mut on)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serveropen(out: *mut HandleCode, l: i64) {
+        if nonblocking(l as usize) != 0 {
+            let code = last_code();
+            close_socket(l);
+            *out = HandleCode { h: -1, code };
+            return;
+        }
+        let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize });
+        *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serverwait(out: *mut WaitOut, s: i64, max: i64, ms: i64) {
+        let empty = || IscArray { ptr: empty_bytes(), len: 0 };
+        let Some(st) = server::<usize>(s) else {
+            *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: -9 };
+            return;
+        };
+        let max = max.clamp(1, 1 << 24) as usize;
+        let (mut ids, mut lens, mut data) = (alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<u8>::new());
+        // again while only connections were accepted, within the delay (as
+        // under Linux and in the interpreter)
+        let deadline = (ms >= 0).then(|| crate::isc_clock_ns().saturating_add(ms as u64 * 1_000_000));
+        loop {
+            let left = match deadline {
+                Some(d) => (d.saturating_sub(crate::isc_clock_ns()).div_ceil(1_000_000)).min(i32::MAX as u64) as c_int,
+                None => -1,
+            };
+            let mut fds: alloc::vec::Vec<WsaPollFd> = core::iter::once(st.listener).chain(st.conns.iter().map(|c| c.1)).map(|fd| WsaPollFd { fd, events: POLLRDNORM, revents: 0 }).collect();
+            let r = WSAPoll(fds.as_mut_ptr(), fds.len() as u32, left);
+            if r < 0 {
+                *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: last_code() };
+                return;
+            }
+            read_ready(st, &fds, max, &mut ids, &mut lens, &mut data);
+            if !ids.is_empty() || r == 0 || left == 0 {
+                break;
+            }
+        }
+        *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+    }
+
+    /// The results `fds` of a poll: the connections waiting accepted, the
+    /// bytes of the others read.
+    unsafe fn read_ready(st: &mut ServerState<usize>, fds: &[WsaPollFd], max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+        // the connections ready (their numbers taken before any is added)
+        let ready: alloc::vec::Vec<i64> = st.conns.iter().zip(&fds[1..]).filter(|(_, f)| f.revents & (POLLRDNORM | POLLHUP | POLLERR) != 0).map(|(c, _)| c.0).collect();
+        if fds[0].revents & POLLRDNORM != 0 {
+            loop {
+                let c = accept(st.listener, core::ptr::null_mut(), core::ptr::null_mut());
+                if c == INVALID_SOCKET {
+                    break;
+                }
+                let one: c_int = 1;
+                setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one as *const c_int as *const u8, 4);
+                if nonblocking(c) != 0 {
+                    closesocket(c);
+                    continue;
+                }
+                st.add(c);
+            }
+        }
+        for id in ready {
+            let Some(fd) = st.fd(id) else { continue };
+            data.reserve(max);
+            let at = data.len();
+            // SAFETY: Winsock writes at most `max` bytes at the room
+            // reserved after the `at` bytes of `data`
+            let r = recv(fd, data.as_mut_ptr().add(at), max as c_int, 0);
+            if r < 0 && WSAGetLastError() == WSAEWOULDBLOCK {
+                continue;
+            }
+            let got = r.max(0) as usize;
+            // SAFETY: Winsock wrote `got` bytes there
+            data.set_len(at + got);
+            ids.push(id);
+            lens.push(got as i64);
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serversend(out: *mut i64, s: i64, id: i64, p: *const u8, n: i64) {
+        let Some(fd) = server::<usize>(s).and_then(|st| st.fd(id)) else {
+            *out = -9;
+            return;
+        };
+        let n = n.max(0) as usize;
+        let mut at = 0usize;
+        while at < n {
+            let r = send(fd, p.add(at), (n - at).min(1 << 30) as c_int, 0);
+            if r < 0 {
+                if WSAGetLastError() != WSAEWOULDBLOCK {
+                    *out = last_code();
+                    return;
+                }
+                let mut pfd = WsaPollFd { fd, events: POLLWRNORM, revents: 0 };
+                if WSAPoll(&mut pfd, 1, SEND_WAIT_MS) == 0 {
+                    *out = 6;
+                    return;
+                }
+                continue;
+            }
+            at += r as usize;
+        }
+        *out = 0;
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serverdrop(out: *mut i64, s: i64, id: i64) {
+        *out = match server::<usize>(s).and_then(|st| st.take(id)) {
+            Some(fd) => {
+                closesocket(fd);
+                0
+            }
+            None => -9,
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serverclose(out: *mut i64, s: i64) {
+        if s > 0 {
+            // SAFETY: the state that `isc_sys_serveropen` made, freed once
+            let st = alloc::boxed::Box::from_raw(s as *mut ServerState<usize>);
+            for &(_, fd) in &st.conns {
+                closesocket(fd);
+            }
+            closesocket(st.listener);
+        }
+        *out = 0;
     }
 
     /// The delay of each read and write of `s`, in milliseconds (a DWORD).

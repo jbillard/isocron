@@ -6955,3 +6955,130 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     tuple, equality, records of any sizes kept as `Response[]`, JSON; the
     refusals; the size tested at run time; compiled on 1 and 4 threads,
     interpreted, Valgrind), the example of `docs/language.md`.
+
+- **D342 — The server of HTTP: `serve(port, handler)` over a `Server` of
+  `net` (2026-11-05).**
+  - A `Conn` is linear and never in an array (D339): the program cannot
+    hold the connections of a server. The runtime holds them, behind a
+    linear handle `Server` (`Ty::Handle(Handle::Server)`), each named by a
+    number given in order and never twice (a stale number reaches no other
+    connection). Five primitives, the least that a loop of the program
+    needs: `sysServerOpen(l)` (takes the listener), `sysServerWait(s, max,
+    ms) => [ids, lens, bytes, code]` (the connections waiting accepted,
+    then at most `max` bytes of each connection that has some, 0 at its
+    end, within `ms`), `sysServerSend(s, id, bytes)` (all of them, at most
+    30 s without progress: `TimedOut`), `sysServerDrop(s, id)`,
+    `sysServerClose(s)` (takes the server). Linux: `epoll`,
+    level-triggered, non-blocking sockets, `TCP_NODELAY`; Windows:
+    `WSAPoll` over the listener and the connections; the interpreter: the
+    sockets of `std::net`, non-blocking, tried every millisecond. A wait
+    starts again while only connections were accepted (their bytes come
+    with the next wait), within its delay: the first version gave an empty
+    wait there, where the interpreter waited for the bytes (a test told).
+    Refused for WASI (D324).
+  - `net`: `Server`, `Arrival = { id, bytes: u8[] }`, `serverOf(l)`,
+    `wait(s, max, ms): Result<Arrival[], IoError>`, `sendTo(s, id, x)`,
+    `closeConn(s, id)`, `closeServer(s)`.
+  - `http`: `serve(port, handler)` (every address, no end), `serveOn(l,
+    handler, limit)` (until `limit` requests answered, 0: no end; a test
+    and a benchmark need its end), `type Request = { method, path, query,
+    headers, body }`, the `Response` of the client (both of arrays of
+    their own size, D341), `textResponse`, `httpDate`. The handler is a
+    `function (Request) => Response` (D327). The loop takes the requests
+    complete at the start of each connection's bytes up to the first that
+    has a body, closes the connection or is a fault: the requests of a
+    pipeline, answered at once and in order. D327 said one request at a
+    time per connection: that made a round of the loop (a wait, the maps,
+    the sends) per request and copied the rest of the connection's bytes
+    into a new record each time (a record's arrays are its own, D336),
+    quadratic in a pipeline: measured below. The ends of the heads are
+    found in one pass (`filter` of CR LF CR LF), each head's frame (its
+    lines, its two spaces, the length of its body, whether the connection
+    stays) read by bytes in parallel, then one `map` over all the requests
+    of all the connections makes each request, calls the handler and
+    writes its response; the sends follow in order. Faults answered
+    without the handler: 400 (the line, a header without a correct name or
+    folded, no `Host` in HTTP/1.1), 501 (`chunked`), 413 (over 16 MiB), 431
+    (a head over 64 KiB), the connection closed after. Each response has
+    `Date` (one per batch) and `Content-Length`; a response of the handler
+    that cannot be sent as it is (its status, a header not a token or with
+    CR or LF) becomes 500.
+  - Found on the way, general rules of the compiler (each with its test):
+    - The type parameters that an argument fixes are bound before the
+      lambdas after it are checked (`bind_type_args`): `count(rows, (r) =>
+      r.id == 1)` of records was refused ("the type of this value must be
+      known to use its field"), `filter` was not (a primitive).
+    - An array in a part of an element of an array holds any element an
+      array may hold (`constrain_part`, as `is_part_ty` of D341):
+      `headers: [string, string][]` in records of an array was refused.
+    - The linear check of a recursive function that takes its parameter on
+      every path (a loop that closes its server at its ends): tried as
+      taking it when the first assumption (it borrows) fails, kept when
+      that holds.
+    - **A slice of an array of tuples that own memory copied their
+      pointers** (`memcpy` of the columns): two owners of each string or
+      array, freed twice (the allocator's check stopped the program:
+      "invalid free"; Valgrind: a read after free). Each owned element of
+      the slice is now a copy of its own (`copy_value`), as the copy of an
+      array does.
+    - `r.length` of a record with a field `length` reads the field (it
+      was the length of an array or a string, refused for a record).
+    - A construction (`Ok({ body: [] })`) takes the type arguments
+      expected when they hold arrays of their own size, and the other
+      branch of a conditional the form expected then (not the first
+      branch's, of fixed sizes).
+    - `a + b + c` of strings, a template literal: one concatenation of all
+      the parts (`isc_str_concat_n`, one block), not a block per `+`; the
+      interpreter the same (it ran the IR's `Concat` of two parts only,
+      and lost the others: a test told). `strings.template` 38.79 ns ->
+      36.22.
+  - The microbenchmark (`bench/primitives/http.isc`, `serve.pipelined`;
+    its floor in `http.c`: the same 8 connections of 200 requests written
+    first, a loop of `epoll` in C that finds each request by its end,
+    checks its line and headers, reads `Content-Length` and `Connection`,
+    writes the response by `snprintf` with the date of the wake and sends
+    it; only the server timed). The first version: 2687.75 ns a request
+    against 939.61 (2.9). By the profile: the string chains in one block
+    2608.78 (a harness of the server alone, 40 rounds); the requests of a
+    pipeline at once, read by bytes 1571.60 (the user cycles of 40 rounds
+    382247522 -> 167300759, the kernel's 241951381 -> 195445952, the
+    floor's 191964767); the head of the response without `filter` and
+    `toLowerCase` 1449.67. The full run: 1444.40 against 934.81 (1.5).
+    What stays, measured: the user cycles 142410957 against 39570581 for
+    64000 requests (about 1600 cycles a request more), the kernel's the
+    floor's (196026525 against 191134951). Counted by callgrind on one
+    round of 1600 requests, each request makes 10.1 blocks (`isc_alloc`),
+    4.1 copies of texts (`isc_str_new`: the literals of `textResponse`
+    and of the status kept in the response), 4.0 texts of bytes checked as
+    UTF-8 (`isc_str_from_bytes`: the method, the target, the name and
+    value of the header; the head was already checked), 2.0 chains and
+    1.0 `join`; the floor makes none. Open in TODO: literals kept without
+    a copy, a text of bytes already checked, the arrays a request is made
+    of in fewer blocks.
+  - `strings.bytes`, `slice`, `startsWith`, `endsWith` measured 6 to 7 %
+    slower in the full run (1.577 -> 1.692 ns for `bytes`), their floors
+    not (0.856 -> 0.891, 1.298 -> 1.296): their loops are the same IR
+    byte for byte (only `main` and the template of the benchmark changed,
+    the strings it prepares by `+` now one block each); the binaries of
+    the last commit and of this one run in turn: `startsWith.1` 1.858,
+    1.822, 1.843 ns against 1.671, 1.938, 1.923, the same range: a
+    placement of the run, not of the code.
+  - The ten programs: the chains of strings change the IR of seven of
+    them, only where they write their output (fasta, nbody, revcomp and
+    spectralnorm: the same IR but the declaration of `isc_str_concat_n`).
+    Before and after (the compiler of the last commit and this one, the
+    best of 5 runs in turn, the sizes of the protocol): binarytrees 807.4
+    ms -> 789.2, fannkuchredux 1486.6 -> 1478.4, knucleotide 800.5 ->
+    792.6, mandelbrot 625.4 -> 627.9, pidigits 493.6 -> 492.7, regexredux
+    94.0 -> 96.2, then 15 runs in turn: 91.1 and 90.8 against 90.9 and
+    90.0; the same outputs.
+  - Tests: `std_http.rs` (`server_on_requests_of_every_form`: the program
+    writes its clients' requests, pipelined, a body, HEAD, HTTP/1.0, 400,
+    501, 404, no `Host`, then serves them, compiled on 1 and 4 threads and
+    interpreted, Valgrind; `server_against_clients_of_the_test`: the
+    server in a program of its own against 8 threads of 25 requests kept
+    alive, 1 MiB sent back, a body sent slowly in pieces, 2000000 bytes,
+    two requests at once, 413, a client that leaves in the middle,
+    compiled, interpreted and under Valgrind); `windows.rs` (the first
+    program in the real VM, `WSAPoll`); `bitwise.rs` and `stdlib.rs` (the
+    rules above); the examples of `docs/language.md`.

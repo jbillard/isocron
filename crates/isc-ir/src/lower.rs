@@ -2473,6 +2473,17 @@ impl<'p> Lower<'p> {
                     let b = out.pop().unwrap();
                     let a = out.pop().unwrap();
                     return Ok(self.concat_arrays(a, b, ty, span));
+                } else if op == StrOp::Concat {
+                    // `a + b + c` of strings, a template literal: one
+                    // concatenation of all the parts, one block made (D342)
+                    let mut parts = Vec::new();
+                    for x in out {
+                        match x.kind {
+                            ExprKind::StrOp(StrOp::Concat, inner) => parts.extend(inner),
+                            _ => parts.push(x),
+                        }
+                    }
+                    ExprKind::StrOp(StrOp::Concat, parts)
                 } else {
                     ExprKind::StrOp(op, out)
                 }

@@ -1,12 +1,72 @@
-// The audit of every form against the machine (D301): the client of the
-// module `http` (D340) on the local machine, one thread: a response written
+// The audit of every form against the machine (D301): the module `http`
+// on the local machine, one thread. The client (D340): a response written
 // by the server side, then the request sent and the response read by
-// `exchange`: a small body by its length, 64 chunks of 1 KiB. Each line: a
-// name, the nanoseconds of one exchange (the mean over `rounds`), a
+// `exchange`: a small body by its length, 64 chunks of 1 KiB. The server
+// (D342): 8 connections with 200 requests each written first, then all of
+// them answered by `serveOn` (only it timed). Each line: a name, the
+// nanoseconds of one exchange or request (the mean over `rounds`), a
 // checksum; against `http.c` (the floor).
 // usage: http <rounds>
 import * as http from "http";
 import * as net from "net";
+
+const CONNS = 8;
+const PER_CONN = 200;
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, "hello, world!");
+}
+
+// the bytes of `c` until `want` of them
+action readSome(c: net.Conn, got: i64, want: i64): i64 {
+    if (got >= want) {
+        return got;
+    }
+    return match (net.read(c, 65536)) {
+        Ok(b) => b.length == 0 ? got : readSome(c, got + b.length, want),
+        Err(e) => got,
+    };
+}
+
+// `n` connections to `port`, the requests written on each, the server run,
+// then the responses read: the nanoseconds of the server and the bytes of
+// the responses
+action conns(l: net.Listener, port: i64, n: i64, requests: string): [u64, i64] {
+    if (n == 0) {
+        const t0 = clock();
+        const r = http.serveOn(l, hello, CONNS * PER_CONN);
+        return [clock() - t0, 0] as const;
+    }
+    return match (net.connect("127.0.0.1", port)) {
+        Ok(c) => {
+            const w = net.writeText(c, requests);
+            const [t, got] = conns(l, port, n - 1, requests);
+            const mine = readSome(c, 0, 1099511627776);
+            net.close(c);
+            return [t, got + mine] as const;
+        },
+        Err(e) => {
+            net.closeListener(l);
+            return [0u64, -1] as const;
+        },
+    };
+}
+
+// `r` rounds of the server: its nanoseconds and the bytes answered
+action serveRounds(r: i64, t: u64, bytes: i64): [u64, i64] {
+    if (r == 0) {
+        return [t, bytes] as const;
+    }
+    const requests = join(map(iota(PER_CONN), (i) => "GET /hello HTTP/1.1\r\nHost: bench\r\n\r\n"), "");
+    return match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            const [dt, got] = conns(l, port, CONNS, requests);
+            return serveRounds(r - 1, t + dt, bytes + got);
+        },
+        Err(e) => [t, -1] as const,
+    };
+}
 
 action exchanges(c: net.Conn, s: net.Conn, response: u8[n], r: i64, acc: i64): i64 {
     if (r == 0) {
@@ -48,5 +108,9 @@ action main(args: string[k]): i32 {
         },
         Err(e) => print("listen failed"),
     };
+    // the server: a tenth of the rounds, each of 1600 requests
+    const sr = Math.max(r / 10, 1);
+    const [st, sb] = serveRounds(sr, 0u64, 0);
+    print(`serve.pipelined ${f64(st) / f64(sr * CONNS * PER_CONN)} ${sb / (sr * CONNS * PER_CONN)}`);
     return 0;
 }
