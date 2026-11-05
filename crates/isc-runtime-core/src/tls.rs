@@ -12,7 +12,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_int, c_long, c_ulong, c_void};
+use core::ffi::{c_char, c_int, c_void};
 
 /// `dlopen(name, flags)` of the C library.
 pub type DlOpen = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_void;
@@ -117,6 +117,7 @@ pub use openssl::*;
 #[cfg(not(windows))]
 mod openssl {
     use super::*;
+    use core::ffi::{c_long, c_ulong};
     use core::sync::atomic::{AtomicPtr, Ordering};
 
     type P = *mut c_void;
@@ -713,20 +714,6 @@ mod schannel {
         key_spec: u32,
     }
 
-    #[repr(C)]
-    struct NCryptBuffer {
-        cb: u32,
-        kind: u32,
-        pv: *const c_void,
-    }
-
-    #[repr(C)]
-    struct NCryptBufferDesc {
-        version: u32,
-        count: u32,
-        buffers: *const NCryptBuffer,
-    }
-
     #[link(name = "secur32")]
     extern "system" {
         fn AcquireCredentialsHandleW(principal: W, package: W, cred_use: u32, logon: *mut c_void, auth: *const c_void, get_key: *mut c_void, arg: *mut c_void, cred: *mut Handle, expiry: *mut i64) -> i32;
@@ -753,13 +740,11 @@ mod schannel {
         fn CertGetCertificateChain(engine: *mut c_void, cert: *const CertContext, time: *const c_void, store: *mut c_void, para: *const ChainPara, flags: u32, reserved: *mut c_void, chain: *mut *const c_void) -> i32;
         fn CertFreeCertificateChain(chain: *const c_void);
         fn CertVerifyCertificateChainPolicy(oid: usize, chain: *const c_void, para: *const PolicyPara, status: *mut PolicyStatus) -> i32;
-        fn CertSetCertificateContextProperty(c: *const CertContext, prop: u32, flags: u32, data: *const c_void) -> i32;
     }
 
     #[link(name = "ncrypt")]
     extern "system" {
         fn NCryptOpenStorageProvider(prov: *mut usize, name: W, flags: u32) -> i32;
-        fn NCryptImportKey(prov: usize, import_key: usize, blob: W, params: *const NCryptBufferDesc, key: *mut usize, data: *const u8, len: u32, flags: u32) -> i32;
         fn NCryptDeleteKey(key: usize, flags: u32) -> i32;
         fn NCryptFreeObject(h: usize) -> i32;
     }
@@ -808,10 +793,7 @@ mod schannel {
     const CERT_CHAIN_POLICY_SSL: usize = 4;
     const AUTHTYPE_SERVER: u32 = 2;
     const CERT_KEY_PROV_INFO_PROP_ID: u32 = 2;
-    const NCRYPTBUFFER_PKCS_KEY_NAME: u32 = 45;
-    const NCRYPT_OVERWRITE_KEY_FLAG: u32 = 0x80;
     const WSAEWOULDBLOCK: c_int = 10035;
-    const POLLRDNORM: i16 = 0x0100;
     const POLLWRNORM: i16 = 0x0010;
 
     fn wide(s: &str) -> Vec<u16> {
@@ -1106,57 +1088,126 @@ mod schannel {
         Ok(Session(alloc::boxed::Box::into_raw(st) as usize))
     }
 
-    /// The credentials of a server: its certificate, its key imported in a
-    /// container of its own of the provider of keys of the system (SChannel
-    /// signs in the process of the system, `lsass`, which finds keys by
-    /// their names, not those of this process), removed with it.
+    /// A value of DER: its tag, its length, its bytes.
+    fn der(tag: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = alloc::vec![tag];
+        let n = body.len();
+        if n < 0x80 {
+            v.push(n as u8);
+        } else {
+            let bytes = n.to_be_bytes();
+            let skip = bytes.iter().take_while(|&&b| b == 0).count();
+            v.push(0x80 | (8 - skip) as u8);
+            v.extend_from_slice(&bytes[skip..]);
+        }
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn seq(parts: &[&[u8]]) -> Vec<u8> {
+        der(0x30, &parts.concat())
+    }
+
+    /// A PKCS #12 (a PFX) of the certificate `cert` and the private key of
+    /// PKCS #8 `key`, neither encrypted nor signed (no password, no MAC):
+    /// the form that `PFXImportCertStore` reads, the bags of the key and of
+    /// the certificate tied by the same `localKeyID`.
+    fn pfx(cert: &[u8], key: &[u8]) -> Vec<u8> {
+        const DATA: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x01];
+        const KEY_BAG: &[u8] = &[0x06, 0x0B, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x0C, 0x0A, 0x01, 0x01];
+        const CERT_BAG: &[u8] = &[0x06, 0x0B, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x0C, 0x0A, 0x01, 0x03];
+        const X509: &[u8] = &[0x06, 0x0A, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x16, 0x01];
+        const LOCAL_KEY_ID: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x15];
+        let attrs = der(0x31, &seq(&[LOCAL_KEY_ID, &der(0x31, &der(0x04, &[1, 2, 3, 4]))]));
+        let key_bag = seq(&[KEY_BAG, &der(0xA0, key), &attrs]);
+        let cert_bag = seq(&[CERT_BAG, &der(0xA0, &seq(&[X509, &der(0xA0, &der(0x04, cert))])), &attrs]);
+        let contents = seq(&[&key_bag, &cert_bag]);
+        let info = |body: &[u8]| seq(&[DATA, &der(0xA0, &der(0x04, body))]);
+        let safe = seq(&[&info(&contents)]);
+        seq(&[&[0x02, 0x01, 0x03], &info(&safe)])
+    }
+
+    /// The credentials of a server: its certificate and its key, imported
+    /// by `PFXImportCertStore` from a PFX made here (SChannel signs in the
+    /// process of the system, `lsass`, which uses the keys that this import
+    /// makes; a key that `NCryptImportKey` makes and that this process can
+    /// use, it refuses: `0x8009030d`, D343), the container of the key
+    /// removed with the server.
     struct Server {
         cred: Handle,
         cert: *const CertContext,
-        prov: usize,
-        key: usize,
+        store: *mut c_void,
+        provider: Vec<u16>,
+        container: Vec<u16>,
+    }
+
+    extern "system" {
+        fn PFXImportCertStore(blob: *const [usize; 2], password: W, flags: u32) -> *mut c_void;
+        fn CertEnumCertificatesInStore(store: *mut c_void, prev: *const CertContext) -> *const CertContext;
+        fn CertGetCertificateContextProperty(c: *const CertContext, prop: u32, data: *mut c_void, n: *mut u32) -> i32;
+        fn NCryptOpenKey(prov: usize, key: *mut usize, name: W, spec: u32, flags: u32) -> i32;
+    }
+
+    /// The text of a wide string ended by a zero, with its zero.
+    fn wide_of(p: W) -> Vec<u16> {
+        let mut v = Vec::new();
+        // SAFETY: a text of the system ended by a zero
+        unsafe {
+            let mut i = 0;
+            while !p.is_null() && *p.add(i) != 0 {
+                v.push(*p.add(i));
+                i += 1;
+            }
+        }
+        v.push(0);
+        v
+    }
+
+    /// The key of the container `container` of the provider of keys
+    /// `provider` removed.
+    fn remove_key(provider: &[u16], container: &[u16]) {
+        // SAFETY: the provider and the key opened, the key deleted (which
+        // frees it), the provider freed
+        unsafe {
+            let mut prov = 0usize;
+            if NCryptOpenStorageProvider(&mut prov, provider.as_ptr(), 0) == 0 {
+                let mut k = 0usize;
+                if NCryptOpenKey(prov, &mut k, container.as_ptr(), 0, 0) == 0 {
+                    NCryptDeleteKey(k, 0);
+                }
+                NCryptFreeObject(prov);
+            }
+        }
     }
 
     pub fn server_ctx(_dl: (DlOpen, DlSym), cert: &[u8], key: &[u8]) -> Result<ServerCtx, (i64, String)> {
         let certs = pem_blocks(cert, "CERTIFICATE");
-        let Some(der) = certs.first() else { return Err((TLS_FAULT, String::from("no certificate in the PEM text"))) };
+        let Some(der_cert) = certs.first() else { return Err((TLS_FAULT, String::from("no certificate in the PEM text"))) };
         let keys = pem_blocks(key, "PRIVATE KEY");
-        let Some(kder) = keys.first() else { return Err((TLS_FAULT, String::from("the certificate or the key of the server: no key of PKCS #8 (BEGIN PRIVATE KEY) in the PEM text"))) };
-        let provider = wide("Microsoft Software Key Storage Provider");
-        // a name of its own for the container: the address of this call
-        // and the clock (one server at a time per name)
-        let mut t: i64 = 0;
-        extern "system" {
-            fn QueryPerformanceCounter(t: *mut i64) -> i32;
-        }
-        // SAFETY: a counter written at `t`
-        unsafe { QueryPerformanceCounter(&mut t) };
-        let name = wide(&alloc::format!("isocron-tls-{:x}-{:x}", t, &t as *const i64 as usize));
+        let Some(der_key) = keys.first() else { return Err((TLS_FAULT, String::from("the certificate or the key of the server: no key of PKCS #8 (BEGIN PRIVATE KEY) in the PEM text"))) };
+        let p = pfx(der_cert, der_key);
+        const PKCS12_PREFER_CNG_KSP: u32 = 0x100;
         // SAFETY: each call on the objects made just before, each freed on
         // the paths that fail
         unsafe {
-            let c = CertCreateCertificateContext(ENCODING, der.as_ptr(), der.len() as u32);
-            if c.is_null() {
-                return Err((TLS_FAULT, String::from("the certificate or the key of the server: the certificate")));
+            let blob: [usize; 2] = [p.len(), p.as_ptr() as usize];
+            let empty = wide("");
+            let store = PFXImportCertStore(&blob, empty.as_ptr(), PKCS12_PREFER_CNG_KSP);
+            if store.is_null() {
+                return Err((TLS_FAULT, String::from("the certificate or the key of the server: the certificate and the key do not go together")));
             }
-            let mut prov = 0usize;
-            if NCryptOpenStorageProvider(&mut prov, provider.as_ptr(), 0) != 0 {
-                CertFreeCertificateContext(c);
-                return Err((TLS_FAULT, String::from("the certificate or the key of the server: no provider of keys")));
+            let c = CertEnumCertificatesInStore(store, core::ptr::null());
+            let mut info = [0u64; 128];
+            let mut n = 1024u32;
+            if c.is_null() || CertGetCertificateContextProperty(c, CERT_KEY_PROV_INFO_PROP_ID, info.as_mut_ptr() as *mut c_void, &mut n) == 0 {
+                if !c.is_null() {
+                    CertFreeCertificateContext(c);
+                }
+                CertCloseStore(store, 0);
+                return Err((TLS_FAULT, String::from("the certificate or the key of the server: the key does not go with the certificate")));
             }
-            let nb = NCryptBuffer { cb: (name.len() * 2) as u32, kind: NCRYPTBUFFER_PKCS_KEY_NAME, pv: name.as_ptr() as *const c_void };
-            let params = NCryptBufferDesc { version: 0, count: 1, buffers: &nb };
-            let blob = wide("PKCS8_PRIVATEKEY");
-            let mut k = 0usize;
-            let r = NCryptImportKey(prov, 0, blob.as_ptr(), &params, &mut k, kder.as_ptr(), kder.len() as u32, NCRYPT_OVERWRITE_KEY_FLAG);
-            if r != 0 {
-                NCryptFreeObject(prov);
-                CertFreeCertificateContext(c);
-                return Err((TLS_FAULT, alloc::format!("the certificate or the key of the server: the key (0x{:08x})", r as u32)));
-            }
-            // a key of CNG: `CERT_NCRYPT_KEY_SPEC`
-            let info = KeyProvInfo { container: name.as_ptr(), provider: provider.as_ptr(), prov_type: 0, flags: 0, c_params: 0, params: core::ptr::null(), key_spec: 0xFFFF_FFFF };
-            CertSetCertificateContextProperty(c, CERT_KEY_PROV_INFO_PROP_ID, 0, &info as *const _ as *const c_void);
+            let ki = &*(info.as_ptr() as *const KeyProvInfo);
+            let (provider, container) = (wide_of(ki.provider), wide_of(ki.container));
             let creds = [c];
             let data = SchannelCred {
                 version: SCHANNEL_CRED_VERSION,
@@ -1178,12 +1229,12 @@ mod schannel {
             let mut cred: Handle = [0; 2];
             let r = AcquireCredentialsHandleW(core::ptr::null(), package.as_ptr(), SECPKG_CRED_INBOUND, core::ptr::null_mut(), &data as *const _ as *const c_void, core::ptr::null_mut(), core::ptr::null_mut(), &mut cred, core::ptr::null_mut());
             if r != SEC_E_OK {
-                NCryptDeleteKey(k, 0);
-                NCryptFreeObject(prov);
                 CertFreeCertificateContext(c);
+                CertCloseStore(store, 0);
+                remove_key(&provider, &container);
                 return Err((TLS_FAULT, alloc::format!("the certificate or the key of the server: 0x{:08x} of SChannel", r as u32)));
             }
-            let s = alloc::boxed::Box::new(Server { cred, cert: c, prov, key: k });
+            let s = alloc::boxed::Box::new(Server { cred, cert: c, store, provider, container });
             Ok(ServerCtx(alloc::boxed::Box::into_raw(s) as usize))
         }
     }
@@ -1194,9 +1245,9 @@ mod schannel {
             let mut s = alloc::boxed::Box::from_raw(c.0 as *mut Server);
             FreeCredentialsHandle(&mut s.cred);
             CertFreeCertificateContext(s.cert);
-            // the key and its container removed (`NCryptDeleteKey` frees it)
-            NCryptDeleteKey(s.key, 0);
-            NCryptFreeObject(s.prov);
+            CertCloseStore(s.store, 0);
+            // the key and its container removed
+            remove_key(&s.provider, &s.container);
         }
     }
 

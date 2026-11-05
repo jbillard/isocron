@@ -31,13 +31,18 @@ pub mod tls {
         fn dlsym(h: *mut std::ffi::c_void, name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
     }
 
-    /// `dlopen` and `dlsym` of the C library (none under Windows yet).
+    /// `dlopen` and `dlsym` of the C library; under Windows, where the
+    /// library of TLS is SChannel, linked, none are needed (`no_dl`).
     pub fn dl() -> Option<(core_tls::DlOpen, core_tls::DlSym)> {
         #[cfg(target_os = "linux")]
         {
             Some((dlopen as core_tls::DlOpen, dlsym as core_tls::DlSym))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        {
+            Some(core_tls::no_dl())
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
         {
             None
         }

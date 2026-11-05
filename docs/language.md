@@ -2737,8 +2737,11 @@ the certificate of the server against the authorities of the system and
 its name; `getWith(url, ca)` and `requestWith(ca, ...)` against those of
 the PEM text `ca` (a server of one's own). `serveTls(port, cert, key,
 handler)` and `serveTlsOn(l, cert, key, handler, limit)` are the server of
-`http` over TLS, the certificate and the private key in PEM. WebAssembly
-has no sockets: a program that reaches TLS is refused when built for it.
+`http` over TLS, the certificate and the private key in PEM (the key of
+PKCS #8, `BEGIN PRIVATE KEY`; under Windows it is put in the store of
+keys of the user while the server runs, removed when it closes).
+WebAssembly has no sockets: a program that reaches TLS is refused when
+built for it.
 
 ```isc
 import * as https from "https";

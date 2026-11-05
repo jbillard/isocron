@@ -1,0 +1,28 @@
+import * as https from "https";
+import * as http from "http";
+import * as net from "net";
+import { message } from "sys";
+
+// the server of the pair (D343): `args[3]` requests answered on the port
+// `args[0]` with the certificate and the key of the files `args[1]` and
+// `args[2]`
+function handle(r: http.Request): http.Response {
+    if (r.path == "/big") {
+        return { status: 200, headers: [], body: map(iota(parseI64(r.query)), (i) => u8(i % 251)) };
+    }
+    if (r.path == "/echo") {
+        return { status: 200, headers: [], body: r.body };
+    }
+    return http.textResponse(200, `secure ${r.method} ${r.path} ${r.query} ${r.body.length}`);
+}
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", parseI64(args[0]))) {
+        Ok(l) => match (https.serveTlsOn(l, readText(args[1]), readText(args[2]), handle, parseI64(args[3]))) {
+            Ok(_) => print("done"),
+            Err(e) => print(`serve failed: ${message(e)}`),
+        },
+        Err(e) => print(`listen failed: ${message(e)}`),
+    };
+    return 0;
+}

@@ -1,0 +1,42 @@
+import * as https from "https";
+import * as http from "http";
+import * as sys from "sys";
+
+// the client of the pair (D343), against the server of the pair on the
+// port `args[0]`: the authorities of the files `args[1]` (that signed the
+// server's certificate) and `args[2]` (another); the faults of TLS told by
+// their kinds (their texts are those of the library of the system)
+function fault(e: http.HttpError): string {
+    return match (e) {
+        http.Io(x) => match (x) {
+            sys.Tls(w) => w == "no certificate in the PEM text" ? `tls ${w}` : `tls ${w.indexOf("certificate") >= 0 ? "certificate" : "other"}`,
+            _ => http.message(e),
+        },
+        _ => http.message(e),
+    };
+}
+
+action show(r: Result<http.Response, http.HttpError>): void {
+    match (r) {
+        Ok(x) => print(x.body.length < 100 ? `${x.status} ${http.text(x)}` : `${x.status} ${x.body.length} ${sum(map(x.body, (b) => i64(b)))}`),
+        Err(e) => print(fault(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const base = `https://localhost:${args[0]}`;
+    const ca = readText(args[1]);
+    const other = readText(args[2]);
+    show(https.getWith(base + "/a?x=1", ca));
+    show(https.getWith(base + "/b", other));
+    show(https.getWith(`https://127.0.0.1:${args[0]}/c`, ca));
+    show(https.getWith(base + "/d", "not a certificate"));
+    show(https.get(base + "/e"));
+    const body = map(iota(1048576), (i) => u8(i % 249));
+    match (https.requestWith(ca, "POST", base + "/echo", [], body)) {
+        Ok(r) => print(`${r.status} ${r.body.length} ${r.body == body}`),
+        Err(e) => print(fault(e)),
+    };
+    show(https.getWith(base + "/big?2000000", ca));
+    return 0;
+}

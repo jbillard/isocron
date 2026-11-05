@@ -376,3 +376,63 @@ fn https_client_on_windows() {
     }
     assert_eq!(String::from_utf8_lossy(&out), want);
 }
+
+/// D343: the server of HTTPS on Windows (SChannel), its client too, in
+/// the real VM: the pair of programs of `data/std_https_pair_*.isc` (a
+/// script of `cmd` starts the server, then the client), compiled, then
+/// interpreted by `$ISC_WINDOWS_ISCC` when it is given; certificates made
+/// by the test (EC); the same outputs as the pair on Linux.
+#[test]
+fn https_server_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let certs = tmp("win_https_pair_certs");
+    let _ = std::fs::remove_dir_all(&certs);
+    std::fs::create_dir_all(&certs).unwrap();
+    let run = |args: &[&str]| assert!(std::process::Command::new("openssl").args(args).current_dir(&certs).output().unwrap().status.success(), "openssl {:?}", args);
+    let ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"];
+    std::fs::write(certs.join("ext.cnf"), "subjectAltName=DNS:localhost\n").unwrap();
+    run(&[&["req", "-x509"][..], &ec, &["-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=isocron test ca"]].concat());
+    run(&[&["req", "-x509"][..], &ec, &["-keyout", "other.key", "-out", "other.pem", "-days", "2", "-subj", "/CN=another ca"]].concat());
+    run(&[&["req"][..], &ec, &["-keyout", "server.key", "-out", "server.csr", "-subj", "/CN=localhost"]].concat());
+    run(&["x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "server.pem", "-days", "2", "-extfile", "ext.cnf"]);
+    let (server_src, client_src) = (include_str!("data/std_https_pair_server.isc"), include_str!("data/std_https_pair_client.isc"));
+    // the pair on Linux: what Windows must print
+    let (lserver, lclient) = (compile(server_src, "winlinux_https_pair_server"), compile(client_src, "winlinux_https_pair_client"));
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port().to_string();
+    let mut server = std::process::Command::new(&lserver).args([&port, "server.pem", "server.key", "3"]).current_dir(&certs).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    while std::net::TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).is_err() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let l = run_linux(&lclient, &certs, &[&port, "ca.pem", "other.pem"], None, 4);
+    let lo = server.wait_with_output().unwrap();
+    let want = format!("{}{}", String::from_utf8_lossy(&l.1), String::from_utf8_lossy(&lo.stdout));
+    assert!(want.ends_with("200 2000000 249996496\ndone\n"), "Linux: {}", want);
+    // the pair on Windows: compiled, then interpreted
+    let d = dir("https_pair");
+    for f in ["ca.pem", "other.pem", "server.pem", "server.key"] {
+        std::fs::copy(certs.join(f), d.join(f)).unwrap();
+    }
+    std::fs::copy(compile_windows(server_src, "win_https_pair_server"), d.join("server.exe")).unwrap();
+    std::fs::copy(compile_windows(client_src, "win_https_pair_client"), d.join("client.exe")).unwrap();
+    std::fs::write(d.join("server.isc"), server_src).unwrap();
+    std::fs::write(d.join("client.isc"), client_src).unwrap();
+    let mut ways = vec![("compiled", "server.exe".to_string(), "client.exe".to_string())];
+    if let Ok(iscc) = std::env::var("ISC_WINDOWS_ISCC") {
+        std::fs::copy(iscc, d.join("iscc.exe")).unwrap();
+        ways.push(("interpreted", "iscc.exe run server.isc".to_string(), "iscc.exe run client.isc".to_string()));
+    }
+    for (name, s, c) in ways {
+        // the server in the background, its output in a file (written at
+        // its end), the client when it listens
+        let script = format!(
+            "@echo off\r\nstart \"\" /b cmd /c \"{} 47970 server.pem server.key 3 > server.txt 2>&1\"\r\nping -n 5 127.0.0.1 > nul\r\n{} 47970 ca.pem other.pem\r\nping -n 3 127.0.0.1 > nul\r\ntype server.txt\r\nexit /b 0\r\n",
+            s, c
+        );
+        std::fs::write(d.join("pair.cmd"), script).unwrap();
+        let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg(d.join("pair.cmd")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), want, "{} on Windows: {}", name, String::from_utf8_lossy(&o.stderr));
+    }
+}

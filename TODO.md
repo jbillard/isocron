@@ -341,8 +341,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
   - [ ] The server above its floor: `serve.pipelined` 1.5 (D342: about 1600 user cycles a request more; 10.1 blocks, 4.1 copies of literal texts, 4.0 texts of bytes checked as UTF-8 again, 2 chains and a `join` a request, none in C): literals kept without a copy, a text of bytes already checked, fewer blocks for a request
   - [ ] Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
-- [ ] `https`: the TLS of the system
+- [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)
-  - [ ] Windows: the server by SChannel: `AcquireCredentialsHandleW` refuses its credentials (`0x8009030d`, D343); the key of EC imported as ECDH to test (an RSA key, or `BCRYPT_ECCPRIVATE_BLOB` of ECDSA); the antivirus of the VM puts the compiled server in quarantine (`Wacatac.B!ml`): an exclusion of `C:\isc` in the VM, the author's to give
+  - [x] Windows: the server by SChannel (its credentials from a PKCS #12 made in memory), tested in the VM compiled and interpreted (D343)
 - [ ] Release 0.3.0

@@ -7158,22 +7158,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     by `EncryptMessage` and `DecryptMessage`, the end by
     `ApplyControlToken`. Tested in the real VM against two `openssl
     s_server` of this machine (the VM reaches it at the bridge of Docker,
-    172.17.0.1): the same outputs as Linux. The server
-    (`AcceptSecurityContext`, the key of PKCS #8 imported by CNG in a
-    container of its own, named on the certificate) is written but not
-    working: `AcquireCredentialsHandleW` refuses its credentials
-    (`0x8009030d`, `SEC_E_UNKNOWN_CREDENTIALS`), with the key named by
-    `CERT_KEY_PROV_INFO_PROP_ID` (as a key of CNG or not), given by its
-    handle (`CERT_NCRYPT_KEY_HANDLE_PROP_ID`) or as a key of the machine;
-    the hypothesis that CNG imports a key of EC as one of ECDH (that
-    cannot sign) could not be tested: the antivirus of the VM (Defender)
-    puts the compiled server in quarantine as `Trojan:Win32/Wacatac.B!ml`
-    (a guess of its learning, on a program that is not signed and opens
-    sockets and keys), and once the client of the test, in the first
-    run of the file (the failure of `https_client_on_windows` then, and
-    none in the three runs after). An exclusion of the folder of the
-    tests in the VM was refused to this work: it weakens the machine; it
-    is the author's to give. Open in TODO.
+    172.17.0.1): the same outputs as Linux.
+  - The server of SChannel (`AcceptSecurityContext`, a step at each of the
+    bytes of a connection). Its credentials first by a key imported by
+    `NCryptImportKey` (PKCS #8, a container of its own named on the
+    certificate by `CERT_KEY_PROV_INFO_PROP_ID`): `AcquireCredentialsHandleW`
+    refused them, `0x8009030d`, and the log of the system said why (event
+    36870, "a fatal error occurred when attempting to access the TLS server
+    credential private key ... the internal error state is 10001"):
+    SChannel uses the key in the process of the system, `lsass`. Measured
+    one by one: this process opens the key, reaches it from the
+    certificate (`CryptAcquireCertificatePrivateKey`) and signs with it
+    (`NCryptSignHash`); RSA and EC alike; as a key of the machine; the
+    certificate in a store; the protocols by default; `SCH_CREDENTIALS`;
+    the key given by its handle (`CERT_NCRYPT_KEY_HANDLE_PROP_ID`, or the
+    property of transfer 99: `0x8009030e`, no key for SChannel); the server
+    run by a task of the account of the system: refused each time. A PFX
+    imported by `PFXImportCertStore` gave a certificate that SChannel took,
+    its key in the same provider with the same description: the server
+    now makes in memory a PKCS #12 of the PEM texts (the bag of the key of
+    PKCS #8 and the bag of the certificate tied by one `localKeyID`,
+    neither encrypted nor signed: no password, no MAC) and imports it
+    (`PKCS12_PREFER_CNG_KSP`); the container of its key is removed when
+    the server closes (counted: the same files of keys before and after a
+    run). A program killed leaves it in the store of keys of its user.
+  - The antivirus of the VM (Defender) put the compiled server in
+    quarantine as `Trojan:Win32/Wacatac.B!ml` in some runs (a guess of its
+    learning, on a program that is not signed and opens sockets and keys),
+    and once the client of the test (the failure of
+    `https_client_on_windows` in the first run of the file, none in the
+    runs after); an exclusion of the folder of the tests was refused to
+    this work (it weakens the machine), and none was needed: the tests
+    passed in the runs that followed, compiled and interpreted (the
+    interpreter on Windows uses the same SChannel, `no_dl`). A program
+    built by `iscc` may meet the same guess on another machine: a
+    signature of the executables would be the answer, outside the
+    compiler.
   - Tests: `std_https.rs` (certificates made by `openssl req` at the test:
     an authority, a server for `localhost`, another authority; the client
     against `openssl s_server`: a small body, 3000000 bytes, another
@@ -7183,5 +7203,9 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     at once, 2000000 bytes) and the client of the module (a POST of 1 MiB
     back); compiled, interpreted and under Valgrind; a certificate that is
     not one refused at the start; the program linked with glibc and not
-    with OpenSSL, a program without TLS static; WASI refused); the example
-    of `docs/language.md`.
+    with OpenSSL, a program without TLS static; WASI refused); `windows.rs`
+    (`https_client_on_windows`: the client compiled for Windows against two
+    `openssl s_server` of this machine; `https_server_on_windows`: a pair of
+    a server and a client in the VM, compiled and interpreted by
+    `iscc.exe`, the same outputs as the pair on Linux); the example of
+    `docs/language.md`.
