@@ -1,10 +1,10 @@
-binarytrees 0.670
+binarytrees 0.677
 fannkuchredux 1.663
-fasta 0.006
-knucleotide 0.680
+fasta 0.005
+knucleotide 0.684
 mandelbrot 0.638
-nbody 1.897
+nbody 1.904
 pidigits 0.491
-regexredux 0.083
-revcomp 0.041
-spectralnorm 0.195
+regexredux 0.082
+revcomp 0.040
+spectralnorm 0.196

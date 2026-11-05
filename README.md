@@ -53,20 +53,20 @@ same Docker image on the same machine
 
 <!-- results:begin -->
 
-**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `c6e020e`, DECISIONS D319; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
+**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `2ef9e9f`, DECISIONS D344; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
 
 | | benchmark | Isocron | fastest other | Isocron / fastest | floor | Isocron / floor |
 | :-: | :-- | --: | :-- | :-: | --: | :-: |
-| 🟢 | binary-trees | 670 ms | Rust 851 ms | $\color{green}{\textbf{0.79}}$ | 394.7 ms | $\color{orange}{1.7}$ |
-| 🟢 | fannkuch-redux | 1663 ms | C 2467 ms | $\color{green}{\textbf{0.67}}$ | 883.5 ms | $\color{orange}{1.9}$ |
-| 🟢 | fasta | 6 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{orange}{2.6}$ |
-| 🟢 | k-nucleotide | 680 ms | C++ 1176 ms | $\color{green}{\textbf{0.58}}$ | 268.0 ms | $\color{orange}{2.5}$ |
-| 🟢 | mandelbrot | 638 ms | C++ 785 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
-| 🟡 | n-body | 1897 ms | C 1947 ms | $\color{orange}{\textbf{0.97}}$ | 1315.5 ms | $\color{green}{1.4}$ |
-| 🟢 | pidigits | 491 ms | C 683 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.5}$ |
-| 🟢 | regex-redux | 83 ms | Rust 755 ms | $\color{green}{\textbf{0.11}}$ | 29.7 ms | $\color{orange}{2.8}$ |
-| 🟢 | reverse-complement | 41 ms | Rust 65 ms | $\color{green}{\textbf{0.63}}$ | 16.8 ms | $\color{orange}{2.4}$ |
-| 🟢 | spectral-norm | 195 ms | Rust 207 ms | $\color{green}{\textbf{0.94}}$ | 107.1 ms | $\color{orange}{1.8}$ |
+| 🟢 | binary-trees | 677 ms | Rust 851 ms | $\color{green}{\textbf{0.80}}$ | 394.7 ms | $\color{orange}{1.7}$ |
+| 🟢 | fannkuch-redux | 1663 ms | C 2470 ms | $\color{green}{\textbf{0.67}}$ | 883.5 ms | $\color{orange}{1.9}$ |
+| 🟢 | fasta | 5 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{orange}{2.2}$ |
+| 🟢 | k-nucleotide | 684 ms | C++ 1170 ms | $\color{green}{\textbf{0.58}}$ | 268.0 ms | $\color{orange}{2.6}$ |
+| 🟢 | mandelbrot | 638 ms | C++ 788 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
+| 🟡 | n-body | 1904 ms | C 1949 ms | $\color{orange}{\textbf{0.98}}$ | 1315.5 ms | $\color{green}{1.4}$ |
+| 🟢 | pidigits | 491 ms | C 686 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.5}$ |
+| 🟢 | regex-redux | 82 ms | Rust 755 ms | $\color{green}{\textbf{0.11}}$ | 29.7 ms | $\color{orange}{2.8}$ |
+| 🟢 | reverse-complement | 40 ms | Rust 63 ms | $\color{green}{\textbf{0.63}}$ | 16.8 ms | $\color{orange}{2.4}$ |
+| 🟡 | spectral-norm | 196 ms | Rust 206 ms | $\color{orange}{\textbf{0.95}}$ | 107.1 ms | $\color{orange}{1.8}$ |
 
 🟢 Isocron the fastest · 🟡 within 5 % of the fastest · 🔴 behind. Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$.
 
@@ -129,6 +129,35 @@ Sizes it cannot compare (`a: f64[n], b: f64[m]`) are checked once at run
 time, with the place in the source: `panic at line 2, column 14: size
 mismatch: 2 != 3`.
 
+## Isocron leaves its file
+
+A standard library ships inside `iscc`, written in Isocron over a few
+primitives of the runtime: the system (`sys`: the environment, folders and
+files; `path`), dates and times (`time`), JSON decoded straight into the
+types of the program, its fields checked at compile time (`json`),
+SHA-256, TCP (`net`), HTTP/1.1 (`http`) and HTTPS by the TLS of the system
+(`https`: OpenSSL loaded when needed under Linux, SChannel under Windows).
+The same results interpreted and compiled, on Linux and Windows; refused
+at compile time for WebAssembly where it has no sockets. A server is a
+pure function: the requests ready at once go to it by `map`, in parallel,
+without a race.
+
+```ts
+import * as http from "http";
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, `hello ${r.query}`);
+}
+
+action main(args: string[k]): i32 {
+    match (http.serve(8080, hello)) {
+        Ok(_) => print("done"),
+        Err(e) => print("cannot serve"),
+    };
+    return 0;
+}
+```
+
 ## Measured against the machine
 
 Beating C is not the goal: the machine is. Each program has a *floor*, what
@@ -152,12 +181,12 @@ they link programs with are inside. Linux x86-64 (glibc 2.28 or later) and
 Windows 10 and 11:
 
 ```sh
-curl -LO https://github.com/jbillard/isocron/releases/download/v0.2.2/isocron-0.2.2-x86_64-linux.tar.gz
-tar -xzf isocron-0.2.2-x86_64-linux.tar.gz
-./isocron-0.2.2-x86_64-linux/iscc --version
+curl -LO https://github.com/jbillard/isocron/releases/download/v0.3.0/isocron-0.3.0-x86_64-linux.tar.gz
+tar -xzf isocron-0.3.0-x86_64-linux.tar.gz
+./isocron-0.3.0-x86_64-linux/iscc --version
 ```
 
-On Windows, unpack `isocron-0.2.2-x86_64-windows.zip` from the
+On Windows, unpack `isocron-0.3.0-x86_64-windows.zip` from the
 [releases](https://github.com/jbillard/isocron/releases) and run `iscc.exe`.
 Beside the compiler, `isc-lsp` is the language server of the editors
 ([editors](docs/language.md#editors-the-language-server-isc-lsp)).

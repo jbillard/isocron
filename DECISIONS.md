@@ -7209,3 +7209,48 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     a server and a client in the VM, compiled and interpreted by
     `iscc.exe`, the same outputs as the pair on Linux); the example of
     `docs/language.md`.
+- **D344 — The Benchmarks Game measured again at 2ef9e9f, with the
+  library of D322 to D343 (2026-11-05).** Before the release 0.3.0: the
+  image `isocron-bg` made again with the `iscc` of 2ef9e9f, the 50
+  programs built in it in both modes and their outputs checked (102 checks
+  the same as the references, the 22 of Isocron among them), then
+  `run.sh measure 4 12 native` after `bench/machine.sh apply parallel`.
+  Isocron the fastest on 10 of 10, each program below three times its
+  floor: regex-redux 82 ms (2.76), k-nucleotide 684 ms (2.55), pidigits
+  491 ms (2.53), reverse-complement 40 ms (2.38), fasta 5 ms (2.16: D321,
+  after the publication of D319), fannkuch-redux 1663 ms (1.88),
+  spectral-norm 196 ms (1.83), binary-trees 677 ms (1.72), mandelbrot 638
+  ms (1.46), n-body 1904 ms (1.45).
+  - Three of them a little above D319: binary-trees 670 -> 677 ms,
+    k-nucleotide 680 -> 684, n-body 1897 -> 1904. Their code: the IR of
+    n-body the same but one declaration (`isc_str_concat_n`); in
+    binary-trees and k-nucleotide only the functions that build the lines
+    of the output (`isc_main_body`, the tasks of the lines: `concat` in one
+    block, D342), the trees and the counts the same. Measured A/B on the
+    host at fixed frequency in the slice of the measurements (4 CPUs, 4
+    threads, 12 alternate rounds), the programs built by the `iscc` of the
+    archive 0.2.2 (the code of c6e020e) against those of 2ef9e9f, the same
+    outputs: binary-trees median 680.6 against 681.0 ms (+0.05 %),
+    n-body 1906.9 against 1908.2 (+0.07 %), k-nucleotide 707.9 against
+    700.3 (-1.07 %). The differences of the publication are those of one
+    series of runs to another (the binary of 0.2.2 itself at 674.5 ms at
+    best there, published at 670), not of the code.
+  - `results/benchmarks_game.md`, the README, `docs/media/benchmarks.svg`
+    and `results/floors.md` (its table and chart, its section on the
+    order of the work) made again.
+- **D345 — Release 0.3.0 (2026-11-05).** The end of the second part of
+  the goal of 2026-11-05: the standard library (D322 to D343), designed
+  in SPEC section 18, each module written in Isocron over the primitives
+  of the runtime, the same results interpreted and compiled, tested on
+  Linux and in the VM of Windows, refused at compile time for WASI where
+  the target lacks it, each with an example tested in `docs/language.md`,
+  a microbenchmark and its floor (`results/primitives.md`). A version
+  0.3.0 (as Cargo counts, the language grew: `T[]`, type arguments of a
+  call, imports of the modules of the library). The archives as for 0.2.2
+  (`build_iscc.sh` for Linux and Windows in the images of the releases,
+  from the sources of the commit of the release; `package.sh`; the
+  extension of VS Code at 0.3.0), tried before they are published
+  (`selftest_linux.sh`, `selftest_windows.py`, the machine of Windows
+  stopped afterwards). `CHANGELOG.md`, the links of the README and of
+  `tools/vscode/README.md` at 0.3.0; the README gains a section on the
+  library, its example checked by `iscc check`.

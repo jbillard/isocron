@@ -259,6 +259,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Release 0.2.1: `isc-lsp` beside `iscc` in the archives (D270)
   - [x] The `.vsix` of the extension of VS Code in the releases, attached to 0.2.1 (D271)
   - [x] Release 0.2.2: each program of the Benchmarks Game below three times its floor (D319, D320)
+  - [x] Release 0.3.0: the standard library (D322 to D343, D345)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [ ] The memory report counts as allocated whole the arrays made by blocks (D225) and by windows (D293)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
@@ -297,6 +298,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The whole rows of a `map` take an equality with the index and the remainders of their tables out of their loop: fasta -13.82 % (D318)
 - [x] The Benchmarks Game measured again at c6e020e, the lowest of 12 runs: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.79, fasta 2.59, k-nucleotide 2.54, pidigits 2.53, reverse-complement 2.44; D319)
 - [x] The tasks of a parallel fill of at least 16 KiB, apart from B (B kept for the reductions): fasta -17.64 % (D321)
+- [x] The Benchmarks Game measured again at 2ef9e9f with the library: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.76, k-nucleotide 2.55, pidigits 2.53, reverse-complement 2.38, fasta 2.16); three programs 0.4 to 1.0 % above D319 shown to be noise by an A/B against the binaries of 0.2.2 (D344)
 - [ ] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions
 
 ## The trusted base (the remarks of the author, 2026-11-04)

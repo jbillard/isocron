@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.3.0 — 2026-11-05
+
+A standard library, to take programs of computation out of their input
+file: modules shipped inside `iscc`, written in Isocron over a closed list
+of primitives of the runtime, the same results in the interpreter and in
+the compiled program, on Linux and Windows, refused at compile time for
+WebAssembly where the target lacks what they reach (D322 to D343).
+The Benchmarks Game measured again with them: still the fastest on 10
+of 10, each program below three times its floor (D344).
+
+### The library
+
+* `sys`: the environment, the current folder, folders and files (exists,
+  made, removed, renamed, listed, read and written), the errors as values
+  (`IoError`); `path` (D323, D330 to D333).
+* `time`: instants, dates and times of the calendar, ISO 8601, offsets
+  (D334).
+* `json`: read and written, `json.decode<T>` straight into a type of the
+  program (its fields checked at compile time) and `json.encode` (D335 to
+  D337).
+* `sha256`: FIPS 180-4, the vectors of the NIST (D338).
+* `net`: TCP, client and server; connections and listeners linear values,
+  closed exactly once on every path, checked at compile time; names
+  resolved (`/etc/hosts`, DNS) (D339).
+* `http`: a client of HTTP/1.1 and a server `serve(port, handler)` whose
+  handler is a pure function, the requests ready at once given to it by
+  `map` in parallel (D340, D342).
+* `https`: TLS by the library of the system, OpenSSL loaded at run time
+  under Linux (only by the programs that use it, never among their
+  libraries), SChannel under Windows; the client checks the certificate
+  and the name, `ca` names a private authority (D343).
+
+### The language
+
+* A payload of a sum type holds an array of its own size; arrays of
+  their own size, `T[]`, in records, tuples and function types (D335,
+  D341).
+* Type arguments of a call (`decode<Point[]>(text)`); sizes bound by the
+  arrays of records and tuples of a parameter; branches of arrays of two
+  sizes (D336, D337).
+
+### The compiler
+
+* `concat` of arrays made into memory by two copies; chains of strings
+  and template literals in one block (D340, D342).
+* Fixes found by the library: a slice of an array of tuples that own
+  memory freed them twice (each element now copied); `count(rows, (r) =>
+  r.id ...)` of records; `r.length` of a record with a field `length`
+  (D342).
+
 ## 0.2.2 — 2026-11-05
 
 Every program of the Benchmarks Game below three times its floor, the
