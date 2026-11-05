@@ -5905,3 +5905,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `replacements_written_by_moves_of_32_bytes` (gaps of 0 to 44 bytes,
   matches at both ends, replacements longer, shorter and empty, a text of
   2.9 MB; 1, 3 and 8 threads, as the interpreter).
+- **D309 — A part of a search stopped at the next part (2026-11-05).** In
+  regex-redux the searches of few matches took longer than those of
+  millions: `tHa[Nt]` (6220 matches) 6.3 to 6.6 ms, `aND|caN|Ha[DS]|WaS`
+  (15867) 10.1 ms, on 4 threads, where one thread searches the text at 0.165 and
+  0.265 ns a byte. Timed part by part (a build of its parts, not kept),
+  they ended at 2125, 6389, 4204 and 2157 us for `tHa[Nt]`, 3353, 10081,
+  6602 and 3337 for the other. Each part searched up to the first match
+  that starts at the next part or after (the merge of D276 resumes there):
+  where no match comes after, as `H` in the last sequence (lower case
+  only), to the end of the text: the part 1 from 12.5 MB to the end, 37.5 MB (its
+  time three times that of the last part).
+  Now a search by masks (by lanes, by the fixed plan, by the general one)
+  stops at the start of the next part when no match crosses it (its end of
+  matches at or before it): from there its search and that of the next part
+  are the same, both from that start with no match before; and the merge,
+  at the end of the matches of a part that stopped there (or that met no
+  more), goes on with the next part from its start. A match across the
+  start: as before. A search from `at` up to `at` (`find_at`, the first
+  match) does not stop. The automaton's searches unchanged. regex-redux
+  -9.76 % [-10.31 %, -9.41 %] (`tHa[Nt]` 11.6 -> 7.5 ms, `aND|...` 15.3 ->
+  8.7, the counts 26.6 -> 24.0); the binaries of the nine others are the
+  same bytes (k-nucleotide +0.41 % [+0.08 %, +0.60 %], binary-trees +0.46
+  % [+0.06 %, +1.52 %], reverse-complement +0.03 %: the same program twice,
+  the intervals of 11 and 61 rounds are no proof alone, as in D306); the
+  same output on 1, 3 and 8 threads. Test
+  `parts_stopped_at_the_next_are_one_search` (texts whose last half has no
+  match, and the reverse; parts cut inside matches and at their ends;
+  fixed and delimited patterns, by lanes and by masks; merged against one
+  search); the tests of `until` take the new rule (`up_to`).

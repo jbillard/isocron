@@ -2243,7 +2243,8 @@ pub mod rx {
 
     /// The matches of the search split into the parts that start at
     /// `starts` (each searched up to the first match at or after the next
-    /// start, that one included), as runs of the matches of the parts (D281:
+    /// start, that one included, or only to the next start when no match
+    /// crosses it: D309), as runs of the matches of the parts (D281:
     /// no copy of them): where a part goes on after a match that crosses
     /// into it, found by halving (D276), or the matches found by `find`
     /// until it does.
@@ -2278,8 +2279,15 @@ pub mod rx {
                     at = next_at(s, a, b);
                     cur = if k + 1 < starts.len() && a >= starts[k + 1] { follow(at) } else { Some((k, last)) };
                 }
-                // a part stops only at a match in a following part: this
-                // one met no more match up to the end of `s`
+                // the part met no more match before the start of the next
+                // one, without a match across it (where a search by masks
+                // stops, D309), or up to the end of `s`: the next part goes on
+                // from its start, its search the same from there
+                Some((k, _)) if k + 1 < starts.len() && at <= starts[k + 1] => {
+                    at = starts[k + 1];
+                    cur = Some((k + 1, 0));
+                }
+                // it met no more match up to the end of `s`
                 Some(_) => break,
                 None => {
                     let Some((a, b)) = find(at) else { break };
@@ -2747,6 +2755,9 @@ pub mod rx {
                 let mut cur = 0usize;
                 self.masks::<N>(b, base, &mut blocks[cur]);
                 let mut allowed = from;
+                // the start of the next part, where the search may stop (D309);
+                // none for `find_at` (`until` at `from`: the first match from there)
+                let stop_at = if until > from { until } else { usize::MAX };
                 let mut st = [0u64; ALTS];
                 while base < n {
                     let nx = 1 - cur;
@@ -2765,6 +2776,11 @@ pub mod rx {
                         if p < allowed {
                             continue;
                         }
+                        // at the next part, no match across its start: it finds the
+                        // same matches from there (D309)
+                        if p >= stop_at && allowed <= stop_at {
+                            return out;
+                        }
                         // the first alternative that matches at p
                         let Some(a) = (0..sm.alts.len()).find(|&a| st[a & (ALTS - 1)] >> j & 1 == 1) else { continue };
                         let e = p + sm.alts[a].seq.len();
@@ -2775,6 +2791,13 @@ pub mod rx {
                         }
                     }
                     base += 64;
+                    // past the start of the next part, no match across it: the
+                    // next part finds the same matches from there (D309: the
+                    // search went on to the first match after it, to the end of
+                    // the text when there was none)
+                    if base >= stop_at && allowed <= stop_at {
+                        return out;
+                    }
                     cur = nx;
                     // inside a long match: on from its end
                     if allowed > base + 64 {
@@ -2935,6 +2958,9 @@ pub mod rx {
             let mut base = from;
             let mut cur = masks(base);
             let mut allowed = from;
+            // the start of the next part, where the search may stop (D309);
+            // none for `find_at` (`until` at `from`: the first match from there)
+            let stop_at = if until > from { until } else { usize::MAX };
             let mut st = [0u64; ALTS];
             while base < n {
                 let next = masks(base + 64);
@@ -2954,6 +2980,11 @@ pub mod rx {
                     if p < allowed {
                         continue;
                     }
+                    // at the next part, no match across its start: it finds the
+                    // same matches from there (D309)
+                    if p >= stop_at && allowed <= stop_at {
+                        return out;
+                    }
                     // the first alternative that matches at p
                     let Some(a) = (0..sm.alts.len()).find(|&a| st[a & (ALTS - 1)] >> j & 1 == 1) else { continue };
                     let e = p + sm.alts[a].seq.len();
@@ -2964,6 +2995,13 @@ pub mod rx {
                     }
                 }
                 base += 64;
+                // past the start of the next part, no match across it: the
+                // next part finds the same matches from there (D309: the
+                // search went on to the first match after it, to the end of
+                // the text when there was none)
+                if base >= stop_at && allowed <= stop_at {
+                    return out;
+                }
                 cur = next;
                 // inside a long match: on from its end
                 if allowed > base + 64 {
@@ -3240,7 +3278,9 @@ pub mod rx {
         impl Simple {
             /// The matches of the global search from `from` (a boundary of
             /// characters) up to the first one that starts at `until` or
-            /// after, that one included (as `bounds_from`).
+            /// after, that one included (as `bounds_from`); only up to
+            /// `until` when no match crosses it (D309: from there the search
+            /// of the next part finds the same ones).
             pub fn bounds_from(&self, s: &str, from: usize, until: usize) -> Vec<(usize, usize)> {
                 if let Some(fx) = &self.fixed {
                     #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
@@ -3275,6 +3315,9 @@ pub mod rx {
                 // no match starts before `allowed` (the end of the last one);
                 // a delimited alternative without its stop byte left is dead
                 let mut allowed = from;
+                // the start of the next part, where the search may stop (D309);
+                // none for `find_at` (`until` at `from`: the first match from there)
+                let stop_at = if until > from { until } else { usize::MAX };
                 let mut dead = 0u64;
                 let mut st = [0u64; ALTS];
                 while base < n {
@@ -3300,6 +3343,11 @@ pub mod rx {
                         let p = base + j as usize;
                         if p < allowed {
                             continue;
+                        }
+                        // at the next part, no match across its start: it finds the
+                        // same matches from there (D309)
+                        if p >= stop_at && allowed <= stop_at {
+                            return out;
                         }
                         // the first alternative that matches at p
                         let mut found = None;
@@ -3350,6 +3398,13 @@ pub mod rx {
                     }
                     carry = self.nl.map(|k| blocks[cur][k] >> 63).unwrap_or(0);
                     base += 64;
+                    // past the start of the next part, no match across it: the
+                    // next part finds the same matches from there (D309: the
+                    // search went on to the first match after it, to the end of
+                    // the text when there was none)
+                    if base >= stop_at && allowed <= stop_at {
+                        return out;
+                    }
                     cur = nx;
                     // inside a long match: on from its end
                     if allowed > base + 64 {
@@ -3460,6 +3515,61 @@ pub mod rx {
                 }
             }
 
+            /// The matches a search by masks from 0 up to `until` gives
+            /// (D309), from those of a whole search: those that start before
+            /// `until`, and the next one when the last of them crosses
+            /// `until`; up to 0, the first one.
+            fn up_to(whole: Vec<(usize, usize)>, until: usize) -> Vec<(usize, usize)> {
+                // from 0 up to 0: the first match (`find_at`)
+                if until == 0 {
+                    return whole[..whole.len().min(1)].to_vec();
+                }
+                let k = whole.partition_point(|&(a, _)| a < until);
+                let k = if k > 0 && k < whole.len() && whole[k - 1].1 > until { k + 1 } else { k };
+                whole[..k].to_vec()
+            }
+
+            /// D309: a search by masks split into parts, each stopped at the
+            /// next part when no match crosses it, merged, is one search:
+            /// parts cut anywhere (inside matches, at their ends), parts
+            /// without matches after the first ones (their searches stop at
+            /// the next part), fixed and delimited patterns, by lanes and by
+            /// masks.
+            #[test]
+            fn parts_stopped_at_the_next_are_one_search() {
+                let mut h = 0x9e37_79b9_7f4a_7c15u64;
+                let mut rnd = |k: u64| {
+                    h ^= h << 13;
+                    h ^= h >> 7;
+                    h ^= h << 17;
+                    h % k
+                };
+                // matches in the first half only, then none
+                let head: alloc::string::String = (0..20000).map(|_| b"aaacgt<x>|tHaNaND"[rnd(17) as usize] as char).collect();
+                let tail: alloc::string::String = (0..20000).map(|_| b"cgcgtc"[rnd(6) as usize] as char).collect();
+                for text in [head.clone() + &tail, tail.clone() + &head, head.clone()] {
+                    for v in ["g/aa", "g/a[NSt]|BY|aa", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/tHa[Nt]", "ig/acg|tHa"] {
+                        let sm = of(v).unwrap();
+                        let whole = sm.bounds_from(&text, 0, usize::MAX);
+                        assert_eq!(whole, super::super::bounds_from(&super::super::of(v), &text, 0, usize::MAX), "{}", v);
+                        for k in [2usize, 3, 4, 7, 64] {
+                            let mut starts: alloc::vec::Vec<usize> = (0..k).map(|i| text.len() * i / k).collect();
+                            if let Some(&(a, b)) = whole.get(whole.len() / 3) {
+                                starts.push(a + (b - a) / 2);
+                                starts.push(b);
+                            }
+                            starts.sort();
+                            starts.dedup();
+                            let parts: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>> = (0..starts.len())
+                                .map(|i| sm.bounds_from(&text, starts[i], starts.get(i + 1).copied().unwrap_or(usize::MAX)))
+                                .collect();
+                            let merged = super::super::merge_bounds_with(&text, &starts, &parts, |at| sm.find_at(&text, at));
+                            assert_eq!(merged, whole, "{} in {} parts", v, starts.len());
+                        }
+                    }
+                }
+            }
+
             /// D275: the fixed alternatives over few bytes (the plan without
             /// a branch per place) find the matches of the automaton: the
             /// patterns of regex-redux and others, over a text of random
@@ -3495,7 +3605,7 @@ pub mod rx {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
                     }
                     for until in [0usize, 64, 1000, 19999] {
-                        assert_eq!(sm.bounds_from(&text, 0, until), super::super::bounds_from(&re, &text, 0, until), "{} until {}", v, until);
+                        assert_eq!(sm.bounds_from(&text, 0, until), up_to(super::super::bounds_from(&re, &text, 0, usize::MAX), until), "{} until {}", v, until);
                     }
                 }
                 // a stop byte or a start of line: the general search
@@ -3557,7 +3667,7 @@ pub mod rx {
                     for from in [0usize, 1, 63, 64, 65, 500] {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
                     }
-                    assert_eq!(sm.bounds_from(&text, 0, 700), super::super::bounds_from(&re, &text, 0, 700), "{} until 700", v);
+                    assert_eq!(sm.bounds_from(&text, 0, 700), up_to(super::super::bounds_from(&re, &text, 0, usize::MAX), 700), "{} until 700", v);
                 }
             }
         }
