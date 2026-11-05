@@ -692,6 +692,10 @@ mod tests {
 // Win32 error and the text of glibc for it, so that a program and the
 // interpreter on Windows give the messages of Linux
 
+/// TLS by the library of the system (D343): OpenSSL loaded at run time.
+#[cfg(not(target_family = "wasm"))]
+pub mod tls;
+
 pub mod oserr {
     /// The POSIX code of a Win32 error (0 if none; EIO for the others).
     pub fn from_win32(code: u32) -> i32 {

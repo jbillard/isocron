@@ -1,0 +1,68 @@
+// The module `https` of the standard library (SPEC section 18, D343): HTTP
+// over TLS, the client and the server of `http` on connections that `net`
+// encrypts with the library of TLS of the system (OpenSSL loaded at run
+// time under Linux, SChannel under Windows). A program that imports it is
+// linked with the C library of the system; for WebAssembly it is refused.
+import { IoError } from "sys";
+import * as net from "net";
+import * as http from "http";
+
+// the request `method` of `url` with the headers and the body given, the
+// certificate of the server checked against the authorities of the PEM text
+// `ca` (empty: those of the system); `http://` as `http` sends it
+export action requestWith(ca: string, method: string, url: string, headers: [string, string][k], body: u8[n]): Result<http.Response, http.HttpError> {
+    return match (http.parseUrl(url)) {
+        Ok([scheme, host, port, target]) => {
+            if (scheme == "http") {
+                return http.request(method, url, headers, body);
+            }
+            return match (net.connect(host, port)) {
+                Ok(c) => {
+                    const r = match (net.startTls(c, host, ca)) {
+                        Ok(_) => http.exchange(c, method, host, port, 443, target, headers, body),
+                        Err(e) => Err(http.Io(e)),
+                    };
+                    net.close(c);
+                    return r;
+                },
+                Err(e) => Err(http.Io(e)),
+            };
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// the request `method` of `url`, the certificate of the server checked
+// against the authorities of the system
+export action request(method: string, url: string, headers: [string, string][k], body: u8[n]): Result<http.Response, http.HttpError> {
+    return requestWith("", method, url, headers, body);
+}
+
+// the response to `GET url`
+export action get(url: string): Result<http.Response, http.HttpError> {
+    return requestWith("", "GET", url, [], []);
+}
+
+// the response to `GET url`, the server checked against `ca`
+export action getWith(url: string, ca: string): Result<http.Response, http.HttpError> {
+    return requestWith(ca, "GET", url, [], []);
+}
+
+// the requests to the listener `l` (taken) answered by `handler` over TLS
+// with the certificate and the key of the PEM texts, until `limit` of them
+// (0: no end)
+export action serveTlsOn(l: net.Listener, cert: string, key: string, handler: (http.Request) => http.Response, limit: i64): Result<void, IoError> {
+    return match (net.serverOfTls(l, cert, key)) {
+        Ok(s) => http.serveServer(s, handler, limit),
+        Err(e) => Err(e),
+    };
+}
+
+// the requests to `port` of every address of the machine answered by
+// `handler` over TLS, with no end
+export action serveTls(port: i64, cert: string, key: string, handler: (http.Request) => http.Response): Result<void, IoError> {
+    return match (net.listen("0.0.0.0", port)) {
+        Ok(l) => serveTlsOn(l, cert, key, handler, 0),
+        Err(e) => Err(e),
+    };
+}

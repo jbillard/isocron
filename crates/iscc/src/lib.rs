@@ -40,7 +40,9 @@ pub struct BuildOptions {
 /// compiler (`ISC_CC`), or when asked; otherwise it is a static program
 /// without a C library.
 fn with_glibc(p: &isc_ir::Program, opts: &BuildOptions) -> bool {
-    !p.externs.is_empty()
+    // TLS: the library of the system loaded at run time (D343)
+    p.sys_paths.iter().any(|(op, _, _)| op.is_tls())
+        || !p.externs.is_empty()
         || !opts.link.is_empty()
         || opts.glibc
         || std::env::var("ISC_ALLOC").map(|v| v == "glibc").unwrap_or(false)
@@ -280,7 +282,8 @@ fn lib_arg(l: &str) -> std::ffi::OsString {
 /// Links a program for Windows as the linker of MinGW (`-m i386pep`): the
 /// start files and the libraries of MinGW-w64 (`msvcrt`, `kernel32`,
 /// `synchronization` for `WaitOnAddress`, `ws2_32` for the sockets of
-/// `net`, D339), those embedded in iscc (written
+/// `net`, D339, `secur32`, `crypt32` and `ncrypt` for SChannel, D343: only
+/// the functions a program calls are imported), those embedded in iscc (written
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
@@ -300,7 +303,7 @@ fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String])
     a.extend(libs.iter().map(|l| lib_arg(l)));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "-L".into(), gcc.clone().into(), "--start-group".into()]);
-    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization", "ws2_32"] {
+    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization", "ws2_32", "secur32", "crypt32", "ncrypt"] {
         a.push(format!("-l{}", l).into());
     }
     a.push("--end-group".into());

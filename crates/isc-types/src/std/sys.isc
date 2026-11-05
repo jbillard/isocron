@@ -3,8 +3,10 @@
 // `sys*` of the runtime. Every action that can fail for a reason outside
 // the program returns a `Result` with an `IoError` (D323).
 
-// An error of the system: its kind and what it is about (a path)
-export type IoError = NotFound(string) | PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) | Refused(string) | TimedOut(string) | Other(i64, string);
+// An error of the system: its kind and what it is about (a path); `Tls`:
+// a fault of TLS, its text saying which (a certificate not trusted, a name
+// that is not the server's, the handshake, no library of TLS, D343)
+export type IoError = NotFound(string) | PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) | Refused(string) | TimedOut(string) | Tls(string) | Other(i64, string);
 
 // the error of the code `code` of a primitive (1 to 6 its kinds, below 0
 // the error of the system negated) about `what` (the other modules of the
@@ -28,6 +30,9 @@ export function ioError(code: i64, what: string): IoError {
     if (code == 6) {
         return TimedOut(what);
     }
+    if (code == 20 || code == 21) {
+        return Tls(what);
+    }
     return Other(-code, what);
 }
 
@@ -40,6 +45,7 @@ export function message(e: IoError): string {
         NotEmpty(w) => `not empty: ${w}`,
         Refused(w) => `refused: ${w}`,
         TimedOut(w) => `timed out: ${w}`,
+        Tls(w) => `tls: ${w}`,
         Other(c, w) => `error ${c} of the system: ${w}`,
     };
 }

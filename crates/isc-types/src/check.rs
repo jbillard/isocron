@@ -2523,6 +2523,8 @@ impl<'g> FnCx<'g> {
             }
             SysOp::ServerDrop => (vec![Ty::Handle(Handle::Server), i64t.clone()], i64t.clone()),
             SysOp::ServerClose => (vec![Ty::Handle(Handle::Server)], i64t.clone()),
+            SysOp::TlsStart => (vec![Ty::Handle(Handle::Conn), Ty::Str, Ty::Str], Ty::Tuple(vec![Ty::Str, i64t.clone()])),
+            SysOp::ServerOpenTls => (vec![Ty::Handle(Handle::Listener), Ty::Str, Ty::Str], Ty::Tuple(vec![Ty::Handle(Handle::Server), Ty::Str, i64t.clone()])),
             SysOp::LocalPort => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
             SysOp::UdpQuery => {
                 let s = self.fresh_size(span);

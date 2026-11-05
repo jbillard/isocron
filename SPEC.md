@@ -983,13 +983,15 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 
 #### `https`
 
-- TLS est fourni par la bibliothèque du système (D328) :
+- TLS est fourni par la bibliothèque du système (D328, D343) :
   - sous Windows, SChannel (`secur32`), avec les certificats du magasin du système ;
-  - sous Linux, OpenSSL (`libssl.so.3`), **chargé à l'exécution** par `dlopen`, seulement par un programme qui importe `https`. Un tel programme est construit avec la bibliothèque C du système (D289), et les autres restent statiques et sans C.
+  - sous Linux, OpenSSL 3 (`libssl.so.3`), **chargé à l'exécution** par `dlopen` au premier usage, jamais lié. Seul un programme qui atteint une primitive de TLS est construit avec la bibliothèque C du système (D289), qui fournit `dlopen` ; OpenSSL n'est pas parmi ses bibliothèques, et les autres programmes restent statiques et sans C.
+- TLS se pose sur une connexion : `net.startTls(c, host, ca)` fait de `c` un client de TLS, ses lectures et écritures chiffrées ensuite ; `net.serverOfTls(l, cert, key)` fait un `Server` dont chaque connexion négocie dans `wait` avant de rendre ses octets déchiffrés, `sendTo` chiffrant. Le client et le serveur de `http` servent ainsi tels quels.
+- `https.get(url)`, `request(method, url, headers, body)`, `getWith(url, ca)`, `requestWith(ca, method, url, headers, body)` ; `serveTls(port, cert, key, handler)` et `serveTlsOn(l, cert, key, handler, limit)`, de la même forme que `serve`.
+- Le client vérifie le certificat et le nom de l'hôte (TLS 1.2 au moins). L'option `ca` (des certificats PEM) remplace le magasin du système pour un serveur privé : c'est ce que font les tests, sur la machine locale. Une faute de TLS est l'erreur `Tls(texte)` de `sys.IoError`, son texte dit laquelle (le certificat, le nom, la négociation, la bibliothèque absente).
+- Sous Windows, le client vérifie par SChannel avec le magasin du système, ou après la négociation par une chaîne dont la seule racine est l'autorité de `ca` ; le serveur par SChannel est ouvert (D343).
 - Sous WASI, `https` est refusé à la compilation.
-- Le client vérifie le certificat et le nom de l'hôte. L'option `ca` (des certificats PEM) remplace le magasin du système pour un serveur privé : c'est ce que font les tests, sur la machine locale.
-- `serveTls(port, cert, key, handler)` est le serveur de la même forme que `serve`.
-- Le code qui appelle ces bibliothèques C est confiné dans un seul module du runtime (`tls.rs`), chaque `unsafe` justifié.
+- Le code qui appelle ces bibliothèques C est confiné dans un seul module, `isc_runtime_core::tls`, le même pour le runtime et pour l'interpréteur (même résultat), chaque `unsafe` justifié. `SIGPIPE` est ignoré au premier usage de TLS : OpenSSL écrit sur ses sockets sans `MSG_NOSIGNAL`.
 
 ### Ordre de travail
 

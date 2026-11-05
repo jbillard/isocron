@@ -310,3 +310,69 @@ fn net_on_windows() {
     let d = dir("http_serve");
     same_on_windows(&runner, include_str!("data/std_http_serve.isc"), "http_serve", &d, &[], None);
 }
+
+/// D343: the client of HTTPS on Windows (SChannel) against two servers of
+/// `openssl s_server` on this machine, at its address that the virtual
+/// machine reaches (`ISC_WINDOWS_HOST_ADDR`, by default 172.17.0.1, the
+/// bridge of Docker): certificates made by the test (an authority, a
+/// certificate for that address, one for `localhost` only, another
+/// authority), then a small body and 3000000 bytes, another authority, a
+/// name the certificate has not, a `ca` that is not one, the authorities of
+/// the system, a connection refused; the same outputs as on Linux (the
+/// faults by their kinds: their texts are the library's).
+#[test]
+fn https_client_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let addr = std::env::var("ISC_WINDOWS_HOST_ADDR").unwrap_or_else(|_| "172.17.0.1".into());
+    let d = dir("https_client");
+    let certs = tmp("win_https_certs");
+    let _ = std::fs::remove_dir_all(&certs);
+    std::fs::create_dir_all(certs.join("www")).unwrap();
+    let run = |args: &[&str]| assert!(std::process::Command::new("openssl").args(args).current_dir(&certs).output().unwrap().status.success(), "openssl {:?}", args);
+    let ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"];
+    std::fs::write(certs.join("ip.cnf"), format!("subjectAltName=IP:{}\n", addr)).unwrap();
+    std::fs::write(certs.join("named.cnf"), "subjectAltName=DNS:localhost\n").unwrap();
+    run(&[&["req", "-x509"][..], &ec, &["-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=isocron test ca"]].concat());
+    run(&[&["req", "-x509"][..], &ec, &["-keyout", "other.key", "-out", "other.pem", "-days", "2", "-subj", "/CN=another ca"]].concat());
+    for n in ["ip", "named"] {
+        run(&[&["req"][..], &ec, &["-keyout", &format!("{}.key", n), "-out", &format!("{}.csr", n), "-subj", "/CN=test server"]].concat());
+        run(&["x509", "-req", "-in", &format!("{}.csr", n), "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", &format!("{}.pem", n), "-days", "2", "-extfile", &format!("{}.cnf", n)]);
+    }
+    std::fs::write(certs.join("www/hello.txt"), "hello over tls\n").unwrap();
+    std::fs::write(certs.join("www/big.bin"), (0..3_000_000u32).map(|i| (i % 253) as u8).collect::<Vec<u8>>()).unwrap();
+    for f in ["ca.pem", "other.pem"] {
+        std::fs::copy(certs.join(f), d.join(f)).unwrap();
+    }
+    // the two servers, on free ports of that address
+    let port = || std::net::TcpListener::bind((addr.as_str(), 0)).unwrap().local_addr().unwrap().port();
+    let (pa, pb) = (port(), port());
+    let mut servers = Vec::new();
+    for (p, n) in [(pa, "ip"), (pb, "named")] {
+        servers.push(
+            std::process::Command::new("openssl")
+                .args(["s_server", "-quiet", "-accept", &format!("{}:{}", addr, p), "-cert", &format!("../{}.pem", n), "-key", &format!("../{}.key", n), "-WWW"])
+                .current_dir(certs.join("www"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        while std::net::TcpStream::connect((addr.as_str(), p)).is_err() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let big: u64 = (0..3_000_000u64).map(|i| i % 253).sum();
+    let want = format!("200 hello over tls\n200 3000000 {}\ntls certificate\ntls certificate\ntls no certificate in the PEM text\ntls certificate\nrefused\n", big);
+    let (sa, sb) = (pa.to_string(), pb.to_string());
+    let args = [addr.as_str(), &sa, &sb, "ca.pem", "other.pem"];
+    let out = same_on_windows(&runner, include_str!("data/std_https_remote_client.isc"), "https_client", &d, &args, None);
+    for mut s in servers {
+        let _ = s.kill();
+        let _ = s.wait();
+    }
+    assert_eq!(String::from_utf8_lossy(&out), want);
+}

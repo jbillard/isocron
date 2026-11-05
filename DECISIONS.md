@@ -7082,3 +7082,106 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     compiled, interpreted and under Valgrind); `windows.rs` (the first
     program in the real VM, `WSAPoll`); `bitwise.rs` and `stdlib.rs` (the
     rules above); the examples of `docs/language.md`.
+
+- **D343 — HTTPS by the library of TLS of the system, laid on the
+  connections (2026-11-05).** The design of D328 kept; under Linux first
+  (Windows, SChannel, in the next step).
+  - TLS is laid on a connection, not a new kind of value: `net.startTls(c,
+    host, ca)` makes `c` a client of TLS and its reads and writes (and
+    `closeWrite`, `close`) go through its session from then on;
+    `net.serverOfTls(l, cert, key)` makes a `Server` whose connections
+    each make their handshake inside `wait` (non-blocking, a step at each
+    of their bytes) before their bytes are given decrypted, `sendTo`
+    encrypting. So the client and the server of `http` (D340, D342) serve
+    as they are (`exchange` on the connection, `serveServer` on the
+    server), with the same linear rules (D339). Two primitives:
+    `sysTlsStart(conn, host, ca) => [text, code]` and
+    `sysServerOpenTls(listener, cert, key) => [server, text, code]` (the
+    listener taken). A fault of TLS is `Tls(text)` of `sys.IoError` (codes
+    20 and 21 of the primitives), its text the library's (the certificate,
+    the name, the handshake) or ours (no library, a PEM text without a
+    certificate).
+  - The one code of TLS is `isc_runtime_core::tls`, shared by the runtime
+    and the interpreter (the same results, as for the floats and the
+    regular expressions): OpenSSL 3 loaded at its first use by `dlopen` of
+    `libssl.so.3` (its `libcrypto` with it), its functions called through
+    the pointers of `dlsym`, each `unsafe` an argument of its manual. The
+    runtime has `dlopen` only in its table of glibc (`isc_os_glibc`, D289):
+    `iscc` links with glibc a program that reaches a primitive of TLS
+    (`with_glibc`), every other one stays static and without C; OpenSSL is
+    never among the libraries of a program (tested by `readelf -d`). The
+    interpreter declares `dlopen` and `dlsym` of the glibc it is linked
+    with. The sessions of the runtime are by socket (a list behind a lock;
+    `recv`, `send`, `shutdown`, `close` look there only when it is not
+    empty); the interpreter's too, ended when the connection closes or its
+    value goes, so that a socket reusing the number never meets an old
+    session. `SIGPIPE` is ignored at the first use of TLS: OpenSSL writes
+    without `MSG_NOSIGNAL`.
+  - The client: TLS 1.2 at least, the certificate checked against the
+    authorities of the system (`SSL_CTX_set_default_verify_paths`) or of
+    the PEM text `ca`, the name by `SSL_set1_host` (an address checked as
+    one), SNI for a name; an end of the stream without `close_notify` is an
+    end (`SSL_OP_IGNORE_UNEXPECTED_EOF`: HTTP tells a short body by its
+    length). The server: the certificate, the rest of its chain and the
+    key of the PEM texts checked to go together, `SSL_set_accept_state`,
+    the bytes already decrypted in a session read without waiting (the
+    socket has nothing left for `epoll` to tell).
+  - `https`: `get`, `request`, `getWith(url, ca)`, `requestWith(ca, ...)`
+    (`http://` sent by `http`), `serveTls(port, cert, key, handler)`,
+    `serveTlsOn(l, cert, key, handler, limit)`; refused for WASI.
+  - The microbenchmark (`bench/primitives/https.isc`; its floor
+    `https.c`: OpenSSL called directly, its functions declared there, the
+    machine having the library and not its headers; `run.py` makes an
+    authority and a certificate for `localhost` and starts `openssl
+    s_server -WWW` for a group that declares `// bench-server: tls`): a
+    request on a connection of its own, its body of 13 bytes and of 64
+    KiB. The first measure: `get.small` 1648637.35 ns against 1217073.34
+    (1.4), `get.64k` 1482847.70 against 1234608.61 (1.2). The client made
+    an `SSL_CTX` and read its authorities for each request; OpenSSL 3
+    takes a part of a millisecond for it: the contexts are now kept by the
+    authorities they trust (at most 8, for the life of the program):
+    1436143.30 and 1253703.00 (1.2, 1.0). With 200 requests of each kind
+    (the runs of 20 were the noise of `s_server`): 1236193.255 ns against
+    1279124.841 and 1273130.585 against 1244920.627, the client's user
+    cycles 960329945 against 927754529 (3.5 % more: the module, its
+    blocks), its kernel's 142539271 against 133901041; the rest is the
+    cryptography of the handshake, the same library. Now 100 requests a
+    line.
+  - Windows: SChannel in the same module (`schannel`, linked: `secur32`,
+    `crypt32`, `ncrypt`, embedded for the linker, imported only by a
+    program that calls them). The client: `InitializeSecurityContextW`
+    over the socket, TLS 1.2; the certificate checked by SChannel against
+    the store of the system and the name, or, for a `ca`, after the
+    handshake by a chain whose only root is that authority
+    (`CertCreateCertificateChainEngine` with `hExclusiveRoot`,
+    `CertVerifyCertificateChainPolicy` for SSL and the name); the records
+    by `EncryptMessage` and `DecryptMessage`, the end by
+    `ApplyControlToken`. Tested in the real VM against two `openssl
+    s_server` of this machine (the VM reaches it at the bridge of Docker,
+    172.17.0.1): the same outputs as Linux. The server
+    (`AcceptSecurityContext`, the key of PKCS #8 imported by CNG in a
+    container of its own, named on the certificate) is written but not
+    working: `AcquireCredentialsHandleW` refuses its credentials
+    (`0x8009030d`, `SEC_E_UNKNOWN_CREDENTIALS`), with the key named by
+    `CERT_KEY_PROV_INFO_PROP_ID` (as a key of CNG or not), given by its
+    handle (`CERT_NCRYPT_KEY_HANDLE_PROP_ID`) or as a key of the machine;
+    the hypothesis that CNG imports a key of EC as one of ECDH (that
+    cannot sign) could not be tested: the antivirus of the VM (Defender)
+    puts the compiled server in quarantine as `Trojan:Win32/Wacatac.B!ml`
+    (a guess of its learning, on a program that is not signed and opens
+    sockets and keys), and once the client of the test, in the first
+    run of the file (the failure of `https_client_on_windows` then, and
+    none in the three runs after). An exclusion of the folder of the
+    tests in the VM was refused to this work: it weakens the machine; it
+    is the author's to give. Open in TODO.
+  - Tests: `std_https.rs` (certificates made by `openssl req` at the test:
+    an authority, a server for `localhost`, another authority; the client
+    against `openssl s_server`: a small body, 3000000 bytes, another
+    authority, a name the certificate has not, a `ca` that is not one, a
+    connection refused, the authorities of the system; the server against
+    `curl` (two requests on a connection, a body, `Connection: close`, 4
+    at once, 2000000 bytes) and the client of the module (a POST of 1 MiB
+    back); compiled, interpreted and under Valgrind; a certificate that is
+    not one refused at the start; the program linked with glibc and not
+    with OpenSSL, a program without TLS static; WASI refused); the example
+    of `docs/language.md`.

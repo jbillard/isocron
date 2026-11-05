@@ -1,0 +1,42 @@
+import * as https from "https";
+import * as http from "http";
+import * as sys from "sys";
+
+// the client of HTTPS (D343) against two servers of the test at the address
+// `args[0]`: on `args[1]` one whose certificate names that address, on
+// `args[2]` one whose certificate names `localhost` only; the authorities
+// of the files `args[3]` (that signed both) and `args[4]` (another). The
+// faults of TLS told by their kinds (their texts are those of the library
+// of the system), so that Linux and Windows print the same
+function fault(e: http.HttpError): string {
+    return match (e) {
+        http.Io(x) => match (x) {
+            sys.Tls(w) => w == "no certificate in the PEM text" ? `tls ${w}` : `tls ${w.indexOf("certificate") >= 0 ? "certificate" : "other"}`,
+            sys.Refused(w) => "refused",
+            _ => http.message(e),
+        },
+        _ => http.message(e),
+    };
+}
+
+action show(r: Result<http.Response, http.HttpError>): void {
+    match (r) {
+        Ok(x) => print(x.body.length < 100 ? `${x.status} ${http.text(x).trim()}` : `${x.status} ${x.body.length} ${sum(map(x.body, (b) => i64(b)))}`),
+        Err(e) => print(fault(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const good = `https://${args[0]}:${args[1]}`;
+    const named = `https://${args[0]}:${args[2]}`;
+    const ca = readText(args[3]);
+    const other = readText(args[4]);
+    show(https.getWith(good + "/hello.txt", ca));
+    show(https.getWith(good + "/big.bin", ca));
+    show(https.getWith(good + "/hello.txt", other));
+    show(https.getWith(named + "/hello.txt", ca));
+    show(https.getWith(good + "/hello.txt", "not a certificate"));
+    show(https.get(good + "/hello.txt"));
+    show(https.getWith(`https://${args[0]}:1/`, ca));
+    return 0;
+}

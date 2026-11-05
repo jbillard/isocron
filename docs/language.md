@@ -2598,7 +2598,10 @@ connections it accepts, named by numbers: `serverOf(l)` takes the
 listener, `wait(s, max, ms)` gives the bytes that connections have sent
 (`Arrival`: `id` and `bytes`, none at the end of a stream), the new
 connections accepted on the way, `sendTo(s, id, x)` answers one,
-`closeConn(s, id)` and `closeServer(s)` close them.
+`closeConn(s, id)` and `closeServer(s)` close them. `startTls(c, host, ca)`
+makes `c` a client of TLS (its reads and writes encrypted from then on),
+`serverOfTls(l, cert, key)` a server whose connections speak TLS; a fault
+of TLS is the error `Tls`, its text saying which.
 `resolve(host)` gives the addresses of a name: under Linux a numeric
 address, `localhost`, `/etc/hosts`, then the servers of `/etc/resolv.conf`
 asked by UDP; under Windows, the system. `lookup(host, server, port)` asks
@@ -2722,6 +2725,36 @@ action main(args: string[k]): i32 {
 ```output
 Ok(())
 [HTTP/1.1 200 OK, Content-Type: text/plain; charset=utf-8, Content-Length: 9, Connection: close, , hello you]
+```
+
+### HTTPS: `https`
+
+HTTP over TLS, by the library of TLS of the system: OpenSSL loaded when
+the program first needs it under Linux (a program that imports `https` is
+linked with the C library of the system, never with OpenSSL), SChannel
+under Windows. `get(url)` and `request(method, url, headers, body)` check
+the certificate of the server against the authorities of the system and
+its name; `getWith(url, ca)` and `requestWith(ca, ...)` against those of
+the PEM text `ca` (a server of one's own). `serveTls(port, cert, key,
+handler)` and `serveTlsOn(l, cert, key, handler, limit)` are the server of
+`http` over TLS, the certificate and the private key in PEM. WebAssembly
+has no sockets: a program that reaches TLS is refused when built for it.
+
+```isc
+import * as https from "https";
+import * as http from "http";
+
+action main(args: string[k]): i32 {
+    match (https.get("https://127.0.0.1:1/")) {
+        Ok(r) => print(r.status),
+        Err(e) => print(http.message(e)),
+    };
+    return 0;
+}
+```
+
+```output
+refused: 127.0.0.1:1
 ```
 
 ## Performance model

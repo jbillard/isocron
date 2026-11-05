@@ -39,6 +39,9 @@ pub struct Os {
     /// The allocator of glibc (`ISC_ALLOC=glibc`), if any.
     pub alloc: Option<unsafe extern "C" fn(usize, usize) -> *mut c_void>,
     pub free: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// `dlopen` and `dlsym` of glibc, for the library of TLS loaded at run
+    /// time (D343); none in a static program.
+    pub dl: Option<(isc_runtime_core::tls::DlOpen, isc_runtime_core::tls::DlSym)>,
 }
 
 extern "Rust" {
@@ -55,7 +58,7 @@ pub fn os() -> &'static Os {
 }
 
 #[no_mangle]
-pub static isc_os_own: Os = Os { spawn, join, stack: own_stack, register: register_nothing, alloc: None, free: None };
+pub static isc_os_own: Os = Os { spawn, join, stack: own_stack, register: register_nothing, alloc: None, free: None, dl: None };
 
 #[no_mangle]
 pub static isc_os_glibc: Os = Os {
@@ -65,6 +68,7 @@ pub static isc_os_glibc: Os = Os {
     register: super::heap::register_with_key,
     alloc: Some(glibc::aligned_alloc),
     free: Some(glibc::free),
+    dl: Some((glibc::dlopen, glibc::dlsym)),
 };
 
 /// Nothing: the threads of the runtime give their cache back themselves.
@@ -539,6 +543,8 @@ mod glibc {
         fn pthread_attr_getstack(attr: *const c_void, addr: *mut *mut c_void, size: *mut usize) -> c_int;
         pub fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
         pub fn free(p: *mut c_void);
+        pub fn dlopen(name: *const core::ffi::c_char, flags: c_int) -> *mut c_void;
+        pub fn dlsym(h: *mut c_void, name: *const core::ffi::c_char) -> *mut c_void;
     }
 
     pub fn spawn(stack: usize, f: Entry, arg: *mut c_void) -> usize {

@@ -77,6 +77,11 @@ fn run_with_input(bin: &std::path::Path, input: &str) -> (i32, String, String) {
 
 #[test]
 fn every_example_of_the_guide_works() {
+    // one run of the examples at a time on the machine: some write in the
+    // same folder of `/tmp` (the example of `sys`), and the suite runs the
+    // test in two processes at once (its variants isc and glibc)
+    let lock = std::fs::File::create(std::env::temp_dir().join("isocron-docs-examples.lock")).unwrap();
+    lock.lock().unwrap();
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/language.md");
     let doc = std::fs::read_to_string(path).unwrap();
     let exs = examples(&doc);

@@ -842,6 +842,12 @@ export action serveOn(l: net.Listener, handler: (Request) => Response, limit: i6
     };
 }
 
+// the requests to the server `s` of `net` (taken: one of TLS, `https`)
+// answered by `handler`, until `limit` of them (0: no end)
+export action serveServer(s: net.Server, handler: (Request) => Response, limit: i64): Result<void, IoError> {
+    return serveLoop(s, handler, [], 0, limit);
+}
+
 // the requests to `port` of every address of the machine answered by
 // `handler`, with no end
 export action serve(port: i64, handler: (Request) => Response): Result<void, IoError> {

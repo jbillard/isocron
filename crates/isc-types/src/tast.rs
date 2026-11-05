@@ -302,10 +302,16 @@ pub enum SysOp {
     ServerDrop,
     /// `sysServerClose(server) => code`: all closed
     ServerClose,
+    /// `sysTlsStart(conn, host, ca) => [text, code]` (D343): the client of
+    /// TLS on the connection, its reads and writes encrypted from then on
+    TlsStart,
+    /// `sysServerOpenTls(listener, cert, key) => [server, text, code]`: a
+    /// server whose connections speak TLS
+    ServerOpenTls,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 30] = [
+    pub const ALL: [SysOp; 32] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -336,12 +342,20 @@ impl SysOp {
         SysOp::ServerSend,
         SysOp::ServerDrop,
         SysOp::ServerClose,
+        SysOp::TlsStart,
+        SysOp::ServerOpenTls,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
     /// D339).
     pub fn consumes(self) -> bool {
-        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose)
+        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose | SysOp::ServerOpenTls)
+    }
+
+    /// TLS (D343): the programs that reach it are linked with the C
+    /// library of the system, which loads the library of TLS.
+    pub fn is_tls(self) -> bool {
+        matches!(self, SysOp::TlsStart | SysOp::ServerOpenTls)
     }
 
     /// The target WebAssembly (WASI preview 1) has it (D324): no sockets.
@@ -365,6 +379,8 @@ impl SysOp {
                 | SysOp::ServerSend
                 | SysOp::ServerDrop
                 | SysOp::ServerClose
+                | SysOp::TlsStart
+                | SysOp::ServerOpenTls
         )
     }
 
@@ -401,6 +417,8 @@ impl SysOp {
             SysOp::ServerSend => "sysServerSend",
             SysOp::ServerDrop => "sysServerDrop",
             SysOp::ServerClose => "sysServerClose",
+            SysOp::TlsStart => "sysTlsStart",
+            SysOp::ServerOpenTls => "sysServerOpenTls",
         }
     }
 }

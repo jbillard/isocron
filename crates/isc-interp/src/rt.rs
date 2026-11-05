@@ -202,7 +202,8 @@ pub fn io_code(e: &std::io::Error) -> i64 {
 /// `epoll`: here the sockets are non-blocking and a wait tries each of them
 /// until one has bytes or ends, or until its delay.
 fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
-    use crate::handles::{Cell, Resource};
+    use crate::handles::{tls, Cell, Resource};
+    use isc_runtime_core::tls as core_tls;
     use crate::{Array, Value};
     use isc_ir::SysOp as S;
     use std::io::{ErrorKind, Read, Write};
@@ -222,10 +223,30 @@ fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let r = cell(&vs[0]).0.borrow_mut().take();
             match r {
                 Some(Resource::Listener(l)) => match l.set_nonblocking(true) {
-                    Ok(()) => tuple(vec![Value::Handle(Rc::new(Cell(std::cell::RefCell::new(Some(Resource::Server { listener: l, next: 1, conns: Vec::new() }))))), Value::Int(0)]),
+                    Ok(()) => tuple(vec![Value::Handle(Rc::new(Cell(std::cell::RefCell::new(Some(Resource::Server { listener: l, next: 1, conns: Vec::new(), tls: 0, sessions: Vec::new() }))))), Value::Int(0)]),
                     Err(e) => tuple(vec![Value::Handle(Rc::new(Cell::default())), Value::Int(io_code(&e))]),
                 },
                 _ => tuple(vec![Value::Handle(Rc::new(Cell::default())), Value::Int(-9)]),
+            }
+        }
+        S::ServerOpenTls => {
+            let text = |v: &Value| match v {
+                Value::Str(s) => s.to_string(),
+                v => panic!("a string expected, got {:?}", v),
+            };
+            let fail = |t: &str, code: i64| tuple(vec![Value::Handle(Rc::new(Cell::default())), Value::Str(Rc::from(t)), Value::Int(code)]);
+            let r = cell(&vs[0]).0.borrow_mut().take();
+            let Some(Resource::Listener(l)) = r else { return fail("a closed listener", -9) };
+            let Some(d) = tls::dl() else { return fail("no TLS in this interpreter", core_tls::NO_LIBRARY) };
+            match core_tls::server_ctx(d, text(&vs[1]).as_bytes(), text(&vs[2]).as_bytes()) {
+                Ok(ctx) => match l.set_nonblocking(true) {
+                    Ok(()) => tuple(vec![Value::Handle(Rc::new(Cell(std::cell::RefCell::new(Some(Resource::Server { listener: l, next: 1, conns: Vec::new(), tls: ctx.0, sessions: Vec::new() }))))), Value::Str(Rc::from("")), Value::Int(0)]),
+                    Err(e) => {
+                        core_tls::free_server_ctx(d, ctx);
+                        fail("the listener", io_code(&e))
+                    }
+                },
+                Err((code, t)) => fail(&t, code),
             }
         }
         S::ServerWait => {
@@ -234,12 +255,19 @@ fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let ms = int(&vs[2]);
             let start = std::time::Instant::now();
             let mut guard = c.0.borrow_mut();
-            let Some(Resource::Server { listener, next, conns }) = &mut *guard else {
+            let Some(Resource::Server { listener, next, conns, tls: ctx, sessions }) = &mut *guard else {
                 return tuple(vec![ints(Vec::new()), ints(Vec::new()), ints(Vec::new()), Value::Int(-9)]);
             };
             loop {
                 while let Ok((s, _)) = listener.accept() {
                     if s.set_nonblocking(true).is_ok() && s.set_nodelay(true).is_ok() {
+                        // a server of TLS: the session of the connection
+                        if *ctx != 0 {
+                            match tls::dl().and_then(|d| core_tls::accept(d, core_tls::ServerCtx(*ctx), tls::fd_of(&s))) {
+                                Some(sess) => sessions.push((*next, sess.0, false)),
+                                None => continue,
+                            }
+                        }
                         conns.push((*next, s));
                         *next += 1;
                     }
@@ -247,6 +275,36 @@ fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
                 let (mut ids, mut lens, mut data) = (Vec::new(), Vec::new(), Vec::new());
                 for (id, s) in conns.iter_mut() {
                     let mut buf = vec![0u8; max];
+                    // through its session: the handshake a step further, then
+                    // its stream (a fault or an end: 0)
+                    if *ctx != 0 {
+                        let (Some(d), Some(x)) = (tls::dl(), sessions.iter_mut().find(|x| x.0 == *id)) else { continue };
+                        let sess = core_tls::Session(x.1);
+                        if !x.2 {
+                            match core_tls::handshake(d, sess) {
+                                core_tls::Step::Done(_) => x.2 = true,
+                                core_tls::Step::WantRead | core_tls::Step::WantWrite => continue,
+                                _ => {
+                                    ids.push(*id);
+                                    lens.push(0);
+                                    continue;
+                                }
+                            }
+                        }
+                        match core_tls::read(d, sess, &mut buf) {
+                            core_tls::Step::Done(n) => {
+                                ids.push(*id);
+                                lens.push(n as i64);
+                                data.extend(buf[..n].iter().map(|&b| b as i64));
+                            }
+                            core_tls::Step::WantRead | core_tls::Step::WantWrite => {}
+                            _ => {
+                                ids.push(*id);
+                                lens.push(0);
+                            }
+                        }
+                        continue;
+                    }
                     match s.read(&mut buf) {
                         Err(e) if e.kind() == ErrorKind::WouldBlock => continue,
                         r => {
@@ -270,7 +328,28 @@ fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let data = byte_values(&vs[2]);
             let mut guard = c.0.borrow_mut();
             let r = match &mut *guard {
-                Some(Resource::Server { conns, .. }) => match conns.iter_mut().find(|x| x.0 == id) {
+                Some(Resource::Server { conns, tls: ctx, sessions, .. }) => match conns.iter_mut().find(|x| x.0 == id) {
+                    // through its session, the socket non-blocking: tried
+                    // again every millisecond, at most 30 s
+                    Some(_) if *ctx != 0 => match (tls::dl(), sessions.iter().find(|x| x.0 == id)) {
+                        (Some(d), Some(x)) => {
+                            let sess = core_tls::Session(x.1);
+                            let start = std::time::Instant::now();
+                            let mut at = 0;
+                            loop {
+                                if at >= data.len() {
+                                    break 0;
+                                }
+                                match core_tls::write(d, sess, &data[at..]) {
+                                    core_tls::Step::Done(k) => at += k,
+                                    core_tls::Step::WantRead | core_tls::Step::WantWrite if start.elapsed() < std::time::Duration::from_secs(30) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                                    core_tls::Step::WantRead | core_tls::Step::WantWrite => break 6,
+                                    _ => break core_tls::TLS_FAULT,
+                                }
+                            }
+                        }
+                        _ => -9,
+                    },
                     Some((_, s)) => {
                         // the socket blocking for the write, as the runtime
                         // waits for a peer that reads slowly
@@ -289,8 +368,14 @@ fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let id = int(&vs[1]);
             let mut guard = c.0.borrow_mut();
             let r = match &mut *guard {
-                Some(Resource::Server { conns, .. }) => match conns.iter().position(|x| x.0 == id) {
+                Some(Resource::Server { conns, sessions, .. }) => match conns.iter().position(|x| x.0 == id) {
                     Some(i) => {
+                        if let Some(j) = sessions.iter().position(|x| x.0 == id) {
+                            let (_, sess, _) = sessions.remove(j);
+                            if let Some(d) = tls::dl() {
+                                core_tls::close(d, core_tls::Session(sess));
+                            }
+                        }
                         drop(conns.remove(i));
                         0
                     }
@@ -301,7 +386,10 @@ fn serve(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             Value::Int(r)
         }
         S::ServerClose => {
-            drop(cell(&vs[0]).0.borrow_mut().take());
+            // its sessions and its context ended as the value of the cell
+            // goes (`Cell::drop`), now: a cell of its own takes it
+            let r = cell(&vs[0]).0.borrow_mut().take();
+            drop(Cell(std::cell::RefCell::new(r)));
             Value::Int(0)
         }
         _ => unreachable!("not a primitive of a server: {:?}", o),
@@ -376,8 +464,8 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let r = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(text(&vs[0])).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
             code(r)
         }
-        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve | S::Shutdown => net(o, vs),
-        S::ServerOpen | S::ServerWait | S::ServerSend | S::ServerDrop | S::ServerClose => serve(o, vs),
+        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve | S::Shutdown | S::TlsStart => net(o, vs),
+        S::ServerOpen | S::ServerWait | S::ServerSend | S::ServerDrop | S::ServerClose | S::ServerOpenTls => serve(o, vs),
     }
 }
 
@@ -442,12 +530,39 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
                 Err(e) => tuple(vec![handle(None), Value::Str(Rc::from("")), Value::Int(e)]),
             }
         }
+        S::TlsStart => {
+            use crate::handles::tls;
+            use isc_runtime_core::tls as core_tls;
+            let c = cell(&vs[0]);
+            let (host, ca) = (text(&vs[1]), text(&vs[2]));
+            let fd = match &*c.0.borrow() {
+                Some(Resource::Conn(s)) => Some(tls::fd_of(s)),
+                _ => None,
+            };
+            let r = match (fd, tls::dl()) {
+                (None, _) => Err((-9, String::from("a closed connection"))),
+                (_, None) => Err((core_tls::NO_LIBRARY, String::from("no TLS in this interpreter"))),
+                (Some(fd), Some(d)) => core_tls::connect(d, fd, host.as_bytes(), ca.as_bytes()).map(|sess| tls::add(fd, sess)),
+            };
+            match r {
+                Ok(()) => tuple(vec![Value::Str(Rc::from("")), Value::Int(0)]),
+                Err((code, t)) => tuple(vec![Value::Str(Rc::from(t.as_str())), Value::Int(code)]),
+            }
+        }
         S::Recv => {
             let c = cell(&vs[0]);
             let max = int(&vs[1]).max(0) as usize;
             let mut buf = vec![0u8; max];
             let r = match &mut *c.0.borrow_mut() {
-                Some(Resource::Conn(s)) => s.read(&mut buf).map_err(|e| io_code(&e)),
+                Some(Resource::Conn(s)) => match (crate::handles::tls::get(crate::handles::tls::fd_of(s)), crate::handles::tls::dl()) {
+                    (Some(sess), Some(d)) => match isc_runtime_core::tls::read(d, sess, &mut buf) {
+                        isc_runtime_core::tls::Step::Done(n) => Ok(n),
+                        isc_runtime_core::tls::Step::End => Ok(0),
+                        isc_runtime_core::tls::Step::WantRead | isc_runtime_core::tls::Step::WantWrite => Err(6),
+                        isc_runtime_core::tls::Step::Fault => Err(isc_runtime_core::tls::TLS_FAULT),
+                    },
+                    _ => s.read(&mut buf).map_err(|e| io_code(&e)),
+                },
                 _ => Err(-9),
             };
             match r {
@@ -462,14 +577,34 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let c = cell(&vs[0]);
             let data = byte_values(&vs[1]);
             let r = match &mut *c.0.borrow_mut() {
-                Some(Resource::Conn(s)) => s.write_all(&data).map_or_else(|e| io_code(&e), |_| 0),
+                Some(Resource::Conn(s)) => match (crate::handles::tls::get(crate::handles::tls::fd_of(s)), crate::handles::tls::dl()) {
+                    (Some(sess), Some(d)) => {
+                        let mut at = 0;
+                        loop {
+                            if at >= data.len() {
+                                break 0;
+                            }
+                            match isc_runtime_core::tls::write(d, sess, &data[at..]) {
+                                isc_runtime_core::tls::Step::Done(k) => at += k,
+                                isc_runtime_core::tls::Step::WantRead | isc_runtime_core::tls::Step::WantWrite => break 6,
+                                _ => break isc_runtime_core::tls::TLS_FAULT,
+                            }
+                        }
+                    }
+                    _ => s.write_all(&data).map_or_else(|e| io_code(&e), |_| 0),
+                },
                 _ => -9,
             };
             Value::Int(r)
         }
         S::Close | S::CloseListener => {
-            // the resource given back to the system now
-            drop(cell(&vs[0]).0.borrow_mut().take());
+            // the resource given back to the system now (its session of
+            // TLS ended first)
+            let r = cell(&vs[0]).0.borrow_mut().take();
+            if let Some(Resource::Conn(s)) = &r {
+                crate::handles::tls::end(crate::handles::tls::fd_of(s));
+            }
+            drop(r);
             Value::Int(0)
         }
         S::SetTimeout => {
@@ -485,7 +620,12 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
         S::Shutdown => {
             let c = cell(&vs[0]);
             let r = match &*c.0.borrow() {
-                Some(Resource::Conn(s)) => s.shutdown(std::net::Shutdown::Write).map_or_else(|e| io_code(&e), |_| 0),
+                Some(Resource::Conn(s)) => {
+                    if let (Some(sess), Some(d)) = (crate::handles::tls::get(crate::handles::tls::fd_of(s)), crate::handles::tls::dl()) {
+                        isc_runtime_core::tls::notify_close(d, sess);
+                    }
+                    s.shutdown(std::net::Shutdown::Write).map_or_else(|e| io_code(&e), |_| 0)
+                }
                 _ => -9,
             };
             Value::Int(r)

@@ -243,6 +243,15 @@ export action setTimeout(c: Conn, ms: i64): Result<void, IoError> {
     return code == 0 ? Ok(()) : Err(ioError(code, "setTimeout"));
 }
 
+// TLS on the connection `c` (D343), its client: the certificate of the
+// server checked against the authorities of the PEM text `ca` (empty: those
+// of the system) and the name `host`; the reads and writes of `c`
+// encrypted from then on
+export action startTls(c: Conn, host: string, ca: string): Result<void, IoError> {
+    const [why, code] = sysTlsStart(c, host, ca);
+    return code == 0 ? Ok(()) : Err(ioError(code, why));
+}
+
 // the sending side of `c` closed: the peer reads the end of its stream,
 // `c` still reads (to close later)
 export action closeWrite(c: Conn): Result<void, IoError> {
@@ -270,6 +279,19 @@ export action serverOf(l: Listener): Result<Server, IoError> {
     }
     sysServerClose(s);
     return Err(ioError(code, "serverOf"));
+}
+
+// a server on the listener `l` (taken) whose connections speak TLS with
+// the certificate (its chain after it) and the private key of the PEM
+// texts `cert` and `key` (D343): `wait` gives their bytes decrypted, after
+// their handshake, `sendTo` encrypts
+export action serverOfTls(l: Listener, cert: string, key: string): Result<Server, IoError> {
+    const [s, why, code] = sysServerOpenTls(l, cert, key);
+    if (code == 0) {
+        return Ok(s);
+    }
+    sysServerClose(s);
+    return Err(ioError(code, why));
 }
 
 // the bytes that the connections of `s` have sent, at most `max` of each,

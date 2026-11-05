@@ -13,7 +13,9 @@ results/primitives.md, the forms ranked by Isocron over its floor.
 import argparse
 import os
 import statistics
+import socket
 import subprocess
+import time
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +45,40 @@ def run(cmd, cpu):
     return forms
 
 
+def tls_server():
+    """For a group that declares `// bench-server: tls` (D343): an authority
+    and a certificate for `localhost` made in `build/tls`, `openssl s_server`
+    serving its files (`-WWW`: `hello.txt`, `64k.bin`) on a free port; the
+    server and the arguments that the benchmark takes after its rounds (the
+    port, the authority)."""
+    d = os.path.join(build, "tls")
+    os.makedirs(os.path.join(d, "www"), exist_ok=True)
+    ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"]
+    with open(os.path.join(d, "ext.cnf"), "w") as f:
+        f.write("subjectAltName=DNS:localhost\n")
+    for cmd in (["req", "-x509"] + ec + ["-keyout", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=bench ca"],
+                ["req"] + ec + ["-keyout", "server.key", "-out", "server.csr", "-subj", "/CN=localhost"],
+                ["x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "server.pem", "-days", "2", "-extfile", "ext.cnf"]):
+        subprocess.run(["openssl"] + cmd, cwd=d, check=True, capture_output=True)
+    with open(os.path.join(d, "www", "hello.txt"), "w") as f:
+        f.write("hello, world!")
+    with open(os.path.join(d, "www", "64k.bin"), "wb") as f:
+        f.write(bytes(i % 251 for i in range(65536)))
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    server = subprocess.Popen(["openssl", "s_server", "-quiet", "-accept", str(port), "-cert", "../server.pem", "-key", "../server.key", "-WWW"],
+                              cwd=os.path.join(d, "www"), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(500):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            break
+        except OSError:
+            time.sleep(0.01)
+    return server, [str(port), os.path.join(d, "ca.pem")]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=5)
@@ -57,14 +93,24 @@ def main():
     for g in groups:
         isc_bin, c_bin = os.path.join(build, g), os.path.join(build, g + "_c")
         subprocess.run([iscc, "build", os.path.join(here, g + ".isc"), "-o", isc_bin], check=True)
-        subprocess.run(["gcc", "-O3", "-march=native", os.path.join(here, g + ".c"), "-o", c_bin], check=True)
+        # the floor of TLS calls OpenSSL itself (D343)
+        libs = ["-l:libssl.so.3", "-l:libcrypto.so.3"] if "// bench-server: tls" in open(os.path.join(here, g + ".isc")).read() else []
+        subprocess.run(["gcc", "-O3", "-march=native", os.path.join(here, g + ".c"), "-o", c_bin] + libs, check=True)
         times = {"isc": {}, "c": {}}
         checks = {"isc": {}, "c": {}}
-        for _ in range(a.runs):
-            for kind, b in (("isc", isc_bin), ("c", c_bin)):
-                for name, (ns, check) in run([b, str(a.rounds)], cpu).items():
-                    times[kind].setdefault(name, []).append(ns)
-                    checks[kind][name] = check
+        server, extra = None, []
+        if "// bench-server: tls" in open(os.path.join(here, g + ".isc")).read():
+            server, extra = tls_server()
+        try:
+            for _ in range(a.runs):
+                for kind, b in (("isc", isc_bin), ("c", c_bin)):
+                    for name, (ns, check) in run([b, str(a.rounds)] + extra, cpu).items():
+                        times[kind].setdefault(name, []).append(ns)
+                        checks[kind][name] = check
+        finally:
+            if server:
+                server.kill()
+                server.wait()
         for name in times["isc"]:
             if name not in times["c"]:
                 sys.exit("%s: no floor for %s" % (g, name))

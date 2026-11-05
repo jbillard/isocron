@@ -1,0 +1,31 @@
+import * as https from "https";
+import * as http from "http";
+import * as net from "net";
+import { message } from "sys";
+
+// a server of HTTPS for the clients of the test (D343): its port printed,
+// then `args[2]` requests answered with the certificate and the key of the
+// files `args[0]` and `args[1]`
+function handle(r: http.Request): http.Response {
+    if (r.path == "/big") {
+        return { status: 200, headers: [], body: map(iota(parseI64(r.query)), (i) => u8(i % 251)) };
+    }
+    if (r.path == "/echo") {
+        return { status: 200, headers: [], body: r.body };
+    }
+    return http.textResponse(200, `secure ${r.method} ${r.path} ${r.query} ${r.body.length}`);
+}
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            print(net.port(l));
+            match (https.serveTlsOn(l, readText(args[0]), readText(args[1]), handle, parseI64(args[2]))) {
+                Ok(_) => print("done"),
+                Err(e) => print(`serve failed: ${message(e)}`),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}

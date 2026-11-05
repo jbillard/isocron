@@ -92,6 +92,21 @@ unsafe fn bytes_read(buf: *mut u8, n: usize, max: usize) -> IscArray {
     IscArray { ptr: q, len: n as i64 }
 }
 
+/// A text and a code (`[string, i64]`).
+#[repr(C)]
+pub struct TextCode {
+    pub text: IscStr,
+    pub code: i64,
+}
+
+/// A handle, a text and a code (`[Server, string, i64]`).
+#[repr(C)]
+pub struct HandleTextCode {
+    pub h: i64,
+    pub text: IscStr,
+    pub code: i64,
+}
+
 /// The result of `sysServerWait` (D342): the numbers of the connections
 /// read, the bytes read from each (0: the end of its stream, or an error
 /// that ends it), and those bytes one after the other.
@@ -127,6 +142,10 @@ struct ServerState<F: Copy> {
     conns: alloc::vec::Vec<(i64, F)>,
     /// The set of `epoll` under Linux (unused under Windows).
     ep: F,
+    /// The context of TLS of the server (0: none, D343), and the session of
+    /// each connection with whether its handshake is done.
+    tls: usize,
+    sessions: alloc::vec::Vec<(i64, usize, bool)>,
 }
 
 #[cfg(not(target_os = "wasi"))]
@@ -165,6 +184,52 @@ unsafe fn server<'a, F: Copy>(s: i64) -> Option<&'a mut ServerState<F>> {
         Some(unsafe { &mut *(s as *mut ServerState<F>) })
     }
 }
+
+/// The sessions of TLS of the connections, by socket: few, behind a lock
+/// that spins (the actions run on one thread; the lock keeps it sound).
+#[cfg(not(target_os = "wasi"))]
+struct Sessions {
+    lock: core::sync::atomic::AtomicBool,
+    count: core::sync::atomic::AtomicUsize,
+    list: core::cell::UnsafeCell<alloc::vec::Vec<(i64, isc_runtime_core::tls::Session)>>,
+}
+
+// SAFETY: `list` is read and written only while `lock` is held
+#[cfg(not(target_os = "wasi"))]
+unsafe impl Sync for Sessions {}
+
+#[cfg(not(target_os = "wasi"))]
+static SESSIONS: Sessions = Sessions { lock: core::sync::atomic::AtomicBool::new(false), count: core::sync::atomic::AtomicUsize::new(0), list: core::cell::UnsafeCell::new(alloc::vec::Vec::new()) };
+
+#[cfg(not(target_os = "wasi"))]
+fn with_sessions<T>(f: impl FnOnce(&mut alloc::vec::Vec<(i64, isc_runtime_core::tls::Session)>) -> T) -> T {
+    while SESSIONS.lock.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+    // SAFETY: the lock is held
+    let r = f(unsafe { &mut *SESSIONS.list.get() });
+    SESSIONS.count.store(unsafe { (*SESSIONS.list.get()).len() }, core::sync::atomic::Ordering::Release);
+    SESSIONS.lock.store(false, core::sync::atomic::Ordering::Release);
+    r
+}
+
+/// The session of TLS of the socket `fd`, if it has one.
+#[cfg(not(target_os = "wasi"))]
+fn session(fd: i64) -> Option<isc_runtime_core::tls::Session> {
+    if SESSIONS.count.load(core::sync::atomic::Ordering::Acquire) == 0 {
+        return None;
+    }
+    with_sessions(|v| v.iter().find(|x| x.0 == fd).map(|x| x.1))
+}
+
+#[cfg(not(target_os = "wasi"))]
+fn take_session(fd: i64) -> Option<isc_runtime_core::tls::Session> {
+    if SESSIONS.count.load(core::sync::atomic::Ordering::Acquire) == 0 {
+        return None;
+    }
+    with_sessions(|v| v.iter().position(|x| x.0 == fd).map(|i| v.remove(i).1))
+}
+
 
 #[cfg(target_os = "linux")]
 mod imp {
@@ -287,11 +352,73 @@ mod imp {
         *out = AcceptOut { h: r as i64, peer: new_str(peer.as_bytes()), code: 0 };
     }
 
+    // ----- TLS of the connections (D343) --------------------------------
+
+    use isc_runtime_core::tls;
+
+    /// `dlopen` and `dlsym` of glibc (a static program has none: it never
+    /// reaches TLS, `iscc` links the programs that do with glibc).
+    fn dl() -> Option<(tls::DlOpen, tls::DlSym)> {
+        crate::process::os().dl
+    }
+
+    /// `SIGPIPE` ignored: OpenSSL writes to its sockets without
+    /// `MSG_NOSIGNAL`, a peer gone is then an error, not the end of the
+    /// program (the runtime's own writes never raised it).
+    unsafe fn ignore_sigpipe() {
+        // struct sigaction of the kernel: handler SIG_IGN, flags, restorer, mask
+        let act: [u64; 4] = [1, 0, 0, 0];
+        syscall6(13, 13, act.as_ptr() as usize, 0, 8, 0, 0);
+    }
+
+    fn text_of(t: &str) -> IscStr {
+        new_str(t.as_bytes())
+    }
+
+    /// `sysTlsStart(conn, host, ca)`: the client of TLS on `conn`, its
+    /// reads and writes encrypted from now on.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_tlsstart(out: *mut TextCode, c: i64, hp: *const u8, hn: i64, cp: *const u8, cn: i64) {
+        let Some(d) = dl() else {
+            *out = TextCode { text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
+            return;
+        };
+        ignore_sigpipe();
+        match tls::connect(d, c, bytes_of(hp, hn), bytes_of(cp, cn)) {
+            Ok(sess) => {
+                with_sessions(|v| v.push((c, sess)));
+                *out = TextCode { text: text_of(""), code: 0 };
+            }
+            Err((code, t)) => *out = TextCode { text: text_of(&t), code },
+        }
+    }
+
+    /// The code of a step of TLS that did not end well.
+    fn tls_code(st: tls::Step) -> i64 {
+        match st {
+            tls::Step::WantRead | tls::Step::WantWrite => 6,
+            _ => tls::TLS_FAULT,
+        }
+    }
+
     /// `sysRecv(conn, max)`: the bytes of one read, none at the end.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_recv(out: *mut IscArrayCode, c: i64, max: i64) {
         let max = max.clamp(1, 1 << 24) as usize;
         let buf = isc_alloc(max as i64);
+        if let (Some(sess), Some(d)) = (session(c), dl()) {
+            // SAFETY: `buf` holds `max` bytes
+            let b = unsafe { core::slice::from_raw_parts_mut(buf, max) };
+            *out = match tls::read(d, sess, b) {
+                tls::Step::Done(n) => IscArrayCode { a: bytes_read(buf, n, max), code: 0 },
+                tls::Step::End => IscArrayCode { a: bytes_read(buf, 0, max), code: 0 },
+                st => {
+                    isc_free(buf);
+                    IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code: tls_code(st) }
+                }
+            };
+            return;
+        }
         // SAFETY: the kernel writes at most `max` bytes at `buf`
         let r = again(|| unsafe { linux::read(c as c_int, buf as *mut c_void, max) });
         if r < 0 {
@@ -307,6 +434,21 @@ mod imp {
     pub unsafe extern "C" fn isc_sys_send(out: *mut i64, c: i64, p: *const u8, n: i64) {
         let mut at = 0usize;
         let n = n.max(0) as usize;
+        if let (Some(sess), Some(d)) = (session(c), dl()) {
+            // SAFETY: `p` holds `n` bytes
+            let all = unsafe { core::slice::from_raw_parts(p, n) };
+            while at < n {
+                match tls::write(d, sess, &all[at..]) {
+                    tls::Step::Done(k) => at += k,
+                    st => {
+                        *out = tls_code(st);
+                        return;
+                    }
+                }
+            }
+            *out = 0;
+            return;
+        }
         while at < n {
             // SAFETY: the kernel reads `n - at` bytes from `p + at`
             let r = again(|| unsafe { syscall6(SYS_SENDTO, c as usize, p.add(at) as usize, n - at, MSG_NOSIGNAL, 0, 0) });
@@ -321,6 +463,9 @@ mod imp {
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_close(out: *mut i64, c: i64) {
+        if let (Some(sess), Some(d)) = (take_session(c), dl()) {
+            tls::close(d, sess);
+        }
         close_socket(c);
         *out = 0;
     }
@@ -331,9 +476,13 @@ mod imp {
         *out = 0;
     }
 
-    /// `sysShutdown(conn)`: `shutdown(fd, SHUT_WR)`.
+    /// `sysShutdown(conn)`: `shutdown(fd, SHUT_WR)` (after the end of the
+    /// stream of TLS, `close_notify`, on a connection of TLS).
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_shutdown(out: *mut i64, c: i64) {
+        if let (Some(sess), Some(d)) = (session(c), dl()) {
+            tls::notify_close(d, sess);
+        }
         *out = net_code(syscall6(48, c as usize, 1, 0, 0, 0, 0).min(0));
     }
 
@@ -398,8 +547,45 @@ mod imp {
             *out = HandleCode { h: -1, code: net_code(r) };
             return;
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new() });
         *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
+    }
+
+    /// `sysServerOpenTls(listener, cert, key)`: a server whose connections
+    /// speak TLS with the certificate and the key of the PEM texts (D343).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serveropentls(out: *mut HandleTextCode, l: i64, cp: *const u8, cn: i64, kp: *const u8, kn: i64) {
+        let Some(d) = dl() else {
+            close_socket(l);
+            *out = HandleTextCode { h: -1, text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
+            return;
+        };
+        ignore_sigpipe();
+        let ctx = match tls::server_ctx(d, bytes_of(cp, cn), bytes_of(kp, kn)) {
+            Ok(c) => c,
+            Err((code, t)) => {
+                close_socket(l);
+                *out = HandleTextCode { h: -1, text: text_of(&t), code };
+                return;
+            }
+        };
+        let mut plain = HandleCode { h: -1, code: 0 };
+        isc_sys_serveropen(&mut plain, l);
+        if plain.code != 0 {
+            tls::free_server_ctx(d, ctx);
+            *out = HandleTextCode { h: -1, text: text_of("the server"), code: plain.code };
+            return;
+        }
+        if let Some(st) = server::<c_int>(plain.h) {
+            st.tls = ctx.0;
+        }
+        *out = HandleTextCode { h: plain.h, text: text_of(""), code: 0 };
+    }
+
+    /// The session of TLS of the connection `id` of a server, and whether
+    /// its handshake is done.
+    fn server_session(st: &ServerState<c_int>, id: i64) -> Option<(tls::Session, bool)> {
+        st.sessions.iter().find(|x| x.0 == id).map(|x| (tls::Session(x.1), x.2))
     }
 
     /// `sysServerWait(server, max, ms)`: the connections waiting accepted,
@@ -419,6 +605,13 @@ mod imp {
         // the next wait), within the delay: as the interpreter, which gives
         // the first bytes or ends, or nothing at the end of the delay
         let deadline = (ms >= 0).then(|| crate::isc_clock_ns().saturating_add(ms as u64 * 1_000_000));
+        if st.tls != 0 {
+            read_pending(st, max, &mut ids, &mut lens, &mut data);
+            if !ids.is_empty() {
+                *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+                return;
+            }
+        }
         loop {
             let left = match deadline {
                 Some(d) => (d.saturating_sub(crate::isc_clock_ns()).div_ceil(1_000_000)).min(i32::MAX as u64) as isize,
@@ -455,12 +648,28 @@ mod imp {
                     if watch(st.ep, c as c_int, id as u64) < 0 {
                         st.take(id);
                         linux::close(c as c_int);
+                        continue;
+                    }
+                    // a server of TLS: the session of the connection, its
+                    // handshake made as its bytes come
+                    if st.tls != 0 {
+                        match dl().and_then(|d| tls::accept(d, tls::ServerCtx(st.tls), c as i64)) {
+                            Some(sess) => st.sessions.push((id, sess.0, false)),
+                            None => {
+                                st.take(id);
+                                linux::close(c as c_int);
+                            }
+                        }
                     }
                 }
                 continue;
             }
             let id = tag as i64;
             let Some(fd) = st.fd(id) else { continue };
+            if st.tls != 0 {
+                read_tls(st, id, max, ids, lens, data);
+                continue;
+            }
             data.reserve(max);
             let at = data.len();
             // SAFETY: the kernel writes at most `max` bytes at the room
@@ -477,16 +686,96 @@ mod imp {
         }
     }
 
+    /// The connection `id` of a server of TLS read: its handshake a step
+    /// further, or at most `max` bytes of its stream (an end or a fault: 0).
+    fn read_tls(st: &mut ServerState<c_int>, id: i64, max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+        let (Some((sess, done)), Some(d)) = (server_session(st, id), dl()) else { return };
+        if !done {
+            match tls::handshake(d, sess) {
+                tls::Step::Done(_) => {
+                    if let Some(x) = st.sessions.iter_mut().find(|x| x.0 == id) {
+                        x.2 = true;
+                    }
+                }
+                tls::Step::WantRead | tls::Step::WantWrite => return,
+                _ => {
+                    ids.push(id);
+                    lens.push(0);
+                    return;
+                }
+            }
+        }
+        let at = data.len();
+        data.resize(at + max, 0);
+        match tls::read(d, sess, &mut data[at..]) {
+            tls::Step::Done(n) => {
+                data.truncate(at + n);
+                ids.push(id);
+                lens.push(n as i64);
+            }
+            tls::Step::WantRead | tls::Step::WantWrite => data.truncate(at),
+            _ => {
+                data.truncate(at);
+                ids.push(id);
+                lens.push(0);
+            }
+        }
+    }
+
+    /// The connections of a server of TLS whose session holds bytes already
+    /// decrypted, read without waiting (the socket has nothing left for
+    /// `epoll` to tell).
+    fn read_pending(st: &mut ServerState<c_int>, max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+        let Some(d) = dl() else { return };
+        let ready: alloc::vec::Vec<i64> = st.sessions.iter().filter(|x| x.2 && tls::pending(d, tls::Session(x.1)) > 0).map(|x| x.0).collect();
+        for id in ready {
+            read_tls(st, id, max, ids, lens, data);
+        }
+    }
+
     /// `sysServerSend(server, id, bytes)`: all of them, waiting for a peer
     /// that reads slowly (at most SEND_WAIT_MS without progress: `TimedOut`).
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serversend(out: *mut i64, s: i64, id: i64, p: *const u8, n: i64) {
-        let Some(fd) = server::<c_int>(s).and_then(|st| st.fd(id)) else {
+        let Some(st) = server::<c_int>(s) else {
+            *out = -9;
+            return;
+        };
+        let Some(fd) = st.fd(id) else {
             *out = -9;
             return;
         };
         let n = n.max(0) as usize;
         let mut at = 0usize;
+        if st.tls != 0 {
+            let (Some((sess, _)), Some(d)) = (server_session(st, id), dl()) else {
+                *out = -9;
+                return;
+            };
+            // SAFETY: `p` holds `n` bytes
+            let all = unsafe { core::slice::from_raw_parts(p, n) };
+            while at < n {
+                match tls::write(d, sess, &all[at..]) {
+                    tls::Step::Done(k) => at += k,
+                    st @ (tls::Step::WantWrite | tls::Step::WantRead) => {
+                        let events = if st == tls::Step::WantWrite { POLLOUT } else { 1 };
+                        let mut pfd = PollFd { fd, events, revents: 0 };
+                        // SAFETY: one `struct pollfd`, written by the kernel
+                        let w = again(|| unsafe { syscall6(SYS_POLL, &mut pfd as *mut PollFd as usize, 1, SEND_WAIT_MS as usize, 0, 0, 0) });
+                        if w == 0 {
+                            *out = 6;
+                            return;
+                        }
+                    }
+                    _ => {
+                        *out = tls::TLS_FAULT;
+                        return;
+                    }
+                }
+            }
+            *out = 0;
+            return;
+        }
         while at < n {
             // SAFETY: the kernel reads `n - at` bytes from `p + at`
             let r = again(|| unsafe { syscall6(SYS_SENDTO, fd as usize, p.add(at) as usize, n - at, MSG_NOSIGNAL, 0, 0) });
@@ -512,7 +801,17 @@ mod imp {
     /// `sysServerDrop(server, id)`: the connection closed.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serverdrop(out: *mut i64, s: i64, id: i64) {
-        *out = match server::<c_int>(s).and_then(|st| st.take(id)) {
+        let Some(st) = server::<c_int>(s) else {
+            *out = -9;
+            return;
+        };
+        if let Some(i) = st.sessions.iter().position(|x| x.0 == id) {
+            let (_, sess, _) = st.sessions.remove(i);
+            if let Some(d) = dl() {
+                tls::close(d, tls::Session(sess));
+            }
+        }
+        *out = match st.take(id) {
             Some(fd) => {
                 linux::close(fd);
                 0
@@ -529,6 +828,14 @@ mod imp {
             // SAFETY: the state that `isc_sys_serveropen` made, freed once
             // (the handle is consumed, D339)
             let st = unsafe { alloc::boxed::Box::from_raw(s as *mut ServerState<c_int>) };
+            if let Some(d) = dl() {
+                for &(_, sess, _) in &st.sessions {
+                    tls::close(d, tls::Session(sess));
+                }
+                if st.tls != 0 {
+                    tls::free_server_ctx(d, tls::ServerCtx(st.tls));
+                }
+            }
             for &(_, fd) in &st.conns {
                 linux::close(fd);
             }
@@ -753,6 +1060,19 @@ mod imp {
     pub unsafe extern "C" fn isc_sys_recv(out: *mut IscArrayCode, c: i64, max: i64) {
         let max = max.clamp(1, 1 << 24) as usize;
         let buf = isc_alloc(max as i64);
+        if let Some(sess) = session(c) {
+            // SAFETY: `buf` holds `max` bytes
+            let b = unsafe { core::slice::from_raw_parts_mut(buf, max) };
+            *out = match tls::read(tls::no_dl(), sess, b) {
+                tls::Step::Done(n) => IscArrayCode { a: bytes_read(buf, n, max), code: 0 },
+                tls::Step::End => IscArrayCode { a: bytes_read(buf, 0, max), code: 0 },
+                st => {
+                    isc_free(buf);
+                    IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code: tls_code(st) }
+                }
+            };
+            return;
+        }
         let r = recv(c as usize, buf, max as c_int, 0);
         if r < 0 {
             isc_free(buf);
@@ -766,6 +1086,21 @@ mod imp {
     pub unsafe extern "C" fn isc_sys_send(out: *mut i64, c: i64, p: *const u8, n: i64) {
         let mut at = 0usize;
         let n = n.max(0) as usize;
+        if let Some(sess) = session(c) {
+            // SAFETY: `p` holds `n` bytes
+            let all = unsafe { core::slice::from_raw_parts(p, n) };
+            while at < n {
+                match tls::write(tls::no_dl(), sess, &all[at..]) {
+                    tls::Step::Done(k) => at += k,
+                    st => {
+                        *out = tls_code(st);
+                        return;
+                    }
+                }
+            }
+            *out = 0;
+            return;
+        }
         while at < n {
             let r = send(c as usize, p.add(at), (n - at).min(1 << 30) as c_int, 0);
             if r < 0 {
@@ -779,8 +1114,96 @@ mod imp {
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_close(out: *mut i64, c: i64) {
+        if let Some(sess) = take_session(c) {
+            tls::close(tls::no_dl(), sess);
+        }
         close_socket(c);
         *out = 0;
+    }
+
+    // ----- TLS of the connections (D343): SChannel ---------------------
+
+    use isc_runtime_core::tls;
+
+    fn tls_code(st: tls::Step) -> i64 {
+        match st {
+            tls::Step::WantRead | tls::Step::WantWrite => 6,
+            _ => tls::TLS_FAULT,
+        }
+    }
+
+    /// `sysTlsStart(conn, host, ca)`: the client of TLS on `conn`.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_tlsstart(out: *mut TextCode, c: i64, hp: *const u8, hn: i64, cp: *const u8, cn: i64) {
+        match tls::connect(tls::no_dl(), c, bytes_of(hp, hn), bytes_of(cp, cn)) {
+            Ok(sess) => {
+                with_sessions(|v| v.push((c, sess)));
+                *out = TextCode { text: new_str(b""), code: 0 };
+            }
+            Err((code, t)) => *out = TextCode { text: new_str(t.as_bytes()), code },
+        }
+    }
+
+    /// `sysServerOpenTls(listener, cert, key)`: a server whose connections
+    /// speak TLS (D343).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serveropentls(out: *mut HandleTextCode, l: i64, cp: *const u8, cn: i64, kp: *const u8, kn: i64) {
+        let ctx = match tls::server_ctx(tls::no_dl(), bytes_of(cp, cn), bytes_of(kp, kn)) {
+            Ok(c) => c,
+            Err((code, t)) => {
+                close_socket(l);
+                *out = HandleTextCode { h: -1, text: new_str(t.as_bytes()), code };
+                return;
+            }
+        };
+        let mut plain = HandleCode { h: -1, code: 0 };
+        isc_sys_serveropen(&mut plain, l);
+        if plain.code != 0 {
+            tls::free_server_ctx(tls::no_dl(), ctx);
+            *out = HandleTextCode { h: -1, text: new_str(b"the server"), code: plain.code };
+            return;
+        }
+        if let Some(st) = server::<usize>(plain.h) {
+            st.tls = ctx.0;
+        }
+        *out = HandleTextCode { h: plain.h, text: new_str(b""), code: 0 };
+    }
+
+    /// The connection `id` of a server of TLS read: its handshake a step
+    /// further, or at most `max` bytes of its stream (an end or a fault: 0).
+    fn read_tls(st: &mut ServerState<usize>, id: i64, max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+        let Some(x) = st.sessions.iter().find(|x| x.0 == id).copied() else { return };
+        let sess = tls::Session(x.1);
+        if !x.2 {
+            match tls::handshake(tls::no_dl(), sess) {
+                tls::Step::Done(_) => {
+                    if let Some(y) = st.sessions.iter_mut().find(|y| y.0 == id) {
+                        y.2 = true;
+                    }
+                }
+                tls::Step::WantRead | tls::Step::WantWrite => return,
+                _ => {
+                    ids.push(id);
+                    lens.push(0);
+                    return;
+                }
+            }
+        }
+        let at = data.len();
+        data.resize(at + max, 0);
+        match tls::read(tls::no_dl(), sess, &mut data[at..]) {
+            tls::Step::Done(n) => {
+                data.truncate(at + n);
+                ids.push(id);
+                lens.push(n as i64);
+            }
+            tls::Step::WantRead | tls::Step::WantWrite => data.truncate(at),
+            _ => {
+                data.truncate(at);
+                ids.push(id);
+                lens.push(0);
+            }
+        }
     }
 
     #[no_mangle]
@@ -792,6 +1215,9 @@ mod imp {
     /// `sysShutdown(conn)`: `shutdown(s, SD_SEND)`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_shutdown(out: *mut i64, c: i64) {
+        if let Some(sess) = session(c) {
+            tls::notify_close(tls::no_dl(), sess);
+        }
         *out = if shutdown(c as usize, 1) == 0 { 0 } else { last_code() };
     }
 
@@ -828,7 +1254,7 @@ mod imp {
             *out = HandleCode { h: -1, code };
             return;
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new() });
         *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
     }
 
@@ -841,6 +1267,17 @@ mod imp {
         };
         let max = max.clamp(1, 1 << 24) as usize;
         let (mut ids, mut lens, mut data) = (alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<u8>::new());
+        // the sessions of TLS that hold bytes already received: read first
+        if st.tls != 0 {
+            let ready: alloc::vec::Vec<i64> = st.sessions.iter().filter(|x| x.2 && tls::pending(tls::no_dl(), tls::Session(x.1)) > 0).map(|x| x.0).collect();
+            for id in ready {
+                read_tls(st, id, max, &mut ids, &mut lens, &mut data);
+            }
+            if !ids.is_empty() {
+                *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+                return;
+            }
+        }
         // again while only connections were accepted, within the delay (as
         // under Linux and in the interpreter)
         let deadline = (ms >= 0).then(|| crate::isc_clock_ns().saturating_add(ms as u64 * 1_000_000));
@@ -880,11 +1317,24 @@ mod imp {
                     closesocket(c);
                     continue;
                 }
-                st.add(c);
+                let id = st.add(c);
+                if st.tls != 0 {
+                    match tls::accept(tls::no_dl(), tls::ServerCtx(st.tls), c as i64) {
+                        Some(sess) => st.sessions.push((id, sess.0, false)),
+                        None => {
+                            st.take(id);
+                            closesocket(c);
+                        }
+                    }
+                }
             }
         }
         for id in ready {
             let Some(fd) = st.fd(id) else { continue };
+            if st.tls != 0 {
+                read_tls(st, id, max, ids, lens, data);
+                continue;
+            }
             data.reserve(max);
             let at = data.len();
             // SAFETY: Winsock writes at most `max` bytes at the room
@@ -903,12 +1353,35 @@ mod imp {
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serversend(out: *mut i64, s: i64, id: i64, p: *const u8, n: i64) {
-        let Some(fd) = server::<usize>(s).and_then(|st| st.fd(id)) else {
+        let Some(st) = server::<usize>(s) else {
+            *out = -9;
+            return;
+        };
+        let Some(fd) = st.fd(id) else {
             *out = -9;
             return;
         };
         let n = n.max(0) as usize;
         let mut at = 0usize;
+        if st.tls != 0 {
+            let Some(x) = st.sessions.iter().find(|x| x.0 == id) else {
+                *out = -9;
+                return;
+            };
+            // SAFETY: `p` holds `n` bytes
+            let all = unsafe { core::slice::from_raw_parts(p, n) };
+            while at < n {
+                match tls::write(tls::no_dl(), tls::Session(x.1), &all[at..]) {
+                    tls::Step::Done(k) => at += k,
+                    st => {
+                        *out = tls_code(st);
+                        return;
+                    }
+                }
+            }
+            *out = 0;
+            return;
+        }
         while at < n {
             let r = send(fd, p.add(at), (n - at).min(1 << 30) as c_int, 0);
             if r < 0 {
@@ -930,7 +1403,15 @@ mod imp {
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serverdrop(out: *mut i64, s: i64, id: i64) {
-        *out = match server::<usize>(s).and_then(|st| st.take(id)) {
+        let Some(st) = server::<usize>(s) else {
+            *out = -9;
+            return;
+        };
+        if let Some(i) = st.sessions.iter().position(|x| x.0 == id) {
+            let (_, sess, _) = st.sessions.remove(i);
+            tls::close(tls::no_dl(), tls::Session(sess));
+        }
+        *out = match st.take(id) {
             Some(fd) => {
                 closesocket(fd);
                 0
@@ -944,6 +1425,12 @@ mod imp {
         if s > 0 {
             // SAFETY: the state that `isc_sys_serveropen` made, freed once
             let st = alloc::boxed::Box::from_raw(s as *mut ServerState<usize>);
+            for &(_, sess, _) in &st.sessions {
+                tls::close(tls::no_dl(), tls::Session(sess));
+            }
+            if st.tls != 0 {
+                tls::free_server_ctx(tls::no_dl(), tls::ServerCtx(st.tls));
+            }
             for &(_, fd) in &st.conns {
                 closesocket(fd);
             }

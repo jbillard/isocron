@@ -1,0 +1,51 @@
+import * as https from "https";
+import * as http from "http";
+import * as sys from "sys";
+
+// the client of HTTPS (D343) against a server of the test on `args[0]`:
+// the authorities of the files `args[1]` (that signed the server's
+// certificate) and `args[2]` (another)
+
+// a response in short: its status, its length, the sum of its bytes, and
+// its text when it is short
+function summary(r: http.Response): string {
+    const s = sum(map(r.body, (x) => i64(x)));
+    return r.body.length < 100 ? `${r.status} ${http.text(r).trim()}` : `${r.status} ${r.body.length} ${s}`;
+}
+
+// a fault in short: its kind (the texts of TLS are those of the library)
+function fault(e: http.HttpError): string {
+    return match (e) {
+        http.Io(x) => match (x) {
+            sys.Tls(w) => w == "no certificate in the PEM text" ? `tls ${w}` : `tls ${w.indexOf("certificate") >= 0 ? "certificate" : "other"}`,
+            sys.Refused(w) => `refused ${w}`,
+            _ => http.message(e),
+        },
+        _ => http.message(e),
+    };
+}
+
+action show(url: string, ca: string): void {
+    match (https.getWith(url, ca)) {
+        Ok(r) => print(summary(r)),
+        Err(e) => print(fault(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const port = args[0];
+    const ca = readText(args[1]);
+    const other = readText(args[2]);
+    show(`https://localhost:${port}/hello.txt`, ca);
+    show(`https://localhost:${port}/big.bin`, ca);
+    show(`https://localhost:${port}/hello.txt`, other);
+    show(`https://127.0.0.1:${port}/hello.txt`, ca);
+    show(`https://localhost:${port}/hello.txt`, "not a certificate");
+    show("https://127.0.0.1:1/", ca);
+    // the authorities of the system do not know the test's
+    match (https.get(`https://localhost:${port}/hello.txt`)) {
+        Ok(r) => print(summary(r)),
+        Err(e) => print(fault(e)),
+    };
+    return 0;
+}

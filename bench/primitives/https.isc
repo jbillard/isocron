@@ -1,0 +1,37 @@
+// The audit of every form against the machine (D301): the client of the
+// module `https` (D343) against `openssl s_server` on the local machine
+// (started by `run.py`: `// bench-server: tls`), one thread: a request on a
+// connection of its own (the connection, the handshake of TLS 1.3, the
+// request, the response, the end), its body of 13 bytes, then of 64 KiB.
+// Each line: a name, the nanoseconds of one request (the mean over half of
+// `rounds`), a checksum; against `https.c` (the floor: OpenSSL called
+// directly, the same requests).
+// usage: https <rounds> <port> <authority.pem>
+// bench-server: tls
+import * as https from "https";
+
+// `n` requests of `url`: the sum of their statuses and lengths
+action gets(url: string, ca: string, n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    return match (https.getWith(url, ca)) {
+        Ok(r) => gets(url, ca, n - 1, acc + r.status + r.body.length),
+        Err(e) => -1,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const r = Math.max(parseI64(args[0]) / 2, 1);
+    const ca = readText(args[2]);
+    const base = `https://localhost:${args[1]}`;
+    const t0 = clock();
+    const a = gets(base + "/hello.txt", ca, r, 0);
+    const t1 = clock();
+    print(`get.small ${f64(t1 - t0) / f64(r)} ${a / r}`);
+    const t2 = clock();
+    const b = gets(base + "/64k.bin", ca, r, 0);
+    const t3 = clock();
+    print(`get.64k ${f64(t3 - t2) / f64(r)} ${b / r}`);
+    return 0;
+}
