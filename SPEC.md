@@ -239,7 +239,7 @@ Chaque valeur a un type connu à la compilation, et aucune conversion entre vale
 | `bigint` | opaque | entier de taille quelconque, littéraux `123n` (D156) ; ne se mélange pas aux autres nombres |
 
 - **Littéraux** : un littéral sans suffixe prend le type exigé par son contexte (`c[v] + 1` avec `c[v]: u32` donne `1: u32`). Si le contexte ne fixe rien : `i64` pour un entier, `f64` pour un flottant. Un littéral hors de la plage du type est une erreur de compilation. Ce n'est pas une conversion : le littéral est typé directement.
-- **Débordement entier** : arithmétique modulaire, définie. C'est le comportement de Rust en mode release ; en C, le débordement signé est indéfini, ce qui autorise certaines optimisations (section 16).
+- **Débordement entier** : arithmétique modulaire, définie. C'est le comportement de Rust en mode release ; en C, le débordement signé est indéfini, ce qui autorise certaines optimisations ; l'arithmétique modulaire est gardée (D329).
 - **Division entière** (décision) : quotient tronqué vers zéro ; `a % b` a le signe de `a`. Division ou reste par zéro : panne. `MIN / -1` donne `MIN` et `MIN % -1` donne `0` (arithmétique modulaire).
 - **Puissance entière** : `a ** k` exige `k >= 0`, sinon panne ; calculée modulo 2^bits comme le reste de l'arithmétique entière.
 - **Conversions explicites** : `f64(n)`, `i32(x)`. D'un flottant vers un entier : troncature vers zéro, saturation aux bornes, NaN donne 0.
@@ -253,7 +253,7 @@ Chaque valeur a un type connu à la compilation, et aucune conversion entre vale
 - **Tailles existentielles** : une variable de taille qui n'apparaît que dans le type du résultat est fixée à l'exécution par la fonction : `readF64(path)` est de type `f64[k]`. La forme bornée `T[k <= n]` (résultat de `filter`) précise en plus que `k` ne dépasse pas `n`.
 - **Expressions de taille** : sommes et produits de constantes et de variables de taille (`T[n - k + 1]`, `T[2 * n]`). Deux tailles sont égales à la compilation si leurs formes polynomiales normalisées sont identiques ; sinon, un test est inséré à l'entrée de la fonction. Un échec est une panne (section 5) ; chaque test restant figure dans le memory report.
 - **Tableaux multidimensionnels** `T[n][m]` (`n` lignes de `m` éléments) : réguliers, stockés ligne par ligne dans un seul bloc.
-- Un tableau de tuples ou de records doit être stocké en colonnes, une colonne par champ (structure of arrays). Le choix automatique de la disposition est reporté (section 16).
+- Un tableau de tuples ou de records doit être stocké en colonnes, une colonne par champ (structure of arrays). Le choix automatique de la disposition est hors de la v1 (D329).
 
 ### Tuples et records
 
@@ -347,7 +347,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 Une fusion évite de créer un tableau intermédiaire en mémoire ; les règles ci-dessous sont garanties, et ce sont les seules sur lesquelles `requireFused` s'appuie.
 
-Préalable : avant la fusion, **toute** fonction non récursive est intégrée à son point d'appel (inlining), sans seuil, et toute fonction d'ordre supérieur est spécialisée (section 11). Un seuil d'inlining rendrait la fusion dépendante de l'implémentation ; la croissance du code qui en résulte est une limite connue (section 16).
+Préalable : avant la fusion, **toute** fonction non récursive est intégrée à son point d'appel (inlining), sans seuil, et toute fonction d'ordre supérieur est spécialisée (section 11). Un seuil d'inlining rendrait la fusion dépendante de l'implémentation ; la croissance du code qui en résulte est mesurée et acceptée (section 16, D329).
 
 ### Règles de fusion
 
@@ -382,7 +382,7 @@ Aucun ramasse-miettes : chaque allocation est libérée à un point connu à la 
 
 - Scalaires, tuples, records et types somme non récursifs : registres ou pile.
 - Tableaux : un bloc contigu, aligné sur 64 octets (une ligne de cache sur les CPU x86-64 courants), sur le tas.
-- Le compilateur peut placer sur la pile un tableau de taille constante ; le seuil est à fixer (section 16). Ce choix n'affecte que la vitesse, jamais le verdict d'une exigence (section 9).
+- Le compilateur peut placer sur la pile un tableau de taille constante ; le seuil est de 32 Kio (D86, D329). Ce choix n'affecte que la vitesse, jamais le verdict d'une exigence (section 9).
 - Types récursifs : sur le tas, avec comptage de références ; un constructeur sans charge n'est pas alloué (D169).
 - Un littéral de tableau dont tous les éléments sont des constantes scalaires est une donnée du programme : le lire n'alloue rien (`@requireNoAlloc` l'accepte), et une valeur qui en est faite (`with`, valeur initiale d'un `fold`) en est une copie (D173).
 
@@ -489,7 +489,7 @@ Par défaut, un calcul flottant donne le même résultat au bit près, quels que
 - Aucune contraction implicite en FMA : `a * b + c` fait deux arrondis. Le FMA s'écrit explicitement : `fma(a, b, c)`.
 - Les nombres sous-normaux sont conservés.
 - Aucune réassociation, aucune simplification algébrique : `x * 0.0` n'est pas remplacé par `0.0`, à cause de NaN et de −0.
-- `sqrt` est correctement arrondie, comme l'exige IEEE 754. Les fonctions transcendantes (`pow`, `exp`, `log`, `sin`, `cos`) sont fournies par le runtime d'Isocron, avec la même implémentation sur toutes les cibles ; leur précision cible est en section 16.
+- `sqrt` est correctement arrondie, comme l'exige IEEE 754. Les fonctions transcendantes (`pow`, `exp`, `log`, `sin`, `cos`) sont fournies par le runtime d'Isocron, avec la même implémentation sur toutes les cibles ; leur précision est celle de l'implémentation de musl (section 16, D329).
 
 ### NaN
 
@@ -510,7 +510,7 @@ Décision : `min` et `max` sur flottants suivent les opérations `minimum` et `m
 
 La sémantique de `reduce(x, op, e)` est la forme ci-dessous, et non « un ordre quelconque ». Le résultat est donc déterministe, même si `op` n'est pas associatif.
 
-Paramètres fixés par la spécification : V = 32 voies, B = 4 096 éléments par bloc (multiple de V). V a été choisi après mesures (`results/xeon-lanes.md`, DECISIONS D55 et D56) ; B reste provisoire jusqu'à ses propres mesures (section 16).
+Paramètres fixés par la spécification : V = 32 voies, B = 4 096 éléments par bloc (multiple de V). V a été choisi après mesures (`results/xeon-lanes.md`, DECISIONS D55 et D56) ; B aussi, après ses propres mesures (section 16, D321, D329).
 
 ```
 reduce_block(x[0..m]):                  -- m <= B
@@ -788,23 +788,26 @@ Dans `dot`, `a` et `b` ont des tailles existentielles différentes : l'égalité
 
 ## 16. Questions ouvertes et limites connues
 
-Ces points ne sont pas tranchés ; aucune implémentation ne doit les décider sans mise à jour de ce document.
+Une question nouvelle est ajoutée ici et tranchée avant d'être implémentée ; aucune ne l'est en silence dans le code. Il n'en reste aucune ouverte : celles de la v1 sont tranchées ci-dessous (D161, D329).
 
-| Question | Pourquoi elle compte | À trancher avant |
-| --- | --- | --- |
-| Valeur de B (4 096) ; V = 32 est tranché (section 10) | grain du parallélisme et coût des niveaux supérieurs de l'arbre, pas encore mesurés | étape 2 |
-| Coût réel du mode reproductible face aux variantes réassociées | conditionne l'intérêt du mode par défaut | fin du POC |
-| `@requireVectorized` et cibles multiples | une même fonction peut passer sur une cible et échouer sur une autre | après la phase 7 |
-| Débordement entier modulaire | peut bloquer des optimisations que C obtient par comportement indéfini | après mesures |
-| Croissance du code due à l'inlining total | l'inlining sans seuil garantit la fusion mais peut gonfler les binaires ; toute limite devra être une règle de la spécification, pas une heuristique | étape 2, phase 2 |
-| Seuil de placement sur la pile | performances des petits tableaux (n'affecte aucun verdict) | étape 2, phase 3 |
-| Précision des fonctions transcendantes | reproductibilité contre vitesse | étape 2 |
-| Disposition automatique (lignes ou colonnes) | aujourd'hui toujours en colonnes | après la phase 7 |
-| Comportement FMA par défaut de Rust, Go, Zig, Fortran | équité de la variante stricte | P5 du POC |
-| Unicité du nom « Isocron » | deux recherches web n'ont trouvé aucun langage de ce nom ; pas une preuve | avant publication |
-| Valeurs linéaires (`Region`, `Shared`, blocs) : l'unicité de la section 8 en garantie, et non plus en optimisation | sans elle, le runtime en Isocron (section 17) pourrait utiliser une région rendue | avant l'allocateur en Isocron |
-| Moteur des expressions régulières et grands entiers : réécrits en Isocron ou gardés en Rust | des dizaines de milliers de lignes, très optimisées | avant la fin de la section 17 |
-| Accès aux instructions vectorielles explicites (masques, comparaisons d'octets) depuis les modules du runtime | les recherches du runtime en dépendent pour leur vitesse | avant le portage des fonctions de texte |
+### Questions tranchées pour la v1 (D329)
+
+| Question | Décision |
+| --- | --- |
+| Valeur de B | **B = 4 096**, fixé : il fixe les bits d'une réduction de plus de B flottants, et ne change rien de mesurable sur un thread (une somme de 10^3 à 10^7 flottants à 2 % près pour B = 1 024, 4 096 et 16 384) ; avec 4 threads, 1 024 est 2 à 4 fois plus lent à 10^5 éléments et aucun n'est meilleur partout. Le grain des tâches d'un remplissage parallèle n'est plus B mais au moins 16 Kio (D321). |
+| Coût du mode reproductible | Il reste le mode par défaut. Mesuré : il égale ou bat la meilleure variante stricte de chaque langage (`results/xeon-summary.md`) ; face aux variantes réassociées de C et Zig, 5,69 µs contre 5,24 µs sur le petit `std_dev` (dans les caches), rien sur les grandes tailles (lues en mémoire). `allowReassoc` reste hors de la v1 (une erreur). |
+| `@requireVectorized` et cibles multiples | Hors de la v1 (section 1). Quand il viendra : vérifié pour chaque cible construite, l'erreur nomme la cible. |
+| Débordement entier modulaire | Gardé, défini. Aucun des écarts des dix programmes à leur plancher ne vient de lui (`results/floors.md`, l'attribution de D263). |
+| Croissance du code due à l'inlining total | Gardé sans seuil : les dix programmes font de 68 Ko à 296 Ko, sauf regex-redux (1,6 Mo : le moteur des expressions régulières qu'il emporte, pas l'inlining). |
+| Seuil de placement sur la pile | 32 Kio (D86) : les tableaux de travail de taille constante jusque-là sur la pile, au-delà sur le tas. |
+| Précision des fonctions transcendantes | Celle de l'implémentation de musl (crate `libm`, D108), la même sur toutes les cibles, dans l'interpréteur comme en code compilé : la reproductibilité avant la vitesse. |
+| Disposition automatique | Les colonnes toujours (section 4) en v1 ; un choix automatique hors de la v1. |
+| FMA par défaut de Rust, Go, Zig, Fortran | Tranché au POC (D34 et suivantes) : chaque langage dans ses règles, les variantes strictes comparées à part. |
+| Unicité du nom « Isocron » | Gardé : publié sous ce nom depuis la version 0.1.0. |
+| Valeurs linéaires | L'unicité de la section 8 est une garantie pour les types déclarés uniques (`Conn`, `Listener` de la bibliothèque, `Region`, `Shared` du runtime), vérifiée par le vérificateur de l'IR (D326). |
+| Moteur des expressions régulières et grands entiers | Gardés en Rust en v1 ; chacun remplacé par une version en Isocron seulement quand elle est aussi rapide (section 17). |
+| Instructions vectorielles explicites dans les modules | Hors de la v1 : SHA-256 en `u32` (section 18), la vectorisation automatique ailleurs ; plus tard une famille de primitives bornées, vérifiées comme les autres. |
+| Fuseaux horaires nommés, heure locale | Hors de la v1 : UTC et décalages fixes (section 18). |
 
 ### Questions tranchées pour la v1 (D161)
 
@@ -846,9 +849,156 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads.
 4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
 5. Les entrées et sorties (fichiers, entrée standard projetée).
-6. Restent hors d'Isocron, à décider (section 16) : le moteur des expressions régulières (aujourd'hui `regex-automata`, en Rust) et les grands entiers (`num-bigint`).
+6. Restent en Rust en v1 (section 16, D329) : le moteur des expressions régulières (aujourd'hui `regex-automata`, en Rust) et les grands entiers (`num-bigint`).
 
-## 18. Références
+## 18. La bibliothèque standard
+
+But : des programmes de calcul qui sortent de leur fichier d'entrée. Ils lisent leur environnement et leurs dossiers, datent leurs résultats, échangent du JSON, signent des données et parlent HTTP. La bibliothèque suit les principes de la section 17 : **le runtime n'ajoute que des primitives minimales**, et tout le reste est écrit en Isocron. Cela couvre les formats, les protocoles, les calendriers, les condensats et les boucles de serveur, vérifiés comme tout programme (D322).
+
+### Règles
+
+1. **Des modules livrés avec le compilateur.** `import { get } from "http";` : un nom nu désigne d'abord un module standard, puis un module de `$ISC_PATH` (D150). Les modules standard sont inclus dans `iscc` lui-même, sans fichier à installer à côté, et nommés `std:<nom>` dans les messages. Un module de l'utilisateur qui porte le nom d'un module standard ne le masque pas : on l'importe par son chemin (`"./http"`). Les modules standard sont lus, vérifiés et compilés comme ceux du programme, sans exception de règle (D322).
+2. **Les primitives** sont les fonctions `sys*` énumérées ci-dessous. Seuls les modules standard les appellent : un programme qui en nomme une est refusé à la compilation, et le message nomme le module qui l'offre. Chaque primitive a :
+   - son contrat ;
+   - son implémentation dans le code compilé et dans l'interpréteur, avec le même résultat ;
+   - l'ensemble des cibles qui l'ont ;
+   - ses tests sous Linux et dans la machine virtuelle Windows.
+
+   Une primitive reçoit et rend des scalaires, des chaînes, des tableaux et des tuples, jamais d'adresse. Son résultat est un tuple `[valeur, code]`, où `code` est `0` ou l'erreur du système, comme les primitives `_or_error` de D138. Le module construit lui-même les `Result` (D323).
+3. **Les effets restent dans les actions.** Toute fonction qui lit ou change le système, l'horloge ou le réseau est une `action`. Une `function` reste pure. C'est ce qui permet à `serve` d'appeler son handler en parallèle (D327).
+4. **Les erreurs du système sont des valeurs.** Toute action qui peut échouer pour une raison extérieure au programme rend `Result<T, IoError>`. Les erreurs sont un fichier absent, un droit refusé ou une connexion refusée. Une panne reste réservée aux erreurs de programmation (D323) :
+
+   ```
+   export type IoError =
+       NotFound(string) | PermissionDenied(string) | AlreadyExists(string)
+       | NotEmpty(string) | Refused(string) | TimedOut(string) | Other(i64, string);
+   ```
+
+   La chaîne nomme l'objet de l'erreur (le chemin, l'adresse). `Other` porte le code du système (`errno` sous Linux, `GetLastError` sous Windows). `message(e)` donne le texte de l'erreur, le même sur toutes les cibles pour les six premières sortes.
+5. **Une cible qui n'a pas une fonction la refuse à la compilation** (D324). WASI (préversion 1) n'a ni sockets, ni dossiers hors de ceux que l'hôte lui ouvre, ni TLS. Un programme pour `wasm32-wasi` qui appelle, directement ou par un module, une primitive que la cible n'a pas est une erreur de compilation. L'erreur nomme la fonction du programme qui mène à la primitive, la primitive et la cible :
+
+   ```
+   error: `connect` (module net) needs `sysConnect`, which the target wasm32-wasi does not have
+   ```
+
+   La vérification porte sur le graphe des appels après la spécialisation. Une fonction jamais appelée ne compte pas.
+6. **Le même résultat partout.** Toute fonction donne le même résultat dans l'interpréteur et en code compilé, sur Linux, Windows et WASI quand la cible l'a. La seule exception est ce que le système décide lui-même : le contenu d'un dossier, l'heure, les codes de `Other`. L'ordre d'une liste de fichiers n'est pas une exception : il est fixé par le tri des noms par octets.
+7. **Chaque fonction a** :
+   - un exemple testé dans `docs/language.md` ;
+   - un microbenchmark dans `bench/primitives/<module>.isc` ;
+   - son plancher en C, dans `bench/primitives/<module>.c`, rangé dans `results/primitives.md` comme les formes du langage.
+
+   Les tests du réseau restent sur la machine locale (`127.0.0.1`, `::1`).
+
+### Primitives
+
+| Famille | Primitives | Cibles |
+| --- | --- | --- |
+| Environnement | `sysGetenv(name) => [string, i64]`, `sysEnviron() => string[k]` (entrées `nom=valeur`) ; les arguments restent ceux de `main` | toutes |
+| Fichiers et dossiers | `sysStat(path) => [i64, i64, i64]` (sorte, taille, date de modification en nanosecondes), `sysReadDir(path) => [string[k], i64]`, `sysMkdir(path)`, `sysRemoveFile(path)`, `sysRemoveDir(path)`, `sysRename(from, to)`, `sysCwd()`, `sysReadFile`, `sysWriteFile(path, bytes, append)` | toutes (WASI : dans les dossiers ouverts par l'hôte) |
+| Horloge | `sysClockReal() => [i64, i64]` (secondes et nanosecondes depuis le 1er janvier 1970, UTC), `clock()` existant (monotone) | toutes |
+| Sockets | `sysSocket(family, kind)`, `sysConnect(s, addr, port, timeoutMs)`, `sysBind(s, addr, port)`, `sysListen(s, backlog)`, `sysAccept(s)`, `sysRecv(s, max)`, `sysSend(s, bytes)`, `sysSendTo`, `sysRecvFrom` (UDP), `sysClose(s)`, `sysPoll(sockets, events, timeoutMs)` | Linux, Windows |
+| Noms | `sysResolve(host) => [string[k], i64]` | Windows (`GetAddrInfoW`) ; sous Linux, la résolution est écrite en Isocron (voir `net`) |
+| TLS | `sysTlsOpen(socket, host, ca, server, cert, key)`, `sysTlsSend`, `sysTlsRecv`, `sysTlsClose` | Linux (OpenSSL chargé à l'exécution), Windows (SChannel) |
+
+Sous Linux, une primitive est un appel direct du système (D287), sauf TLS. Sous Windows, c'est une fonction de `kernel32`, de `ws2_32` ou de `secur32`. Sous WASI, c'est une fonction de WASI. Une socket est un entier qui n'a de sens que pour ces primitives.
+
+### Modules et signatures
+
+#### `sys` : le système
+
+| Fonction | Type |
+| --- | --- |
+| `env(name)` | `action (string) => Option<string>` |
+| `envAll()` | `action () => [string, string][k]`, triées par nom |
+| `cwd()` | `action () => Result<string, IoError>` |
+| `exists(path)`, `isFile(path)`, `isDir(path)` | `action (string) => boolean` |
+| `fileSize(path)`, `modified(path)` | `action (string) => Result<i64, IoError>` (octets ; nanosecondes depuis 1970) |
+| `listDir(path)` | `action (string) => Result<string[k], IoError>` : les noms sans `.` ni `..`, triés par octets |
+| `makeDir(path)`, `makeDirs(path)` | `action (string) => Result<void, IoError>` ; `makeDirs` crée les parents, réussit si le dossier existe |
+| `remove(path)` | `action (string) => Result<void, IoError>` : un fichier ou un dossier vide |
+| `removeAll(path)` | `action (string) => Result<void, IoError>` : un dossier et son contenu, sans suivre les liens |
+| `rename(from, to)` | `action (string, string) => Result<void, IoError>` |
+| `readFile(path)`, `readText(path)` | `action (string) => Result<u8[k], IoError>`, `Result<string, IoError>` |
+| `writeFile(path, x)`, `appendFile(path, x)` | `action (string, u8[n]) => Result<void, IoError>` (et leurs formes `string`) |
+
+Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) sont `join(a, b)`, `dirname(p)`, `basename(p)`, `extension(p)`, `normalize(p)` et `isAbsolute(p)`. Le séparateur est `/`. Sous Windows, `\` est accepté en lecture et `C:` est une racine. `normalize` retire les `.` et les `x/..` sans lire le disque. Leur résultat ne dépend que du texte et de la cible.
+
+#### `time` : dates et heures
+
+- `type Instant = i64` : les nanosecondes depuis le 1er janvier 1970 à 0 h UTC, secondes intercalaires ignorées comme le fait POSIX.
+- `type Date = { year: i64, month: i64, day: i64 }`, `type Time = { hour: i64, minute: i64, second: i64, nano: i64 }`, `type DateTime = { date: Date, time: Time, offset: i64 }` (le décalage en minutes).
+- `now(): action () => Instant`.
+- Les fonctions pures `toDateTime(i, offset)`, `toInstant(d)`, `addDays(d, n)`, `addMonths(d, n)`, `weekday(d)`, `daysBetween(a, b)`, `isLeapYear(y)` et `daysInMonth(y, m)` suivent le calendrier grégorien proleptique (l'algorithme des jours civils de Hinnant, sans table).
+- `format(d, pattern)` lit les champs `YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, `SSS` et `Z`.
+- `formatIso(i)` écrit RFC 3339 en UTC (`2026-11-05T14:03:00Z`, avec des fractions si elles ne sont pas nulles).
+- `parseIso(s): Result<DateTime, string>` lit RFC 3339 et les formes d'ISO 8601 qui en sont des sous-ensembles (date seule, `T` ou espace).
+- Les fuseaux horaires nommés et l'heure locale du système ne font pas partie de la v1 (section 16, D329).
+
+#### `json`
+
+- `type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) | Obj([string, Json][k])`. Les clés d'un objet gardent l'ordre du texte.
+- `parse(text): Result<Json, JsonError>`. Le texte suit RFC 8259 : UTF-8 vérifié, échappements `\uXXXX` et paires de substitution, profondeur au plus 512. `JsonError = { line: i64, column: i64, message: string }`.
+- `stringify(j): string` écrit un texte sans espaces. Un nombre y est écrit sous la forme la plus courte qui se relit en la même valeur, comme `print`. NaN et l'infini sont une erreur, comme en JavaScript.
+- **Le décodage dans un type de l'utilisateur.** `decode<T>(text): Result<T, JsonError>` et `encode<T>(x: T): string`. Un appel peut porter ses arguments de type comme en TypeScript (`decode<Point>(text)`). `f<` est lu comme une liste d'arguments de type quand ce qui suit se lit comme des types fermés par `>` et suivis de `(` ; sinon c'est une comparaison (D325).
+  - Le compilateur écrit, pour chaque `T` employé, son décodeur et son encodeur en Isocron, à la spécialisation. Le décodeur lit le texte une seule fois, sans construire de `Json` intermédiaire.
+  - `T` peut être `i64`, `f64`, `boolean`, `string`, un tableau, un tuple (un tableau JSON de cette longueur), un record de ces types, ou `Option<U>`. `Option<U>` vaut `None` pour un champ absent ou `null`.
+  - Un champ du record absent du texte, d'un autre type, ou un `i64` qui n'est pas un entier exact, est une erreur du décodage qui nomme le chemin du champ (`$.points[3].x`). Un champ du texte que `T` n'a pas est ignoré.
+  - Un `T` que JSON ne peut pas porter (une fonction, un `Map`, un type somme autre qu'`Option`) est **une erreur de compilation** qui nomme le champ.
+- Aucune primitive : le texte et les nombres existent déjà (`parseF64` suit les règles de JavaScript).
+
+#### `sha256`
+
+`digest(x: u8[n]): u8[32]`, `digestText(s): u8[32]` et `hex(x: u8[n]): string` suivent FIPS 180-4. Ils sont écrits en Isocron sur des `u32` (rotations, additions modulaires), un bloc de 64 octets à la fois, par la forme de `fold` sur les blocs. Les vecteurs de test sont ceux du NIST. Le plancher est la même boucle en C. Les instructions SHA du processeur sont mesurées à part, comme borne basse : elles ne sont pas offertes aux modules en v1 (section 16, D329).
+
+#### `net` : TCP
+
+- `type Conn` et `type Listener` sont des valeurs **uniques** (section 8) : passées, jamais copiées. `close` les consomme. Une connexion fermée ne peut plus être lue : l'erreur est donnée à la compilation, par l'unicité, et non à l'exécution (D326).
+- `connect(host, port): action => Result<Conn, IoError>`, `listen(host, port)`, `accept(l): Result<[Conn, string], IoError>` (l'adresse du pair), `read(c, max): Result<u8[k], IoError>` (vide à la fin du flux), `write(c, bytes): Result<void, IoError>` (tout ou erreur), `close(c)`, `setTimeout(c, ms)`.
+- La résolution des noms dans `connect` lit d'abord les adresses numériques (IPv4, IPv6) et `localhost`. Ensuite :
+  - sous Linux, `/etc/hosts`, puis les serveurs de `/etc/resolv.conf` par UDP (enregistrements A et AAAA), en Isocron ;
+  - sous Windows, `sysResolve`.
+
+  Les tests de la résolution interrogent un serveur DNS écrit dans le test, sur la machine locale.
+
+#### `http` : client HTTP/1.1
+
+- `get(url): action => Result<Response, HttpError>` et `request(method, url, headers: [string, string][k], body: u8[n])`.
+- `type Response = { status: i64, headers: [string, string][k], body: u8[k] }` et `text(r): string`. `HttpError` est `Io(IoError) | Malformed(string) | TooLarge(i64) | BadUrl(string)`.
+- Le corps est lu par `Content-Length` ou par `chunked`. Le client ne suit pas les redirections : elles sont rendues telles quelles. `http://` va par `net`, `https://` par `https` quand le programme l'importe ; sinon c'est une erreur `BadUrl` qui le dit.
+
+#### `http` : serveur
+
+- `serve(port: i64, handler: (Request) => Response): action void`, avec `type Request = { method: string, path: string, query: string, headers: [string, string][k], body: u8[k] }`.
+- **Le handler est une `function`** : il ne peut appeler aucune action, et ne voit que sa requête et des valeurs immuables de son contexte (D327).
+- La boucle du serveur, écrite en Isocron sur `sysPoll`, accepte les connexions et lit les octets prêts. Elle lit les requêtes complètes, puis applique le handler à **tout le lot** par le `map` du langage, en parallèle sur le pool, avant d'écrire les réponses. Aucune valeur n'est partagée en écriture entre deux appels du handler, puisqu'ils sont purs : il n'y a **pas de course de données par construction**. Le vérificateur de l'IR (D96) le contrôle comme pour tout `map`.
+- Le serveur accepte les connexions maintenues (`keep-alive`), les corps par `Content-Length` (au plus 16 Mio par défaut) et une requête à la fois par connexion. Une requête mal formée reçoit `400` sans appeler le handler.
+
+#### `https`
+
+- TLS est fourni par la bibliothèque du système (D328) :
+  - sous Windows, SChannel (`secur32`), avec les certificats du magasin du système ;
+  - sous Linux, OpenSSL (`libssl.so.3`), **chargé à l'exécution** par `dlopen`, seulement par un programme qui importe `https`. Un tel programme est construit avec la bibliothèque C du système (D289), et les autres restent statiques et sans C.
+- Sous WASI, `https` est refusé à la compilation.
+- Le client vérifie le certificat et le nom de l'hôte. L'option `ca` (des certificats PEM) remplace le magasin du système pour un serveur privé : c'est ce que font les tests, sur la machine locale.
+- `serveTls(port, cert, key, handler)` est le serveur de la même forme que `serve`.
+- Le code qui appelle ces bibliothèques C est confiné dans un seul module du runtime (`tls.rs`), chaque `unsafe` justifié.
+
+### Ordre de travail
+
+Les modules sont faits dans cet ordre :
+1. `sys` ;
+2. `time` ;
+3. `json` ;
+4. `sha256` ;
+5. `net` ;
+6. le client `http` ;
+7. le serveur `http` ;
+8. `https`.
+
+Chacun a ses primitives, ses tests sous Linux et dans la machine virtuelle Windows, son refus sous WASI, son exemple, son microbenchmark et son plancher. La version 0.3.0 est publiée à la fin.
+
+## 19. Références
 
 - Blelloch, G. E. *Prefix Sums and Their Applications*. Rapport technique, Carnegie Mellon University, 1990.
 - Blelloch, G. E. *Programming Parallel Algorithms*. Communications of the ACM, 1996.

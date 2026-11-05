@@ -311,7 +311,19 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] The tests of the allocator in C (`tests/c/heap_stress.c`, `heap_double_free.c`) rewritten in Rust or Isocron; a mode of checks of the allocator (leaks, uses after free) so that the static programs are checked as Valgrind checks those of glibc
   - [x] n-body static against glibc measured again: +0.06 % [+0.06, +0.07] in one run of 11 rounds, then -0.04 % [-0.93, +0.24] (15 rounds) and -0.03 % [-1.07, +0.00] (31 rounds): no loss (D289)
   - [ ] WASI without wasi-libc; Windows with `kernel32` only
-- [ ] The step HTTPS of the standard library decided again: it relies on C libraries (SChannel, OpenSSL), which the author does not want
+- [x] The step HTTPS of the standard library decided again: the TLS of the system as the goal of 2026-11-05 asks (SChannel, OpenSSL loaded at run time), confined to one module of the runtime, only for the programs that import `https` (D328)
 - [ ] The primitives of a runtime written in Isocron designed in SPEC: typed system calls on arrays, bounded regions of memory, atomics, in a module of the system only, checked by the compiler (D290); then the pure functions of the runtime moved to Isocron one by one, each kept in Rust while its Isocron version is slower; then the allocator, the pool and the start
 - [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron
 
+## The standard library (the goal of 2026-11-05, part 2)
+
+- [x] The design in SPEC section 18: modules shipped inside `iscc`, the closed list of primitives, the errors as values, the targets that lack a function refused at compile time, the signatures of `sys`, `time`, `json`, `sha256`, `net`, `http` and `https` (D322 to D328); the questions of section 16 settled (D329)
+- [ ] `sys`: the environment, folders, the existence, creation and removal of files, paths
+- [ ] `time`: dates and times
+- [ ] `json`: read and written, decoded into a type of the program, its fields checked at compile time
+- [ ] `sha256`
+- [ ] `net`: TCP, client and server
+- [ ] `http`: a client of HTTP/1.1
+- [ ] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool
+- [ ] `https`: the TLS of the system
+- [ ] Release 0.3.0

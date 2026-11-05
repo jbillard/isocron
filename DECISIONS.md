@@ -6282,3 +6282,135 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (`parallel.rs`: arrays of bytes, `u16` and `f64` of 16383 to 1048577
     elements, rows of 61 written to the output, a sum of floats; 1, 3 and
     4 threads, as the interpreter).
+- **D322 — The standard library: modules shipped inside `iscc`, over a
+  closed list of primitives (2026-11-05; SPEC section 18).** The second part
+  of the goal of the author: programs of computation that read their
+  environment and folders, date their results, exchange JSON, hash and
+  speak HTTP. Choices:
+  - The modules (`sys`, `path`, `time`, `json`, `sha256`, `net`, `http`,
+    `https`) are files of Isocron included in the binary of `iscc`
+    (`include_str!`), not files installed next to it: an `iscc` alone is
+    complete (D248), and a module cannot be missing or of another version
+    than its compiler. Their diagnostics name them `std:<name>`.
+  - A bare spec (`"http"`) names a standard module first, then
+    `$ISC_PATH` (D150 looked in `$ISC_PATH` only). A module of the program
+    with the same name is imported by its path (`"./http"`): no file of the
+    disk can change what `import { get } from "http"` means, so the same
+    program compiles the same everywhere.
+  - The standard modules are checked like the program's (types, sizes,
+    uniqueness, the verifier of the IR): no exception, no unchecked code in
+    Isocron. The trusted base stays the primitives and the runtime.
+  - The primitives are actions named `sys*`, callable from the standard
+    modules only: a program that names one is refused with the module that
+    offers it. This keeps the list closed (section 17) and lets a primitive
+    change its form without breaking programs.
+- **D323 — The errors of the system as values: `IoError` (2026-11-05).**
+  Every action that can fail for a reason outside the program (a missing
+  file, a refused connection) returns `Result<T, IoError>`; a panic stays
+  for the errors of programming (D20). `IoError` is a sum of the kinds a
+  program acts on (`NotFound`, `PermissionDenied`, `AlreadyExists`,
+  `NotEmpty`, `Refused`, `TimedOut`) and `Other(code, message)`; each
+  carries the object of the error (a path, an address). The kinds are
+  mapped from `errno` (Linux, WASI) and `GetLastError` (Windows) in the
+  module, so that a program written for one system handles the errors of
+  the other. The primitives return `[value, code]` tuples as the
+  `_or_error` primitives of D138: the code generator builds no sum value;
+  the module builds the `Result`. The `try_*` actions of D138 stay (their
+  error a string).
+- **D324 — A function the target lacks refused at compile time
+  (2026-11-05).** Each primitive lists the targets that have it (WASI
+  preview 1: no sockets, no TLS, files in the preopened folders only). A
+  program built for a target is refused when a primitive it can reach
+  (the call graph after specialization: an unused function does not count)
+  is missing there; the message names the function of the program on the
+  path, the primitive and the target. A check at run time would let a
+  program build for a target where it cannot run (the remark of the
+  author: problems found at compile time, as in Rust).
+- **D325 — JSON decoded into a type of the program, by a decoder written
+  for each type at specialization (2026-11-05).** `decode<T>(text)` and
+  `encode<T>(x)`: the compiler writes, for each `T` used, a decoder and an
+  encoder in Isocron (as it specializes generic functions), which read the
+  text once without building a `Json` tree. The fields are checked at
+  compile time: a `T` that JSON cannot carry (a function, a `Map`, a sum
+  other than `Option`) is a compile error naming the field; a field missing
+  from the text, of another type, or an `i64` not exact is an error of the
+  decoding naming the path of the field (`$.points[3].x`); a field of the
+  text unknown to `T` is skipped (as most decoders of JSON do, so that a
+  service may add fields). The call takes its type arguments as in
+  TypeScript (`decode<Point>(text)`): `f<` is read as type arguments when
+  what follows reads as types closed by `>` and followed by `(`, else as a
+  comparison; a type inferred from the expected result would make the
+  meaning of a call depend on where its value goes.
+- **D326 — Connections and listeners as unique values (2026-11-05).**
+  `Conn` and `Listener` are unique (section 8): moved, never copied; `close`
+  consumes them, and a use after `close` is a compile error from the
+  uniqueness checked by the verifier of the IR, not a failure at run time.
+  The names are resolved in Isocron under Linux (`/etc/hosts`, then the
+  servers of `/etc/resolv.conf` by UDP, A and AAAA), by `GetAddrInfoW`
+  under Windows (its resolver is a function of the system there, as every
+  call of the system of Windows); the tests ask a DNS server written in the
+  test, on the local machine.
+- **D327 — `serve`: the handler a pure function applied by `map` to the
+  batch of ready requests (2026-11-05).** `serve(port, handler)` takes a
+  `function (Request) => Response`. The loop of the server, in Isocron
+  over `sysPoll`, accepts, reads the ready bytes, and applies the handler
+  to the batch of complete requests by the `map` of the language, in
+  parallel on the pool, then writes the responses: the handler can call no
+  action and shares nothing in writing, so no data race is possible by
+  construction, and the parallelism is the one of every `map` (checked by
+  the verifier of the IR, the same results on any number of threads). A
+  task per connection with its own stack would need a scheduler of tasks
+  in the runtime and would let effects in. One request at a time per
+  connection (no pipelining), connections kept alive, bodies by
+  `Content-Length` up to 16 MiB by default, a malformed request answered
+  `400` without calling the handler.
+- **D328 — HTTPS by the TLS of the system, confined (2026-11-05).** The
+  goal of the author (2026-11-05) names it: SChannel under Windows (the
+  certificates of the store of the system), OpenSSL under Linux loaded at
+  run time by `dlopen` of `libssl.so.3`, only by the programs that import
+  `https`; refused for WASI. This settles the open point of TODO (the step
+  HTTPS decided again, D290): these are the only calls of C code the
+  standard library makes, all in one module of the runtime (`tls.rs`),
+  each `unsafe` justified; a program that imports `https` is built with
+  the C library of the system under Linux (D289: the programs that declare
+  C functions), every other program stays static and without C. A TLS
+  written in Isocron was the alternative: the cryptography of a new
+  implementation, unaudited, is a larger risk than the library of the
+  system. The client checks the certificate and the name of the host; the
+  option `ca` (certificates in PEM) replaces the store of the system for a
+  private server, as the tests do on the local machine; `serveTls` is the
+  server of the same form as `serve`.
+- **D329 — The questions of SPEC section 16 settled (2026-11-05).** The
+  goal of 2026-11-05 asks for them before the standard library; each with
+  its measure or its reason (SPEC section 16, now without open question):
+  - B = 4096, fixed: it fixes the bits of a reduction of more than B
+    floats; another B changes nothing that shows on one thread, and none
+    is better everywhere on 4 (D321, which took the grain of the fills
+    apart from it).
+  - The reproducible mode stays the default: it equals or beats the best
+    strict variant of every language (`results/xeon-summary.md`); against
+    the reassociated variants of C and Zig, 5.69 against 5.24 µs on the
+    small `std_dev`, nothing on the sizes read from memory; `allowReassoc`
+    stays out of v1.
+  - `@requireVectorized`: out of v1 (SPEC section 1); when it comes,
+    checked for each target built, the error naming the target.
+  - Modular integer overflow kept: none of the gaps of the ten programs to
+    their floors comes from it (the attribution of D263).
+  - Total inlining kept without a threshold: the ten programs are 68 to
+    296 KB, but regex-redux (1.6 MB: the engine of regular expressions).
+  - The threshold of the stack: 32 KiB (D86).
+  - The transcendental functions: the precision of musl's (`libm`, D108),
+    the same bits on every target and in the interpreter.
+  - The layout: columns always in v1; an automatic choice later.
+  - The FMA of Rust, Go, Zig and Fortran: settled in the POC (D34 and
+    after).
+  - The name Isocron kept: published under it since 0.1.0.
+  - Linear values: the uniqueness of section 8 is a guarantee for the
+    types declared unique (`Conn`, `Listener`, `Region`, `Shared`), checked
+    by the verifier of the IR (D326).
+  - The engine of regular expressions and the big integers stay in Rust
+    in v1, each replaced by Isocron only when as fast (section 17).
+  - Explicit vector instructions in the modules: out of v1 (SHA-256 on
+    `u32`); later a family of bounded primitives.
+  - Named time zones and the local time of the system: out of v1 (UTC and
+    fixed offsets).
