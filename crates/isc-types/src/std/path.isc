@@ -59,33 +59,35 @@ export function extension(p: string): string {
     return k <= 0 || b == ".." ? "" : b.slice(k, b.length);
 }
 
-// the parts of `segs` from `i` on added to `out` (the parts kept so far)
-// above `ups` parts `..` that nothing removed
-function normFrom(segs: string[n], i: i64, out: string, ups: i64, abs: boolean): string {
+// the parts of `segs` from `i` on added to `out`, the text kept so far: its
+// root `/`, or the parts `..` that nothing removed, then `names` parts; `out`
+// itself the result, so that each part is written after it in its block
+// (D351)
+function normFrom(segs: string[n], i: i64, out: string, names: i64, abs: boolean): string {
     if (i == segs.length) {
-        const head = abs ? "/" : "../".repeat(ups);
-        const whole = head + out;
-        if (whole == "") {
-            return ".";
-        }
-        return out == "" && !abs ? whole.slice(0, whole.length - 1) : whole;
+        return out;
     }
     const s = segs[i];
     if (s == "" || s == ".") {
-        return normFrom(segs, i + 1, out, ups, abs);
+        return normFrom(segs, i + 1, out, names, abs);
     }
     if (s == "..") {
-        if (out != "") {
+        if (names > 0) {
             const k = lastByte(out, 47u8);
-            return normFrom(segs, i + 1, k < 0 ? "" : out.slice(0, k), ups, abs);
+            return normFrom(segs, i + 1, k < 0 ? "" : (k == 0 ? "/" : out.slice(0, k)), names - 1, abs);
         }
-        return normFrom(segs, i + 1, out, abs ? ups : ups + 1, abs);
+        if (abs) {
+            return normFrom(segs, i + 1, out, 0, abs);
+        }
+        return normFrom(segs, i + 1, out == "" ? ".." : out + "/..", 0, abs);
     }
-    return normFrom(segs, i + 1, out == "" ? s : out + "/" + s, ups, abs);
+    return normFrom(segs, i + 1, out == "" || out == "/" ? out + s : out + "/" + s, names + 1, abs);
 }
 
 // `p` without `.`, `x/..` and repeated `/`, read as text alone (no link
 // followed); `.` for an empty path
 export function normalize(p: string): string {
-    return normFrom(p.split("/"), 0, "", 0, p.startsWith("/"));
+    const abs = p.startsWith("/");
+    const r = normFrom(p.split("/"), 0, abs ? "/" : "", 0, abs);
+    return r == "" ? "." : r;
 }

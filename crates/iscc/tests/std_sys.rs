@@ -111,3 +111,18 @@ fn time_dates_and_instants() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want), "WASI: {}", r.stderr);
     }
 }
+
+/// D351: `path.normalize` in one pass, its text grown in place: the same
+/// results as the algorithm of 0.3.1 on 7812 paths, interpreted and
+/// compiled (1 and 4 threads).
+#[test]
+fn normalize_as_before() {
+    let src = include_str!("data/std_path_normalize.isc");
+    let want = "7812 paths, 0 different\nnone\n[a/c/d/e.txt, /x, ../../a, .., ., /, /, ., .., ../c]\n";
+    assert_eq!(interp_ok(src, &[]), want, "interpreter");
+    let bin = compile(src, "std_path_normalize");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled, {} threads: {}", t, r.stderr);
+    }
+}

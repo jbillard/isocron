@@ -1,0 +1,24 @@
+// D351: a string built piece by piece by a tail recursion, its accumulator
+// owned, each piece written after it in its block.
+function build(i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    return build(i + 1, n, acc + toString(i % 10) + (i % 7 == 0 ? "," : ""));
+}
+
+function twice(s: string): string {
+    const t = s + "!";
+    return t + s;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const s = build(0, n, "");
+    print(s.length);
+    print(s.slice(0, 30));
+    print(s.slice(s.length - 12, s.length));
+    print(twice("ab"));
+    print(build(0, 3, "x") + build(0, 2, ""));
+    return 0;
+}

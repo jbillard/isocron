@@ -1465,6 +1465,20 @@ pub unsafe fn free_cached(p: *mut u8) -> bool {
 
 #[cold]
 #[inline(never)]
+/// The bytes the block `p` of `alloc` can hold (D351): the size of its
+/// class, or the length of a medium block without its header.
+pub unsafe fn usable(p: *mut u8) -> usize {
+    let h = p.sub(HEADER) as *const Header;
+    if (*h).state != IN_USE {
+        invalid_free();
+    }
+    if (*h).class == MEDIUM {
+        (*h).len - HEADER
+    } else {
+        alloc_class_size((*h).class as usize)
+    }
+}
+
 pub unsafe fn alloc(bytes: usize, zero: bool) -> *mut u8 {
     let h = if bytes <= SMALL_MAX {
         let Some((class, size)) = alloc_class(bytes) else {

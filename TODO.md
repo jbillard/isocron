@@ -304,7 +304,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [ ] The parts of a template written in its block (integers, padded integers, the results of calls): `formatIso` 4.7, its eight parts each a block made, copied, freed (D348)
 - [x] The examples of the README run by the tests; a port listened to twice `AlreadyExists` on Linux, Windows and in the interpreter (D349)
 - [ ] The payload of a `match` on a temporary taken out of it, not copied (`x ?? d`, `match (f()) { Ok(v) => ... }`: a copy and a free of the payload each time, D346)
-- [ ] `path.normalize` in one pass: the parts kept found from the right, joined once (D346: `split` 33 %, the text kept copied again at each part)
+- [x] `path.normalize` with its text grown in place (rule A): 240.7 -> 213.3 ns; a string built piece by piece linear, 100000 pieces 122.2 -> 3.7 ms (D351)
 - [ ] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions
 
 ## The trusted base (the remarks of the author, 2026-11-04)
@@ -344,7 +344,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] `sha256` faster: 1.5 times the same loop in C (D338: the window of the schedule in the state of the `fold`, 24 words for 16 registers, 32 accesses to the stack a round); the instructions SHA of the processor out of v1 (4.1 times faster than the loop in C)
 - [x] `net`: TCP, client and server; connections and listeners linear, checked at compile time; names resolved (hosts, DNS by UDP; GetAddrInfoW under Windows); refused for WASI (D339)
 - [x] `http`: a client of HTTP/1.1; `concat` made into memory by copies; `closeWrite` in `net` (D340)
-  - [ ] `concat` that grows in place an array it consumes (its block unique, at its last use): the join of the chunks of `http` in one copy (D340: 22 µs of the 29 that `exchange.chunked64` takes more than its floor, 2.5 times; the other 7.3 µs to split)
+  - [x] `concat` that grows in place a string it consumes (D351: strings; the arrays of the chunks of `http` still copied) (its block unique, at its last use): the join of the chunks of `http` in one copy (D340: 22 µs of the 29 that `exchange.chunked64` takes more than its floor, 2.5 times; the other 7.3 µs to split)
+  - [ ] `concat` that grows in place an array it consumes (the join of the chunks of `http` in one copy: 22 µs of the 29 that `exchange.chunked64` takes more than its floor)
 - [x] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool (D342)
   - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
   - [ ] The server above its floor: `serve.pipelined` 1.5 (D342: about 1600 user cycles a request more; 10.1 blocks, 4.1 copies of literal texts, 4.0 texts of bytes checked as UTF-8 again, 2 chains and a `join` a request, none in C): literals kept without a copy, a text of bytes already checked, fewer blocks for a request

@@ -1011,3 +1011,18 @@ action main(args: string[k]): i32 {
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     assert_eq!(ll.matches("call void @isc_pad_int(").count(), 7, "integers padded in one block");
 }
+
+/// D351: `acc + x` where `acc` is the accumulator of a tail recursion
+/// (owned, at its last use): `x` written after it in its block when the
+/// block has room, else in a block of twice its length; the same text as
+/// the interpreter, nothing lost or freed twice (Valgrind, the allocator of
+/// glibc: every append in a new block), the IR calling `isc_str_append`.
+#[test]
+fn strings_grown_in_place() {
+    let src = include_str!("data/strings_grown.isc");
+    let want = "114286\n0,1234567,8901234,5678901,2345\n9012345,6789\nab!ab\nx0,120,1\n";
+    agree(src, "strings_grown", &["100000"], want);
+    let bin = compile(src, "strings_grown_ir");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call void @isc_str_append"), "no text grown in place");
+}

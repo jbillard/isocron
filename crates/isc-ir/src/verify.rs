@@ -53,7 +53,7 @@ fn fail<T>(span: Span, msg: String) -> R<T> {
 /// Checks the memory decisions of a recursive function: its parameters are
 /// borrowed (the state of a loop is owned, its copy made on entry, D206),
 /// its result is new memory or a scalar (D102).
-fn verify_fn(p: &Program, f: &Function) -> R<()> {
+pub(crate) fn verify_fn(p: &Program, f: &Function) -> R<()> {
     let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default() };
     for (k, v) in f.params.iter().enumerate() {
         c.st[*v as usize] = if f.consumed.get(k).copied().unwrap_or(false) {
@@ -64,7 +64,14 @@ fn verify_fn(p: &Program, f: &Function) -> R<()> {
             State::Scalar
         };
     }
-    match c.eval(&f.body)? {
+    let r = c.eval(&f.body)?;
+    // an owned parameter is moved or taken apart on every path (D206, D351)
+    for (k, v) in f.params.iter().enumerate() {
+        if f.consumed.get(k).copied().unwrap_or(false) && matches!(c.st[*v as usize], State::Owned { moved: None, .. }) {
+            return fail(f.body.span, format!("`{}` owns `{}` and never frees it", f.name, p.vars[*v as usize].name));
+        }
+    }
+    match r {
         Val::View(_) if f.body.ty.has_heap() => {
             fail(f.body.span, format!("`{}` returns memory it borrows", f.name))
         }
@@ -280,9 +287,10 @@ impl<'p> Checker<'p> {
             }
             // the operands of an operation on strings are only read (D134),
             // except the text of a replacement by a regular expression moved
-            // into it, which the replacement owns (D315)
+            // into it, which the replacement owns (D315), and the left text
+            // of a concatenation moved into it (D351)
             StrOp(op, es) => {
-                let gives = matches!(op, crate::StrOp::Rx(crate::RxOp::Replace | crate::RxOp::ReplaceAll));
+                let gives = matches!(op, crate::StrOp::Rx(crate::RxOp::Replace | crate::RxOp::ReplaceAll) | crate::StrOp::Concat);
                 for (i, x) in es.iter().enumerate() {
                     let v = self.eval(x)?;
                     if i == 0 && gives && v == Val::Fresh && matches!(x.kind, Var(_, Use::Move)) {

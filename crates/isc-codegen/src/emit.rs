@@ -874,6 +874,8 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
     "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
+    "declare void @isc_str_append(ptr, ptr, i64, ptr, i64)",
+    "declare void @isc_str_append_n(ptr, ptr, i64)",
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_trim_side(ptr, ptr, i64, i32)",
     "declare void @isc_str_slice(ptr, ptr, i64, i64, i64, i32, i32)",
@@ -2411,6 +2413,13 @@ impl<'p> Gen<'p> {
         for (k, x) in vals.iter().enumerate() {
             let (s, owned, ty) = &tl.slots[k];
             let t = lt(ty);
+            // a string literal for an owned parameter (a slot without a
+            // flag, D351): the loop owns a copy of it
+            if tc.literals.contains(&k) && owned.is_none() && ty.has_heap() {
+                let c = self.copy_value(x, ty);
+                self.emit(format!("store {} {}, ptr {}", t, c.r, s));
+                continue;
+            }
             // a string literal (D301): kept by the loop without owning it,
             // the old value freed if the loop owned it
             if let (true, Some(o)) = (tc.literals.contains(&k), owned.as_ref()) {
@@ -10714,7 +10723,10 @@ impl<'p> Gen<'p> {
             S::Concat if vals.len() == 2 => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
-                new_str(self, format!("call void @isc_str_concat(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+                // the left text given (its last use, D351): the rest written
+                // after it in its block when it has room
+                let f = if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) { "isc_str_append" } else { "isc_str_concat" };
+                new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", f, p, n, q, m))
             }
             // the parts of `a + b + c`, of a template literal: their texts
             // in a table on the stack, one block made for all (D342)
@@ -10725,7 +10737,8 @@ impl<'p> Gen<'p> {
                     let slot = self.ins(format!("getelementptr inbounds [{} x {{ ptr, i64 }}], ptr {}, i64 0, i64 {}", k, table, i));
                     self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", x.r, slot));
                 }
-                new_str(self, format!("call void @isc_str_concat_n(ptr OUT, ptr {}, i64 {})", table, k))
+                let f = if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) { "isc_str_append_n" } else { "isc_str_concat_n" };
+                new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {})", f, table, k))
             }
             S::Len => {
                 let (_, n) = self.str_parts(&vals[0]);

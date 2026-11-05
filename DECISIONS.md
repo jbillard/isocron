@@ -7388,3 +7388,49 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   of an authority that Windows trusts, an identity checked, its key on a
   device or a service of signature: the author's to get; the tools can
   sign the archives once there is one.
+- **D351 — Rule A: the accumulator of a tail recursion owned; the left
+  text of a concatenation grown in place (2026-11-06).** `path.normalize`
+  4.5 times its floor (D346: `out + "/" + s`, the text kept so far copied
+  again at each part), and a string built piece by piece quadratic: a
+  recursion `build(i + 1, n, acc + x)` of 100000 pieces 122.2 ms. Its IR:
+  `acc` borrowed (a parameter is lent by the caller, D102), so `acc + x`
+  copies `acc`, the result copies it again (`copy acc`), and the caller
+  frees each piece after the call.
+  - Rule A (SPEC): a parameter that holds memory, not a tuple (those are
+    the states of D206), of a function whose calls to itself are all
+    tail calls and which gives it back as one of its results, is owned:
+    `consumed`, copied once on entry, moved at its last use, given back
+    without a copy, freed by a `Free` at the end of the branches that do
+    not move it (`consumes`, D105). Kept only when the memory check of the
+    function holds (`verify_fn`, which now asks that an owned parameter be
+    moved on every path); otherwise the body as before, the parameter
+    borrowed. In the loop of the tail calls (`tail_jump`) an owned
+    parameter given again at its place stays in its slot (`kept`, not in
+    `free_first`: it was freed before the jump, then read: the panic
+    `invalid free` of the first try), and a literal given to it is
+    copied (the loop owns its slot; a literal of D301 is not a block).
+  - The left text of `a + b` (two parts, or a chain of D342) at its last
+    use, owned and without alias, is given to it (`Use::Move`, as the text
+    of a replacement of D315; the memory check counts it as taken):
+    `isc_str_append`, `isc_str_append_n` write the rest after it in its
+    block when the block has room (`heap::usable`: the size of its class,
+    or of a medium block), else in a new block of at least twice its
+    length, the old one freed. With glibc's allocator or under WASI no
+    room is counted (a new block each time, still of twice the length).
+  - `normFrom` of `path` written so that its text holds its root `/` or
+    the parts `..` that nothing removed (they only come while no name is
+    kept), and is itself the result: rule A applies.
+  - Measured A/B against the binaries of the `iscc` of 0.3.1, one CPU at
+    fixed frequency: the build of 100000 pieces 122.2 -> 3.7 ms (-97.0
+    %); `normalize` 240.7 -> 213.3 ns (-11.4 %), its profile now `split`
+    (38 %), the appends (19 %), `normFrom` (12 %). The ten programs: the
+    IR of seven the same but for the declarations; binary-trees,
+    k-nucleotide and pidigits other (accumulators of their recursions),
+    the same outputs, 4 threads, 10 alternate runs: medians +0.02 %, +0.58
+    %, +0.27 %, minimums 683.5 -> 677.0, 688.2 -> 688.0, 491.8 -> 490.6 ms.
+  - Tested by `strings_grown_in_place` (`strings.rs`: interpreter,
+    compiled, Valgrind with the allocator of glibc, the IR calling
+    `isc_str_append`) and `normalize_as_before` (`std_sys.rs`: the old
+    algorithm and the new one on the 7812 paths of up to five parts of
+    `""`, `.`, `..`, `a`, `bc`, absolute and relative, interpreted and
+    compiled on 1 and 4 threads).

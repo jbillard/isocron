@@ -540,18 +540,25 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
             ExprKind::Call(g, args) if *g == fi => {
                 let mut moved = Vec::new();
                 let mut literals = Vec::new();
+                // an owned parameter given again at its place (D351): it
+                // stays in its slot, the next iteration owns it, not freed
+                let mut kept = Vec::new();
                 for (k, a) in args.iter().enumerate() {
                     if !a.ty.has_heap() {
                         continue;
                     }
                     match a.kind {
-                        ExprKind::Var(v, _) if v == f.params[k] => {}
+                        ExprKind::Var(v, _) if v == f.params[k] => {
+                            if f.consumed.get(k).copied().unwrap_or(false) {
+                                kept.push(v);
+                            }
+                        }
                         ExprKind::Var(v, _) if pending.contains(&v) && !moved.iter().any(|(_, w)| *w == v) => moved.push((k, v)),
                         ExprKind::Var(v, _) if LITERALS.with(|l| l.borrow().contains(&v)) => literals.push(k),
                         _ => return,
                     }
                 }
-                let free_first = pending.iter().copied().filter(|v| !moved.iter().any(|(_, w)| w == v)).collect();
+                let free_first = pending.iter().copied().filter(|v| !moved.iter().any(|(_, w)| w == v) && !kept.contains(v)).collect();
                 out.insert(e as *const Expr, TailCall { moved, literals, free_first });
             }
             _ => {}
@@ -2118,6 +2125,24 @@ impl<'a> Rewriter<'a> {
                 }
                 return Ok(Own::Fresh);
             }
+            // the left text of `a + b` (a chain, a template) at its last use,
+            // owned and without alias: given to it (D351), which writes the
+            // rest after it in its block when the block has room
+            ExprKind::StrOp(crate::StrOp::Concat, es) if heap => {
+                let mut first = None;
+                for c in es.iter_mut() {
+                    let o = self.walk(c)?;
+                    first.get_or_insert(o);
+                }
+                if let (Some(Own::Borrowed(_, Some(i))), ExprKind::Var(v, u)) = (&first, &mut es[0].kind) {
+                    let w = *v as usize;
+                    if self.info.candidates.contains(i) && self.info.owned[w] && self.info.alias[w].is_none() {
+                        *u = Use::Move;
+                        self.info.moved[w] = true;
+                    }
+                }
+                return Ok(Own::Fresh);
+            }
             ExprKind::StrOp(..) if str_part => {
                 let mut first = None;
                 for c in e.children_mut() {
@@ -2549,6 +2574,11 @@ fn split_tuples(e: &mut Expr, out: &mut Vec<VarId>) {
 /// that borrows is made new (copied), since the caller frees it (D102).
 /// Returns whether `owned` is still owned at the end (not moved).
 pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<VarId>, copy_reasons: &mut Vec<(Span, String)>) -> R<bool> {
+    ownership_body_with(body, vars, owned, &[], copy_reasons)
+}
+
+/// `ownership_body` with the parameters `params` owned too (D351).
+fn ownership_body_with(body: &mut Expr, vars: &[VarInfo], owned: Option<VarId>, params: &[VarId], copy_reasons: &mut Vec<(Span, String)>) -> R<bool> {
     let n = vars.len();
     let mut info = Info {
         alias: vec![None; n],
@@ -2561,6 +2591,9 @@ pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<Va
         region_side: vec![None],
     };
     if let Some(v) = owned {
+        info.owned[v as usize] = true;
+    }
+    for &v in params {
         info.owned[v as usize] = true;
     }
     let mut split = Vec::new();
@@ -2593,6 +2626,13 @@ pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<Va
         copy_reasons.extend(rw.copy_reasons);
     }
     set_drops(body, &info);
+    // an owned parameter moved on some paths: freed at the end of the
+    // branches that do not move it (D105, D351)
+    for &v in params {
+        if info.moved[v as usize] {
+            consumes(body, v);
+        }
+    }
     Ok(match owned {
         Some(v) => info.owned[v as usize] && !(info.moved[v as usize] && consumes(body, v)),
         None => false,
@@ -2608,29 +2648,54 @@ pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<Va
 /// freed when not moved. The borrowed form copies `p` once, as the result of
 /// the loop; this form copies it once on entry (the generated code, for
 /// `consumed`), and an iteration no longer copies its fields.
-fn own_states(p: &mut Program) {
-    fn calls(e: &Expr, fi: u32) -> usize {
-        let own = matches!(e.kind, ExprKind::Call(g, _) if g == fi) as usize;
-        own + e.children().into_iter().map(|c| calls(c, fi)).sum::<usize>()
-    }
-    // every result is a tail call to `fi` or `pv`: their numbers
-    fn results(e: &Expr, fi: u32, pv: VarId, tails: &mut usize, states: &mut usize) -> bool {
-        match &e.kind {
-            ExprKind::If(c, t, f) => calls(c, fi) == 0 && results(t, fi, pv, tails, states) && results(f, fi, pv, tails, states),
-            ExprKind::Let { init, body, .. } => calls(init, fi) == 0 && results(body, fi, pv, tails, states),
-            ExprKind::CheckSize(a, b, body) => calls(a, fi) + calls(b, fi) == 0 && results(body, fi, pv, tails, states),
-            ExprKind::CheckNonNegative(k, body) => calls(k, fi) == 0 && results(body, fi, pv, tails, states),
-            ExprKind::Call(g, args) if *g == fi => {
-                *tails += 1;
-                args.iter().all(|a| calls(a, fi) == 0)
-            }
-            ExprKind::Var(v, _) if *v == pv => {
-                *states += 1;
-                true
-            }
-            _ => false,
+/// The calls of `e` to the function `fi`.
+fn calls(e: &Expr, fi: u32) -> usize {
+    let own = matches!(e.kind, ExprKind::Call(g, _) if g == fi) as usize;
+    own + e.children().into_iter().map(|c| calls(c, fi)).sum::<usize>()
+}
+
+/// Every result of `e` is a tail call to `fi` or `pv` itself: their
+/// numbers (D206).
+fn results(e: &Expr, fi: u32, pv: VarId, tails: &mut usize, states: &mut usize) -> bool {
+    match &e.kind {
+        ExprKind::If(c, t, f) => calls(c, fi) == 0 && results(t, fi, pv, tails, states) && results(f, fi, pv, tails, states),
+        ExprKind::Let { init, body, .. } => calls(init, fi) == 0 && results(body, fi, pv, tails, states),
+        ExprKind::CheckSize(a, b, body) => calls(a, fi) + calls(b, fi) == 0 && results(body, fi, pv, tails, states),
+        ExprKind::CheckNonNegative(k, body) => calls(k, fi) == 0 && results(body, fi, pv, tails, states),
+        ExprKind::Call(g, args) if *g == fi => {
+            *tails += 1;
+            args.iter().all(|a| calls(a, fi) == 0)
         }
+        ExprKind::Var(v, _) if *v == pv => {
+            *states += 1;
+            true
+        }
+        _ => false,
     }
+}
+
+/// The accumulators of the function `fi` (D351): its parameters that own
+/// memory and are not tuples (those are the states of D206), in a function
+/// whose calls to itself are all tail calls and that gives back such a
+/// parameter itself as one of its results (`build(i + 1, acc + x)`, `return
+/// acc`). Owned, the parameter is moved at its last use (into the `concat`
+/// that grows it in place) and given back without a copy.
+fn accumulators(p: &Program, fi: usize) -> Vec<usize> {
+    let f = &p.fns[fi];
+    (0..f.params.len())
+        .filter(|&k| {
+            let pv = f.params[k];
+            let ty = &p.vars[pv as usize].ty;
+            if f.consumed.get(k).copied().unwrap_or(false) || !ty.has_heap() || matches!(ty, Type::Tuple(_)) {
+                return false;
+            }
+            let (mut tails, mut states) = (0, 0);
+            results(&f.body, fi as u32, pv, &mut tails, &mut states) && calls(&f.body, fi as u32) == tails && tails > 0 && states > 0
+        })
+        .collect()
+}
+
+fn own_states(p: &mut Program) {
     // `pv` read only as `pv[k]`, or given back whole as a result
     fn fields_only(e: &Expr, pv: VarId, tail: bool) -> bool {
         match &e.kind {
@@ -2705,7 +2770,30 @@ pub fn ownership(p: &mut Program) -> R<()> {
     // `main` owns the array of its arguments (allocated by the runtime at
     // start-up), defined in the outermost region
     p.drop_args = ownership_body(&mut p.body, &p.vars, Some(p.args), &mut p.copy_reasons)?;
-    for f in p.fns.iter_mut() {
+    for fi in 0..p.fns.len() {
+        // its accumulators owned (D351), kept only when the memory check of
+        // the function holds (each moved on every path); otherwise borrowed
+        let acc = accumulators(p, fi);
+        if !acc.is_empty() {
+            let saved = p.fns[fi].body.clone();
+            let params: Vec<VarId> = acc.iter().map(|&k| p.fns[fi].params[k]).collect();
+            let mut reasons = Vec::new();
+            let f = &mut p.fns[fi];
+            if ownership_body_with(&mut f.body, &p.vars, None, &params, &mut reasons).is_ok() {
+                for &k in &acc {
+                    p.fns[fi].consumed[k] = true;
+                }
+                if crate::verify::verify_fn(p, &p.fns[fi]).is_ok() {
+                    p.copy_reasons.extend(reasons);
+                    continue;
+                }
+                for &k in &acc {
+                    p.fns[fi].consumed[k] = false;
+                }
+            }
+            p.fns[fi].body = saved;
+        }
+        let f = &mut p.fns[fi];
         ownership_body(&mut f.body, &p.vars, None, &mut p.copy_reasons)?;
     }
     Ok(())

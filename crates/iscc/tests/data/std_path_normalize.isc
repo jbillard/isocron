@@ -1,0 +1,58 @@
+// D351: `path.normalize` against the algorithm of 0.3.1 on every path of up
+// to five parts made of "", ".", "..", "a" and "bc", absolute and relative.
+import * as path from "path";
+
+function lastByte(s: string, c: u8): i64 {
+    const b = bytes(s);
+    return fold(iota(b.length), -1, (a, i) => b[i] == c ? i : a);
+}
+
+// the algorithm of 0.3.1, as it was
+function oldFrom(segs: string[n], i: i64, out: string, ups: i64, abs: boolean): string {
+    if (i == segs.length) {
+        const head = abs ? "/" : "../".repeat(ups);
+        const whole = head + out;
+        if (whole == "") {
+            return ".";
+        }
+        return out == "" && !abs ? whole.slice(0, whole.length - 1) : whole;
+    }
+    const s = segs[i];
+    if (s == "" || s == ".") {
+        return oldFrom(segs, i + 1, out, ups, abs);
+    }
+    if (s == "..") {
+        if (out != "") {
+            const k = lastByte(out, 47u8);
+            return oldFrom(segs, i + 1, k < 0 ? "" : out.slice(0, k), ups, abs);
+        }
+        return oldFrom(segs, i + 1, out, abs ? ups : ups + 1, abs);
+    }
+    return oldFrom(segs, i + 1, out == "" ? s : out + "/" + s, ups, abs);
+}
+
+function oldNormalize(p: string): string {
+    return oldFrom(p.split("/"), 0, "", 0, p.startsWith("/"));
+}
+
+// the path of number `x` (base 5, `len` parts), absolute when `abs`
+function pathOf(x: i64, len: i64, abs: boolean): string {
+    const names = ["", ".", "..", "a", "bc"];
+    const parts = map(iota(len), (j) => names[(x / fold(iota(j), 1, (m, t) => m * 5)) % 5]);
+    return (abs ? "/" : "") + join(parts, "/");
+}
+
+action main(args: string[k]): i32 {
+    const all = map(iota(2 * 3906), (y) => {
+        const abs = y >= 3906;
+        const z = y % 3906;
+        const len = z < 1 ? 0 : (z < 6 ? 1 : (z < 31 ? 2 : (z < 156 ? 3 : (z < 781 ? 4 : 5))));
+        const base = len == 0 ? 0 : (len == 1 ? 1 : (len == 2 ? 6 : (len == 3 ? 31 : (len == 4 ? 156 : 781))));
+        return pathOf(z - base, len, abs);
+    });
+    const bad = filter(all, (p) => path.normalize(p) != oldNormalize(p));
+    print(`${all.length} paths, ${bad.length} different`);
+    print(bad.length > 0 ? `${bad[0]}: ${path.normalize(bad[0])} against ${oldNormalize(bad[0])}` : "none");
+    print(map(["a/./b/../c//d/e.txt", "/../x", "../../a", "..", "a/..", "/a/..", "/", "", "../a/..", "a/b/../../../c"], (p) => path.normalize(p)));
+    return 0;
+}

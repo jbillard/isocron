@@ -1235,6 +1235,66 @@ fn empty_bytes() -> *mut u8 {
     empty_ptr()
 }
 
+/// The bytes the block of the string `p` can hold (D351): the allocator of
+/// Isocron knows it; with glibc's (`ISC_ALLOC=glibc`) or under WASI, none
+/// counted (a new block).
+fn room(p: *mut u8) -> usize {
+    if p == empty_ptr() {
+        return 0;
+    }
+    #[cfg(not(target_os = "wasi"))]
+    if HEAP_MODE.load(Ordering::Relaxed) == 2 {
+        // SAFETY: an owned string of the program, a block of `alloc`
+        return unsafe { heap::usable(p) };
+    }
+    0
+}
+
+/// The string `p` of `n` bytes (given: its last use) followed by the parts
+/// `parts`: written after its bytes in its block when it has room, else in
+/// a new block of at least twice its length (so that the next texts added
+/// to it find room), `p` freed (D351).
+unsafe fn append_parts(p: *mut u8, n: usize, parts: &[IscStr]) -> IscStr {
+    let more: usize = parts.iter().map(|s| s.len as usize).sum();
+    let total = n + more;
+    if more == 0 {
+        return IscStr { ptr: p, len: n as i64 };
+    }
+    let (q, keep) = if room(p) >= total {
+        (p, true)
+    } else {
+        let q = isc_alloc(total.max(2 * n) as i64);
+        if n > 0 {
+            core::ptr::copy_nonoverlapping(p, q, n);
+        }
+        (q, false)
+    };
+    let mut at = n;
+    for s in parts {
+        if s.len > 0 {
+            core::ptr::copy_nonoverlapping(s.ptr, q.add(at), s.len as usize);
+            at += s.len as usize;
+        }
+    }
+    if !keep {
+        isc_free(p);
+    }
+    IscStr { ptr: q, len: total as i64 }
+}
+
+/// `a + b`, `a` given (D351).
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_append(out: *mut IscStr, p: *mut u8, n: i64, q: *const u8, m: i64) {
+    *out = append_parts(p, n as usize, &[IscStr { ptr: q, len: m }]);
+}
+
+/// `a + b + c ...` of `k` parts, the first given (D351).
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_append_n(out: *mut IscStr, parts: *const IscStr, k: i64) {
+    let ps = core::slice::from_raw_parts(parts, k as usize);
+    *out = append_parts(ps[0].ptr as *mut u8, ps[0].len as usize, &ps[1..]);
+}
+
 /// A new string holding these bytes.
 fn new_str(b: &[u8]) -> IscStr {
     if b.is_empty() {
