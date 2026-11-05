@@ -436,3 +436,46 @@ fn split_folds_panic_as_written() {
     let run = run_bin(&bin, &["3", "12"]);
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
 }
+
+/// D346, rule L: `fold(iota(n), init, (a, i) => c ? i : a)` computed from
+/// `i = n - 1` down to the first `i` where `c` holds: found, not found,
+/// `n = 0`, two reads, an `&&`, a widening conversion; a read out of bounds
+/// stops the program as the interpreter does (the loop as written).
+#[test]
+fn last_index_of_a_fold_from_the_end() {
+    let src = r#"function lastOf(b: u8[n], c: u8): i64 {
+    return fold(iota(b.length), -1, (a, i) => b[i] == c ? i : a);
+}
+
+function lastPair(b: u8[n]): i64 {
+    return fold(iota(Math.max(b.length - 1, 0)), 7, (a, i) => b[i] == 97u8 && i64(b[i + 1]) > 98 ? i : a);
+}
+
+function lastBefore(b: u8[n], at: i64): i64 {
+    return fold(iota(at), -1, (s, i) => b[i] == 10u8 ? i : s);
+}
+
+action main(args: string[k]): i32 {
+    const b = bytes(args[0]);
+    print([lastOf(b, 47u8), lastOf(b, 120u8), lastOf(bytes(""), 47u8), lastPair(b), lastPair(bytes("ab"))] as const);
+    print(lastBefore(b, parseI64(args[1])));
+    return 0;
+}
+"#;
+    let ok = |args: &[&str], want: &str| {
+        assert_eq!(interp_ok(src, args), want, "interpreter {:?}", args);
+        let bin = compile(src, "last_index_fold");
+        let r = run_bin(&bin, args);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "compiled {:?}", args);
+    };
+    ok(&["ac/b\nx/acab", "11"], "(6, 5, -1, 7, 7)\n4\n");
+    ok(&["ac/b\nx/acab", "4"], "(6, 5, -1, 7, 7)\n-1\n");
+    ok(&["zzz", "0"], "(-1, -1, -1, 7, 7)\n-1\n");
+    let want = interp_panic(src, &["ab\ncd", "9"]);
+    assert!(want.contains("out of bounds"), "{}", want);
+    let bin = compile(src, "last_index_fold");
+    let r = run_bin(&bin, &["ab\ncd", "9"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    assert_eq!(r.stderr.trim(), want.trim());
+}

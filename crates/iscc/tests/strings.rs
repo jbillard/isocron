@@ -944,3 +944,31 @@ fn replacements_written_by_moves_of_32_bytes() {
         }
     }
 }
+
+/// D346: `==` and `!=` against a literal of at most 16 bytes compiled in
+/// place (its length, then its bytes as one or two integers), on either
+/// side; longer literals and two variables by the runtime. The same
+/// results as the interpreter, every length around 0, 8 and 16.
+#[test]
+fn equality_with_short_literals() {
+    let src = r#"function kinds(s: string): i64[8] {
+    return [s == "" ? 1 : 0, s == "/" ? 1 : 0, "ab" == s ? 1 : 0, s != "abcdefgh" ? 1 : 0, s == "abcdefghi" ? 1 : 0, s == "abcdefghijklmnop" ? 1 : 0, s != "é/." ? 1 : 0, s == "abcdefghijklmnopq" ? 1 : 0];
+}
+
+action main(args: string[k]): i32 {
+    const words = ["", "/", "//", "a", "ab", "abc", "abcdefg", "abcdefgh", "abcdefgi", "abcdefghi", "abcdefghj", "bbcdefghi", "abcdefghijklmnop", "abcdefghijklmnoq", "xbcdefghijklmnop", "abcdefghijklmnopq", "é/.", "é/", args[0]];
+    print(map(words, (w) => kinds(w)));
+    print(map(words, (w) => w == args[0] ? 1 : 0));
+    return 0;
+}
+"#;
+    let want = "[[1, 0, 0, 1, 0, 0, 1, 0], [0, 1, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 1, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 0, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 1, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 1, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 0, 1, 0, 0, 1, 1], [0, 0, 0, 1, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 1, 0], [0, 0, 1, 1, 0, 0, 1, 0]]\n[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]\n";
+    agree(src, "short_literal_equality", &["ab"], want);
+    // only literals of at most 16 bytes: no comparison left to the runtime
+    let short = "function kinds(s: string): i64[4] {\n    return [s == \"\" ? 1 : 0, \"ab\" == s ? 1 : 0, s != \"abcdefgh\" ? 1 : 0, s == \"abcdefghijklmnop\" ? 1 : 0];\n}\n\naction main(args: string[k]): i32 {\n    print(map(args, (w) => kinds(w)));\n    return 0;\n}\n";
+    let bin = compile(short, "short_literal_equality_ir");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(!ll.contains("call i32 @isc_str_cmp("), "a comparison with a short literal left to the runtime");
+    let r = run_bin(&bin, &["ab", "", "abcdefghijklmnop"]);
+    assert_eq!(r.stdout, "[[0, 1, 1, 0], [1, 0, 1, 0], [0, 0, 1, 1]]\n");
+}

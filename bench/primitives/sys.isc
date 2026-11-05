@@ -72,10 +72,13 @@ action main(args: string[k]): i32 {
     const x = map(iota(4096), (i) => u8(i % 251));
     const files = makeFiles(dir, x, 0);
     const one = path.join(dir, "f7.bin");
+    // `env` takes about 55 ns: 100 calls a round, so that its window is not
+    // only its first calls, cold (D346: 200 calls, 13 µs, gave 14.9 % more
+    // in one layout of the same code, 2000 rounds 2.7 %, 20000 -1.5 %)
     const t0 = clock();
-    const a1 = envLoop(r, 0);
+    const a1 = envLoop(100 * r, 0);
     const t1 = clock();
-    print(`env ${f64(t1 - t0) / f64(r)} ${a1 / r}`);
+    print(`env ${f64(t1 - t0) / f64(100 * r)} ${a1 / (100 * r)}`);
     const a2 = existsLoop(one, r, 0);
     const t2 = clock();
     print(`exists ${f64(t2 - t1) / f64(r)} ${a2 / r}`);

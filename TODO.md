@@ -299,6 +299,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The Benchmarks Game measured again at c6e020e, the lowest of 12 runs: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.79, fasta 2.59, k-nucleotide 2.54, pidigits 2.53, reverse-complement 2.44; D319)
 - [x] The tasks of a parallel fill of at least 16 KiB, apart from B (B kept for the reductions): fasta -17.64 % (D321)
 - [x] The Benchmarks Game measured again at 2ef9e9f with the library: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.76, k-nucleotide 2.55, pidigits 2.53, reverse-complement 2.38, fasta 2.16); three programs 0.4 to 1.0 % above D319 shown to be noise by an A/B against the binaries of 0.2.2 (D344)
+- [x] `==` against a literal of at most 16 bytes in place; rule L, the last index of a `fold` from the end; `getenv` without a block of the heap: `basename` 25.64 -> 9.07 ns, `normalize` 335.43 -> 228.61, `env` measured warm (D346)
+- [ ] The payload of a `match` on a temporary taken out of it, not copied (`x ?? d`, `match (f()) { Ok(v) => ... }`: a copy and a free of the payload each time, D346)
+- [ ] `path.normalize` in one pass: the parts kept found from the right, joined once (D346: `split` 33 %, the text kept copied again at each part)
 - [ ] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions
 
 ## The trusted base (the remarks of the author, 2026-11-04)
@@ -343,6 +346,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
   - [ ] The server above its floor: `serve.pipelined` 1.5 (D342: about 1600 user cycles a request more; 10.1 blocks, 4.1 copies of literal texts, 4.0 texts of bytes checked as UTF-8 again, 2 chains and a `join` a request, none in C): literals kept without a copy, a text of bytes already checked, fewer blocks for a request
   - [ ] Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
+  - [ ] The server against servers of C made for production (nginx, h2o) under a generator of load (wrk), from 1 to thousands of connections, 1 and 4 threads, in the Docker image of the benchmarks (asked by the author, 2026-11-05): until then only `serve.pipelined` against a loop of `epoll` written for the same work (1.5)
 - [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)

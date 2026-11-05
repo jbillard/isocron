@@ -7254,3 +7254,61 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   stopped afterwards). `CHANGELOG.md`, the links of the README and of
   `tools/vscode/README.md` at 0.3.0; the README gains a section on the
   library, its example checked by `iscc check`.
+- **D346 — Equality with a short literal in place; rule L, the last
+  index of a `fold` from the end; `getenv` without a block of the heap
+  (2026-11-05).** The gaps of `path` and `sys` that had numbers but no
+  measured cause (D333). Profiled at fixed frequency on one CPU (`perf
+  stat`, `perf record`, a program of each function alone, 4096 paths of
+  `bench/primitives/sys.isc`, 200 rounds): `basename` 87.4 cycles and 271.5
+  instructions a call, 29 % of them in `isc_str_cmp` and `memcmp` for its
+  one `t == "/"`, 63 % in its two `fold`s (the last byte that is not `/`,
+  the last `/`: each over the whole path, by 4 lanes of indices of 64 bits
+  and their reduction, the loop vectorizer of LLVM); `normalize` 1120.8
+  cycles, 26 % in the comparisons with `""`, `"."` and `".."`.
+  - `==` and `!=` against a literal of at most 16 bytes, on either side,
+    compiled in place (`literal_affix` of D301 with `exact`: the length,
+    then the bytes as one integer or two that overlap); longer literals
+    and two variables by the runtime. `basename` 87.4 -> 60.7 cycles,
+    `normalize` 1120.8 -> 796.0.
+  - Rule L (SPEC): `fold(iota(n), init, (a, i) => c ? i : a)`, `c` not
+    reading `a` and unable to stop the program (`safe_cond`: no division
+    or remainder, conversions only to wider integers, its reads `x[i + p]`
+    checked at `i = 0` and `i = n - 1` before the loop as D297 does), is
+    the last `i` where `c` holds: `c` from `n - 1` down, the first that
+    holds; a read out of bounds or `n = 0` by the loop as written (its
+    panic, at its place). In `path` (2), `json` (the line of an error),
+    `time` (`fraction`). `basename` 60.7 -> 34.8 cycles.
+  - The ten programs: their IR the same, byte for byte (neither form in
+    them).
+  - `results/primitives.md` (a whole run): `basename` 25.64 -> 9.07 ns
+    (5.3 -> 1.9 times its floor), `normalize` 335.43 -> 228.61 (6.7 ->
+    4.5). What is left in `normalize` (its profile): `split` (33 %),
+    `out + "/" + s` for each part (`concat` 17 %, `memcpy` 11 %: the text
+    kept so far copied again at each part), the frees (14 %): the
+    algorithm of the module, open in TODO.
+  - `env` 58.67 -> 60.55 ns in the first run after these changes, and
+    66.69 (0.3.0) against 75.28 (now) in an A/B of the two binaries, its
+    code the same (the IR of its loop and the instructions of
+    `isc_sys_getenv` identical; only their places moved): +14.9 % with 200
+    rounds, +2.7 % with 2000, -1.5 % with 20000. With 200 calls its window was 13 µs, its first calls cold. So
+    `env` and its floor now make 100 calls a round: its floor 17.72 ->
+    11.34 ns, warm. Its profile then (169.8 cycles and 664 instructions a
+    call): `isc_sys_getenv` 54.6 % (a `Vec` for the name ended by a zero,
+    made and freed each call; the 18 variables of the environment scanned,
+    `HOME` the ninth; the value copied), `from_utf8_lossy` 16 % (by its
+    iterator of chunks even for ASCII), the copy that `?? ""` makes of the
+    payload of the `Option` (`isc_str_new`, its `free`: 18 % with the
+    rest). The name on the stack below 256 bytes, the value copied once
+    when it is UTF-8 (`from_utf8`, then `new_str`), `from_utf8_lossy` only
+    for a value that is not: 169.8 -> 150.4 cycles; `env` 47.71 ns against
+    11.34 (4.2: glibc returns a pointer into the environment, a string of
+    Isocron is its own copy; the copy of `??`, D347).
+  - The group `strings`, its IR the same as in 0.3.0, 5 to 7 % below the
+    previous run: A/B of the binaries of 0.3.0 and of now, alternately,
+    within 2.1 %; the difference is that of one session of measurement to
+    another.
+  - Tested by `equality_with_short_literals` (`strings.rs`: every length
+    around 0, 8 and 16, either side, `!=`, a literal of 17 bytes, the IR
+    without a call) and `last_index_of_a_fold_from_the_end` (`codegen.rs`:
+    found, not found, `n = 0`, two reads and `&&`, a widening conversion,
+    the panic of a read out of bounds as the interpreter's).

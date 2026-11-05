@@ -2103,6 +2103,47 @@ fn affine_step(e: &Expr, is_y: &dyn Fn(&Expr) -> bool) -> Option<Affine> {
     (a >= 0 && c >= 0 && m >= 2 && fits((m1 - 1) * a1 + c1) && fits(m1 * (m1 - 1))).then_some(Affine { a, c, m })
 }
 
+/// Rule L (D346): `fold(iota(n), init, (a, i) => c ? i : a)`, `c` a
+/// condition that does not read the accumulator `a` and cannot stop the
+/// program (`safe_cond`): the result is the last `i` where `c` holds, or
+/// `init`. Returns `c`.
+fn last_where<'a>(x: &Expr, l: &'a Lambda) -> Option<&'a Expr> {
+    if !matches!(x.kind, ExprKind::Iota(_)) || l.params.len() != 2 || l.body.ty != Type::Int(IntKind::I64) {
+        return None;
+    }
+    let (a, i) = (l.params[0], l.params[1]);
+    let ExprKind::If(c, t, f) = &l.body.kind else { return None };
+    if !matches!(t.kind, ExprKind::Var(v, _) if v == i) || !matches!(f.kind, ExprKind::Var(v, _) if v == a) || c.ty != Type::Bool {
+        return None;
+    }
+    let (mut bound, mut free) = (HashSet::new(), Vec::new());
+    free_vars(c, &mut bound, &mut free);
+    (!free.contains(&a) && safe_cond(c)).then_some(&**c)
+}
+
+/// `e` is computed from scalars without anything that can stop the
+/// program but reads `x[k]` (checked apart, D346): literals, variables,
+/// the operators of scalars but division and remainder (integers wrap,
+/// D329; the amount of a shift is taken modulo its bits), lengths,
+/// projections, conditions, conversions of an integer to a wider one.
+fn safe_cond(e: &Expr) -> bool {
+    use ExprKind::*;
+    let scalar = |t: &Type| matches!(t, Type::Int(_) | Type::Bool | Type::F64 | Type::F32);
+    match &e.kind {
+        Lit(_) | Var(..) => true,
+        Unary(_, x) => scalar(&e.ty) && safe_cond(x),
+        Binary(op, x, y) => !matches!(op, BinOp::Div | BinOp::Rem) && scalar(&e.ty) && scalar(&x.ty) && scalar(&y.ty) && safe_cond(x) && safe_cond(y),
+        If(c, t, f) => scalar(&e.ty) && safe_cond(c) && safe_cond(t) && safe_cond(f),
+        Len(x) | Proj(x, _) => safe_cond(x),
+        Index(a, k) => scalar(&e.ty) && matches!(a.kind, Var(..)) && safe_cond(k),
+        Convert(x) => match (&x.ty, &e.ty) {
+            (Type::Int(f), Type::Int(t)) => t.bits() >= f.bits() && (f.signed() == t.signed() || (!f.signed() && t.bits() > f.bits())) && safe_cond(x),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Rule R (D292): `fold(iota(n), init, (v, t) => v.with(t + 1, f(v[t])))`
 /// (or `1 + t`), `f` an affine step modulo a constant of `v[t]` alone
 /// (`affine_step`): `v[t + 1] = f(v[t])`, so `v[s] = f^(s - 1)(v[1])`, and a
@@ -3932,6 +3973,10 @@ impl<'p> Gen<'p> {
             Scan(x, l, z) => self.scan(e, x, l, z),
             Filter(x, l) => self.filter(e, x, l),
             Fold(x, init, l) if w > 1 => self.fold_vec(x, init, l, w),
+            Fold(x, init, l) if last_where(x, l).is_some() => {
+                let c = last_where(x, l).unwrap();
+                self.fold_last(x, init, l, c)
+            }
             Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
             Fold(x, init, l) if affine_recurrence(x, l).is_some() => {
                 let (f, value) = affine_recurrence(x, l).unwrap();
@@ -8701,6 +8746,75 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// A `fold` of rule L (`last_where`, D346): its reads `x[i + p]` checked
+    /// at `i = 0` and `i = n - 1` (`fold_precheck`), then `c` from `i = n - 1`
+    /// down, the first `i` where it holds the result, `init` when none does;
+    /// the other cases (a read out of bounds, `n = 0`) by the loop as written
+    /// (its checks, its panic). `c` evaluated for fewer `i` gives the same
+    /// result: it reads neither the accumulator nor anything that can stop
+    /// the program.
+    fn fold_last(&mut self, x: &Expr, init: &Expr, l: &Lambda, c: &Expr) -> R<V> {
+        let (src, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, 1)?;
+        let reads = self.fold_index_reads(l);
+        let mut indexes = 0;
+        fn count(e: &Expr, k: &mut usize) {
+            if matches!(e.kind, ExprKind::Index(..)) {
+                *k += 1;
+            }
+            for c in e.children() {
+                count(c, k);
+            }
+        }
+        count(c, &mut indexes);
+        if indexes != reads.len() {
+            return self.fold_loop(&src, &n, &iv, &init.ty, l);
+        }
+        let acc = self.alloca("i64");
+        self.emit(format!("store i64 {}, ptr {}", iv.r, acc));
+        let some = self.ins(format!("icmp sgt i64 {}, 0", n));
+        let ok = if reads.is_empty() {
+            some
+        } else {
+            let fine = self.fold_precheck(&reads, l.params[1], &n, 1)?;
+            self.ins(format!("and i1 {}, {}", some, fine))
+        };
+        let (lhead, lbody, lfound, lnext, lslow, ljoin) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        let at = self.alloca("i64");
+        let last = self.ins(format!("sub i64 {}, 1", n));
+        self.emit(format!("store i64 {}, ptr {}", last, at));
+        self.cbr(&ok, &lhead, &lslow);
+        self.block(&lhead);
+        let i = self.ins(format!("load i64, ptr {}", at));
+        let inside = self.ins(format!("icmp sge i64 {}, 0", i));
+        self.cbr(&inside, &lbody, &ljoin);
+        self.block(&lbody);
+        for (_, k) in &reads {
+            self.prechecked.insert(*k as *const Expr);
+        }
+        self.bind(l.params[0], iv.clone());
+        self.bind(l.params[1], v(i.clone(), "i64"));
+        let cv = self.ex(c, 1);
+        for (_, k) in &reads {
+            self.prechecked.remove(&(*k as *const Expr));
+        }
+        let cv = cv?;
+        self.cbr(&cv.r, &lfound, &lnext);
+        self.block(&lfound);
+        self.emit(format!("store i64 {}, ptr {}", i, acc));
+        self.br(&ljoin);
+        self.block(&lnext);
+        let down = self.ins(format!("sub i64 {}, 1", i));
+        self.emit(format!("store i64 {}, ptr {}", down, at));
+        self.br(&lhead);
+        self.block(&lslow);
+        let slow = self.fold_loop(&src, &n, &iv, &init.ty, l)?;
+        self.emit(format!("store i64 {}, ptr {}", slow.r, acc));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        Ok(v(self.ins(format!("load i64, ptr {}", acc)), "i64"))
+    }
+
     fn fold(&mut self, x: &Expr, init: &Expr, l: &Lambda) -> R<V> {
         let (src, n) = self.prepare_src(x)?;
         let iv = self.ex(init, 1)?;
@@ -10436,9 +10550,10 @@ impl<'p> Gen<'p> {
     /// The string `p`, `n` starts (`start`) or ends with the bytes `t` (at
     /// most 16): at least as long, and its first or last bytes, read as
     /// one integer (up to 8) or two that overlap, equal to those of `t`.
-    fn literal_affix(&mut self, p: &str, n: &str, t: &[u8], start: bool) -> V {
+    /// With `exact`, the string is `t`: as long as `t`, and those bytes.
+    fn literal_affix(&mut self, p: &str, n: &str, t: &[u8], start: bool, exact: bool) -> V {
         if t.is_empty() {
-            return v("true", "i1");
+            return if exact { v(self.ins(format!("icmp eq i64 {}, 0", n)), "i1") } else { v("true", "i1") };
         }
         let l = t.len();
         let word = |b: &[u8]| -> String {
@@ -10448,7 +10563,7 @@ impl<'p> Gen<'p> {
             }
             x.to_string()
         };
-        let long = self.ins(format!("icmp sge i64 {}, {}", n, l));
+        let long = self.ins(format!("icmp {} i64 {}, {}", if exact { "eq" } else { "sge" }, n, l));
         let (lcheck, ljoin) = (self.label(), self.label());
         let lfrom = self.current_label("entry");
         self.cbr(&long, &lcheck, &ljoin);
@@ -10610,7 +10725,7 @@ impl<'p> Gen<'p> {
             S::StartsWith | S::EndsWith if self.literal_of(&es[1]).is_some_and(|t| t.len() <= 16) => {
                 let t = self.literal_of(&es[1]).unwrap();
                 let (p, n) = self.str_parts(&vals[0]);
-                self.literal_affix(&p, &n, t.as_bytes(), op == S::StartsWith)
+                self.literal_affix(&p, &n, t.as_bytes(), op == S::StartsWith, false)
             }
             S::Includes | S::StartsWith | S::EndsWith => {
                 let (p, n) = self.str_parts(&vals[0]);
@@ -10787,6 +10902,19 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 new_str(self, format!("call void @isc_join(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+            }
+            // equal to a literal of at most 16 bytes: its length, then its
+            // bytes compared as one or two integers, without a call
+            S::Cmp(b @ (BinOp::Eq | BinOp::Ne)) if (0..2).any(|k| self.literal_of(&es[k]).is_some_and(|t| t.len() <= 16)) => {
+                let k = (0..2).find(|&k| self.literal_of(&es[k]).is_some_and(|t| t.len() <= 16)).unwrap();
+                let t = self.literal_of(&es[k]).unwrap();
+                let (p, n) = self.str_parts(&vals[1 - k]);
+                let same = self.literal_affix(&p, &n, t.as_bytes(), true, true);
+                if b == BinOp::Eq {
+                    same
+                } else {
+                    v(self.ins(format!("xor i1 {}, true", same.r)), "i1")
+                }
             }
             S::Cmp(b) => {
                 let (p, n) = self.str_parts(&vals[0]);

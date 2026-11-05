@@ -2206,20 +2206,35 @@ pub struct IscStrCode {
 #[no_mangle]
 pub unsafe extern "C" fn isc_sys_getenv(out: *mut IscStrCode, p: *const u8, n: i64) {
     let name = bytes_of(p, n);
-    let mut z = alloc::vec::Vec::with_capacity(name.len() + 1);
-    z.extend_from_slice(name);
-    z.push(0);
+    // the name ended by a zero byte: on the stack when it is short (D346:
+    // a block of the heap made and freed by each call took about 20 of
+    // its 170 cycles)
+    let mut short = [0u8; 256];
+    let long;
+    let z: &[u8] = if name.len() < short.len() {
+        short[..name.len()].copy_from_slice(name);
+        &short[..name.len() + 1]
+    } else {
+        let mut v = alloc::vec::Vec::with_capacity(name.len() + 1);
+        v.extend_from_slice(name);
+        v.push(0);
+        long = v;
+        &long
+    };
     let v = if name.is_empty() || name.contains(&0) || name.contains(&b'=') { core::ptr::null() } else { getenv(z.as_ptr() as *const c_char) };
     if v.is_null() {
         *out = IscStrCode { s: adopt(alloc::string::String::new()), code: 0 };
         return;
     }
-    let mut len = 0;
-    while *v.add(len) != 0 {
-        len += 1;
-    }
-    let text = alloc::string::String::from_utf8_lossy(core::slice::from_raw_parts(v as *const u8, len)).into_owned();
-    *out = IscStrCode { s: adopt(text), code: 1 };
+    // SAFETY: `getenv` gives a string ended by a zero byte
+    let value = core::slice::from_raw_parts(v as *const u8, strlen(v));
+    // valid UTF-8 (the common case) copied once; otherwise each invalid
+    // sequence replaced by U+FFFD
+    let s = match core::str::from_utf8(value) {
+        Ok(_) => new_str(value),
+        Err(_) => adopt(alloc::string::String::from_utf8_lossy(value).into_owned()),
+    };
+    *out = IscStrCode { s, code: 1 };
 }
 
 /// A `String` of the runtime as a string of the program: its buffer is a

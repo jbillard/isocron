@@ -94,12 +94,13 @@ int main(int argc, char **argv) {
     sprintf(path, "%s/f7.bin", dir);
     long acc = 0;
     double t0 = now();
-    for (long i = 0; i < r; i++) {
+    // 100 calls a round, as `sys.isc` (D346)
+    for (long i = 0; i < 100 * r; i++) {
         const char *v = getenv("HOME");
         acc += v ? strlen(v) : 0;
     }
     double t1 = now();
-    printf("env %.3f %ld\n", (t1 - t0) / r, acc / r);
+    printf("env %.3f %ld\n", (t1 - t0) / (100 * r), acc / (100 * r));
     acc = 0;
     struct stat st;
     for (long i = 0; i < r; i++) acc += stat(path, &st) == 0;
