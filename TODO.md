@@ -296,6 +296,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `countBy` by tables of counts only, each key with its count in one word, looked for by lines of 8 slots: k-nucleotide -19.33 % (D317)
 - [x] The whole rows of a `map` take an equality with the index and the remainders of their tables out of their loop: fasta -13.82 % (D318)
 - [x] The Benchmarks Game measured again at c6e020e, the lowest of 12 runs: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.79, fasta 2.59, k-nucleotide 2.54, pidigits 2.53, reverse-complement 2.44; D319)
+- [x] The tasks of a parallel fill of at least 16 KiB, apart from B (B kept for the reductions): fasta -17.64 % (D321)
+- [ ] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions
 
 ## The trusted base (the remarks of the author, 2026-11-04)
 

@@ -363,3 +363,32 @@ fn affine_recurrences_match_the_interpreter() {
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "tasks T={}: {}", t, run.stderr);
     }
 }
+
+/// D321: the tasks of a parallel fill write at least 16 KiB (16384 bytes,
+/// 8192 elements of 2 bytes, B elements of 4 bytes and more), the results
+/// of the reductions still by blocks of B: arrays of bytes, `u16` and
+/// `f64` around those sizes (one task, two, a partial last one), rows of 61
+/// bytes cut by the tasks (lines written by blocks to the output), a sum of
+/// floats whose bits fix B; as the interpreter on 1, 3 and 4 threads.
+#[test]
+fn fills_by_tasks_of_16_kib_do_not_depend_on_threads() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const bs = map(iota(n), (i) => u8((i * 7 + i / 61) % 251));
+    const ws = map(iota(n), (i) => u16((i * 13) % 65521));
+    const fs = map(iota(n), (i) => f64(i % 1000) * 0.001 + 1.0 / f64(i + 1));
+    print([sum(map(bs, (b) => i64(b))), sum(map(ws, (w) => i64(w))), bs.length]);
+    print(sum(fs));
+    printBytes(map(iota(n), (q) => q % 61 == 60 || q == n - 1 ? 10u8 : u8(65 + (q / 61 * 60 + q % 61) % 26)));
+    return 0;
+}
+";
+    let bin = compile(src, "fills_16k");
+    for n in ["16383", "16384", "16385", "32769", "100003", "1048577"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 3, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n = {}, {} threads: {}", n, t, r.stderr);
+        }
+    }
+}

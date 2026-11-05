@@ -27,6 +27,19 @@ use isc_syntax::Span;
 pub const LANES: u32 = 32;
 pub const BLOCK: i64 = 4096;
 
+/// The bytes a task of a parallel fill writes at least (D321): its elements
+/// do not depend on the cut (D121), so its grain is free of B, which fixes
+/// the results of the reductions; a task of B bytes (lines of fasta, 4 KiB)
+/// paid the start and the end of a task every 4096 bytes. At least B
+/// elements, as before for elements of 4 bytes and more.
+pub const FILL_BYTES: i64 = 16 << 10;
+
+/// The elements of a task of a parallel fill of elements of `es` bytes
+/// (D321).
+fn fill_block(es: i64) -> i64 {
+    BLOCK.max(FILL_BYTES / es.max(1))
+}
+
 /// A quotient and a remainder of the index of a loop by the constant `c`,
 /// in two slots that each iteration moves on (D180).
 #[derive(Clone)]
@@ -4971,7 +4984,7 @@ impl<'p> Gen<'p> {
         let ldone = if heavy {
             None
         } else {
-            let small = self.ins(format!("icmp sle i64 {}, {}", n, BLOCK));
+            let small = self.ins(format!("icmp sle i64 {}, {}", n, fill_block(esize(&et))));
             let lsmall = self.label();
             let lpar = self.label();
             let ldone = self.label();
@@ -4994,7 +5007,7 @@ impl<'p> Gen<'p> {
             let one = self.ins(format!("icmp slt i64 {}, 1", t3));
             self.ins(format!("select i1 {}, i64 1, i64 {}", one, t3))
         } else {
-            BLOCK.to_string()
+            fill_block(esize(&et)).to_string()
         };
         let n0 = self.ins(format!("add i64 {}, {}", n, bs));
         let n1 = self.ins(format!("sub i64 {}, 1", n0));
@@ -5201,8 +5214,10 @@ impl<'p> Gen<'p> {
                 g.fill_range(&src, &dst, &n, &et, lo, &hi, w)?;
             } else {
                 let len = g.ins(format!("sub i64 {}, {}", hi, lo));
-                let c0 = g.ins(format!("add i64 {}, {}", len, BLOCK - 1));
-                let c = g.ins(format!("sdiv i64 {}, {}", c0, BLOCK));
+                // the windows of D293 are made for tasks of B elements
+                let tb = if wins.is_empty() { fill_block(esize(&et)) } else { BLOCK };
+                let c0 = g.ins(format!("add i64 {}, {}", len, tb - 1));
+                let c = g.ins(format!("sdiv i64 {}, {}", c0, tb));
                 let mut extra = vec![v(dst.clone(), "ptr"), v(lo.to_string(), "i64"), v(hi.clone(), "i64")];
                 if !wins.is_empty() {
                     extra.push(v(ok.clone(), "i1"));
@@ -5214,9 +5229,9 @@ impl<'p> Gen<'p> {
                 scope.extend(filters.iter());
                 let (task, ctx, ctx_bytes) = g.outline_task(&scope, &extra, &mut |t, x, i| {
                     let (src, n) = t.prepare_src(e)?;
-                    let off = t.ins(format!("mul i64 {}, {}", i, BLOCK));
+                    let off = t.ins(format!("mul i64 {}, {}", i, tb));
                     let start = t.ins(format!("add i64 {}, {}", x[1].r, off));
-                    let lim = t.ins(format!("add i64 {}, {}", start, BLOCK));
+                    let lim = t.ins(format!("add i64 {}, {}", start, tb));
                     let short = t.ins(format!("icmp slt i64 {}, {}", x[2].r, lim));
                     let end = t.ins(format!("select i1 {}, i64 {}, i64 {}", short, x[2].r, lim));
                     let heaps = match x.get(3) {

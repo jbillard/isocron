@@ -6248,3 +6248,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   outputs; `iscc run`; WebAssembly), the machine stopped afterwards.
   `CHANGELOG.md`, the links of the README and of `tools/vscode/README.md`
   at 0.2.2.
+- **D321 — The tasks of a parallel fill of at least 16 KiB, apart from B
+  (2026-11-05).** Measured for the question of B (SPEC section 16): the
+  compiler built with B = 1024, 4096 and 16384, a `sum` and a `dot` of n
+  floats (the lowest of 3 runs): on one thread B changes nothing that
+  shows (57.3 to 60.7 ns at n = 1000, 13809 to 13856 ns at 10^5, 3.40 to
+  3.44 ms at 10^7); on 4 threads at n = 10^5, B = 1024 takes 6845 and
+  13407 ns (98 tasks) against 1776 and 6689 at 4096, 16384 2054 and 4019;
+  at 10^7 the three within 2.5 %. B fixes the bits of a reduction of more
+  than B floats (the `dot` at 10^5: 38655.506687999994 with 4096,
+  38655.506688 with the two others). Six of the ten programs are other
+  binaries with another B, the same outputs: with 16384 fasta -16.43 %
+  [-16.94 %, -15.80 %] and reverse-complement -8.91 % [-9.27 %, -8.58 %],
+  the four others within 0.83 %; with 1024 fasta +54.69 % and
+  reverse-complement +37.41 %. Their gain is not their reductions: B is
+  also the grain of the tasks that fill an array (`materialize`) and the
+  blocks of the output (`print_stream`), whose elements do not depend on
+  the cut (D121): a task of B bytes for the lines of fasta, 62000 tasks
+  of 4 KiB for its 254 MB, each with its two rows of 61 cut at its ends
+  (the general code, D272).
+  - So B stays 4096 for the reductions (and their results), and a task of
+    a fill writes at least 16 KiB (`FILL_BYTES`, `fill_block`: B elements
+    for elements of 4 bytes and more, as before; 16384 bytes; 8192
+    elements of 2 bytes), but where it reads a `filter` by windows (D293:
+    their margins are for tasks of B elements). fasta -17.64 % [-18.62 %,
+    -16.49 %] (61 rounds, 5441 -> 4439 µs): 188.6 -> 143.8 million
+    instructions (about 960 a task less, 46500 tasks less), 108000 ->
+    40000 mispredicted branches, 61.5 -> 50.0 million cycles;
+    k-nucleotide -0.15 % [-0.80 %, +0.08 %]; the eight others the same
+    binaries (reverse-complement too: its gain with B = 16384 comes from
+    another use of B, to be found).
+  - Tested by `fills_by_tasks_of_16_kib_do_not_depend_on_threads`
+    (`parallel.rs`: arrays of bytes, `u16` and `f64` of 16383 to 1048577
+    elements, rows of 61 written to the output, a sum of floats; 1, 3 and
+    4 threads, as the interpreter).
