@@ -5883,3 +5883,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`report.py`), the table of `results/floors.md` (`floors.py`) made
   again; its attribution of the gaps (D263) stays that of `c77e61b`, said
   so.
+- **D308 — The text between the matches of a replacement moved by 32
+  bytes (2026-11-05).** A replacement of regex-redux (`a[NSt]|BY` by
+  `<2>`: 3522378 matches, 53516158 bytes written) took about 22 ms on 4
+  threads: its search 9.4 to 9.7 ms, its sizes 1.3 ms, its writing 10.9 to
+  11.1 ms (timed in a build of its phases, not kept), 12.4 ns of CPU a
+  match to write. Of the 21.0 million branches mispredicted by 8 such
+  replacements, 83.92 % were in its writing: `copy_short` chose among four
+  moves by the length of the text between two matches, a length the text
+  decides (about one mispredicted every two matches). Now that text, up to
+  32 bytes, is one move of 32 where the text and the part of the result of
+  the thread have the room, the bytes past it written for nothing (the next
+  writes cover them, never past the part, which another thread writes).
+  8 replacements: 19.0 -> 14.0 ms each, 21.0 -> 4.6 million branches
+  mispredicted; the result the same bytes (the five replacements of
+  regex-redux, against the compiler of `c77e61b`). The ten programs,
+  alternated rounds: regex-redux -9.65 % [-10.36 %, -9.23 %] (its
+  replacements of `a[NSt]|BY` 24.9 -> 19.5 ms, `<[^>]*>` 24.1 -> 18.9 ms,
+  `\|[^|][^|]*\|` 12.9 -> 10.8 ms); the others between -0.22 % and +0.71
+  %, every interval across 0, the same outputs. Test
+  `replacements_written_by_moves_of_32_bytes` (gaps of 0 to 44 bytes,
+  matches at both ends, replacements longer, shorter and empty, a text of
+  2.9 MB; 1, 3 and 8 threads, as the interpreter).

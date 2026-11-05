@@ -2015,6 +2015,22 @@ unsafe fn copy_short(src: *const u8, dst: *mut u8, n: usize) {
     }
 }
 
+/// `n` bytes from `src` to `dst` (D308), where `src_room` bytes can be read
+/// from `src` and `dst_room` written from `dst`: up to 32 bytes by one move
+/// of 32 when both have that room, the bytes past `n` written for nothing
+/// (the next writes cover them), so that the length of the text between two
+/// matches decides no branch (`copy_short` chose among four moves by it:
+/// about one branch mispredicted every two matches of a replacement of
+/// regex-redux); else `copy_short`.
+#[inline(always)]
+unsafe fn copy_room(src: *const u8, dst: *mut u8, n: usize, src_room: usize, dst_room: usize) {
+    if n <= 32 && src_room >= 32 && dst_room >= 32 {
+        core::ptr::write_unaligned(dst as *mut [u8; 32], core::ptr::read_unaligned(src as *const [u8; 32]));
+    } else {
+        copy_short(src, dst, n);
+    }
+}
+
 /// From this many bytes of text on, a replacement writes its result in
 /// parallel (D279).
 const REPLACE_PARALLEL_MIN: usize = 1 << 20;
@@ -2082,6 +2098,7 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     #[repr(C)]
     struct Ctx {
         s: *const u8,
+        n: usize,
         to: *const u8,
         tn: usize,
         found: *const Found,
@@ -2096,8 +2113,11 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
             let k = k as usize;
             let mut last = *c.cut.add(k);
             let mut o = c.out.add(*c.at.add(k));
+            // the end of this part of the result: past it, the part of
+            // another thread
+            let end_o = c.out.add(*c.at.add(k + 1)) as usize;
             (*c.found).between(*c.first.add(k), *c.first.add(k + 1), &mut |a, b| {
-                copy_short(c.s.add(last), o, a - last);
+                copy_room(c.s.add(last), o, a - last, c.n - last, end_o - o as usize);
                 o = o.add(a - last);
                 copy_short(c.to, o, c.tn);
                 o = o.add(c.tn);
@@ -2109,6 +2129,7 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     }
     let mut ctx = Ctx {
         s: s.as_ptr(),
+        n: s.len(),
         to: to.as_ptr(),
         tn: to.len(),
         found: found as *const Found,

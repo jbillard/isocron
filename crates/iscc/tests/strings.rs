@@ -841,3 +841,35 @@ action main(args: string[k]): i32 {
     valgrind_clean(src, "str_block_parts", &["40"]);
     valgrind_clean(src, "str_block_parts", &["200000"]);
 }
+
+/// D308: a replacement written in parallel, the text between two matches
+/// moved by 32 bytes where the text and the part of the result have the
+/// room: gaps of 0 to 40 bytes and longer, matches at both ends of the text
+/// and at the ends of the parts of the threads, replacements longer, shorter
+/// and empty, a text of more than 1 MiB (written in parallel) and a short
+/// one; on 1, 3 and 8 threads, as the interpreter.
+#[test]
+fn replacements_written_by_moves_of_32_bytes() {
+    let src = r#"action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const gaps = map(iota(n), (i) => (i * 7919 + i / 13) % 45);
+    const text = "ab" + join(map(iota(n), (i) => "xyzw".repeat(gaps[i] / 4 + 1).slice(0, gaps[i]) + (i % 3 == 0 ? "ab" : "aC")), "") + "ab";
+    const a = text.replace(/a[bC]/g, "<<long replacement>>");
+    const b = text.replace(/a[bC]/g, "-");
+    const c = text.replace(/a[bC]/g, "");
+    const d = text.replace(/ab|zw/g, "Q");
+    print([a.length, b.length, c.length, d.length]);
+    print([a.slice(0, 60), b.slice(b.length - 40, b.length), c.slice(1000, 1040), d.slice(d.length / 2, d.length / 2 + 50)]);
+    print(sum(map(bytes(a), (x) => i64(x))) + 3 * sum(map(bytes(b), (x) => i64(x))) + 5 * sum(map(bytes(c), (x) => i64(x))) + 7 * sum(map(bytes(d), (x) => i64(x))));
+    return 0;
+}
+"#;
+    let bin = compile(src, "str_replace_room");
+    for n in ["50", "120000"] {
+        let want = interp_ok(src, &[n]);
+        for threads in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[n], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} matches, {} threads: {}", n, threads, r.stderr);
+        }
+    }
+}
