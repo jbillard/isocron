@@ -6087,3 +6087,35 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     row, a text used after its replacement that keeps its bytes; short and
     long texts on 1, 3 and 8 threads as the interpreter; Valgrind) and
     `a_mapped_input_given_to_a_replacement_is_not_written` (`stdin.rs`).
+- **D316 — The last 2 MiB of a region of medium blocks without huge pages
+  (2026-11-05).** A timeline of fasta (perf at 50 kHz, by thread and by
+  0.1 ms): before its first line and between its first and second
+  sequence, its main thread works alone 0.55 to 0.85 ms each time, the
+  three others waiting; in both, mostly `clear_page_erms` (132 and 122
+  samples in 10 runs: about 0.25 ms each), under `heap::alloc_medium`.
+  The system gives huge pages to every anonymous mapping (`always`): 4
+  huge pages a run (`thp_fault_alloc`), 2 MiB each cleared by the kernel
+  at its first touch. One of them held only the sentinel that `new_region`
+  writes in the last page of each region of 256 MiB, at the first medium
+  block of the program: 2 MiB cleared for 64 bytes. That last huge page of
+  a region is now `MADV_NOHUGEPAGE` (the sentinel a page of 4 KiB; a block
+  that reaches the end of a region gets pages of 4 KiB for its last 2
+  MiB): 3 huge pages a run. Leaving it out of `MADV_HUGEPAGE` alone did
+  not change them (the setting `always`): 4 again, and its -1.08 % was not
+  from them (not kept as a measure of it). fasta -4.27 % [-5.03 %,
+  -3.74 %] (61 rounds, 6374 -> 6102 µs), with N = 1 -33.15 % [-35.82 %,
+  -31.72 %] (765 -> 517 µs: the cost at the start of every program with a
+  medium block); then with the ten programs, all other binaries: fasta
+  -4.57 % [-5.12 %, -3.81 %], reverse-complement -0.91 % [-1.74 %,
+  -0.58 %], regex-redux -0.15 % [-1.23 %, +0.26 %], k-nucleotide +0.39 %
+  [-0.15 %, +0.98 %], pidigits +0.07 % [-0.13 %, +0.19 %], fannkuch-redux
+  -0.05 % [-0.12 %, +0.02 %], binary-trees -0.03 % [-0.63 %, +0.31 %],
+  mandelbrot -0.05 % [-0.07 %, -0.02 %], n-body -0.00 % [-0.02 %,
+  +0.02 %], spectral-norm -0.00 % [-0.01 %, +0.25 %]. The three huge pages
+  left are faulted, by `perf -e page-faults` (39 faults a run), in
+  `alloc_medium` (3) and `refill` (11, with pages of 4 KiB), where the
+  blocks of the program begin: to be attributed to their blocks before
+  any change. Tested by `medium_blocks_to_the_end_of_a_region`
+  (`memory.rs`: 17 blocks of 16 MiB, past the end of a region, written,
+  read, freed, then 34 blocks of 8 MiB; both allocators, 1 and 4
+  threads).

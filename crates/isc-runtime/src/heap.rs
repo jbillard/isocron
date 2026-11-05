@@ -1009,7 +1009,12 @@ unsafe fn new_region(st: &mut State) -> bool {
         return false;
     }
     let start = (base as usize).next_multiple_of(HUGE);
-    madvise(start as *mut c_void, REGION, MADV_HUGEPAGE);
+    // huge pages but in the last 2 MiB, where the sentinel is written now:
+    // in a huge page (the system may give them without being asked) it
+    // would have the kernel clear 2 MiB for its 64 bytes, at the first
+    // medium block of the program, before anything else (D316)
+    madvise(start as *mut c_void, REGION - HUGE, MADV_HUGEPAGE);
+    madvise((start + REGION - HUGE) as *mut c_void, HUGE, MADV_NOHUGEPAGE);
     let first = start as *mut Header;
     let sentinel = (start + REGION - PAGE) as *mut Header;
     sentinel.write(Header {

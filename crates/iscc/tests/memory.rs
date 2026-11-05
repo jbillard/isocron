@@ -968,3 +968,38 @@ action main(args: string[k]): i32 {
     assert_eq!(ty("free"), "i64[]");
     clean(src, "narrow_vg", &[]);
 }
+
+/// D316: the last 2 MiB of a region of medium blocks are kept out of huge
+/// pages (its sentinel is written there). Blocks of about 16 MiB up to that
+/// end and into a second region (17 of them, 272 MB), every element written
+/// and read, freed, then a second wave of blocks of 8 MiB in the memory
+/// they gave back; with the allocator of Isocron and glibc's, on 1 and 4 threads.
+#[test]
+fn medium_blocks_to_the_end_of_a_region() {
+    let src = "action main(args: string[k]): i32 {
+    const k = parseI64(args[0]);
+    const parts = map(iota(k), (j) => fill(2097144, j + 1));
+    print(sum(map(parts, (p) => sum(p) + p[p.length - 1])));
+    const again = map(iota(2 * k), (j) => fill(1048572, 2 * j));
+    print(sum(map(again, (p) => sum(p) + p[0])));
+    return 0;
+}
+";
+    let k = 17i64;
+    let first: i64 = (0..k).map(|j| 2097144 * (j + 1) + (j + 1)).sum();
+    let second: i64 = (0..2 * k).map(|j| 1048572 * (2 * j) + 2 * j).sum();
+    let want = format!("{}\n{}\n", first, second);
+    let bin = compile(src, "heap_region_end");
+    for alloc in [None, Some("glibc")] {
+        for threads in ["1", "4"] {
+            let mut cmd = std::process::Command::new(&bin);
+            cmd.arg(k.to_string()).env("ISC_THREADS", threads);
+            match alloc {
+                Some(a) => cmd.env("ISC_ALLOC", a),
+                None => cmd.env_remove("ISC_ALLOC"),
+            };
+            let o = cmd.output().unwrap();
+            assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{:?}, {} threads: {}", alloc, threads, String::from_utf8_lossy(&o.stderr));
+        }
+    }
+}
