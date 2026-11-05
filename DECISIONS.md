@@ -6452,3 +6452,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     standard one. To do: Windows (`kernel32`) and WASI (wasi-libc), the
     module of paths, the example of the guide, the microbenchmark and its
     floor.
+- **D331 — The module `sys` under Windows (2026-11-05).** The eleven
+  primitives of D330 by the functions of `kernel32` (`system.rs`): the
+  paths in UTF-16 (`MultiByteToWideChar`, -1 for a path that holds a zero
+  byte or is not UTF-8), `GetFileAttributesExW` (a folder by its
+  attribute, the time of the last write from 100 ns since 1601 to ns since
+  1970), `FindFirstFileW` and `FindNextFileW` on `path\*` (without `.` and
+  `..`), `CreateDirectoryW`, `DeleteFileW`, `RemoveDirectoryW`,
+  `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` (as the standard library
+  of Rust, so as `rename` under Linux), `GetCurrentDirectoryW`,
+  `GetEnvironmentStringsW` (without the entries of the drives, `=C:=...`),
+  `CreateFileW`, `ReadFile` and `WriteFile` (appended at the end of the file
+  with `OPEN_ALWAYS`). The codes of the last error as the standard library
+  of Rust names their kinds (2 and 3 not found, 5 permission denied, 80 and
+  183 already exists, 145 not empty, 10061 refused, 1460 and 10060 timed
+  out). Tested in the machine of Windows by `sys_on_windows`
+  (`windows.rs`: the program of `std_sys.rs` run there and under Linux, the
+  same outputs on 1 and 4 threads); the three other tests of Windows pass
+  with the new runtime.

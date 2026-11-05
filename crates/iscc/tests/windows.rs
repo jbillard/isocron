@@ -241,3 +241,17 @@ fn iscc_on_windows() {
         assert_eq!(out.replace("\r\n", "\n"), want, "{}: iscc on Windows", name);
     }
 }
+
+/// D331: the module `sys` on Windows (`kernel32`): every function in a new
+/// folder `w`, the same outputs as on Linux (the folder, its files, the
+/// errors of the six kinds).
+#[test]
+fn sys_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let d = dir("sys");
+    let out = same_on_windows(&runner, include_str!("data/std_sys.isc"), "sys", &d, &["w"], None);
+    assert!(String::from_utf8_lossy(&out).starts_with("ok\nok\nalready exists: w/a\n"), "{}", String::from_utf8_lossy(&out));
+}

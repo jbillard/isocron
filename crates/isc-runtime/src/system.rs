@@ -261,3 +261,284 @@ mod imp {
         *out = code;
     }
 }
+
+#[cfg(windows)]
+mod imp {
+    use super::*;
+
+    type Handle = *mut c_void;
+    const INVALID: Handle = !0usize as Handle;
+    const CP_UTF8: u32 = 65001;
+
+    #[repr(C)]
+    struct AttributeData {
+        attributes: u32,
+        created: [u32; 2],
+        accessed: [u32; 2],
+        written: [u32; 2],
+        size_high: u32,
+        size_low: u32,
+    }
+
+    #[repr(C)]
+    struct FindData {
+        attributes: u32,
+        times: [u32; 6],
+        size_high: u32,
+        size_low: u32,
+        reserved: [u32; 2],
+        name: [u16; 260],
+        short: [u16; 14],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLastError() -> u32;
+        fn MultiByteToWideChar(cp: u32, flags: u32, s: *const u8, n: i32, w: *mut u16, wn: i32) -> i32;
+        fn WideCharToMultiByte(cp: u32, flags: u32, w: *const u16, wn: i32, s: *mut u8, n: i32, default: *const u8, used: *mut i32) -> i32;
+        fn GetFileAttributesExW(name: *const u16, level: i32, info: *mut AttributeData) -> i32;
+        fn FindFirstFileW(name: *const u16, data: *mut FindData) -> Handle;
+        fn FindNextFileW(h: Handle, data: *mut FindData) -> i32;
+        fn FindClose(h: Handle) -> i32;
+        fn CreateDirectoryW(name: *const u16, sa: *mut c_void) -> i32;
+        fn DeleteFileW(name: *const u16) -> i32;
+        fn RemoveDirectoryW(name: *const u16) -> i32;
+        fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+        fn GetCurrentDirectoryW(n: u32, buf: *mut u16) -> u32;
+        fn GetEnvironmentStringsW() -> *mut u16;
+        fn FreeEnvironmentStringsW(p: *mut u16) -> i32;
+        fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *mut c_void, disposition: u32, flags: u32, template: Handle) -> Handle;
+        fn ReadFile(h: Handle, buf: *mut c_void, n: u32, done: *mut u32, ov: *mut c_void) -> i32;
+        fn WriteFile(h: Handle, buf: *const c_void, n: u32, done: *mut u32, ov: *mut c_void) -> i32;
+        fn SetFilePointerEx(h: Handle, distance: i64, new: *mut i64, method: u32) -> i32;
+        fn CloseHandle(h: Handle) -> i32;
+    }
+
+    /// The code of the last error of Windows, as the standard library of
+    /// Rust names its kinds (D322).
+    fn last_code() -> i64 {
+        // SAFETY: no argument
+        match unsafe { GetLastError() } {
+            2 | 3 => 1,
+            5 => 2,
+            80 | 183 => 3,
+            145 => 4,
+            10061 => 5,
+            1460 | 10060 => 6,
+            e => -(e as i64),
+        }
+    }
+
+    /// `ok` (a result of Windows not 0) as a code.
+    fn code_if(ok: bool) -> i64 {
+        if ok {
+            0
+        } else {
+            last_code()
+        }
+    }
+
+    /// The path of `n` bytes at `p` in UTF-16 with a zero after it; None when
+    /// it holds a zero byte or is not UTF-8.
+    unsafe fn wide(p: *const u8, n: i64) -> Option<alloc::vec::Vec<u16>> {
+        let b = bytes_of(p, n);
+        if b.contains(&0) || core::str::from_utf8(b).is_err() {
+            return None;
+        }
+        let wn = if b.is_empty() { 0 } else { MultiByteToWideChar(CP_UTF8, 0, b.as_ptr(), b.len() as i32, core::ptr::null_mut(), 0) };
+        let mut w = alloc::vec![0u16; wn as usize + 1];
+        if wn > 0 {
+            MultiByteToWideChar(CP_UTF8, 0, b.as_ptr(), b.len() as i32, w.as_mut_ptr(), wn);
+        }
+        Some(w)
+    }
+
+    /// The UTF-8 of the `wn` units of UTF-16 at `w`.
+    unsafe fn narrow(w: *const u16, wn: usize) -> alloc::vec::Vec<u8> {
+        if wn == 0 {
+            return alloc::vec::Vec::new();
+        }
+        let n = WideCharToMultiByte(CP_UTF8, 0, w, wn as i32, core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null_mut());
+        let mut b = alloc::vec![0u8; n.max(0) as usize];
+        WideCharToMultiByte(CP_UTF8, 0, w, wn as i32, b.as_mut_ptr(), n, core::ptr::null(), core::ptr::null_mut());
+        b
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_environ(out: *mut IscArray) {
+        let mut all = alloc::vec::Vec::new();
+        let base = GetEnvironmentStringsW();
+        if !base.is_null() {
+            let mut e = base;
+            while *e != 0 {
+                let mut n = 0;
+                while *e.add(n) != 0 {
+                    n += 1;
+                }
+                // the entries of the drives (`=C:=C:\...`) are not variables
+                if *e != b'=' as u16 {
+                    all.push(narrow(e, n));
+                }
+                e = e.add(n + 1);
+            }
+            FreeEnvironmentStringsW(base);
+        }
+        *out = sorted_strings(all);
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
+        let Some(w) = wide(p, n) else {
+            *out = [0, 0, 0, -1];
+            return;
+        };
+        let mut d: AttributeData = core::mem::zeroed();
+        if GetFileAttributesExW(w.as_ptr(), 0, &mut d) == 0 {
+            *out = [0, 0, 0, last_code()];
+            return;
+        }
+        let kind = if d.attributes & 0x10 != 0 { 2 } else { 1 };
+        let size = ((d.size_high as i64) << 32) | d.size_low as i64;
+        // 100 ns since 1601 -> ns since 1970
+        let ft = ((d.written[1] as i64) << 32) | d.written[0] as i64;
+        *out = [kind, size, (ft - 116_444_736_000_000_000).wrapping_mul(100), 0];
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
+        let Some(mut w) = wide(p, n) else {
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: -1 };
+            return;
+        };
+        w.pop();
+        w.extend_from_slice(&[b'\\' as u16, b'*' as u16, 0]);
+        let mut d: FindData = core::mem::zeroed();
+        let h = FindFirstFileW(w.as_ptr(), &mut d);
+        if h == INVALID {
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: last_code() };
+            return;
+        }
+        let mut names = alloc::vec::Vec::new();
+        loop {
+            let len = d.name.iter().position(|&c| c == 0).unwrap_or(d.name.len());
+            let name = narrow(d.name.as_ptr(), len);
+            if name != b"." && name != b".." {
+                names.push(name);
+            }
+            if FindNextFileW(h, &mut d) == 0 {
+                break;
+            }
+        }
+        FindClose(h);
+        *out = IscArrayCode { a: sorted_strings(names), code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_mkdir(out: *mut i64, p: *const u8, n: i64) {
+        *out = match wide(p, n) {
+            None => -1,
+            Some(w) => code_if(CreateDirectoryW(w.as_ptr(), core::ptr::null_mut()) != 0),
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_removefile(out: *mut i64, p: *const u8, n: i64) {
+        *out = match wide(p, n) {
+            None => -1,
+            Some(w) => code_if(DeleteFileW(w.as_ptr()) != 0),
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_removedir(out: *mut i64, p: *const u8, n: i64) {
+        *out = match wide(p, n) {
+            None => -1,
+            Some(w) => code_if(RemoveDirectoryW(w.as_ptr()) != 0),
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_rename(out: *mut i64, p: *const u8, n: i64, q: *const u8, m: i64) {
+        *out = match (wide(p, n), wide(q, m)) {
+            // MOVEFILE_REPLACE_EXISTING, as the standard library of Rust
+            (Some(a), Some(b)) => code_if(MoveFileExW(a.as_ptr(), b.as_ptr(), 1) != 0),
+            _ => -1,
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_cwd(out: *mut IscStrCode) {
+        let need = GetCurrentDirectoryW(0, core::ptr::null_mut());
+        let mut w = alloc::vec![0u16; need as usize + 1];
+        let got = GetCurrentDirectoryW(w.len() as u32, w.as_mut_ptr());
+        if got == 0 {
+            *out = IscStrCode { s: adopt(alloc::string::String::new()), code: last_code() };
+            return;
+        }
+        *out = IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&narrow(w.as_ptr(), got as usize)).into_owned()), code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_readfile(out: *mut IscArrayCode, p: *const u8, n: i64) {
+        let Some(w) = wide(p, n) else {
+            *out = IscArrayCode { a: byte_array(&[]), code: -1 };
+            return;
+        };
+        // GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
+        let h = CreateFileW(w.as_ptr(), 0x8000_0000, 3, core::ptr::null_mut(), 3, 0x80, core::ptr::null_mut());
+        if h == INVALID {
+            *out = IscArrayCode { a: byte_array(&[]), code: last_code() };
+            return;
+        }
+        let mut data = alloc::vec::Vec::new();
+        let mut buf = alloc::vec![0u8; 1 << 16];
+        let mut code = 0;
+        loop {
+            let mut got = 0u32;
+            if ReadFile(h, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut got, core::ptr::null_mut()) == 0 {
+                code = last_code();
+                break;
+            }
+            if got == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..got as usize]);
+        }
+        CloseHandle(h);
+        *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_writefile(out: *mut i64, p: *const u8, n: i64, d: *const u8, m: i64, append: i32) {
+        let Some(w) = wide(p, n) else {
+            *out = -1;
+            return;
+        };
+        // GENERIC_WRITE, FILE_SHARE_READ; OPEN_ALWAYS to append,
+        // CREATE_ALWAYS otherwise
+        let disposition = if append != 0 { 4 } else { 2 };
+        let h = CreateFileW(w.as_ptr(), 0x4000_0000, 1, core::ptr::null_mut(), disposition, 0x80, core::ptr::null_mut());
+        if h == INVALID {
+            *out = last_code();
+            return;
+        }
+        if append != 0 {
+            // FILE_END
+            SetFilePointerEx(h, 0, core::ptr::null_mut(), 2);
+        }
+        let data = bytes_of(d, m);
+        let mut at = 0;
+        let mut code = 0;
+        while at < data.len() {
+            let mut done = 0u32;
+            let chunk = (data.len() - at).min(1 << 30) as u32;
+            if WriteFile(h, data[at..].as_ptr() as *const c_void, chunk, &mut done, core::ptr::null_mut()) == 0 {
+                code = last_code();
+                break;
+            }
+            at += done as usize;
+        }
+        CloseHandle(h);
+        *out = code;
+    }
+}
