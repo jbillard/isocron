@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use isc_ir::*;
 pub mod ffi;
+pub mod handles;
 pub mod rt;
 
 /// Reduction parameters of SPEC section 10.
@@ -30,6 +31,9 @@ pub enum Value {
     Array(Rc<Array>),
     /// A node of a recursive type: the tuple it holds (D103).
     Node(Rc<Value>),
+    /// A resource of the system (D339), given back when its last owner
+    /// goes or when it is closed.
+    Handle(Rc<handles::Cell>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1577,6 +1581,8 @@ fn zero_value(t: &Type) -> Value {
         Type::Array(e, _) => Value::Array(Rc::new(Array::with_capacity(e, 0))),
         // the slot of a variant not taken: never read
         Type::Rec(_) => Value::Unit,
+        // no resource (D339)
+        Type::Handle => Value::Handle(Rc::new(handles::Cell::default())),
     }
 }
 

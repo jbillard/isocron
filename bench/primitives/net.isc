@@ -1,0 +1,94 @@
+// The audit of every form against the machine (D301): the module `net`
+// (D339) on the local machine, one thread: a round trip of 64 bytes on a
+// connection (written, read by the peer, written back, read), a connection
+// made (`connect`, `accept`, both closed), 64 KiB sent and received. Each
+// line: a name, the nanoseconds of one (the mean over `rounds`), a
+// checksum; against `net.c` (the floor: the same calls of the system).
+// usage: net <rounds>
+import * as net from "net";
+
+// the bytes of `c` until `n` of them are read: their sum
+action readN(c: net.Conn, n: i64, sum: i64): i64 {
+    if (n <= 0) {
+        return sum;
+    }
+    return match (net.read(c, n)) {
+        Ok(b) => b.length == 0 ? -1 : readN(c, n - b.length, sum + b.length),
+        Err(e) => -1,
+    };
+}
+
+action trips(c: net.Conn, s: net.Conn, x: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const w = net.write(c, x);
+    const a = readN(s, x.length, 0);
+    const w2 = net.write(s, x);
+    const b = readN(c, x.length, 0);
+    return trips(c, s, x, r - 1, acc + a + b);
+}
+
+action connects(l: net.Listener, port: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return match (net.connect("127.0.0.1", port)) {
+        Ok(c) => match (net.accept(l)) {
+            Ok([s, peer]) => {
+                net.close(s);
+                net.close(c);
+                return connects(l, port, r - 1, acc + 1);
+            },
+            Err(e) => {
+                net.close(c);
+                return -1;
+            },
+        },
+        Err(e) => -1,
+    };
+}
+
+action sends(c: net.Conn, s: net.Conn, x: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const w = net.write(c, x);
+    return sends(c, s, x, r - 1, acc + readN(s, x.length, 0));
+}
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            match (net.connect("127.0.0.1", port)) {
+                Ok(c) => match (net.accept(l)) {
+                    Ok([s, peer]) => {
+                        const small = map(iota(64), (i) => u8(i));
+                        const t0 = clock();
+                        const a = trips(c, s, small, r, 0);
+                        const t1 = clock();
+                        print(`roundtrip.64 ${f64(t1 - t0) / f64(r)} ${a / r}`);
+                        const big = map(iota(65536), (i) => u8(i % 251));
+                        const t2 = clock();
+                        const b = sends(c, s, big, r, 0);
+                        const t3 = clock();
+                        print(`send.64k ${f64(t3 - t2) / f64(r)} ${b / r}`);
+                        net.close(s);
+                        net.close(c);
+                    },
+                    Err(e) => net.close(c),
+                },
+                Err(e) => print("connect failed"),
+            };
+            const t4 = clock();
+            const n = connects(l, port, r, 0);
+            const t5 = clock();
+            print(`connect ${f64(t5 - t4) / f64(r)} ${n / r}`);
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}

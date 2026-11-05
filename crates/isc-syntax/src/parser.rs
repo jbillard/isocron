@@ -312,7 +312,7 @@ impl P {
         let alias = match self.peek().clone() {
             T::Sym(S::LBrace | S::LBracket | S::LParen) => true,
             T::Ident(w) => {
-                matches!(w.as_str(), "string" | "boolean" | "void" | "bigint")
+                matches!(w.as_str(), "string" | "boolean" | "void" | "bigint" | "sysConn" | "sysListener")
                     || isc_scalar(&w)
                     || matches!(self.peek_at(1), T::Sym(S::Lt | S::LBracket))
             }

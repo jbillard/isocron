@@ -334,7 +334,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] JSON faster: `decode` 6.3 and `parse` 6.5 times their floors (D337: the index, two passes, about 58 ns a member and a pass against 22); one pass for the values without rows, the accumulator of a tail recursion updated where it is, cheaper calls of short loops; `argsort` of integer keys as pairs (no comparison through the indices)
 - [x] `sha256`: FIPS 180-4 in Isocron, the vectors of the NIST, Linux and Windows, the guide, the microbenchmark and its floor (D338)
   - [ ] `sha256` faster: 1.5 times the same loop in C (D338: the window of the schedule in the state of the `fold`, 24 words for 16 registers, 32 accesses to the stack a round); the instructions SHA of the processor out of v1 (4.1 times faster than the loop in C)
-- [ ] `net`: TCP, client and server
+- [x] `net`: TCP, client and server; connections and listeners linear, checked at compile time; names resolved (hosts, DNS by UDP; GetAddrInfoW under Windows); refused for WASI (D339)
 - [ ] `http`: a client of HTTP/1.1
 - [ ] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool
 - [ ] `https`: the TLS of the system

@@ -1,0 +1,248 @@
+// The module `net` of the standard library (SPEC section 18, D339):
+// connections of TCP, client and server, over the primitives `sys*` of the
+// runtime. A `Conn` and a `Listener` are unique (D326): never copied; `close`
+// and `closeListener` consume them, and a use after it is refused at compile
+// time. A value that is freed without being closed is closed then. The
+// names are resolved here under Linux (a numeric address, `localhost`,
+// `/etc/hosts`, then the servers of `/etc/resolv.conf` asked by UDP for
+// the records A and AAAA), by the system under Windows.
+import { IoError, ioError } from "sys";
+
+export type Conn = sysConn;
+export type Listener = sysListener;
+
+// a numeric address: digits and dots (IPv4), or a colon (IPv6)
+function numeric(host: string): boolean {
+    const b = bytes(host);
+    return b.length > 0 && (count(b, (c) => c == 58u8) > 0 || count(b, (c) => (c < 48u8 || c > 57u8) && c != 46u8) == 0);
+}
+
+// the hexadecimal digits of `x` (at least one)
+function hexText(x: i64): string {
+    const d = "0123456789abcdef";
+    return x < 16 ? d.slice(x, x + 1) : hexText(x / 16) + d.slice(x % 16, x % 16 + 1);
+}
+
+// the 16 bytes of an IPv6 address as text (RFC 5952: the longest run of
+// zeros, of two groups or more, written `::`)
+function ipv6Text(b: u8[16]): string {
+    const g = map(iota(8), (i) => i64(b[2 * i]) * 256 + i64(b[2 * i + 1]));
+    // the length of the run of zeros that starts at each group
+    const runs = map(iota(8), (i) => fold(iota(8 - i), 0, (n, j) => n == j && g[i + j] == 0 ? n + 1 : n));
+    const best = fold(iota(8), 0, (k, i) => runs[i] > runs[k] ? i : k);
+    const len = runs[best] >= 2 ? runs[best] : 0;
+    const part = (a: i64, z: i64) => join(map(iota(z - a), (i) => hexText(g[a + i])), ":");
+    return len == 0 ? part(0, 8) : `${part(0, best)}::${part(best + len, 8)}`;
+}
+
+// ----- the resolver of names (Linux, D326) ------------------------------
+
+// the addresses of `host` in the text of `/etc/hosts`
+function fromHosts(text: string, host: string): string[k] {
+    const lines = filter(map(text.split("\n"), (l) => {
+        const i = l.indexOf("#");
+        return (i < 0 ? l : l.slice(0, i)).replaceAll("\t", " ").trim();
+    }), (l) => l.length > 0);
+    const found = filter(lines, (l) => {
+        const ws = filter(l.split(" "), (w) => w.length > 0);
+        return ws.length > 1 && count(iota(ws.length - 1), (j) => ws[j + 1] == host) > 0;
+    });
+    return map(found, (l) => l.split(" ")[0]);
+}
+
+// the servers named in the text of `/etc/resolv.conf`
+function nameservers(text: string): string[k] {
+    const lines = filter(map(text.split("\n"), (l) => l.replaceAll("\t", " ").trim()), (l) => l.startsWith("nameserver "));
+    return map(lines, (l) => l.slice(11, l.length).trim());
+}
+
+// the query of DNS for the records `kind` (1 A, 28 AAAA) of `host`
+function query(host: string, kind: i64): u8[k] {
+    const labels = join(map(filter(host.split("."), (l) => l.length > 0), (l) => stringOf([u8(l.length)]) + l), "");
+    return bytes(stringOf([0x12u8, 0x34u8, 0x01u8, 0x00u8, 0u8, 1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) + labels + stringOf([0u8, 0u8, u8(kind), 0u8, 1u8]));
+}
+
+// the place after the name at `at` of a message (labels, or a pointer that
+// ends it)
+function nameEnd(m: u8[n], at: i64): i64 {
+    if (at >= m.length) {
+        return m.length;
+    }
+    const c = m[at];
+    if (c == 0u8) {
+        return at + 1;
+    }
+    return (c & 0xC0u8) == 0xC0u8 ? at + 2 : nameEnd(m, at + 1 + i64(c));
+}
+
+// the addresses in the answers of the message `m` from `at`, `left` of
+// them, after those found
+function answers(m: u8[n], at: i64, left: i64, found: string): string {
+    if (left == 0 || at >= m.length) {
+        return found;
+    }
+    const p = nameEnd(m, at);
+    if (p + 10 > m.length) {
+        return found;
+    }
+    const kind = i64(m[p]) * 256 + i64(m[p + 1]);
+    const len = i64(m[p + 8]) * 256 + i64(m[p + 9]);
+    const data = p + 10;
+    if (data + len > m.length) {
+        return found;
+    }
+    const a = kind == 1 && len == 4 ? join(map(iota(4), (i) => toString(m[data + i])), ".") : (kind == 28 && len == 16 ? ipv6Text(map(iota(16), (i) => m[data + i])) : "");
+    const more = a == "" ? found : (found == "" ? a : found + "," + a);
+    return answers(m, data + len, left - 1, more);
+}
+
+// the addresses that the answer `m` to the query `id` gives
+function parseAnswer(m: u8[n]): string[k] {
+    if (m.length < 12 || m[0] != 0x12u8 || m[1] != 0x34u8 || (m[3] & 15u8) != 0u8) {
+        return [];
+    }
+    const questions = i64(m[4]) * 256 + i64(m[5]);
+    const count = i64(m[6]) * 256 + i64(m[7]);
+    // the questions skipped: each a name and 4 bytes
+    const at = fold(iota(questions), 12, (p, i) => nameEnd(m, p) + 4);
+    const all = answers(m, at, count, "");
+    return all == "" ? [] : all.split(",");
+}
+
+// the addresses of `host` asked to the server of DNS at `server` and `port`
+// (the records A, then AAAA)
+export action lookup(host: string, server: string, port: i64): Result<string[k], IoError> {
+    const [a, code] = sysUdpQuery(server, port, query(host, 1), 2000);
+    if (code != 0) {
+        return Err(ioError(code, `${server}:${port}`));
+    }
+    const [b, code6] = sysUdpQuery(server, port, query(host, 28), 2000);
+    const v4 = parseAnswer(a);
+    const v6 = code6 == 0 ? parseAnswer(b) : [];
+    const all = join(v4, ",") + (v4.length > 0 && v6.length > 0 ? "," : "") + join(v6, ",");
+    if (all == "") {
+        return Err(ioError(1, host));
+    }
+    return Ok(all.split(","));
+}
+
+// the addresses of `host` asked to the servers from the `i`-th
+action askServers(host: string, servers: string[n], i: i64): Result<string[k], IoError> {
+    if (i >= servers.length) {
+        return Err(ioError(1, host));
+    }
+    return match (lookup(host, servers[i], 53)) {
+        Ok(found) => Ok(found),
+        Err(e) => askServers(host, servers, i + 1),
+    };
+}
+
+// the text of a file, or nothing
+action textOf(path: string): string {
+    const [b, code] = sysReadFile(path);
+    return code == 0 && count(b, (c) => c >= 0x80u8) == 0 ? stringOf(b) : "";
+}
+
+// the addresses of `host`: itself when numeric, `localhost`, then as the
+// system resolves (under Linux: `/etc/hosts`, then DNS)
+export action resolve(host: string): Result<string[k], IoError> {
+    if (numeric(host)) {
+        return Ok([host]);
+    }
+    if (host == "localhost") {
+        return Ok(["127.0.0.1", "::1"]);
+    }
+    if (sysPlatform() == 1) {
+        const [found, code] = sysResolve(host);
+        return code == 0 ? Ok(found) : Err(ioError(code, host));
+    }
+    const listed = fromHosts(textOf("/etc/hosts"), host);
+    if (listed.length > 0) {
+        return Ok(listed);
+    }
+    return askServers(host, nameservers(textOf("/etc/resolv.conf")), 0);
+}
+
+// ----- connections ------------------------------------------------------
+
+// a connection to the first of the addresses `xs` from `i` that accepts it
+action connectFrom(xs: string[n], i: i64, port: i64, what: string, last: i64): Result<Conn, IoError> {
+    if (i >= xs.length) {
+        return Err(ioError(last, what));
+    }
+    const [c, code] = sysConnect(xs[i], port);
+    if (code == 0) {
+        return Ok(c);
+    }
+    // the resource of a failure (none: closing it does nothing) closed too
+    sysClose(c);
+    return connectFrom(xs, i + 1, port, what, code);
+}
+
+// a connection to `host` at `port`
+export action connect(host: string, port: i64): Result<Conn, IoError> {
+    return match (resolve(host)) {
+        Ok(xs) => connectFrom(xs, 0, port, `${host}:${port}`, 5),
+        Err(e) => Err(e),
+    };
+}
+
+// a socket that listens at the address `host` (numeric, or `localhost`) and
+// `port` (0: a port that the system chooses, `port(l)` tells which)
+export action listen(host: string, port: i64): Result<Listener, IoError> {
+    const address = host == "localhost" ? "127.0.0.1" : host;
+    const [l, code] = sysListen(address, port);
+    if (code == 0) {
+        return Ok(l);
+    }
+    sysCloseListener(l);
+    return Err(ioError(code, `${host}:${port}`));
+}
+
+// the next connection to `l`, and the address of its peer
+export action accept(l: Listener): Result<[Conn, string], IoError> {
+    const [c, peer, code] = sysAccept(l);
+    if (code == 0) {
+        return Ok([c, peer] as const);
+    }
+    sysClose(c);
+    return Err(ioError(code, "accept"));
+}
+
+// the port where `l` listens
+export action port(l: Listener): i64 {
+    return sysLocalPort(l);
+}
+
+// at most `max` bytes that `c` has received (none: the end of the stream)
+export action read(c: Conn, max: i64): Result<u8[k], IoError> {
+    const [b, code] = sysRecv(c, max);
+    return code == 0 ? Ok(b) : Err(ioError(code, "read"));
+}
+
+// all the bytes `x` sent on `c`
+export action write(c: Conn, x: u8[n]): Result<void, IoError> {
+    const code = sysSend(c, x);
+    return code == 0 ? Ok(()) : Err(ioError(code, "write"));
+}
+
+// the text `s` sent on `c`
+export action writeText(c: Conn, s: string): Result<void, IoError> {
+    return write(c, bytes(s));
+}
+
+// the delay of each read and write of `c`, in milliseconds (0: none); past
+// it, the error `TimedOut`
+export action setTimeout(c: Conn, ms: i64): Result<void, IoError> {
+    const code = sysSetTimeout(c, ms);
+    return code == 0 ? Ok(()) : Err(ioError(code, "setTimeout"));
+}
+
+// the connection closed: it cannot be used after
+export action close(c: Conn): void {
+    sysClose(c);
+}
+
+export action closeListener(l: Listener): void {
+    sysCloseListener(l);
+}

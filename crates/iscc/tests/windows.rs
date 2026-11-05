@@ -289,3 +289,17 @@ fn json_on_windows() {
         same_on_windows(&runner, src, name, &d, &[], None);
     }
 }
+
+/// D339: the module `net` on Windows (Winsock): a listener, a connection,
+/// bytes both ways, a read past its delay, a connection refused; the same
+/// outputs as on Linux (the server of DNS of the test is on Linux: the
+/// program asks it only when given its port).
+#[test]
+fn net_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let d = dir("net");
+    same_on_windows(&runner, include_str!("data/std_net.isc"), "net", &d, &[], None);
+}

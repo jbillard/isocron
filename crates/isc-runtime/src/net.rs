@@ -1,0 +1,609 @@
+//! The primitives of the network of the module `net` (SPEC section 18,
+//! D339): connections and listeners of TCP, a datagram of UDP for the
+//! resolver of names, each returning its value and the code of its error as
+//! the other primitives of the system (`system.rs`): 0 none, 5 refused, 6
+//! timed out, otherwise the error of the system negated (-22 an address that
+//! is not numeric). A connection or a listener is the number of its socket,
+//! closed exactly once by `sysClose` or `sysCloseListener` (the checker
+//! proves it: linear values).
+//! Under Linux, the system called directly (D287); under Windows, Winsock;
+//! WASI has no sockets (the compiler refuses the programs that reach them,
+//! D324), only `sysPlatform`.
+
+use super::*;
+#[cfg(not(target_os = "wasi"))]
+use crate::system::IscArrayCode;
+
+/// `[resource, code]`.
+#[repr(C)]
+pub struct HandleCode {
+    pub h: i64,
+    pub code: i64,
+}
+
+/// `[conn, peer, code]`.
+#[repr(C)]
+pub struct AcceptOut {
+    pub h: i64,
+    pub peer: IscStr,
+    pub code: i64,
+}
+
+/// `sysPlatform()`: 0 Linux, 1 Windows, 2 WASI.
+#[no_mangle]
+pub unsafe extern "C" fn isc_sys_platform(out: *mut i64) {
+    *out = if cfg!(target_os = "wasi") {
+        2
+    } else if cfg!(windows) {
+        1
+    } else {
+        0
+    };
+}
+
+/// The numeric address `a` and the port: the bytes of its `sockaddr_in` or
+/// `sockaddr_in6`, and its family.
+#[cfg(not(target_os = "wasi"))]
+fn sockaddr(a: &[u8], port: i64, inet6: u16) -> Option<([u8; 28], usize, u16)> {
+    let text = core::str::from_utf8(a).ok()?;
+    let ip: core::net::IpAddr = text.parse().ok()?;
+    let port = u16::try_from(port).ok()?;
+    let mut b = [0u8; 28];
+    match ip {
+        core::net::IpAddr::V4(v) => {
+            b[0..2].copy_from_slice(&2u16.to_ne_bytes());
+            b[2..4].copy_from_slice(&port.to_be_bytes());
+            b[4..8].copy_from_slice(&v.octets());
+            Some((b, 16, 2))
+        }
+        core::net::IpAddr::V6(v) => {
+            b[0..2].copy_from_slice(&inet6.to_ne_bytes());
+            b[2..4].copy_from_slice(&port.to_be_bytes());
+            b[8..24].copy_from_slice(&v.octets());
+            Some((b, 28, inet6))
+        }
+    }
+}
+
+/// The address of a `sockaddr` as text: `a.b.c.d:port`, `[v6]:port`.
+#[cfg(not(target_os = "wasi"))]
+fn address_text(b: &[u8; 28], inet6: u16) -> alloc::string::String {
+    let family = u16::from_ne_bytes([b[0], b[1]]);
+    let port = u16::from_be_bytes([b[2], b[3]]);
+    if family == inet6 {
+        let mut o = [0u8; 16];
+        o.copy_from_slice(&b[8..24]);
+        alloc::format!("{}", core::net::SocketAddr::new(core::net::IpAddr::V6(core::net::Ipv6Addr::from(o)), port))
+    } else {
+        alloc::format!("{}", core::net::SocketAddr::new(core::net::IpAddr::V4(core::net::Ipv4Addr::new(b[4], b[5], b[6], b[7])), port))
+    }
+}
+
+/// An array of bytes holding the first `n` bytes of `buf` (of `max`
+/// allocated): `buf` itself when they fill most of it, else a copy.
+#[cfg(not(target_os = "wasi"))]
+unsafe fn bytes_read(buf: *mut u8, n: usize, max: usize) -> IscArray {
+    if n * 2 >= max {
+        return IscArray { ptr: buf, len: n as i64 };
+    }
+    let q = isc_alloc(n.max(1) as i64);
+    core::ptr::copy_nonoverlapping(buf, q, n);
+    isc_free(buf);
+    IscArray { ptr: q, len: n as i64 }
+}
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::*;
+    use crate::linux::syscall6;
+
+    const SYS_SOCKET: usize = 41;
+    const SYS_CONNECT: usize = 42;
+    const SYS_SENDTO: usize = 44;
+    const SYS_RECVFROM: usize = 45;
+    const SYS_BIND: usize = 49;
+    const SYS_LISTEN: usize = 50;
+    const SYS_GETSOCKNAME: usize = 51;
+    const SYS_SETSOCKOPT: usize = 54;
+    const SYS_ACCEPT4: usize = 288;
+    const AF_INET6: u16 = 10;
+    const SOCK_STREAM: usize = 1;
+    const SOCK_DGRAM: usize = 2;
+    const SOCK_CLOEXEC: usize = 0o2000000;
+    const SOL_SOCKET: usize = 1;
+    const SO_REUSEADDR: usize = 2;
+    const SO_RCVTIMEO: usize = 20;
+    const SO_SNDTIMEO: usize = 21;
+    const MSG_NOSIGNAL: usize = 0x4000;
+    const EINTR: isize = -4;
+
+    /// The code of the result of a call on a socket: a timeout (`EAGAIN`
+    /// past `SO_RCVTIMEO`) as one.
+    fn net_code(r: isize) -> i64 {
+        if r == -11 {
+            6
+        } else {
+            crate::system::code_of_call(r)
+        }
+    }
+
+    /// A socket of `kind` for the family `family`, or a negative code.
+    unsafe fn socket(family: u16, kind: usize) -> isize {
+        syscall6(SYS_SOCKET, family as usize, kind | SOCK_CLOEXEC, 0, 0, 0, 0)
+    }
+
+    /// The call `f` again while a signal interrupts it.
+    fn again(mut f: impl FnMut() -> isize) -> isize {
+        loop {
+            let r = f();
+            if r != EINTR {
+                return r;
+            }
+        }
+    }
+
+    /// The socket `h` closed (none: -1).
+    unsafe fn close_socket(h: i64) {
+        if h >= 0 {
+            linux::close(h as c_int);
+        }
+    }
+
+    /// `sysConnect(address, port)`.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_connect(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
+        let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
+            *out = HandleCode { h: -1, code: -22 };
+            return;
+        };
+        let fd = socket(family, SOCK_STREAM);
+        if fd < 0 {
+            *out = HandleCode { h: -1, code: net_code(fd) };
+            return;
+        }
+        // SAFETY: the address of `len` bytes, read by the kernel
+        let r = again(|| unsafe { syscall6(SYS_CONNECT, fd as usize, addr.as_ptr() as usize, len, 0, 0, 0) });
+        if r < 0 {
+            linux::close(fd as c_int);
+            *out = HandleCode { h: -1, code: net_code(r) };
+            return;
+        }
+        *out = HandleCode { h: fd as i64, code: 0 };
+    }
+
+    /// `sysListen(address, port)`: the address reusable at once.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_listen(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
+        let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
+            *out = HandleCode { h: -1, code: -22 };
+            return;
+        };
+        let fd = socket(family, SOCK_STREAM);
+        if fd < 0 {
+            *out = HandleCode { h: -1, code: net_code(fd) };
+            return;
+        }
+        let one: c_int = 1;
+        syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_REUSEADDR, &one as *const c_int as usize, 4, 0);
+        let mut r = syscall6(SYS_BIND, fd as usize, addr.as_ptr() as usize, len, 0, 0, 0);
+        if r >= 0 {
+            r = syscall6(SYS_LISTEN, fd as usize, 128, 0, 0, 0, 0);
+        }
+        if r < 0 {
+            linux::close(fd as c_int);
+            *out = HandleCode { h: -1, code: net_code(r) };
+            return;
+        }
+        *out = HandleCode { h: fd as i64, code: 0 };
+    }
+
+    /// `sysAccept(listener)`: the connection and the address of its peer.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_accept(out: *mut AcceptOut, l: i64) {
+        let mut addr = [0u8; 28];
+        let mut len: u32 = 28;
+        // SAFETY: the kernel writes at most `len` bytes at `addr`, and its
+        // length at `len`
+        let r = again(|| unsafe { syscall6(SYS_ACCEPT4, l as usize, addr.as_mut_ptr() as usize, &mut len as *mut u32 as usize, SOCK_CLOEXEC, 0, 0) });
+        if r < 0 {
+            *out = AcceptOut { h: -1, peer: new_str(b""), code: net_code(r) };
+            return;
+        }
+        let peer = address_text(&addr, AF_INET6);
+        *out = AcceptOut { h: r as i64, peer: new_str(peer.as_bytes()), code: 0 };
+    }
+
+    /// `sysRecv(conn, max)`: the bytes of one read, none at the end.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_recv(out: *mut IscArrayCode, c: i64, max: i64) {
+        let max = max.clamp(1, 1 << 24) as usize;
+        let buf = isc_alloc(max as i64);
+        // SAFETY: the kernel writes at most `max` bytes at `buf`
+        let r = again(|| unsafe { linux::read(c as c_int, buf as *mut c_void, max) });
+        if r < 0 {
+            isc_free(buf);
+            *out = IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code: net_code(r) };
+            return;
+        }
+        *out = IscArrayCode { a: bytes_read(buf, r as usize, max), code: 0 };
+    }
+
+    /// `sysSend(conn, bytes)`: every byte, or an error (never `SIGPIPE`).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_send(out: *mut i64, c: i64, p: *const u8, n: i64) {
+        let mut at = 0usize;
+        let n = n.max(0) as usize;
+        while at < n {
+            // SAFETY: the kernel reads `n - at` bytes from `p + at`
+            let r = again(|| unsafe { syscall6(SYS_SENDTO, c as usize, p.add(at) as usize, n - at, MSG_NOSIGNAL, 0, 0) });
+            if r < 0 {
+                *out = net_code(r);
+                return;
+            }
+            at += r as usize;
+        }
+        *out = 0;
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_close(out: *mut i64, c: i64) {
+        close_socket(c);
+        *out = 0;
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_closelistener(out: *mut i64, l: i64) {
+        close_socket(l);
+        *out = 0;
+    }
+
+    /// The delay of `ms` milliseconds of each read (`SO_RCVTIMEO`) and write
+    /// of the socket `fd`: 0 for none.
+    unsafe fn timeouts(fd: i64, ms: i64) -> isize {
+        let tv = [ms.max(0) / 1000, (ms.max(0) % 1000) * 1000];
+        let r = syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_RCVTIMEO, tv.as_ptr() as usize, 16, 0);
+        if r < 0 {
+            return r;
+        }
+        syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_SNDTIMEO, tv.as_ptr() as usize, 16, 0)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_settimeout(out: *mut i64, c: i64, ms: i64) {
+        *out = net_code(timeouts(c, ms).min(0));
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_localport(out: *mut i64, l: i64) {
+        let mut addr = [0u8; 28];
+        let mut len: u32 = 28;
+        let r = syscall6(SYS_GETSOCKNAME, l as usize, addr.as_mut_ptr() as usize, &mut len as *mut u32 as usize, 0, 0, 0);
+        *out = if r < 0 { -1 } else { u16::from_be_bytes([addr[2], addr[3]]) as i64 };
+    }
+
+    /// `sysUdpQuery(address, port, packet, ms)`: the packet sent, the first
+    /// datagram from that address within `ms` milliseconds.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_udpquery(out: *mut IscArrayCode, a: *const u8, an: i64, port: i64, p: *const u8, n: i64, ms: i64) {
+        let fail = |code: i64| IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code };
+        let Some((addr, len, family)) = sockaddr(bytes_of(a, an), port, AF_INET6) else {
+            *out = fail(-22);
+            return;
+        };
+        let fd = socket(family, SOCK_DGRAM);
+        if fd < 0 {
+            *out = fail(net_code(fd));
+            return;
+        }
+        let r = timeouts(fd as i64, ms.max(1));
+        let r = if r < 0 { r } else { syscall6(SYS_SENDTO, fd as usize, p as usize, n.max(0) as usize, 0, addr.as_ptr() as usize, len) };
+        if r < 0 {
+            linux::close(fd as c_int);
+            *out = fail(net_code(r));
+            return;
+        }
+        let max = 65536usize;
+        let buf = isc_alloc(max as i64);
+        loop {
+            let mut from = [0u8; 28];
+            let mut flen: u32 = 28;
+            // SAFETY: the kernel writes at most `max` bytes at `buf` and its
+            // sender at `from`
+            let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, buf as usize, max, 0, from.as_mut_ptr() as usize, &mut flen as *mut u32 as usize) });
+            if r < 0 {
+                isc_free(buf);
+                linux::close(fd as c_int);
+                *out = fail(net_code(r));
+                return;
+            }
+            // only the answer of the server asked
+            if from[..len] == addr[..len] {
+                linux::close(fd as c_int);
+                *out = IscArrayCode { a: bytes_read(buf, r as usize, max), code: 0 };
+                return;
+            }
+        }
+    }
+
+    /// `sysResolve(host)`: the module resolves the names under Linux.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_resolve(out: *mut IscArrayCode, _p: *const u8, _n: i64) {
+        *out = IscArrayCode { a: str_array(&mut core::iter::empty(), 0), code: 7 };
+    }
+}
+
+#[cfg(windows)]
+mod imp {
+    use super::*;
+    use core::sync::atomic::AtomicBool;
+
+    const AF_INET6: u16 = 23;
+    const SOCK_STREAM: c_int = 1;
+    const SOCK_DGRAM: c_int = 2;
+    const SOL_SOCKET: c_int = 0xffff;
+    const SO_REUSEADDR: c_int = 4;
+    const SO_RCVTIMEO: c_int = 0x1006;
+    const SO_SNDTIMEO: c_int = 0x1005;
+    const INVALID_SOCKET: usize = !0;
+
+    #[link(name = "ws2_32")]
+    extern "system" {
+        fn WSAStartup(version: u16, data: *mut u8) -> c_int;
+        fn WSAGetLastError() -> c_int;
+        fn socket(af: c_int, kind: c_int, protocol: c_int) -> usize;
+        fn connect(s: usize, name: *const u8, len: c_int) -> c_int;
+        fn bind(s: usize, name: *const u8, len: c_int) -> c_int;
+        fn listen(s: usize, backlog: c_int) -> c_int;
+        fn accept(s: usize, addr: *mut u8, len: *mut c_int) -> usize;
+        fn recv(s: usize, buf: *mut u8, len: c_int, flags: c_int) -> c_int;
+        fn send(s: usize, buf: *const u8, len: c_int, flags: c_int) -> c_int;
+        fn sendto(s: usize, buf: *const u8, len: c_int, flags: c_int, to: *const u8, tolen: c_int) -> c_int;
+        fn recvfrom(s: usize, buf: *mut u8, len: c_int, flags: c_int, from: *mut u8, fromlen: *mut c_int) -> c_int;
+        fn closesocket(s: usize) -> c_int;
+        fn setsockopt(s: usize, level: c_int, name: c_int, value: *const u8, len: c_int) -> c_int;
+        fn getsockname(s: usize, name: *mut u8, len: *mut c_int) -> c_int;
+        fn GetAddrInfoW(node: *const u16, service: *const u16, hints: *const c_void, result: *mut *mut AddrInfoW) -> c_int;
+        fn FreeAddrInfoW(info: *mut AddrInfoW);
+    }
+
+    #[repr(C)]
+    struct AddrInfoW {
+        flags: c_int,
+        family: c_int,
+        socktype: c_int,
+        protocol: c_int,
+        addrlen: usize,
+        canonname: *mut u16,
+        addr: *const u8,
+        next: *mut AddrInfoW,
+    }
+
+    static STARTED: AtomicBool = AtomicBool::new(false);
+
+    /// Winsock started once, before the first socket.
+    fn start() {
+        if !STARTED.swap(true, Ordering::AcqRel) {
+            let mut data = [0u8; 512];
+            // SAFETY: WSADATA fits the 512 bytes given
+            unsafe { WSAStartup(0x0202, data.as_mut_ptr()) };
+        }
+    }
+
+    /// The code of the last error of Winsock (the codes of `system.rs`).
+    fn last_code() -> i64 {
+        // SAFETY: no argument
+        match unsafe { WSAGetLastError() } {
+            10061 => 5,
+            10060 => 6,
+            10013 => 2,
+            10048 => 3,
+            e => -(e as i64),
+        }
+    }
+
+    /// The socket `h` closed (none: -1).
+    unsafe fn close_socket(h: i64) {
+        if h >= 0 {
+            closesocket(h as usize);
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_connect(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
+        start();
+        let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
+            *out = HandleCode { h: -1, code: -22 };
+            return;
+        };
+        let s = socket(family as c_int, SOCK_STREAM, 0);
+        if s == INVALID_SOCKET {
+            *out = HandleCode { h: -1, code: last_code() };
+            return;
+        }
+        if connect(s, addr.as_ptr(), len as c_int) != 0 {
+            let code = last_code();
+            closesocket(s);
+            *out = HandleCode { h: -1, code };
+            return;
+        }
+        *out = HandleCode { h: s as i64, code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_listen(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
+        start();
+        let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
+            *out = HandleCode { h: -1, code: -22 };
+            return;
+        };
+        let s = socket(family as c_int, SOCK_STREAM, 0);
+        if s == INVALID_SOCKET {
+            *out = HandleCode { h: -1, code: last_code() };
+            return;
+        }
+        let one: c_int = 1;
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one as *const c_int as *const u8, 4);
+        if bind(s, addr.as_ptr(), len as c_int) != 0 || listen(s, 128) != 0 {
+            let code = last_code();
+            closesocket(s);
+            *out = HandleCode { h: -1, code };
+            return;
+        }
+        *out = HandleCode { h: s as i64, code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_accept(out: *mut AcceptOut, l: i64) {
+        let mut addr = [0u8; 28];
+        let mut len: c_int = 28;
+        let s = accept(l as usize, addr.as_mut_ptr(), &mut len);
+        if s == INVALID_SOCKET {
+            *out = AcceptOut { h: -1, peer: new_str(b""), code: last_code() };
+            return;
+        }
+        let peer = address_text(&addr, AF_INET6);
+        *out = AcceptOut { h: s as i64, peer: new_str(peer.as_bytes()), code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_recv(out: *mut IscArrayCode, c: i64, max: i64) {
+        let max = max.clamp(1, 1 << 24) as usize;
+        let buf = isc_alloc(max as i64);
+        let r = recv(c as usize, buf, max as c_int, 0);
+        if r < 0 {
+            isc_free(buf);
+            *out = IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code: last_code() };
+            return;
+        }
+        *out = IscArrayCode { a: bytes_read(buf, r as usize, max), code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_send(out: *mut i64, c: i64, p: *const u8, n: i64) {
+        let mut at = 0usize;
+        let n = n.max(0) as usize;
+        while at < n {
+            let r = send(c as usize, p.add(at), (n - at).min(1 << 30) as c_int, 0);
+            if r < 0 {
+                *out = last_code();
+                return;
+            }
+            at += r as usize;
+        }
+        *out = 0;
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_close(out: *mut i64, c: i64) {
+        close_socket(c);
+        *out = 0;
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_closelistener(out: *mut i64, l: i64) {
+        close_socket(l);
+        *out = 0;
+    }
+
+    /// The delay of each read and write of `s`, in milliseconds (a DWORD).
+    unsafe fn timeouts(s: usize, ms: i64) -> c_int {
+        let v: u32 = ms.clamp(0, u32::MAX as i64) as u32;
+        let r = setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &v as *const u32 as *const u8, 4);
+        if r != 0 {
+            return r;
+        }
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &v as *const u32 as *const u8, 4)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_settimeout(out: *mut i64, c: i64, ms: i64) {
+        *out = if timeouts(c as usize, ms) == 0 { 0 } else { last_code() };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_localport(out: *mut i64, l: i64) {
+        let mut addr = [0u8; 28];
+        let mut len: c_int = 28;
+        *out = if getsockname(l as usize, addr.as_mut_ptr(), &mut len) != 0 { -1 } else { u16::from_be_bytes([addr[2], addr[3]]) as i64 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_udpquery(out: *mut IscArrayCode, a: *const u8, an: i64, port: i64, p: *const u8, n: i64, ms: i64) {
+        start();
+        let fail = |code: i64| IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code };
+        let Some((addr, len, family)) = sockaddr(bytes_of(a, an), port, AF_INET6) else {
+            *out = fail(-22);
+            return;
+        };
+        let s = socket(family as c_int, SOCK_DGRAM, 0);
+        if s == INVALID_SOCKET {
+            *out = fail(last_code());
+            return;
+        }
+        if timeouts(s, ms.max(1)) != 0 || sendto(s, p, n.max(0) as c_int, 0, addr.as_ptr(), len as c_int) < 0 {
+            let code = last_code();
+            closesocket(s);
+            *out = fail(code);
+            return;
+        }
+        let max = 65536usize;
+        let buf = isc_alloc(max as i64);
+        loop {
+            let mut from = [0u8; 28];
+            let mut flen: c_int = 28;
+            let r = recvfrom(s, buf, max as c_int, 0, from.as_mut_ptr(), &mut flen);
+            if r < 0 {
+                let code = last_code();
+                isc_free(buf);
+                closesocket(s);
+                *out = fail(code);
+                return;
+            }
+            if from[..len] == addr[..len] {
+                closesocket(s);
+                *out = IscArrayCode { a: bytes_read(buf, r as usize, max), code: 0 };
+                return;
+            }
+        }
+    }
+
+    /// `sysResolve(host)`: the addresses of `GetAddrInfoW` (D326), as text,
+    /// each once.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_resolve(out: *mut IscArrayCode, p: *const u8, n: i64) {
+        start();
+        let host = alloc::string::String::from_utf8_lossy(bytes_of(p, n)).into_owned();
+        let wide: alloc::vec::Vec<u16> = host.encode_utf16().chain(core::iter::once(0)).collect();
+        let mut info: *mut AddrInfoW = core::ptr::null_mut();
+        let r = GetAddrInfoW(wide.as_ptr(), core::ptr::null(), core::ptr::null(), &mut info);
+        if r != 0 {
+            let code = match r {
+                11001 => 1,
+                e => -(e as i64),
+            };
+            *out = IscArrayCode { a: str_array(&mut core::iter::empty(), 0), code };
+            return;
+        }
+        let mut texts: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+        let mut it = info;
+        while !it.is_null() {
+            let a = &*it;
+            if !a.addr.is_null() && a.addrlen <= 28 {
+                let mut b = [0u8; 28];
+                core::ptr::copy_nonoverlapping(a.addr, b.as_mut_ptr(), a.addrlen);
+                // the address alone, without its port
+                let t = address_text(&b, AF_INET6);
+                let ip = match t.rfind(':') {
+                    Some(k) => t[..k].trim_start_matches('[').trim_end_matches(']').into(),
+                    None => t,
+                };
+                if !texts.contains(&ip) {
+                    texts.push(ip);
+                }
+            }
+            it = a.next;
+        }
+        FreeAddrInfoW(info);
+        *out = IscArrayCode { a: str_array(&mut texts.iter().map(|t| t.as_str()), texts.len()), code: 0 };
+    }
+}

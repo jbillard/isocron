@@ -330,6 +330,8 @@ pub fn lt(t: &Type) -> String {
         Type::Str | Type::Big | Type::Array(_, _) => "{ ptr, i64 }".into(),
         // a node of a recursive type (D103)
         Type::Rec(_) => "ptr".into(),
+        // a resource of the system: its number (D339)
+        Type::Handle => "i64".into(),
         Type::Tuple(ts) => {
             if ts.is_empty() {
                 "{}".into()
@@ -355,7 +357,7 @@ fn esize(t: &Type) -> i64 {
         Type::F32 => 4,
         Type::Bool | Type::Unit => 1,
         Type::Str | Type::Big | Type::Array(_, _) => 16,
-        Type::Rec(_) => 8,
+        Type::Rec(_) | Type::Handle => 8,
         Type::Tuple(ts) => ts.iter().map(esize).sum::<i64>().max(1),
     }
 }
@@ -10677,6 +10679,8 @@ impl<'p> Gen<'p> {
 
     fn print_value(&mut self, x: &V, t: &Type, shape: &Shape) -> R<()> {
         match t {
+            // refused by the checker (D339)
+            Type::Handle => return Err("a resource of the system cannot be printed".into()),
             Type::Int(k) => {
                 let w = if k.bits() < 64 {
                     let op = if k.signed() { "sext" } else { "zext" };

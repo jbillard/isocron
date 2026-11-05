@@ -17,6 +17,7 @@ pub fn type_str(t: &Type) -> String {
         // and the memory report speak of the array)
         Type::Array(e, _) => format!("{}[]", type_str(e)),
         Type::Rec(i) => format!("rec#{}", i),
+        Type::Handle => "handle".into(),
     }
 }
 

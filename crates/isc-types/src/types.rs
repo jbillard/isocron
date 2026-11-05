@@ -184,11 +184,32 @@ pub enum Size {
     Var(u32),
 }
 
+/// A resource of the system held by a value (D339): unique, never copied,
+/// given back to the system when the value is freed or consumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Handle {
+    /// A connection of TCP (`net.Conn`).
+    Conn,
+    /// A socket that listens (`net.Listener`).
+    Listener,
+}
+
+impl Handle {
+    pub fn name(self) -> &'static str {
+        match self {
+            Handle::Conn => "Conn",
+            Handle::Listener => "Listener",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
     /// A regular expression (D157): built by `RegExp(source, flags)` or
     /// `/source/flags`.
     RegExp,
+    /// A resource of the system (D339): unique.
+    Handle(Handle),
     /// An integer of any size (D156): owned, as a string.
     BigInt,
     Int(IntKind),
@@ -270,6 +291,7 @@ impl fmt::Display for TyDisplay<'_> {
             Ty::Str => write!(f, "string"),
             Ty::BigInt => write!(f, "bigint"),
             Ty::RegExp => write!(f, "RegExp"),
+            Ty::Handle(h) => write!(f, "{}", h.name()),
             // the syntax of the programs (D148): `[A, B]`
             Ty::Tuple(ts) => {
                 write!(f, "[")?;

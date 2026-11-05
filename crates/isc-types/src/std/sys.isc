@@ -7,8 +7,9 @@
 export type IoError = NotFound(string) | PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) | Refused(string) | TimedOut(string) | Other(i64, string);
 
 // the error of the code `code` of a primitive (1 to 6 its kinds, below 0
-// the error of the system negated) about `what`
-function ioError(code: i64, what: string): IoError {
+// the error of the system negated) about `what` (the other modules of the
+// system give theirs by it: `net`)
+export function ioError(code: i64, what: string): IoError {
     if (code == 1) {
         return NotFound(what);
     }

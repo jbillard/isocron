@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tast::*;
 use crate::types::class::Classes;
-use crate::types::{class, IntKind, Poly, Size, SymId, Ty, TyDisplay};
+use crate::types::{class, Handle, IntKind, Poly, Size, SymId, Ty, TyDisplay};
 use isc_syntax::ast::{self, BinOp, Class, ExprKind, PatternKind, SizeExpr, TypeKind, UnOp};
 use isc_syntax::lexer::Scalar;
 use isc_syntax::{Diagnostic, Result, Span};
@@ -328,6 +328,9 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
         TypeKind::Unit => Ty::Unit,
         // the built-in `RegExp` (D157), unless the program declares its own
         TypeKind::Named(name, args) if name == "RegExp" && args.is_empty() && !cx.sums.iter().any(|(n, _)| n == "RegExp") => Ty::RegExp,
+        // the resources of the system (D339), named by the module `net`
+        TypeKind::Named(name, args) if name == "sysConn" && args.is_empty() => Ty::Handle(crate::types::Handle::Conn),
+        TypeKind::Named(name, args) if name == "sysListener" && args.is_empty() => Ty::Handle(crate::types::Handle::Listener),
         TypeKind::Named(name, args) => {
             if let Some(i) = cx.generics.iter().position(|g| &g.0 == name) {
                 if !args.is_empty() {
@@ -773,6 +776,17 @@ impl<'g> FnCx<'g> {
                 }
                 Ok(())
             }
+            // a resource of the system (D339): unique, so neither in an
+            // array nor compared, nor a type parameter of a function
+            Ty::Handle(h) => {
+                if lit != LitKind::None || classes != 0 {
+                    return Err(UErr::Constraint(format!(
+                        "a `{}` is unique (it is never copied): it cannot be stored in an array, compared, printed or given as a type parameter",
+                        h.name()
+                    )));
+                }
+                Ok(())
+            }
             // an integer of any size (D156): every class of the integers
             Ty::BigInt => {
                 if lit == LitKind::Float || classes & class::FLOAT != 0 {
@@ -912,6 +926,7 @@ impl<'g> FnCx<'g> {
             (Ty::Int(k1), Ty::Int(k2)) if k1 == k2 => Ok(()),
             (Ty::F64, Ty::F64) | (Ty::F32, Ty::F32) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Str, Ty::Str) | (Ty::BigInt, Ty::BigInt) | (Ty::RegExp, Ty::RegExp) => Ok(()),
             (Ty::Param(p), Ty::Param(q)) if p == q => Ok(()),
+            (Ty::Handle(x), Ty::Handle(y)) if x == y => Ok(()),
             // the arrays of a record or a tuple are tested as the array
             // itself (the lowering tests each one, D336)
             (Ty::Tuple(x), Ty::Tuple(y)) if x.len() == y.len() => {
@@ -2153,6 +2168,7 @@ impl<'g> FnCx<'g> {
             }
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.loosen(t)).collect()),
             Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), self.loosen(t))).collect()),
+            Ty::Sum { id, name, args } => Ty::Sum { id, name, args: args.iter().map(|t| self.loosen(t)).collect() },
             other => other,
         }
     }
@@ -2193,6 +2209,15 @@ impl<'g> FnCx<'g> {
                     fs.push((n.clone(), self.join(u, v, span)?));
                 }
                 Ty::Record(fs)
+            }
+            // `Result<string[a], E>` and `Result<string[b], E>`: through the
+            // arguments of a sum type
+            (Ty::Sum { id: i, name, args: p }, Ty::Sum { id: j, args: q, .. }) if i == j && p.len() == q.len() => {
+                let mut args = Vec::new();
+                for (u, v) in p.iter().zip(q.iter()) {
+                    args.push(self.join(u, v, span)?);
+                }
+                Ty::Sum { id: *i, name: name.clone(), args }
             }
             _ => {
                 self.unify(&x, &y, span)?;
@@ -2302,6 +2327,25 @@ impl<'g> FnCx<'g> {
                 let s = self.fresh_size(span);
                 (vec![Ty::Str, Ty::Array(s, Box::new(Ty::Int(IntKind::U8))), Ty::Bool], i64t.clone())
             }
+            // the resources of the system (D339)
+            SysOp::Connect => (vec![Ty::Str, i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Conn), i64t.clone()])),
+            SysOp::Listen => (vec![Ty::Str, i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Listener), i64t.clone()])),
+            SysOp::Accept => (vec![Ty::Handle(Handle::Listener)], Ty::Tuple(vec![Ty::Handle(Handle::Conn), Ty::Str, i64t.clone()])),
+            SysOp::Recv => (vec![Ty::Handle(Handle::Conn), i64t.clone()], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()])),
+            SysOp::Send => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Conn), Ty::Array(s, Box::new(Ty::Int(IntKind::U8)))], i64t.clone())
+            }
+            SysOp::Close => (vec![Ty::Handle(Handle::Conn)], i64t.clone()),
+            SysOp::CloseListener => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
+            SysOp::SetTimeout => (vec![Ty::Handle(Handle::Conn), i64t.clone()], i64t.clone()),
+            SysOp::LocalPort => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
+            SysOp::UdpQuery => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Str, i64t.clone(), Ty::Array(s, Box::new(Ty::Int(IntKind::U8))), i64t.clone()], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()]))
+            }
+            SysOp::Platform => (vec![], i64t.clone()),
+            SysOp::Resolve => (vec![Ty::Str], Ty::Tuple(vec![exist(self, Ty::Str), i64t.clone()])),
         };
         if args.len() != params.len() {
             return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));
@@ -3288,6 +3332,18 @@ fn subst_value(t: &Ty, type_args: &[Ty], sizes: &[Size]) -> Ty {
     }
 }
 
+/// Whether a value of type `t` holds a resource of the system (D339).
+pub fn holds_handle(t: &Ty) -> bool {
+    match t {
+        Ty::Handle(_) => true,
+        Ty::Tuple(ts) => ts.iter().any(holds_handle),
+        Ty::Record(fs) => fs.iter().any(|(_, t)| holds_handle(t)),
+        Ty::Sum { args, .. } => args.iter().any(holds_handle),
+        Ty::Array(_, e) => holds_handle(e),
+        _ => false,
+    }
+}
+
 /// Whether a value of type `t` holds a function, in the payload of a sum
 /// type too (D153).
 fn holds_function(g: &Globals, t: &Ty, seen: &mut Vec<u32>) -> bool {
@@ -3543,6 +3599,8 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
     for f in fns.iter().filter(|f| !f.from_prelude) {
         certain_panics(&f.body)?;
     }
+    // the connections and listeners closed exactly once (D339)
+    check_linear(&fns, &sums_for_linear(&globals))?;
     let recursive = recursive_fns(&fns);
     let recursive = outline_large(&fns, recursive, main);
     // a constant computed from itself would never end (D159)
@@ -3901,6 +3959,9 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         if t == Ty::RegExp {
             return err(sp, "a RegExp cannot be printed");
         }
+        if holds_handle(&t) {
+            return err(sp, "a resource of the system (a connection, a listener) cannot be printed");
+        }
         if holds_map(g, &t) {
             return err(sp, "a Map cannot be printed: print `m.entries()`");
         }
@@ -4221,4 +4282,428 @@ fn recursive_fns(fns: &[TFn]) -> Vec<bool> {
             false
         })
         .collect()
+}
+
+/// The primitives of the system that `main` can reach (D324), each with the
+/// first path of calls found to it (the names of the functions from `main`)
+/// and the place of its call in the last function of the program on that
+/// path (outside the standard modules): a target that lacks one refuses
+/// the program, naming them. Through every call of a reached function, a
+/// function value too (more than run time takes, never less).
+pub fn system_paths(p: &TProgram) -> Vec<(SysOp, Vec<String>, Span)> {
+    fn prims(e: &TExpr, out: &mut Vec<(SysOp, Span)>) {
+        if let TExprKind::Call { callee: Callee::Prim(Prim::Sys(op)), .. } = &e.kind {
+            out.push((*op, e.span));
+        }
+        for_each_child(e, &mut |c| prims(c, out));
+    }
+    let n = p.fns.len();
+    let calls: Vec<Vec<(FnId, Span)>> = p
+        .fns
+        .iter()
+        .map(|f| {
+            let mut v = Vec::new();
+            collect_calls(&f.body, &mut v);
+            v
+        })
+        .collect();
+    // breadth first from `main`: the parent of each function and the place
+    // of the call that reached it
+    let mut parent: Vec<Option<(FnId, Span)>> = vec![None; n];
+    let mut seen = vec![false; n];
+    let mut queue = std::collections::VecDeque::from([p.main]);
+    seen[p.main] = true;
+    let mut out: Vec<(SysOp, Vec<String>, Span)> = Vec::new();
+    while let Some(f) = queue.pop_front() {
+        let mut ps = Vec::new();
+        prims(&p.fns[f].body, &mut ps);
+        for (op, sp) in ps {
+            if out.iter().any(|(o, _, _)| *o == op) {
+                continue;
+            }
+            let mut path = vec![f];
+            let mut at = sp;
+            while let Some((g, s)) = parent[*path.last().unwrap()] {
+                path.push(g);
+                let _ = s;
+            }
+            path.reverse();
+            // the call made by the last function of the program on the path
+            let mut k = path.len();
+            while k > 1 && p.fns[path[k - 1]].name.starts_with(crate::modules::STD_KEY) {
+                k -= 1;
+            }
+            if k < path.len() {
+                at = parent[path[k]].map(|(_, s)| s).unwrap_or(sp);
+            }
+            let names = path.iter().map(|&g| p.fns[g].name.replace(crate::modules::STD_KEY, "")).collect();
+            out.push((op, names, at));
+        }
+        for &(g, sp) in &calls[f] {
+            if !seen[g] {
+                seen[g] = true;
+                parent[g] = Some((f, sp));
+                queue.push_back(g);
+            }
+        }
+    }
+    out
+}
+
+// ----- the resources of the system are linear (D339) ---------------------
+
+/// A value of type `t` holds a resource of the system: a `Conn`, a
+/// `Listener`, or a value that holds one (in a tuple, a record, the payload
+/// of a sum).
+fn linear_ty(t: &Ty, sums: &[SumDef], seen: &mut Vec<u32>) -> bool {
+    match t {
+        Ty::Handle(_) => true,
+        Ty::Tuple(ts) => ts.iter().any(|x| linear_ty(x, sums, seen)),
+        Ty::Record(fs) => fs.iter().any(|(_, x)| linear_ty(x, sums, seen)),
+        Ty::Sum { id, args, .. } => {
+            if seen.contains(id) {
+                return false;
+            }
+            seen.push(*id);
+            let def = &sums[*id as usize];
+            let r = (0..def.variants.len()).any(|k| def.payload(k, args).iter().any(|x| linear_ty(x, sums, seen)));
+            seen.pop();
+            r
+        }
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Lin {
+    Live,
+    /// Closed or given away, at this place.
+    Gone(Span),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Take {
+    /// The value is only read.
+    Borrow,
+    /// The value is taken: closed, stored, returned.
+    Move,
+}
+
+struct LinCx<'a> {
+    f: &'a TFn,
+    sums: &'a [SumDef],
+    /// For each function, whether it consumes each parameter.
+    consumes: &'a [Vec<bool>],
+    st: HashMap<LocalId, Lin>,
+    in_lambda: Vec<Vec<LocalId>>,
+}
+
+impl LinCx<'_> {
+    fn linear(&self, t: &Ty) -> bool {
+        linear_ty(t, self.sums, &mut Vec::new())
+    }
+
+    fn name(&self, l: LocalId) -> String {
+        self.f.locals[l as usize].name.clone()
+    }
+
+    /// The local `l` used where `e` is, taken or read.
+    fn local(&mut self, l: LocalId, take: Take, span: Span) -> Result<()> {
+        let ty = self.f.locals[l as usize].ty.clone();
+        if !self.linear(&ty) {
+            return Ok(());
+        }
+        if let Some(own) = self.in_lambda.last() {
+            if !own.contains(&l) {
+                return err(span, format!("`{}` holds a connection or a listener: a lambda cannot capture it (it is closed exactly once)", self.name(l)));
+            }
+        }
+        match self.st.get(&l).copied() {
+            Some(Lin::Gone(at)) => err(span, format!("`{}` is used after it was closed or given away at line {}", self.name(l), at.line)),
+            _ => {
+                if take == Take::Move {
+                    self.st.insert(l, Lin::Gone(span));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The locals that a pattern binds from a value of type `ty`: the
+    /// linear ones alive; a part of a linear value left by `_` is lost.
+    fn bind(&mut self, p: &TPat, ty: &Ty, linear: bool, span: Span) -> Result<()> {
+        match p {
+            TPat::Bind(l) => {
+                if linear && self.linear(ty) {
+                    self.st.insert(*l, Lin::Live);
+                }
+                Ok(())
+            }
+            TPat::Wild(_) => {
+                if linear && self.linear(ty) {
+                    return err(span, "a connection or a listener is left by `_` here: it would never be closed");
+                }
+                Ok(())
+            }
+            TPat::Lit(..) => Ok(()),
+            TPat::Tuple(ps, _) => {
+                let ts: Vec<Ty> = match ty {
+                    Ty::Tuple(ts) => ts.clone(),
+                    Ty::Record(fs) => fs.iter().map(|(_, t)| t.clone()).collect(),
+                    _ => return Ok(()),
+                };
+                for (q, t) in ps.iter().zip(ts.iter()) {
+                    self.bind(q, t, linear, span)?;
+                }
+                Ok(())
+            }
+            TPat::Ctor { sum, variant, subs, .. } => {
+                let args = match ty {
+                    Ty::Sum { args, .. } => args.clone(),
+                    _ => Vec::new(),
+                };
+                let payload = self.sums[*sum as usize].payload(*variant as usize, &args);
+                for (q, t) in subs.iter().zip(payload.iter()) {
+                    self.bind(q, t, linear, span)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The locals bound by a pattern.
+    fn bound(p: &TPat, out: &mut Vec<LocalId>) {
+        match p {
+            TPat::Bind(l) => out.push(*l),
+            TPat::Tuple(ps, _) | TPat::Ctor { subs: ps, .. } => ps.iter().for_each(|q| Self::bound(q, out)),
+            TPat::Wild(_) | TPat::Lit(..) => {}
+        }
+    }
+
+    /// The locals of `ls` that hold a resource and are still alive: a fault,
+    /// they would never be closed.
+    fn all_gone(&self, ls: &[LocalId], span: Span) -> Result<()> {
+        for &l in ls {
+            if self.st.get(&l) == Some(&Lin::Live) {
+                return err(span, format!("`{}` is never closed: a connection or a listener is closed (or given away) on every path", self.name(l)));
+            }
+        }
+        Ok(())
+    }
+
+    /// The states after two paths: the same, or a fault.
+    fn agree(&self, a: &HashMap<LocalId, Lin>, b: &HashMap<LocalId, Lin>, span: Span) -> Result<HashMap<LocalId, Lin>> {
+        let mut out = a.clone();
+        for (l, x) in a {
+            let y = b.get(l).copied().unwrap_or(Lin::Live);
+            match (*x, y) {
+                (Lin::Live, Lin::Gone(at)) | (Lin::Gone(at), Lin::Live) => {
+                    return err(span, format!("`{}` is closed or given away on one path (line {}) and not on the other", self.name(*l), at.line));
+                }
+                _ => {}
+            }
+        }
+        for (l, y) in b {
+            if !a.contains_key(l) {
+                if let Lin::Gone(at) = y {
+                    return err(span, format!("`{}` is closed or given away on one path (line {}) and not on the other", self.name(*l), at.line));
+                }
+                out.insert(*l, *y);
+            }
+        }
+        Ok(out)
+    }
+
+    /// A new value that holds a resource, which its context only reads: it
+    /// would be lost.
+    fn lost(&self, e: &TExpr, take: Take) -> Result<()> {
+        if take == Take::Borrow && self.linear(&e.ty) && !matches!(e.kind, TExprKind::Local(_)) {
+            return err(e.span, "the connection or listener made here is never closed: bind it, close it or give it away");
+        }
+        Ok(())
+    }
+
+    fn walk(&mut self, e: &TExpr, take: Take) -> Result<()> {
+        let span = e.span;
+        match &e.kind {
+            TExprKind::Lit(_) | TExprKind::SizeVal(_) | TExprKind::FnRef { .. } | TExprKind::PrimRef(_) | TExprKind::OpRef(_) => Ok(()),
+            TExprKind::Local(l) => self.local(*l, take, span),
+            TExprKind::Tuple(es) | TExprKind::Array(es) | TExprKind::Construct { args: es, .. } => {
+                for x in es {
+                    self.walk(x, Take::Move)?;
+                }
+                self.lost(e, take)
+            }
+            TExprKind::Field(x, _) => {
+                if self.linear(&e.ty) {
+                    return err(span, "a connection or a listener in a value is taken by a pattern (`const { c, ... } = v`), not read as a field");
+                }
+                self.walk(x, Take::Borrow)
+            }
+            TExprKind::FieldUpdate { target, value, .. } => {
+                let t = if self.linear(&target.ty) { Take::Move } else { Take::Borrow };
+                self.walk(target, t)?;
+                self.walk(value, Take::Move)?;
+                self.lost(e, take)
+            }
+            TExprKind::Match(x, arms) => {
+                let linear = self.linear(&x.ty);
+                self.walk(x, if linear { Take::Move } else { Take::Borrow })?;
+                let before = self.st.clone();
+                let mut after: Option<HashMap<LocalId, Lin>> = None;
+                for (p, body) in arms {
+                    self.st = before.clone();
+                    self.bind(p, &x.ty, linear, span)?;
+                    let mut own = Vec::new();
+                    Self::bound(p, &mut own);
+                    self.walk(body, take)?;
+                    self.all_gone(&own, body.span)?;
+                    for l in &own {
+                        self.st.remove(l);
+                    }
+                    after = Some(match after {
+                        None => self.st.clone(),
+                        Some(a) => self.agree(&a, &self.st.clone(), body.span)?,
+                    });
+                }
+                self.st = after.unwrap_or(before);
+                Ok(())
+            }
+            TExprKind::Call { callee, args, .. } => {
+                match callee {
+                    Callee::Prim(Prim::Sys(op)) => {
+                        for (i, a) in args.iter().enumerate() {
+                            self.walk(a, if i == 0 && op.consumes() { Take::Move } else { Take::Borrow })?;
+                        }
+                    }
+                    Callee::Fn { id, .. } => {
+                        for (i, a) in args.iter().enumerate() {
+                            let moves = self.consumes.get(*id).and_then(|c| c.get(i)).copied().unwrap_or(false);
+                            self.walk(a, if moves { Take::Move } else { Take::Borrow })?;
+                        }
+                    }
+                    Callee::Value(f) => {
+                        self.walk(f, Take::Borrow)?;
+                        for a in args {
+                            self.walk(a, Take::Borrow)?;
+                        }
+                    }
+                    Callee::Prim(_) | Callee::Extern(_) => {
+                        for a in args {
+                            self.walk(a, Take::Borrow)?;
+                        }
+                    }
+                }
+                self.lost(e, take)
+            }
+            TExprKind::If(c, t, f) => {
+                self.walk(c, Take::Borrow)?;
+                let before = self.st.clone();
+                self.walk(t, take)?;
+                let after_t = std::mem::replace(&mut self.st, before);
+                self.walk(f, take)?;
+                let after_f = self.st.clone();
+                self.st = self.agree(&after_t, &after_f, span)?;
+                Ok(())
+            }
+            TExprKind::Lambda(params, body) => {
+                self.in_lambda.push(params.clone());
+                let r = self.walk(body, Take::Move);
+                self.in_lambda.pop();
+                r
+            }
+            TExprKind::Block(stmts, last) => {
+                let mut own = Vec::new();
+                for s in stmts {
+                    match s {
+                        TStmt::Let(p, init) => {
+                            let linear = self.linear(&init.ty);
+                            self.walk(init, if linear { Take::Move } else { Take::Borrow })?;
+                            self.bind(p, &init.ty, linear, init.span)?;
+                            Self::bound(p, &mut own);
+                        }
+                        TStmt::Expr(x) => self.walk(x, Take::Borrow)?,
+                    }
+                }
+                self.walk(last, take)?;
+                self.all_gone(&own, last.span)?;
+                for l in &own {
+                    self.st.remove(l);
+                }
+                Ok(())
+            }
+            TExprKind::Index(a, b) | TExprKind::Pow(a, b) | TExprKind::Binary { lhs: a, rhs: b, .. } => {
+                self.walk(a, Take::Borrow)?;
+                self.walk(b, Take::Borrow)
+            }
+            TExprKind::Slice(a, b, c) => {
+                self.walk(a, Take::Borrow)?;
+                self.walk(b, Take::Borrow)?;
+                self.walk(c, Take::Borrow)
+            }
+            TExprKind::Update { target, index, value, .. } => {
+                self.walk(target, Take::Borrow)?;
+                self.walk(index, Take::Borrow)?;
+                self.walk(value, Take::Borrow)
+            }
+            TExprKind::Unary(_, x) => self.walk(x, Take::Borrow),
+        }
+    }
+}
+
+fn sums_for_linear(g: &Globals) -> Vec<SumDef> {
+    g.sums.clone()
+}
+
+/// The resources of the system are linear (D339): each local that holds a
+/// connection or a listener is closed, or given away (to a value, to a
+/// function that takes it, as a result), exactly once on every path; a use
+/// after it, a value lost, a capture by a lambda, a close on one path only
+/// are refused. Whether a function takes each of its parameters is found
+/// from its body (again until nothing changes, for the recursive ones).
+fn check_linear(fns: &[TFn], sums: &[SumDef]) -> Result<()> {
+    let any = fns.iter().any(|f| f.locals.iter().any(|l| linear_ty(&l.ty, sums, &mut Vec::new())));
+    if !any {
+        return Ok(());
+    }
+    let mut consumes: Vec<Vec<bool>> = fns.iter().map(|f| vec![false; f.params.len()]).collect();
+    let with = |f: &TFn| f.locals.iter().any(|l| linear_ty(&l.ty, sums, &mut Vec::new()));
+    // what each function takes, found again until nothing changes (a
+    // function whose check fails keeps what it had: the last pass tells)
+    for _round in 0..=fns.len() {
+        let mut changed = false;
+        for (i, f) in fns.iter().enumerate() {
+            if !with(f) {
+                continue;
+            }
+            let mut cx = LinCx { f, sums, consumes: &consumes, st: HashMap::new(), in_lambda: Vec::new() };
+            for &p in &f.params {
+                if cx.linear(&f.locals[p as usize].ty) {
+                    cx.st.insert(p, Lin::Live);
+                }
+            }
+            if cx.walk(&f.body, Take::Move).is_err() {
+                continue;
+            }
+            let now: Vec<bool> = f.params.iter().map(|p| matches!(cx.st.get(p), Some(Lin::Gone(_)))).collect();
+            if now != consumes[i] {
+                consumes[i] = now;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // the check, with what each function takes
+    for f in fns.iter().filter(|f| with(f)) {
+        let mut cx = LinCx { f, sums, consumes: &consumes, st: HashMap::new(), in_lambda: Vec::new() };
+        for &p in &f.params {
+            if cx.linear(&f.locals[p as usize].ty) {
+                cx.st.insert(p, Lin::Live);
+            }
+        }
+        cx.walk(&f.body, Take::Move)?;
+    }
+    Ok(())
 }

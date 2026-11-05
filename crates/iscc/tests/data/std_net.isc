@@ -1,0 +1,78 @@
+import * as net from "net";
+import { message } from "sys";
+
+// a server and its client in one program: the kernel keeps the bytes
+// until each side reads them
+action exchange(l: net.Listener, port: i64): void {
+    match (net.connect("localhost", port)) {
+        Ok(c) => {
+            print(net.writeText(c, "hello"));
+            match (net.accept(l)) {
+                Ok([s, peer]) => {
+                    print(peer.startsWith("127.0.0.1:"));
+                    match (net.read(s, 100)) {
+                        Ok(b) => print(stringOf(b)),
+                        Err(e) => print(message(e)),
+                    };
+                    print(net.write(s, map(iota(70000), (i) => u8(i % 251))));
+                    net.close(s);
+                },
+                Err(e) => print(message(e)),
+            };
+            print(readAll(c, 0, 0));
+            net.close(c);
+        },
+        Err(e) => print(message(e)),
+    };
+}
+
+// the bytes received until the end of the stream: their number and sum
+action readAll(c: net.Conn, n: i64, total: i64): [i64, i64] {
+    return match (net.read(c, 4096)) {
+        Ok(b) => b.length == 0 ? [n, total] as const : readAll(c, n + b.length, total + sum(map(b, (x) => i64(x)))),
+        Err(e) => [-1, -1] as const,
+    };
+}
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            print(port > 0);
+            exchange(l, port);
+            // a read past its delay
+            match (net.connect("127.0.0.1", port)) {
+                Ok(c) => {
+                    print(net.setTimeout(c, 50));
+                    match (net.read(c, 10)) {
+                        Ok(b) => print(b.length),
+                        Err(e) => print(message(e)),
+                    };
+                    net.close(c);
+                },
+                Err(e) => print(message(e)),
+            };
+            net.closeListener(l);
+            // nothing listens there any more
+            match (net.connect("127.0.0.1", port)) {
+                Ok(c) => {
+                    print("connected");
+                    net.close(c);
+                },
+                Err(e) => print(message(e).startsWith("refused: 127.0.0.1:")),
+            };
+        },
+        Err(e) => print(message(e)),
+    };
+    print(net.resolve("localhost"));
+    print(net.resolve("::1"));
+    // the server of DNS of the test, at the port of the first argument
+    if (args.length > 0) {
+        print(net.lookup("example.test", "127.0.0.1", parseI64(args[0])));
+        match (net.lookup("missing.test", "127.0.0.1", parseI64(args[0]))) {
+            Ok(xs) => print(xs),
+            Err(e) => print(message(e)),
+        };
+    }
+    return 0;
+}

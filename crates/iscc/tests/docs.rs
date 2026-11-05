@@ -127,7 +127,15 @@ fn every_example_of_the_guide_works() {
                 let r = run_with_input(&bin, ex.input.as_deref().unwrap_or(""));
                 assert_eq!(r.0, 0, "{}: {}", at, r.2);
                 assert_eq!(r.1, out, "{}: compiled and interpreted outputs differ", at);
-                if let (Some(runner), None) = (&wasm, &ex.input) {
+                // a program that reaches what WASI lacks (sockets): refused
+                // when built for it (D324)
+                let p = iscc::frontend("doc.isc", &ex.src).unwrap_or_else(|e| panic!("{}: {}", at, e));
+                if p.sys_paths.iter().any(|(op, _, _)| !op.on_wasi()) {
+                    let o = isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() };
+                    let opts = iscc::BuildOptions { output: tmp(&format!("doc_{}.wasm", n)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+                    let e = iscc::build(&p, &opts).expect_err("a program that WASI cannot run, built for it");
+                    assert!(e.contains("(WASI preview 1) has no"), "{}: {}", at, e);
+                } else if let (Some(runner), None) = (&wasm, &ex.input) {
                     let w = compile_wasm(&ex.src, &format!("doc_{}", n));
                     let r = run_wasm(runner, &w, &[]);
                     assert_eq!(r.code, 0, "{}: WebAssembly: {}", at, r.stderr);

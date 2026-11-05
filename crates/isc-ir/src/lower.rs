@@ -307,7 +307,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let fns: Vec<Function> = l.fns.into_iter().map(|f| f.expect("a recursive function lowered")).collect();
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p) })
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new() })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -365,6 +365,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         choices: std::mem::take(&mut l.choices),
         reassoc_fns: std::mem::take(&mut l.reassoc_fns),
         externs: extern_fns(p),
+        sys_paths: isc_types::check::system_paths(p),
     })
 }
 
@@ -747,6 +748,7 @@ impl<'p> Lower<'p> {
             Ty::Unit => Type::Unit,
             Ty::Str | Ty::RegExp => Type::Str,
             Ty::BigInt => Type::Big,
+            Ty::Handle(_) => Type::Handle,
             Ty::Sum { id, args, .. } if self.p.sums[id as usize].recursive => Type::Rec(self.rec_index(env, id, &args, span)?),
             // `Map<K, V>` (D158): the keys, the values, the positions of the
             // keys sorted
@@ -1360,6 +1362,9 @@ impl<'p> Lower<'p> {
             Type::Str | Type::Big => Ok(Expr::new(ExprKind::StrOp(StrOp::Cmp(BinOp::Eq), vec![l, r]), bt, span)),
             // structural, by a function of the code generator (D129); the
             // strings by bytes (D134)
+            // a resource of the system is never compared (the checker
+            // refuses it, D339)
+            Type::Handle => internal(span, "a comparison of resources of the system"),
             Type::Rec(_) => {
                 // both sides bound, then freed after the comparison, which
                 // only reads them

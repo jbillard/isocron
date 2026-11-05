@@ -6750,3 +6750,64 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `digest.4k.shani` in the floor): 4177.48 to 4239.05 ns, 4.1 times the
     loop in C; out of v1 (SPEC section 16, D329: no explicit vector
     instructions in the modules).
+- **D339 — The module `net`: connections of TCP, linear values
+  (2026-11-05).** The design of D326 kept, but its check moved:
+  - `Conn` and `Listener` are resources of the system (`Ty::Handle`, the
+    names `sysConn` and `sysListener` of the module, predefined types for
+    the parser so that `type Conn = sysConn;` is an alias), an integer in
+    the IR (`Type::Handle`, the socket's number). They are **linear**,
+    checked on the typed tree (`check_linear`): each local that holds one
+    is closed, or given away (in a value, a result, to a function that
+    takes it), exactly once on every path; a use after it, a connection
+    never closed, closed on one branch only, left by `_`, captured by a
+    lambda, made and lost are errors of compilation with their place.
+    Whether a function takes each parameter is found from its body (closed
+    on all its paths: taken; never: borrowed), again until nothing changes
+    for the recursive ones; the errors only from the last pass. D326 put
+    the check in the verifier of the IR, by the uniqueness of section 8:
+    tried first (a value owned and never copied, `close` consuming it), it
+    needs to take a resource out of the value of a `match` (`Ok([s,
+    peer])`: the IR projects it, a borrow, and only a copy would give it to
+    `close`); the linear check of the typed tree needs no move out of the
+    IR, gives clearer messages, and asks that every connection be closed.
+    Neither compared nor printed nor in an array, nor a type parameter of
+    a function (the constraint of `Ty::Handle`).
+  - The primitives (`SysOp`): `sysConnect`, `sysListen` (`SO_REUSEADDR`),
+    `sysAccept`, `sysRecv`, `sysSend` (all the bytes; `MSG_NOSIGNAL`: a
+    peer gone is an error, not `SIGPIPE`), `sysClose` and
+    `sysCloseListener` (taking their argument), `sysSetTimeout`,
+    `sysLocalPort`, `sysUdpQuery` (one datagram sent, the first answer of
+    that address within a delay), `sysPlatform`, `sysResolve`. In the
+    runtime (`net.rs`): Linux by its system calls, numeric addresses read
+    by `core::net` (no C library, D287), a timeout (`EAGAIN` past
+    `SO_RCVTIMEO`) the code 6; Windows by Winsock (`ws2_32`, now linked
+    with every program for Windows, `GetAddrInfoW` for `sysResolve`); the
+    interpreter by `std::net`, the same codes.
+  - The names resolved in Isocron under Linux (`net.isc`): a numeric
+    address, `localhost`, `/etc/hosts`, then the servers of
+    `/etc/resolv.conf` on port 53, a query A then AAAA made and read by the
+    module (labels, pointers of names, the text of IPv6 by RFC 5952);
+    `lookup(host, server, port)` asks one server.
+  - D324 made: `system_paths`, on the typed program, finds from `main` the
+    primitives of the system that a program reaches and a path of calls to
+    each; `iscc build` for WebAssembly refuses one that WASI lacks
+    (`SysOp::on_wasi`: no sockets), naming the path (`main` -> `ask` ->
+    `net.connect`) and the place of the call in the program. The test of
+    the guide checks that refusal for the examples that reach one.
+  - The language, on the way (general): `join` and `loosen` go through the
+    arguments of sum types (`Result<string[a], E>` and `Result<string[b],
+    E>` in two arms: a size fixed at run time, D337).
+  - Tested by `tcp_and_dns_on_the_local_machine` (a listener on a port the
+    system chooses, a connection by `localhost`, bytes both ways, 70000 of
+    them read to the end of the stream, a read past its delay, a connection
+    refused, the records A and AAAA asked to a server of DNS written in the
+    test and a name it lacks; compiled with 1 and 4 threads, interpreted,
+    Valgrind), `connections_are_closed_exactly_once` (seven refusals and a
+    function that only reads its connection), `net_refused_for_wasi`
+    (`std_net.rs`), `net_on_windows` (`windows.rs`, the Windows VM) and the
+    guide.
+  - The microbenchmark (`bench/primitives/net.isc`, its floor `net.c`: the
+    same calls of the system in C; `results/primitives.md`): a round trip
+    of 64 bytes 6167.09 ns against 5869.86 (1.1), a connection made
+    24175.46 against 23192.41 (1.0), 64 KiB sent and received 11204.86
+    against 12105.38 (0.9): the time of the kernel.

@@ -66,6 +66,7 @@ fn shape_of(t: &Ty, sums: &[SumDef], at: &str) -> Result<Shape, String> {
         Ty::BigInt => return Err(place("a `bigint` (JSON numbers are read as `f64` or integers of 64 bits)")),
         Ty::Fn(..) => return Err(place("a function")),
         Ty::RegExp => return Err(place("a `RegExp`")),
+        Ty::Handle(h) => return Err(place(&format!("a `{}` (a resource of the system)", h.name()))),
         Ty::Sum { id, .. } if sums[*id as usize].variants.len() == 1 && sums[*id as usize].variants[0].name == crate::MAP_CTOR => return Err(place("a `Map` (decode an object into a record, or into `json.Json`)")),
         Ty::Sum { name, .. } => return Err(place(&format!("the sum type `{}` (of the sum types, JSON carries `Option` only)", name))),
         Ty::Param(_) | Ty::Var(_) => return Err(place("a type parameter (the type must be known where it is called)")),

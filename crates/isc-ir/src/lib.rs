@@ -43,6 +43,10 @@ pub enum Type {
     /// A value of the recursive type `Program::recs[i]`: a pointer to a
     /// node on the heap, with a reference count (D103).
     Rec(u32),
+    /// A resource of the system (D339): its number (a descriptor, a
+    /// socket); closed exactly once, which the checker proves (a linear
+    /// value of the typed tree), so a scalar here.
+    Handle,
 }
 
 /// The length of an array known when the program is compiled (`f64[5]`,
@@ -429,6 +433,10 @@ pub struct Program {
     pub vars: Vec<VarInfo>,
     /// The shapes of the printed values (`ActionOp::Print`).
     pub shapes: Vec<Shape>,
+    /// The primitives of the system that `main` reaches, each with a path of
+    /// calls to it and the place of the call in the program (D324): a target
+    /// that lacks one refuses the program.
+    pub sys_paths: Vec<(SysOp, Vec<String>, isc_syntax::Span)>,
 }
 
 /// What `print` shows beyond the IR type of a value: the names of the

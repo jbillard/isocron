@@ -81,6 +81,7 @@ mod linux;
 
 // the primitives of the system of the standard library (D322)
 mod system;
+mod net;
 // The functions of memory that LLVM and `core` call (D288): those of
 // `isc-mem`, the runtime's own under Linux; in a program linked with glibc,
 // they are the ones of the program too (the definitions of an executable
@@ -1227,6 +1228,11 @@ static EMPTY_BYTES: EmptyBytes = EmptyBytes([0; 64]);
 
 fn empty_ptr() -> *mut u8 {
     EMPTY_BYTES.0.as_ptr() as *mut u8
+}
+
+/// The memory of an empty array of bytes: none owned (as an empty string).
+fn empty_bytes() -> *mut u8 {
+    empty_ptr()
 }
 
 /// A new string holding these bytes.

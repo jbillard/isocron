@@ -153,7 +153,7 @@ fn elem_bytes(t: &Type) -> u64 {
         Type::Str | Type::Big => 16,
         Type::Tuple(ts) => ts.iter().map(elem_bytes).sum(),
         Type::Array(_, _) => 16,
-        Type::Rec(_) => 8,
+        Type::Rec(_) | Type::Handle => 8,
     }
 }
 

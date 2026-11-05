@@ -49,6 +49,18 @@ fn with_glibc(p: &isc_ir::Program, opts: &BuildOptions) -> bool {
 
 /// Compiles the IR to a native executable.
 pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
+    // a primitive of the system that the target lacks (D324)
+    if opts.codegen.isa.is_wasm() {
+        if let Some((op, path, at)) = p.sys_paths.iter().find(|(op, _, _)| !op.on_wasi()) {
+            return Err(format!(
+                "{}:{}: the target WebAssembly (WASI preview 1) has no `{}` (no sockets): reached by {}",
+                at.line,
+                at.col,
+                op.name(),
+                path.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(" -> ")
+            ));
+        }
+    }
     let ir = isc_codegen::emit_with(p, &opts.codegen)?;
     if let Some(f) = &opts.emit_llvm {
         std::fs::write(f, &ir).map_err(|e| format!("cannot write `{}`: {}", f.display(), e))?;
@@ -267,7 +279,8 @@ fn lib_arg(l: &str) -> std::ffi::OsString {
 
 /// Links a program for Windows as the linker of MinGW (`-m i386pep`): the
 /// start files and the libraries of MinGW-w64 (`msvcrt`, `kernel32`,
-/// `synchronization` for `WaitOnAddress`), those embedded in iscc (written
+/// `synchronization` for `WaitOnAddress`, `ws2_32` for the sockets of
+/// `net`, D339), those embedded in iscc (written
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
@@ -287,7 +300,7 @@ fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String])
     a.extend(libs.iter().map(|l| lib_arg(l)));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "-L".into(), gcc.clone().into(), "--start-group".into()]);
-    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization"] {
+    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization", "ws2_32"] {
         a.push(format!("-l{}", l).into());
     }
     a.push("--end-group".into());

@@ -260,10 +260,36 @@ pub enum SysOp {
     /// `sysNow() => nanoseconds`: the time of the clock of the system since
     /// 1970-01-01T00:00:00Z
     Now,
+    /// `sysConnect(address, port) => [conn, code]`: a numeric address (D339)
+    Connect,
+    /// `sysListen(address, port) => [listener, code]`: port 0 for any
+    Listen,
+    /// `sysAccept(listener) => [conn, peer, code]`
+    Accept,
+    /// `sysRecv(conn, max) => [bytes, code]`: none at the end of the stream
+    Recv,
+    /// `sysSend(conn, bytes) => code`: all of them, or an error
+    Send,
+    /// `sysClose(conn) => code`: consumes the connection
+    Close,
+    /// `sysCloseListener(listener) => code`: consumes the listener
+    CloseListener,
+    /// `sysSetTimeout(conn, ms) => code`: of each read and write (0: none)
+    SetTimeout,
+    /// `sysLocalPort(listener) => port`
+    LocalPort,
+    /// `sysUdpQuery(address, port, packet, ms) => [answer, code]`: one
+    /// datagram sent, one received (the resolver of names, D326)
+    UdpQuery,
+    /// `sysPlatform() => 0` Linux, `1` Windows, `2` WASI
+    Platform,
+    /// `sysResolve(host) => [addresses, code]`: the resolver of Windows
+    /// (Linux: the module resolves, code 7)
+    Resolve,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 12] = [
+    pub const ALL: [SysOp; 24] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -276,7 +302,43 @@ impl SysOp {
         SysOp::ReadFile,
         SysOp::WriteFile,
         SysOp::Now,
+        SysOp::Connect,
+        SysOp::Listen,
+        SysOp::Accept,
+        SysOp::Recv,
+        SysOp::Send,
+        SysOp::Close,
+        SysOp::CloseListener,
+        SysOp::SetTimeout,
+        SysOp::LocalPort,
+        SysOp::UdpQuery,
+        SysOp::Platform,
+        SysOp::Resolve,
     ];
+
+    /// It consumes its first argument (a resource of the system closed,
+    /// D339).
+    pub fn consumes(self) -> bool {
+        matches!(self, SysOp::Close | SysOp::CloseListener)
+    }
+
+    /// The target WebAssembly (WASI preview 1) has it (D324): no sockets.
+    pub fn on_wasi(self) -> bool {
+        !matches!(
+            self,
+            SysOp::Connect
+                | SysOp::Listen
+                | SysOp::Accept
+                | SysOp::Recv
+                | SysOp::Send
+                | SysOp::Close
+                | SysOp::CloseListener
+                | SysOp::SetTimeout
+                | SysOp::LocalPort
+                | SysOp::UdpQuery
+                | SysOp::Resolve
+        )
+    }
 
     /// Its name in the modules.
     pub fn name(self) -> &'static str {
@@ -293,6 +355,18 @@ impl SysOp {
             SysOp::ReadFile => "sysReadFile",
             SysOp::WriteFile => "sysWriteFile",
             SysOp::Now => "sysNow",
+            SysOp::Connect => "sysConnect",
+            SysOp::Listen => "sysListen",
+            SysOp::Accept => "sysAccept",
+            SysOp::Recv => "sysRecv",
+            SysOp::Send => "sysSend",
+            SysOp::Close => "sysClose",
+            SysOp::CloseListener => "sysCloseListener",
+            SysOp::SetTimeout => "sysSetTimeout",
+            SysOp::LocalPort => "sysLocalPort",
+            SysOp::UdpQuery => "sysUdpQuery",
+            SysOp::Platform => "sysPlatform",
+            SysOp::Resolve => "sysResolve",
         }
     }
 }

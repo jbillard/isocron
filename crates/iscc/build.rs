@@ -172,7 +172,7 @@ fn link_files(sysroot: Option<&PathBuf>) {
 /// Windows. Without them, an empty list: iscc then reads them from
 /// `$ISC_MINGW_DIR` when it links.
 fn mingw_files() {
-    const LIB: [&str; 7] = ["crt2.o", "libmingw32.a", "libmingwex.a", "libmsvcrt.a", "libkernel32.a", "libsynchronization.a", "libmoldname.a"];
+    const LIB: [&str; 8] = ["crt2.o", "libmingw32.a", "libmingwex.a", "libmsvcrt.a", "libkernel32.a", "libsynchronization.a", "libmoldname.a", "libws2_32.a"];
     const GCC: [&str; 4] = ["crtbegin.o", "crtend.o", "libgcc.a", "libgcc_eh.a"];
     println!("cargo:rerun-if-env-changed=ISC_MINGW_DIR");
     let root = PathBuf::from(env::var("ISC_MINGW_DIR").unwrap_or_else(|_| "/usr".into()));

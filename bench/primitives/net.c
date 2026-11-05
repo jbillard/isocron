@@ -1,0 +1,93 @@
+// The floor of `net.isc`: the same work on the local machine, the calls of
+// the system made directly in C, on one thread: a round trip of 64 bytes on
+// a connection of TCP, 64 KiB sent and received, a connection made
+// (`connect`, `accept`, both closed). Each line: a name, the nanoseconds of
+// one (the mean over `rounds`), a checksum.
+//   net <rounds>
+#define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+
+static double now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+// `n` bytes read: their number, or -1
+static long read_n(int fd, char *buf, long n) {
+    long got = 0;
+    while (got < n) {
+        long r = read(fd, buf + got, n - got);
+        if (r <= 0) return -1;
+        got += r;
+    }
+    return got;
+}
+
+static int connect_to(int port) {
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port)};
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) != 0) return -1;
+    return fd;
+}
+
+int main(int argc, char **argv) {
+    long r = argc > 1 ? atol(argv[1]) : 10;
+    int l = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int one = 1;
+    setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = 0};
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    bind(l, (struct sockaddr *)&a, sizeof a);
+    listen(l, 128);
+    socklen_t len = sizeof a;
+    getsockname(l, (struct sockaddr *)&a, &len);
+    int port = ntohs(a.sin_port);
+    int c = connect_to(port);
+    int s = accept4(l, NULL, NULL, SOCK_CLOEXEC);
+    static char small[64], big[65536], buf[65536];
+    for (int i = 0; i < 64; i++) small[i] = i;
+    for (int i = 0; i < 65536; i++) big[i] = i % 251;
+    long acc = 0;
+    double t0 = now();
+    for (long k = 0; k < r; k++) {
+        send(c, small, 64, MSG_NOSIGNAL);
+        acc += read_n(s, buf, 64);
+        send(s, small, 64, MSG_NOSIGNAL);
+        acc += read_n(c, buf, 64);
+    }
+    printf("roundtrip.64 %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        long at = 0;
+        while (at < 65536) {
+            long w = send(c, big + at, 65536 - at, MSG_NOSIGNAL);
+            if (w <= 0) return 1;
+            at += w;
+        }
+        acc += read_n(s, buf, 65536);
+    }
+    printf("send.64k %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    close(s);
+    close(c);
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        int x = connect_to(port);
+        int y = accept4(l, NULL, NULL, SOCK_CLOEXEC);
+        close(y);
+        close(x);
+        acc += x >= 0 && y >= 0;
+    }
+    printf("connect %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    close(l);
+    return 0;
+}

@@ -956,8 +956,9 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 
 #### `net` : TCP
 
-- `type Conn` et `type Listener` sont des valeurs **uniques** (section 8) : passées, jamais copiées. `close` les consomme. Une connexion fermée ne peut plus être lue : l'erreur est donnée à la compilation, par l'unicité, et non à l'exécution (D326).
-- `connect(host, port): action => Result<Conn, IoError>`, `listen(host, port)`, `accept(l): Result<[Conn, string], IoError>` (l'adresse du pair), `read(c, max): Result<u8[k], IoError>` (vide à la fin du flux), `write(c, bytes): Result<void, IoError>` (tout ou erreur), `close(c)`, `setTimeout(c, ms)`.
+- `type Conn` et `type Listener` sont des valeurs **linéaires** : chacune est fermée, ou donnée (dans une valeur, un résultat, à une fonction qui la ferme), **exactement une fois sur chaque chemin**. Le vérificateur de types le prouve sur l'arbre typé : un usage après `close`, une connexion jamais fermée, fermée dans une seule branche, laissée par `_`, capturée par une lambda ou perdue sont des erreurs de compilation, jamais d'exécution (D326, D339). Une fonction consomme un paramètre qu'elle ferme sur tous ses chemins ; elle l'emprunte sinon. Elles ne sont ni comparées, ni imprimées, ni mises dans un tableau.
+- `connect(host, port): action => Result<Conn, IoError>`, `listen(host, port)` (port 0 : un port choisi par le système, que `port(l)` donne), `accept(l): Result<[Conn, string], IoError>` (l'adresse du pair), `read(c, max): Result<u8[k], IoError>` (vide à la fin du flux), `write(c, bytes): Result<void, IoError>` et `writeText(c, s)` (tout ou erreur), `close(c)`, `closeListener(l)`, `setTimeout(c, ms)` (au-delà : `TimedOut`), `resolve(host)` et `lookup(host, serveur, port)` (un serveur DNS donné).
+- WebAssembly (WASI preview 1) n'a pas de sockets : un programme qui en atteint une est refusé à la compilation pour cette cible, le chemin de ses appels nommé (D324).
 - La résolution des noms dans `connect` lit d'abord les adresses numériques (IPv4, IPv6) et `localhost`. Ensuite :
   - sous Linux, `/etc/hosts`, puis les serveurs de `/etc/resolv.conf` par UDP (enregistrements A et AAAA), en Isocron ;
   - sous Windows, `sysResolve`.

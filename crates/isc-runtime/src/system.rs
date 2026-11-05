@@ -32,7 +32,7 @@ fn code_of(errno: i64) -> i64 {
 
 /// The result of a call of the kernel as a code (0 when it succeeded).
 #[cfg(target_os = "linux")]
-fn code_of_call(r: isize) -> i64 {
+pub(crate) fn code_of_call(r: isize) -> i64 {
     if r < 0 {
         code_of(-(r as i64))
     } else {

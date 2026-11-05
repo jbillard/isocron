@@ -192,7 +192,8 @@ pub fn io_code(e: &std::io::Error) -> i64 {
         K::AlreadyExists => 3,
         K::DirectoryNotEmpty => 4,
         K::ConnectionRefused => 5,
-        K::TimedOut => 6,
+        // a read or a write past its delay (`SO_RCVTIMEO`: `EAGAIN`)
+        K::TimedOut | K::WouldBlock => 6,
         _ => -(e.raw_os_error().unwrap_or(1) as i64),
     }
 }
@@ -265,5 +266,152 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let r = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(text(&vs[0])).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
             code(r)
         }
+        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve => net(o, vs),
+    }
+}
+
+/// The bytes of an array of `u8`.
+fn byte_values(v: &crate::Value) -> Vec<u8> {
+    use crate::{Array, Value};
+    match v {
+        Value::Array(a) => match &**a {
+            Array::Int(v) => v.iter().map(|&x| x as u8).collect(),
+            a => panic!("bytes expected, got {:?}", a),
+        },
+        v => panic!("bytes expected, got {:?}", v),
+    }
+}
+
+/// The primitives of the network (D339), as the runtime does them: a
+/// connection or a listener in a cell, which `close` empties.
+fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
+    use crate::handles::{Cell, Resource};
+    use crate::{Array, Value};
+    use isc_ir::SysOp as S;
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+    use std::rc::Rc;
+    let text = |v: &Value| match v {
+        Value::Str(s) => s.to_string(),
+        v => panic!("a string expected, got {:?}", v),
+    };
+    let int = |v: &Value| match v {
+        Value::Int(x) => *x,
+        v => panic!("an integer expected, got {:?}", v),
+    };
+    let tuple = |xs: Vec<Value>| Value::Tuple(Rc::new(xs));
+    let handle = |r: Option<Resource>| Value::Handle(Rc::new(Cell(std::cell::RefCell::new(r))));
+    let bytes = |b: Vec<u8>| Value::Array(Rc::new(Array::Int(b.into_iter().map(|x| x as i64).collect())));
+    let cell = |v: &Value| match v {
+        Value::Handle(c) => c.clone(),
+        v => panic!("a resource expected, got {:?}", v),
+    };
+    // a numeric address and a port, or the code of an invalid argument
+    let address = |a: &str, port: i64| -> Result<SocketAddr, i64> {
+        let ip: IpAddr = a.parse().map_err(|_| -22)?;
+        u16::try_from(port).map(|p| SocketAddr::new(ip, p)).map_err(|_| -22)
+    };
+    match o {
+        S::Connect => match address(&text(&vs[0]), int(&vs[1])).map(|a| TcpStream::connect(a).map_err(|e| io_code(&e))) {
+            Ok(Ok(c)) => tuple(vec![handle(Some(Resource::Conn(c))), Value::Int(0)]),
+            Ok(Err(e)) | Err(e) => tuple(vec![handle(None), Value::Int(e)]),
+        },
+        S::Listen => match address(&text(&vs[0]), int(&vs[1])).map(|a| TcpListener::bind(a).map_err(|e| io_code(&e))) {
+            Ok(Ok(l)) => tuple(vec![handle(Some(Resource::Listener(l))), Value::Int(0)]),
+            Ok(Err(e)) | Err(e) => tuple(vec![handle(None), Value::Int(e)]),
+        },
+        S::Accept => {
+            let c = cell(&vs[0]);
+            let r = match &*c.0.borrow() {
+                Some(Resource::Listener(l)) => l.accept().map_err(|e| io_code(&e)),
+                _ => Err(-9),
+            };
+            match r {
+                Ok((s, peer)) => tuple(vec![handle(Some(Resource::Conn(s))), Value::Str(Rc::from(peer.to_string().as_str())), Value::Int(0)]),
+                Err(e) => tuple(vec![handle(None), Value::Str(Rc::from("")), Value::Int(e)]),
+            }
+        }
+        S::Recv => {
+            let c = cell(&vs[0]);
+            let max = int(&vs[1]).max(0) as usize;
+            let mut buf = vec![0u8; max];
+            let r = match &mut *c.0.borrow_mut() {
+                Some(Resource::Conn(s)) => s.read(&mut buf).map_err(|e| io_code(&e)),
+                _ => Err(-9),
+            };
+            match r {
+                Ok(n) => {
+                    buf.truncate(n);
+                    tuple(vec![bytes(buf), Value::Int(0)])
+                }
+                Err(e) => tuple(vec![bytes(Vec::new()), Value::Int(e)]),
+            }
+        }
+        S::Send => {
+            let c = cell(&vs[0]);
+            let data = byte_values(&vs[1]);
+            let r = match &mut *c.0.borrow_mut() {
+                Some(Resource::Conn(s)) => s.write_all(&data).map_or_else(|e| io_code(&e), |_| 0),
+                _ => -9,
+            };
+            Value::Int(r)
+        }
+        S::Close | S::CloseListener => {
+            // the resource given back to the system now
+            drop(cell(&vs[0]).0.borrow_mut().take());
+            Value::Int(0)
+        }
+        S::SetTimeout => {
+            let c = cell(&vs[0]);
+            let ms = int(&vs[1]);
+            let d = (ms > 0).then(|| std::time::Duration::from_millis(ms as u64));
+            let r = match &*c.0.borrow() {
+                Some(Resource::Conn(s)) => s.set_read_timeout(d).and_then(|_| s.set_write_timeout(d)).map_or_else(|e| io_code(&e), |_| 0),
+                _ => -9,
+            };
+            Value::Int(r)
+        }
+        S::LocalPort => {
+            let c = cell(&vs[0]);
+            let r = match &*c.0.borrow() {
+                Some(Resource::Listener(l)) => l.local_addr().map_or(-1, |a| a.port() as i64),
+                _ => -1,
+            };
+            Value::Int(r)
+        }
+        S::UdpQuery => {
+            let r = (|| -> Result<Vec<u8>, i64> {
+                let to = address(&text(&vs[0]), int(&vs[1]))?;
+                let local: SocketAddr = if to.is_ipv4() { "0.0.0.0:0".parse().unwrap() } else { "[::]:0".parse().unwrap() };
+                let u = UdpSocket::bind(local).map_err(|e| io_code(&e))?;
+                let ms = int(&vs[3]).max(1) as u64;
+                u.set_read_timeout(Some(std::time::Duration::from_millis(ms))).map_err(|e| io_code(&e))?;
+                u.send_to(&byte_values(&vs[2]), to).map_err(|e| io_code(&e))?;
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    let (n, from) = u.recv_from(&mut buf).map_err(|e| io_code(&e))?;
+                    if from == to {
+                        buf.truncate(n);
+                        return Ok(buf);
+                    }
+                }
+            })();
+            match r {
+                Ok(b) => tuple(vec![bytes(b), Value::Int(0)]),
+                Err(e) => tuple(vec![bytes(Vec::new()), Value::Int(e)]),
+            }
+        }
+        S::Platform => Value::Int(if cfg!(windows) { 1 } else { 0 }),
+        S::Resolve => {
+            let strs = |v: Vec<String>| Value::Array(Rc::new(Array::Str(v.into_iter().map(|x| Rc::from(x.as_str())).collect())));
+            if !cfg!(windows) {
+                return tuple(vec![strs(Vec::new()), Value::Int(7)]);
+            }
+            match std::net::ToSocketAddrs::to_socket_addrs(&(text(&vs[0]).as_str(), 0)) {
+                Ok(it) => tuple(vec![strs(it.map(|a| a.ip().to_string()).collect()), Value::Int(0)]),
+                Err(e) => tuple(vec![strs(Vec::new()), Value::Int(io_code(&e))]),
+            }
+        }
+        _ => unreachable!(),
     }
 }

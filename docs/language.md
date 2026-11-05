@@ -2552,6 +2552,62 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
 32
 ```
 
+### TCP: `net`
+
+`listen(host, port)` makes a `Listener` (port 0: one that the system
+chooses, `port(l)` tells which), `accept(l)` the next connection and the
+address of its peer, `connect(host, port)` a `Conn` to a server; `read(c,
+max)` the bytes received (none at the end of the stream), `write(c, x)` and
+`writeText(c, s)` send all of them, `setTimeout(c, ms)` bounds each read
+and write (past it: `TimedOut`). The errors are those of `sys` (`IoError`).
+`resolve(host)` gives the addresses of a name: under Linux a numeric
+address, `localhost`, `/etc/hosts`, then the servers of `/etc/resolv.conf`
+asked by UDP; under Windows, the system. `lookup(host, server, port)` asks
+one server of DNS.
+
+A `Conn` and a `Listener` are closed exactly once: by `close(c)` and
+`closeListener(l)`, or given away (in a value, a result, to a function that
+closes it). The compiler checks it on every path: a use after `close`, a
+connection never closed, closed on one branch only, captured by a lambda
+or lost are errors of compilation. WebAssembly (WASI) has no sockets: a
+program that reaches one is refused when built for it.
+
+```isc
+import * as net from "net";
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            match (net.connect("localhost", net.port(l))) {
+                Ok(c) => {
+                    print(net.writeText(c, "ping"));
+                    match (net.accept(l)) {
+                        Ok([s, peer]) => {
+                            match (net.read(s, 100)) {
+                                Ok(b) => print(stringOf(b)),
+                                Err(e) => print("read failed"),
+                            };
+                            net.close(s);
+                        },
+                        Err(e) => print("accept failed"),
+                    };
+                    net.close(c);
+                },
+                Err(e) => print("connect failed"),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}
+```
+
+```output
+Ok(())
+ping
+```
+
 ## Performance model
 
 * **Fusion.** Element-wise operations, `map` and `iota` feeding a single
