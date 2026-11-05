@@ -5968,3 +5968,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Tested by the tests of D306 and D309 (`lanes_find_the_matches_of_the_masks`
   against the fixed plan, `parts_stopped_at_the_next_are_one_search`,
   against the automaton), in the build for x86-64-v4 of the suite.
+- **D312 — The 17 cycles of a step of n-body explained by measurement
+  (2026-11-05).** D261 left 17 of the 118.8 cycles of a step outside its
+  model of latencies (98.0 cycles, 101.5 with the divider), given to the
+  ports and the window of the scheduler without a measure. Measured now,
+  one thread on its core, its sibling idle, 50 million steps: 119.62
+  cycles and 243.00 instructions a step; the ports of the vector units 0
+  and 1 receive 78.75 and 79.47 uops a step, the port 5 48.84, the port 6
+  1.00, the loads 28.00, the stores 14.00 and 14.00; no uop executes in
+  11.43 cycles a step. The loop of the step (its 243 instructions, from
+  the assembly of the compiler) simulated by `llvm-mca` (LLVM 21.1.8, the
+  model of Rocket Lake, the same for Ice Lake: latencies, ports, divider,
+  window of the scheduler), built from the tree of LLVM of the releases
+  (the target `llvm-mca` alone): 116.04 cycles a step, 97.0 % of the
+  measure; its analysis of bottlenecks: resources in 59.43 % of the cycles
+  (port 0 43.07 %, port 1 39.62 %, divider 18.08 %, port 5 13.80 %),
+  registers in 74.07 %. So the chain of latencies (101.5) waits about
+  14.5 cycles a step for the ports 0 and 1, busy two cycles of three with
+  the other operations of the step, and the divider; the last 3.6 cycles
+  (3.0 %) are what the simulation leaves out (the front of the processor,
+  the 39 accesses to the stack). n-body is 1.5 times its floor.

@@ -250,7 +250,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] n-body varies by about 3 % from a series of runs to the next with the same code (2.02 to 2.11 s), C and Rust do not: find why (D261: the sibling thread of its core; offline, 126.3 to 126.4 cycles a step in every run)
   - [x] The roots and divisions of a `fold` that do not depend on its accumulator, two elements at a time: n-body 1.979 -> 1.861 s, in Docker 1.892 s against C 1.945 s (D261)
   - [x] The Benchmarks Game measured again at c77e61b: the fastest on 10 of 10, n-body 1.897 s against C 1.945 s (D262)
-  - [ ] A model of the loop of n-body with the ports and the window of the scheduler: the model of D261 (latency and divider) gives 108.5 cycles a step, 118.8 measured
+  - [x] A model of the loop of n-body with the ports and the window of the scheduler: the model of D261 (latency and divider) gives 108.5 cycles a step, 118.8 measured — done (D312): `llvm-mca` (latencies, ports, divider, scheduler) 116.04 cycles a step against 119.62 measured, the ports 0 and 1 busy 78.75 and 79.47 uops a step
   - [x] The runtime given to LLVM with the program, so that the generated code inlines its fast paths: measured, at most about 0.4 % (pidigits: 0.22 calls into the runtime a thousand instructions), not done (D263, D265)
   - [x] The gap of each program to its floor attributed to its components (D263, `results/floors.md`)
   - [x] Release 0.2.0: the fastest on 10 of 10 (D264)
