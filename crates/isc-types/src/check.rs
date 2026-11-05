@@ -1194,18 +1194,32 @@ impl<'g> FnCx<'g> {
             }
             ExprKind::Match(scrutinee, arms) => {
                 let x = self.check(scrutinee, None)?;
-                let ty = match expected {
-                    Some(t) => t.clone(),
-                    None => self.fresh(0, LitKind::None, span),
-                };
+                // each arm given the form expected, not its sizes: arms of
+                // arrays of other sizes have a size fixed at run time (D337)
+                let mut ty: Option<Ty> = None;
                 let mut out = Vec::new();
-                for (p, body) in arms {
+                for (p, body) in arms.iter() {
                     self.scopes.push(HashMap::new());
                     let tp = self.bind_pattern_in(p, &x.ty, true)?;
-                    let b = self.check(body, Some(&ty))?;
-                    self.unify(&ty, &b.ty, body.span)?;
+                    let hint = match (&ty, expected) {
+                        (Some(t), _) => Some(self.loosen(t)),
+                        (None, Some(e)) => Some(self.loosen(e)),
+                        (None, None) => None,
+                    };
+                    let b = self.check(body, hint.as_ref())?;
+                    ty = Some(match ty {
+                        None => b.ty.clone(),
+                        Some(t) => self.join(&t, &b.ty, body.span)?,
+                    });
                     self.scopes.pop();
                     out.push((tp, b));
+                }
+                let ty = match ty {
+                    Some(t) => t,
+                    None => self.fresh(0, LitKind::None, span),
+                };
+                if let Some(e) = expected {
+                    self.unify(e, &ty, span)?;
                 }
                 self.exhaustive(&x.ty, &out.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), span)?;
                 Ok(self.mk(TExprKind::Match(Box::new(x), out), ty, span))
@@ -1297,10 +1311,13 @@ impl<'g> FnCx<'g> {
             ExprKind::If(c, t, f) => {
                 let c = self.check(c, Some(&Ty::Bool))?;
                 self.unify(&Ty::Bool, &c.ty, c.span)?;
-                let t = self.check(t, expected)?;
-                let f = self.check(f, Some(&t.ty.clone()))?;
-                self.unify(&t.ty, &f.ty, f.span)?;
-                let ty = t.ty.clone();
+                // each branch given the form expected, not its sizes: arrays
+                // of two sizes have a size fixed at run time (D337)
+                let hint = expected.map(|e| self.loosen(e));
+                let t = self.check(t, hint.as_ref())?;
+                let hint = self.loosen(&t.ty);
+                let f = self.check(f, Some(&hint))?;
+                let ty = self.join(&t.ty, &f.ty, f.span)?;
                 Ok(self.mk(TExprKind::If(Box::new(c), Box::new(t), Box::new(f)), ty, span))
             }
             ExprKind::Lambda(params, body) => {
@@ -1585,6 +1602,15 @@ impl<'g> FnCx<'g> {
             let qn = format!("{}.{}", m, name);
             if self.g.names.contains_key(&qn) || self.g.ctors.contains_key(&qn) {
                 return qn;
+            }
+            // in a module of the standard library (or the prelude kept for
+            // it), a function of the prelude that the program declares
+            // again keeps its meaning (D337)
+            if m.starts_with(crate::modules::STD_KEY) {
+                let pn = format!("{}{}", PRELUDE_KEPT, name);
+                if self.g.names.contains_key(&pn) {
+                    return pn;
+                }
             }
         }
         if let Some(qn) = self.g.imports.get(&self.file).and_then(|i| i.get(name)) {
@@ -2115,6 +2141,64 @@ impl<'g> FnCx<'g> {
         }
         let ret = self.subst_call(&sig.ret, &type_args, &sym_map, span)?;
         Ok(self.mk(TExprKind::Call { callee: Callee::Fn { id, type_args }, args: targs, size_checks }, ret, span))
+    }
+
+    /// `t` with each size of an array replaced by a fresh size variable (the
+    /// hint of the second branch of a conditional, D337).
+    fn loosen(&mut self, t: &Ty) -> Ty {
+        match self.shallow(t) {
+            Ty::Array(_, e) => {
+                let e = self.loosen(&e);
+                Ty::Array(self.fresh_size(Span::default()), Box::new(e))
+            }
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.loosen(t)).collect()),
+            Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), self.loosen(t))).collect()),
+            other => other,
+        }
+    }
+
+    /// The type of a value that is `a` or `b` (the branches of a conditional,
+    /// the arms of a `match`, D337): their types unified, but where both
+    /// are arrays of sizes that differ, a new size fixed at run time (as the
+    /// size of an array that a call returns), through tuples and records.
+    fn join(&mut self, a: &Ty, b: &Ty, span: Span) -> Result<Ty> {
+        let (x, y) = (self.shallow(a), self.shallow(b));
+        Ok(match (&x, &y) {
+            (Ty::Array(s1, e1), Ty::Array(s2, e2)) => {
+                let e = self.join(e1, e2, span)?;
+                let (r1, r2) = (self.size_res(s1), self.size_res(s2));
+                let s = match (&r1, &r2) {
+                    (Size::Poly(p), Size::Poly(q)) if p != q => {
+                        let k = self.syms.len() as SymId;
+                        self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                        Size::Poly(Poly::sym(k))
+                    }
+                    _ => {
+                        self.unify_size(&r1, &r2, Mode::Strict, false).map_err(|_| Diagnostic::new(span, "size mismatch"))?;
+                        r1
+                    }
+                };
+                Ty::Array(s, Box::new(e))
+            }
+            (Ty::Tuple(p), Ty::Tuple(q)) if p.len() == q.len() => {
+                let mut ts = Vec::new();
+                for (u, v) in p.iter().zip(q.iter()) {
+                    ts.push(self.join(u, v, span)?);
+                }
+                Ty::Tuple(ts)
+            }
+            (Ty::Record(p), Ty::Record(q)) if p.len() == q.len() && p.iter().zip(q.iter()).all(|(u, v)| u.0 == v.0) => {
+                let mut fs = Vec::new();
+                for ((n, u), (_, v)) in p.iter().zip(q.iter()) {
+                    fs.push((n.clone(), self.join(u, v, span)?));
+                }
+                Ty::Record(fs)
+            }
+            _ => {
+                self.unify(&x, &y, span)?;
+                x
+            }
+        })
     }
 
     /// `t` with each existential size symbol replaced by a fresh size variable.
@@ -3243,6 +3327,10 @@ fn contains_fn(t: &Ty) -> bool {
 
 /// Checks a program. `prelude` is the standard library written in
 /// Isocron; user declarations shadow prelude declarations of the same name.
+/// The prefix of the functions of the prelude that a program declares again,
+/// kept for the modules of the standard library (D337).
+const PRELUDE_KEPT: &str = "std:prelude.";
+
 /// The name of the placeholders `decode` and `encode` of the module `json`
 /// (D336).
 const DECODE: &str = "std:json.decode";
@@ -3359,16 +3447,29 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
             ast::Decl::Extern(_) | ast::Decl::Type(_) | ast::Decl::Import(..) => {}
         }
     }
+    // a function of the prelude that the program declares again: replaced
+    // in the program, kept for the modules of the standard library under
+    // `std:prelude.` (D337)
+    let mut kept: Vec<ast::FnDecl> = Vec::new();
     for d in &prelude.decls {
         if let ast::Decl::Fn(f) = d {
             let uses_dropped = !dropped.is_empty()
                 && (mentions(&f.ret, &dropped)
                     || f.params.iter().any(|p| matches!(&p.ty, ast::ParamType::Type(t) if mentions(t, &dropped))));
-            if !names.contains_key(&f.name) && !uses_dropped {
+            if uses_dropped {
+                continue;
+            }
+            if !names.contains_key(&f.name) {
                 names.insert(f.name.clone(), decls.len());
                 decls.push((f, true));
+            } else {
+                kept.push(ast::FnDecl { name: format!("{}{}", PRELUDE_KEPT, f.name), ..f.clone() });
             }
         }
+    }
+    for f in &kept {
+        names.insert(f.name.clone(), decls.len());
+        decls.push((f, true));
     }
     for (d, _) in &decls {
         if ctors.contains_key(&d.name) {

@@ -330,7 +330,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] A payload holds an array of its own size; `json` read and written (D335)
   - [x] `decode<T>` and `encode<T>`: the type arguments of a call, a decoder written for each type (D336)
   - [x] `json` tested in the Windows VM (D336)
-  - [ ] The microbenchmark of `json` and its floor
+  - [x] The microbenchmark of `json` and its floor; JSON read as a cursor (D337)
+  - [ ] JSON faster: `decode` 6.3 and `parse` 6.5 times their floors (D337: the index, two passes, about 58 ns a member and a pass against 22); one pass for the values without rows, the accumulator of a tail recursion updated where it is, cheaper calls of short loops; `argsort` of integer keys as pairs (no comparison through the indices)
 - [ ] `sha256`
 - [ ] `net`: TCP, client and server
 - [ ] `http`: a client of HTTP/1.1

@@ -570,6 +570,10 @@ pub extern "C" fn isc_alloc_zeroed(bytes: i64) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn isc_free(p: *mut u8) {
+    // an empty string made by `new_str`: nothing owned
+    if p == empty_ptr() {
+        return;
+    }
     #[cfg(not(target_os = "wasi"))]
     if HEAP_MODE.load(Ordering::Relaxed) == 2 && unsafe { heap::free_cached(p) } {
         return;
@@ -1214,8 +1218,22 @@ pub unsafe extern "C" fn isc_str_new(out: *mut IscStr, p: *const u8, n: i64) {
     *out = new_str(bytes_of(p, n));
 }
 
+/// The bytes of every empty string made by `new_str`: none owned, read
+/// only, never freed (D337: the empty strings of the faults of the readers
+/// of JSON were an allocation each).
+#[repr(C, align(64))]
+struct EmptyBytes([u8; 64]);
+static EMPTY_BYTES: EmptyBytes = EmptyBytes([0; 64]);
+
+fn empty_ptr() -> *mut u8 {
+    EMPTY_BYTES.0.as_ptr() as *mut u8
+}
+
 /// A new string holding these bytes.
 fn new_str(b: &[u8]) -> IscStr {
+    if b.is_empty() {
+        return IscStr { ptr: empty_ptr(), len: 0 };
+    }
     let q = isc_alloc(b.len() as i64);
     unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), q, b.len()) };
     IscStr { ptr: q, len: b.len() as i64 }

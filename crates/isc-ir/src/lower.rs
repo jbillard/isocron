@@ -1157,11 +1157,30 @@ impl<'p> Lower<'p> {
                 let c = self.expr(env, c)?;
                 let t = self.expr(env, t)?;
                 let f = self.expr(env, f)?;
-                let ty = t.ty.clone();
+                // its own type: the branches may be arrays of two lengths,
+                // fixed or not (D337)
+                let ty = self.ty(env, &e.ty, span)?;
                 Ok(Expr::new(ExprKind::If(Box::new(c), Box::new(t), Box::new(f)), ty, span))
             }
             TExprKind::Block(stmts, r) => self.block(env, stmts, r),
         }
+    }
+
+    /// `fill(n, v)` of a value that owns memory: `v` bound, copied into each
+    /// element, then freed (D154); of an array, an array of arrays, built as
+    /// `map(iota(n), (_) => v)` builds its rows (D337).
+    fn fill_of(&mut self, n: Expr, v: Expr, ty: Type, span: Span) -> Expr {
+        let t = self.new_var("filled", v.ty.clone());
+        let (vt, sp) = (v.ty.clone(), v.span);
+        let inner = if vt.is_array() {
+            let i64t = Type::Int(IntKind::I64);
+            let p = self.new_var("i", i64t.clone());
+            let ids = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(Box::new(i64t), Fixed::ANY), span);
+            Expr::new(ExprKind::Map(vec![ids], Lambda { params: vec![p], body: Box::new(Expr::var(t, vt, sp)), drop_params: vec![false] }), ty, span)
+        } else {
+            Expr::new(ExprKind::Fill(Box::new(n), Box::new(Expr::var(t, vt, sp))), ty, span)
+        };
+        self.let_(t, v, inner, false, span)
     }
 
     /// An integer as a `bigint` (D156).
@@ -2602,11 +2621,9 @@ impl<'p> Lower<'p> {
                     ExprKind::Iota(Box::new(nv.clone()))
                 } else {
                     let x = self.expr(env, &args[1])?;
-                    if x.ty.has_heap() && !matches!(x.kind, ExprKind::Var(..)) {
-                        let t = self.new_var("filled", x.ty.clone());
-                        let (xt, sp) = (x.ty.clone(), x.span);
-                        let inner = Expr::new(ExprKind::Fill(Box::new(nv.clone()), Box::new(Expr::var(t, xt, sp))), ty.clone(), span);
-                        let checked = Expr::new(ExprKind::CheckNonNegative(Box::new(nv), Box::new(self.let_(t, x, inner, false, span))), ty, span);
+                    if x.ty.has_heap() && !matches!(x.kind, ExprKind::Var(..)) || x.ty.is_array() {
+                        let inner = self.fill_of(nv.clone(), x, ty.clone(), span);
+                        let checked = Expr::new(ExprKind::CheckNonNegative(Box::new(nv), Box::new(inner)), ty, span);
                         return Ok(self.let_(v, n, checked, false, span));
                     }
                     ExprKind::Fill(Box::new(nv.clone()), Box::new(x))
@@ -2631,13 +2648,8 @@ impl<'p> Lower<'p> {
             Prim::Fill => {
                 let n = self.expr(env, &args[0])?;
                 let v = self.expr(env, &args[1])?;
-                // a new value that owns memory (a string, a node): bound,
-                // copied into each element, then freed (D154)
-                if v.ty.has_heap() && !matches!(v.kind, ExprKind::Var(..)) {
-                    let t = self.new_var("filled", v.ty.clone());
-                    let (vt, sp) = (v.ty.clone(), v.span);
-                    let inner = Expr::new(ExprKind::Fill(Box::new(n), Box::new(Expr::var(t, vt, sp))), ty, span);
-                    return Ok(self.let_(t, v, inner, false, span));
+                if v.ty.has_heap() && !matches!(v.kind, ExprKind::Var(..)) || v.ty.is_array() {
+                    return Ok(self.fill_of(n, v, ty, span));
                 }
                 ExprKind::Fill(Box::new(n), Box::new(v))
             }

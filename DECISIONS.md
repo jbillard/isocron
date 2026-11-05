@@ -6643,3 +6643,76 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     Valgrind), `json_on_windows` (`windows.rs`: four of these programs in
     the Windows VM, the same outputs with 1 and 4 threads) and the guide.
     The tests of JSON took 564 s before the limit of inlining, 52 s after.
+- **D337 — JSON read as a cursor; what the microbenchmark of `json` asked
+  of the language and the runtime (2026-11-05).** The microbenchmark
+  (`bench/primitives/json.isc` and its floor `json.c`: a document of 1000
+  records of about 44 bytes, `{"id", "x", "name", "ok"}`, read by `parse`
+  and `decode<Rec[k]>`, written by `stringify` and `encode`; the floor reads
+  and writes it as C does it the cheapest way known, one pass, a tape for
+  `parse`, structures for `decode`, the names in an arena) gave, per record,
+  `decode` 3248.54 ns against 86.48 (37.6 times), `parse` 3500.36 against
+  168.12 (20.8), `stringify` 621.27 against 390.17 (1.6), `encode` 258.05
+  against 217.98 (1.2). By profile and count of instructions (callgrind),
+  then each change measured on the fixed machine:
+  - The decoders as a cursor: a value read from its place, a check
+    returning the place after it or its fault, then the building; the
+    members of a record read one after the other by a tail recursion (a
+    loop) carrying its fields, their names compared byte by byte where
+    they are (an escape in a key: read first). `decode` 3248.54 -> 1429.85.
+  - The index without sorting: the sort of the brackets and of the commas
+    by (level, place) (18 % of the time) left out; the closing of a
+    container is the first byte where the depth falls below its level,
+    the commas of an array those of its level in its segment (a `filter`),
+    the kind of a closing checked by the reader that visits each container
+    (the brackets are no longer checked level by level: a fault is found
+    where the reader meets it, `$.extra: a bracket closed by the other
+    kind`); `parse` checked by the same cursor. `decode` 707.82, `parse`
+    1460.97.
+  - The empty strings own no memory (the runtime, general): `new_str` of no
+    byte points to a static block that `isc_free` leaves; the faults `""`
+    returned by every check were an allocation and a free each (21.6
+    allocations per record counted by callgrind). The parts of `decode`:
+    684 -> 603 ns.
+  - The index in one `scan`: `4 * depth + state` after each byte (the
+    states and the depths were two scans and two maps); the short
+    searches (the end of a string, a name compared, a backslash) as loops
+    that stop, not `count`, whose reduction of fixed order costs its set
+    up for two to five bytes. `decode` 538.85, `parse` 1335.97, then 1091.19
+    with the building of `parse` as a cursor too. The readers by segments
+    of D336 removed.
+  - Found on the way, general: a conditional or a `match` whose branches
+    are arrays of other sizes was refused (`c ? a : b`, `a: i64[n]`, `b:
+    i64[m]`); it now has a new size fixed at run time, as the result of a
+    call (`join`, through tuples and records; each branch given only the
+    form expected, not its sizes); the lowering gave a conditional the
+    type of its first branch, so that `.length` of `pick(false, [1, 2, 3],
+    [4])` was 3 compiled (now its own type, 1). `fill(n, row)` built a
+    plain array in the code generator (an LLVM error: `{ ptr, i64 }` for an
+    array of arrays): it is now `map(iota(n), (_) => row)`. A function of
+    the prelude that a program declares again (`count`) replaced it inside
+    the modules of the standard library too (the benchmark declares its
+    `count`, and `json` counted with it): the modules keep the prelude's,
+    under `std:prelude.` (the prelude itself still follows the program, as
+    the guide says).
+  - Measured at the end (`results/primitives.md`): `decode` 543.62 against
+    86.70 (6.3), `parse` 1092.39 against 168.41 (6.5), `stringify` 602.60
+    against 390.60 (1.5), `encode` 267.63 against 217.75 (1.2). The gap of
+    `decode`, by its parts (`parts2.isc`, the fixed machine, per record):
+    the index 48.1 ns and the checks of UTF-8 and of the depth 5.1 (the
+    floor has none: it reads once, sequentially); a decoding of `{ id: i64
+    }[k]` on the same text 454.5 ns, of the whole record 526-527: about 58
+    ns for each member and each pass, against about 22 for a member of the
+    floor, and two passes (the check, then the building) where the floor
+    has one; a member unknown to the type costs as much as a known one (it
+    is checked). The rest of a member: the calls of the loops that are not
+    inlined (a prologue of six saved registers and the test of the stack),
+    their results as tuples in memory, the string of a name (an allocation,
+    as the arena of the floor). An array of 1000 integers: 78.9 to 80.1
+    ns an element. Open (TODO): one pass for the values that hold no rows (the
+    building returning its fault), the accumulator of a tail recursion
+    updated where it is, the calls of short loops.
+  - Tested by `branches_of_arrays_of_two_sizes`,
+    `a_program_declaring_a_function_of_the_prelude_leaves_the_modules_alone`
+    (`stdlib.rs`: the interpreter, compiled, Valgrind), the programs of
+    JSON of D336 (their faults now with the paths of the cursor) and the
+    guide.

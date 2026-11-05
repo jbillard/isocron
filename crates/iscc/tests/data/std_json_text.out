@@ -1,3 +1,3 @@
-[line 1, column 11: a bracket closed by the other kind, line 1, column 1: a bracket without its end, line 1, column 4: a closing bracket without its opening, line 1, column 1: a closing bracket without its opening, line 1, column 3: a bracket closed by the other kind, {"a":[[],{}],"b":{"c":[1,[2,{}]]}}, line 1, column 1: a bracket without its end, line 1, column 4: $: text after the value, ["]"]]
+[line 1, column 11: $.a: a bracket closed by the other kind, line 1, column 1: $: a bracket without its end, line 1, column 4: $: text after the value, line 1, column 1: $: a value expected, line 1, column 4: $: a bracket closed by the other kind, {"a":[[],{}],"b":{"c":[1,[2,{}]]}}, line 1, column 1: $: a bracket without its end, line 1, column 4: $: text after the value, ["]"]]
 [1e+21,100000000000000000000,123456789012345680000,1.5e+300,-2.5e-7,0.000001,0.000001234,5e-324,1.7976931348623157e+308,0,0.1,100]
 [1e+30,3.4028235e+38,1e-7,0.5]

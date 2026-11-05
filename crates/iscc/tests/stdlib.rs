@@ -1027,3 +1027,92 @@ fn json_types_refused_at_compile_time() {
     };
     assert!(e.contains("a type parameter (the type must be known where it is called)") && e.contains("bad.isc:4:"), "{}", e);
 }
+
+const REDECLARED: &str = r##"import * as json from "json";
+import * as time from "time";
+
+// a function of the prelude declared again by the program
+function count(j: json.Json): i64 {
+    return match (j) {
+        json.Arr(xs) => xs.length * 100,
+        _ => -1,
+    };
+}
+
+action main(args: string[k]): i32 {
+    match (json.parse("[1, 2, 3]")) {
+        Ok(j) => print(count(j)),
+        Err(e) => print(json.message(e)),
+    };
+    match (json.decode<{ a: f64[k] }>("{\"a\": [1.5, 2.5]}")) {
+        Ok(v) => print(json.encode(v)),
+        Err(e) => print(json.message(e)),
+    };
+    print(time.formatIso(1767225600123000000));
+    return 0;
+}
+"##;
+
+/// D337: a function of the prelude that a program declares again (here
+/// `count`, of another type) is the program's in the program, and keeps
+/// its meaning in the modules of the standard library (`json` counts with
+/// the `count` of the prelude); the interpreter, compiled, Valgrind.
+#[test]
+fn a_program_declaring_a_function_of_the_prelude_leaves_the_modules_alone() {
+    agree(REDECLARED, "redeclared_prelude", &[], "300\n{\"a\":[1.5,2.5]}\n2026-01-01T00:00:00.123Z\n");
+}
+
+const BRANCHES_OF_SIZES: &str = r##"type S = A | B | C;
+
+function pick(c: boolean, a: i64[n], b: i64[m]): i64[k] {
+    if (c) {
+        return a;
+    }
+    return b;
+}
+
+function rows(s: S): f64[k] {
+    return match (s) {
+        A => [1.0],
+        B => [1.0, 2.0],
+        C => map(iota(3), (i) => f64(i)),
+    };
+}
+
+function grid(c: boolean): f64[r][q] {
+    return c ? [[1.0, 2.0]] : [[1.0], [2.0], [3.0]];
+}
+
+action main(args: string[k]): i32 {
+    print([pick(true, [1, 2, 3], [4]).length, pick(false, [1, 2, 3], [4]).length]);
+    print(map([A, B, C], (s) => rows(s).length));
+    print([grid(true).length, grid(false).length, grid(true)[0].length, grid(false)[0].length]);
+    const xs = args.length > 5 ? [1, 2] : [3];
+    print(xs);
+    const t = args.length == 0 ? { a: [1.0], n: 1 } : { a: [1.0, 2.0], n: 2 };
+    print(t);
+    const z = fill(2, fill(3, 1.5));
+    print(z);
+    print(fill(0, fill(0, 0.0)).length);
+    print(fill(2, ["a", "b"]));
+    const e = ["", "x".slice(0, 0), "" + "", `${""}`];
+    print(map(e, (s) => s.length));
+    return 0;
+}
+"##;
+
+/// D337: the branches of a conditional, or the arms of a `match`, that are
+/// arrays of two sizes: a size fixed at run time, as the size of an array
+/// that a call returns (through tuples and records; the type of the
+/// conditional its own in the lowering, not that of its first branch);
+/// `fill` of a row: an array of arrays; empty strings that own no memory;
+/// the interpreter, compiled with 1 and 4 threads, Valgrind.
+#[test]
+fn branches_of_arrays_of_two_sizes() {
+    agree(
+        BRANCHES_OF_SIZES,
+        "branches_of_sizes",
+        &[],
+        "[3, 1]\n[1, 2, 3]\n[1, 3, 2, 1]\n[3]\n{a: [1], n: 1}\n[[1.5, 1.5, 1.5], [1.5, 1.5, 1.5]]\n0\n[[a, b], [a, b]]\n[0, 0, 0, 0]\n",
+    );
+}

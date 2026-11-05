@@ -1,0 +1,43 @@
+// The audit of every form against the machine (D301): the module `json`
+// (D335, D336) on a document of 1000 records `{"id": i, "x": i / 2,
+// "name": "n<i>", "ok": i is even}` (about 40 bytes each). Each line: a
+// name, the nanoseconds of one record (the mean over `rounds`), a
+// checksum; against `json.c` (the floor).
+// usage: json <rounds>
+import * as json from "json";
+
+type Rec = { id: i64, x: f64, name: string, ok: boolean };
+
+function count(j: json.Json): i64 {
+    return match (j) {
+        json.Arr(xs) => xs.length,
+        _ => -1,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    const n = 1000;
+    const doc = "[" + join(map(iota(n), (i) => `{"id":${i},"x":${f64(i) * 0.5},"name":"n${i}","ok":${i % 2 == 0}}`), ",") + "]";
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => match (json.parse(doc)) {
+        Ok(j) => count(j),
+        Err(e) => -1,
+    });
+    print(`parse ${f64(t1) / each} ${a1}`);
+    const [a2, t2] = bench(r, () => match (json.decode<Rec[k]>(doc)) {
+        Ok(v) => sum(map(v, (q) => q.id)),
+        Err(e) => -1,
+    });
+    print(`decode ${f64(t2) / each} ${a2}`);
+    const parsed = match (json.parse(doc)) {
+        Ok(j) => j,
+        Err(e) => json.Null,
+    };
+    const [a3, t3] = bench(r, () => json.stringify(parsed).length);
+    print(`stringify ${f64(t3) / each} ${a3}`);
+    const decoded = map(iota(n), (i) => ({ id: i, x: f64(i) * 0.5, name: `n${i}`, ok: i % 2 == 0 }));
+    const [a4, t4] = bench(r, () => json.encode(decoded).length);
+    print(`encode ${f64(t4) / each} ${a4}`);
+    return 0;
+}

@@ -169,7 +169,10 @@ through others) is compiled as a function of its own: see
 [Recursion](#recursion); so is a function too large to be inlined
 everywhere (see [Performance model](#performance-model)). A user declaration with the name of a
 standard-library function (`sum`, `mean`, ...) replaces it everywhere,
-including inside the standard library.
+including inside the prelude (the functions of the standard library that
+are always there); the modules of the standard library (`json`, `time`,
+...) keep the function of the prelude, so that a program cannot change
+what they mean.
 
 ### Modules
 
@@ -719,7 +722,9 @@ array in one of its records or tuples (`r: { xs: f64[k] }`, then `k` is the
 length of `r.xs`); the size of a result may be any sum or product of these
 variables and of constants. The size of the rows of an array of arrays
 (`t: f64[r][c]`, or `{ xs: f64[k] }[n]`) is known to the types, not a value
-of the function: `t[0].length` reads it.
+of the function: `t[0].length` reads it. A conditional or a `match` whose
+branches are arrays of other sizes (`c ? [1] : [1, 2]`) has a size fixed at
+run time, as the array a function returns with `T[k]`.
 
 * Sizes the compiler can compare are checked at compile time: passing a
   `f64[3]` where a `f64[4]` is expected is an error.
