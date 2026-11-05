@@ -12,9 +12,10 @@
 | :-- | :-- |
 | [**benchmarks_game.md**](benchmarks_game.md) | 🏁 The ten programs of the Benchmarks Game against the fastest in C, C++, Rust and Go, measured in Docker, with the floor of each (intermediate results: the work goes on) |
 | [**floors.md**](floors.md) | 📏 The floor of each program: what its result requires at the cost of the cheapest way the machine has to do it |
+| [**primitives.md**](primitives.md) | 🔬 Every form of the language against its floor: a microbenchmark of the form in Isocron and the same work in C the cheapest way known, on one core at fixed frequency, ranked by the gap (`bench/primitives/run.py`; the strings so far) |
 | [`machine_floor.txt`](machine_floor.txt) | the costs of the machine the floors are made of (`bench/floor/floor.c`) |
 | [`machine_counts.txt`](machine_counts.txt) | the work the floors count (flips, iterations, k-mers: `bench/floor/counts.c`) |
-| [`benchmarks_game.tsv`](benchmarks_game.tsv), [`floors.tsv`](floors.tsv), [`floors_isocron.tsv`](floors_isocron.tsv) | the raw lines of the measurements and of the floors |
+| [`benchmarks_game.tsv`](benchmarks_game.tsv), [`floors.tsv`](floors.tsv), [`floors_isocron.tsv`](floors_isocron.tsv), [`primitives.tsv`](primitives.tsv) | the raw lines of the measurements and of the floors |
 
 ## Campaigns of the proof of concept (kept as they were)
 

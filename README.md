@@ -136,6 +136,13 @@ its result requires at the cost of the cheapest way this processor has to
 do it, and [`results/floors.md`](results/floors.md) says, program by
 program, where the time above it still goes.
 
+Each form of the language is measured the same way: a microbenchmark of
+the form in Isocron, against the same work written in C the cheapest way
+known, on one core at fixed frequency.
+[`results/primitives.md`](results/primitives.md) ranks them by their gap to
+that floor, and the work goes from the largest gap down (the strings first,
+DECISIONS D301 to D305).
+
 ## Get started
 
 ### Install
@@ -196,7 +203,7 @@ iscc build hello.isc --target wasm32-wasi      # hello.wasm
 | [`docs/language.md`](docs/language.md) | the language as implemented today |
 | [`DECISIONS.md`](DECISIONS.md) | every choice made where the specification is silent, with its measurements |
 | [`TODO.md`](TODO.md) | the tasks P0 to P6, done and to do |
-| [`results/`](results/README.md) | the measurements: the Benchmarks Game, the floors, the kernels of the proof of concept |
+| [`results/`](results/README.md) | the measurements: the Benchmarks Game, the floors, every form against its floor, the kernels of the proof of concept |
 | [`CHANGELOG.md`](CHANGELOG.md) | the releases |
 
 <details>
@@ -276,6 +283,7 @@ bench/build.sh                              # the programs of the proof of conce
 bench/run.py                                # protocol of section 14: results/poc.md and results/poc.json
 bench/benchmarks_game/run.sh measure 4 3 native > results/benchmarks_game.tsv   # the ten programs, in Docker
 bench/floor/run.sh > results/machine_floor.txt                                    # the costs of the machine
+bench/machine.sh apply && python3 bench/primitives/run.py; bench/machine.sh restore  # every form against its floor in C: results/primitives.md
 ```
 
 </details>
@@ -295,7 +303,7 @@ bench/floor/run.sh > results/machine_floor.txt                                  
 | `crates/iscc` | the `iscc` driver and the end-to-end tests |
 | `crates/isc-lsp` | the language server of the editors (`isc-lsp`): the parser and the checker as libraries, the protocol on stdio |
 | `examples` | the programs of the proof of concept (`poc`) and of the Benchmarks Game (`benchmarks_game`) |
-| `bench` | reference programs, the protocols, the floors of the machine (`bench/floor`) |
+| `bench` | reference programs, the protocols, the floors of the machine (`bench/floor`), every form of the language against its floor in C (`bench/primitives`) |
 | `tools` | `suite.py`: the complete suite in a few minutes; `release/`: the compilers and archives of a release, `publish.sh`; `vscode/`: the extension of VS Code; `neovim/`: the configuration of Neovim |
 
 </details>
