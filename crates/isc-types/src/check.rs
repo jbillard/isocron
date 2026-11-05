@@ -241,6 +241,12 @@ struct SigCtx<'a> {
 /// The names each file imports by name (D150): file -> local -> `m.x`.
 type Imports = HashMap<u32, HashMap<String, String>>;
 
+/// The payload types of a variant of `def` for the type arguments `args`
+/// and the sizes `sizes` of its payload (D335).
+fn payload_sized(def: &SumDef, variant: usize, args: &[Ty], sizes: &[Size]) -> Vec<Ty> {
+    def.variants[variant].payload.iter().map(|t| subst_value(t, args, sizes)).collect()
+}
+
 /// The module of a declaration named `m.x` (D139).
 fn module_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(m, _)| m)
@@ -747,6 +753,11 @@ impl<'g> FnCx<'g> {
                 }
                 let def = &self.g.sums[*id as usize];
                 let payloads: Vec<Ty> = (0..def.variants.len()).flat_map(|k| def.payload(k, args)).collect();
+                // a recursive type is stored as nodes (D130): an array of it
+                // holds their pointers, its payloads are in the nodes, so
+                // being an element of an array asks nothing of them (an
+                // array in a payload: D335); its equality still does
+                let classes = if def.recursive { classes & !class::ELEM } else { classes };
                 self.constraining.push(key);
                 let mut r = Ok(());
                 for c in payloads {
@@ -1459,7 +1470,16 @@ impl<'g> FnCx<'g> {
                 let targs: Vec<Ty> = def.params.iter().map(|_| self.fresh(0, LitKind::None, p.span)).collect();
                 let sty = Ty::Sum { id: sum, name: def.name.clone(), args: targs.clone() };
                 self.unify(&sty, ty, p.span)?;
-                let payload = def.payload(variant as usize, &targs);
+                // the sizes of the payload taken apart: new existential ones
+                let nsizes = def.variants[variant as usize].sizes;
+                let sizes: Vec<Size> = (0..nsizes)
+                    .map(|_| {
+                        let s = self.syms.len() as SymId;
+                        self.syms.push(SymInfo { name: format!("k@{}:{}", p.span.line, p.span.col), origin: SymOrigin::Existential(p.span) });
+                        Size::Poly(Poly::sym(s))
+                    })
+                    .collect();
+                let payload = payload_sized(def, variant as usize, &targs, &sizes);
                 if payload.len() != ps.len() {
                     return err(
                         p.span,
@@ -1767,7 +1787,9 @@ impl<'g> FnCx<'g> {
         let (sum, variant) = g.ctors[name];
         let def = &g.sums[sum as usize];
         let targs: Vec<Ty> = def.params.iter().map(|_| self.fresh(0, LitKind::None, span)).collect();
-        let payload = def.payload(variant as usize, &targs);
+        // the sizes of the payload: any (D335)
+        let sizes: Vec<Size> = (0..def.variants[variant as usize].sizes).map(|_| self.fresh_size(span)).collect();
+        let payload = payload_sized(def, variant as usize, &targs, &sizes);
         if payload.len() != args.len() {
             return err(
                 span,
@@ -3393,7 +3415,8 @@ fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>,
             let mut syms = Vec::new();
             let mut payload = Vec::new();
             for f in &v.fields {
-                let ty = type_from_ast(f, &mut SigCtx { generics: &generics, sums: &heads, syms: &mut syms, allow_new: false, result: false, module: module_of(&t.name), imports: imports.get(&t.span.file) })?;
+                // a size named in a payload: of each value (D335)
+                let ty = type_from_ast(f, &mut SigCtx { generics: &generics, sums: &heads, syms: &mut syms, allow_new: true, result: false, module: module_of(&t.name), imports: imports.get(&t.span.file) })?;
                 // a function is stored as its code (D153), alone in its
                 // field
                 if !matches!(ty, Ty::Fn(..)) && contains_fn(&ty) {
@@ -3401,10 +3424,7 @@ fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>,
                 }
                 payload.push(ty);
             }
-            if !syms.is_empty() {
-                return err(v.span, "the payload of a constructor cannot use a size variable");
-            }
-            variants.push(VariantDef { name: v.name.clone(), payload });
+            variants.push(VariantDef { name: v.name.clone(), payload, sizes: syms.len() });
         }
         if variants.is_empty() {
             return err(t.span, format!("the type `{}` has no constructor", t.name));

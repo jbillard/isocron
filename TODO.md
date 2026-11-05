@@ -327,6 +327,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `time`: dates and times (D334)
   - [ ] `time` above its floor: `now` 8.6 (the clock of the vDSO, not a call of the kernel), `formatIso` 8.3
 - [ ] `json`: read and written, decoded into a type of the program, its fields checked at compile time
+  - [x] A payload holds an array of its own size; `json` read and written (D335)
+  - [ ] `decode<T>` and `encode<T>`: the type arguments of a call, a decoder written for each type; the microbenchmark and its floor
 - [ ] `sha256`
 - [ ] `net`: TCP, client and server
 - [ ] `http`: a client of HTTP/1.1

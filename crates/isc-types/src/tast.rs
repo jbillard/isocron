@@ -438,6 +438,11 @@ pub struct SumDef {
 pub struct VariantDef {
     pub name: String,
     pub payload: Vec<Ty>,
+    /// The sizes its payload names (`Arr(Json[k])`, D335): their symbols 0
+    /// to `sizes - 1` in `payload`, the sizes of each value of its own, any
+    /// at a construction, new existential ones where a pattern takes it
+    /// apart.
+    pub sizes: usize,
 }
 
 impl SumDef {

@@ -1215,6 +1215,9 @@ recursive type are compared with `==` node by node (the floats as `==`
 compares them: NaN differs from itself), without stack for a long list.
 An array of a recursive type holds its nodes, each element one owner: an
 element read and kept elsewhere, or an array copied, adds an owner.
+A payload can hold an array of its own size, `Branch(Tree[k])`: any
+array at a construction, an array of a new size where a pattern takes it
+apart, as the array returned by a function.
 
 ```isc
 type List = Nil | Cons(i64, List);
@@ -2375,6 +2378,49 @@ action main(args: string[k]): i32 {
 2026-11-05T13:03:00.25Z
 05/11/2026 14:03 +01:00
 true
+```
+
+### JSON: `json`
+
+`parse(text)` reads a JSON text (RFC 8259) into a `Json`, `stringify(j)`
+writes it again without spaces (a number in its shortest form, NaN and the
+infinities as `null`, as JavaScript does):
+
+`type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) |
+Obj(string[m], Json[m])`, the keys of an object and their values in two
+arrays, in the order of the text. An error is a `JsonError` (`line`,
+`column`, `message`); `message(e)` gives its text.
+
+```isc
+import * as json from "json";
+
+action names(j: json.Json): void {
+    match (j) {
+        json.Obj(ks, vs) => print(ks),
+        _ => print("not an object"),
+    };
+}
+
+action main(args: string[k]): i32 {
+    match (json.parse("{\"name\": \"Ada\", \"years\": [1815, 1852], \"note\": \"a\\u00e9\"}")) {
+        Ok(j) => {
+            names(j);
+            print(json.stringify(j));
+        },
+        Err(e) => print(json.message(e)),
+    };
+    match (json.parse("[1, 2,]")) {
+        Ok(j) => print(json.stringify(j)),
+        Err(e) => print(json.message(e)),
+    };
+    return 0;
+}
+```
+
+```output
+[name, years, note]
+{"name":"Ada","years":[1815,1852],"note":"aé"}
+line 1, column 7: not a value
 ```
 
 ## Performance model

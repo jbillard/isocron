@@ -937,9 +937,9 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 
 #### `json`
 
-- `type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) | Obj([string, Json][k])`. Les clés d'un objet gardent l'ordre du texte.
+- `type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) | Obj(string[m], Json[m])` : les clés d'un objet et leurs valeurs dans deux tableaux, dans l'ordre du texte (D335 : une charge de type somme a ses propres tailles).
 - `parse(text): Result<Json, JsonError>`. Le texte suit RFC 8259 : UTF-8 vérifié, échappements `\uXXXX` et paires de substitution, profondeur au plus 512. `JsonError = { line: i64, column: i64, message: string }`.
-- `stringify(j): string` écrit un texte sans espaces. Un nombre y est écrit sous la forme la plus courte qui se relit en la même valeur, comme `print`. NaN et l'infini sont une erreur, comme en JavaScript.
+- `stringify(j): string` écrit un texte sans espaces. Un nombre y est écrit sous la forme la plus courte qui se relit en la même valeur, comme `print`. NaN et l'infini sont écrits `null`, comme en JavaScript.
 - **Le décodage dans un type de l'utilisateur.** `decode<T>(text): Result<T, JsonError>` et `encode<T>(x: T): string`. Un appel peut porter ses arguments de type comme en TypeScript (`decode<Point>(text)`). `f<` est lu comme une liste d'arguments de type quand ce qui suit se lit comme des types fermés par `>` et suivis de `(` ; sinon c'est une comparaison (D325).
   - Le compilateur écrit, pour chaque `T` employé, son décodeur et son encodeur en Isocron, à la spécialisation. Le décodeur lit le texte une seule fois, sans construire de `Json` intermédiaire.
   - `T` peut être `i64`, `f64`, `boolean`, `string`, un tableau, un tuple (un tableau JSON de cette longueur), un record de ces types, ou `Option<U>`. `Option<U>` vaut `None` pour un champ absent ou `null`.

@@ -774,3 +774,63 @@ fn counts_by_lines_of_slots() {
     }
     valgrind_clean(COUNTS_BY_LINES, "std_counts_by_lines", &["60000"]);
 }
+
+const SIZED_PAYLOADS: &str = r##"type Shape = Poly(f64[k]) | Dot(f64);
+type Tree = Leaf(i64) | Branch(Tree[k]);
+
+function area(s: Shape): f64 {
+    return match (s) {
+        Poly(xs) => sum(xs),
+        Dot(x) => x,
+    };
+}
+
+function total(t: Tree): i64 {
+    return match (t) {
+        Leaf(v) => v,
+        Branch(ts) => sum(map(ts, total)),
+    };
+}
+
+function build(d: i64): Tree {
+    return d == 0 ? Leaf(1) : Branch(map(iota(d), (i) => build(i)));
+}
+
+function width(t: Tree): i64 {
+    return match (t) {
+        Leaf(_) => 0,
+        Branch(ts) => ts.length,
+    };
+}
+
+action main(args: string[k]): i32 {
+    print([area(Poly([1.0, 2.0, 3.5])), area(Dot(4.0)), area(Poly(map(iota(5), (i) => f64(i))))]);
+    print(total(build(6)));
+    const ts = map(iota(5), (d) => build(d));
+    print(map(ts, total));
+    print(map(ts, width));
+    print(build(2) == Branch([Leaf(1), Branch([Leaf(1)])]));
+    return 0;
+}
+"##;
+
+/// D335: a payload holds an array of its own size (`Poly(f64[k])`,
+/// `Branch(Tree[k])`): any at a construction, a new existential size where
+/// a pattern takes it apart; an array of a recursive type whose nodes hold
+/// arrays (the nodes are pointers in it, D130); equality node by node; the
+/// same in the interpreter and compiled; Valgrind.
+#[test]
+fn payloads_hold_arrays_of_their_own_size() {
+    agree(SIZED_PAYLOADS, "std_sized_payloads", &[], "[6.5, 4, 10]\n32\n[1, 1, 2, 4, 8]\n[0, 1, 2, 3, 4]\ntrue\n");
+}
+
+/// D335: the module `json`: an object with arrays, numbers, literals and
+/// escapes (a surrogate pair) read and written again; the errors of an
+/// array with a comma at its end, a member without colon, an unknown
+/// escape, two values without comma, a word that is not a literal; empty
+/// and nested containers; the same in the interpreter and compiled;
+/// Valgrind.
+#[test]
+fn json_read_and_written() {
+    agree(include_str!("data/std_json.isc"), "std_json", &[], include_str!("data/std_json.out"));
+}

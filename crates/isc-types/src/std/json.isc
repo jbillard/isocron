@@ -1,0 +1,430 @@
+// The module `json` of the standard library (SPEC section 18, D335): JSON
+// (RFC 8259) read and written in Isocron. The text is indexed first, in
+// passes over its bytes and no loop: a `scan` tells the bytes inside a
+// string (a state 0 outside, 1 inside, 2 after a backslash), another the
+// depth of the brackets outside strings; an opening and its closing have
+// the same level and follow each other in the order (level, place), so
+// that one sort pairs them; the commas of a container are a run of the
+// commas in that order, found by halving. The values are then read from
+// there, each array by a `map` over its elements.
+
+export type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) | Obj(string[m], Json[m]);
+
+// an error: its line and column (from 1) and what it is
+export type JsonError = { line: i64, column: i64, message: string };
+
+// the index of a text (each array of its own size, D335): the state before
+// each byte (0 outside a string); the openings by (level, place) as keys
+// and their closings; the commas by (level, place) as keys and their
+// places; the places of the quotes that end strings; the depth after each
+// byte
+type Index = Ix(i64[s1], i64[s2], i64[s3], i64[s4], i64[s5], i64[s6], i64[s7]);
+
+function ixOpens(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d) => o,
+    };
+}
+
+function ixCloses(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d) => c,
+    };
+}
+
+function ixCommaKeys(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d) => ck,
+    };
+}
+
+function ixCommas(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d) => cm,
+    };
+}
+
+function ixEnds(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d) => e,
+    };
+}
+
+function ixDepth(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d) => d,
+    };
+}
+
+// the error at the byte `at` of `b`
+function errorAt(b: u8[n], at: i64, message: string): JsonError {
+    const lines = count(iota(Math.min(at, b.length)), (i) => b[i] == 10u8);
+    const lineStart = fold(iota(Math.min(at, b.length)), -1, (s, i) => b[i] == 10u8 ? i : s);
+    return { line: lines + 1, column: at - lineStart, message: message };
+}
+
+// the first place of the sorted `xs` whose value is at least `v`
+function lowerBound(xs: i64[n], v: i64, lo: i64, hi: i64): i64 {
+    if (lo >= hi) {
+        return lo;
+    }
+    const mid = (lo + hi) / 2;
+    return xs[mid] < v ? lowerBound(xs, v, mid + 1, hi) : lowerBound(xs, v, lo, mid);
+}
+
+function isSpace(c: u8): boolean {
+    return c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8;
+}
+
+// the first place from `at` that is not a space
+function skip(b: u8[n], at: i64): i64 {
+    return at < b.length && isSpace(b[at]) ? skip(b, at + 1) : at;
+}
+
+// the bytes of `b` are UTF-8
+function utf8(b: u8[n]): boolean {
+    return fold(b, 0, (want, x) => {
+        if (want < 0) {
+            return -1;
+        }
+        if (want > 0) {
+            return (x & 0xC0u8) == 0x80u8 ? want - 1 : -1;
+        }
+        if (x < 0x80u8) {
+            return 0;
+        }
+        if ((x & 0xE0u8) == 0xC0u8 && x >= 0xC2u8) {
+            return 1;
+        }
+        if ((x & 0xF0u8) == 0xE0u8) {
+            return 2;
+        }
+        if ((x & 0xF8u8) == 0xF0u8 && x <= 0xF4u8) {
+            return 3;
+        }
+        return -1;
+    }) == 0;
+}
+
+// the value of the hexadecimal digit `c`, or -1
+function hexDigit(c: u8): i64 {
+    if (c >= 48u8 && c <= 57u8) {
+        return i64(c - 48u8);
+    }
+    if (c >= 97u8 && c <= 102u8) {
+        return i64(c - 87u8);
+    }
+    if (c >= 65u8 && c <= 70u8) {
+        return i64(c - 55u8);
+    }
+    return -1;
+}
+
+// the four hexadecimal digits at `at`, or -1
+function hex4(b: u8[n], at: i64): i64 {
+    if (at + 4 > b.length) {
+        return -1;
+    }
+    return fold(iota(4), 0, (v, j) => v < 0 || hexDigit(b[at + j]) < 0 ? -1 : v * 16 + hexDigit(b[at + j]));
+}
+
+// the code point `u` in UTF-8
+function utf8Of(u: i64): string {
+    if (u < 0x80) {
+        return stringOf([u8(u)]);
+    }
+    if (u < 0x800) {
+        return stringOf([u8(0xC0 | (u >> 6)), u8(0x80 | (u & 0x3F))]);
+    }
+    if (u < 0x10000) {
+        return stringOf([u8(0xE0 | (u >> 12)), u8(0x80 | ((u >> 6) & 0x3F)), u8(0x80 | (u & 0x3F))]);
+    }
+    return stringOf([u8(0xF0 | (u >> 18)), u8(0x80 | ((u >> 12) & 0x3F)), u8(0x80 | ((u >> 6) & 0x3F)), u8(0x80 | (u & 0x3F))]);
+}
+
+// the text of the string whose bytes are from `at` to `end`, its escapes
+// read, after `acc`
+function unescape(b: u8[n], text: string, at: i64, end: i64, acc: string): Result<string, JsonError> {
+    if (at >= end) {
+        return Ok(acc);
+    }
+    // the bytes up to the next backslash, as they are
+    const next = fold(iota(end - at), -1, (s, j) => s < 0 && b[at + j] == 92u8 ? at + j : s);
+    if (next < 0) {
+        return Ok(acc + text.slice(at, end));
+    }
+    const head = acc + text.slice(at, next);
+    if (next + 1 >= end) {
+        return Err(errorAt(b, next, "a backslash at the end of a string"));
+    }
+    const c = b[next + 1];
+    if (c == 117u8) {
+        const u = hex4(b, next + 2);
+        if (u < 0) {
+            return Err(errorAt(b, next, "an escape \\u without four hexadecimal digits"));
+        }
+        // a surrogate pair
+        if (u >= 0xD800 && u < 0xDC00) {
+            const low = next + 8 <= end && b[next + 6] == 92u8 && b[next + 7] == 117u8 ? hex4(b, next + 8) : -1;
+            if (low < 0xDC00 || low >= 0xE000) {
+                return Err(errorAt(b, next, "a high surrogate without its low one"));
+            }
+            return unescape(b, text, next + 12, end, head + utf8Of(0x10000 + ((u - 0xD800) << 10) + (low - 0xDC00)));
+        }
+        if (u >= 0xDC00 && u < 0xE000) {
+            return Err(errorAt(b, next, "a low surrogate alone"));
+        }
+        return unescape(b, text, next + 6, end, head + utf8Of(u));
+    }
+    const plain = c == 34u8 ? "\"" : (c == 92u8 ? "\\" : (c == 47u8 ? "/" : (c == 98u8 ? stringOf([8u8]) : (c == 102u8 ? stringOf([12u8]) : (c == 110u8 ? "\n" : (c == 114u8 ? "\r" : (c == 116u8 ? "\t" : "")))))));
+    if (plain == "") {
+        return Err(errorAt(b, next, "an unknown escape"));
+    }
+    return unescape(b, text, next + 2, end, head + plain);
+}
+
+// the string that opens at `at` (a quote) and the place after it
+function stringAt(b: u8[n], text: string, ix: Index, at: i64): Result<[string, i64], JsonError> {
+    const k = lowerBound(ixEnds(ix), at + 1, 0, ixEnds(ix).length);
+    if (k >= ixEnds(ix).length) {
+        return Err(errorAt(b, at, "a string without its end"));
+    }
+    const end = ixEnds(ix)[k];
+    if (count(iota(end - at - 1), (j) => b[at + 1 + j] < 32u8) > 0) {
+        return Err(errorAt(b, at, "a control character in a string"));
+    }
+    return match (unescape(b, text, at + 1, end, "")) {
+        Ok(s) => Ok([s, end + 1] as const),
+        Err(e) => Err(e),
+    };
+}
+
+// the end of the number at `at`: its bytes of digits, signs, dots, exponents
+function numberEnd(b: u8[n], at: i64): i64 {
+    if (at >= b.length) {
+        return at;
+    }
+    const c = b[at];
+    return (c >= 48u8 && c <= 57u8) || c == 45u8 || c == 43u8 || c == 46u8 || c == 101u8 || c == 69u8 ? numberEnd(b, at + 1) : at;
+}
+
+// the digits from `at` (at least one when `one`): the place after them
+function digitsEnd(b: u8[n], at: i64, end: i64): i64 {
+    return at < end && b[at] >= 48u8 && b[at] <= 57u8 ? digitsEnd(b, at + 1, end) : at;
+}
+
+// the bytes from `at` to `end` are a number of JSON:
+// -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?
+function numberOk(b: u8[n], at: i64, end: i64): boolean {
+    const s = at < end && b[at] == 45u8 ? at + 1 : at;
+    if (s >= end || b[s] < 48u8 || b[s] > 57u8) {
+        return false;
+    }
+    const i = b[s] == 48u8 ? s + 1 : digitsEnd(b, s, end);
+    const f = i < end && b[i] == 46u8 ? digitsEnd(b, i + 1, end) : i;
+    if (f == i + 1) {
+        return false;
+    }
+    if (f == end) {
+        return true;
+    }
+    if (b[f] != 101u8 && b[f] != 69u8) {
+        return false;
+    }
+    const sg = f + 1 < end && (b[f + 1] == 43u8 || b[f + 1] == 45u8) ? f + 2 : f + 1;
+    const e = digitsEnd(b, sg, end);
+    return e > sg && e == end;
+}
+
+// the starts of the `m` elements of the container that opens at `p` and
+// closes at `c`, its commas from the `lo`-th of their order
+function elementStart(ix: Index, p: i64, lo: i64, j: i64): i64 {
+    return j == 0 ? p + 1 : ixCommas(ix)[lo + j - 1] + 1;
+}
+
+// the value at `at` and the place after it (spaces after it skipped)
+function valueAt(b: u8[n], text: string, ix: Index, at0: i64): Result<[Json, i64], JsonError> {
+    const at = skip(b, at0);
+    if (at >= b.length) {
+        return Err(errorAt(b, at, "a value expected"));
+    }
+    const c = b[at];
+    if (c == 34u8) {
+        return match (stringAt(b, text, ix, at)) {
+            Ok([s, e]) => Ok([Str(s), skip(b, e)] as const),
+            Err(e) => Err(e),
+        };
+    }
+    if (c == 91u8 || c == 123u8) {
+        return containerAt(b, text, ix, at);
+    }
+    if (c == 116u8 && text.slice(at, Math.min(at + 4, b.length)) == "true") {
+        return Ok([Bool(true), skip(b, at + 4)] as const);
+    }
+    if (c == 102u8 && text.slice(at, Math.min(at + 5, b.length)) == "false") {
+        return Ok([Bool(false), skip(b, at + 5)] as const);
+    }
+    if (c == 110u8 && text.slice(at, Math.min(at + 4, b.length)) == "null") {
+        return Ok([Null, skip(b, at + 4)] as const);
+    }
+    const end = numberEnd(b, at);
+    if (end > at && numberOk(b, at, end)) {
+        return Ok([Num(parseF64(text.slice(at, end))), skip(b, end)] as const);
+    }
+    return Err(errorAt(b, at, "not a value"));
+}
+
+// the member `"key": value` at `at`
+function memberAt(b: u8[n], text: string, ix: Index, at0: i64): Result<[[string, Json], i64], JsonError> {
+    const at = skip(b, at0);
+    if (at >= b.length || b[at] != 34u8) {
+        return Err(errorAt(b, at, "a key expected"));
+    }
+    return match (stringAt(b, text, ix, at)) {
+        Ok([key, e]) => memberValue(b, text, ix, key, skip(b, e)),
+        Err(err) => Err(err),
+    };
+}
+
+// the value of the member `key` whose colon is expected at `colon`
+function memberValue(b: u8[n], text: string, ix: Index, key: string, colon: i64): Result<[[string, Json], i64], JsonError> {
+    if (colon >= b.length || b[colon] != 58u8) {
+        return Err(errorAt(b, colon, "a colon expected"));
+    }
+    return match (valueAt(b, text, ix, colon + 1)) {
+        Ok([value, after]) => Ok([[key, value] as const, after] as const),
+        Err(err) => Err(err),
+    };
+}
+
+// the array or object that opens at `p`
+function containerAt(b: u8[n], text: string, ix: Index, p: i64): Result<[Json, i64], JsonError> {
+    const level = ixDepth(ix)[p];
+    const key = level * (b.length + 1) + p;
+    const k = lowerBound(ixOpens(ix), key, 0, ixOpens(ix).length);
+    if (k >= ixOpens(ix).length || ixOpens(ix)[k] != key) {
+        return Err(errorAt(b, p, "a bracket without its end"));
+    }
+    const c = ixCloses(ix)[k];
+    const array = b[p] == 91u8;
+    if (b[c] != (array ? 93u8 : 125u8)) {
+        return Err(errorAt(b, c, "a bracket closed by the other kind"));
+    }
+    const lo = lowerBound(ixCommaKeys(ix), key, 0, ixCommaKeys(ix).length);
+    const hi = lowerBound(ixCommaKeys(ix), level * (b.length + 1) + c, 0, ixCommaKeys(ix).length);
+    const empty = skip(b, p + 1) == c;
+    if (empty && hi > lo) {
+        return Err(errorAt(b, p, "a comma without values"));
+    }
+    const m = empty ? 0 : hi - lo + 1;
+    if (array) {
+        return match (arrayFrom(b, text, ix, p, lo, m, c, 0, fill(m, Null))) {
+            Ok(xs) => Ok([Arr(xs), skip(b, c + 1)] as const),
+            Err(e) => Err(e),
+        };
+    }
+    return match (objectFrom(b, text, ix, p, lo, m, c, 0, fill(m, ""), fill(m, Null))) {
+        Ok([ks, vs]) => Ok([Obj(ks, vs), skip(b, c + 1)] as const),
+        Err(e) => Err(e),
+    };
+}
+
+// the end of the element `j` of `m` of the container: the next comma, or
+// its closing `c`
+function endOf(ix: Index, lo: i64, m: i64, c: i64, j: i64): i64 {
+    return j + 1 < m ? ixCommas(ix)[lo + j] : c;
+}
+
+// the elements from `j` of the array that opens at `p`, into `acc`
+// (updated where it is)
+function arrayFrom(b: u8[n], text: string, ix: Index, p: i64, lo: i64, m: i64, c: i64, j: i64, acc: Json[m]): Result<Json[m], JsonError> {
+    if (j == m) {
+        return Ok(acc);
+    }
+    const at = elementStart(ix, p, lo, j);
+    return match (valueAt(b, text, ix, at)) {
+        Ok([v, e]) => e != endOf(ix, lo, m, c, j) ? Err(errorAt(b, e, "a comma or a bracket expected after a value")) : arrayFrom(b, text, ix, p, lo, m, c, j + 1, acc.with(j, v)),
+        Err(e) => Err(e),
+    };
+}
+
+// the members from `j` of the object that opens at `p`, into `keys` and
+// `values`
+function objectFrom(b: u8[n], text: string, ix: Index, p: i64, lo: i64, m: i64, c: i64, j: i64, keys: string[m], values: Json[m]): Result<[string[m], Json[m]], JsonError> {
+    if (j == m) {
+        return Ok([keys, values] as const);
+    }
+    const at = elementStart(ix, p, lo, j);
+    return match (memberAt(b, text, ix, at)) {
+        Ok([kv, e]) => e != endOf(ix, lo, m, c, j) ? Err(errorAt(b, e, "a comma or a brace expected after a member")) : match (kv) {
+            [k, v] => objectFrom(b, text, ix, p, lo, m, c, j + 1, keys.with(j, k), values.with(j, v)),
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// the index of a text `b`
+function indexOf(b: u8[n]): Index {
+    const st = scan(map(b, (c) => i64(c)), (s, c) => s == 0 ? (c == 34 ? 1 : 0) : (s == 1 ? (c == 92 ? 2 : (c == 34 ? 0 : 1)) : 1), 0);
+    const before = map(iota(b.length), (i) => i == 0 ? 0 : st[i - 1]);
+    const isOpen = (i: i64) => before[i] == 0 && (b[i] == 91u8 || b[i] == 123u8);
+    const isClose = (i: i64) => before[i] == 0 && (b[i] == 93u8 || b[i] == 125u8);
+    const depth = scan(map(iota(b.length), (i) => isOpen(i) ? 1 : (isClose(i) ? -1 : 0)), (+), 0);
+    const w = b.length + 1;
+    // the openings and closings by (level, place): consecutive pairs
+    const brackets = filter(iota(b.length), (i) => isOpen(i) || isClose(i));
+    const keys = map(brackets, (i) => (isOpen(i) ? depth[i] : depth[i] + 1) * w + i);
+    const order = argsort(keys);
+    const pairs = brackets.length / 2;
+    const opens = map(iota(pairs), (k) => keys[order[2 * k]]);
+    const closes = map(iota(pairs), (k) => brackets[order[2 * k + 1]]);
+    const commaPlaces = filter(iota(b.length), (i) => before[i] == 0 && b[i] == 44u8);
+    const ckeys = map(commaPlaces, (i) => depth[i] * w + i);
+    const corder = argsort(ckeys);
+    return Ix(before, opens, closes, map(corder, (j) => ckeys[j]), map(corder, (j) => commaPlaces[j]), filter(iota(b.length), (i) => before[i] == 1 && b[i] == 34u8), depth);
+}
+
+// the JSON value of `text`
+export function parse(text: string): Result<Json, JsonError> {
+    const b = bytes(text);
+    if (!utf8(b)) {
+        return Err({ line: 1, column: 1, message: "not UTF-8" });
+    }
+    const ix = indexOf(b);
+    if (b.length > 0 && max(ixDepth(ix)) > 512) {
+        return Err(errorAt(b, 0, "deeper than 512"));
+    }
+    return match (valueAt(b, text, ix, 0)) {
+        Ok([v, e]) => e == b.length ? Ok(v) : Err(errorAt(b, e, "text after the value")),
+        Err(e) => Err(e),
+    };
+}
+
+// the text of `e`: `line L, column C: message`
+export function message(e: JsonError): string {
+    return `line ${e.line}, column ${e.column}: ${e.message}`;
+}
+
+// `s` as a string of JSON, between quotes
+export function quote(s: string): string {
+    const b = bytes(s);
+    if (count(iota(b.length), (i) => b[i] < 32u8 || b[i] == 34u8 || b[i] == 92u8) == 0) {
+        return "\"" + s + "\"";
+    }
+    const named = s.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("\n", "\\n").replaceAll("\r", "\\r").replaceAll("\t", "\\t");
+    const controls = filter(iota(32), (c) => c != 9 && c != 10 && c != 13 && count(iota(b.length), (i) => i64(b[i]) == c) > 0);
+    return "\"" + fold(controls, named, (t, c) => t.replaceAll(stringOf([u8(c)]), "\\u00" + (c < 16 ? "0" : "1") + "0123456789abcdef".slice(c % 16, c % 16 + 1))) + "\"";
+}
+
+// `j` as text, without spaces; a number in its shortest form, NaN and the
+// infinities as `null` (as JavaScript)
+export function stringify(j: Json): string {
+    return match (j) {
+        Null => "null",
+        Bool(x) => x ? "true" : "false",
+        Num(x) => x == x && x != 1.0 / 0.0 && x != -1.0 / 0.0 ? toString(x) : "null",
+        Str(s) => quote(s),
+        Arr(xs) => "[" + join(map(xs, stringify), ",") + "]",
+        Obj(ks, vs) => "{" + join(map(iota(ks.length), (i) => quote(ks[i]) + ":" + stringify(vs[i])), ",") + "}",
+    };
+}

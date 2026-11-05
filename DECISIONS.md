@@ -6533,3 +6533,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   against 45.81 (8.3), `parseIso` 37.43 against 23.31 (1.6), `dateOf` and
   `daysOf` 19.15 against 17.30 (1.1), `toDateTime` 3.70 against 3.37
   (1.1).
+- **D335 — A payload holds an array of its own size; the module `json`
+  read and written (2026-11-05).** The language: a size named in the
+  payload of a constructor (`type Tree = Leaf(i64) | Branch(Tree[k])`)
+  is of each value, as the size of an array returned by a function: any
+  at a construction (a size of inference), a new existential one where a
+  pattern takes the payload apart (`VariantDef::sizes`, `payload_sized`);
+  the code is the same (an array is a pointer and a length). An array of
+  a recursive type asks nothing of the payloads of its nodes (D130: the
+  nodes are pointers in it), so its nodes may hold arrays; its equality
+  still asks theirs. Tested by `payloads_hold_arrays_of_their_own_size`
+  (`stdlib.rs`: an array payload built and taken apart, a tree whose
+  nodes hold arrays of nodes, kept in an array, compared; the
+  interpreter, compiled, Valgrind).
+  - `json` (`crates/isc-types/src/std/json.isc`), in Isocron without a
+    loop: the text checked as UTF-8 by a `fold`; a `scan` of the states
+    of the bytes (outside a string, inside, after a backslash), a `scan` of
+    the depth of the brackets outside strings; an opening and its closing
+    have the same level and follow each other in the order (level, place),
+    so one `argsort` pairs them all; the commas of a container are a run
+    of the commas in that order, found by halving; the end of each string
+    by halving in the quotes that end strings. Then a descent: an array
+    or object filled element by element in arrays made first (`fill`),
+    updated where they are (`with`), as an array of sums holding a `Json`
+    or of tuples holding one is not stored (D138, D154). `Json` is `Null |
+    Bool | Num | Str | Arr(Json[k]) | Obj(string[m], Json[m])` (the keys
+    and values apart, for the same reason); numbers by the grammar of RFC
+    8259 then `parseF64`; escapes, `\u` and surrogate pairs; at most 512
+    levels; errors with their line and column. `stringify` without spaces,
+    numbers by `toString` (their shortest form), NaN and the infinities as
+    `null` (as JavaScript). Tested by `json_read_and_written` (`stdlib.rs`:
+    the interpreter, compiled, Valgrind) and the guide ("JSON: `json`").
+    To come: `decode<T>` and `encode<T>` (D325), the microbenchmark and
+    its floor.

@@ -1,0 +1,10 @@
+import * as json from "json";
+
+action main(args: string[k]): i32 {
+    const texts = ["{\"a\": [1, 2.5, -3e2, true, null], \"b\": {\"c\": \"x\\ny\\u00e9\\ud83d\\ude00\"}, \"d\": []}", "[]", "  42 ", "[1,]", "{\"a\" 1}", "\"\\q\"", "[1 2]", "nul", "{}", "[[[]]]"];
+    print(map(texts, (t) => match (json.parse(t)) {
+        Ok(j) => json.stringify(j),
+        Err(e) => json.message(e),
+    }));
+    return 0;
+}
