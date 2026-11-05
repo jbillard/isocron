@@ -266,7 +266,7 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let r = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(text(&vs[0])).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
             code(r)
         }
-        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve => net(o, vs),
+        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve | S::Shutdown => net(o, vs),
     }
 }
 
@@ -367,6 +367,14 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let d = (ms > 0).then(|| std::time::Duration::from_millis(ms as u64));
             let r = match &*c.0.borrow() {
                 Some(Resource::Conn(s)) => s.set_read_timeout(d).and_then(|_| s.set_write_timeout(d)).map_or_else(|e| io_code(&e), |_| 0),
+                _ => -9,
+            };
+            Value::Int(r)
+        }
+        S::Shutdown => {
+            let c = cell(&vs[0]);
+            let r = match &*c.0.borrow() {
+                Some(Resource::Conn(s)) => s.shutdown(std::net::Shutdown::Write).map_or_else(|e| io_code(&e), |_| 0),
                 _ => -9,
             };
             Value::Int(r)

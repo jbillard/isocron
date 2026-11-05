@@ -6811,3 +6811,98 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     of 64 bytes 6167.09 ns against 5869.86 (1.1), a connection made
     24175.46 against 23192.41 (1.0), 64 KiB sent and received 11204.86
     against 12105.38 (0.9): the time of the kernel.
+
+- **D340 — The client of HTTP/1.1; `concat` made into memory by copies
+  (2026-11-05).**
+  - The module `http` (`std/http.isc`, in Isocron over `net`): `get(url)`,
+    `request(method, url, headers, body)`, `exchange(c, ...)` on an open
+    connection (what `https` will reuse), `parseUrl(url)`, `header(r,
+    name)` (its case ignored, the last one), `text(r)` (`?` for a byte that
+    is not UTF-8), `message(e)`. A request has a connection of its own
+    (`Connection: close`), `Host`, `User-Agent: isocron`, and
+    `Content-Length` when it has a body or its method expects one (`POST`,
+    `PUT`, `PATCH`); a name of a header that is not a token, a value with
+    CR, LF or a zero byte, a method or a target that cannot be sent, are
+    refused before sending (`Malformed`). The body of the response is read
+    by `Content-Length`, by `chunked` (extensions and trailers ignored), or
+    to the end of the stream; none for `HEAD`, `1xx`, `204` and `304`. A
+    head is at most 64 KiB, a body 64 MiB (`TooLarge`). Redirections are
+    given as they are.
+  - `https://` gives `BadUrl` with the text "the module https sends it"
+    until the module `https` exists: the client of `http` never opens TLS
+    itself (SPEC section 18).
+  - `Response` is `{ status, headers: [string, string][responseHeaders],
+    body: u8[responseBytes] }`: the sizes of an alias are variables of the
+    signatures that use it (D159), so its names are none that a signature
+    of the module uses (`k` was caught by `exchange`'s headers).
+  - The bytes read are a list (`type Chunks = Done | More(u8[k],
+    Chunks)`), joined at the end two by two in a loop (`pairs`): each byte
+    copied log2(n) times, n nodes made (the halves of the first version
+    rebuilt the list at each level: n log2(n) nodes). The rest of a chunk
+    not whole is read by pieces, each byte copied once, never with each
+    read (a chunk of 1 MiB in reads of 16 KiB copied its start 64 times);
+    each read takes at least 64 KiB, what follows the chunk kept.
+  - A primitive more, the smallest that the tests needed:
+    `sysShutdown(conn)`, `closeWrite(c)` in `net` (`shutdown(fd,
+    SHUT_WR)`, `SD_SEND`): the sending side closed, the connection kept.
+    The test of the client writes its responses from the server side of
+    the same program; under Windows, a socket closed with bytes not read
+    (the request) resets the connection, and the client read error 10053
+    (`WSAECONNABORTED`) where Linux gave the response.
+  - The microbenchmark (`bench/primitives/http.isc`, its floor `http.c`:
+    the same exchanges in C, one buffer of 1 MiB, the head parsed by
+    `strstr`, the chunks copied by `memcpy`). The first measure:
+    `exchange.small` 7708.32 ns against 5657.14 (1.4), `exchange.chunked64`
+    (64 chunks of 1 KiB) 1078937.24 against 20475.60 (52.7). By the
+    profile, in order:
+    - The size of each chunk looked for its end (`;` or space) up to the
+      end of the buffer, not of its line: quadratic. Bounded by the line
+      (`firstBefore`): 64 chunks 1079733.18 ns -> 179318.7 (a variant of
+      the benchmark, 50 rounds).
+    - The end of the head found by a `filter` of the whole buffer: a loop
+      that stops there and starts where the last search ended; the readers
+      of the body make the response (no `match` to rebuild it): 179318.7 ->
+      156224.44, a body of 64 KiB by its length 73825.16 -> 48888.86.
+    - `concat(a, b)` of arrays is lowered to `map(iota(n), (i) -> if i < l
+      then a[i] else b[i - l])` (D136), which fuses with its consumers;
+      made into memory it was a loop with a test and masked reads per
+      element: 19290.12 ns for two arrays of 32 KiB of bytes, against
+      1631.2 for `malloc` and two `memcpy` in C (11.8 times). The code
+      generator now recognizes this form when it is made into memory
+      (`concat_parts`: `a`, `b`, `l` and `n` simple and free of `i`) and,
+      for scalars or tuples of scalars (`plain_columns`), makes a block and
+      copies each side, column by column (`concat_copy`): 1480.69 ns, and
+      16384 doubles 3627.64 -> 2795.58. When the lengths do not fit the
+      form (`0 <= l <= len(a)`, `0 <= n - l <= len(b)`, false only for a
+      `map` written so by hand), the `map` runs as before and its checks
+      panic (tested). A general rule of the compiler: the ten programs do
+      not make a `concat`, their IR is unchanged byte for byte.
+      `exchange.chunked64` 155218.52 -> 48358.91 (7.7 -> 2.4 times its
+      floor).
+    - The join two by two in a loop (above): 256 chunks 75927.84 ->
+      63018.05; the reads of at least 64 KiB: 4000 calls of `read` for 1000
+      rounds -> 3000 (the floor: 2001, its reads of up to 1 MiB).
+  - At the end: `exchange.small` 7531.66 ns against 5624.50 (1.3),
+    `exchange.chunked64` 49754.47 against 20027.70 (2.5). The gap of the
+    chunks measured: the same benchmark with a `flatten` that copies
+    nothing (the newest node: a wrong checksum, the same reads) takes
+    27194.65 and 27540.88 ns against 49354.71 and 49142.15 (3000 rounds
+    each), its user cycles 99504384 against 282918589 and its kernel
+    cycles 234627513 against 263954614: the join, six copies of 64 KiB in
+    blocks of 2 to 64 KiB made and freed, is 22 µs of the 29. It would take
+    one copy if `concat` grew in place an array that it consumes (its
+    block unique, at its last use): open in TODO, a rule of the language
+    and of the runtime, not of this module. The other 7.3 µs (each chunk
+    copied into its node, the head as strings, the second read) are open
+    with it.
+  - Tests: `std_http.rs` (responses of every form written by the program
+    itself, compiled on 1 and 4 threads and interpreted; `get` and
+    `request` to a server written in the test: 3 MiB by length, 1000
+    chunks, chunks of every size sent in pieces cut anywhere, one of
+    300000 bytes, a head of 40 headers, a redirection, a POST with a
+    header of UTF-8, a connection refused, a header refused; Valgrind);
+    `http_on_windows` in the real VM (the same outputs as Linux);
+    `bitwise.rs` (`concat` made by copies of every kind of element, empty
+    sides, slices, 4 threads, Valgrind; the `map` of the same form with
+    other lengths, the same panic as the interpreter); the example of
+    `docs/language.md`, refused for WASI.

@@ -2339,6 +2339,7 @@ impl<'g> FnCx<'g> {
             SysOp::Close => (vec![Ty::Handle(Handle::Conn)], i64t.clone()),
             SysOp::CloseListener => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
             SysOp::SetTimeout => (vec![Ty::Handle(Handle::Conn), i64t.clone()], i64t.clone()),
+            SysOp::Shutdown => (vec![Ty::Handle(Handle::Conn)], i64t.clone()),
             SysOp::LocalPort => (vec![Ty::Handle(Handle::Listener)], i64t.clone()),
             SysOp::UdpQuery => {
                 let s = self.fresh_size(span);
@@ -2916,7 +2917,7 @@ impl<'g> FnCx<'g> {
                 self.unify(&Ty::Str, &to.ty, to.span)?;
                 Ok(mk(vec![x, pat, to], Ty::Str, self))
             }
-            Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::ReplaceAll => {
+            Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith => {
                 let mut xs = Vec::new();
                 for a in args {
                     let x = self.check(a, Some(&Ty::Str))?;

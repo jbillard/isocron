@@ -1,0 +1,45 @@
+import * as http from "http";
+
+// the status, the length and the sum of the bytes of a response
+function summary(r: http.Response): string {
+    return `${r.status} ${r.body.length} ${sum(map(r.body, (x) => i64(x)))}`;
+}
+
+action main(args: string[k]): i32 {
+    const base = `http://127.0.0.1:${args[0]}`;
+    const paths = ["/hello", "/big", "/chunks", "/redirect", "/missing"];
+    print(map(paths, (p) => p));
+    match (http.get(base + "/hello")) {
+        Ok(r) => print(`${summary(r)} ${http.text(r)} ${http.header(r, "x-server") ?? "-"}`),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.get(base + "/big")) {
+        Ok(r) => print(summary(r)),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.get(base + "/chunks")) {
+        Ok(r) => print(summary(r)),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.get(base + "/split")) {
+        Ok(r) => print(`${summary(r)} ${http.header(r, "X-HEADER-39") ?? "-"}`),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.get(base + "/redirect")) {
+        Ok(r) => print(`${r.status} ${http.header(r, "location") ?? "-"}`),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.request("POST", base + "/echo", [["X-Test", "été"] as const], bytes("a body"))) {
+        Ok(r) => print(`${r.status} ${http.text(r)}`),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.get("http://127.0.0.1:1/")) {
+        Ok(r) => print(r.status),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.request("GET", base + "/x", [["Bad Name", "v"] as const], [])) {
+        Ok(r) => print(r.status),
+        Err(e) => print(http.message(e)),
+    };
+    return 0;
+}

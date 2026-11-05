@@ -335,7 +335,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `sha256`: FIPS 180-4 in Isocron, the vectors of the NIST, Linux and Windows, the guide, the microbenchmark and its floor (D338)
   - [ ] `sha256` faster: 1.5 times the same loop in C (D338: the window of the schedule in the state of the `fold`, 24 words for 16 registers, 32 accesses to the stack a round); the instructions SHA of the processor out of v1 (4.1 times faster than the loop in C)
 - [x] `net`: TCP, client and server; connections and listeners linear, checked at compile time; names resolved (hosts, DNS by UDP; GetAddrInfoW under Windows); refused for WASI (D339)
-- [ ] `http`: a client of HTTP/1.1
+- [x] `http`: a client of HTTP/1.1; `concat` made into memory by copies; `closeWrite` in `net` (D340)
+  - [ ] `concat` that grows in place an array it consumes (its block unique, at its last use): the join of the chunks of `http` in one copy (D340: 22 µs of the 29 that `exchange.chunked64` takes more than its floor, 2.5 times; the other 7.3 µs to split)
 - [ ] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool
 - [ ] `https`: the TLS of the system
 - [ ] Release 0.3.0

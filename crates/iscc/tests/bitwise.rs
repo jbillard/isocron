@@ -119,6 +119,67 @@ fn array_concatenation_and_print_bytes() {
     );
 }
 
+const CONCAT_COPIED: &str = r#"// each array passed out of line (a recursion): its concat materialized
+function keep(x: u8[n], k: i64): u8[n] {
+    return k == 0 ? x : keep(x, k - 1);
+}
+
+function keepF(x: f32[n], k: i64): f32[n] {
+    return k == 0 ? x : keepF(x, k - 1);
+}
+
+function keepB(x: boolean[n], k: i64): boolean[n] {
+    return k == 0 ? x : keepB(x, k - 1);
+}
+
+function keepT(x: [i64, f64][n], k: i64): [i64, f64][n] {
+    return k == 0 ? x : keepT(x, k - 1);
+}
+
+action main(args: string[k]): i32 {
+    const b = bytes("hello, world");
+    printBytes(concat(keep(concat(b.slice(7, 12), b.slice(0, 5)), 1), [10u8]));
+    print(keepF(concat(map(iota(3), (i) => f32(i) * 0.5f32), [f32(9.5)]), 1));
+    print(keepB(concat([true, false], [false]), 1));
+    print(keepT(concat([[1, 1.5] as const], map(iota(2), (i) => [i, f64(i) / 4.0] as const)), 1));
+    print([keep(concat(b.slice(3, 3), b.slice(0, 2)), 1).length, keep(concat(b, b.slice(0, 0)), 1).length, keep(concat(b.slice(0, 0), b.slice(0, 0)), 1).length] as const);
+    const big = keep(concat(map(iota(100000), (i) => u8(i % 251)), map(iota(70000), (i) => u8(i % 13))), 1);
+    print(`${big.length} ${sum(map(big, (x) => i64(x)))}`);
+    return 0;
+}
+"#;
+
+/// D340: `concat` of arrays of scalars and of tuples of scalars, made into
+/// memory: each side copied (slices of bytes, floats of 32 bits, booleans,
+/// columns of tuples, sides empty, 170000 bytes on 1 and 4 threads); the
+/// same outputs compiled and interpreted, Valgrind.
+#[test]
+fn concatenations_made_by_copies() {
+    agree(
+        CONCAT_COPIED,
+        "concat_copied",
+        &[],
+        "worldhello\n[0, 0.5, 1, 9.5]\n[true, false, false]\n[(1, 1.5), (0, 0), (1, 0.25)]\n(2, 12, 0)\n170000 12912381\n",
+    );
+    let bin = compile(CONCAT_COPIED, "concat_copied_4");
+    let r = run_bin_threads(&bin, &[], Some(4));
+    assert_eq!(r.stdout, interp_ok(CONCAT_COPIED, &[]), "4 threads");
+}
+
+/// D340: a `map` of the form of `concat` written by hand, its lengths not
+/// those of a `concat`: the loop of the `map` and its checks, the same panic
+/// as the interpreter.
+#[test]
+fn a_map_of_the_form_of_concat_with_other_lengths() {
+    let src = "function bad(a: i64[n], b: i64[m]): i64[k] {\n    return map(iota(a.length + b.length + 1), (i) => i < a.length ? a[i] : b[i - a.length]);\n}\n\nfunction keep(x: i64[n], k: i64): i64[n] {\n    return k == 0 ? x : keep(x, k - 1);\n}\n\naction main(args: string[k]): i32 {\n    print(keep(bad(iota(3), iota(parseI64(args[0]))), 1));\n    return 0;\n}\n";
+    let want = interp_panic(src, &["2"]);
+    assert!(want.contains("out of bounds"), "{}", want);
+    let bin = compile(src, "concat_form_bad");
+    let r = run_bin(&bin, &["2"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    assert_eq!(r.stderr.trim(), want.trim());
+}
+
 /// The classic algorithm of the Benchmarks Game, independently.
 fn mandelbrot_reference(n: usize) -> Vec<u8> {
     let mut out = format!("P4\n{} {}\n", n, n).into_bytes();

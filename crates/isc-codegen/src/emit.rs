@@ -570,6 +570,63 @@ pub struct Gen<'p> {
 /// A value of this type holds nodes of a recursive type (D130).
 /// An element of this type owns memory of its own: a node (D130) or a
 /// string (D134); arrays of them free and copy each element.
+/// The form `concat(a, b)` of arrays is lowered to (D136): `map(iota(n),
+/// (i) -> if i < l then a[i] else b[i - l])`, `a`, `b`, `l` and `n` simple
+/// (variables, projections, lengths, literals, sums) and free of `i`: its
+/// parts `(a, b, l, n)`.
+fn concat_parts(e: &Expr) -> Option<(&Expr, &Expr, &Expr, &Expr)> {
+    use ExprKind::*;
+    let Map(ins, lam) = &e.kind else { return None };
+    if ins.len() != 1 || lam.params.len() != 1 {
+        return None;
+    }
+    let Iota(n) = &ins[0].kind else { return None };
+    let p = lam.params[0];
+    let is_p = |x: &Expr| matches!(x.kind, Var(v, _) if v == p);
+    let If(c, t, f) = &lam.body.kind else { return None };
+    let Binary(BinOp::Lt, i, l) = &c.kind else { return None };
+    let Index(a, i1) = &t.kind else { return None };
+    let Index(b, j) = &f.kind else { return None };
+    let Binary(BinOp::Sub, i2, l2) = &j.kind else { return None };
+    let et = e.ty.elem();
+    let fits = is_p(i) && is_p(i1) && is_p(i2) && same_simple(l, l2) && [&**a, &**b, &**l, &**n].iter().all(|x| simple_of(x, p));
+    (fits && a.ty.is_array() && b.ty.is_array() && a.ty.elem() == et && b.ty.elem() == et).then(|| (&**a, &**b, &**l, &**n))
+}
+
+/// A variable other than `p`, a projection or a length of one, a literal,
+/// or a sum or difference of those: evaluated again without a cost
+fn simple_of(x: &Expr, p: VarId) -> bool {
+    use ExprKind::*;
+    match &x.kind {
+        Var(v, _) => *v != p,
+        Lit(_) => true,
+        Proj(y, _) | Len(y) => simple_of(y, p),
+        Binary(BinOp::Add | BinOp::Sub, y, z) => simple_of(y, p) && simple_of(z, p),
+        _ => false,
+    }
+}
+
+/// The same simple expression (spans aside)
+fn same_simple(x: &Expr, y: &Expr) -> bool {
+    use ExprKind::*;
+    match (&x.kind, &y.kind) {
+        (Var(v, _), Var(w, _)) => v == w,
+        (Lit(a), Lit(b)) => a == b,
+        (Proj(a, i), Proj(b, j)) => i == j && same_simple(a, b),
+        (Len(a), Len(b)) => same_simple(a, b),
+        (Binary(o, a, b), Binary(q, c, d)) => o == q && same_simple(a, c) && same_simple(b, d),
+        _ => false,
+    }
+}
+
+/// Elements copied by bytes: scalars, or tuples of scalars (columns)
+fn plain_columns(t: &Type) -> bool {
+    match t {
+        Type::Tuple(ts) => ts.iter().all(plain_columns),
+        _ => t.is_scalar(),
+    }
+}
+
 fn holds_owned(t: &Type) -> bool {
     match t {
         Type::Rec(_) | Type::Str | Type::Big => true,
@@ -1372,20 +1429,6 @@ fn src_checks(s: &Src) -> bool {
     }
 }
 
-/// `lam_ok` for vector code read by `elem_replayed` (D185).
-fn lam_ok_replay(l: &Lambda) -> bool {
-    let before = REPLAY.with(|r| r.replace(true));
-    let ok = lam_ok(l);
-    REPLAY.with(|r| r.set(before));
-    ok
-}
-
-/// `src_vec_ok_replay`, an index into an array of bytes allowed: for
-/// `fill_range`, whose loop is vector code only when each such array has at
-/// most 256 bytes (D185).
-/// `let x = map(...) in printBytes(x)`: an array of bytes made only to be
-/// written, by `materialize` (not a stream, not rows), its elements without
-/// a loop of their own (D225).
 /// `$group(map(...))` of integer keys (D244): the keys made by blocks that
 /// stay in the caches and grouped as they are made, never stored all.
 fn group_stream_ok(init: &Expr) -> bool {
@@ -4947,6 +4990,68 @@ impl<'p> Gen<'p> {
     }
 
     fn materialize(&mut self, e: &Expr) -> R<V> {
+        if let Some(parts) = concat_parts(e) {
+            if plain_columns(e.ty.elem()) {
+                return self.concat_copy(e, parts);
+            }
+        }
+        self.materialize_general(e)
+    }
+
+    /// `concat(a, b)` of arrays of scalars, or of tuples of scalars,
+    /// materialized: a new block and each side copied (`memcpy`, column by
+    /// column), not a loop with a test per element (D340). The `map` it is
+    /// lowered to stays the other branch, taken when the lengths do not fit
+    /// its form (a `map` written so by hand): its checks panic as before.
+    fn concat_copy(&mut self, e: &Expr, (a, b, l, n): (&Expr, &Expr, &Expr, &Expr)) -> R<V> {
+        let et = e.ty.elem().clone();
+        let nv = self.ex(n, 1)?;
+        let av = self.ex(a, 1)?;
+        let bv = self.ex(b, 1)?;
+        let lv = self.ex(l, 1)?;
+        let (pa, la) = self.str_parts(&av);
+        let (pb, lb) = self.str_parts(&bv);
+        let rest = self.ins(format!("sub i64 {}, {}", nv.r, lv.r));
+        let c1 = self.ins(format!("icmp sge i64 {}, 0", lv.r));
+        let c2 = self.ins(format!("icmp sle i64 {}, {}", lv.r, la));
+        let c3 = self.ins(format!("icmp sge i64 {}, 0", rest));
+        let c4 = self.ins(format!("icmp sle i64 {}, {}", rest, lb));
+        let c12 = self.ins(format!("and i1 {}, {}", c1, c2));
+        let c34 = self.ins(format!("and i1 {}, {}", c3, c4));
+        let ok = self.ins(format!("and i1 {}, {}", c12, c34));
+        let (lfast, lslow, ljoin) = (self.label(), self.label(), self.label());
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        let dst = self.alloc_elems(&nv.r, &et);
+        let cols = |g: &mut Self, p: &str, len: &str| -> Vec<(Type, String)> {
+            if matches!(et, Type::Tuple(_)) {
+                g.columns(p, len, &et).into_iter().map(|(_, t, c)| (t, c)).collect()
+            } else {
+                vec![(et.clone(), p.to_string())]
+            }
+        };
+        let (ca, cb, cd) = (cols(self, &pa, &la), cols(self, &pb, &lb), cols(self, &dst, &nv.r));
+        for (((leaf, sa), (_, sb)), (_, d)) in ca.iter().zip(&cb).zip(&cd) {
+            let sz = esize(leaf);
+            let first = self.ins(format!("mul i64 {}, {}", lv.r, sz));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, sa, first));
+            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", d, first));
+            let second = self.ins(format!("mul i64 {}, {}", rest, sz));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at, sb, second));
+        }
+        let fast = self.arr(&dst, &nv.r);
+        let lfast_end = self.current_label(&lfast);
+        self.br(&ljoin);
+        self.block(&lslow);
+        let slow = self.materialize_general(e)?;
+        let lslow_end = self.current_label(&lslow);
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", fast.r, lfast_end, slow.r, lslow_end));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: fast.uni && slow.uni })
+    }
+
+    fn materialize_general(&mut self, e: &Expr) -> R<V> {
         let et = e.ty.elem().clone();
         if let ExprKind::Zeros(n) = &e.kind {
             let nv = self.ex(n, 1)?;

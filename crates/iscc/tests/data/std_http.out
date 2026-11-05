@@ -1,0 +1,9 @@
+200 text/plain 5 hello
+200 - 9 Wikipedia
+404 - 12 no such page
+301 - 0 
+malformed: the body ended after 5 of 10 bytes
+malformed: the status line garbage
+malformed: the header Content-Length
+[http a.b 8080 /x?y, http ::1 81 /, https h 443 /, bad url: ftp://x, bad url: http://:80/, bad url: http://h:99999/]
+bad url: https://example.test/: the module https sends it (import { get } from "https")

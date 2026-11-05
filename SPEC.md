@@ -957,7 +957,7 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 #### `net` : TCP
 
 - `type Conn` et `type Listener` sont des valeurs **linéaires** : chacune est fermée, ou donnée (dans une valeur, un résultat, à une fonction qui la ferme), **exactement une fois sur chaque chemin**. Le vérificateur de types le prouve sur l'arbre typé : un usage après `close`, une connexion jamais fermée, fermée dans une seule branche, laissée par `_`, capturée par une lambda ou perdue sont des erreurs de compilation, jamais d'exécution (D326, D339). Une fonction consomme un paramètre qu'elle ferme sur tous ses chemins ; elle l'emprunte sinon. Elles ne sont ni comparées, ni imprimées, ni mises dans un tableau.
-- `connect(host, port): action => Result<Conn, IoError>`, `listen(host, port)` (port 0 : un port choisi par le système, que `port(l)` donne), `accept(l): Result<[Conn, string], IoError>` (l'adresse du pair), `read(c, max): Result<u8[k], IoError>` (vide à la fin du flux), `write(c, bytes): Result<void, IoError>` et `writeText(c, s)` (tout ou erreur), `close(c)`, `closeListener(l)`, `setTimeout(c, ms)` (au-delà : `TimedOut`), `resolve(host)` et `lookup(host, serveur, port)` (un serveur DNS donné).
+- `connect(host, port): action => Result<Conn, IoError>`, `listen(host, port)` (port 0 : un port choisi par le système, que `port(l)` donne), `accept(l): Result<[Conn, string], IoError>` (l'adresse du pair), `read(c, max): Result<u8[k], IoError>` (vide à la fin du flux), `write(c, bytes): Result<void, IoError>` et `writeText(c, s)` (tout ou erreur), `close(c)`, `closeListener(l)`, `setTimeout(c, ms)` (au-delà : `TimedOut`), `closeWrite(c)` (le côté d'envoi seul fermé : le pair lit la fin du flux, D340), `resolve(host)` et `lookup(host, serveur, port)` (un serveur DNS donné).
 - WebAssembly (WASI preview 1) n'a pas de sockets : un programme qui en atteint une est refusé à la compilation pour cette cible, le chemin de ses appels nommé (D324).
 - La résolution des noms dans `connect` lit d'abord les adresses numériques (IPv4, IPv6) et `localhost`. Ensuite :
   - sous Linux, `/etc/hosts`, puis les serveurs de `/etc/resolv.conf` par UDP (enregistrements A et AAAA), en Isocron ;
@@ -967,9 +967,11 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 
 #### `http` : client HTTP/1.1
 
-- `get(url): action => Result<Response, HttpError>` et `request(method, url, headers: [string, string][k], body: u8[n])`.
-- `type Response = { status: i64, headers: [string, string][k], body: u8[k] }` et `text(r): string`. `HttpError` est `Io(IoError) | Malformed(string) | TooLarge(i64) | BadUrl(string)`.
-- Le corps est lu par `Content-Length` ou par `chunked`. Le client ne suit pas les redirections : elles sont rendues telles quelles. `http://` va par `net`, `https://` par `https` quand le programme l'importe ; sinon c'est une erreur `BadUrl` qui le dit.
+- `get(url): action => Result<Response, HttpError>` et `request(method, url, headers: [string, string][k], body: u8[n])`. `exchange(c, method, host, port, défaut, cible, headers, body)` fait l'échange sur une connexion déjà ouverte (c'est ce que `https` réutilise) ; `parseUrl(url)` donne le schéma, l'hôte, le port et la cible (D340).
+- `type Response = { status: i64, headers: [string, string][responseHeaders], body: u8[responseBytes] }`, `header(r, nom)` (sans casse) et `text(r): string` (`?` pour un octet qui n'est pas de l'UTF-8). `HttpError` est `Io(IoError) | Malformed(string) | TooLarge(i64) | BadUrl(string)`, et `message(e)` son texte.
+- La requête porte `Host`, `User-Agent: isocron`, `Connection: close`, et `Content-Length` quand il y a un corps ou que la méthode en attend un (`POST`, `PUT`, `PATCH`). Un nom d'en-tête qui n'est pas un jeton, ou une valeur avec CR ou LF, est refusé avant l'envoi (`Malformed`).
+- Le corps est lu par `Content-Length`, par `chunked` (extensions et trailers ignorés) ou jusqu'à la fin du flux ; il n'y en a pas pour `HEAD`, `1xx`, `204` et `304`. Une tête est limitée à 64 Kio, un corps à 64 Mio (`TooLarge`). Chaque octet n'est recopié qu'une fois par lecture : le reste d'un morceau incomplet se lit par pièces, et les pièces sont réunies deux par deux à la fin (log2 du nombre de pièces copies de chaque octet, D340).
+- Le client ne suit pas les redirections : elles sont rendues telles quelles. `http://` va par `net`, `https://` par `https` quand le programme l'importe ; sinon c'est une erreur `BadUrl` qui le dit.
 
 #### `http` : serveur
 

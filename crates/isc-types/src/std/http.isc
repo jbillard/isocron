@@ -1,0 +1,465 @@
+// The module `http` of the standard library (SPEC section 18, D340): a
+// client of HTTP/1.1 over `net`, written in Isocron. A request is sent on a
+// connection of its own (`Connection: close`); the body of the response is
+// read by `Content-Length`, by `chunked`, or to the end of the stream; the
+// redirections are given as they are. `https://` is the module `https`'s.
+import { IoError, message as ioMessage } from "sys";
+import * as net from "net";
+
+export type HttpError = Io(IoError) | Malformed(string) | TooLarge(i64) | BadUrl(string);
+// (the sizes of an alias are those of the signatures that use it, D159:
+// names that no signature of the module uses)
+export type Response = { status: i64, headers: [string, string][responseHeaders], body: u8[responseBytes] };
+
+// the most bytes of the head of a response, of its body
+const HEAD_LIMIT = 65536;
+const BODY_LIMIT = 67108864;
+
+// the text of an error
+export function message(e: HttpError): string {
+    return match (e) {
+        Io(x) => ioMessage(x),
+        Malformed(w) => `malformed: ${w}`,
+        TooLarge(n) => `too large: more than ${n} bytes`,
+        BadUrl(u) => `bad url: ${u}`,
+    };
+}
+
+// ----- the address --------------------------------------------------------
+
+// the place of the first of the bytes `c` and `d` in `b` from `at`, or the
+// end
+function firstOf(b: u8[n], at: i64, c: u8, d: u8): i64 {
+    return at >= b.length || b[at] == c || b[at] == d ? at : firstOf(b, at + 1, c, d);
+}
+
+// the place of the first of the bytes `c` and `d` in `b` from `at` to `z`,
+// or `z`
+function firstBefore(b: u8[n], at: i64, z: i64, c: u8, d: u8): i64 {
+    return at >= z || b[at] == c || b[at] == d ? at : firstBefore(b, at + 1, z, c, d);
+}
+
+// a port: digits only, from 1 to 65535
+function portOf(s: string): i64 {
+    const b = bytes(s);
+    if (b.length == 0 || b.length > 5 || count(b, (c) => c < 48u8 || c > 57u8) > 0) {
+        return -1;
+    }
+    const p = fold(b, 0, (v, c) => v * 10 + i64(c - 48u8));
+    return p >= 1 && p <= 65535 ? p : -1;
+}
+
+// the parts of an address of HTTP: [scheme, host, port, target]
+export function parseUrl(url: string): Result<[string, string, i64, string], HttpError> {
+    const i = url.indexOf("://");
+    if (i <= 0) {
+        return Err(BadUrl(url));
+    }
+    const scheme = url.slice(0, i).toLowerCase();
+    if (scheme != "http" && scheme != "https") {
+        return Err(BadUrl(url));
+    }
+    const rest = url.slice(i + 3, url.length);
+    const b = bytes(rest);
+    const end = firstOf(b, 0, 47u8, 63u8);
+    const authority = rest.slice(0, end);
+    const after = rest.slice(end, rest.length);
+    const target = after == "" ? "/" : (after.startsWith("?") ? "/" + after : after);
+    const fallback = scheme == "http" ? 80 : 443;
+    // `[v6]:port`, `host:port`, `host`
+    if (authority.startsWith("[")) {
+        const close = authority.indexOf("]");
+        if (close < 0) {
+            return Err(BadUrl(url));
+        }
+        const host = authority.slice(1, close);
+        const tail = authority.slice(close + 1, authority.length);
+        const port = tail == "" ? fallback : (tail.startsWith(":") ? portOf(tail.slice(1, tail.length)) : -1);
+        return host == "" || port < 0 ? Err(BadUrl(url)) : Ok([scheme, host, port, target] as const);
+    }
+    const colon = authority.indexOf(":");
+    const host = colon < 0 ? authority : authority.slice(0, colon);
+    const port = colon < 0 ? fallback : portOf(authority.slice(colon + 1, authority.length));
+    if (host == "" || port < 0 || count(bytes(host), (c) => c <= 32u8 || c == 64u8) > 0) {
+        return Err(BadUrl(url));
+    }
+    return Ok([scheme, host, port, target] as const);
+}
+
+// ----- the request ----------------------------------------------------------
+
+// a name of a header: the characters of a token (RFC 9110)
+function tokenOk(s: string): boolean {
+    const b = bytes(s);
+    return b.length > 0 && count(b, (c) => c <= 32u8 || c >= 127u8 || c == 40u8 || c == 41u8 || c == 44u8 || c == 47u8 || c == 58u8 || c == 59u8 || c == 60u8 || c == 61u8 || c == 62u8 || c == 63u8 || c == 64u8 || c == 91u8 || c == 92u8 || c == 93u8 || c == 123u8 || c == 125u8 || c == 34u8) == 0;
+}
+
+// a value of a header: no line feed, no carriage return, no zero byte
+function valueOk(s: string): boolean {
+    return count(bytes(s), (c) => c == 10u8 || c == 13u8 || c == 0u8) == 0;
+}
+
+// the head of a request
+function requestHead(method: string, host: string, port: i64, fallback: i64, target: string, headers: [string, string][k], length: i64): string {
+    const name = host.indexOf(":") >= 0 ? `[${host}]` : host;
+    const where = port == fallback ? name : `${name}:${port}`;
+    const extra = join(map(headers, (h) => {
+        const [k, v] = h;
+        return `${k}: ${v}\r\n`;
+    }), "");
+    const sized = length > 0 || method == "POST" || method == "PUT" || method == "PATCH" ? `Content-Length: ${length}\r\n` : "";
+    return `${method} ${target} HTTP/1.1\r\nHost: ${where}\r\nUser-Agent: isocron\r\nConnection: close\r\n${extra}${sized}\r\n`;
+}
+
+// a fault of the request itself
+function requestFault(method: string, target: string, headers: [string, string][k]): string {
+    if (!tokenOk(method)) {
+        return `the method ${method}`;
+    }
+    if (!valueOk(target) || target.indexOf(" ") >= 0) {
+        return `the target ${target}`;
+    }
+    const bad = filter(headers, (h) => {
+        const [k, v] = h;
+        return !tokenOk(k) || !valueOk(v);
+    });
+    if (bad.length > 0) {
+        const [k, v] = bad[0];
+        return `the header ${k}`;
+    }
+    return "";
+}
+
+// ----- the response ---------------------------------------------------------
+
+// arrays of bytes, the last read first
+type Chunks = Done | More(u8[k], Chunks);
+
+// the arrays of `cs` concatenated two by two onto `acc`, in the reverse
+// order of `cs` (a loop); `newest` when `cs` has the newest first
+function pairs(cs: Chunks, acc: Chunks, newest: boolean): Chunks {
+    return match (cs) {
+        Done => acc,
+        More(x, rest) => match (rest) {
+            Done => More(x, acc),
+            More(y, more) => pairs(more, More(newest ? concat(y, x) : concat(x, y), acc), newest),
+        },
+    };
+}
+
+// the bytes of the `n` nodes of `cs` in the order they were read (`cs`
+// has the newest first when `newest`): two by two, each byte copied
+// log2(n) times, n nodes made in all
+function flatten(cs: Chunks, n: i64, newest: boolean): u8[k] {
+    if (n <= 1) {
+        return match (cs) {
+            Done => [],
+            More(x, rest) => x,
+        };
+    }
+    return flatten(pairs(cs, Done, newest), (n + 1) / 2, !newest);
+}
+
+// the place after the end of the head (CR LF CR LF) from `at`, or -1: a
+// loop that stops there
+function headEnd(b: u8[n], at: i64): i64 {
+    if (at + 3 >= b.length) {
+        return -1;
+    }
+    return b[at] == 13u8 && b[at + 1] == 10u8 && b[at + 2] == 13u8 && b[at + 3] == 10u8 ? at + 4 : headEnd(b, at + 1);
+}
+
+// the bytes of `c` until the end of the head: all the bytes read and the
+// place after the head (the bytes before `from` already searched)
+action readHead(c: net.Conn, buf: u8[n], from: i64): Result<[u8[k], i64], HttpError> {
+    const at = headEnd(buf, from);
+    if (at >= 0) {
+        return Ok([buf, at] as const);
+    }
+    if (buf.length > HEAD_LIMIT) {
+        return Err(TooLarge(HEAD_LIMIT));
+    }
+    return match (net.read(c, 65536)) {
+        Ok(b) => b.length == 0 ? Err(Malformed("the connection closed before the end of the head")) : readHead(c, concat(buf, b), Math.max(buf.length - 3, 0)),
+        Err(e) => Err(Io(e)),
+    };
+}
+
+// the bytes of `c` until `want` of them are read (`have` already, in
+// `count` nodes of `cs`)
+action readLength(c: net.Conn, status: i64, hs: [string, string][h], cs: Chunks, count: i64, have: i64, want: i64): Result<Response, HttpError> {
+    if (have >= want) {
+        return Ok({ status: status, headers: hs, body: have == want ? flatten(cs, count, true) : flatten(cs, count, true).slice(0, want) });
+    }
+    return match (net.read(c, Math.min(want - have, 1048576))) {
+        Ok(b) => b.length == 0 ? Err(Malformed(`the body ended after ${have} of ${want} bytes`)) : readLength(c, status, hs, More(b, cs), count + 1, have + b.length, want),
+        Err(e) => Err(Io(e)),
+    };
+}
+
+// the bytes of `c` until the end of the stream
+action readToEnd(c: net.Conn, status: i64, hs: [string, string][h], cs: Chunks, count: i64, have: i64): Result<Response, HttpError> {
+    if (have > BODY_LIMIT) {
+        return Err(TooLarge(BODY_LIMIT));
+    }
+    return match (net.read(c, 1048576)) {
+        Ok(b) => b.length == 0 ? Ok({ status: status, headers: hs, body: flatten(cs, count, true) }) : readToEnd(c, status, hs, More(b, cs), count + 1, have + b.length),
+        Err(e) => Err(Io(e)),
+    };
+}
+
+// the place of the first CR LF of `b` from `at`, or -1
+function lineEnd(b: u8[n], at: i64): i64 {
+    if (at + 1 >= b.length) {
+        return -1;
+    }
+    return b[at] == 13u8 && b[at + 1] == 10u8 ? at : lineEnd(b, at + 1);
+}
+
+// the value of the hexadecimal digits of `b` from `a` to `z` (before any
+// `;`), or -1
+function hexSize(b: u8[n], a: i64, z: i64): i64 {
+    const stop = firstBefore(b, a, z, 59u8, 32u8);
+    if (stop == a || stop - a > 15) {
+        return -1;
+    }
+    return fold(iota(stop - a), 0, (v, j) => {
+        const c = b[a + j];
+        const d = c >= 48u8 && c <= 57u8 ? i64(c) - 48 : (c >= 97u8 && c <= 102u8 ? i64(c) - 87 : (c >= 65u8 && c <= 70u8 ? i64(c) - 55 : -1));
+        return v < 0 || d < 0 ? -1 : v * 16 + d;
+    });
+}
+
+// the chunks of `buf` from `at` that are whole, after the `count` nodes of
+// `cs` (`have` bytes): [the chunks, their count and bytes, a place, a
+// state, a fault, a length]: the state 1 when the last chunk is there, -1
+// a fault, -2 too large, 0 a line of a size not whole at the place, 2 the
+// data of a chunk of the length not whole from the place; a function that
+// only reads `buf` (passed to itself as it is: never copied)
+function chunksIn(buf: u8[n], at: i64, cs: Chunks, count: i64, have: i64): [Chunks, i64, i64, i64, i64, string, i64] {
+    const line = lineEnd(buf, at);
+    if (line < 0) {
+        return buf.length - at > 4096 ? [cs, count, have, at, -1, "a line of chunked longer than 4096 bytes", 0] as const : [cs, count, have, at, 0, "", 0] as const;
+    }
+    const len = hexSize(buf, at, line);
+    if (len < 0) {
+        return [cs, count, have, at, -1, "the size of a chunk", 0] as const;
+    }
+    if (len == 0) {
+        return [cs, count, have, at, 1, "", 0] as const;
+    }
+    if (have + len > BODY_LIMIT) {
+        return [cs, count, have, at, -2, "", 0] as const;
+    }
+    const start = line + 2;
+    if (buf.length < start + len + 2) {
+        return [cs, count, have, start, 2, "", len] as const;
+    }
+    if (buf[start + len] != 13u8 || buf[start + len + 1] != 10u8) {
+        return [cs, count, have, at, -1, "a chunk not followed by CR LF", 0] as const;
+    }
+    return chunksIn(buf, start + len + 2, More(buf.slice(start, start + len), cs), count + 1, have + len);
+}
+
+// the body in chunks: `buf` the bytes read and not yet taken (after the CR
+// LF that ends a chunk when `crlf`), the chunks found in `count` nodes of
+// `cs`, `have` bytes of them; a chunk of `want` bytes not whole (0: none),
+// `got` of them in the `pn` nodes of `ps`, read by pieces (each byte
+// copied once, not with each read; `buf` then holds what follows them);
+// each call with new bytes read
+action readChunked(c: net.Conn, status: i64, hs: [string, string][h], buf: u8[n], crlf: boolean, cs: Chunks, count: i64, have: i64, ps: Chunks, pn: i64, got: i64, want: i64): Result<Response, HttpError> {
+    if (want > 0) {
+        if (got >= want) {
+            return readChunked(c, status, hs, buf, true, More(flatten(ps, pn, true), cs), count + 1, have + want, Done, 0, 0, 0);
+        }
+        // at least 64 KiB read (what follows the chunk too, kept in `buf`)
+        return match (net.read(c, Math.min(Math.max(want - got, 65536), 1048576))) {
+            Ok(b) => {
+                const k = Math.min(b.length, want - got);
+                if (b.length == 0) {
+                    return Err(Malformed("the body ended inside a chunk"));
+                }
+                return k == b.length ? readChunked(c, status, hs, buf, crlf, cs, count, have, More(b, ps), pn + 1, got + k, want) : readChunked(c, status, hs, b.slice(k, b.length), crlf, cs, count, have, More(b.slice(0, k), ps), pn + 1, got + k, want);
+            },
+            Err(e) => Err(Io(e)),
+        };
+    }
+    if (crlf && buf.length >= 2 && (buf[0] != 13u8 || buf[1] != 10u8)) {
+        return Err(Malformed("a chunk not followed by CR LF"));
+    }
+    const [found, n2, h2, at, state, why, len] = crlf && buf.length < 2 ? [cs, count, have, 0, 0, "", 0] as const : chunksIn(buf, crlf ? 2 : 0, cs, count, have);
+    if (state == 1) {
+        return Ok({ status: status, headers: hs, body: flatten(found, n2, true) });
+    }
+    if (state == -1) {
+        return Err(Malformed(why));
+    }
+    if (state == -2) {
+        return Err(TooLarge(BODY_LIMIT));
+    }
+    if (state == 2) {
+        // its data so far (the CR of its end apart)
+        const end = Math.min(buf.length, at + len);
+        return readChunked(c, status, hs, buf.slice(end, buf.length), true, found, n2, h2, More(buf.slice(at, end), Done), 1, end - at, len);
+    }
+    return match (net.read(c, 65536)) {
+        Ok(b) => b.length == 0 ? Err(Malformed("the body ended inside a chunk")) : readChunked(c, status, hs, concat(buf.slice(at, buf.length), b), crlf && at == 0, found, n2, h2, Done, 0, 0, 0),
+        Err(e) => Err(Io(e)),
+    };
+}
+
+// the bytes of `b` are UTF-8
+function utf8(b: u8[n]): boolean {
+    if (count(b, (x) => x >= 0x80u8) == 0) {
+        return true;
+    }
+    return fold(b, 0, (want, x) => {
+        if (want < 0) {
+            return -1;
+        }
+        if (want > 0) {
+            return (x & 0xC0u8) == 0x80u8 ? want - 1 : -1;
+        }
+        if (x < 0x80u8) {
+            return 0;
+        }
+        if ((x & 0xE0u8) == 0xC0u8 && x >= 0xC2u8) {
+            return 1;
+        }
+        if ((x & 0xF0u8) == 0xE0u8) {
+            return 2;
+        }
+        if ((x & 0xF8u8) == 0xF0u8 && x <= 0xF4u8) {
+            return 3;
+        }
+        return -1;
+    }) == 0;
+}
+
+// the value of the header `name` (its case ignored) of `hs`, the last one
+export function headerOf(hs: [string, string][k], name: string): Option<string> {
+    const low = name.toLowerCase();
+    const found = filter(hs, (h) => {
+        const [k, v] = h;
+        return k.toLowerCase() == low;
+    });
+    if (found.length == 0) {
+        return None;
+    }
+    const [k, v] = found[found.length - 1];
+    return Some(v);
+}
+
+// the value of the header `name` of the response `r`
+export function header(r: Response, name: string): Option<string> {
+    return headerOf(r.headers, name);
+}
+
+// the body of `r` as text (a byte that is not UTF-8: `?`)
+export function text(r: Response): string {
+    return utf8(r.body) ? stringOf(r.body) : stringOf(map(r.body, (x) => x >= 0x80u8 ? 63u8 : x));
+}
+
+// the head of a response: [status, headers], or its fault
+function parseHead(head: string): Result<[i64, [string, string][k]], HttpError> {
+    const lines = head.split("\r\n");
+    const status = lines[0];
+    if (!status.startsWith("HTTP/1.") || status.length < 12 || status.slice(8, 9) != " ") {
+        return Err(Malformed(`the status line ${status}`));
+    }
+    const code = portOf(status.slice(9, 12));
+    if (code < 100 || code > 999) {
+        return Err(Malformed(`the status line ${status}`));
+    }
+    const rest = filter(lines.slice(1, lines.length), (l) => l != "");
+    const bad = filter(rest, (l) => l.indexOf(":") <= 0);
+    if (bad.length > 0) {
+        return Err(Malformed(`the header line ${bad[0]}`));
+    }
+    return Ok([code, map(rest, (l) => {
+        const i = l.indexOf(":");
+        return [l.slice(0, i).trim(), l.slice(i + 1, l.length).trim()] as const;
+    })] as const);
+}
+
+// the response read from `c` to the request `method`
+action readResponse(c: net.Conn, method: string): Result<Response, HttpError> {
+    return match (readHead(c, [], 0)) {
+        Ok([buf, at]) => {
+            const headBytes = buf.slice(0, at - 4);
+            if (!utf8(headBytes)) {
+                return Err(Malformed("the head is not text"));
+            }
+            return match (parseHead(stringOf(headBytes))) {
+                Ok([status, hs]) => {
+                    const rest = buf.slice(at, buf.length);
+                    const none = method == "HEAD" || status == 204 || status == 304 || (status >= 100 && status < 200);
+                    const chunked = match (headerOf(hs, "transfer-encoding")) {
+                        Some(v) => v.toLowerCase().indexOf("chunked") >= 0,
+                        None => false,
+                    };
+                    const length = match (headerOf(hs, "content-length")) {
+                        Some(v) => {
+                            const t = bytes(v);
+                            return t.length > 0 && t.length < 16 && count(t, (x) => x < 48u8 || x > 57u8) == 0 ? fold(t, 0, (n, x) => n * 10 + i64(x - 48u8)) : -2;
+                        },
+                        None => -1,
+                    };
+                    if (none) {
+                        return Ok({ status: status, headers: hs, body: [] });
+                    }
+                    if (chunked) {
+                        return readChunked(c, status, hs, rest, false, Done, 0, 0, Done, 0, 0, 0);
+                    }
+                    if (length == -2) {
+                        return Err(Malformed("the header Content-Length"));
+                    }
+                    if (length > BODY_LIMIT) {
+                        return Err(TooLarge(BODY_LIMIT));
+                    }
+                    return length >= 0 ? readLength(c, status, hs, More(rest, Done), 1, rest.length, length) : readToEnd(c, status, hs, More(rest, Done), 1, rest.length);
+                },
+                Err(e) => Err(e),
+            };
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// the request sent on the connection `c` (which stays open), to `host` and
+// `port` (`fallback` the port of its scheme), and its response read
+export action exchange(c: net.Conn, method: string, host: string, port: i64, fallback: i64, target: string, headers: [string, string][k], body: u8[n]): Result<Response, HttpError> {
+    const fault = requestFault(method, target, headers);
+    if (fault != "") {
+        return Err(Malformed(fault));
+    }
+    return match (net.write(c, concat(bytes(requestHead(method, host, port, fallback, target, headers, body.length)), body))) {
+        Ok(_) => readResponse(c, method),
+        Err(e) => Err(Io(e)),
+    };
+}
+
+// the request `method` of `url` with the headers and the body given
+export action request(method: string, url: string, headers: [string, string][k], body: u8[n]): Result<Response, HttpError> {
+    return match (parseUrl(url)) {
+        Ok([scheme, host, port, target]) => {
+            if (scheme == "https") {
+                return Err(BadUrl(`${url}: the module https sends it (import { get } from "https")`));
+            }
+            return match (net.connect(host, port)) {
+                Ok(c) => {
+                    const r = exchange(c, method, host, port, 80, target, headers, body);
+                    net.close(c);
+                    return r;
+                },
+                Err(e) => Err(Io(e)),
+            };
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// the response to `GET url`
+export action get(url: string): Result<Response, HttpError> {
+    return request("GET", url, [], []);
+}

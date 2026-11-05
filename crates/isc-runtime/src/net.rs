@@ -257,6 +257,12 @@ mod imp {
         *out = 0;
     }
 
+    /// `sysShutdown(conn)`: `shutdown(fd, SHUT_WR)`.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_shutdown(out: *mut i64, c: i64) {
+        *out = net_code(syscall6(48, c as usize, 1, 0, 0, 0, 0).min(0));
+    }
+
     /// The delay of `ms` milliseconds of each read (`SO_RCVTIMEO`) and write
     /// of the socket `fd`: 0 for none.
     unsafe fn timeouts(fd: i64, ms: i64) -> isize {
@@ -360,6 +366,7 @@ mod imp {
         fn sendto(s: usize, buf: *const u8, len: c_int, flags: c_int, to: *const u8, tolen: c_int) -> c_int;
         fn recvfrom(s: usize, buf: *mut u8, len: c_int, flags: c_int, from: *mut u8, fromlen: *mut c_int) -> c_int;
         fn closesocket(s: usize) -> c_int;
+        fn shutdown(s: usize, how: c_int) -> c_int;
         fn setsockopt(s: usize, level: c_int, name: c_int, value: *const u8, len: c_int) -> c_int;
         fn getsockname(s: usize, name: *mut u8, len: *mut c_int) -> c_int;
         fn GetAddrInfoW(node: *const u16, service: *const u16, hints: *const c_void, result: *mut *mut AddrInfoW) -> c_int;
@@ -503,6 +510,12 @@ mod imp {
     pub unsafe extern "C" fn isc_sys_closelistener(out: *mut i64, l: i64) {
         close_socket(l);
         *out = 0;
+    }
+
+    /// `sysShutdown(conn)`: `shutdown(s, SD_SEND)`.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_shutdown(out: *mut i64, c: i64) {
+        *out = if shutdown(c as usize, 1) == 0 { 0 } else { last_code() };
     }
 
     /// The delay of each read and write of `s`, in milliseconds (a DWORD).

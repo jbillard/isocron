@@ -286,10 +286,13 @@ pub enum SysOp {
     /// `sysResolve(host) => [addresses, code]`: the resolver of Windows
     /// (Linux: the module resolves, code 7)
     Resolve,
+    /// `sysShutdown(conn) => code`: its sending side closed (the peer reads
+    /// the end of the stream), the connection kept
+    Shutdown,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 24] = [
+    pub const ALL: [SysOp; 25] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -314,6 +317,7 @@ impl SysOp {
         SysOp::UdpQuery,
         SysOp::Platform,
         SysOp::Resolve,
+        SysOp::Shutdown,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
@@ -337,6 +341,7 @@ impl SysOp {
                 | SysOp::LocalPort
                 | SysOp::UdpQuery
                 | SysOp::Resolve
+                | SysOp::Shutdown
         )
     }
 
@@ -367,6 +372,7 @@ impl SysOp {
             SysOp::UdpQuery => "sysUdpQuery",
             SysOp::Platform => "sysPlatform",
             SysOp::Resolve => "sysResolve",
+            SysOp::Shutdown => "sysShutdown",
         }
     }
 }

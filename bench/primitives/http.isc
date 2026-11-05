@@ -1,0 +1,52 @@
+// The audit of every form against the machine (D301): the client of the
+// module `http` (D340) on the local machine, one thread: a response written
+// by the server side, then the request sent and the response read by
+// `exchange`: a small body by its length, 64 chunks of 1 KiB. Each line: a
+// name, the nanoseconds of one exchange (the mean over `rounds`), a
+// checksum; against `http.c` (the floor).
+// usage: http <rounds>
+import * as http from "http";
+import * as net from "net";
+
+action exchanges(c: net.Conn, s: net.Conn, response: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const w = net.write(s, response);
+    return match (http.exchange(c, "GET", "example.test", 80, 80, "/a", [], [])) {
+        Ok(x) => exchanges(c, s, response, r - 1, acc + x.status + x.body.length),
+        Err(e) => -1,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    const small = bytes("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nhello, world!");
+    const piece = join(map(iota(1024), (i) => "x"), "");
+    const chunked = bytes("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + join(map(iota(64), (i) => "400\r\n" + piece + "\r\n"), "") + "0\r\n\r\n");
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            match (net.connect("127.0.0.1", net.port(l))) {
+                Ok(c) => match (net.accept(l)) {
+                    Ok([s, peer]) => {
+                        const t0 = clock();
+                        const a = exchanges(c, s, small, r, 0);
+                        const t1 = clock();
+                        print(`exchange.small ${f64(t1 - t0) / f64(r)} ${a / r}`);
+                        const t2 = clock();
+                        const b = exchanges(c, s, chunked, r, 0);
+                        const t3 = clock();
+                        print(`exchange.chunked64 ${f64(t3 - t2) / f64(r)} ${b / r}`);
+                        net.close(s);
+                        net.close(c);
+                    },
+                    Err(e) => net.close(c),
+                },
+                Err(e) => print("connect failed"),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}

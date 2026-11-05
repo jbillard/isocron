@@ -238,6 +238,13 @@ export action setTimeout(c: Conn, ms: i64): Result<void, IoError> {
     return code == 0 ? Ok(()) : Err(ioError(code, "setTimeout"));
 }
 
+// the sending side of `c` closed: the peer reads the end of its stream,
+// `c` still reads (to close later)
+export action closeWrite(c: Conn): Result<void, IoError> {
+    const code = sysShutdown(c);
+    return code == 0 ? Ok(()) : Err(ioError(code, "closeWrite"));
+}
+
 // the connection closed: it cannot be used after
 export action close(c: Conn): void {
     sysClose(c);

@@ -1,0 +1,51 @@
+import * as http from "http";
+import * as net from "net";
+
+// a response written by the server side first, its sending side closed
+// (the end of the stream, the request still received): the kernel keeps it
+// until the client reads it after sending its request
+action canned(response: string): void {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            match (net.connect("127.0.0.1", net.port(l))) {
+                Ok(c) => {
+                    match (net.accept(l)) {
+                        Ok([s, peer]) => {
+                            const w = net.writeText(s, response);
+                            const h = net.closeWrite(s);
+                            match (http.exchange(c, "GET", "example.test", 80, 80, "/a?b=1", [["Accept", "*/*"] as const], [])) {
+                                Ok(r) => print(`${r.status} ${http.header(r, "content-type") ?? "-"} ${r.body.length} ${http.text(r)}`),
+                                Err(e) => print(http.message(e)),
+                            };
+                            net.close(s);
+                        },
+                        Err(e) => print("accept failed"),
+                    };
+                    net.close(c);
+                },
+                Err(e) => print("connect failed"),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+}
+
+action main(args: string[k]): i32 {
+    canned("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello");
+    canned("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;x=y\r\npedia\r\n0\r\n\r\n");
+    canned("HTTP/1.0 404 Not Found\r\n\r\nno such page");
+    canned("HTTP/1.1 301 Moved\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n");
+    canned("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+    canned("garbage\r\n\r\n");
+    canned("HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n");
+    print(map(["http://a.b:8080/x?y", "http://[::1]:81", "https://h", "ftp://x", "http://:80/", "http://h:99999/"], (u) => match (http.parseUrl(u)) {
+        Ok([s, h, p, t]) => `${s} ${h} ${p} ${t}`,
+        Err(e) => http.message(e),
+    }));
+    match (http.get("https://example.test/")) {
+        Ok(r) => print(r.status),
+        Err(e) => print(http.message(e)),
+    };
+    return 0;
+}
