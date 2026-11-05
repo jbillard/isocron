@@ -736,6 +736,94 @@ int main(int argc, char **argv) {
         munmap(txt, BLOCK * t + 128);
     }
 
+    // regex-redux: the same matches by groups of 8 blocks (D311), cheaper:
+    // the classes of each byte looked up in a table (bit c: base c), the bits
+    // of each lane of 8 bytes transposed (gf2p8affineqb), so that a block's
+    // classes are the lanes of one vector; the 8 vectors of a group
+    // transposed, a lane per block; each place of a literal the lane of its
+    // base shifted by its place with the next block's (the lanes moved by
+    // one), anded lane by lane: no reduction of lanes; ns per byte per core
+    {
+        const size_t BLOCK = 256u << 10;
+        unsigned char *txt = mapped(BLOCK * t + 1024);
+        const char *bases = "acgt";
+        uint64_t h = 0x9e3779b97f4a7c15ull;
+        for (size_t i = 0; i < BLOCK * t + 1024; i++) { h ^= h << 13; h ^= h >> 7; h ^= h << 17; txt[i] = bases[h & 3]; }
+        unsigned char table[128] = {0};
+        table['a'] = 1, table['c'] = 2, table['g'] = 4, table['t'] = 8;
+        const __m512i lo = _mm512_loadu_si512(table), hi = _mm512_loadu_si512(table + 64);
+        const __m512i rev = _mm512_set_epi64(0x38393a3b3c3d3e3fll, 0x3031323334353637ll, 0x28292a2b2c2d2e2fll, 0x2021222324252627ll,
+                                             0x18191a1b1c1d1e1fll, 0x1011121314151617ll, 0x08090a0b0c0d0e0fll, 0x0001020304050607ll);
+        const __m512i sel = _mm512_set1_epi64(0x8040201008040201ll);
+        const __m512i gather = _mm512_set_epi64(0x3f372f271f170f07ll, 0x3e362e261e160e06ll, 0x3d352d251d150d05ll, 0x3c342c241c140c04ll,
+                                                0x3b332b231b130b03ll, 0x3a322a221a120a02ll, 0x3931292119110901ll, 0x3830282018100800ll);
+        const __m512i i0 = _mm512_set_epi64(13, 12, 5, 4, 9, 8, 1, 0), i1 = _mm512_set_epi64(15, 14, 7, 6, 11, 10, 3, 2);
+        const __m512i j0 = _mm512_set_epi64(11, 10, 9, 8, 3, 2, 1, 0);
+        const long PASSES = 1l << 12;
+        best = 1e9;
+        long found_check = 0;
+        for (int r = 0; r < REPS; r++) {
+            long found = 0;
+            double s = now();
+#pragma omp parallel for reduction(+ : found)
+            for (int k = 0; k < t; k++) {
+                const unsigned char *b = txt + (size_t)k * BLOCK;
+                long f = 0;
+                for (long pass = 0; pass < PASSES / t; pass++) {
+                    __m512i cur[4], nxt[4];
+#define LANES(at, out)                                                                                          \
+    do {                                                                                                        \
+        __m512i l[8];                                                                                           \
+        for (int q = 0; q < 8; q++) {                                                                           \
+            __m512i x = _mm512_loadu_si512((at) + 64 * q);                                                      \
+            __m512i c = _mm512_permutex2var_epi8(lo, x, hi);                                                    \
+            l[q] = _mm512_permutexvar_epi8(gather, _mm512_gf2p8affine_epi64_epi8(sel, _mm512_permutexvar_epi8(rev, c), 0)); \
+        }                                                                                                       \
+        __m512i t0 = _mm512_unpacklo_epi64(l[0], l[1]), t1 = _mm512_unpackhi_epi64(l[0], l[1]);                \
+        __m512i t2 = _mm512_unpacklo_epi64(l[2], l[3]), t3 = _mm512_unpackhi_epi64(l[2], l[3]);                \
+        __m512i t4 = _mm512_unpacklo_epi64(l[4], l[5]), t5 = _mm512_unpackhi_epi64(l[4], l[5]);                \
+        __m512i t6 = _mm512_unpacklo_epi64(l[6], l[7]), t7 = _mm512_unpackhi_epi64(l[6], l[7]);                \
+        __m512i u0 = _mm512_permutex2var_epi64(t0, i0, t2), u1 = _mm512_permutex2var_epi64(t1, i0, t3);        \
+        __m512i u2 = _mm512_permutex2var_epi64(t0, i1, t2), u3 = _mm512_permutex2var_epi64(t1, i1, t3);        \
+        __m512i u4 = _mm512_permutex2var_epi64(t4, i0, t6), u5 = _mm512_permutex2var_epi64(t5, i0, t7);        \
+        __m512i u6 = _mm512_permutex2var_epi64(t4, i1, t6), u7 = _mm512_permutex2var_epi64(t5, i1, t7);        \
+        (out)[0] = _mm512_permutex2var_epi64(u0, j0, u4), (out)[1] = _mm512_permutex2var_epi64(u1, j0, u5);    \
+        (out)[2] = _mm512_permutex2var_epi64(u2, j0, u6), (out)[3] = _mm512_permutex2var_epi64(u3, j0, u7);    \
+    } while (0)
+                    LANES(b, cur);
+                    for (size_t i = 0; i + 512 <= BLOCK; i += 512) {
+                        LANES(b + i + 512, nxt);
+                        __m512i nb[4];
+                        for (int c = 0; c < 4; c++) nb[c] = _mm512_alignr_epi64(nxt[c], cur[c], 1);
+#define SH(c, j) (j == 0 ? cur[c] : _mm512_or_si512(_mm512_srli_epi64(cur[c], j), _mm512_slli_epi64(nb[c], 64 - j)))
+                        // agggtaaa, tttaccct: a 0, c 1, g 2, t 3
+                        __m512i m1 = _mm512_and_si512(_mm512_and_si512(_mm512_and_si512(SH(0, 0), SH(2, 1)), _mm512_and_si512(SH(2, 2), SH(2, 3))),
+                                                      _mm512_and_si512(_mm512_and_si512(SH(3, 4), SH(0, 5)), _mm512_and_si512(SH(0, 6), SH(0, 7))));
+                        __m512i m2 = _mm512_and_si512(_mm512_and_si512(_mm512_and_si512(SH(3, 0), SH(3, 1)), _mm512_and_si512(SH(3, 2), SH(0, 3))),
+                                                      _mm512_and_si512(_mm512_and_si512(SH(1, 4), SH(1, 5)), _mm512_and_si512(SH(1, 6), SH(3, 7))));
+#undef SH
+                        f += _mm512_reduce_add_epi64(_mm512_popcnt_epi64(_mm512_or_si512(m1, m2)));
+                        for (int c = 0; c < 4; c++) cur[c] = nxt[c];
+                    }
+#undef LANES
+                }
+                found += f;
+            }
+            sink += found;
+            found_check = found;
+            double e = now() - s;
+            if (e < best) best = e;
+        }
+        // the same count by bytes: the scan finds every match
+        long naive = 0;
+        for (int k = 0; k < t; k++)
+            for (size_t i = (size_t)k * BLOCK; i < (size_t)k * BLOCK + BLOCK; i++)
+                naive += memcmp(txt + i, "agggtaaa", 8) == 0 || memcmp(txt + i, "tttaccct", 8) == 0;
+        if (found_check != naive * (PASSES / t)) { fprintf(stderr, "literal_lanes_scan: %ld matches, %ld expected\n", found_check, naive * (PASSES / t)); exit(1); }
+        printf("literal_lanes_scan %.4f ns_per_byte_per_core\n", best * t / ((double)(PASSES / t) * t * BLOCK) * 1e9);
+        munmap(txt, BLOCK * t + 1024);
+    }
+
     // fasta: lines of 60 bytes and a newline made from a table of 139968
     // bytes read in turn (one period of the generator, its symbols), into a
     // buffer of 256 KiB per thread (the output written by blocks that stay

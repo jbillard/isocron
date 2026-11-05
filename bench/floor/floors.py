@@ -161,8 +161,10 @@ def regexredux():
     b = 50.8e6
     read = b / (c4("file_read_new") * 1e9)
     copy = b / (c4("copy") * 1e9)
-    scan = max(b * c4("literal_pair_scan") * ns / T, b / (c4("read") * 1e9))
-    return read + copy + 9 * scan + 5 * max(copy, scan), "read %.1f ms, 6 copies of 50.8 MB at %.1f GB/s, 9 scans for literals (%.3f ns per byte)" % (read * 1e3, c4("copy"), c4("literal_pair_scan")), "estimate"
+    # the cheaper of the two scans known (D311: by groups of 8 blocks)
+    lit = min(c4("literal_pair_scan"), c4("literal_lanes_scan"))
+    scan = max(b * lit * ns / T, b / (c4("read") * 1e9))
+    return read + copy + 9 * scan + 5 * max(copy, scan), "read %.1f ms, 6 copies of 50.8 MB at %.1f GB/s, 9 scans for literals (%.3f ns per byte)" % (read * 1e3, c4("copy"), lit), "estimate"
 rows.append(("regexredux", regexredux()))
 
 # reverse-complement: the input (254 MB) read by every thread into new pages,

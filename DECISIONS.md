@@ -5934,3 +5934,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   match, and the reverse; parts cut inside matches and at their ends;
   fixed and delimited patterns, by lanes and by masks; merged against one
   search); the tests of `until` take the new rule (`up_to`).
+- **D311 — The fixed alternatives searched by groups of 8 blocks
+  (2026-11-05).** After D309 the 9 counts of regex-redux took 24.0 ms of
+  its 104.7: a count 0.20 ns a byte on one thread, 111 instructions a block
+  (D306), of which the `and` of the 8 lanes of each alternative (7
+  instructions each, a chain of their latencies). Now the masks of the
+  classes of 8 blocks of 64 bytes (5 instructions each, D306) are
+  transposed, 8 by 8 lanes of 64 bits: lane i of vector c the mask of class
+  c in block i; each place of an alternative is the vector of its class
+  shifted by its place, with the next block's (the lanes moved by one),
+  anded lane by lane: no reduction; a group without a start of match is
+  left at once, the starts of the others taken block by block as before
+  (their choice, their order, the stop of D309). The classes and shifts of
+  each place prepared once for a search. A prototype of the method, alone,
+  0.063 ns a byte (the 1502 matches of a naive count); in the engine a
+  count 0.20 -> 0.097 ns a byte, 74 instructions a block before the places
+  prepared once (0.106). The floor's scan written the same way
+  (`literal_lanes_scan` in `bench/floor/floor.c`: the pattern known, its
+  shifts constants) takes 0.0636 ns a byte against 0.0747 for
+  `literal_pair_scan`; `floors.py` takes the cheaper, and the floor of
+  regex-redux does not move (its scan is bound by the reading of the text
+  from memory, `max` of the two). Only that constant added to
+  `results/machine_floor.txt`: the run of `bench/floor/run.sh` that measured
+  it moved 12 others by 2 to 8.9 % (the state of the machine:
+  `tree_loop_depth20` +8.9 %, `random_increment_256KiB` -8.8 %), the floors
+  of the other programs kept. Tried and not kept: the 8 loads of a group in
+  the text without a test, the same time (0.096 to 0.101 ns a byte against
+  0.097 to 0.101). regex-redux -14.53 % [-15.02 %, -12.82 %] (104.7 ->
+  89.6 ms: the counts 24.0 -> 12.9 ms); k-nucleotide and pidigits, other
+  binaries (the runtime they link), +0.33 % [-0.20 %, +0.63 %] and -0.05 %
+  [-0.13 %, +0.17 %]; the seven others the same binaries; the same output
+  on 1, 3 and 8 threads. The search by lanes of D306, single blocks, gone.
+  Tested by the tests of D306 and D309 (`lanes_find_the_matches_of_the_masks`
+  against the fixed plan, `parts_stopped_at_the_next_are_one_search`,
+  against the automaton), in the build for x86-64-v4 of the suite.

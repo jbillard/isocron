@@ -29,6 +29,7 @@ tree_loop_depth20 2.022 ns_per_node_per_core
 fasta_number_iub 1.029 ns_per_number_per_core
 fasta_number_homo 0.557 ns_per_number_per_core
 literal_pair_scan 0.0747 ns_per_byte_per_core
+literal_lanes_scan 0.0636 ns_per_byte_per_core
 table_rows 0.0350 ns_per_byte_per_core
 # 4 thread(s), CPUs 0,1,2,3
 read 47.3 GB/s
@@ -61,4 +62,5 @@ tree_loop_depth20 4.424 ns_per_node_per_core
 fasta_number_iub 1.029 ns_per_number_per_core
 fasta_number_homo 0.559 ns_per_number_per_core
 literal_pair_scan 0.0742 ns_per_byte_per_core
+literal_lanes_scan 0.0639 ns_per_byte_per_core
 table_rows 0.0347 ns_per_byte_per_core

@@ -287,7 +287,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The fixed alternatives of a search by lanes of AVX-512: a count 0.29 -> 0.20 ns a byte, regex-redux -13.31 % (D306)
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)
 - [x] A part of a search stopped at the next part when no match crosses it: regex-redux -9.76 % (D309)
-- [ ] regex-redux at 104.7 ms: its dense replacements (50.5 ms: millions of matches searched and written), its counts (24.0 ms, the reduction of the lanes), its cleaning (12.8 ms)
+- [x] The fixed alternatives searched by groups of 8 blocks, no reduction of lanes: regex-redux -14.53 % (D311)
+- [ ] regex-redux at 89.6 ms (3 times its floor: 89.2): its dense replacements (49.4 ms: millions of matches searched and written), its cleaning (12.9 ms: the zeroing of its new pages)
 
 ## The trusted base (the remarks of the author, 2026-11-04)
 
