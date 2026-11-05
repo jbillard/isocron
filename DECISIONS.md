@@ -7433,4 +7433,8 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `isc_str_append`) and `normalize_as_before` (`std_sys.rs`: the old
     algorithm and the new one on the 7812 paths of up to five parts of
     `""`, `.`, `..`, `a`, `bc`, absolute and relative, interpreted and
-    compiled on 1 and 4 threads).
+    compiled on 1 and 4 threads). The negative test of the memory check that
+    removes the copy of a parameter returned (`verify.rs`) took `doubled(x,
+    k)`, now of rule A (no copy left to remove): its recursion made not a
+    tail call, so that the parameter stays borrowed and its copy is
+    there.

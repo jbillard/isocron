@@ -235,12 +235,14 @@ fn a_filter_read_by_index_is_rejected() {
 #[test]
 fn a_function_returning_its_borrowed_parameter_is_rejected() {
     // the copy of `x` returned by `doubled` removed: the result would be the
-    // memory of the caller
+    // memory of the caller (its call to itself not a tail call, so `x` is
+    // borrowed: with a tail call it is owned and given back without a copy,
+    // rule A of D351)
     let mut p = ir("function doubled(x: f64[n], k: i64): f64[n] {
     if (k == 0) {
         return x;
     } else {
-        return doubled(map(x, (v) => v * 2.0), k - 1);
+        return map(doubled(x, k - 1), (v) => v * 2.0);
     }
 }
 
