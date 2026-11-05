@@ -6470,3 +6470,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`windows.rs`: the program of `std_sys.rs` run there and under Linux, the
   same outputs on 1 and 4 threads); the three other tests of Windows pass
   with the new runtime.
+- **D332 — The module `sys` under WASI (2026-11-05).** The eleven
+  primitives by the functions of wasi-libc (`stat`, `opendir`, `readdir`,
+  `mkdir`, `unlink`, `rmdir`, `rename`, `getcwd`, `open`, `read`, `write`,
+  `environ`), in the folders the host opens: WASI has them all, so `sys`
+  is not refused there (D324 refuses only what a target lacks). The layout
+  of `struct stat` of wasi-libc for wasm32 measured with `offsetof` (a
+  program in C built by `zig cc -target wasm32-wasi` and run by
+  `wasmtime`): 144 bytes, the mode at 24, the size at 48, the time of the
+  last change at 88 (seconds, 64 bits) and 96 (nanoseconds, 32 bits); the
+  name of a `dirent` at 9; `nlink_t` is 32 bits there, so the layout of
+  Linux would have been wrong. The codes of WASI for the kinds: 44 not
+  found, 2 and 63 permission denied, 20 already exists, 55 not empty, 14
+  refused, 73 timed out (`wasi/api.h`). Tested by `sys_under_wasi`
+  (`std_sys.rs`: the program of D330 under `wasmtime`, the same outputs as
+  under Linux).

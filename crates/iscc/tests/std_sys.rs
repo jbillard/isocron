@@ -55,3 +55,24 @@ fn primitives_only_in_the_standard_modules() {
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), "absent\nshadow\n".to_string()), "{}", String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D332: `sys` under WASI (wasi-libc, the folders the host opens): the same
+/// outputs as compiled for Linux, the environment of the engine without the
+/// variable of the test.
+#[test]
+fn sys_under_wasi() {
+    let Some(runner) = wasi_runner() else {
+        eprintln!("no WASI engine: `sys` under WASI not run");
+        return;
+    };
+    let wasm = compile_wasm(SRC, "std_sys_wasi");
+    let dir = tmp("std_sys_wasi_dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let arg = dir.to_str().unwrap().to_string();
+    let r = run_wasm(&runner, &wasm, &[&arg]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let want = "ok\nok\nalready exists: BASE/a\nok\nok\nok\nun deux\ntwo.bin is not text\n[b, one.txt]\n[true, true, true, false]\n7\nnot empty: BASE/a/b\nok\nnot found: BASE/a/one.txt\nok\nfalse\nabsent\n0\n";
+    assert_eq!(r.stdout.replace(&arg, "BASE"), want);
+}

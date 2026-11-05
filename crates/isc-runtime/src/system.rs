@@ -542,3 +542,220 @@ mod imp {
         *out = code;
     }
 }
+
+#[cfg(target_os = "wasi")]
+mod imp {
+    use super::*;
+
+    // `struct stat` of wasi-libc for wasm32 (measured with `offsetof`): 144
+    // bytes, the mode at 24, the size at 48, the time of the last change at
+    // 88 (seconds, 64 bits) and 96 (nanoseconds, 32 bits); a `dirent` its
+    // name at 9
+    const STAT_BYTES: usize = 144;
+    const O_APPEND: c_int = 1;
+
+    extern "C" {
+        fn stat(path: *const c_char, st: *mut u8) -> c_int;
+        fn opendir(path: *const c_char) -> *mut c_void;
+        fn readdir(d: *mut c_void) -> *const u8;
+        fn closedir(d: *mut c_void) -> c_int;
+        fn mkdir(path: *const c_char, mode: u32) -> c_int;
+        fn unlink(path: *const c_char) -> c_int;
+        fn rmdir(path: *const c_char) -> c_int;
+        fn rename(from: *const c_char, to: *const c_char) -> c_int;
+        fn getcwd(buf: *mut c_char, n: usize) -> *mut c_char;
+        static environ: *const *const u8;
+    }
+
+    /// The code of the `errno` of WASI.
+    fn last_code() -> i64 {
+        // SAFETY: the `errno` of this thread
+        match unsafe { *__errno_location() } {
+            44 => 1,
+            2 | 63 => 2,
+            20 => 3,
+            55 => 4,
+            14 => 5,
+            73 => 6,
+            e => -(e as i64),
+        }
+    }
+
+    fn code_if(r: c_int) -> i64 {
+        if r == 0 {
+            0
+        } else {
+            last_code()
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_environ(out: *mut IscArray) {
+        let mut all = alloc::vec::Vec::new();
+        let mut e = environ;
+        if !e.is_null() {
+            while !(*e).is_null() {
+                let v = *e;
+                let mut n = 0;
+                while *v.add(n) != 0 {
+                    n += 1;
+                }
+                all.push(core::slice::from_raw_parts(v, n).to_vec());
+                e = e.add(1);
+            }
+        }
+        *out = sorted_strings(all);
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
+        let Some(z) = zpath(p, n) else {
+            *out = [0, 0, 0, -1];
+            return;
+        };
+        let mut st = [0u8; STAT_BYTES];
+        if stat(z.as_ptr() as *const c_char, st.as_mut_ptr()) != 0 {
+            *out = [0, 0, 0, last_code()];
+            return;
+        }
+        let word = |at: usize| i64::from_le_bytes(st[at..at + 8].try_into().unwrap());
+        let mode = u32::from_le_bytes(st[24..28].try_into().unwrap());
+        let kind = match mode & 0xF000 {
+            0x8000 => 1,
+            0x4000 => 2,
+            _ => 3,
+        };
+        let nsec = i32::from_le_bytes(st[96..100].try_into().unwrap()) as i64;
+        *out = [kind, word(48), word(88).wrapping_mul(1_000_000_000).wrapping_add(nsec), 0];
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
+        let Some(z) = zpath(p, n) else {
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: -1 };
+            return;
+        };
+        let d = opendir(z.as_ptr() as *const c_char);
+        if d.is_null() {
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: last_code() };
+            return;
+        }
+        let mut names = alloc::vec::Vec::new();
+        loop {
+            let e = readdir(d);
+            if e.is_null() {
+                break;
+            }
+            let name = e.add(9);
+            let mut len = 0;
+            while *name.add(len) != 0 {
+                len += 1;
+            }
+            let b = core::slice::from_raw_parts(name, len);
+            if b != b"." && b != b".." {
+                names.push(b.to_vec());
+            }
+        }
+        closedir(d);
+        *out = IscArrayCode { a: sorted_strings(names), code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_mkdir(out: *mut i64, p: *const u8, n: i64) {
+        *out = match zpath(p, n) {
+            None => -1,
+            Some(z) => code_if(mkdir(z.as_ptr() as *const c_char, 0o777)),
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_removefile(out: *mut i64, p: *const u8, n: i64) {
+        *out = match zpath(p, n) {
+            None => -1,
+            Some(z) => code_if(unlink(z.as_ptr() as *const c_char)),
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_removedir(out: *mut i64, p: *const u8, n: i64) {
+        *out = match zpath(p, n) {
+            None => -1,
+            Some(z) => code_if(rmdir(z.as_ptr() as *const c_char)),
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_rename(out: *mut i64, p: *const u8, n: i64, q: *const u8, m: i64) {
+        *out = match (zpath(p, n), zpath(q, m)) {
+            (Some(a), Some(b)) => code_if(rename(a.as_ptr() as *const c_char, b.as_ptr() as *const c_char)),
+            _ => -1,
+        };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_cwd(out: *mut IscStrCode) {
+        let mut buf = alloc::vec![0u8; 4096];
+        if getcwd(buf.as_mut_ptr() as *mut c_char, buf.len()).is_null() {
+            *out = IscStrCode { s: adopt(alloc::string::String::new()), code: last_code() };
+            return;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        *out = IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&buf[..len]).into_owned()), code: 0 };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_readfile(out: *mut IscArrayCode, p: *const u8, n: i64) {
+        let Some(z) = zpath(p, n) else {
+            *out = IscArrayCode { a: byte_array(&[]), code: -1 };
+            return;
+        };
+        let fd = open(z.as_ptr() as *const c_char, O_RDONLY);
+        if fd < 0 {
+            *out = IscArrayCode { a: byte_array(&[]), code: last_code() };
+            return;
+        }
+        let mut data = alloc::vec::Vec::new();
+        let mut buf = alloc::vec![0u8; 1 << 16];
+        let mut code = 0;
+        loop {
+            let r = read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+            if r < 0 {
+                code = last_code();
+                break;
+            }
+            if r == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..r as usize]);
+        }
+        close(fd);
+        *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_writefile(out: *mut i64, p: *const u8, n: i64, d: *const u8, m: i64, append: i32) {
+        let Some(z) = zpath(p, n) else {
+            *out = -1;
+            return;
+        };
+        let flags = O_WRONLY | O_CREAT | if append != 0 { O_APPEND } else { O_TRUNC };
+        let fd = open(z.as_ptr() as *const c_char, flags, 0o666 as c_int);
+        if fd < 0 {
+            *out = last_code();
+            return;
+        }
+        let data = bytes_of(d, m);
+        let mut at = 0;
+        let mut code = 0;
+        while at < data.len() {
+            let r = write(fd, data[at..].as_ptr() as *const c_void, data.len() - at);
+            if r <= 0 {
+                code = if r < 0 { last_code() } else { -29 };
+                break;
+            }
+            at += r as usize;
+        }
+        close(fd);
+        *out = code;
+    }
+}
