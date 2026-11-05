@@ -1853,6 +1853,9 @@ impl RxEngine {
 /// `extra`; never copied into one vector unless a caller needs it.
 struct Found {
     parts: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>>,
+    /// the bytes of the matches of each part, summed by its search while
+    /// they are in its caches (D314); `usize::MAX` when not summed
+    removed: alloc::vec::Vec<usize>,
     extra: alloc::vec::Vec<(usize, usize)>,
     /// each run: its part (`usize::MAX` for `extra`), its first and its end
     runs: alloc::vec::Vec<(usize, usize, usize)>,
@@ -1861,11 +1864,11 @@ struct Found {
 impl Found {
     fn one(v: alloc::vec::Vec<(usize, usize)>) -> Found {
         let n = v.len();
-        Found { parts: alloc::vec![v], extra: alloc::vec::Vec::new(), runs: alloc::vec![(0, 0, n)] }
+        Found { parts: alloc::vec![v], removed: alloc::vec![usize::MAX], extra: alloc::vec::Vec::new(), runs: alloc::vec![(0, 0, n)] }
     }
 
-    fn of(parts: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>>, runs: &[sem::rx::Run]) -> Found {
-        let mut f = Found { parts, extra: alloc::vec::Vec::new(), runs: alloc::vec::Vec::with_capacity(runs.len()) };
+    fn of(parts: alloc::vec::Vec<alloc::vec::Vec<(usize, usize)>>, removed: alloc::vec::Vec<usize>, runs: &[sem::rx::Run]) -> Found {
+        let mut f = Found { parts, removed, extra: alloc::vec::Vec::new(), runs: alloc::vec::Vec::with_capacity(runs.len()) };
         for r in runs {
             match *r {
                 sem::rx::Run::Part(k, lo, hi) => f.runs.push((k, lo, hi)),
@@ -1902,35 +1905,19 @@ impl Found {
         out
     }
 
-    /// The place (run, index in it) of the first match that starts at `at`
-    /// or after: by halving over the runs, then in the run.
-    fn first_at(&self, at: usize) -> (usize, usize) {
-        let r = (0..self.runs.len()).collect::<alloc::vec::Vec<_>>().partition_point(|&r| self.run(r).last().map_or(true, |&(a, _)| a < at));
-        if r == self.runs.len() {
-            return (r, 0);
+    /// The bytes of the matches of the run `r`: the sum of its part less
+    /// its matches outside the run (none or one at each end, where the
+    /// searches of two parts meet), else counted.
+    fn removed_of(&self, r: usize) -> usize {
+        let bytes = |m: &[(usize, usize)]| m.iter().map(|&(a, b)| b - a).sum::<usize>();
+        let (k, lo, hi) = self.runs[r];
+        if k == usize::MAX {
+            return bytes(&self.extra[lo..hi]);
         }
-        (r, self.run(r).partition_point(|&(a, _)| a < at))
-    }
-
-    /// The match before the place `(r, j)`, if any.
-    fn before(&self, (r, j): (usize, usize)) -> Option<(usize, usize)> {
-        if j > 0 {
-            return Some(self.run(r)[j - 1]);
-        }
-        (0..r).rev().find_map(|q| self.run(q).last().copied())
-    }
-
-    /// The matches from the place `from` to the place `to`, in order.
-    fn between(&self, from: (usize, usize), to: (usize, usize), f: &mut dyn FnMut(usize, usize)) {
-        let (mut r, mut j) = from;
-        while (r, j) < to && r < self.runs.len() {
-            let run = self.run(r);
-            let end = if r == to.0 { to.1 } else { run.len() };
-            for &(a, b) in &run[j..end.min(run.len())] {
-                f(a, b);
-            }
-            r += 1;
-            j = 0;
+        let p = &self.parts[k];
+        match self.removed[k] {
+            total if total != usize::MAX && lo + (p.len() - hi) < hi - lo => total - bytes(&p[..lo]) - bytes(&p[hi..]),
+            _ => bytes(&p[lo..hi]),
         }
     }
 }
@@ -1979,6 +1966,7 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> Found {
         starts: *const usize,
         k: usize,
         found: *mut alloc::vec::Vec<(usize, usize)>,
+        removed: *mut usize,
     }
     extern "C" fn part(ctx: *mut c_void, i: i64) {
         unsafe {
@@ -1987,13 +1975,19 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> Found {
             let starts = core::slice::from_raw_parts(c.starts, c.k);
             let i = i as usize;
             let until = if i + 1 < c.k { starts[i + 1] } else { usize::MAX };
-            *c.found.add(i) = (*c.re).bounds_from(s, starts[i], until);
+            let m = (*c.re).bounds_from(s, starts[i], until);
+            // the bytes of its matches, read where it has just written them
+            // (the caches of this thread), for the sizes of a replacement
+            // (D314)
+            *c.removed.add(i) = m.iter().map(|&(a, b)| b - a).sum();
+            *c.found.add(i) = m;
         }
     }
-    let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr() };
+    let mut removed = alloc::vec![0usize; starts.len()];
+    let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr(), removed: removed.as_mut_ptr() };
     parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
     let runs = re.merge(s, &starts, &found);
-    Found::of(found, &runs)
+    Found::of(found, removed, &runs)
 }
 
 /// `n` bytes from `src` to `dst` (D280): a few bytes, as most texts between
@@ -2045,66 +2039,51 @@ unsafe fn copy_room(src: *const u8, dst: *mut u8, n: usize, src_room: usize, dst
 const REPLACE_PARALLEL_MIN: usize = 1 << 20;
 
 /// `s` with each match of `bounds` replaced by `to`, a text without `$`
-/// (each replacement the same bytes), written by every thread (D236, D279):
-/// the text cut into parts of about the same bytes, several per thread
-/// taken in turn (D313), each cut moved to the end of the match it falls
-/// in; the size of each part of the result known before (its text between
-/// its matches, then `to` per match), each part written at its place. The bytes of `replace_bounds`. None with
-/// one thread, a short text or a busy pool.
+/// (each replacement the same bytes), written by every thread (D236, D279,
+/// D314): the result in pieces, each a run of matches of the search (the
+/// matches of one of its parts, D281) with the text before it, or a copy of
+/// a text without match longer than a part; the size of each piece known
+/// from the search (`Found::removed_of`), the pieces written at their
+/// places, each thread its range of them first (D313). The bytes of
+/// `replace_bounds`. None with one thread, a short text or a busy pool.
 unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     let threads = thread_count();
     if threads <= 1 || s.len() < REPLACE_PARALLEL_MIN || BUSY.load(Ordering::Relaxed) {
         return None;
     }
-    // several parts per thread, taken in turn: their cost follows their
-    // matches (D313)
-    let parts = (threads * PARTS_PER_THREAD).min(64);
-    // part k: the text cut[k] .. cut[k + 1] and the matches that start in it,
-    // from the place first[k] to first[k + 1] (a cut is never inside a match)
-    let mut cut = [0usize; 65];
-    let mut first = [(0usize, 0usize); 65];
-    for k in 1..parts {
-        let c = s.len() * k / parts;
-        let at = found.first_at(c);
-        let c = match found.before(at) {
-            Some((_, b)) if b > c => b,
-            _ => c,
-        };
-        cut[k] = c.max(cut[k - 1]);
-        first[k] = found.first_at(cut[k]);
+    // a piece of the result: the text from `start` to `end`, with the
+    // matches of the run `run` (`usize::MAX`: none), at `at` in the result
+    #[derive(Clone, Copy)]
+    struct Piece {
+        start: usize,
+        end: usize,
+        run: usize,
+        at: usize,
     }
-    cut[parts] = s.len();
-    first[parts] = (found.runs.len(), 0);
-    // the bytes of each part of the result, counted by every thread (D284:
-    // a walk of millions of matches by the caller alone, the others waiting)
-    let mut size = [0usize; 64];
-    #[repr(C)]
-    struct Sizes {
-        found: *const Found,
-        cut: *const usize,
-        first: *const (usize, usize),
-        tn: usize,
-        size: *mut usize,
-    }
-    extern "C" fn sizes(ctx: *mut c_void, k: i64) {
-        unsafe {
-            let c = &*(ctx as *const Sizes);
-            let k = k as usize;
-            let (mut removed, mut count) = (0usize, 0usize);
-            (*c.found).between(*c.first.add(k), *c.first.add(k + 1), &mut |a, b| {
-                removed += b - a;
-                count += 1;
-            });
-            *c.size.add(k) = (*c.cut.add(k + 1) - *c.cut.add(k)) - removed + count * c.tn;
+    // a text without match longer than a part (the first sequence of
+    // regex-redux, without any match of `a[NSt]`): copies of a part each,
+    // shared like the runs
+    let part = (s.len() / (threads * PARTS_PER_THREAD)).max(1);
+    let tn = to.len();
+    let mut pieces: alloc::vec::Vec<Piece> = alloc::vec::Vec::with_capacity(found.runs.len() + s.len() / part + 2);
+    let (mut last, mut at) = (0usize, 0usize);
+    for r in 0..found.runs.len() {
+        let m = found.run(r);
+        let (Some(&(first, _)), Some(&(_, end))) = (m.first(), m.last()) else { continue };
+        while first - last > part {
+            pieces.push(Piece { start: last, end: last + part, run: usize::MAX, at });
+            (last, at) = (last + part, at + part);
         }
+        pieces.push(Piece { start: last, end, run: r, at });
+        at += (end - last) - found.removed_of(r) + m.len() * tn;
+        last = end;
     }
-    let mut sctx = Sizes { found: found as *const Found, cut: cut.as_ptr(), first: first.as_ptr(), tn: to.len(), size: size.as_mut_ptr() };
-    parallel_for(parts as i64, sizes, &mut sctx as *mut Sizes as *mut c_void, core::mem::size_of::<Sizes>() as i64, true, true);
-    let mut at = [0usize; 65];
-    for k in 0..parts {
-        at[k + 1] = at[k] + size[k];
+    while last < s.len() {
+        let end = (last + part).min(s.len());
+        pieces.push(Piece { start: last, end, run: usize::MAX, at });
+        (last, at) = (end, at + (end - last));
     }
-    let total = at[parts];
+    let total = at;
     let buf = isc_alloc(total.max(1) as i64);
     #[repr(C)]
     struct Ctx {
@@ -2113,43 +2092,46 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
         to: *const u8,
         tn: usize,
         found: *const Found,
-        cut: *const usize,
-        first: *const (usize, usize),
-        at: *const usize,
+        pieces: *const Piece,
+        count: usize,
+        total: usize,
         out: *mut u8,
     }
-    extern "C" fn part(ctx: *mut c_void, k: i64) {
+    extern "C" fn write(ctx: *mut c_void, k: i64) {
         unsafe {
             let c = &*(ctx as *const Ctx);
-            let k = k as usize;
-            let mut last = *c.cut.add(k);
-            let mut o = c.out.add(*c.at.add(k));
-            // the end of this part of the result: past it, the part of
+            let p = *c.pieces.add(k as usize);
+            let mut o = c.out.add(p.at);
+            if p.run == usize::MAX {
+                core::ptr::copy_nonoverlapping(c.s.add(p.start), o, p.end - p.start);
+                return;
+            }
+            // the end of this piece of the result: past it, the piece of
             // another thread
-            let end_o = c.out.add(*c.at.add(k + 1)) as usize;
-            (*c.found).between(*c.first.add(k), *c.first.add(k + 1), &mut |a, b| {
+            let k = k as usize;
+            let end_o = c.out.add(if k + 1 < c.count { (*c.pieces.add(k + 1)).at } else { c.total }) as usize;
+            let mut last = p.start;
+            for &(a, b) in (*c.found).run(p.run) {
                 copy_room(c.s.add(last), o, a - last, c.n - last, end_o - o as usize);
                 o = o.add(a - last);
                 copy_short(c.to, o, c.tn);
                 o = o.add(c.tn);
                 last = b;
-            });
-            let end = *c.cut.add(k + 1);
-            core::ptr::copy_nonoverlapping(c.s.add(last), o, end - last);
+            }
         }
     }
     let mut ctx = Ctx {
         s: s.as_ptr(),
         n: s.len(),
         to: to.as_ptr(),
-        tn: to.len(),
+        tn,
         found: found as *const Found,
-        cut: cut.as_ptr(),
-        first: first.as_ptr(),
-        at: at.as_ptr(),
+        pieces: pieces.as_ptr(),
+        count: pieces.len(),
+        total,
         out: buf,
     };
-    parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
+    parallel_for(pieces.len() as i64, write, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
     Some(IscStr { ptr: buf, len: total as i64 })
 }
 

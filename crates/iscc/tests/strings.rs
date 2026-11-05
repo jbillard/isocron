@@ -849,6 +849,8 @@ action main(args: string[k]): i32 {
 /// parts finish early and take parts of the others); a count, replacements
 /// longer, shorter and empty; on 1, 2, 3, 5 and 8 threads and on 65 (more
 /// than the 64 ranges: the tasks only taken in turn), as the interpreter.
+/// D314: the result written by pieces, the runs of the search and the
+/// copies of the long texts without match, at the start and at the end.
 #[test]
 fn uneven_parts_finished_by_the_other_threads() {
     let src = r#"action main(args: string[k]): i32 {
@@ -857,9 +859,10 @@ fn uneven_parts_finished_by_the_other_threads() {
     const a = text.replace(/a[NSt]|BY/g, "<2>");
     const b = text.replace(/a[NSt]|BY/g, "");
     const c = a.replace(/<[^>]*>/g, "|");
-    print([countMatches(text, /a[NSt]|BY/g), a.length, b.length, c.length]);
-    print([a.slice(a.length - 30, a.length), c.slice(c.length / 2, c.length / 2 + 40)]);
-    print(sum(map(bytes(a), (x) => i64(x))) + 3 * sum(map(bytes(b), (x) => i64(x))) + 5 * sum(map(bytes(c), (x) => i64(x))));
+    const d = (text + "xyzw".repeat(n)).replace(/a[NSt]|BY/g, "<2>");
+    print([countMatches(text, /a[NSt]|BY/g), a.length, b.length, c.length, d.length]);
+    print([a.slice(a.length - 30, a.length), c.slice(c.length / 2, c.length / 2 + 40), d.slice(d.length - 4 * n - 10, d.length - 4 * n + 10)]);
+    print(sum(map(bytes(a), (x) => i64(x))) + 3 * sum(map(bytes(b), (x) => i64(x))) + 5 * sum(map(bytes(c), (x) => i64(x))) + 7 * sum(map(bytes(d), (x) => i64(x))));
     return 0;
 }
 "#;

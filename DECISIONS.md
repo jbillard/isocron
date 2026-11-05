@@ -6036,3 +6036,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     half has no match, a count and replacements longer, shorter and empty,
     on 1, 2, 3, 5, 8 and 65 threads (more than the 64 ranges), as the
     interpreter.
+- **D314 — The sizes of a replacement in parallel from its search; its
+  result written by pieces (2026-11-05).** After D313 a replacement still
+  read its list of matches twice after the search had written it (16 bytes
+  a match, 56 MB for the 3.5 million of `a[NSt]|BY`): once to count the
+  bytes of each part of the result (`sizes`, 7.4 % of the samples of
+  `a[NSt]|BY` alone, 5.9 % and 4.1 % for the two next), once to write it;
+  and its parts were cut by bytes again, apart from the parts of the
+  search (`first_at`, `before`). Now the task that searches a part sums the
+  bytes of its matches right after finding them, where they are in its
+  caches (`Found::removed`); the result is written by pieces: each run of
+  the merged matches (D281: the matches of one part, except one or none at
+  each end where two searches meet, `Found::removed_of`) with the text
+  before it, and the text without match longer than a part (the first
+  sequence of regex-redux, without any `a`) cut into copies of a part,
+  each piece at a place known before, written in the ranges of D313. No
+  `sizes` pass, no second cutting. Repeated, two runs of 10 calls each:
+  `a[NSt]|BY` 12.51 and 12.45 -> 12.42 and 12.22 ms, `<[^>]*>` 15.83 and
+  15.73 -> 15.48 and 15.63 ms, `\|[^|][^|]*\|` 10.30 and 10.18 -> 10.21
+  and 10.24 ms. regex-redux -1.28 % [-1.66 %, -0.28 %] (31 rounds, 88.71 ->
+  87.99 ms); the nine other programs are the same binaries. Tested by the
+  tests of D308 and D313, the latter with a long text without match at the
+  end (`uneven_parts_finished_by_the_other_threads`).
