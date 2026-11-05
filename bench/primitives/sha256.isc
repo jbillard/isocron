@@ -1,0 +1,26 @@
+// The audit of every form against the machine (D301): the module `sha256`
+// (D338) on 4096 bytes and on 55 (one block). Each line: a name, the
+// nanoseconds of one call (the mean over `rounds`), a checksum; against
+// `sha256.c` (the floor: the same loop in C).
+// usage: sha256 <rounds>
+import * as sha256 from "sha256";
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    const big = map(iota(4096), (i) => u8(i * 7 + 3));
+    const small = map(iota(55), (i) => u8(i * 7 + 3));
+    const [a1, t1] = bench(r, () => {
+        const h = sha256.digest(big);
+        return i64(h[0]) + i64(h[31]) * 256;
+    });
+    print(`digest.4k ${f64(t1) / f64(r)} ${a1}`);
+    const [a2, t2] = bench(r, () => {
+        const h = sha256.digest(small);
+        return i64(h[0]) + i64(h[31]) * 256;
+    });
+    print(`digest.55 ${f64(t2) / f64(r)} ${a2}`);
+    const d = sha256.digest(big);
+    const [a3, t3] = bench(r, () => sha256.hex(d).length);
+    print(`hex.32 ${f64(t3) / f64(r)} ${a3}`);
+    return 0;
+}

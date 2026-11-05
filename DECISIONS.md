@@ -6716,3 +6716,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (`stdlib.rs`: the interpreter, compiled, Valgrind), the programs of
     JSON of D336 (their faults now with the paths of the cursor) and the
     guide.
+- **D338 — The module `sha256` (2026-11-05).** FIPS 180-4 in Isocron on
+  `u32` (`crates/isc-types/src/std/sha256.isc`), as SPEC section 18 says:
+  the message padded as it is read (its bytes, 0x80, zeros, its length in
+  bits, big-endian: `paddedByte`, a word read whole when its 4 bytes are of
+  the message), never copied; each block of 64 bytes compressed by a
+  `fold` of its 64 rounds whose state is a tuple of 24 words, the 8 of the
+  hash and the window of 16 words of the schedule (the next word made at
+  each round: `W[t+16] = s1(W[t+14]) + W[t+9] + s0(W[t+1]) + W[t]`); the
+  blocks by a `fold`. `digest(x): u8[32]`, `digestText(s)`, `hex(x)`.
+  Tested by `sha256_of_the_vectors_of_the_nist` (`stdlib.rs`: the vectors
+  of the NIST, the empty message, `abc`, the messages of 448 and 896 bits,
+  a million `a`; the lengths 55, 56, 63, 64, 65, 119, 120 and 128 at the
+  bounds of the blocks and a text of UTF-8, each as `sha256sum` gives it;
+  the interpreter, compiled, Valgrind), `json_on_windows` (`windows.rs`, the
+  same program in the Windows VM) and the guide.
+  - The microbenchmark (`bench/primitives/sha256.isc`, its floor
+    `sha256.c`: the same loop in C, the schedule in an array of 64 words):
+    `digest.4k` 25839.88 ns against 17402.70 (1.5 times), `digest.55`
+    425.70 against 282.90 (1.5), `hex.32` 21.05 against 33.02 (0.6)
+    (`results/primitives.md`). The
+    gap, by the code of the loops: a round of the floor is 39 instructions
+    without access to the stack (its schedule a loop of its own, which gcc
+    makes with vector instructions), a round of the module 85, of which 32
+    accesses to the stack: the 24 words of the state of the `fold` do not
+    fit the 16 registers, and the schedule is made at the 64 rounds (16 of
+    them for nothing). Measured and left:
+    the schedule in an array updated where it is by a `fold` (38402.66 ns)
+    and the last 16 rounds by a second `fold` on an array of the words
+    left (34795.61): their arrays (allocated at each block, read with their
+    bounds checked) cost more than the moves they save.
+  - The instructions SHA of the processor (SHA-NI, the lower bound,
+    `digest.4k.shani` in the floor): 4177.48 to 4239.05 ns, 4.1 times the
+    loop in C; out of v1 (SPEC section 16, D329: no explicit vector
+    instructions in the modules).

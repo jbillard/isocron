@@ -1,0 +1,10 @@
+import * as sha256 from "sha256";
+
+action main(args: string[k]): i32 {
+    const texts = ["", "abc", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"];
+    print(map(texts, (t) => sha256.hex(sha256.digestText(t))));
+    print(sha256.hex(sha256.digest(fill(1000000, 97u8))));
+    print(map([55, 56, 63, 64, 65, 119, 120, 128], (n) => sha256.hex(sha256.digest(map(iota(n), (i) => u8(i * 7 + 3))))));
+    print(sha256.hex(sha256.digestText("été 東京 🦀")));
+    return 0;
+}

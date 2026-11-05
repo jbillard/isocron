@@ -1,0 +1,83 @@
+// The module `sha256` of the standard library (SPEC section 18, D338): the
+// hash of FIPS 180-4, in Isocron on `u32` (rotations, additions modulo
+// 2^32). The message is padded as it is read (its bytes, 0x80, zeros, its
+// length in bits), never copied; each block of 64 bytes is compressed by a
+// `fold` of its 64 rounds, whose state is the 8 words of the hash and the
+// window of the 16 words of the schedule; the blocks by a `fold` too.
+
+const K = [
+    0x428a2f98u32, 0x71374491u32, 0xb5c0fbcfu32, 0xe9b5dba5u32, 0x3956c25bu32, 0x59f111f1u32, 0x923f82a4u32, 0xab1c5ed5u32,
+    0xd807aa98u32, 0x12835b01u32, 0x243185beu32, 0x550c7dc3u32, 0x72be5d74u32, 0x80deb1feu32, 0x9bdc06a7u32, 0xc19bf174u32,
+    0xe49b69c1u32, 0xefbe4786u32, 0x0fc19dc6u32, 0x240ca1ccu32, 0x2de92c6fu32, 0x4a7484aau32, 0x5cb0a9dcu32, 0x76f988dau32,
+    0x983e5152u32, 0xa831c66du32, 0xb00327c8u32, 0xbf597fc7u32, 0xc6e00bf3u32, 0xd5a79147u32, 0x06ca6351u32, 0x14292967u32,
+    0x27b70a85u32, 0x2e1b2138u32, 0x4d2c6dfcu32, 0x53380d13u32, 0x650a7354u32, 0x766a0abbu32, 0x81c2c92eu32, 0x92722c85u32,
+    0xa2bfe8a1u32, 0xa81a664bu32, 0xc24b8b70u32, 0xc76c51a3u32, 0xd192e819u32, 0xd6990624u32, 0xf40e3585u32, 0x106aa070u32,
+    0x19a4c116u32, 0x1e376c08u32, 0x2748774cu32, 0x34b0bcb5u32, 0x391c0cb3u32, 0x4ed8aa4au32, 0x5b9cca4fu32, 0x682e6ff3u32,
+    0x748f82eeu32, 0x78a5636fu32, 0x84c87814u32, 0x8cc70208u32, 0x90befffau32, 0xa4506cebu32, 0xbef9a3f7u32, 0xc67178f2u32,
+];
+
+type State = [u32, u32, u32, u32, u32, u32, u32, u32];
+
+function rotr(x: u32, n: u32): u32 {
+    return (x >> n) | (x << (32u32 - n));
+}
+
+// the byte `i` of the message padded to `p` bytes
+function paddedByte(m: u8[n], i: i64, p: i64): u32 {
+    if (i < m.length) {
+        return u32(m[i]);
+    }
+    if (i == m.length) {
+        return 0x80u32;
+    }
+    if (i < p - 8) {
+        return 0u32;
+    }
+    const bits = u64(m.length) * 8u64;
+    return u32((bits >> u64(8 * (p - 1 - i))) & 0xFFu64);
+}
+
+// the word at the byte `at` of the padded message (big-endian)
+function word(m: u8[n], at: i64, p: i64): u32 {
+    if (at + 4 <= m.length) {
+        return (u32(m[at]) << 24u32) | (u32(m[at + 1]) << 16u32) | (u32(m[at + 2]) << 8u32) | u32(m[at + 3]);
+    }
+    return (paddedByte(m, at, p) << 24u32) | (paddedByte(m, at + 1, p) << 16u32) | (paddedByte(m, at + 2, p) << 8u32) | paddedByte(m, at + 3, p);
+}
+
+// the state after the block at the byte `at` of the padded message
+function block(m: u8[n], p: i64, at: i64, h: State): State {
+    const [h0, h1, h2, h3, h4, h5, h6, h7] = h;
+    const first = [h0, h1, h2, h3, h4, h5, h6, h7, word(m, at, p), word(m, at + 4, p), word(m, at + 8, p), word(m, at + 12, p), word(m, at + 16, p), word(m, at + 20, p), word(m, at + 24, p), word(m, at + 28, p), word(m, at + 32, p), word(m, at + 36, p), word(m, at + 40, p), word(m, at + 44, p), word(m, at + 48, p), word(m, at + 52, p), word(m, at + 56, p), word(m, at + 60, p)] as const;
+    // round `t`: the window holds the words `t` to `t + 15` of the schedule
+    const last = fold(iota(64), first, (s, t) => {
+        const [a, b, c, d, e, f, g, hh, x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15] = s;
+        const t1 = hh + (rotr(e, 6u32) ^ rotr(e, 11u32) ^ rotr(e, 25u32)) + ((e & f) ^ ((e ^ 0xFFFFFFFFu32) & g)) + K[t] + x0;
+        const t2 = (rotr(a, 2u32) ^ rotr(a, 13u32) ^ rotr(a, 22u32)) + ((a & b) ^ (a & c) ^ (b & c));
+        const next = (rotr(x14, 17u32) ^ rotr(x14, 19u32) ^ (x14 >> 10u32)) + x9 + (rotr(x1, 7u32) ^ rotr(x1, 18u32) ^ (x1 >> 3u32)) + x0;
+        return [t1 + t2, a, b, c, d + t1, e, f, g, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, next] as const;
+    });
+    const [a, b, c, d, e, f, g, hh, y0, y1, y2, y3, y4, y5, y6, y7, y8, y9, y10, y11, y12, y13, y14, y15] = last;
+    return [h0 + a, h1 + b, h2 + c, h3 + d, h4 + e, h5 + f, h6 + g, h7 + hh] as const;
+}
+
+// the hash of the bytes `m`
+export function digest(m: u8[n]): u8[32] {
+    const p = (m.length + 9 + 63) / 64 * 64;
+    const init = [0x6a09e667u32, 0xbb67ae85u32, 0x3c6ef372u32, 0xa54ff53au32, 0x510e527fu32, 0x9b05688cu32, 0x1f83d9abu32, 0x5be0cd19u32] as const;
+    const h = fold(iota(p / 64), init, (s, k) => block(m, p, 64 * k, s));
+    const [h0, h1, h2, h3, h4, h5, h6, h7] = h;
+    const words = [h0, h1, h2, h3, h4, h5, h6, h7];
+    return map(iota(32), (i) => u8((words[i / 4] >> u32(24 - 8 * (i % 4))) & 0xFFu32));
+}
+
+// the hash of the bytes of the text `s` (UTF-8)
+export function digestText(s: string): u8[32] {
+    return digest(bytes(s));
+}
+
+// the bytes `x` in hexadecimal, two lowercase digits each
+export function hex(x: u8[n]): string {
+    const digits = bytes("0123456789abcdef");
+    return stringOf(map(iota(2 * x.length), (i) => digits[i % 2 == 0 ? i64(x[i / 2] >> 4u8) : i64(x[i / 2] & 15u8)]));
+}

@@ -268,9 +268,10 @@ fn time_on_windows() {
     same_on_windows(&runner, include_str!("data/std_time.isc"), "time", &d, &[], None);
 }
 
-/// D335, D336: the module `json` on Windows (pure Isocron, its threads
-/// those of Windows): reading, decoding into types with their faults,
-/// writing; the same outputs as on Linux.
+/// D335, D336, D338: the modules `json` and `sha256` on Windows (pure
+/// Isocron, its threads those of Windows): reading, decoding into types
+/// with their faults, writing; the hashes of the vectors of the NIST; the
+/// same outputs as on Linux.
 #[test]
 fn json_on_windows() {
     let Some(runner) = runner() else {
@@ -282,6 +283,7 @@ fn json_on_windows() {
         (include_str!("data/std_json_types.isc"), "json_types"),
         (include_str!("data/std_json_decode.isc"), "json_decode"),
         (include_str!("data/std_json_strings.isc"), "json_strings"),
+        (include_str!("data/std_sha256.isc"), "sha256"),
     ] {
         let d = dir(name);
         same_on_windows(&runner, src, name, &d, &[], None);

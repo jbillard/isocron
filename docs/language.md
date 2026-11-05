@@ -2530,6 +2530,28 @@ line 1, column 41: $.points[0].y: a number expected
 [1e+21,0.5,0]
 ```
 
+### SHA-256: `sha256`
+
+`digest(x)` is the hash of the bytes `x` (FIPS 180-4), a `u8[32]`;
+`digestText(s)` the hash of the bytes of a text, `hex(x)` bytes in
+hexadecimal. The module is written in Isocron on `u32`: the same hash in
+the interpreter, compiled, on every target.
+
+```isc
+import * as sha256 from "sha256";
+
+action main(args: string[k]): i32 {
+    print(sha256.hex(sha256.digestText("abc")));
+    print(sha256.digest(fill(1000000, 97u8)).length);
+    return 0;
+}
+```
+
+```output
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+32
+```
+
 ## Performance model
 
 * **Fusion.** Element-wise operations, `map` and `iota` feeding a single

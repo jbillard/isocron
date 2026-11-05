@@ -1116,3 +1116,13 @@ fn branches_of_arrays_of_two_sizes() {
         "[3, 1]\n[1, 2, 3]\n[1, 3, 2, 1]\n[3]\n{a: [1], n: 1}\n[[1.5, 1.5, 1.5], [1.5, 1.5, 1.5]]\n0\n[[a, b], [a, b]]\n[0, 0, 0, 0]\n",
     );
 }
+
+/// D338: the module `sha256` (FIPS 180-4): the vectors of the NIST (the
+/// empty message, `abc`, the messages of 448 and 896 bits, a million `a`),
+/// the lengths at the bounds of the blocks (55, 56, 63, 64, 65, 119, 120,
+/// 128 bytes) and a text of UTF-8, as `sha256sum` gives them; the
+/// interpreter, compiled with 1 and 4 threads, Valgrind.
+#[test]
+fn sha256_of_the_vectors_of_the_nist() {
+    agree(include_str!("data/std_sha256.isc"), "std_sha256", &[], include_str!("data/std_sha256.out"));
+}
