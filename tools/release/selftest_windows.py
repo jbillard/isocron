@@ -19,9 +19,17 @@ PROGRAMS = [("binarytrees", "10"), ("fannkuchredux", "7"), ("fasta", "1000"), ("
 
 def main():
     iscc, ref = sys.argv[1], os.path.abspath(sys.argv[2])
+    # the folder of the test removed at the end, even on a failure: it holds
+    # an iscc.exe and the programs (about 110 MB, in a /tmp held in memory)
+    with tempfile.TemporaryDirectory(prefix="isc-winself-") as d:
+        code = selftest(iscc, ref, d)
+    sys.exit(code)
+
+
+def selftest(iscc, ref, d):
+    """The test in the folder `d`: 0 when every output is the same."""
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     bg = os.path.join(root, "examples", "benchmarks_game")
-    d = tempfile.mkdtemp(prefix="isc-winself-")
     for f in [iscc] + [os.path.join(bg, n + ".isc") for n, _ in PROGRAMS]:
         subprocess.run(["cp", f, d], check=True)
     with open(os.path.join(d, "in.txt"), "wb") as f:
@@ -50,7 +58,7 @@ def main():
     run_ok = parts.get("run", b"").replace(b"\r\n", b"\n") == want_run
     wasm_ok = parts.get("wasm", b"").strip() == b"ok"
     print("iscc run: %s, wasm: %s" % ("ok" if run_ok else "DIFFERENT", "ok" if wasm_ok else "FAILED"))
-    sys.exit(1 if fail or not run_ok or not wasm_ok else 0)
+    return 1 if fail or not run_ok or not wasm_ok else 0
 
 
 if __name__ == "__main__":
