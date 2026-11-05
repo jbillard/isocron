@@ -7374,3 +7374,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `iscc.exe`). The file `windows.rs` in the VM: 10 of 10 (a first run
     9 of 10: `win_https_client.exe` put in quarantine by Defender, events
     1116 and 1117 at the time of the test; the next run without it).
+- **D350 — Release 0.3.1 (2026-11-06).** Asked by the author after the
+  example of the server of the README failed under Windows: a correction
+  of 0.3.0, compatible with it (as Cargo counts), from `main` (D346, D348,
+  D349). The archives as for 0.3.0 (`build_iscc.sh` for Linux and Windows
+  in the images of the releases, from the sources of the commit of the
+  release; `package.sh`; the extension at 0.3.1), tried before they are
+  published: `selftest_linux.sh`, `selftest_windows.py`, and the example
+  of the server of the README run by the `iscc` of each archive under
+  Linux and in the VM of Windows (compiled and interpreted: `hello world`,
+  a second copy refused with 1), the VM stopped afterwards. The signature
+  of the executables by Authenticode, asked about: it needs a certificate
+  of an authority that Windows trusts, an identity checked, its key on a
+  device or a service of signature: the author's to get; the tools can
+  sign the archives once there is one.

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.1 — 2026-11-06
+
+A correction of 0.3.0: the example of the server in the README, and a
+port listened to twice.
+
+### Fixes
+
+* The server of the README says where it listens and why it cannot
+  serve, and returns 0 or 1 (it printed nothing: `serve` answers without
+  end, its `done` could never show). Every example of the README is now
+  run by the tests (D349).
+* A port already listened to is `AlreadyExists` on Linux, on Windows and
+  in the interpreter; under Windows a second server took the same port
+  (`SO_REUSEADDR`, now `SO_EXCLUSIVEADDRUSE`) (D349).
+
+### Faster
+
+* `==` against a short literal compiled in place; the last index of a
+  `fold` found from the end; `getenv` without a block of the heap:
+  `path.basename` 25.64 -> 9.07 ns, `path.normalize` 335.43 -> 228.61 ns
+  (D346).
+* `toString(x).padStart(n, c)` of an integer written in one block:
+  `time.formatIso` 314.00 -> 216.46 ns (D348).
+
 ## 0.3.0 — 2026-11-05
 
 A standard library, to take programs of computation out of their input

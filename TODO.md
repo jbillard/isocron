@@ -354,4 +354,5 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)
   - [x] Windows: the server by SChannel (its credentials from a PKCS #12 made in memory), tested in the VM compiled and interpreted (D343)
-- [ ] Release 0.3.0
+- [x] Release 0.3.0 (D345)
+- [x] Release 0.3.1: the example of the server of the README, a port listened to twice refused everywhere (D349, D350)
