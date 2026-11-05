@@ -1,0 +1,37 @@
+// The audit of every form against the machine (D301): the functions of
+// the module `time` (D334) on 4096 instants of 2026, one per 997 seconds
+// and 123456789 ns. Each line: a name, the nanoseconds of one call (the
+// mean over `rounds`), a checksum; against `time.c` (the floor).
+// usage: time <rounds>
+import * as time from "time";
+
+action nowLoop(r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return nowLoop(r - 1, acc + (time.now() > 0 ? 1 : 0));
+}
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    const n = 4096;
+    const ins = map(iota(n), (i) => 1767225600000000000 + i * 997123456789);
+    const texts = map(ins, (i) => time.formatIso(i));
+    const t0 = clock();
+    const a0 = nowLoop(r, 0);
+    const t1 = clock();
+    print(`now ${f64(t1 - t0) / f64(r)} ${a0 / r}`);
+    const each = f64(r * n);
+    const [a1, t2] = bench(r, () => sum(map(ins, (i) => time.toDateTime(i, 60).time.minute)));
+    print(`toDateTime ${f64(t2) / each} ${a1}`);
+    const [a2, t3] = bench(r, () => sum(map(ins, (i) => time.formatIso(i).length)));
+    print(`formatIso ${f64(t3) / each} ${a2}`);
+    const [a3, t4] = bench(r, () => sum(map(texts, (s) => match (time.parseIso(s)) {
+        Ok(d) => d.time.second,
+        Err(e) => -1,
+    })));
+    print(`parseIso ${f64(t4) / each} ${a3}`);
+    const [a4, t5] = bench(r, () => sum(map(iota(n), (i) => time.daysOf(time.dateOf(i * 37 - 70000)))));
+    print(`dateOf.daysOf ${f64(t5) / each} ${a4}`);
+    return 0;
+}

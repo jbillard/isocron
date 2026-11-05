@@ -98,6 +98,14 @@ mod imp {
         *out = sorted_strings(all);
     }
 
+    /// `sysNow()`: CLOCK_REALTIME in nanoseconds since 1970.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
+        let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+        linux::clock_gettime(0, &mut ts);
+        *out = ts.tv_sec.wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as i64);
+    }
+
     /// `sysStat(path)`: [kind, size, modified, code].
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
@@ -386,6 +394,20 @@ mod imp {
         *out = sorted_strings(all);
     }
 
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetSystemTimePreciseAsFileTime(ft: *mut [u32; 2]);
+    }
+
+    /// `sysNow()`: 100 ns since 1601 -> ns since 1970.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
+        let mut ft = [0u32; 2];
+        GetSystemTimePreciseAsFileTime(&mut ft);
+        let t = ((ft[1] as i64) << 32) | ft[0] as i64;
+        *out = (t - 116_444_736_000_000_000).wrapping_mul(100);
+    }
+
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
         let Some(w) = wide(p, n) else {
@@ -605,6 +627,20 @@ mod imp {
             }
         }
         *out = sorted_strings(all);
+    }
+
+    extern "C" {
+        // `clockid_t` is a pointer in wasi-libc
+        static _CLOCK_REALTIME: u8;
+        fn clock_gettime(clk: *const u8, ts: *mut Timespec) -> c_int;
+    }
+
+    /// `sysNow()`: CLOCK_REALTIME in nanoseconds since 1970.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
+        let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+        clock_gettime(&_CLOCK_REALTIME, &mut ts);
+        *out = ts.tv_sec.wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as i64);
     }
 
     #[no_mangle]

@@ -6505,3 +6505,31 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `listDir` of 65 names 11000.35 against 9011.29 (1.2), `writeFile` of 4
   KiB 3317.43 against 3232.49 (1.0), `exists` 666.28 against 691.52
   (1.0). Tested by `paths_as_text` (`std_sys.rs`) and the guide.
+- **D334 — The module `time` (2026-11-05).** One primitive, `sysNow` (the
+  clock of the system in nanoseconds since 1970: `clock_gettime` with
+  `CLOCK_REALTIME` under Linux, `GetSystemTimePreciseAsFileTime` under
+  Windows, `_CLOCK_REALTIME` of wasi-libc, `SystemTime` in the
+  interpreter); the rest in Isocron (`crates/isc-types/src/std/time.isc`):
+  instants as `i64` nanoseconds (1677 to 2262: the year 1 is out of
+  range), the records `Date`, `Time`, `DateTime` (an offset in minutes),
+  the proleptic Gregorian calendar by the algorithms of the civil days of
+  Howard Hinnant (`daysOf`, `dateOf`, with divisions rounded down),
+  `weekday` (ISO 8601, 1 Monday), `addDays`, `addMonths` (the day kept or
+  the last of the month), `daysBetween`, `isLeapYear`, `daysInMonth`,
+  `toDateTime`, `toInstant`, `formatIso` and `formatDateTime` (RFC 3339, a
+  fraction without its zeros at the end), `format` (YYYY MM DD HH mm ss
+  SSS Z), `parseIso` (RFC 3339 and the forms of ISO 8601 it holds; a day,
+  an hour, an offset that are not refused as a `Result`). The values
+  checked against the `datetime` of Python (the days of 1970-01-01,
+  2000-02-29, 2026-11-05 and 0001-01-01 and their weekdays, 9805 days
+  between 2000-01-01 and 2026-11-05). Tested by `time_dates_and_instants`
+  (`std_sys.rs`: the interpreter, compiled and WASI, the same outputs) and
+  `time_on_windows` (in the machine of Windows); the guide has "Dates and
+  times". `bench/primitives/time.isc` and `time.c` (the same work in C:
+  `clock_gettime`, the same algorithms, the text by hand, the same checks
+  of a date read), the same checksums, one CPU, median of 5 runs of 200
+  rounds: `now` 150.78 ns against 17.59 (8.6: the runtime calls the
+  kernel, where glibc reads the clock in the vDSO), `formatIso` 380.90
+  against 45.81 (8.3), `parseIso` 37.43 against 23.31 (1.6), `dateOf` and
+  `daysOf` 19.15 against 17.30 (1.1), `toDateTime` 3.70 against 3.37
+  (1.1).

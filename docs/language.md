@@ -2327,6 +2327,56 @@ ok
 false
 ```
 
+### Dates and times: `time`
+
+An instant is an `i64`: the nanoseconds since 1970-01-01T00:00:00Z, leap
+seconds left out (1677 to 2262). `now()` is the only action; the rest are
+pure functions of the proleptic Gregorian calendar, in UTC or at a fixed
+offset in minutes (no named time zones yet).
+
+| Function | Type |
+| --- | --- |
+| `now()` | `action () => i64` |
+| `toDateTime(i, offset)`, `toInstant(d)` | `(i64, i64) => DateTime`, `(DateTime) => i64` |
+| `daysOf(d)`, `dateOf(z)` | `(Date) => i64`, `(i64) => Date` (days since 1970-01-01) |
+| `weekday(d)` | `(Date) => i64`: 1 Monday to 7 Sunday |
+| `addDays(d, n)`, `addMonths(d, n)`, `daysBetween(a, b)` | on `Date` |
+| `isLeapYear(y)`, `daysInMonth(y, m)` | on `i64` |
+| `formatIso(i)`, `formatDateTime(d)`, `format(d, pattern)` | RFC 3339; `YYYY MM DD HH mm ss SSS Z` |
+| `parseIso(s)` | `(string) => Result<DateTime, string>` |
+
+with `Date = { year, month, day }`, `Time = { hour, minute, second, nano }`
+and `DateTime = { date, time, offset }`.
+
+```isc
+import * as time from "time";
+
+action main(args: string[k]): i32 {
+    const d = { year: 2026, month: 1, day: 31 };
+    print(time.addMonths(d, 1));
+    print(time.weekday(d));
+    print(time.daysBetween(d, { year: 2026, month: 12, day: 25 }));
+    match (time.parseIso("2026-11-05T14:03:00.25+01:00")) {
+        Ok(t) => {
+            print(time.formatIso(time.toInstant(t)));
+            print(time.format(t, "DD/MM/YYYY HH:mm Z"));
+        },
+        Err(e) => print(e),
+    };
+    print(time.now() > 0);
+    return 0;
+}
+```
+
+```output
+{day: 28, month: 2, year: 2026}
+6
+328
+2026-11-05T13:03:00.25Z
+05/11/2026 14:03 +01:00
+true
+```
+
 ## Performance model
 
 * **Fusion.** Element-wise operations, `map` and `iota` feeding a single

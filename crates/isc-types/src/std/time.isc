@@ -1,0 +1,201 @@
+// The module `time` of the standard library (SPEC section 18, D334): an
+// instant is the nanoseconds since 1970-01-01T00:00:00Z (`i64`, leap seconds
+// left out as POSIX does); dates of the proleptic Gregorian calendar by the
+// algorithms of the civil days of Howard Hinnant, without tables. Only
+// `now` reads the system; UTC and fixed offsets (no named zones in v1).
+
+export type Date = { year: i64, month: i64, day: i64 };
+export type Time = { hour: i64, minute: i64, second: i64, nano: i64 };
+export type DateTime = { date: Date, time: Time, offset: i64 };
+
+const NANOS_PER_DAY = 86400000000000;
+
+// the integer below `a / b` and its remainder (b > 0)
+function floorDiv(a: i64, b: i64): i64 {
+    const q = a / b;
+    return a % b < 0 ? q - 1 : q;
+}
+
+function floorMod(a: i64, b: i64): i64 {
+    const r = a % b;
+    return r < 0 ? r + b : r;
+}
+
+// the time of the clock of the system
+export action now(): i64 {
+    return sysNow();
+}
+
+export function isLeapYear(y: i64): boolean {
+    return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+}
+
+export function daysInMonth(y: i64, m: i64): i64 {
+    if (m == 2) {
+        return isLeapYear(y) ? 29 : 28;
+    }
+    return m == 4 || m == 6 || m == 9 || m == 11 ? 30 : 31;
+}
+
+// the days from 1970-01-01 to `d`
+export function daysOf(d: Date): i64 {
+    const y = d.month <= 2 ? d.year - 1 : d.year;
+    const era = floorDiv(y, 400);
+    const yoe = y - era * 400;
+    const mp = (d.month + 9) % 12;
+    const doy = (153 * mp + 2) / 5 + d.day - 1;
+    const doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// the date `z` days after 1970-01-01
+export function dateOf(z0: i64): Date {
+    const z = z0 + 719468;
+    const era = floorDiv(z, 146097);
+    const doe = z - era * 146097;
+    const yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const mp = (5 * doy + 2) / 153;
+    const m = mp < 10 ? mp + 3 : mp - 9;
+    const y = yoe + era * 400;
+    return { year: m <= 2 ? y + 1 : y, month: m, day: doy - (153 * mp + 2) / 5 + 1 };
+}
+
+// the day of the week of `d`: 1 Monday to 7 Sunday (ISO 8601)
+export function weekday(d: Date): i64 {
+    return floorMod(daysOf(d) + 3, 7) + 1;
+}
+
+export function addDays(d: Date, n: i64): Date {
+    return dateOf(daysOf(d) + n);
+}
+
+// `n` months later, the day kept or the last of its month
+export function addMonths(d: Date, n: i64): Date {
+    const total = d.year * 12 + d.month - 1 + n;
+    const y = floorDiv(total, 12);
+    const m = floorMod(total, 12) + 1;
+    return { year: y, month: m, day: Math.min(d.day, daysInMonth(y, m)) };
+}
+
+// the days from `a` to `b`
+export function daysBetween(a: Date, b: Date): i64 {
+    return daysOf(b) - daysOf(a);
+}
+
+// the date and time of the instant `i` at `offset` minutes from UTC
+export function toDateTime(i: i64, offset: i64): DateTime {
+    const t = i + offset * 60000000000;
+    const days = floorDiv(t, NANOS_PER_DAY);
+    const r = t - days * NANOS_PER_DAY;
+    const s = r / 1000000000;
+    return { date: dateOf(days), time: { hour: s / 3600, minute: s / 60 % 60, second: s % 60, nano: r % 1000000000 }, offset: offset };
+}
+
+// the instant of `d`
+export function toInstant(d: DateTime): i64 {
+    const s = d.time.hour * 3600 + d.time.minute * 60 + d.time.second;
+    return daysOf(d.date) * NANOS_PER_DAY + s * 1000000000 + d.time.nano - d.offset * 60000000000;
+}
+
+function pad(x: i64, n: i64): string {
+    return toString(x).padStart(n, "0");
+}
+
+// the offset as `Z` or `+HH:MM`
+function zone(offset: i64): string {
+    if (offset == 0) {
+        return "Z";
+    }
+    const a = Math.abs(offset);
+    return `${offset < 0 ? "-" : "+"}${pad(a / 60, 2)}:${pad(a % 60, 2)}`;
+}
+
+// the fraction of a second, without its zeros at the end ("" for none)
+function fraction(nano: i64): string {
+    if (nano == 0) {
+        return "";
+    }
+    const b = bytes(pad(nano, 9));
+    const last = fold(iota(9), 0, (a, i) => b[i] != 48u8 ? i : a);
+    return "." + pad(nano, 9).slice(0, last + 1);
+}
+
+// `d` in RFC 3339 (`2026-11-05T14:03:00Z`, a fraction when it has one)
+export function formatDateTime(d: DateTime): string {
+    const t = d.time;
+    return `${pad(d.date.year, 4)}-${pad(d.date.month, 2)}-${pad(d.date.day, 2)}T${pad(t.hour, 2)}:${pad(t.minute, 2)}:${pad(t.second, 2)}${fraction(t.nano)}${zone(d.offset)}`;
+}
+
+// the instant `i` in RFC 3339, in UTC
+export function formatIso(i: i64): string {
+    return formatDateTime(toDateTime(i, 0));
+}
+
+// `d` by the fields of `pattern`: YYYY, MM, DD, HH, mm, ss, SSS (the
+// milliseconds) and Z (the offset)
+export function format(d: DateTime, pattern: string): string {
+    return pattern
+        .replaceAll("YYYY", pad(d.date.year, 4))
+        .replaceAll("MM", pad(d.date.month, 2))
+        .replaceAll("DD", pad(d.date.day, 2))
+        .replaceAll("HH", pad(d.time.hour, 2))
+        .replaceAll("mm", pad(d.time.minute, 2))
+        .replaceAll("ss", pad(d.time.second, 2))
+        .replaceAll("SSS", pad(d.time.nano / 1000000, 3))
+        .replaceAll("Z", zone(d.offset));
+}
+
+// the number of the `n` digits of `b` from `at`, or -1
+function digits(b: u8[k], at: i64, n: i64): i64 {
+    if (at + n > b.length) {
+        return -1;
+    }
+    return fold(iota(n), 0, (v, j) => v < 0 || b[at + j] < 48u8 || b[at + j] > 57u8 ? -1 : v * 10 + i64(b[at + j] - 48u8));
+}
+
+// the nanoseconds of the digits of a fraction from `at` (after its dot),
+// and the place after them
+function fractionAt(b: u8[k], at: i64): [i64, i64] {
+    const n = fold(iota(b.length - at), 0, (c, j) => c == j && b[at + j] >= 48u8 && b[at + j] <= 57u8 ? c + 1 : c);
+    const used = Math.min(n, 9);
+    const v = digits(b, at, used);
+    const scale = fold(iota(9 - used), 1, (s, j) => s * 10);
+    return [v * scale, at + n] as const;
+}
+
+// a date of RFC 3339 or of the forms of ISO 8601 it contains: `YYYY-MM-DD`,
+// then `T` or a space, `HH:MM:SS`, a fraction, `Z` or `+HH:MM`
+export function parseIso(s: string): Result<DateTime, string> {
+    const b = bytes(s);
+    const y = digits(b, 0, 4);
+    const mo = digits(b, 5, 2);
+    const d = digits(b, 8, 2);
+    if (y < 0 || mo < 1 || mo > 12 || d < 1 || b.length < 10 || b[4] != 45u8 || b[7] != 45u8 || d > daysInMonth(y, mo)) {
+        return Err(`not a date: ${s}`);
+    }
+    const date = { year: y, month: mo, day: d };
+    if (b.length == 10) {
+        return Ok({ date: date, time: { hour: 0, minute: 0, second: 0, nano: 0 }, offset: 0 });
+    }
+    const h = digits(b, 11, 2);
+    const mi = digits(b, 14, 2);
+    const se = digits(b, 17, 2);
+    if ((b[10] != 84u8 && b[10] != 32u8) || h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 60 || b.length < 19 || b[13] != 58u8 || b[16] != 58u8) {
+        return Err(`not a time: ${s}`);
+    }
+    const [nano, at] = b.length > 19 && b[19] == 46u8 ? fractionAt(b, 20) : [0, 19] as const;
+    if (at == b.length) {
+        return Ok({ date: date, time: { hour: h, minute: mi, second: se, nano: nano }, offset: 0 });
+    }
+    if (b[at] == 90u8 && at + 1 == b.length) {
+        return Ok({ date: date, time: { hour: h, minute: mi, second: se, nano: nano }, offset: 0 });
+    }
+    const oh = digits(b, at + 1, 2);
+    const om = digits(b, at + 4, 2);
+    if ((b[at] != 43u8 && b[at] != 45u8) || oh < 0 || om < 0 || at + 6 != b.length || b[at + 3] != 58u8) {
+        return Err(`not an offset: ${s}`);
+    }
+    const off = oh * 60 + om;
+    return Ok({ date: date, time: { hour: h, minute: mi, second: se, nano: nano }, offset: b[at] == 45u8 ? -off : off });
+}

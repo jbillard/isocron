@@ -255,3 +255,15 @@ fn sys_on_windows() {
     let out = same_on_windows(&runner, include_str!("data/std_sys.isc"), "sys", &d, &["w"], None);
     assert!(String::from_utf8_lossy(&out).starts_with("ok\nok\nalready exists: w/a\n"), "{}", String::from_utf8_lossy(&out));
 }
+
+/// D334: the module `time` on Windows (its clock by
+/// `GetSystemTimePreciseAsFileTime`): the same outputs as on Linux.
+#[test]
+fn time_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let d = dir("time");
+    same_on_windows(&runner, include_str!("data/std_time.isc"), "time", &d, &[], None);
+}

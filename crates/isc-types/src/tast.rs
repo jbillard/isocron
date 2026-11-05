@@ -257,10 +257,13 @@ pub enum SysOp {
     ReadFile,
     /// `sysWriteFile(path, bytes, append) => code`
     WriteFile,
+    /// `sysNow() => nanoseconds`: the time of the clock of the system since
+    /// 1970-01-01T00:00:00Z
+    Now,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 11] = [
+    pub const ALL: [SysOp; 12] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -272,6 +275,7 @@ impl SysOp {
         SysOp::Cwd,
         SysOp::ReadFile,
         SysOp::WriteFile,
+        SysOp::Now,
     ];
 
     /// Its name in the modules.
@@ -288,6 +292,7 @@ impl SysOp {
             SysOp::Cwd => "sysCwd",
             SysOp::ReadFile => "sysReadFile",
             SysOp::WriteFile => "sysWriteFile",
+            SysOp::Now => "sysNow",
         }
     }
 }

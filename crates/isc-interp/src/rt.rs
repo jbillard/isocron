@@ -244,6 +244,7 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
         S::RemoveFile => code(std::fs::remove_file(text(&vs[0]))),
         S::RemoveDir => code(std::fs::remove_dir(text(&vs[0]))),
         S::Rename => code(std::fs::rename(text(&vs[0]), text(&vs[1]))),
+        S::Now => Value::Int(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64)),
         S::Cwd => match std::env::current_dir() {
             Ok(p) => tuple(vec![Value::Str(Rc::from(lossy(p.as_os_str().as_encoded_bytes()).as_str())), Value::Int(0)]),
             Err(e) => tuple(vec![Value::Str(Rc::from("")), Value::Int(io_code(&e))]),

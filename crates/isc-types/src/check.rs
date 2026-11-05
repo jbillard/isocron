@@ -1987,6 +1987,7 @@ impl<'g> FnCx<'g> {
             SysOp::Mkdir | SysOp::RemoveFile | SysOp::RemoveDir => (vec![Ty::Str], i64t.clone()),
             SysOp::Rename => (vec![Ty::Str, Ty::Str], i64t.clone()),
             SysOp::Cwd => (vec![], Ty::Tuple(vec![Ty::Str, i64t.clone()])),
+            SysOp::Now => (vec![], i64t.clone()),
             SysOp::ReadFile => (vec![Ty::Str], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()])),
             SysOp::WriteFile => {
                 let s = self.fresh_size(span);

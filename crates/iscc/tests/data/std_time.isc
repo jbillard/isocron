@@ -1,0 +1,22 @@
+import * as time from "time";
+
+action main(args: string[k]): i32 {
+    print(map([0, 951782400000000000, -1, 1762351380123000000, -5000000000000000000], (i) => time.formatIso(i)));
+    print(time.toDateTime(1762351380123456789, 60));
+    print(time.formatDateTime(time.toDateTime(1762351380000000000, -330)));
+    print(map([{ year: 1970, month: 1, day: 1 }, { year: 2000, month: 2, day: 29 }, { year: 2026, month: 11, day: 5 }, { year: 1, month: 1, day: 1 }], (d) => [time.daysOf(d), time.weekday(d)] as const));
+    print(time.addMonths({ year: 2024, month: 1, day: 31 }, 1));
+    print(time.addMonths({ year: 2023, month: 1, day: 31 }, -2));
+    print(time.addDays({ year: 2024, month: 2, day: 28 }, 2));
+    print(time.daysBetween({ year: 2000, month: 1, day: 1 }, { year: 2026, month: 11, day: 5 }));
+    print([time.isLeapYear(1900), time.isLeapYear(2000), time.isLeapYear(2024), time.daysInMonth(2023, 2)] as const);
+    print(time.format(time.toDateTime(1762351380123000000, 0), "DD/MM/YYYY HH:mm:ss.SSS Z"));
+    const ins = ["2026-11-05", "2026-11-05T14:03:00Z", "2026-11-05 14:03:00.5+01:30", "2026-11-05T14:03:00.123456789123-05:00", "2026-02-30", "2026-11-05T25:00:00Z", "x"];
+    print(map(ins, (s) => match (time.parseIso(s)) {
+        Ok(d) => `${time.toInstant(d)}`,
+        Err(e) => e,
+    }));
+    const t = time.now();
+    print(t > 1762000000000000000);
+    return 0;
+}

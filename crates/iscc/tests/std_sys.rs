@@ -90,3 +90,24 @@ fn paths_as_text() {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled: {}", r.stderr);
 }
+
+/// D334: the module `time`: instants in RFC 3339 (before 1970, a leap day,
+/// fractions), dates and times at an offset, the days of dates and their
+/// weekdays (checked against the `datetime` of Python), months and days
+/// added, the leap years, a pattern, dates read (offsets, a fraction of 12
+/// digits, a day, an hour, a text that are not), the clock of the system;
+/// the same in the interpreter, compiled and under WASI.
+#[test]
+fn time_dates_and_instants() {
+    let src = include_str!("data/std_time.isc");
+    let want = include_str!("data/std_time.out");
+    assert_eq!(interp_ok(src, &[]), want, "interpreter");
+    let bin = compile(src, "std_time");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled: {}", r.stderr);
+    if let Some(runner) = wasi_runner() {
+        let wasm = compile_wasm(src, "std_time_wasi");
+        let r = run_wasm(&runner, &wasm, &[]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want), "WASI: {}", r.stderr);
+    }
+}
