@@ -6234,3 +6234,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     three times their floor and the decisions that took them below, the
     gaps that are left); its attribution of the gaps stays that of
     c77e61b (D263), marked so.
+- **D320 — Release 0.2.2 (2026-11-05).** The end of the first part of the
+  goal of 2026-11-05: each of the ten programs below three times its floor
+  in the publication of D319, the fastest on 10 of 10. A version
+  compatible with 0.2.1 (as Cargo counts): the language unchanged, the
+  compiler and the runtime faster (D272 to D318), the programs without C
+  under Linux (D287 to D289). The archives as for 0.2.1 (`build_iscc.sh`
+  for Linux and Windows in the images of the releases, from the sources of
+  the commit of the release; `package.sh`; the extension of VS Code at
+  0.2.2), tried before they are published: the archive for Linux on Debian
+  12 slim without network (`selftest_linux.sh`), the one for Windows on the
+  machine of Windows (`selftest_windows.py`: the ten programs, the same
+  outputs; `iscc run`; WebAssembly), the machine stopped afterwards.
+  `CHANGELOG.md`, the links of the README and of `tools/vscode/README.md`
+  at 0.2.2.

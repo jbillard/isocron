@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.2.2 — 2026-11-05
+
+Every program of the Benchmarks Game below three times its floor, the
+cost of the machine (`results/floors.md`), and the fastest on 10 of 10:
+regex-redux 129 -> 83 ms, fasta 11 -> 6 ms, k-nucleotide 863 -> 680 ms,
+reverse-complement 42 -> 41 ms (D319: the lowest of 12 runs now).
+
+### The compiler
+
+* Rows of a `map` (lines of fasta): the whole rows at constant places, in
+  one vector of 64 lanes when they are 33 to 64 bytes wide, an equality
+  with the index and the remainders of their tables taken out of their
+  loop; a table read at `x % c` copied with its period (D272 to D274,
+  D318).
+* An affine recurrence modulo a constant (`v.with(t + 1, (v[t] * a + c) %
+  m)`) computed in parts from powers of its step (D292).
+* A `filter` read only by arrays written by blocks made by windows; the
+  index of a `fold` in vector code checked before its loop (D293, D297).
+* String literals and the parts and bytes of strings read where they are;
+  reductions of integers in one accumulator (D301, D303, D304).
+* The text of a replacement by a regular expression given to it at its
+  last use, written where it is when each match is replaced by as many
+  bytes (D315).
+
+### The runtime
+
+* No C called by the runtime under Linux: the system called directly, the
+  functions of memory in Rust (`isc-mem`), static programs without a C
+  library, their start, threads and thread-local storage (D287 to D289).
+* Regular expressions: fixed alternatives searched by lanes and groups of
+  blocks of AVX-512, the parts of a search stopped at the next part,
+  several parts per thread, each thread its range first, the sizes of a
+  replacement from its search (D275 to D284, D306 to D314).
+* `countBy` by tables of counts only, each key with its count in one word,
+  looked for by lines of 8 slots (D317); the blocks of small keys counted
+  in one loop (D296).
+* The standard output by blocks into files; the decimal text of integers
+  written directly; case, padding and replacement written once; the lines
+  and parts of a text in one block (D298 to D305).
+* The allocator: small blocks carved from spans of huge pages; the last
+  2 MiB of a region without huge pages (0.25 ms less at the start of a
+  program, D294, D316).
+
+### The repository
+
+* `bench/primitives/`: every form of the language against its floor in C,
+  `results/primitives.md` (D301).
+* The Benchmarks Game measured with the lowest of 12 runs (D319).
+
 ## 0.2.1 — 2026-11-04
 
 The editors: `isc-lsp`, the language server, beside the compiler. The

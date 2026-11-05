@@ -258,6 +258,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The language server `isc-lsp` for every editor: the hover (types, comments, documentation), the errors as typed, the definitions, the outline; in VS Code and Neovim (D269)
   - [x] Release 0.2.1: `isc-lsp` beside `iscc` in the archives (D270)
   - [x] The `.vsix` of the extension of VS Code in the releases, attached to 0.2.1 (D271)
+  - [x] Release 0.2.2: each program of the Benchmarks Game below three times its floor (D319, D320)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [ ] The memory report counts as allocated whole the arrays made by blocks (D225) and by windows (D293)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
