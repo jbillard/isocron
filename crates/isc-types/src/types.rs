@@ -182,6 +182,11 @@ static EMPTY: Vec<SymId> = Vec::new();
 pub enum Size {
     Poly(Poly),
     Var(u32),
+    /// The size of an array that each value has of its own (`T[]`, D341):
+    /// in a record, a tuple, a payload or a function type; read, it is a
+    /// new existential size. A size is forgotten where `Own` is expected,
+    /// never given to a size that is not `Own`.
+    Own,
 }
 
 /// A resource of the system held by a value (D339): unique, never copied,
@@ -333,6 +338,7 @@ impl fmt::Display for TyDisplay<'_> {
                 let mut t = self.ty;
                 while let Ty::Array(s, e) = t {
                     sizes.push(match s {
+                        Size::Own => String::new(),
                         Size::Poly(p) => p.show(self.sym_name),
                         Size::Var(v) => match (self.size_var)(*v) {
                             Some(p) => p.show(self.sym_name),

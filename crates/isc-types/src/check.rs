@@ -54,16 +54,34 @@ fn is_map(sums: &[SumDef], id: u32) -> bool {
     d.variants.len() == 1 && d.variants[0].name == crate::MAP_CTOR
 }
 
+/// The parameter that binds a size of a signature
+fn i_of(o: &SymOrigin) -> usize {
+    match o {
+        SymOrigin::Param(i) | SymOrigin::ParamPath(i, _) | SymOrigin::SizeParam(i) => *i,
+        _ => 0,
+    }
+}
+
 fn is_elem_ty(t: &Ty) -> bool {
     match t {
         Ty::Int(_) | Ty::F64 | Ty::F32 | Ty::Bool | Ty::Str | Ty::Param(_) => true,
-        Ty::Tuple(ts) => ts.iter().all(is_elem_ty),
-        Ty::Record(fs) => fs.iter().all(|(_, t)| is_elem_ty(t)),
+        Ty::Tuple(ts) => ts.iter().all(is_part_ty),
+        Ty::Record(fs) => fs.iter().all(|(_, t)| is_part_ty(t)),
         // checked when the program is lowered (a payload may hold an array)
         Ty::Sum { .. } => true,
         // arrays of arrays of scalars (SPEC section 4; D95)
         Ty::Array(_, e) => matches!(**e, Ty::Int(_) | Ty::F64 | Ty::F32 | Ty::Bool | Ty::Param(_)),
         _ => false,
+    }
+}
+
+/// A part of a tuple or a record that is an element of an array: an array
+/// there is a block of its own (D336), of any element an array may hold
+/// (its size its own or not, D341); the rest as `is_elem_ty`.
+fn is_part_ty(t: &Ty) -> bool {
+    match t {
+        Ty::Array(_, e) => is_elem_ty(e),
+        _ => is_elem_ty(t),
     }
 }
 
@@ -297,6 +315,7 @@ fn module_of(name: &str) -> Option<&str> {
 
 fn size_from_ast(se: &SizeExpr, cx: &mut SigCtx) -> Result<Poly> {
     Ok(match se {
+        SizeExpr::Own(span) => return err(*span, "`[]` (an array of its own size) stands alone as the size of an array"),
         SizeExpr::Lit(v, _) => Poly::constant(*v as i64),
         SizeExpr::Var(name, span) => {
             if let Some(i) = cx.syms.iter().position(|s| &s.name == name) {
@@ -355,12 +374,19 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
             }
         }
         TypeKind::Array(size, elem) => {
-            let p = size_from_ast(size, cx)?;
+            let p = match size {
+                SizeExpr::Own(_) => Size::Own,
+                _ => Size::Poly(size_from_ast(size, cx)?),
+            };
             let e = type_from_ast(elem, cx)?;
             if !is_elem_ty(&e) {
                 return Err(poc(elem.span, "an array whose elements are not scalars, strings or tuples of these"));
             }
-            Ty::Array(Size::Poly(p), Box::new(e))
+            // the rows of an array of arrays share their size (D341)
+            if matches!(e, Ty::Array(Size::Own, _)) {
+                return err(elem.span, "the rows of an array of arrays have one size: an array of its own size (`T[]`) goes in a record or a tuple of the elements");
+            }
+            Ty::Array(p, Box::new(e))
         }
         TypeKind::BoundedArray(k, n, elem) => {
             // `[k <= n]T`: an existential size `k`, at most `n` (SPEC section
@@ -453,6 +479,14 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
                 type_from_ast(t, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: false, module: module_of(&d.name), imports: imports.get(&d.span.file) })?
             }
         };
+        // `x: T[]`: a size of its own for the parameter (D341), named after it
+        let ty = match ty {
+            Ty::Array(Size::Own, e) => {
+                syms.push(SymInfo { name: format!("{}.length", p.name), origin: SymOrigin::Param(param_tys.len()) });
+                Ty::Array(Size::Poly(Poly::sym((syms.len() - 1) as SymId)), e)
+            }
+            ty => ty,
+        };
         param_names.push((p.name.clone(), p.span));
         param_tys.push(ty);
     }
@@ -502,6 +536,14 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
     // array (`[k]T` or `[k <= n]T`).
     let nparams_syms = syms.len();
     let ret = type_from_ast(&d.ret, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: true, module: module_of(&d.name), imports: imports.get(&d.span.file) })?;
+    // a result `T[]`: an existential size (D341)
+    let ret = match ret {
+        Ty::Array(Size::Own, e) => {
+            syms.push(SymInfo { name: format!("k@{}:{}", d.ret.span.line, d.ret.span.col), origin: SymOrigin::Existential(d.ret.span) });
+            Ty::Array(Size::Poly(Poly::sym((syms.len() - 1) as SymId)), e)
+        }
+        ret => ret,
+    };
     for s in nparams_syms..syms.len() {
         if !alone_in(&ret, s as SymId) {
             return err(
@@ -893,6 +935,11 @@ impl<'g> FnCx<'g> {
         let a = self.size_res(a);
         let b = self.size_res(b);
         match (&a, &b) {
+            // a size forgotten where each value has its own (D341); never
+            // the other way: a size of its own given to a size of the
+            // signature would let two arrays of different sizes pass as one
+            (Size::Own, _) => Ok(()),
+            (_, Size::Own) => Err(UErr::Size),
             (Size::Var(x), Size::Var(y)) if x == y => Ok(()),
             (Size::Var(x), _) => {
                 self.svars[*x as usize].0 = Some(b.clone());
@@ -951,9 +998,11 @@ impl<'g> FnCx<'g> {
                 self.unify_in(e1, e2, mode, false)?;
                 self.unify_size(s1, s2, mode, top)
             }
+            // the parameters the other way: the function found must take what
+            // the type expected passes (an array of its own size, D341)
             (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) if p1.len() == p2.len() => {
                 for (s, t) in p1.iter().zip(p2.iter()) {
-                    self.unify_in(s, t, Mode::Strict, false)?;
+                    self.unify_in(t, s, Mode::Strict, false)?;
                 }
                 self.unify_in(r1, r2, Mode::Strict, false)
             }
@@ -1013,12 +1062,52 @@ impl<'g> FnCx<'g> {
     // ----- scopes -------------------------------------------------------
 
     fn add_local(&mut self, name: &str, ty: Ty, span: Span) -> LocalId {
+        let ty = self.open_own(&ty, span);
         self.locals.push(Local { name: name.to_string(), ty, span });
         let id = (self.locals.len() - 1) as LocalId;
         if name != "_" {
             self.scopes.last_mut().unwrap().insert(name.to_string(), id);
         }
         id
+    }
+
+    /// The size that an argument gives to a size of the callee: its own,
+    /// or a new existential size for an array of its own size (D341).
+    fn size_of_call(&mut self, sz: &Size, span: Span) -> Size {
+        match self.size_res(sz) {
+            Size::Own => {
+                let k = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                Size::Poly(Poly::sym(k))
+            }
+            other => other,
+        }
+    }
+
+    /// Does `t` hold an array of its own size (D341)?
+    fn holds_own(&self, t: &Ty) -> bool {
+        match self.shallow(t) {
+            Ty::Array(s, e) => self.size_res(&s) == Size::Own || self.holds_own(&e),
+            Ty::Tuple(ts) => ts.iter().any(|t| self.holds_own(t)),
+            Ty::Record(fs) => fs.iter().any(|(_, t)| self.holds_own(t)),
+            Ty::Sum { args, .. } => args.iter().any(|t| self.holds_own(t)),
+            Ty::Fn(ps, r) => ps.iter().any(|t| self.holds_own(t)) || self.holds_own(&r),
+            _ => false,
+        }
+    }
+
+    /// `t`, an array of its own size (D341) given a new existential size:
+    /// what a value read out of a record, a tuple, a payload or a call of a
+    /// function type has. Its parts keep theirs, opened when they are read.
+    fn open_own(&mut self, t: &Ty, span: Span) -> Ty {
+        match self.shallow(t) {
+            Ty::Array(s, e) if self.size_res(&s) == Size::Own => {
+                let k = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                Ty::Array(Size::Poly(Poly::sym(k)), e)
+            }
+            other => other,
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<LocalId> {
@@ -1121,7 +1210,12 @@ impl<'g> FnCx<'g> {
                 self.check(&t, expected)
             }
             ExprKind::Array(es) => {
-                let elem = self.fresh(class::ELEM, LitKind::None, span);
+                // elements of arrays of their own size (D341): the element
+                // type expected, so that each element keeps its own sizes
+                let elem = match expected.map(|t| self.shallow(t)) {
+                    Some(Ty::Array(_, e)) if self.holds_own(&e) => *e,
+                    _ => self.fresh(class::ELEM, LitKind::None, span),
+                };
                 let mut out = Vec::new();
                 for x in es {
                     let t = self.check(x, Some(&elem))?;
@@ -1177,6 +1271,7 @@ impl<'g> FnCx<'g> {
                     return Ok(self.mk(call, Ty::Int(IntKind::I64), span));
                 }
                 let (i, ty) = self.field_of(&x.ty, name, x.span)?;
+                let ty = self.open_own(&ty, span);
                 Ok(self.mk(TExprKind::Field(Box::new(x), i), ty, span))
             }
             ExprKind::Slice(x0, a0, b0) => {
@@ -1416,7 +1511,11 @@ impl<'g> FnCx<'g> {
         let n = syms.len();
         let ty = type_from_ast(t, &mut SigCtx { generics: &generics, sums: &self.g.heads, syms: &mut syms, allow_new: false, result: false, module: self.module.as_deref(), imports: self.g.imports.get(&self.file) })?;
         debug_assert_eq!(n, syms.len());
-        Ok(ty)
+        // `const x: T[] = ...`: any size (D341)
+        Ok(match ty {
+            Ty::Array(Size::Own, e) => Ty::Array(self.fresh_size(t.span), e),
+            ty => ty,
+        })
     }
 
     /// The index and type of field `name` of a record type, which must be
@@ -1918,6 +2017,8 @@ impl<'g> FnCx<'g> {
             self.unify(p, &t.ty, a.span)?;
             targs.push(t);
         }
+        // a result of its own size: a new existential size (D341)
+        let ret = self.open_own(&ret, span);
         Ok(self.mk(
             TExprKind::Call { callee: Callee::Value(Box::new(callee)), args: targs, size_checks: Vec::new() },
             ret,
@@ -2099,7 +2200,9 @@ impl<'g> FnCx<'g> {
                     at
                 };
                 match at {
-                    Ty::Array(sz, _) => sym_map[s] = Some(self.size_res(&sz)),
+                    // an array of its own size: its size for this call, a new
+                    // existential one (D341)
+                    Ty::Array(sz, _) => sym_map[s] = Some(self.size_of_call(&sz, args[i_of(&info.origin)].span)),
                     other => {
                         return err(
                             targs[*i].span,
@@ -2118,7 +2221,9 @@ impl<'g> FnCx<'g> {
                     at
                 };
                 match at {
-                    Ty::Array(sz, _) => sym_map[s] = Some(self.size_res(&sz)),
+                    // an array of its own size: its size for this call, a new
+                    // existential one (D341)
+                    Ty::Array(sz, _) => sym_map[s] = Some(self.size_of_call(&sz, args[i_of(&info.origin)].span)),
                     other => {
                         return err(
                             targs[i].span,
@@ -2162,9 +2267,14 @@ impl<'g> FnCx<'g> {
     /// hint of the second branch of a conditional, D337).
     fn loosen(&mut self, t: &Ty) -> Ty {
         match self.shallow(t) {
-            Ty::Array(_, e) => {
+            Ty::Array(s, e) => {
                 let e = self.loosen(&e);
-                Ty::Array(self.fresh_size(Span::default()), Box::new(e))
+                // a size of its own stays (D341)
+                let s = match self.size_res(&s) {
+                    Size::Own => Size::Own,
+                    _ => self.fresh_size(Span::default()),
+                };
+                Ty::Array(s, Box::new(e))
             }
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.loosen(t)).collect()),
             Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), self.loosen(t))).collect()),
@@ -2184,6 +2294,7 @@ impl<'g> FnCx<'g> {
                 let e = self.join(e1, e2, span)?;
                 let (r1, r2) = (self.size_res(s1), self.size_res(s2));
                 let s = match (&r1, &r2) {
+                    (Size::Own, _) | (_, Size::Own) => Size::Own,
                     (Size::Poly(p), Size::Poly(q)) if p != q => {
                         let k = self.syms.len() as SymId;
                         self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
@@ -3165,6 +3276,7 @@ impl<'g> FnCx<'g> {
             Ty::Array(s, e) => {
                 let e = self.zonk(&e)?;
                 match self.size_res(&s) {
+                    Size::Own => Ty::Array(Size::Own, Box::new(e)),
                     Size::Poly(p) => Ty::Array(Size::Poly(p), Box::new(e)),
                     Size::Var(v) => {
                         return err(self.svars[v as usize].1, "cannot infer the size of this array; add a type annotation")

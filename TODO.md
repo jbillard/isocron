@@ -338,5 +338,6 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `http`: a client of HTTP/1.1; `concat` made into memory by copies; `closeWrite` in `net` (D340)
   - [ ] `concat` that grows in place an array it consumes (its block unique, at its last use): the join of the chunks of `http` in one copy (D340: 22 µs of the 29 that `exchange.chunked64` takes more than its floor, 2.5 times; the other 7.3 µs to split)
 - [ ] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool
+  - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
 - [ ] `https`: the TLS of the system
 - [ ] Release 0.3.0

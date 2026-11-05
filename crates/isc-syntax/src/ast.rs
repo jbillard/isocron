@@ -128,6 +128,9 @@ pub struct TypeDecl {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SizeExpr {
+    /// `T[]`: an array of its own size, in a record, a tuple, a payload or a
+    /// function type (D341)
+    Own(Span),
     Lit(u64, Span),
     Var(String, Span),
     Add(Box<SizeExpr>, Box<SizeExpr>),

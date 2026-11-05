@@ -27,6 +27,9 @@ enum Shape {
     Opt(Box<Shape>),
     /// An array: its length when the type fixes it.
     Arr(Option<i64>, Box<Shape>),
+    /// An array of its own size (`T[]`, D341): each value its own length,
+    /// never compared with the others.
+    Own(Box<Shape>),
     Tuple(Vec<Shape>),
     /// A record, its fields in the order of their names.
     Record(Vec<(String, Shape)>),
@@ -51,13 +54,17 @@ fn shape_of(t: &Ty, sums: &[SumDef], at: &str) -> Result<Shape, String> {
         Ty::Array(size, e) => {
             let fixed = match size {
                 Size::Poly(p) => p.as_const(),
-                Size::Var(_) => None,
+                Size::Var(_) | Size::Own => None,
             };
             let inner = shape_of(e, sums, &format!("{}[]", at))?;
             if holds_array(&inner) && holds_option_of_array(&inner) {
                 return Err(place("an `Option` holding an array, in an array (its rows must have one length)"));
             }
-            Shape::Arr(fixed, Box::new(inner))
+            if *size == Size::Own {
+                Shape::Own(Box::new(inner))
+            } else {
+                Shape::Arr(fixed, Box::new(inner))
+            }
         }
         Ty::Tuple(ts) => Shape::Tuple(ts.iter().enumerate().map(|(i, x)| shape_of(x, sums, &format!("{}[{}]", at, i))).collect::<Result<_, _>>()?),
         Ty::Record(fs) if fs.len() > MAX_FIELDS => return Err(place(&format!("a record of {} fields (at most {}: their presence is checked by the bits of one integer)", fs.len(), MAX_FIELDS))),
@@ -87,7 +94,7 @@ fn holds_array(s: &Shape) -> bool {
 fn holds_option_of_array(s: &Shape) -> bool {
     match s {
         Shape::Opt(e) => holds_array(e),
-        Shape::Arr(_, e) => holds_option_of_array(e),
+        Shape::Arr(_, e) | Shape::Own(e) => holds_option_of_array(e),
         Shape::Tuple(ts) => ts.iter().any(holds_option_of_array),
         Shape::Record(fs) => fs.iter().any(|(_, x)| holds_option_of_array(x)),
         _ => false,
@@ -104,6 +111,7 @@ fn key(s: &Shape) -> String {
         Shape::Str => "string".into(),
         Shape::Opt(e) => format!("Option<{}>", key(e)),
         Shape::Arr(n, e) => format!("{}[{}]", key(e), n.map(|n| n.to_string()).unwrap_or_else(|| "_".into())),
+        Shape::Own(e) => format!("{}[]", key(e)),
         Shape::Tuple(ts) => format!("[{}]", ts.iter().map(key).collect::<Vec<_>>().join(", ")),
         Shape::Record(fs) => format!("{{{}}}", fs.iter().map(|(n, x)| format!("{}: {}", n, key(x))).collect::<Vec<_>>().join(", ")),
     }
@@ -130,6 +138,7 @@ fn render_with(s: &Shape, next: &mut usize, prefix: &str) -> String {
         Shape::F32 => "f32".into(),
         Shape::Str => "string".into(),
         Shape::Opt(e) => format!("Option<{}>", render(e, next)),
+        Shape::Own(e) => format!("{}[]", render(e, next)),
         Shape::Arr(n, e) => {
             let inner = render(e, next);
             match n {
@@ -162,6 +171,7 @@ fn default_of(s: &Shape) -> String {
         Shape::Str => "\"\"".into(),
         Shape::Opt(_) => "None".into(),
         Shape::Arr(n, e) => format!("fill({}, {})", n.unwrap_or(0), default_of(e)),
+        Shape::Own(_) => "[]".into(),
         Shape::Tuple(ts) => format!("[{}] as const", ts.iter().map(default_of).collect::<Vec<_>>().join(", ")),
         Shape::Record(fs) => format!("{{ {} }}", fs.iter().map(|(n, x)| format!("{}: {}", n, default_of(x))).collect::<Vec<_>>().join(", ")),
     }
@@ -213,7 +223,11 @@ impl Gen {
                     format!("return match (x) {{\n        Some(v) => codecEncode{j}(v),\n        None => \"null\",\n    }};"),
                 )
             }
-            Shape::Arr(n, inner) => {
+            Shape::Arr(_, inner) | Shape::Own(inner) => {
+                let n = match &s {
+                    Shape::Arr(n, _) => *n,
+                    _ => None,
+                };
                 let j = self.id(inner);
                 let mut check = format!("const [o, c, p, why] = arrayCheckAt(b, ix, at, (x) => codecCheck{j}(b, text, ix, x));\n    if (p >= 0) {{\n        return [c + 1, p, why] as const;\n    }}\n");
                 if let Some(n) = n {

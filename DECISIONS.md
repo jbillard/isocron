@@ -6906,3 +6906,52 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     sides, slices, 4 threads, Valgrind; the `map` of the same form with
     other lengths, the same panic as the interpreter); the example of
     `docs/language.md`, refused for WASI.
+
+- **D341 — Arrays of their own size, `T[]` (2026-11-05).** The server of
+  HTTP (SPEC section 18) gives its handler `(Request) => Response`, and a
+  batch of requests to `map`: records whose bodies have different sizes in
+  one array. Until now a record could not: the sizes of its fields are
+  variables of the signatures that use it (D159), the same for every
+  element of an array (`[{ tags: [1] }, { tags: [1, 2] }]` refused, and
+  `decode<Tagged[n]>` of such a text an error at run time), and a size
+  that appears only in a function type of a parameter bound nowhere. Only
+  the payloads of sum types had sizes of their own (D335); a server with
+  sums and accessors (`http.path(r)`) instead of records was the other
+  way, against the records of SPEC and of the client's `Response`.
+  - `T[]`: an array whose size the type does not name, each value its own
+    (`Size::Own`), in a record, a tuple, a payload or a function type.
+    Read (a field, a part of a tuple taken apart, a variable bound to it,
+    the result of a call of a function value), it is opened: a new
+    existential size, as the result of `filter`. A parameter `x: T[]` is
+    `x: T[n]` with a size of its own named `x.length`; a result `T[]` an
+    existential size; `const x: T[] = ...` any size.
+  - The unification goes one way: an array of any size goes where `Own`
+    is expected (a size forgotten), an `Own` never into a size that is not
+    `Own`, not even a variable of inference: bound to `Own`, a size of a
+    signature would accept any array afterwards, and two arrays of
+    different sizes would pass as one (a `map` of both, a bound check
+    removed). The parameters of function types are unified the other way
+    (what the type expected passes is what the function found takes): a
+    function that takes `u8[4]` is not a `(u8[]) => ...` (tested). `loosen`
+    and `join` keep `Own`; a literal array whose element type expected
+    holds `Own` gives it to its elements (each its own sizes).
+  - A size of a callee bound through an array of its own size
+    (`both(r: { body: u8[n] }, x: u8[n])` called with a `Request`) is a new
+    existential size of that call: the call is tested at run time, as for
+    any size known only then (`size mismatch: 1 != 3`, the same in the
+    interpreter).
+  - The rows of an array of arrays share their size: `T[4][]` is refused
+    at compile time. The parts of a record or a tuple that is an element
+    of an array may now be arrays of strings or of tuples
+    (`headers: [string, string][]`), each a block of its own (D336).
+  - JSON: `Shape::Own`, an array whose length is never compared with the
+    other elements' (the rows of an array still are): `decode<Tagged[]>`
+    of records with arrays of 1, 3 and 0 elements, and `encode`.
+  - The IR: `Fixed::ANY`, the length at run time, as every array of a
+    size not fixed; nothing else changes there (the ten programs do not
+    use `T[]`).
+  - Tests: `stdlib.rs` (`arrays_of_their_own_size`: a batch of requests
+    given by `map` to a function value, `T[]` as parameter, result and in a
+    tuple, equality, records of any sizes kept as `Response[]`, JSON; the
+    refusals; the size tested at run time; compiled on 1 and 4 threads,
+    interpreted, Valgrind), the example of `docs/language.md`.

@@ -732,6 +732,38 @@ run time, as the array a function returns with `T[k]`.
   checked when a function is called and by the element-wise operators; a
   mismatch is a panic.
 
+An array of its own size, `T[]`, is one whose size the type does not
+name: each value has its own. In a record, a tuple, a payload or a function
+type, it lets the elements of an array hold arrays of different sizes
+(`{ path: string, body: u8[] }[n]`, requests each with its body), and a
+function type take arrays of any size (`(Request) => Response`). Read (a
+field, a part of a tuple, the result of a call), it has a new size known at
+run time, as the array of `T[k]`. An array of any size goes where `T[]` is
+expected; an array of its own size never goes where a size of the
+signature is: it is then tested at run time, a mismatch a panic. `x: T[]`
+as a parameter is an array of a size of its own (`x.length`), `T[]` as a
+result one of a size fixed at run time. The rows of an array of arrays
+share their size: `T[4][]` is refused (a record holds such rows).
+
+```isc
+type Request = { path: string, body: u8[] };
+type Response = { status: i64, body: u8[] };
+
+function answer(r: Request): Response {
+    return { status: r.body.length == 0 ? 204 : 200, body: bytes(`${r.path} ${r.body.length}`) };
+}
+
+action main(args: string[k]): i32 {
+    const rs: Request[] = [{ path: "/a", body: [] }, { path: "/b", body: bytes("hello") }];
+    print(map(map(rs, answer), (r) => `${r.status} ${stringOf(r.body)}`));
+    return 0;
+}
+```
+
+```output
+[204 /a 0, 200 /b 5]
+```
+
 A parameter declared `k: size` is an `i64` that is also a size of the
 signature: the size of the result can depend on it. Its argument is a size
 (a literal, a size variable, a sum or product of these) or a variable (bind

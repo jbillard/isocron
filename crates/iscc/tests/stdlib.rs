@@ -920,6 +920,102 @@ fn sizes_bound_by_arrays_in_records_tuples_and_rows() {
     assert!(e.contains("2:12") && e.contains("known to the types only"), "{}", e);
 }
 
+const OWN_SIZES: &str = r##"import * as json from "json";
+
+// records holding arrays of their own size (D341)
+type Request = { path: string, headers: [string, string][], body: u8[] };
+type Response = { status: i64, body: u8[] };
+
+// a function of requests, applied by `map` to a batch of them
+action serveAll(rs: Request[n], handler: (Request) => Response, rounds: i64): i64 {
+    if (rounds == 0) {
+        return 0;
+    }
+    const out = map(rs, handler);
+    print(map(out, (r) => `${r.status}:${stringOf(r.body)}`));
+    return serveAll(rs, handler, rounds - 1);
+}
+
+function hello(r: Request): Response {
+    return { status: r.path == "/" ? 200 : 404, body: bytes(`${r.path} ${r.headers.length} ${r.body.length}`) };
+}
+
+// a parameter `T[]`, a tuple holding one, a result `T[]`
+function total(xs: u8[], t: [u8[], i64]): i64 {
+    const [a, n] = t;
+    return xs.length + a.length + n;
+}
+
+function longer(r: Request, by: i64): u8[] {
+    return concat(r.body, fill(by, 33u8));
+}
+
+type Tagged = { name: string, tags: i64[] };
+
+action main(args: string[k]): i32 {
+    const rs: Request[] = [{ path: "/", headers: [], body: [] }, { path: "/x", headers: [["a", "b"] as const], body: bytes("body") }, { path: "/y", headers: [], body: bytes("a longer body") }];
+    serveAll(rs, hello, 1);
+    print(total(bytes("abc"), [bytes("de"), 7] as const));
+    print(stringOf(longer(rs[1], args.length + 3)));
+    print([rs[1] == rs[1], rs[0] == rs[1], rs[1] == rs[2]] as const);
+    // a record made with arrays of any size, kept where `T[]` is expected
+    const made = map(iota(4), (i) => ({ status: i, body: map(iota(i), (j) => u8(65 + j)) }));
+    const kept: Response[] = made;
+    print(map(kept, (r) => stringOf(r.body)));
+    const one = args.length == 0 ? rs[2] : rs[0];
+    print(one.body.length);
+    // JSON: arrays of their own size in the records of an array
+    match (json.decode<Tagged[]>("[{\"name\": \"a\", \"tags\": [1]}, {\"name\": \"b\", \"tags\": [1, 2, 3]}, {\"name\": \"c\", \"tags\": []}]")) {
+        Ok(ts) => {
+            print(map(ts, (t) => `${t.name}:${sum(t.tags)}/${t.tags.length}`));
+            print(json.encode(ts));
+        },
+        Err(e) => print(json.message(e)),
+    };
+    return 0;
+}
+"##;
+
+/// D341: arrays of their own size (`T[]`) in records, tuples and function
+/// types: a batch of requests of every size given to a function by `map`,
+/// a parameter and a result `T[]`, a tuple taken apart, equality, records
+/// made with any sizes and kept as `T[]`, a conditional, JSON decoded into
+/// records of arrays of different lengths and encoded; compiled (1 and 4
+/// threads) and interpreted, the same outputs; Valgrind.
+#[test]
+fn arrays_of_their_own_size() {
+    let want = "[200:/ 0 0, 404:/x 1 4, 404:/y 0 13]\n12\nbody!!!\n(true, false, false)\n[, A, AB, ABC]\n13\n[a:1/1, b:6/3, c:0/0]\n[{\"name\":\"a\",\"tags\":[1]},{\"name\":\"b\",\"tags\":[1,2,3]},{\"name\":\"c\",\"tags\":[]}]\n";
+    agree(OWN_SIZES, "own_sizes", &[], want);
+    let bin = compile(OWN_SIZES, "own_sizes_4");
+    let r = run_bin_threads(&bin, &[], Some(4));
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "4 threads: {}", r.stderr);
+    // refused at compile time: rows of their own size, a function that
+    // takes only arrays of 4 where any size is passed
+    let prelude = "type Request = { path: string, body: u8[] };\ntype Response = { status: i64, body: u8[] };\n";
+    let refused = [
+        ("function rows(x: u8[4][]): i64 {\n    return x.length;\n}\n", "    print(1);\n", "the rows of an array of arrays have one size"),
+        (
+            "function four(r: { path: string, body: u8[4] }): Response {\n    return { status: i64(r.body[3]), body: [] };\n}\n\naction serve(rs: Request[n], h: (Request) => Response): void {\n    print(map(rs, h).length);\n}\n",
+            "    const rs: Request[] = [{ path: \"/\", body: bytes(\"a\") }];\n    serve(rs, four);\n",
+            "size mismatch: expected `({body: u8[], path: string}) => {body: u8[], status: i64}`, found `({body: u8[4], path: string}) => {body: u8[], status: i64}`",
+        ),
+    ];
+    for (decl, body, want) in refused {
+        let src = format!("{}\n{}\naction main(args: string[k]): i32 {{\n{}    return 0;\n}}\n", prelude, decl, body);
+        match iscc::frontend("own.isc", &src) {
+            Ok(_) => panic!("accepted:\n{}", src),
+            Err(e) => assert!(e.contains(want), "{}", e),
+        }
+    }
+    // an array of its own size given to a size of a function with another
+    // array: tested where it is called, as a size known at run time
+    let mismatch = format!("{}\nfunction both(r: {{ path: string, body: u8[n] }}, x: u8[n]): i64 {{\n    return sum(map(r.body + x, (a) => i64(a)));\n}}\n\naction main(args: string[k]): i32 {{\n    const r: Request = {{ path: \"/\", body: bytes(\"abc\") }};\n    print(both(r, bytes(\"x\")));\n    return 0;\n}}\n", prelude);
+    let want = interp_panic(&mismatch, &[]);
+    assert!(want.contains("size mismatch: 1 != 3"), "{}", want);
+    let r = run_bin(&compile(&mismatch, "own_sizes_mismatch"), &[]);
+    assert_eq!((r.code, r.stderr.trim()), (101, want.trim()));
+}
+
 const TYPE_ARGUMENTS: &str = r##"function first<T>(xs: T[n]): T {
     return xs[0];
 }

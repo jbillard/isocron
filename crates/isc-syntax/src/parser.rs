@@ -403,11 +403,15 @@ impl P {
     fn ty(&mut self) -> Result<TypeExpr> {
         let span = self.span();
         let mut base = self.base_ty()?;
-        // `T[n]`, `T[r][c]` (r rows of c), `T[k <= n]`
+        // `T[n]`, `T[r][c]` (r rows of c), `T[k <= n]`, `T[]` (an array of
+        // its own size, D341)
         let mut sizes: Vec<(Option<String>, SizeExpr)> = Vec::new();
         while self.is(S::LBracket) {
+            let at = self.span();
             self.bump();
-            if let (T::Ident(k), T::Sym(S::Le)) = (self.peek().clone(), self.peek_at(1).clone()) {
+            if self.is(S::RBracket) {
+                sizes.push((None, SizeExpr::Own(at)));
+            } else if let (T::Ident(k), T::Sym(S::Le)) = (self.peek().clone(), self.peek_at(1).clone()) {
                 self.bump();
                 self.bump();
                 let n = self.size_expr()?;

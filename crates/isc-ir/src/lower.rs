@@ -784,7 +784,8 @@ impl<'p> Lower<'p> {
                 // its length when the type fixes it (`f64[5]`, D204)
                 let fixed = match &sz {
                     Size::Poly(p) => p.as_const().filter(|c| (0..=u32::MAX as i64).contains(c)).map(|c| c as u32),
-                    Size::Var(_) => None,
+                    // a size of its own (D341): known at run time
+                    Size::Var(_) | Size::Own => None,
                 };
                 // an array of nodes: pointers, one owner each (D130)
                 Type::Array(Box::new(et), crate::Fixed(fixed))
