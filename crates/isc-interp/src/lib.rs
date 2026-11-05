@@ -1196,6 +1196,14 @@ impl<'a> Interp<'a> {
 
     fn action(&mut self, e: &Expr, op: ActionOp, args: &[Expr]) -> R<Value> {
         Ok(match op {
+            // the primitives of the system (D322), as the runtime does them
+            ActionOp::Sys(o) => {
+                let mut vs = Vec::new();
+                for a in args {
+                    vs.push(self.eval(a)?);
+                }
+                rt::sys(o, &vs)
+            }
             ActionOp::ReadF64 => {
                 let p = self.string(&args[0])?;
                 match rt::read_f64_file(&p) {

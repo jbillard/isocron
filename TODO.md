@@ -319,6 +319,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 
 - [x] The design in SPEC section 18: modules shipped inside `iscc`, the closed list of primitives, the errors as values, the targets that lack a function refused at compile time, the signatures of `sys`, `time`, `json`, `sha256`, `net`, `http` and `https` (D322 to D328); the questions of section 16 settled (D329)
 - [ ] `sys`: the environment, folders, the existence, creation and removal of files, paths
+  - [x] The standard modules inside `iscc`, the primitives of the system, `sys` under Linux and in the interpreter (D330)
+  - [ ] `sys` under Windows (`kernel32`, tested in the machine of Windows) and WASI (wasi-libc)
+  - [ ] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor
 - [ ] `time`: dates and times
 - [ ] `json`: read and written, decoded into a type of the program, its fields checked at compile time
 - [ ] `sha256`

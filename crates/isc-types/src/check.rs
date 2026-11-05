@@ -90,6 +90,9 @@ const MATH: &[&str] = &[
 ];
 
 fn prim_by_name(name: &str) -> Option<Prim> {
+    if let Some(op) = SysOp::ALL.iter().find(|o| o.name() == name) {
+        return Some(Prim::Sys(*op));
+    }
     let name = match name.strip_prefix("Math.") {
         Some(f) if MATH.contains(&f) => f,
         Some(_) => return None,
@@ -1968,6 +1971,40 @@ impl<'g> FnCx<'g> {
         })
     }
 
+    /// A primitive of the system (D322): its arguments and its result.
+    fn check_sys(&mut self, op: SysOp, name: &str, args: &[ast::Expr], span: Span) -> Result<TExpr> {
+        let i64t = Ty::Int(IntKind::I64);
+        let exist = |c: &mut Self, elem: Ty| -> Ty {
+            let s = c.syms.len() as SymId;
+            c.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+            Ty::Array(Size::Poly(Poly::sym(s)), Box::new(elem))
+        };
+        let (params, result): (Vec<Ty>, Ty) = match op {
+            SysOp::Getenv => (vec![Ty::Str], Ty::Tuple(vec![Ty::Str, i64t.clone()])),
+            SysOp::Environ => (vec![], exist(self, Ty::Str)),
+            SysOp::Stat => (vec![Ty::Str], Ty::Tuple(vec![i64t.clone(), i64t.clone(), i64t.clone(), i64t.clone()])),
+            SysOp::ReadDir => (vec![Ty::Str], Ty::Tuple(vec![exist(self, Ty::Str), i64t.clone()])),
+            SysOp::Mkdir | SysOp::RemoveFile | SysOp::RemoveDir => (vec![Ty::Str], i64t.clone()),
+            SysOp::Rename => (vec![Ty::Str, Ty::Str], i64t.clone()),
+            SysOp::Cwd => (vec![], Ty::Tuple(vec![Ty::Str, i64t.clone()])),
+            SysOp::ReadFile => (vec![Ty::Str], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()])),
+            SysOp::WriteFile => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Str, Ty::Array(s, Box::new(Ty::Int(IntKind::U8))), Ty::Bool], i64t.clone())
+            }
+        };
+        if args.len() != params.len() {
+            return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));
+        }
+        let mut out = Vec::new();
+        for (a, t) in args.iter().zip(&params) {
+            let x = self.check(a, Some(t))?;
+            self.unify(t, &x.ty, x.span)?;
+            out.push(x);
+        }
+        Ok(self.mk(TExprKind::Call { callee: Callee::Prim(Prim::Sys(op)), args: out, size_checks: Vec::new() }, result, span))
+    }
+
     fn check_prim(
         &mut self,
         p: Prim,
@@ -1976,6 +2013,16 @@ impl<'g> FnCx<'g> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<TExpr> {
+        // the primitives of the system: the standard modules only (D322)
+        if let Prim::Sys(op) = p {
+            if !self.module.as_deref().is_some_and(|m| m.starts_with(crate::modules::STD_KEY)) {
+                return err(span, format!("`{}` is a primitive of the standard library: a program calls the functions of its modules (`import {{ env }} from \"sys\"`)", name));
+            }
+            if !self.can_act() {
+                return err(span, format!("the action `{}` cannot be called here (SPEC section 12)", name));
+            }
+            return self.check_sys(op, name, args, span);
+        }
         if p.is_action() && !self.can_act() {
             return err(
                 span,
@@ -1987,6 +2034,8 @@ impl<'g> FnCx<'g> {
             );
         }
         let n = match p {
+            // checked by `check_sys`, which returned
+            Prim::Sys(_) => unreachable!(),
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print => 1,
             Prim::Math(f) => f.arity(),
@@ -2349,6 +2398,7 @@ impl<'g> FnCx<'g> {
             }
             // the order of the elements (D155): integers, floats, booleans,
             // strings
+            Prim::Sys(_) => unreachable!(),
             Prim::Group | Prim::GroupCounts => {
                 let x = self.check(&args[0], None)?;
                 let elem = self.expect_array(&x.ty, x.span, "the keys of `$group`")?;

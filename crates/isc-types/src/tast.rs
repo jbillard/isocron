@@ -140,6 +140,8 @@ pub enum Prim {
     /// `$groupCounts(keys)` (D317): `$group` without the last indices
     /// (zeros), for `countBy`
     GroupCounts,
+    /// A primitive of the system (D322), called by the standard modules only.
+    Sys(SysOp),
     /// `argsort(x)`: the indices of the elements in their order, stable
     /// (D155): the primitive of `sort` and `sortBy`.
     ArgSort,
@@ -223,11 +225,79 @@ impl MathFn {
     }
 }
 
+/// The primitives of the system (SPEC section 18, D322): actions of the
+/// runtime that the modules of the standard library call, and they alone.
+/// Each returns its value and the code of its error (0: none; 1 to 6 the
+/// kinds of `IoError`; below 0 the error of the system, negated), the same
+/// in the interpreter and in the compiled code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SysOp {
+    /// `sysGetenv(name) => [value, found]`
+    Getenv,
+    /// `sysEnviron() => string[k]`: the entries `name=value`, in the order
+    /// of their bytes
+    Environ,
+    /// `sysStat(path) => [kind, size, modified, code]`: kind 1 a file, 2 a
+    /// folder, 3 something else; modified in nanoseconds since 1970
+    Stat,
+    /// `sysReadDir(path) => [names, code]`: without `.` and `..`, in the
+    /// order of their bytes
+    ReadDir,
+    /// `sysMkdir(path) => code`
+    Mkdir,
+    /// `sysRemoveFile(path) => code`
+    RemoveFile,
+    /// `sysRemoveDir(path) => code`: an empty folder
+    RemoveDir,
+    /// `sysRename(from, to) => code`
+    Rename,
+    /// `sysCwd() => [path, code]`
+    Cwd,
+    /// `sysReadFile(path) => [bytes, code]`
+    ReadFile,
+    /// `sysWriteFile(path, bytes, append) => code`
+    WriteFile,
+}
+
+impl SysOp {
+    pub const ALL: [SysOp; 11] = [
+        SysOp::Getenv,
+        SysOp::Environ,
+        SysOp::Stat,
+        SysOp::ReadDir,
+        SysOp::Mkdir,
+        SysOp::RemoveFile,
+        SysOp::RemoveDir,
+        SysOp::Rename,
+        SysOp::Cwd,
+        SysOp::ReadFile,
+        SysOp::WriteFile,
+    ];
+
+    /// Its name in the modules.
+    pub fn name(self) -> &'static str {
+        match self {
+            SysOp::Getenv => "sysGetenv",
+            SysOp::Environ => "sysEnviron",
+            SysOp::Stat => "sysStat",
+            SysOp::ReadDir => "sysReadDir",
+            SysOp::Mkdir => "sysMkdir",
+            SysOp::RemoveFile => "sysRemoveFile",
+            SysOp::RemoveDir => "sysRemoveDir",
+            SysOp::Rename => "sysRename",
+            SysOp::Cwd => "sysCwd",
+            SysOp::ReadFile => "sysReadFile",
+            SysOp::WriteFile => "sysWriteFile",
+        }
+    }
+}
+
 impl Prim {
     pub fn is_action(self) -> bool {
         matches!(
             self,
-            Prim::ReadF64
+            Prim::Sys(_)
+                | Prim::ReadF64
                 | Prim::ReadF32
                 | Prim::ReadBytes
                 | Prim::WriteF64

@@ -5,6 +5,20 @@
 
 use std::path::{Path, PathBuf};
 
+/// The modules of the standard library (SPEC section 18, D322): files of
+/// Isocron included in the compiler, named by a bare spec (`"sys"`) before
+/// `$ISC_PATH`; their key is `std:<name>`, which no file can have, and only
+/// their functions call the primitives of the system (`sys*`).
+pub const STD_MODULES: &[(&str, &str)] = &[("sys", include_str!("std/sys.isc"))];
+
+/// The prefix of the keys of the standard modules (D322).
+pub const STD_KEY: &str = "std:";
+
+/// The source of the standard module `name`.
+pub fn std_module(name: &str) -> Option<&'static str> {
+    STD_MODULES.iter().find(|(n, _)| *n == name).map(|(_, src)| *src)
+}
+
 /// The modules of a program (D139, D150). `import ... from "./m"` (or
 /// `"../lib/m"`) reads `m.isc` relative to the importing file; a bare name
 /// `"m"` is searched in the directories of `$ISC_PATH` (separated by `:`).
@@ -40,6 +54,11 @@ pub fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mu
     }
 
     fn resolve(spec: &str, dir: &Path, span: Span) -> Result<PathBuf, Diagnostic> {
+        // a bare name of the standard library: that module, whatever the
+        // files of `$ISC_PATH` (D322)
+        if std_module(spec).is_some() {
+            return Ok(PathBuf::from(format!("{}{}", STD_KEY, spec)));
+        }
         let file = if spec.ends_with(".isc") { spec.to_string() } else { format!("{}.isc", spec) };
         if spec.starts_with("./") || spec.starts_with("../") || spec.starts_with('/') {
             let p = dir.join(&file);
@@ -83,7 +102,9 @@ pub fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mu
         let own = own_names(prog);
         let mut aliases: Vec<(String, usize, String)> = Vec::new();
         for imp in &imports {
-            let file = canonical(&resolve(&imp.spec, dir, imp.span)?);
+            let found = resolve(&imp.spec, dir, imp.span)?;
+            let standard = found.to_str().and_then(|f| f.strip_prefix(STD_KEY)).map(str::to_string);
+            let file = if standard.is_some() { found } else { canonical(&found) };
             if let Some(k) = st.chain.iter().position(|(f, _)| *f == file) {
                 let mut names: Vec<String> = st.chain[k..].iter().map(|(_, n)| n.clone()).collect();
                 names.push(st.chain[k].1.clone());
@@ -92,18 +113,26 @@ pub fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mu
             let m = match st.modules.iter().position(|m| m.file == file) {
                 Some(m) => m,
                 None => {
-                    let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    let stem = match &standard {
+                        Some(name) => name.clone(),
+                        None => file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                    };
                     if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || stem.starts_with(|c: char| c.is_ascii_digit()) {
                         return Err(Diagnostic::new(imp.span, format!("`{}` cannot be a module: its file name must be a name (letters, digits, `_`)", file.display())));
                     }
-                    let mut key = stem.clone();
+                    let mut key = match &standard {
+                        Some(name) => format!("{}{}", STD_KEY, name),
+                        None => stem.clone(),
+                    };
                     let mut n = 1;
-                    while st.modules.iter().any(|m| m.key == key) {
+                    while standard.is_none() && st.modules.iter().any(|m| m.key == key) {
                         n += 1;
                         key = format!("{}~{}", stem, n);
                     }
-                    let src = std::fs::read_to_string(&file)
-                        .map_err(|e| Diagnostic::new(imp.span, format!("cannot read `{}`: {}", file.display(), e)))?;
+                    let src = match &standard {
+                        Some(name) => std_module(name).unwrap_or_default().to_string(),
+                        None => std::fs::read_to_string(&file).map_err(|e| Diagnostic::new(imp.span, format!("cannot read `{}`: {}", file.display(), e)))?,
+                    };
                     let fid = files.add(file.display().to_string());
                     let mut mp = isc_syntax::parse(&src, fid)?;
                     for d in &mp.decls {
@@ -114,7 +143,8 @@ pub fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mu
                         }
                     }
                     st.chain.push((file.clone(), stem.clone()));
-                    let mdir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+                    // a standard module imports others by bare names only
+                    let mdir = if standard.is_some() { PathBuf::new() } else { file.parent().map(Path::to_path_buf).unwrap_or_default() };
                     process(&mut mp, fid, &mdir, st, files)?;
                     st.chain.pop();
                     let declared = own_names(&mp);

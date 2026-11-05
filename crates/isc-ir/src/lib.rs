@@ -11,7 +11,7 @@
 //! results (`Use::Move`, `drop` flags, `Copy` nodes) drive the code
 //! generator. The interpreter ignores them.
 
-pub use isc_types::tast::{Fallible, MathFn};
+pub use isc_types::tast::{Fallible, MathFn, SysOp};
 
 pub mod lower;
 pub mod passes;
@@ -161,6 +161,9 @@ pub enum ActionOp {
     /// The standard input (D155): its bytes, its text.
     ReadStdin,
     ReadStdinText,
+    /// A primitive of the system (D322): its value and the code of its
+    /// error, a tuple.
+    Sys(SysOp),
 }
 
 /// The operations on strings (D134).

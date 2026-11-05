@@ -1,0 +1,235 @@
+// The module `sys` of the standard library (SPEC section 18, D322): the
+// environment of the program, its folders and files, over the primitives
+// `sys*` of the runtime. Every action that can fail for a reason outside
+// the program returns a `Result` with an `IoError` (D323).
+
+// An error of the system: its kind and what it is about (a path)
+export type IoError = NotFound(string) | PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) | Refused(string) | TimedOut(string) | Other(i64, string);
+
+// the error of the code `code` of a primitive (1 to 6 its kinds, below 0
+// the error of the system negated) about `what`
+function ioError(code: i64, what: string): IoError {
+    if (code == 1) {
+        return NotFound(what);
+    }
+    if (code == 2) {
+        return PermissionDenied(what);
+    }
+    if (code == 3) {
+        return AlreadyExists(what);
+    }
+    if (code == 4) {
+        return NotEmpty(what);
+    }
+    if (code == 5) {
+        return Refused(what);
+    }
+    if (code == 6) {
+        return TimedOut(what);
+    }
+    return Other(-code, what);
+}
+
+// the text of an error, the same on every target for the first six kinds
+export function message(e: IoError): string {
+    return match (e) {
+        NotFound(w) => `not found: ${w}`,
+        PermissionDenied(w) => `permission denied: ${w}`,
+        AlreadyExists(w) => `already exists: ${w}`,
+        NotEmpty(w) => `not empty: ${w}`,
+        Refused(w) => `refused: ${w}`,
+        TimedOut(w) => `timed out: ${w}`,
+        Other(c, w) => `error ${c} of the system: ${w}`,
+    };
+}
+
+// nothing, or the error of `code` about `what`
+function done(code: i64, what: string): Result<void, IoError> {
+    return code == 0 ? Ok(()) : Err(ioError(code, what));
+}
+
+// the variable `name` of the environment
+export action env(name: string): Option<string> {
+    const [value, found] = sysGetenv(name);
+    if (found == 0) {
+        return None;
+    } else {
+        return Some(value);
+    }
+}
+
+// every variable of the environment, [name, value], in the order of the
+// bytes of their names
+export action envAll(): [string, string][k] {
+    const all = sysEnviron();
+    return map(all, (e) => {
+        const i = e.indexOf("=");
+        return i < 0 ? [e, ""] as const : [e.slice(0, i), e.slice(i + 1, e.length)] as const;
+    });
+}
+
+// the folder of the program
+export action cwd(): Result<string, IoError> {
+    const [path, code] = sysCwd();
+    return code == 0 ? Ok(path) : Err(ioError(code, "."));
+}
+
+// a file or a folder is at `path`
+export action exists(path: string): boolean {
+    const [kind, count, at, code] = sysStat(path);
+    return code == 0;
+}
+
+export action isFile(path: string): boolean {
+    const [kind, count, at, code] = sysStat(path);
+    return code == 0 && kind == 1;
+}
+
+export action isDir(path: string): boolean {
+    const [kind, count, at, code] = sysStat(path);
+    return code == 0 && kind == 2;
+}
+
+// the bytes of the file at `path`
+export action fileSize(path: string): Result<i64, IoError> {
+    const [kind, count, at, code] = sysStat(path);
+    return code == 0 ? Ok(count) : Err(ioError(code, path));
+}
+
+// the time of the last change of `path`, in nanoseconds since 1970 (UTC)
+export action modified(path: string): Result<i64, IoError> {
+    const [kind, count, at, code] = sysStat(path);
+    return code == 0 ? Ok(at) : Err(ioError(code, path));
+}
+
+// the names in the folder `path`, without `.` and `..`, in the order of
+// their bytes
+export action listDir(path: string): Result<string[k], IoError> {
+    const [names, code] = sysReadDir(path);
+    return code == 0 ? Ok(names) : Err(ioError(code, path));
+}
+
+// a new folder
+export action makeDir(path: string): Result<void, IoError> {
+    return done(sysMkdir(path), path);
+}
+
+// the folders of the first `i` parts of `parts`, then the others
+action makeFrom(parts: string[n], i: i64): Result<void, IoError> {
+    if (i > parts.length) {
+        return Ok(());
+    }
+    const path = join(parts.slice(0, i), "/");
+    const code = path == "" ? 0 : sysMkdir(path);
+    if (code != 0 && !(code == 3 && isDir(path))) {
+        return Err(ioError(code, path));
+    }
+    return makeFrom(parts, i + 1);
+}
+
+// the folder `path` and the folders above it that are not there; nothing
+// when it is there
+export action makeDirs(path: string): Result<void, IoError> {
+    return makeFrom(path.split("/"), 1);
+}
+
+// the file, or the empty folder, at `path`
+export action remove(path: string): Result<void, IoError> {
+    return isDir(path) ? done(sysRemoveDir(path), path) : done(sysRemoveFile(path), path);
+}
+
+// the entries `names` of the folder `path` from the `i`-th removed with all
+// they hold
+action removeEntries(path: string, names: string[n], i: i64): Result<void, IoError> {
+    if (i >= names.length) {
+        return Ok(());
+    }
+    const r = removeAll(`${path}/${names[i]}`);
+    return match (r) {
+        Ok(_) => removeEntries(path, names, i + 1),
+        Err(e) => Err(e),
+    };
+}
+
+// the file at `path`, or the folder and everything in it (a link is
+// removed, not followed)
+export action removeAll(path: string): Result<void, IoError> {
+    if (!isDir(path)) {
+        return remove(path);
+    }
+    return match (listDir(path)) {
+        Ok(names) => match (removeEntries(path, names, 0)) {
+            Ok(_) => done(sysRemoveDir(path), path),
+            Err(e) => Err(e),
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// the file or folder `from` now at `to`
+export action rename(from: string, to: string): Result<void, IoError> {
+    return done(sysRename(from, to), from);
+}
+
+// the bytes of the file at `path`
+export action readFile(path: string): Result<u8[k], IoError> {
+    const [bytes, code] = sysReadFile(path);
+    return code == 0 ? Ok(bytes) : Err(ioError(code, path));
+}
+
+// the bytes of `b` are UTF-8: each byte the continuation expected, or the
+// start of a character
+function utf8(b: u8[n]): boolean {
+    const left = fold(b, 0, (want, x) => {
+        if (want < 0) {
+            return -1;
+        }
+        if (want > 0) {
+            return (x & 0xC0u8) == 0x80u8 ? want - 1 : -1;
+        }
+        if (x < 0x80u8) {
+            return 0;
+        }
+        if ((x & 0xE0u8) == 0xC0u8 && x >= 0xC2u8) {
+            return 1;
+        }
+        if ((x & 0xF0u8) == 0xE0u8) {
+            return 2;
+        }
+        if ((x & 0xF8u8) == 0xF0u8 && x <= 0xF4u8) {
+            return 3;
+        }
+        return -1;
+    });
+    return left == 0;
+}
+
+// the text of the file at `path` (UTF-8: otherwise an error)
+export action readText(path: string): Result<string, IoError> {
+    const [bytes, code] = sysReadFile(path);
+    if (code != 0) {
+        return Err(ioError(code, path));
+    }
+    if (!utf8(bytes)) {
+        return Err(Other(0, `${path}: not UTF-8`));
+    }
+    return Ok(stringOf(bytes));
+}
+
+// the file at `path` made or emptied, then `x` written into it
+export action writeFile(path: string, x: u8[n]): Result<void, IoError> {
+    return done(sysWriteFile(path, x, false), path);
+}
+
+// `x` written at the end of the file at `path`, made if it is not there
+export action appendFile(path: string, x: u8[n]): Result<void, IoError> {
+    return done(sysWriteFile(path, x, true), path);
+}
+
+export action writeText(path: string, s: string): Result<void, IoError> {
+    return done(sysWriteFile(path, bytes(s), false), path);
+}
+
+export action appendText(path: string, s: string): Result<void, IoError> {
+    return done(sysWriteFile(path, bytes(s), true), path);
+}

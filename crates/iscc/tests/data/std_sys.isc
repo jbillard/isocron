@@ -1,0 +1,46 @@
+import * as sys from "sys";
+
+action show(r: Result<void, sys.IoError>): void {
+    match (r) {
+        Ok(_) => print("ok"),
+        Err(e) => print(sys.message(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const base = args[0];
+    show(sys.makeDirs(`${base}/a/b/c`));
+    show(sys.makeDirs(`${base}/a/b/c`));
+    show(sys.makeDir(`${base}/a`));
+    show(sys.writeText(`${base}/a/one.txt`, "un"));
+    show(sys.appendText(`${base}/a/one.txt`, " deux"));
+    show(sys.writeFile(`${base}/a/b/two.bin`, [1u8, 2u8, 255u8]));
+    match (sys.readText(`${base}/a/one.txt`)) {
+        Ok(t) => print(t),
+        Err(e) => print(sys.message(e)),
+    };
+    match (sys.readText(`${base}/a/b/two.bin`)) {
+        Ok(t) => print(t),
+        Err(e) => print("two.bin is not text"),
+    };
+    match (sys.listDir(`${base}/a`)) {
+        Ok(ns) => print(ns),
+        Err(e) => print(sys.message(e)),
+    };
+    print([sys.exists(`${base}/a/one.txt`), sys.isFile(`${base}/a/one.txt`), sys.isDir(`${base}/a`), sys.exists(`${base}/nothing`)]);
+    match (sys.fileSize(`${base}/a/one.txt`)) {
+        Ok(n) => print(n),
+        Err(e) => print(sys.message(e)),
+    };
+    show(sys.remove(`${base}/a/b`));
+    show(sys.rename(`${base}/a/one.txt`, `${base}/a/uno.txt`));
+    show(sys.remove(`${base}/a/one.txt`));
+    show(sys.removeAll(`${base}/a`));
+    print(sys.exists(`${base}/a`));
+    print(sys.env("ISC_SYS_TEST") ?? "absent");
+    print(filter(sys.envAll(), (p) => {
+        const [n, v] = p;
+        return n == "ISC_SYS_TEST";
+    }).length);
+    return 0;
+}

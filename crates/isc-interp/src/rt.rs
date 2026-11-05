@@ -180,3 +180,89 @@ pub fn write_bytes_file(path: &str, data: &[u8]) -> Result<(), String> {
 pub fn write_f64_file(path: &str, xs: &[f64]) -> Result<(), String> {
     write_bytes_file(path, &f64_to_le_canonical(xs))
 }
+
+/// The code of an error of the system (D322), the same as the runtime's:
+/// 1 not found, 2 permission denied, 3 already exists, 4 not empty, 5
+/// refused, 6 timed out, otherwise the error of the system negated.
+pub fn io_code(e: &std::io::Error) -> i64 {
+    use std::io::ErrorKind as K;
+    match e.kind() {
+        K::NotFound => 1,
+        K::PermissionDenied => 2,
+        K::AlreadyExists => 3,
+        K::DirectoryNotEmpty => 4,
+        K::ConnectionRefused => 5,
+        K::TimedOut => 6,
+        _ => -(e.raw_os_error().unwrap_or(1) as i64),
+    }
+}
+
+/// A primitive of the system (D322), as the runtime does it: its value and
+/// the code of its error in a tuple.
+pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
+    use crate::{Array, Value};
+    use isc_ir::SysOp as S;
+    use std::rc::Rc;
+    let text = |v: &Value| match v {
+        Value::Str(s) => s.to_string(),
+        v => panic!("a string expected, got {:?}", v),
+    };
+    let tuple = |xs: Vec<Value>| Value::Tuple(Rc::new(xs));
+    let code = |r: std::io::Result<()>| Value::Int(match r {
+        Ok(()) => 0,
+        Err(e) => io_code(&e),
+    });
+    let strs = |v: Vec<String>| Value::Array(Rc::new(Array::Str(v.into_iter().map(|x| Rc::from(x.as_str())).collect())));
+    let lossy = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    match o {
+        S::Getenv => match Some(text(&vs[0])).filter(|n| !n.is_empty() && !n.contains(['=', '\0'])).and_then(std::env::var_os) {
+            Some(v) => tuple(vec![Value::Str(Rc::from(lossy(v.as_encoded_bytes()).as_str())), Value::Int(1)]),
+            None => tuple(vec![Value::Str(Rc::from("")), Value::Int(0)]),
+        },
+        S::Environ => {
+            let mut all: Vec<Vec<u8>> = std::env::vars_os().map(|(k, v)| [k.as_encoded_bytes(), b"=", v.as_encoded_bytes()].concat()).collect();
+            all.sort();
+            strs(all.iter().map(|b| lossy(b)).collect())
+        }
+        S::Stat => match std::fs::metadata(text(&vs[0])) {
+            Ok(m) => {
+                let kind = if m.is_file() { 1 } else if m.is_dir() { 2 } else { 3 };
+                let at = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as i64);
+                tuple(vec![Value::Int(kind), Value::Int(m.len() as i64), Value::Int(at), Value::Int(0)])
+            }
+            Err(e) => tuple(vec![Value::Int(0), Value::Int(0), Value::Int(0), Value::Int(io_code(&e))]),
+        },
+        S::ReadDir => match std::fs::read_dir(text(&vs[0])) {
+            Ok(d) => {
+                let mut names: Vec<Vec<u8>> = d.filter_map(|x| x.ok()).map(|x| x.file_name().as_encoded_bytes().to_vec()).collect();
+                names.sort();
+                tuple(vec![strs(names.iter().map(|b| lossy(b)).collect()), Value::Int(0)])
+            }
+            Err(e) => tuple(vec![strs(Vec::new()), Value::Int(io_code(&e))]),
+        },
+        S::Mkdir => code(std::fs::create_dir(text(&vs[0]))),
+        S::RemoveFile => code(std::fs::remove_file(text(&vs[0]))),
+        S::RemoveDir => code(std::fs::remove_dir(text(&vs[0]))),
+        S::Rename => code(std::fs::rename(text(&vs[0]), text(&vs[1]))),
+        S::Cwd => match std::env::current_dir() {
+            Ok(p) => tuple(vec![Value::Str(Rc::from(lossy(p.as_os_str().as_encoded_bytes()).as_str())), Value::Int(0)]),
+            Err(e) => tuple(vec![Value::Str(Rc::from("")), Value::Int(io_code(&e))]),
+        },
+        S::ReadFile => match std::fs::read(text(&vs[0])) {
+            Ok(b) => tuple(vec![Value::Array(Rc::new(Array::Int(b.into_iter().map(|x| x as i64).collect()))), Value::Int(0)]),
+            Err(e) => tuple(vec![Value::Array(Rc::new(Array::Int(Vec::new()))), Value::Int(io_code(&e))]),
+        },
+        S::WriteFile => {
+            let bytes: Vec<u8> = match &vs[1] {
+                Value::Array(a) => match &**a {
+                    Array::Int(v) => v.iter().map(|&x| x as u8).collect(),
+                    a => panic!("bytes expected, got {:?}", a),
+                },
+                v => panic!("bytes expected, got {:?}", v),
+            };
+            let append = matches!(vs[2], Value::Bool(true));
+            let r = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(text(&vs[0])).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
+            code(r)
+        }
+    }
+}

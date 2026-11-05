@@ -78,6 +78,9 @@ extern "C" {
 // Linux (D287): the system called directly, no C library
 #[cfg(target_os = "linux")]
 mod linux;
+
+// the primitives of the system of the standard library (D322)
+mod system;
 // The functions of memory that LLVM and `core` call (D288): those of
 // `isc-mem`, the runtime's own under Linux; in a program linked with glibc,
 // they are the ones of the program too (the definitions of an executable
@@ -2133,6 +2136,37 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     };
     parallel_for(pieces.len() as i64, write, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
     Some(IscStr { ptr: buf, len: total as i64 })
+}
+
+/// A string and the code of an error (D322): the tuple `[string, i64]` of a
+/// primitive of the system, laid out as the compiled code reads it.
+#[repr(C)]
+pub struct IscStrCode {
+    pub s: IscStr,
+    pub code: i64,
+}
+
+/// `sysGetenv(name)` (D322): the value of the variable `name` of the
+/// environment and 1, or the empty string and 0; a name that is empty or
+/// holds `=` or a zero byte names none; the bytes of a value that are not
+/// UTF-8 replaced, as the interpreter does.
+#[no_mangle]
+pub unsafe extern "C" fn isc_sys_getenv(out: *mut IscStrCode, p: *const u8, n: i64) {
+    let name = bytes_of(p, n);
+    let mut z = alloc::vec::Vec::with_capacity(name.len() + 1);
+    z.extend_from_slice(name);
+    z.push(0);
+    let v = if name.is_empty() || name.contains(&0) || name.contains(&b'=') { core::ptr::null() } else { getenv(z.as_ptr() as *const c_char) };
+    if v.is_null() {
+        *out = IscStrCode { s: adopt(alloc::string::String::new()), code: 0 };
+        return;
+    }
+    let mut len = 0;
+    while *v.add(len) != 0 {
+        len += 1;
+    }
+    let text = alloc::string::String::from_utf8_lossy(core::slice::from_raw_parts(v as *const u8, len)).into_owned();
+    *out = IscStrCode { s: adopt(text), code: 1 };
 }
 
 /// A `String` of the runtime as a string of the program: its buffer is a

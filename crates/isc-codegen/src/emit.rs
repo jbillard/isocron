@@ -1467,6 +1467,12 @@ fn row_lin(e: &Expr, q: VarId, c: i64, lets: &HashMap<VarId, &Expr>, bound: &dyn
     }
 }
 
+/// The function of the runtime of a primitive of the system (D322):
+/// `sysGetenv` is `isc_sys_getenv`.
+fn sys_symbol(o: isc_ir::SysOp) -> String {
+    format!("isc_sys_{}", o.name().trim_start_matches("sys").to_ascii_lowercase())
+}
+
 /// The flag of the kind of the keys of `isc_group` for `$groupCounts`
 /// (D317), as in the runtime.
 const GROUP_COUNTS: i32 = 64;
@@ -10860,6 +10866,37 @@ impl<'p> Gen<'p> {
             }
             // the fallible forms (D138): the value and the message through
             // pointers, then the pair
+            // a primitive of the system (D322): its arguments by their
+            // parts, its tuple written by the runtime at OUT
+            ActionOp::Sys(o) => {
+                let tt = lt(&e.ty);
+                let out = self.alloca(&tt);
+                let mut parts = vec![format!("ptr {}", out)];
+                let mut types = vec!["ptr".to_string()];
+                for (a, x) in args.iter().zip(&vals) {
+                    match &a.ty {
+                        Type::Str | Type::Array(..) => {
+                            let (p, n) = self.str_parts(x);
+                            parts.push(format!("ptr {}", p));
+                            parts.push(format!("i64 {}", n));
+                            types.extend(["ptr".to_string(), "i64".to_string()]);
+                        }
+                        Type::Bool => {
+                            let b = self.ins(format!("zext i1 {} to i32", x.r));
+                            parts.push(format!("i32 {}", b));
+                            types.push("i32".to_string());
+                        }
+                        _ => {
+                            parts.push(format!("i64 {}", x.r));
+                            types.push("i64".to_string());
+                        }
+                    }
+                }
+                let f = sys_symbol(o);
+                self.decls.insert(format!("declare void @{}({})", f, types.join(", ")));
+                self.emit(format!("call void @{}({})", f, parts.join(", ")));
+                v(self.ins(format!("load {}, ptr {}", tt, out)), &tt)
+            }
             ActionOp::OrError(f) => {
                 use isc_ir::Fallible as F;
                 let (p, n) = self.str_parts(&vals[0]);

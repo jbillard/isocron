@@ -6414,3 +6414,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `u32`); later a family of bounded primitives.
   - Named time zones and the local time of the system: out of v1 (UTC and
     fixed offsets).
+- **D330 — The module `sys` under Linux and in the interpreter (2026-11-05;
+  part 2 of the goal, its first step).** The standard modules are files of
+  Isocron included in `iscc` (`isc_types::modules::STD_MODULES`,
+  `crates/isc-types/src/std/`), imported by a bare spec before
+  `$ISC_PATH`, their key `std:<name>` (their diagnostics say `std:sys:96:27`;
+  a file `sys.isc` of `$ISC_PATH` does not hide them, one next to the
+  program is imported by its path). The primitives of the system are one
+  family, `Prim::Sys(SysOp)` and `ActionOp::Sys(SysOp)`, from one table
+  (`SysOp`: its name, its arguments and its tuple): the type checker
+  refuses one outside a standard module, naming the module to import; the
+  code generator passes the strings and arrays by their parts and the
+  booleans as `i32`, the runtime writing the tuple at a pointer
+  (`isc_sys_<name>`); the interpreter does each one with the standard
+  library of Rust (`isc_interp::rt::sys`). Their codes of errors are the
+  same in both: 1 not found, 2 permission denied, 3 already exists, 4 not
+  empty, 5 refused, 6 timed out, the error of the system negated
+  otherwise, -1 for a path holding a zero byte.
+  - Eleven primitives: `sysGetenv`, `sysEnviron` (in the order of their
+    bytes), `sysStat` (kind, size, time of the last change in
+    nanoseconds), `sysReadDir` (without `.` and `..`, in the order of
+    their bytes), `sysMkdir`, `sysRemoveFile`, `sysRemoveDir`, `sysRename`,
+    `sysCwd`, `sysReadFile`, `sysWriteFile` (made or emptied, or
+    appended). Under Linux the system called directly (`newfstatat`,
+    `getdents64`, `mkdirat`, `unlinkat`, `renameat`, `getcwd`, `openat`,
+    `read`, `write`: `linux.rs`, `system.rs`), the environment that of the
+    stack of the kernel (D287).
+  - The module `sys` in Isocron: `IoError` and `message`, `env`, `envAll`,
+    `cwd`, `exists`, `isFile`, `isDir`, `fileSize`, `modified`, `listDir`,
+    `makeDir`, `makeDirs`, `remove`, `removeAll`, `rename`, `readFile`,
+    `readText` (UTF-8 checked by a `fold`: otherwise an error, not a
+    panic), `writeFile`, `appendFile`, `writeText`, `appendText`. Its loops
+    with effects are recursions (a lambda cannot act).
+  - Tested by `crates/iscc/tests/std_sys.rs`: every function in a new
+    folder, compiled and interpreted, the same outputs; a primitive
+    refused in a program; a `sys.isc` of `$ISC_PATH` not hiding the
+    standard one. To do: Windows (`kernel32`) and WASI (wasi-libc), the
+    module of paths, the example of the guide, the microbenchmark and its
+    floor.

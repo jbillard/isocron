@@ -298,3 +298,84 @@ pub unsafe fn sigaction(sig: c_int, act: *const SigAction, old: *mut SigAction) 
     // size of the mask 8)
     unsafe { syscall6(SYS_RT_SIGACTION, sig as usize, given as usize, old as usize, 8, 0, 0) as c_int }
 }
+
+// the calls of the primitives of the system of the standard library (D322)
+const SYS_GETCWD: usize = 79;
+const SYS_GETDENTS64: usize = 217;
+const SYS_MKDIRAT: usize = 258;
+const SYS_NEWFSTATAT: usize = 262;
+const SYS_UNLINKAT: usize = 263;
+const SYS_RENAMEAT: usize = 264;
+
+/// `newfstatat(AT_FDCWD, path, st, 0)`: the kind (1 a file, 2 a folder, 3
+/// something else), the size, the time of the last change in nanoseconds,
+/// or the negative code of the kernel.
+///
+/// # Safety
+/// `path` is a string ending with a zero byte.
+pub unsafe fn stat(path: *const c_char) -> Result<(i64, i64, i64), isize> {
+    // `struct stat` of x86-64: 144 bytes; the mode at 24, the size at 48,
+    // the time of the last change at 88 (seconds) and 96 (nanoseconds)
+    let mut st = [0u64; 18];
+    // SAFETY: the kernel reads `path` up to its zero byte and writes 144
+    // bytes at `st`
+    let r = unsafe { syscall6(SYS_NEWFSTATAT, AT_FDCWD as usize, path as usize, st.as_mut_ptr() as usize, 0, 0, 0) };
+    if r < 0 {
+        return Err(r);
+    }
+    let mode = (st[3] & 0xFFFF_FFFF) as u32;
+    let kind = match mode & 0o170000 {
+        0o100000 => 1,
+        0o040000 => 2,
+        _ => 3,
+    };
+    Ok((kind, st[6] as i64, (st[11] as i64).wrapping_mul(1_000_000_000).wrapping_add(st[12] as i64)))
+}
+
+/// `getdents64(fd, buf, n)`: the bytes of the entries written, or the
+/// negative code of the kernel.
+///
+/// # Safety
+/// `buf` has `n` bytes to write into.
+pub unsafe fn getdents(fd: c_int, buf: *mut u8, n: usize) -> isize {
+    // SAFETY: the kernel writes at most `n` bytes at `buf`
+    unsafe { syscall6(SYS_GETDENTS64, fd as usize, buf as usize, n, 0, 0, 0) }
+}
+
+/// `mkdirat(AT_FDCWD, path, 0o777)`.
+///
+/// # Safety
+/// `path` is a string ending with a zero byte.
+pub unsafe fn mkdir(path: *const c_char) -> isize {
+    // SAFETY: the kernel reads `path` up to its zero byte
+    unsafe { syscall6(SYS_MKDIRAT, AT_FDCWD as usize, path as usize, 0o777, 0, 0, 0) }
+}
+
+/// `unlinkat(AT_FDCWD, path, flags)`: a file, or an empty folder with
+/// `AT_REMOVEDIR` (0x200).
+///
+/// # Safety
+/// `path` is a string ending with a zero byte.
+pub unsafe fn unlink(path: *const c_char, folder: bool) -> isize {
+    // SAFETY: the kernel reads `path` up to its zero byte
+    unsafe { syscall6(SYS_UNLINKAT, AT_FDCWD as usize, path as usize, if folder { 0x200 } else { 0 }, 0, 0, 0) }
+}
+
+/// `renameat(AT_FDCWD, from, AT_FDCWD, to)`.
+///
+/// # Safety
+/// `from` and `to` are strings ending with a zero byte.
+pub unsafe fn rename(from: *const c_char, to: *const c_char) -> isize {
+    // SAFETY: the kernel reads both strings up to their zero bytes
+    unsafe { syscall6(SYS_RENAMEAT, AT_FDCWD as usize, from as usize, AT_FDCWD as usize, to as usize, 0, 0) }
+}
+
+/// `getcwd(buf, n)`: the bytes written with the zero byte, or the negative
+/// code of the kernel.
+///
+/// # Safety
+/// `buf` has `n` bytes to write into.
+pub unsafe fn getcwd(buf: *mut u8, n: usize) -> isize {
+    // SAFETY: the kernel writes at most `n` bytes at `buf`
+    unsafe { syscall6(SYS_GETCWD, buf as usize, n, 0, 0, 0, 0) }
+}
