@@ -318,11 +318,12 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 ## The standard library (the goal of 2026-11-05, part 2)
 
 - [x] The design in SPEC section 18: modules shipped inside `iscc`, the closed list of primitives, the errors as values, the targets that lack a function refused at compile time, the signatures of `sys`, `time`, `json`, `sha256`, `net`, `http` and `https` (D322 to D328); the questions of section 16 settled (D329)
-- [ ] `sys`: the environment, folders, the existence, creation and removal of files, paths
+- [x] `sys`: the environment, folders, the existence, creation and removal of files, paths (D330 to D333)
   - [x] The standard modules inside `iscc`, the primitives of the system, `sys` under Linux and in the interpreter (D330)
   - [x] `sys` under Windows (`kernel32`), tested in the machine of Windows (D331)
   - [x] `sys` under WASI (wasi-libc, in the folders the host opens; D332)
-  - [ ] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor
+  - [x] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor (D333)
+  - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7, `basename` 5.3, `env` 3.2, `readFile` 2.2
 - [ ] `time`: dates and times
 - [ ] `json`: read and written, decoded into a type of the program, its fields checked at compile time
 - [ ] `sha256`

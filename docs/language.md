@@ -2243,6 +2243,90 @@ not a number: parseI64: `12x` is not a valid integer
 no data
 ```
 
+## The standard library
+
+Modules shipped inside `iscc`, imported by their bare names (SPEC section
+18): `import * as sys from "sys"`. A file of `$ISC_PATH` with the same name
+does not hide them; a module of the program with that name is imported by
+its path (`"./sys"`). They are written in Isocron over a few primitives of
+the runtime, which a program cannot call itself.
+
+### The system: `sys`
+
+| Function | Type |
+| --- | --- |
+| `env(name)` | `action (string) => Option<string>` |
+| `envAll()` | `action () => [string, string][k]`, by name |
+| `cwd()` | `action () => Result<string, IoError>` |
+| `exists(p)`, `isFile(p)`, `isDir(p)` | `action (string) => boolean` |
+| `fileSize(p)`, `modified(p)` | `action (string) => Result<i64, IoError>` (bytes; nanoseconds since 1970) |
+| `listDir(p)` | `action (string) => Result<string[k], IoError>`, in the order of their bytes |
+| `makeDir(p)`, `makeDirs(p)`, `remove(p)`, `removeAll(p)` | `action (string) => Result<void, IoError>` |
+| `rename(from, to)` | `action (string, string) => Result<void, IoError>` |
+| `readFile(p)`, `readText(p)` | `action (string) => Result<u8[k], IoError>`, `Result<string, IoError>` |
+| `writeFile(p, x)`, `appendFile(p, x)`, `writeText(p, s)`, `appendText(p, s)` | `action => Result<void, IoError>` |
+| `message(e)` | `(IoError) => string` |
+
+An error of the system is a value: `IoError = NotFound(string) |
+PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) |
+Refused(string) | TimedOut(string) | Other(i64, string)`, the string naming
+the path. The same on Linux, Windows and WASI (in the folders the host
+opens).
+
+### Paths: `path`
+
+Pure functions on the text of a path, which read nothing of the system:
+`join(a, b)`, `dirname(p)`, `basename(p)`, `extension(p)`, `normalize(p)`,
+`isAbsolute(p)`. The separator is `/` on every target.
+
+```isc
+import * as sys from "sys";
+import * as path from "path";
+
+action say(r: Result<void, sys.IoError>): void {
+    match (r) {
+        Ok(_) => print("ok"),
+        Err(e) => print(sys.message(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const dir = path.join(sys.env("TMPDIR") ?? "/tmp", "isocron-guide-sys");
+    const before = sys.removeAll(dir);
+    say(sys.makeDirs(path.join(dir, "data/raw")));
+    say(sys.writeText(path.join(dir, "data/raw/a.csv"), "1,2,3\n"));
+    match (sys.listDir(path.join(dir, "data/raw"))) {
+        Ok(names) => print(names),
+        Err(e) => print(sys.message(e)),
+    };
+    match (sys.readText(path.join(dir, "data/raw/a.csv"))) {
+        Ok(t) => print(t.trim()),
+        Err(e) => print(sys.message(e)),
+    };
+    match (sys.readText(path.join(dir, "missing.txt"))) {
+        Ok(t) => print(t),
+        Err(e) => print(path.basename(sys.message(e))),
+    };
+    print(path.extension("report.final.pdf"));
+    print(path.normalize("data/./raw/../clean//b.csv"));
+    say(sys.removeAll(dir));
+    print(sys.exists(dir));
+    return 0;
+}
+```
+
+```output
+ok
+ok
+[a.csv]
+1,2,3
+missing.txt
+.pdf
+data/clean/b.csv
+ok
+false
+```
+
 ## Performance model
 
 * **Fusion.** Element-wise operations, `map` and `iota` feeding a single

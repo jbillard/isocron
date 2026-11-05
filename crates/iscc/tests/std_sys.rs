@@ -76,3 +76,17 @@ fn sys_under_wasi() {
     let want = "ok\nok\nalready exists: BASE/a\nok\nok\nok\nun deux\ntwo.bin is not text\n[b, one.txt]\n[true, true, true, false]\n7\nnot empty: BASE/a/b\nok\nnot found: BASE/a/one.txt\nok\nfalse\nabsent\n0\n";
     assert_eq!(r.stdout.replace(&arg, "BASE"), want);
 }
+
+/// D333: the module `path`, pure functions on the text of paths: the last
+/// part, the folder, the extension, the normal form, roots and joins, on
+/// paths with `/` at their ends, doubled, `.` and `..`, a drive; the same
+/// in the interpreter and compiled.
+#[test]
+fn paths_as_text() {
+    let src = include_str!("data/std_path.isc");
+    let want = "[c.txt, b, c.txt, /, , .profile, b.tar.gz, b, C:\\x, c, y, a, .., ., c]\n[/a/b, a, ., /, ., ., a, //a, ., a/./b/.., ../x/../.., /.., a, ., a//b/.]\n[.txt, , .txt, , , , .gz, , , , , , , , ]\n[/a/b/c.txt, a/b, c.txt, /, ., .profile, a/b.tar.gz, /a/b, C:\\x, a/c, ../../y, /a, ., ., a/b/c]\n[true, false, false, true, false, false, false, true, true, false, false, true, false, false, false]\n[a/b, a/b, /b, b, C:/b]\n";
+    assert_eq!(interp_ok(src, &[]), want, "interpreter");
+    let bin = compile(src, "std_path");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled: {}", r.stderr);
+}

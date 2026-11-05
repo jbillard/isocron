@@ -6485,3 +6485,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   refused, 73 timed out (`wasi/api.h`). Tested by `sys_under_wasi`
   (`std_sys.rs`: the program of D330 under `wasmtime`, the same outputs as
   under Linux).
+- **D333 — The module `path`, the guide, the microbenchmark of `sys` and
+  its floor (2026-11-05).** `path`: pure functions on the text of a path
+  (`join`, `dirname`, `basename`, `extension`, `normalize`, `isAbsolute`),
+  in Isocron, reading nothing of the system: the separator `/` on every
+  target (Windows takes it too), so that a result depends on the text
+  alone (SPEC section 18 said `\` too under Windows: a function of the
+  text could not tell the target), `C:/` and `C:\` roots everywhere; the
+  last `/` found by a `fold` (no `lastIndexOf`), `normalize` a recursion
+  with a string for its parts kept. `docs/language.md`, "The standard
+  library": the functions of `sys` and `path` and an example run by the
+  interpreter, compiled and as WebAssembly. `bench/primitives/sys.isc` and
+  `sys.c` (the same work in C: `stat`, `getenv`, `open`, `read`, `write`,
+  `getdents64` and a sort, the paths by hand), the same checksums;
+  `run.py` on one CPU at fixed frequency, the median of 5 runs of 200
+  rounds (`results/primitives.md`): `normalize` 335.56 ns against 49.95
+  (6.7 times), `basename` 25.51 against 4.82 (5.3), `env` 61.64 against
+  19.02 (3.2), `readFile` of 4 KiB 4316.62 against 1929.61 (2.2),
+  `listDir` of 65 names 11000.35 against 9011.29 (1.2), `writeFile` of 4
+  KiB 3317.43 against 3232.49 (1.0), `exists` 666.28 against 691.52
+  (1.0). Tested by `paths_as_text` (`std_sys.rs`) and the guide.

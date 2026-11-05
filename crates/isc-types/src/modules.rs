@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// Isocron included in the compiler, named by a bare spec (`"sys"`) before
 /// `$ISC_PATH`; their key is `std:<name>`, which no file can have, and only
 /// their functions call the primitives of the system (`sys*`).
-pub const STD_MODULES: &[(&str, &str)] = &[("sys", include_str!("std/sys.isc"))];
+pub const STD_MODULES: &[(&str, &str)] = &[("sys", include_str!("std/sys.isc")), ("path", include_str!("std/path.isc"))];
 
 /// The prefix of the keys of the standard modules (D322).
 pub const STD_KEY: &str = "std:";

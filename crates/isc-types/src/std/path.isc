@@ -1,0 +1,91 @@
+// The module `path` of the standard library (SPEC section 18, D333): pure
+// functions on paths, which read nothing of the system. The separator is
+// `/` on every target (Windows takes it too), so that a result depends on
+// the text alone; `C:/` and `C:\` are roots everywhere.
+
+// the place of the last byte `c` of `s`, or -1
+function lastByte(s: string, c: u8): i64 {
+    const b = bytes(s);
+    return fold(iota(b.length), -1, (a, i) => b[i] == c ? i : a);
+}
+
+// `s` without the `/` at its end (a root `/` kept)
+function trimEnd(s: string): string {
+    const b = bytes(s);
+    const last = fold(iota(b.length), -1, (a, i) => b[i] != 47u8 ? i : a);
+    return last < 0 ? (s.length > 0 ? "/" : "") : s.slice(0, last + 1);
+}
+
+// `p` starts at a root: `/`, or a drive `C:/` or `C:\`
+export function isAbsolute(p: string): boolean {
+    const b = bytes(p);
+    return p.startsWith("/") || (b.length >= 3 && b[1] == 58u8 && (b[2] == 47u8 || b[2] == 92u8));
+}
+
+// `b` after `a` (`b` itself when it is absolute or `a` empty), not
+// normalized
+export function join(a: string, b: string): string {
+    if (a == "" || isAbsolute(b)) {
+        return b;
+    }
+    return a.endsWith("/") ? a + b : a + "/" + b;
+}
+
+// the last part of `p` (`/` at its end ignored)
+export function basename(p: string): string {
+    const t = trimEnd(p);
+    if (t == "/") {
+        return "/";
+    }
+    return t.slice(lastByte(t, 47u8) + 1, t.length);
+}
+
+// `p` without its last part: `.` when it has one part, `/` at the root
+export function dirname(p: string): string {
+    const t = trimEnd(p);
+    const k = lastByte(t, 47u8);
+    if (k < 0) {
+        return ".";
+    }
+    const d = trimEnd(t.slice(0, k));
+    return d == "" ? "/" : d;
+}
+
+// the extension of the last part of `p` with its dot (`.txt`), or "" (a
+// name that starts with its only dot has none, as `.profile`)
+export function extension(p: string): string {
+    const b = basename(p);
+    const k = lastByte(b, 46u8);
+    return k <= 0 || b == ".." ? "" : b.slice(k, b.length);
+}
+
+// the parts of `segs` from `i` on added to `out` (the parts kept so far)
+// above `ups` parts `..` that nothing removed
+function normFrom(segs: string[n], i: i64, out: string, ups: i64, abs: boolean): string {
+    if (i == segs.length) {
+        const head = abs ? "/" : "../".repeat(ups);
+        const whole = head + out;
+        if (whole == "") {
+            return ".";
+        }
+        return out == "" && !abs ? whole.slice(0, whole.length - 1) : whole;
+    }
+    const s = segs[i];
+    if (s == "" || s == ".") {
+        return normFrom(segs, i + 1, out, ups, abs);
+    }
+    if (s == "..") {
+        if (out != "") {
+            const k = lastByte(out, 47u8);
+            return normFrom(segs, i + 1, k < 0 ? "" : out.slice(0, k), ups, abs);
+        }
+        return normFrom(segs, i + 1, out, abs ? ups : ups + 1, abs);
+    }
+    return normFrom(segs, i + 1, out == "" ? s : out + "/" + s, ups, abs);
+}
+
+// `p` without `.`, `x/..` and repeated `/`, read as text alone (no link
+// followed); `.` for an empty path
+export function normalize(p: string): string {
+    return normFrom(p.split("/"), 0, "", 0, p.startsWith("/"));
+}

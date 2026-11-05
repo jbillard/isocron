@@ -922,7 +922,7 @@ Sous Linux, une primitive est un appel direct du système (D287), sauf TLS. Sous
 | `readFile(path)`, `readText(path)` | `action (string) => Result<u8[k], IoError>`, `Result<string, IoError>` |
 | `writeFile(path, x)`, `appendFile(path, x)` | `action (string, u8[n]) => Result<void, IoError>` (et leurs formes `string`) |
 
-Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) sont `join(a, b)`, `dirname(p)`, `basename(p)`, `extension(p)`, `normalize(p)` et `isAbsolute(p)`. Le séparateur est `/`. Sous Windows, `\` est accepté en lecture et `C:` est une racine. `normalize` retire les `.` et les `x/..` sans lire le disque. Leur résultat ne dépend que du texte et de la cible.
+Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) sont `join(a, b)`, `dirname(p)`, `basename(p)`, `extension(p)`, `normalize(p)` et `isAbsolute(p)`. Le séparateur est `/` sur toutes les cibles (Windows l'accepte aussi), et `C:/` ou `C:\` est une racine partout (D333). `normalize` retire les `.` et les `x/..` sans lire le disque. Leur résultat ne dépend que du texte et de la cible.
 
 #### `time` : dates et heures
 

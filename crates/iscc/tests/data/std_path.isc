@@ -1,0 +1,12 @@
+import * as path from "path";
+
+action main(args: string[k]): i32 {
+    const ps = ["/a/b/c.txt", "a/b/", "c.txt", "/", "", ".profile", "a/b.tar.gz", "//a//b//", "C:\\x", "a/./b/../c", "../x/../../y", "/../a", "a/..", "./", "a//b/./c/"];
+    print(map(ps, (p) => path.basename(p)));
+    print(map(ps, (p) => path.dirname(p)));
+    print(map(ps, (p) => path.extension(p)));
+    print(map(ps, (p) => path.normalize(p)));
+    print(map(ps, (p) => path.isAbsolute(p)));
+    print([path.join("a", "b"), path.join("a/", "b"), path.join("a", "/b"), path.join("", "b"), path.join("a", "C:/b")]);
+    return 0;
+}
