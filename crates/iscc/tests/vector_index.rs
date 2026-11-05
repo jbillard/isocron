@@ -709,3 +709,57 @@ fn consecutive_indices_through_a_remainder() {
         }
     }
 }
+
+/// D318: the whole rows of a `map` by rows (one vector a row, D274) take
+/// out of their loop an equality of the index with a value of before it
+/// (`q == n - 1`, `q == k` for k inside, before, after the rows, at the
+/// first and the last row; the rows apart, the row of k with the equality)
+/// and carry from a row to the next the remainder of the first lane of a
+/// table read at `x % c` (`x` linear in the row and the place: steps 60, 7
+/// and 1000 with c = 997, a table longer than a copy with its period
+/// (139968, D273), a first lane below 0 (the general code and its panic),
+/// a table shorter than c (its panic)), as the interpreter on 1, 3 and 4
+/// threads.
+#[test]
+fn rows_take_their_equalities_and_remainders_out_of_their_loop() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const k = parseI64(args[1]);
+    const t = parseI64(args[2]);
+    const big = map(iota(139968), (i) => u8(65 + (i * 7) % 26));
+    const tab = map(iota(t), (i) => u8(97 + i % 26));
+    printBytes(map(iota(n), (q) => q % 61 == 60 || q == n - 1 ? 10u8 : big[(1 + 3 * n + q / 61 * 60 + q % 61) % 139968]));
+    printBytes(map(iota(n), (q) => q % 61 == 60 || q == k ? 10u8 : tab[(q / 61 * 7 + q % 61 + k + 1) % 997]));
+    printBytes(map(iota(n), (q) => q == k + 5 ? 33u8 : tab[(q / 61 * 1000 + q % 61) % 997]));
+    printBytes(map(iota(n), (q) => q % 61 == 60 ? 10u8 : tab[(q / 61 * 60 + q % 61 + 300000 - k) % 997]));
+    return 0;
+}
+";
+    let bin = compile(src, "rows_hoisted");
+    let cases: [[&str; 3]; 9] = [
+        ["100003", "70000", "997"],
+        ["100003", "-1", "997"],
+        ["100003", "200000", "997"],
+        ["100003", "0", "997"],
+        ["100003", "100002", "997"],
+        ["61", "30", "997"],
+        ["1000", "500", "997"],
+        ["5000", "100", "996"],
+        ["100003", "400000", "997"],
+    ];
+    for args in cases {
+        let want = interp(src, &args);
+        assert_eq!(matches!(want, Outcome::Panic(..)), args[2] == "996" || args[1] == "400000", "{:?}", args);
+        for th in [1, 3, 4] {
+            let r = run_bin_threads(&bin, &args, Some(th));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, th, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    let site = if th == 1 { m.as_str() } else { m.split(": the index is").next().unwrap() };
+                    assert!(r.stderr.contains(site), "{:?} {} threads: {} / {}", args, th, r.stderr, m);
+                }
+            }
+        }
+    }
+}

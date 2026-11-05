@@ -447,6 +447,11 @@ struct Func {
     /// before it with their first `w - 1` elements after their `c` (D273):
     /// the copy, and whether it was made (the table has `c` elements).
     period_tables: HashMap<(VarId, i64), (String, String)>,
+    /// The remainders `x % c` of the reads of those tables carried from a
+    /// row to the next by the whole rows of `fill_rows` (D318): per `Rem`
+    /// expression, the slot of the remainder of its first lane and whether
+    /// every lane of every row is at least 0.
+    carried: HashMap<*const Expr, (String, String)>,
 }
 
 pub struct Gen<'p> {
@@ -1371,6 +1376,82 @@ fn group_stream_ok(init: &Expr) -> bool {
         && matches!(init.ty.elem(), Type::Int(_))
         && !isc_ir::passes::is_stream(init)
         && !matches!(&init.kind, ExprKind::Map(ins, _) if ins.iter().any(|i| matches!(i.kind, ExprKind::Var(_, Use::Move))))
+}
+
+/// What the whole rows of `fill_rows` take out of their loop (D318): an
+/// equality `q == K` of the index with a value of before the loop (true in
+/// one row at most: the rows apart) and the value of K; the reads of a
+/// table at `x % c` (c at least the lanes) whose first lane is `step * row
+/// + K`, each with the
+/// slot of its remainder, its step, K, c, and whether every lane of every
+/// row is at least 0.
+#[derive(Default)]
+struct RowHoist {
+    eq: Option<(*const Expr, String)>,
+    rems: Vec<(*const Expr, String, i64, String, i64, String)>,
+}
+
+/// An index of the body of a `map` by rows of `c` (D318): `row * row +
+/// place * place + c0 + sum of k * v` for variables `v` bound before the
+/// loop.
+#[derive(Clone, Default)]
+struct RowLin {
+    row: i64,
+    place: i64,
+    c0: i64,
+    vars: Vec<(i64, VarId)>,
+}
+
+impl RowLin {
+    fn scaled(&self, k: i64) -> Option<RowLin> {
+        Some(RowLin {
+            row: self.row.checked_mul(k)?,
+            place: self.place.checked_mul(k)?,
+            c0: self.c0.checked_mul(k)?,
+            vars: self.vars.iter().map(|&(a, v)| a.checked_mul(k).map(|b| (b, v))).collect::<Option<Vec<_>>>()?,
+        })
+    }
+
+    fn plus(&self, o: &RowLin) -> Option<RowLin> {
+        let mut vars = self.vars.clone();
+        vars.extend(o.vars.iter().copied());
+        Some(RowLin { row: self.row.checked_add(o.row)?, place: self.place.checked_add(o.place)?, c0: self.c0.checked_add(o.c0)?, vars })
+    }
+}
+
+/// `e` as a `RowLin` (D318): integer literals, `q`, `q / c` (the row),
+/// `q % c` (the place), sums, differences, products by a literal, the
+/// variables of the `let`s of the body by their values, those of `bound`
+/// (bound before the loop) as they are; all of type `i64`.
+fn row_lin(e: &Expr, q: VarId, c: i64, lets: &HashMap<VarId, &Expr>, bound: &dyn Fn(VarId) -> bool) -> Option<RowLin> {
+    let i64t = Type::Int(IntKind::I64);
+    if e.ty != i64t {
+        return None;
+    }
+    let lit = |x: &Expr| match x.kind {
+        ExprKind::Lit(Lit::Int(k)) if x.ty == i64t => Some(k),
+        _ => None,
+    };
+    let is_q = |x: &Expr| matches!(x.kind, ExprKind::Var(v, _) if v == q);
+    match &e.kind {
+        ExprKind::Lit(Lit::Int(k)) => Some(RowLin { c0: *k, ..RowLin::default() }),
+        ExprKind::Var(v, _) if *v == q => Some(RowLin { row: c, place: 1, ..RowLin::default() }),
+        ExprKind::Var(v, _) => match lets.get(v) {
+            Some(init) => row_lin(init, q, c, lets, bound),
+            None if bound(*v) => Some(RowLin { vars: vec![(1, *v)], ..RowLin::default() }),
+            None => None,
+        },
+        ExprKind::Binary(BinOp::Div, x, d) if is_q(x) && lit(d) == Some(c) => Some(RowLin { row: 1, ..RowLin::default() }),
+        ExprKind::Binary(BinOp::Rem, x, d) if is_q(x) && lit(d) == Some(c) => Some(RowLin { place: 1, ..RowLin::default() }),
+        ExprKind::Binary(BinOp::Add, a, b) => row_lin(a, q, c, lets, bound)?.plus(&row_lin(b, q, c, lets, bound)?),
+        ExprKind::Binary(BinOp::Sub, a, b) => row_lin(a, q, c, lets, bound)?.plus(&row_lin(b, q, c, lets, bound)?.scaled(-1)?),
+        ExprKind::Binary(BinOp::Mul, a, b) => match (lit(a), lit(b)) {
+            (Some(k), _) => row_lin(b, q, c, lets, bound)?.scaled(k),
+            (_, Some(k)) => row_lin(a, q, c, lets, bound)?.scaled(k),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The flag of the kind of the keys of `isc_group` for `$groupCounts`
@@ -4097,8 +4178,12 @@ impl<'p> Gen<'p> {
                 if w > 1 && c >= w as i64 && x.ty == Type::Int(IntKind::I64) {
                     let xv = self.ex(x, w)?;
                     if let (false, Some((first, 1))) = (uni(&xv), self.f.contig.get(&xv.r).cloned()) {
-                        let r0 = self.ins(format!("srem i64 {}, {}", first, c));
-                        let nonneg = self.ins(format!("icmp sge i64 {}, 0", first));
+                        // the remainder of the first lane carried from the
+                        // row before (D318), or computed
+                        let (r0, nonneg) = match self.f.carried.get(&(i as *const Expr)).cloned() {
+                            Some((slot, ok)) => (self.ins(format!("load i64, ptr {}", slot)), ok),
+                            None => (self.ins(format!("srem i64 {}, {}", first, c)), self.ins(format!("icmp sge i64 {}, 0", first))),
+                        };
                         // the table copied with its period continued (D273):
                         // every remainder of a lane in it, whatever the first
                         let period = match &a.kind {
@@ -6268,6 +6353,98 @@ impl<'p> Gen<'p> {
     /// of a `map` are values: computed twice, stored twice, the same); a row
     /// of fewer than `w` elements (the ends of `start .. end`) one at a time.
     #[allow(clippy::too_many_arguments)]
+    /// The `RowHoist` of the whole rows `ff .. lf` of `fill_rows` (D318),
+    /// its values computed here, before their loop.
+    fn row_hoist(&mut self, src: &Src, c: i64, lanes: u32, ff: &str, lf: &str) -> RowHoist {
+        let mut h = RowHoist::default();
+        let Src::Map(srcs, l) = src else { return h };
+        let [Src::Iota] = srcs.as_slice() else { return h };
+        let q = l.params[0];
+        fn lets_of<'e>(e: &'e Expr, out: &mut HashMap<VarId, &'e Expr>) {
+            if let ExprKind::Let { var, init, .. } = &e.kind {
+                out.insert(*var, init);
+            }
+            for ch in e.children() {
+                lets_of(ch, out);
+            }
+        }
+        let mut lets = HashMap::new();
+        lets_of(&l.body, &mut lets);
+        let env: HashSet<VarId> = self.env.keys().copied().filter(|v| !lets.contains_key(v) && *v != q).collect();
+        let bound = |v: VarId| env.contains(&v);
+        // the value of `r` before the loop: the literal and the variables
+        let value = |g: &mut Self, r: &RowLin| -> Option<String> {
+            let mut acc = r.c0.to_string();
+            for &(k, v) in &r.vars {
+                let x = g.env.get(&v)?.clone();
+                if x.t != "i64" {
+                    return None;
+                }
+                let m = g.ins(format!("mul i64 {}, {}", x.r, k));
+                acc = g.ins(format!("add i64 {}, {}", acc, m));
+            }
+            Some(acc)
+        };
+        fn find<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+            if matches!(e.kind, ExprKind::Binary(BinOp::Eq, ..) | ExprKind::Index(..)) {
+                out.push(e);
+            }
+            for ch in e.children() {
+                find(ch, out);
+            }
+        }
+        let mut sites = Vec::new();
+        find(&l.body, &mut sites);
+        let is_q = |x: &Expr| matches!(x.kind, ExprKind::Var(v, _) if v == q);
+        for e in sites {
+            match &e.kind {
+                ExprKind::Binary(BinOp::Eq, a, b) if h.eq.is_none() && a.ty == Type::Int(IntKind::I64) => {
+                    let other = if is_q(a) { b } else if is_q(b) { a } else { continue };
+                    let Some(k) = row_lin(other, q, c, &lets, &bound) else { continue };
+                    if k.row != 0 || k.place != 0 {
+                        continue;
+                    }
+                    if let Some(kv) = value(self, &k) {
+                        h.eq = Some((e as *const Expr, kv));
+                    }
+                }
+                ExprKind::Index(t, i) => {
+                    let (ExprKind::Var(t, _), ExprKind::Binary(BinOp::Rem, x, cc)) = (&t.kind, &i.kind) else { continue };
+                    let ExprKind::Lit(Lit::Int(cc)) = cc.kind else { continue };
+                    // read by one load from the remainder of its first lane
+                    // (`index_vec`: a table copied with its period, D273, or
+                    // read where it is when the lanes do not cross its end)
+                    let _ = t;
+                    if cc < lanes as i64 || h.rems.iter().any(|r| std::ptr::eq(r.0, &**i)) {
+                        continue;
+                    }
+                    let Some(x) = row_lin(x, q, c, &lets, &bound) else { continue };
+                    // consecutive lanes, rows that do not go back, a step
+                    // whose products by the rows cannot wrap
+                    if x.place != 1 || x.row < 0 || x.row >= 1 << 31 {
+                        continue;
+                    }
+                    let k0 = RowLin { row: 0, place: 0, ..x.clone() };
+                    let Some(kv) = value(self, &k0) else { continue };
+                    let slot = self.alloca("i64");
+                    // every lane at least 0 in every row from `ff`: the
+                    // first lane of the row `ff` (the others after it, the
+                    // rows below 2^31: no product wraps)
+                    let x0a = self.ins(format!("mul i64 {}, {}", ff, x.row));
+                    let x0 = self.ins(format!("add i64 {}, {}", x0a, kv));
+                    let pos = self.ins(format!("icmp sge i64 {}, 0", x0));
+                    let small = self.ins(format!("icmp slt i64 {}, {}", lf, 1i64 << 31));
+                    let kpos = self.ins(format!("icmp slt i64 {}, {}", kv, 1i64 << 61));
+                    let ok0 = self.ins(format!("and i1 {}, {}", pos, small));
+                    let ok = self.ins(format!("and i1 {}, {}", ok0, kpos));
+                    h.rems.push((&**i as *const Expr, slot, x.row, kv, cc, ok));
+                }
+                _ => {}
+            }
+        }
+        h
+    }
+
     fn fill_rows(
         &mut self,
         src: &Src,
@@ -6305,17 +6482,72 @@ impl<'p> Gen<'p> {
         if c % w as i64 != 0 {
             places.push(c - w as i64);
         }
-        self.for_range(&ff, &lf, 1, &mut |g, row| {
-            let bq = g.ins(format!("mul i64 {}, {}", row, c));
-            let rowv = V { r: row.to_string(), t: "i64".into(), uni: true };
-            if wide {
-                return g.row_vector_wide(src, p, 2 * w, c, &rowv, &bq, divs, rems);
+        // the whole rows in one vector each (D274): the remainders of the
+        // tables read at `x % c` carried from a row to the next, and
+        // `q == K` false outside the row of K, those rows apart (D318)
+        let hoist = if wide { self.row_hoist(src, c, 2 * w, &ff, &lf) } else { RowHoist::default() };
+        let (a, b) = match &hoist.eq {
+            Some((_, kv)) => {
+                let k_ok = self.ins(format!("icmp sge i64 {}, 0", kv));
+                let rk0 = self.ins(format!("sdiv i64 {}, {}", kv, c));
+                let rk = self.ins(format!("select i1 {}, i64 {}, i64 -1", k_ok, rk0));
+                let ge = self.ins(format!("icmp sge i64 {}, {}", rk, ff));
+                let lt = self.ins(format!("icmp slt i64 {}, {}", rk, lf));
+                let inside = self.ins(format!("and i1 {}, {}", ge, lt));
+                let rk1 = self.ins(format!("add i64 {}, 1", rk));
+                (self.ins(format!("select i1 {}, i64 {}, i64 {}", inside, rk, lf)), self.ins(format!("select i1 {}, i64 {}, i64 {}", inside, rk1, lf)))
             }
-            for k in &places {
-                g.row_vector(src, p, n, et, w, &rowv, &bq, &k.to_string(), divs, rems)?;
+            None => (lf.clone(), lf.clone()),
+        };
+        for (i, (from, to)) in [(ff.clone(), a.clone()), (a.clone(), b.clone()), (b.clone(), lf.clone())].into_iter().enumerate() {
+            if hoist.eq.is_none() && i > 0 {
+                break;
             }
-            Ok(())
-        })?;
+            let lane_false = i != 1;
+            if let (true, Some((e, _))) = (lane_false, &hoist.eq) {
+                self.pre.insert(*e, V { r: "false".into(), t: "i1".into(), uni: true });
+            }
+            // the remainders of the first row of this range
+            for (e, slot, step0, kv, cc, _) in &hoist.rems {
+                let x0a = self.ins(format!("mul i64 {}, {}", from, step0));
+                let x0 = self.ins(format!("add i64 {}, {}", x0a, kv));
+                let r0 = self.ins(format!("srem i64 {}, {}", x0, cc));
+                self.emit(format!("store i64 {}, ptr {}", r0, slot));
+                let _ = e;
+            }
+            for (e, slot, _, _, _, ok) in &hoist.rems {
+                self.f.carried.insert(*e, (slot.clone(), ok.clone()));
+            }
+            let rems_c = hoist.rems.clone();
+            self.for_range(&from, &to, 1, &mut |g, row| {
+                let bq = g.ins(format!("mul i64 {}, {}", row, c));
+                let rowv = V { r: row.to_string(), t: "i64".into(), uni: true };
+                if wide {
+                    g.row_vector_wide(src, p, 2 * w, c, &rowv, &bq, divs, rems)?;
+                    // the remainders of the next row: one step, then less
+                    // the divisor where it reaches it
+                    for (_, slot, step0, _, cc, _) in &rems_c {
+                        let r = g.ins(format!("load i64, ptr {}", slot));
+                        let r1 = g.ins(format!("add i64 {}, {}", r, step0.rem_euclid(*cc)));
+                        let wrap = g.ins(format!("icmp sge i64 {}, {}", r1, cc));
+                        let r2 = g.ins(format!("sub i64 {}, {}", r1, cc));
+                        let r3 = g.ins(format!("select i1 {}, i64 {}, i64 {}", wrap, r2, r1));
+                        g.emit(format!("store i64 {}, ptr {}", r3, slot));
+                    }
+                    return Ok(());
+                }
+                for k in &places {
+                    g.row_vector(src, p, n, et, w, &rowv, &bq, &k.to_string(), divs, rems)?;
+                }
+                Ok(())
+            })?;
+            for (e, ..) in &hoist.rems {
+                self.f.carried.remove(e);
+            }
+            if let Some((e, _)) = &hoist.eq {
+                self.pre.remove(e);
+            }
+        }
         self.row_range(src, p, n, et, start, end, w, c, divs, rems, &rlo, &ff)?;
         let lf1 = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", lf, rlo));
         self.row_range(src, p, n, et, start, end, w, c, divs, rems, &lf1, &rend)?;

@@ -6166,3 +6166,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     negative ones, in parallel parts and in one part without the table of
     small keys (the key 0 hashed), as the interpreter on 1, 3 and 8
     threads; Valgrind) and the tests of `countBy` before.
+- **D318 — The whole rows of a `map` take an equality with the index and
+  the remainders of their tables out of their loop (2026-11-05).** After
+  D316 a line of fasta (61 bytes, one vector of 64 lanes, D274) took about
+  40 instructions, 12.8 cycles in its third sequence where the floor's
+  copy from tables takes about 6.8: `q == length - 1` (true in the last
+  line only) made into a mask at every line (`shlx`, `cmov`, four
+  operations of masks, one mask reloaded from the stack), and the
+  remainder by 139968 of the first lane of the table of its symbols
+  computed again at every line (a product by the inverse, shifts, a
+  product, the tests of the sign and of the room), where it grows by 60.
+  Now `fill_rows` (`row_hoist`), for its whole rows in one vector each:
+  - an equality `q == K` of the index with a value of before the loop
+    (`row_lin`: literals, variables bound before, sums, products by
+    literals; nothing that can fail) is false outside the row `K / c`: the
+    rows before and after it run with the equality false, that row alone
+    with it;
+  - a table read at `x % c` (c at least the lanes) whose index is linear
+    in the row and the place (`row_lin`, through the `let`s of the body:
+    `x = step * row + place + K`) gets the remainder of its first lane
+    carried from a row to the next (`step % c` added, `c` taken off where
+    it reaches it), computed once for the first row; `index_vec` reads it
+    there instead of dividing. Every lane is at least 0 when the first
+    lane of the first row is, the step is at least 0 and below 2^31 and
+    the rows are below 2^31 (no product wraps): otherwise the general code
+    (and its panic), as before.
+  - fasta -13.82 % [-14.69 %, -13.18 %] (61 rounds, 6246 -> 5390 µs), 226
+    -> 189 million instructions; only the equality at first (the table of
+    139968 is read where it is, not copied with its period, D273, so its
+    remainder was not carried): -9.30 %. The nine other programs are the
+    same binaries.
+  - Tested by `rows_take_their_equalities_and_remainders_out_of_their_loop`
+    (`vector_index.rs`: `q == n - 1` and `q == k` for k inside, before,
+    after the rows and at their ends; tables read at remainders with steps
+    60, 7 and 1000 for c = 997, the table of 139968; a first lane below 0
+    and a table shorter than c, their panics; 1, 3 and 4 threads, as the
+    interpreter).
