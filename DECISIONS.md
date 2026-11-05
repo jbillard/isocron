@@ -7312,3 +7312,65 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     without a call) and `last_index_of_a_fold_from_the_end` (`codegen.rs`:
     found, not found, `n = 0`, two reads and `&&`, a widening conversion,
     the panic of a read out of bounds as the interpreter's).
+- **D348 — The text of an integer padded in one block (2026-11-05).**
+  `time.formatIso` 7.0 times its floor without a measured cause (D334).
+  Profiled alone at fixed frequency: 979.3 cycles and 3962.5 instructions
+  a call, against a floor of 45.8 ns; each `pad(x, n)` of the module
+  (`toString(x).padStart(n, "0")`) makes the text of `x`, then the padded
+  text; `isc_pad` took its slow path (the writer of `fmt`, its buffer grown:
+  `reserve` and `finish_grow` 13 %) whenever the text had already `n`
+  bytes (`pad(2026, 4)`, a minute of two digits); the template copied the
+  eight parts (`concat_n` and `memcpy` 28 %), the frees 12.5 %.
+  - `isc_pad`: a text of `n` bytes or more, or an empty fill, copied once
+    at its size (`padStart` gives it as it is): 979.3 -> 873.1 cycles.
+  - `toString(x)` of an integer bound by a `let` whose only use, outside
+    the functions of `map` and the others, is the text of a `padStart` or
+    `padEnd` (`sole_pad_text`): `x` evaluated at its place, no string
+    made; with a fill of one byte, `isc_pad_int` writes the text of `x`
+    and the fill in one block of its size; with another fill, the text
+    made, padded, freed. 873.1 -> 652.7 cycles.
+  - `results/primitives.md` (a whole run): `formatIso` 314.00 -> 216.46 ns
+    (6.9 -> 4.7 times its floor). What is left (its profile): the eight
+    parts of the template each a block made, copied into the result and
+    freed (`isc_pad_int` 21 %, `memcpy` 18 %, `concat_n` 14 %, `free` 10
+    %), where the floor writes the 20 bytes in one buffer: the parts of a
+    template written in its block, open in TODO. `padStart` of the group
+    `strings` (a text of 4 bytes padded to 12 by `-`, not an integer)
+    11.60 -> 12.08 ns, within the drift between sessions of D346.
+  - The ten programs: their IR the same (neither form in them).
+  - Tested by `integers_padded_in_one_block` (`strings.rs`: negative
+    numbers padded as JavaScript does, `0000-7`; unsigned; a text long
+    enough; `padEnd`; a fill of two bytes; a text read twice; templates;
+    seven calls of `isc_pad_int` in the IR).
+- **D349 — The examples of the README run; a port listened to twice
+  refused everywhere (2026-11-05).** The example of `serve` in the README
+  (D345) had been checked by `iscc check` only: run under Windows by the
+  author, it printed nothing (`serve` answers without end) and its branch
+  `Ok(_) => print("done")` could never run. Now it says where it listens,
+  says why it cannot serve (`sys.message`), and returns 0 or 1.
+  - Run under Linux and in the VM of Windows, compiled and interpreted:
+    `hello world` for `/?world`; a second copy on the same port should
+    say why it cannot serve. It did not, in three ways: under Linux
+    `cannot serve: error 98 of the system` (`EADDRINUSE` not one of the
+    kinds), in the interpreter the same, and under Windows compiled the
+    second copy served too: the runtime set `SO_REUSEADDR`, which under
+    Windows lets another socket bind a port already listened to. Now a
+    port listened to is `AlreadyExists` everywhere (`EADDRINUSE` under
+    Linux, `AddrInUse` in the interpreter, `SO_EXCLUSIVEADDRUSE` instead
+    of `SO_REUSEADDR` under Windows: `WSAEADDRINUSE`, as Windows already
+    named it); Linux keeps `SO_REUSEADDR` (there it only lets a server
+    start again at once on a port in `TIME_WAIT`).
+  - In the VM after it: the second copy `cannot serve: already exists:
+    0.0.0.0:8080`, exit code 1, compiled and interpreted. The line
+    `listening` of a compiled server killed by `taskkill /f` is not in the
+    file its output went to: a file is written by blocks (D299); in a
+    console each line goes out at once (`GetConsoleMode`).
+  - Tested by `every_example_of_the_readme_works` (`docs.rs`: each block
+    of the README run, the commands of the block `console` after it and
+    their outputs, a function alone type-checked, the server started on a
+    free port, asked, a second copy refused, then stopped, interpreted and
+    compiled), `a_port_listened_to_twice` (`std_net.rs`) and
+    `a_port_listened_to_twice_on_windows` (`windows.rs`, compiled and by
+    `iscc.exe`). The file `windows.rs` in the VM: 10 of 10 (a first run
+    9 of 10: `win_https_client.exe` put in quarantine by Defender, events
+    1116 and 1117 at the time of the test; the next run without it).

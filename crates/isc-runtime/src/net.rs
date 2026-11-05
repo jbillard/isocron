@@ -929,7 +929,9 @@ mod imp {
     const SOCK_STREAM: c_int = 1;
     const SOCK_DGRAM: c_int = 2;
     const SOL_SOCKET: c_int = 0xffff;
-    const SO_REUSEADDR: c_int = 4;
+    // `~SO_REUSEADDR`: no other socket binds the port of this one (with
+    // `SO_REUSEADDR` Windows let a second listener take the same port)
+    const SO_EXCLUSIVEADDRUSE: c_int = !4;
     const SO_RCVTIMEO: c_int = 0x1006;
     const SO_SNDTIMEO: c_int = 0x1005;
     const INVALID_SOCKET: usize = !0;
@@ -1033,7 +1035,9 @@ mod imp {
             return;
         }
         let one: c_int = 1;
-        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one as *const c_int as *const u8, 4);
+        // a port already listened to: `WSAEADDRINUSE`, `AlreadyExists` as
+        // under Linux and in the interpreter
+        setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &one as *const c_int as *const u8, 4);
         if bind(s, addr.as_ptr(), len as c_int) != 0 || listen(s, 128) != 0 {
             let code = last_code();
             closesocket(s);

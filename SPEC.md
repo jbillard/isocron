@@ -877,7 +877,7 @@ But : des programmes de calcul qui sortent de leur fichier d'entrée. Ils lisent
        | NotEmpty(string) | Refused(string) | TimedOut(string) | Other(i64, string);
    ```
 
-   La chaîne nomme l'objet de l'erreur (le chemin, l'adresse). `Other` porte le code du système (`errno` sous Linux, `GetLastError` sous Windows). `message(e)` donne le texte de l'erreur, le même sur toutes les cibles pour les six premières sortes.
+   La chaîne nomme l'objet de l'erreur (le chemin, l'adresse ; une adresse déjà écoutée est `AlreadyExists`, D349). `Other` porte le code du système (`errno` sous Linux, `GetLastError` sous Windows). `message(e)` donne le texte de l'erreur, le même sur toutes les cibles pour les six premières sortes.
 5. **Une cible qui n'a pas une fonction la refuse à la compilation** (D324). WASI (préversion 1) n'a ni sockets, ni dossiers hors de ceux que l'hôte lui ouvre, ni TLS. Un programme pour `wasm32-wasi` qui appelle, directement ou par un module, une primitive que la cible n'a pas est une erreur de compilation. L'erreur nomme la fonction du programme qui mène à la primitive, la primitive et la cible :
 
    ```

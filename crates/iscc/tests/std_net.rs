@@ -141,3 +141,14 @@ fn net_refused_for_wasi() {
     let r = run_bin(&compile(src, "net_wasi_linux"), &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "1\n"));
 }
+
+/// D348: a port listened to twice: the second `listen` is
+/// `AlreadyExists`, in the interpreter and compiled.
+#[test]
+fn a_port_listened_to_twice() {
+    let src = include_str!("data/std_net_twice.isc");
+    assert_eq!(interp_ok(src, &[]), "refused: already exists\n", "interpreter");
+    let bin = compile(src, "std_net_twice");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "refused: already exists\n"), "compiled: {}", r.stderr);
+}

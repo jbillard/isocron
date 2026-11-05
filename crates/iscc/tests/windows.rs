@@ -436,3 +436,26 @@ fn https_server_on_windows() {
         assert_eq!(String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), want, "{} on Windows: {}", name, String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// D348: a port listened to twice on Windows: the second `listen` refused
+/// (`SO_EXCLUSIVEADDRUSE`; with `SO_REUSEADDR` a second server took the same
+/// port), compiled, then interpreted by `$ISC_WINDOWS_ISCC` when it is
+/// given: the same output as on Linux.
+#[test]
+fn a_port_listened_to_twice_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let src = include_str!("data/std_net_twice.isc");
+    let d = dir("net_twice");
+    let out = same_on_windows(&runner, src, "net_twice", &d, &[], None);
+    assert_eq!(String::from_utf8_lossy(&out), "refused: already exists\n");
+    if let Ok(iscc) = std::env::var("ISC_WINDOWS_ISCC") {
+        std::fs::copy(iscc, d.join("iscc.exe")).unwrap();
+        std::fs::write(d.join("twice.isc"), src).unwrap();
+        std::fs::write(d.join("twice.cmd"), "@echo off\r\niscc.exe run twice.isc\r\nexit /b %errorlevel%\r\n").unwrap();
+        let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg(d.join("twice.cmd")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), "refused: already exists\n", "interpreted on Windows: {}", String::from_utf8_lossy(&o.stderr));
+    }
+}

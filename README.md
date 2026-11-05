@@ -143,20 +143,35 @@ pure function: the requests ready at once go to it by `map`, in parallel,
 without a race.
 
 ```ts
+// hello_server.isc
 import * as http from "http";
+import * as sys from "sys";
 
 function hello(r: http.Request): http.Response {
     return http.textResponse(200, `hello ${r.query}`);
 }
 
 action main(args: string[k]): i32 {
-    match (http.serve(8080, hello)) {
-        Ok(_) => print("done"),
-        Err(e) => print("cannot serve"),
+    print("listening on http://localhost:8080 (Ctrl+C stops it)");
+    // `serve` answers without end: it returns only if it cannot serve
+    return match (http.serve(8080, hello)) {
+        Ok(_) => 0,
+        Err(e) => {
+            print(`cannot serve: ${sys.message(e)}`);
+            return 1;
+        },
     };
-    return 0;
 }
 ```
+
+```console
+$ iscc run hello_server.isc
+listening on http://localhost:8080 (Ctrl+C stops it)
+```
+
+From another terminal, `curl "http://localhost:8080/?world"` gets `hello
+world`; a port already taken prints `cannot serve: already exists:
+0.0.0.0:8080`.
 
 ## Measured against the machine
 

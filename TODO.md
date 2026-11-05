@@ -300,6 +300,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The tasks of a parallel fill of at least 16 KiB, apart from B (B kept for the reductions): fasta -17.64 % (D321)
 - [x] The Benchmarks Game measured again at 2ef9e9f with the library: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.76, k-nucleotide 2.55, pidigits 2.53, reverse-complement 2.38, fasta 2.16); three programs 0.4 to 1.0 % above D319 shown to be noise by an A/B against the binaries of 0.2.2 (D344)
 - [x] `==` against a literal of at most 16 bytes in place; rule L, the last index of a `fold` from the end; `getenv` without a block of the heap: `basename` 25.64 -> 9.07 ns, `normalize` 335.43 -> 228.61, `env` measured warm (D346)
+- [x] `toString(x).padStart(n, c)` of an integer in one block: `formatIso` 314.00 -> 216.46 ns (D348)
+- [ ] The parts of a template written in its block (integers, padded integers, the results of calls): `formatIso` 4.7, its eight parts each a block made, copied, freed (D348)
+- [x] The examples of the README run by the tests; a port listened to twice `AlreadyExists` on Linux, Windows and in the interpreter (D349)
 - [ ] The payload of a `match` on a temporary taken out of it, not copied (`x ?? d`, `match (f()) { Ok(v) => ... }`: a copy and a free of the payload each time, D346)
 - [ ] `path.normalize` in one pass: the parts kept found from the right, joined once (D346: `split` 33 %, the text kept copied again at each part)
 - [ ] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions

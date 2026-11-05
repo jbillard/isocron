@@ -972,3 +972,42 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &["ab", "", "abcdefghijklmnop"]);
     assert_eq!(r.stdout, "[[0, 1, 1, 0], [1, 0, 1, 0], [0, 0, 1, 1]]\n");
 }
+
+/// D348: `toString(x).padStart(n, c)` (or `padEnd`) of an integer and a
+/// fill of one byte written in one block (`isc_pad_int`), the text of `x`
+/// never made; another fill by the text made, padded, then freed; a text
+/// read twice as before. Negative numbers padded as JavaScript does
+/// (`0000-7`), unsigned ones, a text already long enough, in templates.
+#[test]
+fn integers_padded_in_one_block() {
+    let src = r#"function pad(x: i64, n: i64): string {
+    return toString(x).padStart(n, "0");
+}
+
+function right(x: u8, n: i64): string {
+    return toString(x).padEnd(n, "*");
+}
+
+function two(x: i32, n: i64): string {
+    return toString(x).padStart(n, "ab");
+}
+
+function twice(x: i64): string {
+    const t = toString(x);
+    return t.padStart(4, "0") + t;
+}
+
+action main(args: string[k]): i32 {
+    const v = parseI64(args[0]);
+    print([pad(v, 4), pad(v, 1), pad(-v, 6), pad(v, 0), right(u8(v % 256), 5), two(i32(v), 7), twice(v)] as const);
+    print(`${pad(v % 60, 2)}:${pad(v % 7, 2)}`);
+    return 0;
+}
+"#;
+    agree(src, "padded_integers", &["7"], "(0007, 7, 0000-7, 7, 7****, ababab7, 00077)\n07:00\n");
+    agree(src, "padded_integers", &["2026"], "(2026, 2026, 0-2026, 2026, 234**, aba2026, 20262026)\n46:03\n");
+    agree(src, "padded_integers", &["0"], "(0000, 0, 000000, 0, 0****, ababab0, 00000)\n00:00\n");
+    let bin = compile(src, "padded_integers_ir");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert_eq!(ll.matches("call void @isc_pad_int(").count(), 7, "integers padded in one block");
+}

@@ -22,7 +22,8 @@ fn code_of(errno: i64) -> i64 {
     match errno {
         2 => 1,
         1 | 13 => 2,
-        17 => 3,
+        // an address already in use (`EADDRINUSE`) as Windows says it
+        17 | 98 => 3,
         39 => 4,
         111 => 5,
         110 => 6,

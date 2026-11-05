@@ -1,0 +1,25 @@
+// A port listened to twice (D348): the second `listen` refused, with the
+// same error on Linux, on Windows and in the interpreter.
+import * as net from "net";
+import * as sys from "sys";
+
+action main(args: string[k]): i32 {
+    return match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const p = net.port(l);
+            match (net.listen("127.0.0.1", p)) {
+                Ok(m) => {
+                    print("bound twice");
+                    net.closeListener(m);
+                },
+                Err(e) => print(sys.message(e) == `already exists: 127.0.0.1:${p}` ? "refused: already exists" : sys.message(e)),
+            };
+            net.closeListener(l);
+            return 0;
+        },
+        Err(e) => {
+            print(sys.message(e));
+            return 1;
+        },
+    };
+}

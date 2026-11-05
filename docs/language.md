@@ -2366,8 +2366,9 @@ the runtime, which a program cannot call itself.
 An error of the system is a value: `IoError = NotFound(string) |
 PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) |
 Refused(string) | TimedOut(string) | Other(i64, string)`, the string naming
-the path. The same on Linux, Windows and WASI (in the folders the host
-opens).
+the path (or the address: a port already listened to is `AlreadyExists`).
+The same on Linux, Windows and WASI (in the folders the host opens), and
+in the interpreter.
 
 ### Paths: `path`
 

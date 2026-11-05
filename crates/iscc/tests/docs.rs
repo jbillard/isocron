@@ -177,3 +177,144 @@ fn every_example_of_the_guide_works() {
         }
     }
 }
+
+/// The fenced blocks of `text`: their language, the line of their fence,
+/// their text.
+fn fences(text: &str) -> Vec<(String, usize, String)> {
+    let mut out = Vec::new();
+    let mut open: Option<(String, usize, String)> = None;
+    for (i, l) in text.lines().enumerate() {
+        match (&mut open, l.strip_prefix("```")) {
+            (None, Some(lang)) => open = Some((lang.trim().to_string(), i + 1, String::new())),
+            (Some(_), Some(_)) => out.push(open.take().unwrap()),
+            (Some((_, _, t)), None) => {
+                t.push_str(l);
+                t.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    out
+}
+
+/// A command of a block of the README, run by `sh` in `dir` with `iscc` on
+/// the `PATH`: its exit code and its output (both streams).
+fn readme_command(dir: &std::path::Path, cmd: &str) -> (i32, String) {
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_iscc")).parent().unwrap().to_path_buf();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let o = std::process::Command::new("sh").arg("-c").arg(format!("{} 2>&1", cmd)).current_dir(dir).env("PATH", path).output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// The server of the README (`http.serve`), interpreted then compiled, on a
+/// free port (8080 may be taken): its first line, `hello world` for
+/// `/?world`, and a second copy on the same port that says why it cannot
+/// serve and exits with 1.
+fn readme_server(dir: &std::path::Path, name: &str, src: &str, first: &str) {
+    use std::io::{BufRead, Read, Write};
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let file = format!("{}_{}.isc", name, port);
+    std::fs::write(dir.join(&file), src.replace("8080", &port.to_string())).unwrap();
+    let (code, out) = readme_command(dir, &format!("iscc build {} -o {}_bin", file, name));
+    assert_eq!(code, 0, "{}", out);
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_iscc"));
+    let ways: [(&std::path::Path, Vec<String>); 2] = [(bin, vec!["run".into(), file.clone()]), (&dir.join(format!("{}_bin", name)), vec![])];
+    for (prog, args) in ways.iter() {
+        let mut server = std::process::Command::new(prog).args(args).current_dir(dir).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut lines = std::io::BufReader::new(server.stdout.take().unwrap());
+        let mut line = String::new();
+        lines.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), first.replace("8080", &port.to_string()), "{:?} {:?}", prog, args);
+        let mut stream = loop {
+            if let Ok(s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                break s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        stream.write_all(b"GET /?world HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200") && reply.ends_with("\r\n\r\nhello world"), "{:?}: {}", prog, reply);
+        let second = std::process::Command::new(prog).args(args).current_dir(dir).output().unwrap();
+        assert_eq!(second.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&second.stdout),
+            format!("{}\ncannot serve: already exists: 0.0.0.0:{}\n", first.replace("8080", &port.to_string()), port)
+        );
+        server.kill().unwrap();
+        server.wait().unwrap();
+    }
+}
+
+/// D348: every example of the README is run, not only checked. A program
+/// is written under the name its first comment or the command after it
+/// gives; the commands of the ```console block after it are run and their
+/// output compared with the lines under them; a ```sh block after it, each
+/// command run; a function alone (no `main`) is type-checked; the server is
+/// started, asked, and stopped (`readme_server`).
+#[test]
+fn every_example_of_the_readme_works() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let blocks = fences(&readme);
+    let dir = tmp("readme_examples");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut ran = 0;
+    for (k, (lang, line, src)) in blocks.iter().enumerate() {
+        if lang != "ts" {
+            continue;
+        }
+        let next = blocks.get(k + 1).filter(|b| (b.0 == "console" || b.0 == "sh") && b.1 <= line + src.lines().count() + 4);
+        let named = src.lines().next().and_then(|l| l.strip_prefix("// ")).and_then(|l| l.split(".isc").next().filter(|_| l.contains(".isc")));
+        let from_cmd = next.and_then(|b| b.2.split_whitespace().find(|w| w.ends_with(".isc")).map(|w| w.trim_end_matches(".isc")));
+        let name = named.or(from_cmd).map(str::to_string).unwrap_or_else(|| format!("readme_{}", line));
+        let mut text = src.clone();
+        if !text.contains("action main") {
+            text.push_str("\naction main(args: string[k]): i32 {\n    return 0;\n}\n");
+        }
+        std::fs::write(dir.join(format!("{}.isc", name)), &text).unwrap();
+        ran += 1;
+        if text.contains("http.serve(") {
+            let first = next.and_then(|b| b.2.lines().nth(1)).expect("the first line of the server");
+            readme_server(&dir, &name, &text, first);
+            continue;
+        }
+        match next {
+            Some((kind, _, cmds)) if kind == "console" => {
+                let mut lines = cmds.lines().peekable();
+                while let Some(l) = lines.next() {
+                    let cmd = l.strip_prefix("$ ").unwrap_or_else(|| panic!("README line {}: {}", line, l));
+                    let cmd = cmd.split(" #").next().unwrap().trim();
+                    let mut want = String::new();
+                    while let Some(o) = lines.peek().filter(|o| !o.starts_with("$ ")) {
+                        want.push_str(o);
+                        want.push('\n');
+                        lines.next();
+                    }
+                    let (code, out) = readme_command(&dir, cmd);
+                    if cmd.starts_with("iscc check") && !want.is_empty() {
+                        assert_ne!(code, 0, "README line {}: `{}` accepted", line, cmd);
+                    } else {
+                        assert_eq!(code, 0, "README line {}: `{}`: {}", line, cmd, out);
+                    }
+                    assert_eq!(out, want, "README line {}: `{}`", line, cmd);
+                }
+            }
+            Some((_, _, cmds)) => {
+                for l in cmds.lines() {
+                    let cmd = l.split(" #").next().unwrap().trim();
+                    let (code, out) = readme_command(&dir, cmd);
+                    assert_eq!(code, 0, "README line {}: `{}`: {}", line, cmd, out);
+                    if cmd.ends_with(&format!("./{}", name)) || cmd.starts_with("iscc run") {
+                        assert!(!out.is_empty(), "README line {}: `{}` printed nothing", line, cmd);
+                    }
+                }
+            }
+            None => {
+                let (code, out) = readme_command(&dir, &format!("iscc check {}.isc", name));
+                assert_eq!(code, 0, "README line {}: {}", line, out);
+            }
+        }
+    }
+    assert!(ran >= 5, "only {} examples in the README", ran);
+}

@@ -189,7 +189,8 @@ pub fn io_code(e: &std::io::Error) -> i64 {
     match e.kind() {
         K::NotFound => 1,
         K::PermissionDenied => 2,
-        K::AlreadyExists => 3,
+        // an address already in use as the compiled programs say it
+        K::AlreadyExists | K::AddrInUse => 3,
         K::DirectoryNotEmpty => 4,
         K::ConnectionRefused => 5,
         // a read or a write past its delay (`SO_RCVTIMEO`: `EAGAIN`)

@@ -533,6 +533,9 @@ pub struct Gen<'p> {
     prechecked: HashSet<*const Expr>,
     /// The variables bound to a string literal (borrowed, D301): their text.
     str_lits: HashMap<VarId, String>,
+    /// The variables bound to `toString(x)` of an integer whose only use is
+    /// the text of a `padStart` or `padEnd` (D348): `x` as an `i64`, signed.
+    int_texts: HashMap<VarId, (String, bool)>,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -870,6 +873,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32, i32)",
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
+    "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_trim_side(ptr, ptr, i64, i32)",
     "declare void @isc_str_slice(ptr, ptr, i64, i64, i64, i32, i32)",
@@ -955,6 +959,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         windowed: HashMap::new(),
         prechecked: HashSet::new(),
         str_lits: HashMap::new(),
+        int_texts: HashMap::new(),
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -1117,6 +1122,22 @@ fn free_vars(e: &Expr, bound: &mut HashSet<VarId>, out: &mut Vec<VarId>) {
             }
         }
     }
+}
+
+/// `v` is read once in `e`, as the text of a `padStart` or `padEnd`, outside
+/// the functions of a `map`, `reduce`, `fold`, `scan` or `filter` (D348).
+fn sole_pad_text(e: &Expr, v: VarId) -> bool {
+    fn uses(e: &Expr, v: VarId) -> usize {
+        matches!(e.kind, ExprKind::Var(w, _) if w == v) as usize + e.children().into_iter().map(|c| uses(c, v)).sum::<usize>()
+    }
+    fn at_pad(e: &Expr, v: VarId) -> bool {
+        match &e.kind {
+            ExprKind::StrOp(isc_ir::StrOp::PadStart | isc_ir::StrOp::PadEnd, es) if matches!(es[0].kind, ExprKind::Var(w, _) if w == v) => true,
+            ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => false,
+            _ => e.children().into_iter().any(|c| at_pad(c, v)),
+        }
+    }
+    uses(e, v) == 1 && at_pad(e, v)
 }
 
 fn mentions(e: &Expr, vars: &HashSet<VarId>) -> bool {
@@ -3516,6 +3537,26 @@ impl<'p> Gen<'p> {
             Let { var, init, body, stmt, drop } => {
                 if let (StrLit(t), Type::Str) = (&init.kind, &init.ty) {
                     self.str_lits.insert(*var, t.clone());
+                }
+                // `toString(x)` of an integer read only as the text of one
+                // `padStart` or `padEnd`: `x` now, its text written padded by
+                // that operation, no string between (D348)
+                if let (StrOp(isc_ir::StrOp::ToString, xs), true, 1) = (&init.kind, *drop, w) {
+                    if let Type::Int(k) = xs[0].ty {
+                        if !*stmt && sole_pad_text(body, *var) {
+                            let xv = self.ex(&xs[0], 1)?;
+                            let x = if k.bits() < 64 {
+                                let op = if k.signed() { "sext" } else { "zext" };
+                                self.ins(format!("{} i{} {} to i64", op, k.bits(), xv.r))
+                            } else {
+                                xv.r.clone()
+                            };
+                            self.int_texts.insert(*var, (x, k.signed()));
+                            let r = self.ex(body, w);
+                            self.int_texts.remove(var);
+                            return r;
+                        }
+                    }
                 }
                 let iv = self.ex(init, w)?;
                 self.bind(*var, iv.clone());
@@ -10632,6 +10673,33 @@ impl<'p> Gen<'p> {
         use isc_ir::StrOp as S;
         if matches!(op, S::Group | S::GroupCounts) && group_stream_ok(&es[0]) {
             return self.group_stream(&es[0], op == S::GroupCounts);
+        }
+        // the text of an integer padded (`int_texts`, D348): with a fill of
+        // one byte, written in one block by the runtime; otherwise the text
+        // made here, padded, then freed
+        if let (S::PadStart | S::PadEnd, ExprKind::Var(t, _)) = (op, &es[0].kind) {
+            if let Some((x, signed)) = self.int_texts.get(t).cloned() {
+                let len = self.ex(&es[1], 1)?;
+                let fill = self.ex(&es[2], 1)?;
+                let start = (op == S::PadStart) as i32;
+                let out = self.alloca("{ ptr, i64 }");
+                match self.literal_of(&es[2]) {
+                    Some(f) if f.len() == 1 => {
+                        self.emit(format!("call void @isc_pad_int(ptr {}, i64 {}, i32 {}, i64 {}, i32 {}, i32 {})", out, x, signed as i32, len.r, f.as_bytes()[0], start));
+                    }
+                    _ => {
+                        let tx = self.alloca("{ ptr, i64 }");
+                        let f = if signed { "isc_to_string_i64" } else { "isc_to_string_u64" };
+                        self.emit(format!("call void @{}(ptr {}, i64 {})", f, tx, x));
+                        let text = v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", tx)), "{ ptr, i64 }");
+                        let (p, n) = self.str_parts(&text);
+                        let (q, m) = self.str_parts(&fill);
+                        self.emit(format!("call void @isc_pad(ptr {}, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", out, p, n, len.r, q, m, start));
+                        self.drop_value(&text, &Type::Str);
+                    }
+                }
+                return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"));
+            }
         }
         let mut vals = Vec::new();
         for x in es {

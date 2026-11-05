@@ -1352,6 +1352,28 @@ pub unsafe extern "C" fn isc_to_string_i64(out: *mut IscStr, v: i64) {
     *out = new_str(signed_decimal(v, &mut b));
 }
 
+/// `toString(v).padStart(len, c)` (`start`) or `.padEnd`, `c` one byte,
+/// in one block of its size (D348): the text of `v` (signed or not), `c`
+/// before or after it up to `len` bytes; the text alone when it has `len`
+/// bytes or more, as `padStart` gives it.
+#[no_mangle]
+pub unsafe extern "C" fn isc_pad_int(out: *mut IscStr, v: i64, signed: i32, len: i64, c: i32, start: i32) {
+    let mut b = [0u8; 20];
+    let t = if signed != 0 { signed_decimal(v, &mut b) } else { decimal(v as u64, &mut b) };
+    if len <= t.len() as i64 {
+        *out = new_str(t);
+        return;
+    }
+    let (total, gap) = (len as usize, len as usize - t.len());
+    *out = made(total, |d| {
+        let (at, from) = if start != 0 { (gap, 0) } else { (0, t.len()) };
+        d[at..at + t.len()].write_copy_of_slice(t);
+        for o in &mut d[from..from + gap] {
+            o.write(c as u8);
+        }
+    });
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn isc_to_string_u64(out: *mut IscStr, v: u64) {
     let mut b = [0u8; 20];
@@ -2411,10 +2433,17 @@ pub unsafe extern "C" fn isc_to_case(out: *mut IscStr, p: *const u8, n: i64, upp
 #[no_mangle]
 pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
     let (s, fill) = (text(p, n), text(q, m));
+    // `s` itself when it has `len` bytes or more or the fill is empty
+    // (`sem::pad`): one copy of its exact size (D348: through the writer of
+    // `fmt`, its buffer grown, a third of `pad(2026, 4)`)
+    if len <= s.len() as i64 || fill.is_empty() {
+        *out = new_str(s.as_bytes());
+        return;
+    }
     // a fill of one byte (D302): the string of `len` bytes, the fill then
     // the text or the text then the fill (a character at a time through
     // `fmt`, 67 ns for 20 bytes)
-    if fill.len() == 1 && len > s.len() as i64 {
+    if fill.len() == 1 {
         let (b, c, total) = (s.as_bytes(), fill.as_bytes()[0], len as usize);
         let gap = total - b.len();
         *out = made(total, |d| {
