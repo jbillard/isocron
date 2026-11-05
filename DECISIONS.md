@@ -6119,3 +6119,50 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`memory.rs`: 17 blocks of 16 MiB, past the end of a region, written,
   read, freed, then 34 blocks of 8 MiB; both allocators, 1 and 4
   threads).
+- **D317 — `countBy` by tables of counts only, each key with its count in
+  one word, looked for by lines of 8 slots (2026-11-05).** Timed count by
+  count (`clock()` between them, 4 threads): k-nucleotide spends 34 to 43
+  ms on each of its counts of 1 to 6 bases (the floor 20 ms) and 257 to 266
+  ms on each of 12 and 18 bases (the floor 69 ms: random increments in a
+  table of 2 MiB per thread); 3 counts of 18 bases alone: `count_round`
+  31.88 % and `add_block` 30.11 % of the samples, the keys made 15 %.
+  `countBy` used `$group`, whose three columns (first index, last index,
+  count) need a slot of 16 bytes a key (a table of 4 MiB per thread for
+  140000 keys, beyond the L2 cache: D253 scattered the keys into lists
+  counted again), but reads only the first indices and the counts (the
+  last index is for `Map(entries)`, whose last value wins).
+  - `$groupCounts` (a primitive of the prelude, `Prim::GroupCounts`,
+    `StrOp::GroupCounts`): the columns of `$group`, the last indices zeros,
+    in the interpreter as in the compiled code; `countBy` calls it. The
+    runtime (`isc_groups_new(n, parts, counts)`, the flag 64 of the kind of
+    `isc_group`) counts it in `CountTable`: `key << bits | count` in one
+    word (`bits` those of n, so that no count reaches them), the small keys
+    by their value, a key too large for its word (a negative one) in a
+    `WordGroups` of its own, the groups in the order of their first
+    occurrence, the tables of the parts merged in their order.
+  - Probed slot by slot (linear probing, the hash's low bits), it was
+    slower: the counts of 12 and 18 bases 365 to 386 ms; 208 million
+    mispredicted branches against 27 million (3 counts of 125 million
+    keys): the end of the probe, one or two slots, about one key in two
+    (a simulation of the table with the keys of the input: 1.54 and 1.58
+    slots a key, load 0.53). Now the slots are lines of 8 in one line of
+    the cache, the 8 compared with the key at once (in vectors), one
+    branch on the result (found, an empty slot, the next line): 7.0
+    million mispredictions; the counts of 12 and 18 bases 226 and 231 ms.
+  - Then one pass a chunk of 1024 keys: the line of the key 16 places
+    later prefetched with its hash computed there, where an array of
+    (key, hash, index) of 24 bytes a key was written then read again; a
+    small key among them counted by its value (about 4 a chunk with 12
+    bases, which made every chunk take the path key by key otherwise):
+    the instructions of 3 counts of 18 bases 35.1 -> 24.7 billion; the
+    counts of 12 and 18 bases 172 and 179 ms.
+  - k-nucleotide -19.33 % [-20.20 %, -18.61 %] (11 rounds, 848.98 ->
+    687.93 ms), the same output on 1, 3, 4 and 8 threads; regex-redux and
+    pidigits other binaries (the runtime they link): -0.11 % [-0.61 %,
+    +0.47 %] and -0.13 % [-0.15 %, -0.00 %]; the seven others the same
+    binaries.
+  - Tested by `counts_by_lines_of_slots` (`stdlib.rs`: about 200000
+    distinct keys, the table grown from 1024 lines, small keys among them,
+    negative ones, in parallel parts and in one part without the table of
+    small keys (the key 0 hashed), as the interpreter on 1, 3 and 8
+    threads; Valgrind) and the tests of `countBy` before.

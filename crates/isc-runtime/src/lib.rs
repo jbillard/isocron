@@ -2545,19 +2545,26 @@ pub extern "C" fn isc_group_parts(n: i64) -> i64 {
 }
 
 /// The tables of the `parts` parts of a `$group` of `n` keys (D244): the
-/// small keys counted by their value from GROUP_DIRECT_MIN keys on.
+/// small keys counted by their value from GROUP_DIRECT_MIN keys on; for
+/// `$groupCounts` (`counts`, D317) tables of counts only.
 #[no_mangle]
-pub extern "C" fn isc_groups_new(n: i64, parts: i64) -> *mut c_void {
+pub extern "C" fn isc_groups_new(n: i64, parts: i64, counts: i32) -> *mut c_void {
     const GROUP_DIRECT_MIN: i64 = 1 << 16;
     let direct = n >= GROUP_DIRECT_MIN;
-    // several tables at once: their large ones scattered (D253)
-    let tables: alloc::vec::Vec<sem::WordGroups> = (0..parts.max(1)).map(|_| sem::WordGroups::new_for(direct, n.max(0) as usize, parts > 1, parts.max(1) as usize)).collect();
-    alloc::boxed::Box::into_raw(alloc::boxed::Box::new(GroupsState { tables })) as *mut c_void
+    let k = parts.max(1) as usize;
+    let st = if counts != 0 {
+        GroupsState { tables: alloc::vec::Vec::new(), counts: (0..k).map(|_| sem::CountTable::new(direct, n.max(0) as usize)).collect() }
+    } else {
+        // several tables at once: their large ones scattered (D253)
+        GroupsState { tables: (0..k).map(|_| sem::WordGroups::new_for(direct, n.max(0) as usize, parts > 1, k)).collect(), counts: alloc::vec::Vec::new() }
+    };
+    alloc::boxed::Box::into_raw(alloc::boxed::Box::new(st)) as *mut c_void
 }
 
-/// The tables of the parts of a `$group`.
+/// The tables of the parts of a `$group`, or of a `$groupCounts`.
 struct GroupsState {
     tables: alloc::vec::Vec<sem::WordGroups>,
+    counts: alloc::vec::Vec<sem::CountTable>,
 }
 
 /// The `len` keys at `p` (of the integer kind `kind`, as for `isc_group`),
@@ -2567,13 +2574,20 @@ struct GroupsState {
 pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const u8, len: i64, start: i64, kind: i32) {
     // (each part its own table: through the pointer)
     let st = state as *mut GroupsState;
-    let t = &mut *(*st).tables.as_mut_ptr().add(part as usize);
+    let counted = !(*st).counts.is_empty();
     let len = len.max(0) as usize;
     let start = start as usize;
+    let add = |keys: &[u64], at: usize| {
+        if counted {
+            (*(*st).counts.as_mut_ptr().add(part as usize)).add_block(keys, at)
+        } else {
+            (*(*st).tables.as_mut_ptr().add(part as usize)).add_block(keys, at)
+        }
+    };
     // keys of 64 bits added where they are; narrower ones as their 64 bits
     // (sign extended), by chunks
     if matches!(kind, 3 | 7) {
-        t.add_block(core::slice::from_raw_parts(p as *const u64, len), start);
+        add(core::slice::from_raw_parts(p as *const u64, len), start);
         return;
     }
     let mut wide = [0u64; 256];
@@ -2596,7 +2610,7 @@ pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const
             5 => widen!(u16),
             _ => widen!(u32),
         }
-        t.add_block(&wide[..m], start + done);
+        add(&wide[..m], start + done);
         done += m;
     }
 }
@@ -2607,8 +2621,15 @@ pub unsafe extern "C" fn isc_groups_add(state: *mut c_void, part: i64, p: *const
 #[no_mangle]
 pub unsafe extern "C" fn isc_groups_end(out: *mut IscArray, state: *mut c_void) {
     let st = *alloc::boxed::Box::from_raw(state as *mut GroupsState);
-    let GroupsState { mut tables } = st;
-    let g = if tables.iter().any(|t| t.scattered()) {
+    let GroupsState { mut tables, counts } = st;
+    let g = if !counts.is_empty() {
+        let mut it = counts.into_iter();
+        let mut all = it.next().unwrap();
+        for t in it {
+            all.merge(&t);
+        }
+        all.columns()
+    } else if tables.iter().any(|t| t.scattered()) {
         scattered_columns(&mut tables)
     } else {
         let mut it = tables.into_iter();
@@ -2622,6 +2643,9 @@ pub unsafe extern "C" fn isc_groups_end(out: *mut IscArray, state: *mut c_void) 
     core::ptr::copy_nonoverlapping(g.as_ptr(), q, g.len());
     *out = IscArray { ptr: q as *mut u8, len: g.len() as i64 };
 }
+
+/// The flag of `kind` for `isc_group` of `$groupCounts` (D317).
+const GROUP_COUNTS: i32 = 64;
 
 /// The columns of `isc_group` from tables of which some scattered their
 /// keys (D253): the keys counted by their value merged in the order of the
@@ -2689,6 +2713,9 @@ unsafe fn scattered_columns(tables: &mut [sem::WordGroups]) -> alloc::vec::Vec<i
 /// `isc_argsort` (strings and `bigint` by their bytes, both canonical).
 #[no_mangle]
 pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kind: i32) {
+    // `$groupCounts` (D317): the same groups, their last indices zeros
+    let counts = kind & GROUP_COUNTS != 0;
+    let kind = kind & !GROUP_COUNTS;
     let n = n.max(0) as usize;
     unsafe fn at<T: Copy>(p: *const u8, i: usize) -> T {
         *(p as *const T).add(i)
@@ -2710,7 +2737,7 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
             ints!($t, |x: $t| x as i64)
         };
     }
-    let g = match kind {
+    let mut g = match kind {
         0 => ints!(i8),
         1 => ints!(i16),
         2 => ints!(i32),
@@ -2731,6 +2758,10 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
             },
         ),
     };
+    if counts {
+        let m = g.len() / 3;
+        g[m..2 * m].fill(0);
+    }
     let q = isc_alloc((g.len() * 8) as i64) as *mut i64;
     core::ptr::copy_nonoverlapping(g.as_ptr(), q, g.len());
     *out = IscArray { ptr: q as *mut u8, len: g.len() as i64 };

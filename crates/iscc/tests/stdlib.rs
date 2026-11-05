@@ -705,3 +705,72 @@ fn big_integers_times_a_word() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}: {}", n, r.stderr);
     }
 }
+
+const COUNTS_BY_LINES: &str = r##"function key(i: i64): i64 {
+    if (i % 1009 == 0) {
+        return -(i % 50) - 1;
+    }
+    if (i % 97 == 0) {
+        return i % 1000;
+    }
+    return (i * 2654435761) % 200003 + 70000;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const ks = countBy(iota(n), key);
+    print(ks.size);
+    print(ks.keys().slice(0, 8));
+    print([ks.get(0) ?? -1, ks.get(97) ?? -1, ks.get(-1) ?? -1, ks.get(70000) ?? -1, ks.get(270002) ?? -1]);
+    print(sum(map(ks.entries(), (e) => {
+        const [k, c] = e;
+        return (k % 1000003) * c;
+    })));
+    return 0;
+}
+"##;
+
+/// D317: `countBy` by tables of counts only (`$groupCounts`), each key
+/// with its count in one word, found in its line of 8 slots: about 200000
+/// distinct keys (the table grows from 1024 lines), small keys among them
+/// (counted by their value, inside the loop of the hashed ones) and
+/// negative ones (too large to share a word with a count: a `WordGroups`
+/// of their own), in parallel parts (n = 1200000) and in one part without
+/// the table of small keys (n = 60000: the key 0 hashed); the groups in the
+/// order of their first occurrence, as the interpreter, on 1, 3 and 8
+/// threads; Valgrind on the smaller one.
+#[test]
+fn counts_by_lines_of_slots() {
+    let key = |i: i64| -> i64 {
+        if i % 1009 == 0 {
+            -(i % 50) - 1
+        } else if i % 97 == 0 {
+            i % 1000
+        } else {
+            (i * 2654435761) % 200003 + 70000
+        }
+    };
+    let bin = compile(COUNTS_BY_LINES, "std_counts_by_lines");
+    for n in [60000i64, 1200000] {
+        let mut order: Vec<i64> = Vec::new();
+        let mut counts: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        for i in 0..n {
+            let c = counts.entry(key(i)).or_insert(0);
+            if *c == 0 {
+                order.push(key(i));
+            }
+            *c += 1;
+        }
+        let get = |k: i64| counts.get(&k).copied().unwrap_or(-1);
+        let first: Vec<String> = order[..8].iter().map(|k| k.to_string()).collect();
+        let check: i64 = order.iter().map(|&k| (k % 1000003) * counts[&k]).sum();
+        let want = format!("{}\n[{}]\n[{}, {}, {}, {}, {}]\n{}\n", order.len(), first.join(", "), get(0), get(97), get(-1), get(70000), get(270002), check);
+        let arg = n.to_string();
+        assert_eq!(interp_ok(COUNTS_BY_LINES, &[&arg]), want, "interpreter, n = {}", n);
+        for t in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[&arg], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n = {}, {} threads: {}", n, t, r.stderr);
+        }
+    }
+    valgrind_clean(COUNTS_BY_LINES, "std_counts_by_lines", &["60000"]);
+}

@@ -4634,6 +4634,233 @@ pub fn group_dense(n: usize, key: impl Fn(usize) -> i64) -> Option<alloc::vec::V
     Some(first)
 }
 
+/// The counts of the groups of integer keys (as their 64 bits) for
+/// `$groupCounts` (D317), which needs no last index: each key with its
+/// count in one word of its slot, `key << bits | count` (`bits` those of the
+/// number of keys, so that no count reaches them; 0 an empty slot), where
+/// `WordGroups` keeps a key, its last index and its count (16 bytes: a
+/// table of 140000 keys twice larger than the L2 cache, D253 scattered it
+/// into lists counted again). With `direct`, the keys below DIRECT_MAX
+/// counted by their value; a key too large to share its word (beyond `64 -
+/// bits` bits: a negative key, sign extended) in a `WordGroups` of its own.
+/// The groups in the order of their first occurrence (`first`, `keys`);
+/// the tables of consecutive ranges merged in their order.
+pub struct CountTable {
+    /// the slots by lines of 8, a key looked for in the line of its hash and
+    /// the lines after it (D317)
+    lines: alloc::vec::Vec<Line>,
+    used: usize,
+    bits: u32,
+    small: alloc::vec::Vec<u32>,
+    direct: bool,
+    first: alloc::vec::Vec<u32>,
+    keys: alloc::vec::Vec<u64>,
+    wide: Option<alloc::boxed::Box<WordGroups>>,
+}
+
+/// 8 slots of a `CountTable` in one line of the cache.
+#[derive(Clone, Copy, Default)]
+#[repr(C, align(64))]
+struct Line([u64; 8]);
+
+impl CountTable {
+    /// The keys of a range of at most `n` keys in all (with the ranges it
+    /// will be merged with): its counts below 2^bits.
+    pub fn new(direct: bool, n: usize) -> CountTable {
+        let bits = (usize::BITS - n.max(1).leading_zeros()).max(1);
+        CountTable { lines: alloc::vec![Line::default(); 128], used: 0, bits, small: alloc::vec::Vec::new(), direct, first: alloc::vec::Vec::new(), keys: alloc::vec::Vec::new(), wide: None }
+    }
+
+    /// The key `k` fits in a slot with its count.
+    #[inline(always)]
+    fn packs(&self, k: u64) -> bool {
+        k >> (64 - self.bits) == 0
+    }
+
+    /// The slots of the line `l` that hold `k`, and the empty ones, as
+    /// masks of 8 bits: the 8 slots compared at once (in vectors), one
+    /// branch on the result, where a probe slot by slot mispredicted its
+    /// end about once a key (D317: 208 million mispredictions against 27
+    /// million in 3 counts of 125 million keys).
+    #[inline(always)]
+    fn masks(line: &Line, k: u64, bits: u32) -> (u32, u32) {
+        let (mut found, mut empty) = (0u32, 0u32);
+        for (j, &e) in line.0.iter().enumerate() {
+            found |= ((e >> bits == k) as u32 & (e != 0) as u32) << j;
+            empty |= ((e == 0) as u32) << j;
+        }
+        (found, empty)
+    }
+
+    /// `count` more for the key `k` of the slot table (`packs`), first at
+    /// `first` if new.
+    #[inline(always)]
+    fn bump(&mut self, k: u64, h: u64, first: u32, count: u32) {
+        let mask = self.lines.len() - 1;
+        let mut l = (h as usize) & mask;
+        loop {
+            // SAFETY: `l` is masked by the length less one (a power of two)
+            let line = unsafe { self.lines.get_unchecked_mut(l) };
+            let (found, empty) = Self::masks(line, k, self.bits);
+            if found != 0 {
+                line.0[found.trailing_zeros() as usize] += count as u64;
+                return;
+            }
+            if empty != 0 {
+                line.0[empty.trailing_zeros() as usize] = k << self.bits | count as u64;
+                self.first.push(first);
+                self.keys.push(k);
+                self.used += 1;
+                // at most 3/4 full
+                if self.used * 4 > self.lines.len() * 8 * 3 {
+                    self.grow();
+                }
+                return;
+            }
+            l = (l + 1) & mask;
+        }
+    }
+
+    #[cold]
+    fn grow(&mut self) {
+        let old = core::mem::take(&mut self.lines);
+        self.lines = alloc::vec![Line::default(); old.len() * 2];
+        let mask = self.lines.len() - 1;
+        for e in old.iter().flat_map(|l| l.0).filter(|&e| e != 0) {
+            let mut l = (hash_word(e >> self.bits) as usize) & mask;
+            loop {
+                let (_, empty) = Self::masks(&self.lines[l], u64::MAX, self.bits);
+                if empty != 0 {
+                    self.lines[l].0[empty.trailing_zeros() as usize] = e;
+                    break;
+                }
+                l = (l + 1) & mask;
+            }
+        }
+    }
+
+    /// `count` more for the key `k`, first at `first` if new.
+    fn add_count(&mut self, k: u64, first: u32, count: u32) {
+        if self.direct && k < WordGroups::DIRECT_MAX {
+            if k as usize >= self.small.len() {
+                self.small.resize((k as usize + 1).next_power_of_two().max(256), 0);
+            }
+            let c = &mut self.small[k as usize];
+            if *c == 0 {
+                self.first.push(first);
+                self.keys.push(k);
+            }
+            *c += count;
+        } else if self.packs(k) {
+            self.bump(k, hash_word(k), first, count);
+        } else {
+            self.wide.get_or_insert_with(|| alloc::boxed::Box::new(WordGroups::new(false))).add_count(k, first, first, count);
+        }
+    }
+
+    /// The keys `keys` at the indices `start ..` (after every index added
+    /// before), in order, by chunks of 1024: a chunk of small keys counted
+    /// by their value; a chunk whose keys all pack (its largest tells) in
+    /// one loop that prefetches the line of the key AHEAD places later, its
+    /// hash computed there (no array of hashes written and read again), a
+    /// small key among them counted by its value (k-nucleotide, k = 12:
+    /// about 4 keys of a chunk); the other chunks key by key.
+    pub fn add_block(&mut self, keys: &[u64], start: usize) {
+        const CHUNK: usize = 1024;
+        const AHEAD: usize = 16;
+        for (c, chunk) in keys.chunks(CHUNK).enumerate() {
+            let base = (start + c * CHUNK) as u32;
+            let top = chunk.iter().copied().max().unwrap_or(0);
+            if self.direct && top < WordGroups::DIRECT_MAX {
+                if top as usize >= self.small.len() {
+                    self.small.resize((top as usize + 1).next_power_of_two().max(256), 0);
+                }
+                let small = &mut self.small[..];
+                for (j, &k) in chunk.iter().enumerate() {
+                    let e = &mut small[k as usize];
+                    if *e == 0 {
+                        self.first.push(base + j as u32);
+                        self.keys.push(k);
+                    }
+                    *e += 1;
+                }
+                continue;
+            }
+            if self.packs(top) {
+                for (j, &k) in chunk.iter().enumerate() {
+                    if self.direct && k < WordGroups::DIRECT_MAX {
+                        self.add_count(k, base + j as u32, 1);
+                        continue;
+                    }
+                    if let Some(&a) = chunk.get(j + AHEAD) {
+                        let l = (hash_word(a) as usize) & (self.lines.len() - 1);
+                        #[cfg(target_arch = "x86_64")]
+                        // SAFETY: a prefetch reads nothing; `l` is a line of the table
+                        unsafe {
+                            core::arch::x86_64::_mm_prefetch(self.lines.as_ptr().add(l) as *const i8, core::arch::x86_64::_MM_HINT_T0)
+                        };
+                        #[cfg(not(target_arch = "x86_64"))]
+                        let _ = l;
+                    }
+                    self.bump(k, hash_word(k), base + j as u32, 1);
+                }
+                continue;
+            }
+            for (j, &k) in chunk.iter().enumerate() {
+                self.add_count(k, base + j as u32, 1);
+            }
+        }
+    }
+
+    /// The count of the key `k` of a group.
+    fn count(&self, k: u64) -> u32 {
+        if self.direct && k < WordGroups::DIRECT_MAX {
+            return self.small[k as usize];
+        }
+        let mask = self.lines.len() - 1;
+        let mut l = (hash_word(k) as usize) & mask;
+        loop {
+            let (found, _) = Self::masks(&self.lines[l], k, self.bits);
+            if found != 0 {
+                return (self.lines[l].0[found.trailing_zeros() as usize] & ((1u64 << self.bits) - 1)) as u32;
+            }
+            l = (l + 1) & mask;
+        }
+    }
+
+    /// The groups of `other`, of indices all after those of `self`.
+    pub fn merge(&mut self, other: &CountTable) {
+        for g in 0..other.first.len() {
+            let k = other.keys[g];
+            self.add_count(k, other.first[g], other.count(k));
+        }
+        if let Some(w) = &other.wide {
+            self.wide.get_or_insert_with(|| alloc::boxed::Box::new(WordGroups::new(false))).merge(w);
+        }
+    }
+
+    /// The columns of `group` (D167) without the last indices (zeros): the
+    /// first index of each group in the order of the first indices, 0, its
+    /// count.
+    pub fn columns(self) -> alloc::vec::Vec<i64> {
+        let mut groups: alloc::vec::Vec<(u32, u32)> = self.first.iter().zip(&self.keys).map(|(&f, &k)| (f, self.count(k))).collect();
+        if let Some(w) = self.wide {
+            let c = w.columns();
+            let m = c.len() / 3;
+            groups.extend((0..m).map(|g| (c[g] as u32, c[2 * m + g] as u32)));
+        }
+        if !groups.windows(2).all(|w| w[0].0 < w[1].0) {
+            groups.sort_unstable_by_key(|g| g.0);
+        }
+        let m = groups.len();
+        let mut out = alloc::vec::Vec::with_capacity(3 * m);
+        out.extend(groups.iter().map(|g| g.0 as i64));
+        out.extend(core::iter::repeat(0i64).take(m));
+        out.extend(groups.iter().map(|g| g.1 as i64));
+        out
+    }
+}
+
 /// The hash of an integer key (its bits).
 #[inline(always)]
 pub fn hash_word(x: u64) -> u64 {

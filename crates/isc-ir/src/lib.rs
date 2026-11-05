@@ -204,6 +204,9 @@ pub enum StrOp {
     /// `$group(keys)` (D167): the first, last and count of each distinct
     /// key, in the order of first occurrence: a new `[3m]i64`.
     Group,
+    /// `$groupCounts(keys)` (D317): the columns of `Group`, the last
+    /// indices zeros (`countBy` reads the first indices and the counts).
+    GroupCounts,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.

@@ -363,8 +363,9 @@ impl Interp<'_> {
                 };
                 Value::F64(isc_runtime_core::js_parse_int(&s(&vs[0]), r))
             }
-            // the distinct keys in the order of first occurrence (D167)
-            S::Group => {
+            // the distinct keys in the order of first occurrence (D167); for
+            // `$groupCounts` their last indices zeros (D317)
+            S::Group | S::GroupCounts => {
                 use isc_runtime_core::{group, hash_bytes, hash_word};
                 let a = match &vs[0] {
                     Value::Array(a) => a.clone(),
@@ -376,6 +377,11 @@ impl Interp<'_> {
                     Array::Str(v) => group(v.len(), |i| hash_bytes(v[i].as_bytes()), |i, j| v[i].as_bytes() == v[j].as_bytes()),
                     a => panic!("$group of {:?}", a),
                 };
+                let mut g = g;
+                if matches!(op, S::GroupCounts) {
+                    let m = g.len() / 3;
+                    g[m..2 * m].fill(0);
+                }
                 Value::Array(Rc::new(Array::Int(g)))
             }
             // stable: the ties by index (D155)

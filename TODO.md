@@ -292,6 +292,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The sizes of a replacement in parallel from its search, its result written by pieces: regex-redux -1.28 % (D314)
 - [x] The text of a replacement given to it at its last use, written where it is when each match is replaced by as many bytes: regex-redux -3.81 % (D315)
 - [x] The last 2 MiB of a region of medium blocks without huge pages (its sentinel cleared 2 MiB at the start of every program): fasta -4.57 %, with N = 1 -33.15 % (D316)
+- [x] `countBy` by tables of counts only, each key with its count in one word, looked for by lines of 8 slots: k-nucleotide -19.33 % (D317)
 - [ ] regex-redux at 84.5 ms (3 times its floor: 89.2): its dense replacements (millions of matches searched, listed in 16 bytes each, then written), its cleaning (12.9 ms: the zeroing of its new pages)
 
 ## The trusted base (the remarks of the author, 2026-11-04)

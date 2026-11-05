@@ -176,9 +176,9 @@ function Map<K extends Key, V>(entries: [K, V][n]): Map<K, V> {
 // `countBy(xs, f)`: the number of the elements of each key `f(x)`, the keys
 // in the order of their first element. The keys are grouped as they are
 // made, never stored all (D244): the key of each group is made again from
-// its first element.
+// its first element; its last element is not needed (`$groupCounts`, D317).
 function countBy<T, K extends Key>(xs: T[n], f: (x: T) => K): Map<K, i64> {
-    const g = $group(map(xs, f));
+    const g = $groupCounts(map(xs, f));
     return $countPick(xs, f, g, iota($third(g)));
 }
 

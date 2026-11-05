@@ -176,6 +176,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "RegExp" | "$RegExp" => Prim::RegExpNew,
         "$mapOf" => Prim::MapOf,
         "$group" => Prim::Group,
+        "$groupCounts" => Prim::GroupCounts,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -1997,7 +1998,7 @@ impl<'g> FnCx<'g> {
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
-            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group => 1,
+            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts => 1,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -2348,7 +2349,7 @@ impl<'g> FnCx<'g> {
             }
             // the order of the elements (D155): integers, floats, booleans,
             // strings
-            Prim::Group => {
+            Prim::Group | Prim::GroupCounts => {
                 let x = self.check(&args[0], None)?;
                 let elem = self.expect_array(&x.ty, x.span, "the keys of `$group`")?;
                 self.require(&elem, class::KEY, x.span)?;

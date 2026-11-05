@@ -797,7 +797,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
     "declare void @isc_group(ptr, ptr, i64, i32)",
     "declare i64 @isc_group_parts(i64)",
-    "declare ptr @isc_groups_new(i64, i64)",
+    "declare ptr @isc_groups_new(i64, i64, i32)",
     "declare void @isc_groups_add(ptr, i64, ptr, i64, i64, i32)",
     "declare void @isc_groups_end(ptr, ptr)",
     "declare double @isc_js_number(ptr, i64, i32, i64)",
@@ -1373,9 +1373,17 @@ fn group_stream_ok(init: &Expr) -> bool {
         && !matches!(&init.kind, ExprKind::Map(ins, _) if ins.iter().any(|i| matches!(i.kind, ExprKind::Var(_, Use::Move))))
 }
 
-/// `let ks = map(...) in $group(ks)`: see `group_stream_ok`.
-fn group_let_ok(var: VarId, init: &Expr, body: &Expr) -> bool {
-    group_stream_ok(init) && matches!(&body.kind, ExprKind::StrOp(StrOp::Group, args) if args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var))
+/// The flag of the kind of the keys of `isc_group` for `$groupCounts`
+/// (D317), as in the runtime.
+const GROUP_COUNTS: i32 = 64;
+
+/// `let ks = map(...) in $group(ks)` (or `$groupCounts`): see
+/// `group_stream_ok`; whether it counts only.
+fn group_let_ok(var: VarId, init: &Expr, body: &Expr) -> Option<bool> {
+    match &body.kind {
+        ExprKind::StrOp(op @ (StrOp::Group | StrOp::GroupCounts), args) if group_stream_ok(init) && args.len() == 1 && matches!(args[0].kind, ExprKind::Var(x, _) if x == var) => Some(*op == StrOp::GroupCounts),
+        _ => None,
+    }
 }
 
 /// The kind of the integer keys of `$group` for the runtime (as
@@ -3296,7 +3304,7 @@ impl<'p> Gen<'p> {
                 Ok(v("false", "i1"))
             }
             // keys made only to be grouped: grouped as they are made (D244)
-            Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body) => self.group_stream(init),
+            Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body).is_some() => self.group_stream(init, group_let_ok(*var, init, body) == Some(true)),
             // a `filter` read only by the blocks of an array written by
             // blocks: each block makes the part it reads (D293)
             Let { var, init, body, drop, .. } if w == 1 && !self.in_task && windowed_filter(*var, init, body).is_some() => {
@@ -5005,10 +5013,12 @@ impl<'p> Gen<'p> {
     /// its table (`isc_groups_add`), then the tables merged in their order
     /// (`isc_groups_end`): the columns of `isc_group` for the same keys.
     /// From 2^31 keys on, the array of keys made whole and `isc_group`.
-    fn group_stream(&mut self, e: &Expr) -> R<V> {
+    /// `counts`: `$groupCounts`, tables of counts only (D317).
+    fn group_stream(&mut self, e: &Expr, counts: bool) -> R<V> {
         const GROUP_BLOCK: i64 = 1024;
         let et = e.ty.elem().clone();
         let kind = group_kind(&et);
+        let whole_kind = kind | if counts { GROUP_COUNTS } else { 0 };
         let spmd = match &e.kind {
             ExprKind::Map(_, l) => spmd_state(self.p, &l.body),
             _ => None,
@@ -5029,12 +5039,12 @@ impl<'p> Gen<'p> {
         self.block(&lbig);
         let all = self.materialize(e)?;
         let (p, m) = self.str_parts(&all);
-        self.emit(format!("call void @isc_group(ptr {}, ptr {}, i64 {}, i32 {})", out, p, m, kind));
+        self.emit(format!("call void @isc_group(ptr {}, ptr {}, i64 {}, i32 {})", out, p, m, whole_kind));
         self.emit(format!("call void @isc_free(ptr {})", p));
         self.br(&ldone);
         self.block(&lstream);
         let parts = self.ins(format!("call i64 @isc_group_parts(i64 {})", n));
-        let state = self.ins(format!("call ptr @isc_groups_new(i64 {}, i64 {})", n, parts));
+        let state = self.ins(format!("call ptr @isc_groups_new(i64 {}, i64 {}, i32 {})", n, parts, counts as i32));
         let extra = [v(state.clone(), "ptr"), v(parts.clone(), "i64")];
         let et2 = et.clone();
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, x, i| {
@@ -10129,8 +10139,8 @@ impl<'p> Gen<'p> {
 
     fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
         use isc_ir::StrOp as S;
-        if op == S::Group && group_stream_ok(&es[0]) {
-            return self.group_stream(&es[0]);
+        if matches!(op, S::Group | S::GroupCounts) && group_stream_ok(&es[0]) {
+            return self.group_stream(&es[0], op == S::GroupCounts);
         }
         let mut vals = Vec::new();
         for x in es {
@@ -10365,9 +10375,10 @@ impl<'p> Gen<'p> {
                 };
                 v(self.ins(format!("call double @isc_js_number(ptr {}, i64 {}, i32 {}, i64 {})", p, n, which, radix)), "double")
             }
-            S::Group => {
+            S::Group | S::GroupCounts => {
                 let (p, n) = self.str_parts(&vals[0]);
-                let kind = group_kind(es[0].ty.elem());
+                // the last indices not made for `$groupCounts` (D317)
+                let kind = group_kind(es[0].ty.elem()) | if op == S::GroupCounts { GROUP_COUNTS } else { 0 };
                 new_str(self, format!("call void @isc_group(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
             }
             S::ArgSort => {
