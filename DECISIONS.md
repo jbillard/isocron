@@ -5988,3 +5988,51 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the other operations of the step, and the divider; the last 3.6 cycles
   (3.0 %) are what the simulation leaves out (the front of the processor,
   the 39 accesses to the stack). n-body is 1.5 times its floor.
+- **D313 — The parts of a search by masks and of a replacement, several
+  per thread, each thread its range first (2026-11-05).** Profiled alone
+  (`a[NSt]|BY` on the 50 MB of regex-redux, 40 calls, 4 threads): the four
+  threads have the same time, but the caller spends 14.05 % of all the
+  samples in `parallel_for`, waiting, and does about a quarter of the
+  search and of the writing of each other thread (`bounds_groups` 2.18 %
+  against 9.81 to 9.87 %, the writing 1.78 % against 8.84 to 9.23 %); the
+  same wait in `<[^>]*>` (13.19 %) and `\|[^|][^|]*\|` (13.94 %). The parts
+  were one per thread, of the same bytes, and their cost follows their
+  matches: the first quarter of the text (its first sequence, in capitals,
+  without `a` nor `B`) has 210332 of the 3522378 matches, the three others
+  1051544 to 1141369; the caller's part is the first.
+  - 8 parts per thread taken in turn (`PARTS_PER_THREAD`, for the search by
+    masks, the sizes and the writing; the automaton keeps one part per
+    thread, its cache): the waiting gone (1.91 % for the caller), the three
+    replacements repeated 4.3 to 6.5 % faster, but regex-redux +1.91 %
+    [+1.17 %, +2.67 %] (31 rounds): its results are new pages, and threads
+    writing neighbouring parts of 1.5 MB fault the same huge pages together
+    (D254): 165 to 170 million cycles of the kernel -> 221 to 223 million,
+    the cycles of the program 970 to 984 million -> 940 to 948 million.
+  - Kept: each thread takes the parts of its own contiguous range first,
+    from its first, then those left in the ranges of the others from their
+    ends (`RANGES`, `take_range`: the first and the end of each range in
+    one word of 64 bits, taken by one exchange, no task taken twice; a job
+    `dynamic` and `contiguous` at once; more than 64 threads or 2^32 tasks:
+    only dynamic). The threads write their own pages first and meet only
+    at the ends of their ranges. Repeated, one run of 10 calls each:
+    `a[NSt]|BY` 13.38 -> 12.37 ms, `<[^>]*>` 17.08 -> 15.74 ms,
+    `\|[^|][^|]*\|` 11.26 -> 10.24 ms. regex-redux -1.59 % [-2.27 %,
+    -0.61 %] (31 rounds), then -1.70 % [-2.66 %, -0.76 %] (31 rounds, 90.56
+    -> 88.96 ms) with the ten programs, all of them other binaries (the
+    runtime they link): fasta -1.10 % [-1.94 %, -0.56 %], reverse-complement
+    -0.20 % [-2.91 %, +1.55 %], k-nucleotide +0.02 % [-0.47 %, +0.31 %],
+    pidigits -0.15 % [-0.23 %, +0.00 %], fannkuch-redux +0.01 % [-0.11 %,
+    +0.11 %], binary-trees -0.08 % [-1.13 %, +0.09 %], mandelbrot -0.01 %
+    [-0.02 %, +0.05 %], n-body +0.01 % [-0.01 %, +0.03 %], spectral-norm
+    +0.01 % [+0.00 %, +0.01 %]. The kernel still spends 20 to 26 million
+    cycles more (164 to 168 million -> 185 to 194 million): by `perf -g`,
+    the zeroing of new pages under `heap::alloc_medium` (2.52 % of the
+    samples, none before), the 32 lists of matches of a search now medium
+    blocks of about 2 MB where there were 4 of 14 MB; the next step, the
+    sizes of the parts taken from the search (no list read again), is
+    where they are measured again.
+  - Tested by `uneven_parts_finished_by_the_other_threads`
+    (`crates/iscc/tests/strings.rs`): a text of more than 1 MiB whose first
+    half has no match, a count and replacements longer, shorter and empty,
+    on 1, 2, 3, 5, 8 and 65 threads (more than the 64 ranges), as the
+    interpreter.

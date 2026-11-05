@@ -1814,6 +1814,13 @@ pub unsafe extern "C" fn isc_rx_new(out: *mut IscStr, p: *const u8, n: i64, q: *
 /// many bytes.
 const RX_PART: usize = 1 << 18;
 
+/// Parts per thread of a search by masks and of a replacement written in
+/// parallel, taken in turn (D313): their cost follows their matches, not
+/// their bytes (regex-redux: the first quarter of its text has 210332 of
+/// the 3.5 million matches of `a[NSt]|BY`, its thread waited for the
+/// others), so that the threads that finish early take the remaining parts.
+const PARTS_PER_THREAD: usize = 8;
+
 /// The matches of the global search of `re` in `s` (D189): with several
 /// threads and a long text, its parts searched by the tasks of the pool,
 /// each up to its first match in the next part, then merged into the
@@ -1949,8 +1956,10 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> Found {
     if threads <= 1 || s.len() < 2 * RX_PART || (busy && !matches!(re, RxEngine::Simple(_))) {
         return Found::one(re.bounds_from(s, 0, usize::MAX));
     }
-    // one part per thread: each one fills one cache
-    let parts = (s.len() / RX_PART).min(threads);
+    // the automaton: one part per thread, each one fills one cache; the
+    // masks, which have none: several parts per thread, taken in turn
+    let per = if matches!(re, RxEngine::Simple(_)) { threads * PARTS_PER_THREAD } else { threads };
+    let parts = (s.len() / RX_PART).min(per);
     let mut starts: alloc::vec::Vec<usize> = alloc::vec::Vec::with_capacity(parts);
     for k in 0..parts {
         let mut c = s.len() * k / parts;
@@ -1982,7 +1991,7 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> Found {
         }
     }
     let mut ctx = Ctx { re, s: s.as_ptr(), n: s.len(), starts: starts.as_ptr(), k: starts.len(), found: found.as_mut_ptr() };
-    parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, false);
+    parallel_for(starts.len() as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
     let runs = re.merge(s, &starts, &found);
     Found::of(found, &runs)
 }
@@ -2037,17 +2046,19 @@ const REPLACE_PARALLEL_MIN: usize = 1 << 20;
 
 /// `s` with each match of `bounds` replaced by `to`, a text without `$`
 /// (each replacement the same bytes), written by every thread (D236, D279):
-/// the text cut into one part of about the same bytes per thread, each cut
-/// moved to the end of the match it falls in; the size of each part of the
-/// result known before (its text between its matches, then `to` per match),
-/// each part written at its place. The bytes of `replace_bounds`. None with
+/// the text cut into parts of about the same bytes, several per thread
+/// taken in turn (D313), each cut moved to the end of the match it falls
+/// in; the size of each part of the result known before (its text between
+/// its matches, then `to` per match), each part written at its place. The bytes of `replace_bounds`. None with
 /// one thread, a short text or a busy pool.
 unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
     let threads = thread_count();
     if threads <= 1 || s.len() < REPLACE_PARALLEL_MIN || BUSY.load(Ordering::Relaxed) {
         return None;
     }
-    let parts = threads.min(64);
+    // several parts per thread, taken in turn: their cost follows their
+    // matches (D313)
+    let parts = (threads * PARTS_PER_THREAD).min(64);
     // part k: the text cut[k] .. cut[k + 1] and the matches that start in it,
     // from the place first[k] to first[k + 1] (a cut is never inside a match)
     let mut cut = [0usize; 65];
@@ -2088,7 +2099,7 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
         }
     }
     let mut sctx = Sizes { found: found as *const Found, cut: cut.as_ptr(), first: first.as_ptr(), tn: to.len(), size: size.as_mut_ptr() };
-    parallel_for(parts as i64, sizes, &mut sctx as *mut Sizes as *mut c_void, core::mem::size_of::<Sizes>() as i64, false, false);
+    parallel_for(parts as i64, sizes, &mut sctx as *mut Sizes as *mut c_void, core::mem::size_of::<Sizes>() as i64, true, true);
     let mut at = [0usize; 65];
     for k in 0..parts {
         at[k + 1] = at[k] + size[k];
@@ -2138,7 +2149,7 @@ unsafe fn replace_parallel(s: &str, to: &str, found: &Found) -> Option<IscStr> {
         at: at.as_ptr(),
         out: buf,
     };
-    parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, false, false);
+    parallel_for(parts as i64, part, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
     Some(IscStr { ptr: buf, len: total as i64 })
 }
 
@@ -2895,7 +2906,7 @@ pub unsafe extern "C" fn isc_parse_f64(p: *const u8, len: i64, line: i32, col: i
 // for a short while, then sleep on a futex. The number of threads is
 // `$ISC_THREADS`, or else the number of CPUs the process may run on.
 
-use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 type Task = extern "C" fn(ctx: *mut c_void, i: i64);
 
@@ -3092,7 +3103,9 @@ pub struct JobLine {
 
 /// The next task of a dynamic job (`isc_parallel_for_dynamic`, D145), in a
 /// line of its own: the threads take it in turn while they work. With
-/// `contiguous`, each thread its range of the tasks (D254).
+/// `contiguous`, each thread its range of the tasks (D254). With both, each
+/// thread its range first, then the tasks left in the ranges of the others,
+/// from their ends (D313: `RANGES`).
 #[repr(C, align(128))]
 pub struct NextLine {
     next: AtomicI64,
@@ -3101,6 +3114,36 @@ pub struct NextLine {
 }
 
 static NEXT: NextLine = NextLine { next: AtomicI64::new(0), dynamic: core::sync::atomic::AtomicBool::new(false), contiguous: core::sync::atomic::AtomicBool::new(false) };
+
+/// Threads whose ranges `RANGES` can hold; a job of more threads, or of
+/// more than `u32::MAX` tasks, is only dynamic.
+const RANGE_THREADS: usize = 64;
+
+/// The tasks left in the range of each thread for a job both dynamic and
+/// contiguous (D313): the first in the low 32 bits, the end in the high
+/// ones. Its thread takes them from the first, the threads that have
+/// finished their own from the end, each by one exchange of the whole
+/// word: no task is taken twice. Each thread writes first the pages of its
+/// own range (the threads do not fault the same huge page of a new array
+/// together, D254), and a part costlier than the others (more matches of a
+/// search) is finished by them, from its other end.
+static RANGES: [AtomicU64; RANGE_THREADS] = [const { AtomicU64::new(0) }; RANGE_THREADS];
+
+/// The next task of the range `r`: from its first (`front`) or its end.
+fn take_range(r: &AtomicU64, front: bool) -> Option<i64> {
+    let mut v = r.load(Ordering::Acquire);
+    loop {
+        let (first, end) = (v & 0xFFFF_FFFF, v >> 32);
+        if first >= end {
+            return None;
+        }
+        let (next, task) = if front { (v + 1, first) } else { (v - (1 << 32), end - 1) };
+        match r.compare_exchange_weak(v, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(task as i64),
+            Err(now) => v = now,
+        }
+    }
+}
 
 #[repr(C, align(128))]
 pub struct SleepLine {
@@ -3164,6 +3207,18 @@ fn run_share(k: usize, threads: usize) {
     let task: Task = unsafe { core::mem::transmute(JOB.task.load(Ordering::Acquire)) };
     let ctx = JOB.ctx.load(Ordering::Acquire) as *mut c_void;
     let n = JOB.n.load(Ordering::Acquire);
+    // each thread its range, then the ends of the others' (D313)
+    if NEXT.dynamic.load(Ordering::Acquire) && NEXT.contiguous.load(Ordering::Acquire) {
+        while let Some(i) = take_range(&RANGES[k], true) {
+            task(ctx, i);
+        }
+        for j in 1..threads {
+            while let Some(i) = take_range(&RANGES[(k + j) % threads], false) {
+                task(ctx, i);
+            }
+        }
+        return;
+    }
     // a dynamic job: the next task not taken yet, until there is none
     if NEXT.dynamic.load(Ordering::Acquire) {
         loop {
@@ -3435,8 +3490,17 @@ fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: b
     JOB.n.store(n, Ordering::Relaxed);
     JOB.finished.store(0, Ordering::Relaxed);
     NEXT.next.store(0, Ordering::Relaxed);
+    // the ranges of a job both dynamic and contiguous; too many threads or
+    // tasks for them: only dynamic
+    let ranged = dynamic && contiguous && threads <= RANGE_THREADS && n <= u32::MAX as i64;
+    if ranged {
+        for (k, r) in RANGES.iter().enumerate().take(threads) {
+            let share = sem::static_share(n, threads as i64, k as i64);
+            r.store(share.start as u64 | (share.end as u64) << 32, Ordering::Relaxed);
+        }
+    }
     NEXT.dynamic.store(dynamic, Ordering::Relaxed);
-    NEXT.contiguous.store(contiguous, Ordering::Relaxed);
+    NEXT.contiguous.store(ranged || (contiguous && !dynamic), Ordering::Relaxed);
     // Published by a plain write: only the caller writes `gen`. A locked
     // add would ask for its line only once every earlier write is done; a
     // write lets the processor fetch it while the line of the job is still

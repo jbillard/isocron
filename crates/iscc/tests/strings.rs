@@ -842,6 +842,37 @@ action main(args: string[k]): i32 {
     valgrind_clean(src, "str_block_parts", &["200000"]);
 }
 
+/// D313: the parts of a search and of a replacement in parallel, several
+/// per thread, each thread its own range first, then the ends of the
+/// others': a text of more than 1 MiB whose first half has no match and
+/// whose second half has one every few bytes (the threads of the first
+/// parts finish early and take parts of the others); a count, replacements
+/// longer, shorter and empty; on 1, 2, 3, 5 and 8 threads and on 65 (more
+/// than the 64 ranges: the tasks only taken in turn), as the interpreter.
+#[test]
+fn uneven_parts_finished_by_the_other_threads() {
+    let src = r#"action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const text = "xyzw".repeat(n) + join(map(iota(n), (i) => "aN".repeat(i % 3 + 1) + "xyzw".slice(0, i % 5)), "") + "BY";
+    const a = text.replace(/a[NSt]|BY/g, "<2>");
+    const b = text.replace(/a[NSt]|BY/g, "");
+    const c = a.replace(/<[^>]*>/g, "|");
+    print([countMatches(text, /a[NSt]|BY/g), a.length, b.length, c.length]);
+    print([a.slice(a.length - 30, a.length), c.slice(c.length / 2, c.length / 2 + 40)]);
+    print(sum(map(bytes(a), (x) => i64(x))) + 3 * sum(map(bytes(b), (x) => i64(x))) + 5 * sum(map(bytes(c), (x) => i64(x))));
+    return 0;
+}
+"#;
+    let bin = compile(src, "str_uneven_parts");
+    for n in ["30", "300000"] {
+        let want = interp_ok(src, &[n]);
+        for threads in [1, 2, 3, 5, 8, 65] {
+            let r = run_bin_threads(&bin, &[n], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n = {}, {} threads: {}", n, threads, r.stderr);
+        }
+    }
+}
+
 /// D308: a replacement written in parallel, the text between two matches
 /// moved by 32 bytes where the text and the part of the result have the
 /// room: gaps of 0 to 40 bytes and longer, matches at both ends of the text

@@ -288,7 +288,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)
 - [x] A part of a search stopped at the next part when no match crosses it: regex-redux -9.76 % (D309)
 - [x] The fixed alternatives searched by groups of 8 blocks, no reduction of lanes: regex-redux -14.53 % (D311)
-- [ ] regex-redux at 89.6 ms (3 times its floor: 89.2): its dense replacements (49.4 ms: millions of matches searched and written), its cleaning (12.9 ms: the zeroing of its new pages)
+- [x] The parts of a search by masks and of a replacement, 8 per thread, each thread its range first then the ends of the others': regex-redux -1.70 % (D313)
+- [ ] regex-redux at 89.0 ms (3 times its floor: 89.2): its dense replacements (millions of matches searched, listed in 16 bytes each, read twice, then written: about 70 % of their time is the traffic of memory), its cleaning (12.9 ms: the zeroing of its new pages)
 
 ## The trusted base (the remarks of the author, 2026-11-04)
 
