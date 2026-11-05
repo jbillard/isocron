@@ -315,6 +315,32 @@ fn run_mapped(bin: &std::path::Path, path: &std::path::Path, during: &dyn Fn(u32
     (first, rest, status.code())
 }
 
+/// D315: the standard input mapped from its file (D257), read only, given
+/// to a replacement of each match by as many bytes at its last use: not
+/// written where it is (the result is new), freed.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn a_mapped_input_given_to_a_replacement_is_not_written() {
+    let src = "action main(args: string[k]): i32 {
+    const r = readStdinText().replace(/ab/g, \"cd\");
+    print(r.length);
+    print(countMatches(r, /cd/g));
+    print(r.slice(0, 12));
+    return 0;
+}
+";
+    let n = 8_000_000usize;
+    let text: Vec<u8> = (0..n).map(|i| b"abxa"[i % 4]).collect();
+    let path = tmp("stdin_given.txt");
+    std::fs::write(&path, &text).unwrap();
+    let bin = compile(src, "stdin_given");
+    let want = format!("{}\n{}\ncdxacdxacdxa\n", n, n / 4);
+    for threads in ["1", "4"] {
+        let o = std::process::Command::new(&bin).env("ISC_THREADS", threads).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads: {}", threads, String::from_utf8_lossy(&o.stderr));
+    }
+}
+
 /// D257: a large file as the standard input is mapped, held by a read
 /// lease; written and truncated while the program runs, the program still
 /// sees the bytes it had (the pages made private before the lease is given

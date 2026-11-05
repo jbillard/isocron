@@ -842,6 +842,43 @@ action main(args: string[k]): i32 {
     valgrind_clean(src, "str_block_parts", &["200000"]);
 }
 
+/// D315: the text of a replacement by a regular expression moved into it
+/// at its last use: written where it is when each match is replaced by as
+/// many bytes (a new text, a text made in a lambda, no match at all), freed
+/// by it otherwise (a shorter and a longer replacement in a row); a text
+/// used after its replacement is not given and keeps its bytes. Short and
+/// long texts (more than 1 MiB and 65536 matches: written by the threads),
+/// on 1, 3 and 8 threads, as the interpreter; Valgrind finds no leak and no
+/// invalid access.
+#[test]
+fn texts_given_to_their_replacement() {
+    let src = r###"action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const base = join(map(iota(n), (i) => "xaNDyHaSzWaS".slice(0, i % 13) + "caN"), "-");
+    const a = (base + "!").replace(/aND|caN|Ha[DS]|WaS/g, "<3>");
+    const c = (base + "!").replace(/aND|caN|Ha[DS]|WaS/g, "<3>").replace(/<3>/g, "#").replace(/#/g, "##");
+    const d = (base + "?").replace(/zz/g, "yy");
+    const e = map(iota(3), (i) => (base + toString(i)).replace(/caN/g, "CAN").length);
+    const f = base.replace(/caN/g, "CAN");
+    print([base.length, a.length, c.length, d.length, f.length]);
+    print(e);
+    print([base.slice(0, 40), a.slice(0, 40), c.slice(0, 40), d.slice(d.length - 20, d.length), f.slice(0, 40)]);
+    print(sum(map(bytes(a), (x) => i64(x))) + 3 * sum(map(bytes(c), (x) => i64(x))) + 5 * sum(map(bytes(f), (x) => i64(x))) + 7 * sum(map(bytes(base), (x) => i64(x))));
+    return 0;
+}
+"###;
+    let bin = compile(src, "str_given_replace");
+    for n in ["40", "200000"] {
+        let want = interp_ok(src, &[n]);
+        for threads in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[n], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n = {}, {} threads: {}", n, threads, r.stderr);
+        }
+    }
+    valgrind_clean(src, "str_given_replace", &["40"]);
+    valgrind_clean(src, "str_given_replace", &["2000"]);
+}
+
 /// D313: the parts of a search and of a replacement in parallel, several
 /// per thread, each thread its own range first, then the ends of the
 /// others': a text of more than 1 MiB whose first half has no match and

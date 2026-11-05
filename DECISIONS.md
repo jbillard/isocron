@@ -6058,3 +6058,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   87.99 ms); the nine other programs are the same binaries. Tested by the
   tests of D308 and D313, the latter with a long text without match at the
   end (`uneven_parts_finished_by_the_other_threads`).
+- **D315 — The text of a replacement given to it at its last use, written
+  where it is when each match is replaced by as many bytes (2026-11-05).**
+  The second replacement of regex-redux, `aND|caN|Ha[DS]|WaS` by `<3>`,
+  replaces 15867 matches of 3 bytes by 3 bytes in a text of 50 MB that dies
+  with it, and copied the 50 MB into a new string (7.1 ms of the program
+  before D313). Now:
+  - The ownership pass moves the text of a replacement by a regular
+    expression into it when that is its last use, owned and without alias
+    (`Use::Move`, the conditions of D207 for a `map` that writes into its
+    input); the memory verifier accepts that operand moved (the replacement
+    owns it), the others stay read (D134); the code generator passes
+    `given` to `isc_rx_replace`.
+  - The runtime, given the text: when every match has the bytes of the
+    replacement (each one checked, not their sum), writes the replacement
+    over each match (`replace_over`, each run of the search by a task from
+    65536 matches on) and returns the text itself; otherwise builds the
+    result as before and frees the text. Never in the standard input mapped
+    from its file, which is read only (D257: `writable`); a literal or a
+    view is never given (not owned).
+  - regex-redux -3.81 % [-4.39 %, -3.58 %] (31 rounds, 88.29 -> 84.51 ms):
+    cycles of the program 914 million -> 872 to 890 million, of the kernel
+    190 million -> 177 to 179 million (7 runs, twice). The four last
+    replacements of regex-redux get their texts (`(move)` in its IR); the
+    three others free them. The nine other programs are the same binaries.
+  - Tested by `texts_given_to_their_replacement` (`strings.rs`: a new text,
+    one made in a lambda, no match, a shorter then a longer replacement in a
+    row, a text used after its replacement that keeps its bytes; short and
+    long texts on 1, 3 and 8 threads as the interpreter; Valgrind) and
+    `a_mapped_input_given_to_a_replacement_is_not_written` (`stdin.rs`).

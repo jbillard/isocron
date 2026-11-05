@@ -2095,6 +2095,25 @@ impl<'a> Rewriter<'a> {
                     _ => Own::Scalar,
                 });
             }
+            // the text of a replacement by a regular expression at its last
+            // use, owned and without alias: given to it (D315), which writes
+            // its result there when each match is replaced by as many bytes,
+            // and frees it otherwise
+            ExprKind::StrOp(crate::StrOp::Rx(crate::RxOp::Replace | crate::RxOp::ReplaceAll), es) => {
+                let mut first = None;
+                for c in es.iter_mut() {
+                    let o = self.walk(c)?;
+                    first.get_or_insert(o);
+                }
+                if let (Some(Own::Borrowed(_, Some(i))), ExprKind::Var(v, u)) = (&first, &mut es[0].kind) {
+                    let w = *v as usize;
+                    if self.info.candidates.contains(i) && self.info.owned[w] && self.info.alias[w].is_none() {
+                        *u = Use::Move;
+                        self.info.moved[w] = true;
+                    }
+                }
+                return Ok(Own::Fresh);
+            }
             ExprKind::StrOp(..) if str_part => {
                 let mut first = None;
                 for c in e.children_mut() {

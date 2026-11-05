@@ -2201,8 +2201,52 @@ pub unsafe extern "C" fn isc_rx_matches(out: *mut IscArray, s: *const u8, n: i64
     *out = str_array(&mut found.iter().map(|(a, b)| &t[a..b]), count);
 }
 
+/// `to` written over each match of `found` in the bytes at `p` (D315),
+/// each run by a task when there are many.
+unsafe fn replace_over(p: *mut u8, to: &str, found: &Found) {
+    #[repr(C)]
+    struct Ctx {
+        p: *mut u8,
+        to: *const u8,
+        tn: usize,
+        found: *const Found,
+    }
+    extern "C" fn over(ctx: *mut c_void, r: i64) {
+        unsafe {
+            let c = &*(ctx as *const Ctx);
+            for &(a, _) in (*c.found).run(r as usize) {
+                copy_short(c.to, c.p.add(a), c.tn);
+            }
+        }
+    }
+    let mut ctx = Ctx { p, to: to.as_ptr(), tn: to.len(), found: found as *const Found };
+    let runs = found.runs.len() as i64;
+    if found.len() >= 1 << 16 {
+        parallel_for(runs, over, &mut ctx as *mut Ctx as *mut c_void, core::mem::size_of::<Ctx>() as i64, true, true);
+    } else {
+        for r in 0..runs {
+            over(&mut ctx as *mut Ctx as *mut c_void, r);
+        }
+    }
+}
+
+/// The bytes of a string given to the runtime can be written where they
+/// are: not those of the standard input mapped from its file, read only
+/// (D257).
+fn writable(p: *const u8) -> bool {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if mapped::owns(p) {
+        return false;
+    }
+    let _ = p;
+    true
+}
+
+/// `given`: the text `s` is moved into the replacement at its last use
+/// (D315), which frees it, or writes the result in it when each match is
+/// replaced by as many bytes.
 #[no_mangle]
-pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, v: *const u8, m: i64, q: *const u8, k: i64, all: i32, line: i32, col: i32) {
+pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, v: *const u8, m: i64, q: *const u8, k: i64, all: i32, given: i32, line: i32, col: i32) {
     let (t, re, to) = (text(s, n), text(v, m), text(q, k));
     let (flags, _) = sem::rx::parts(re);
     if all != 0 && !flags.contains('g') {
@@ -2214,18 +2258,35 @@ pub unsafe extern "C" fn isc_rx_replace(out: *mut IscStr, s: *const u8, n: i64, 
     if (all != 0 || flags.contains('g')) && sem::rx::without_groups(to) {
         let found = rx_bounds(&rx_engine(re, t), t);
         if !to.contains('$') {
+            // the text given, each match of the bytes of `to`: the result is
+            // the text, `to` over each match, nothing copied (D315)
+            if given != 0 && writable(s) && found.iter().all(|(a, b)| b - a == to.len()) {
+                replace_over(s as *mut u8, to, &found);
+                *out = IscStr { ptr: s as *mut u8, len: n };
+                return;
+            }
             if let Some(r) = replace_parallel(t, to, &found) {
                 *out = r;
+                give_back(s, given);
                 return;
             }
         }
         *out = adopt(sem::rx::replace_bounds(t, to, &found.to_vec()));
+        give_back(s, given);
         return;
     }
     *out = written(&|w| {
         let _ = sem::rx::replace(w, re, t, to, all != 0);
         Ok(())
     });
+    give_back(s, given);
+}
+
+/// A string given to the runtime (D315) and not kept: freed.
+unsafe fn give_back(s: *const u8, given: i32) {
+    if given != 0 {
+        isc_free(s as *mut u8);
+    }
 }
 
 #[no_mangle]

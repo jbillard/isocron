@@ -786,7 +786,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_rx_new(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare i64 @isc_rx_int(ptr, i64, ptr, i64, i32)",
     "declare void @isc_rx_matches(ptr, ptr, i64, ptr, i64)",
-    "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32)",
+    "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32, i32)",
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
@@ -10265,7 +10265,9 @@ impl<'p> Gen<'p> {
                         let (q, m) = self.str_parts(&vals[1]);
                         let (r, k) = self.str_parts(&vals[2]);
                         let all = (x == X::ReplaceAll) as i32;
-                        new_str(self, format!("call void @isc_rx_replace(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, {})", p, n, q, m, r, k, all, pos))
+                        // its text moved into it: the runtime owns it (D315)
+                        let given = matches!(es[0].kind, ExprKind::Var(_, isc_ir::Use::Move)) as i32;
+                        new_str(self, format!("call void @isc_rx_replace(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, i32 {}, {})", p, n, q, m, r, k, all, given, pos))
                     }
                 }
             }
