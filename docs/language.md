@@ -64,8 +64,8 @@ target/release/iscc build first.isc -o first && ./first
 The syntax is that of TypeScript; what differs comes from the semantics:
 
 * `function` declares a pure function: it computes a value from its
-  arguments, it cannot do any input/output, and it is always inlined where
-  it is called.
+  arguments, it cannot do any input/output, and it is inlined where it is
+  called (unless it is recursive or very large).
 * `action` declares a function that may do input/output; its body is a
   sequence of statements run in order.
 * Every program has exactly one `action main(args: string[k]): i32`. `args`
@@ -166,7 +166,8 @@ Functions can call each other in any order. A call of a function that is not
 recursive is inlined, which is what guarantees fusion (section 7 of the
 specification). A recursive function (one that can call itself, directly or
 through others) is compiled as a function of its own: see
-[Recursion](#recursion). A user declaration with the name of a
+[Recursion](#recursion); so is a function too large to be inlined
+everywhere (see [Performance model](#performance-model)). A user declaration with the name of a
 standard-library function (`sum`, `mean`, ...) replaces it everywhere,
 including inside the standard library.
 
@@ -713,8 +714,12 @@ action main(args: string[k]): i32 {
 
 An array type carries its size: `f64[n]`, `u32[256]`, `i64[n - 1]`,
 `f64[2 * n]`. In the current compiler, each size variable must appear alone as
-the size of an array parameter (`x: T[n]`); the size of a result may be any
-sum or product of these variables and of constants.
+the size of an array of a parameter: the parameter itself (`x: T[n]`), or an
+array in one of its records or tuples (`r: { xs: f64[k] }`, then `k` is the
+length of `r.xs`); the size of a result may be any sum or product of these
+variables and of constants. The size of the rows of an array of arrays
+(`t: f64[r][c]`, or `{ xs: f64[k] }[n]`) is known to the types, not a value
+of the function: `t[0].length` reads it.
 
 * Sizes the compiler can compare are checked at compile time: passing a
   `f64[3]` where a `f64[4]` is expected is an error.
@@ -778,6 +783,27 @@ action main(args: string[k]): i32 {
 
 ```output
 [11, 22]
+```
+
+```isc
+function total(r: { name: string, xs: f64[k] }): f64 {
+    return sum(r.xs) + f64(k);
+}
+
+function sums(t: f64[r][c]): f64[r] {
+    return map(t, (row) => sum(row));
+}
+
+action main(args: string[k]): i32 {
+    print(total({ name: "a", xs: [1.0, 2.0] }));
+    print(sums([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]));
+    return 0;
+}
+```
+
+```output
+5
+[3, 7, 11]
 ```
 
 ## Expressions
@@ -1808,6 +1834,36 @@ as an argument, chosen at run time and stored in a tuple, a record or an
 array (see "Functions chosen at run time" and "Functions in structures"); a
 function that returns a function is not compiled yet.
 
+The type arguments of a call are inferred, or given after its name as in
+TypeScript, `f<T>(x)`: needed when no argument tells them (`none<i64>()`,
+`json.decode<Point>(text)`). `f < a` stays a comparison unless what follows
+`<` reads as types closed by `>` and followed by `(`.
+
+```isc
+function none<T>(): Option<T> {
+    return None;
+}
+
+function first<T>(xs: T[n]): T {
+    return xs[0];
+}
+
+action main(args: string[k]): i32 {
+    print(none<i64>() ?? 7);
+    print(first<f64>([2.5, 1.0]));
+    const a = 1;
+    const b = 2;
+    print(a < b);
+    return 0;
+}
+```
+
+```output
+7
+2.5
+true
+```
+
 ## Actions and input/output
 
 Input/output is only possible in an `action`. The statements of an action run
@@ -2383,13 +2439,15 @@ true
 ### JSON: `json`
 
 `parse(text)` reads a JSON text (RFC 8259) into a `Json`, `stringify(j)`
-writes it again without spaces (a number in its shortest form, NaN and the
-infinities as `null`, as JavaScript does):
+writes it again without spaces, its numbers as JavaScript writes them
+(`JSON.stringify`: the shortest digits, an exponent from 1e21 and below
+1e-6, -0 as 0, NaN and the infinities as `null`):
 
 `type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) |
 Obj(string[m], Json[m])`, the keys of an object and their values in two
 arrays, in the order of the text. An error is a `JsonError` (`line`,
-`column`, `message`); `message(e)` gives its text.
+`column`, `message`); `message(e)` gives its text, with the path of the
+value at fault (`$` the whole text, `[2]` an element, `.name` a member).
 
 ```isc
 import * as json from "json";
@@ -2420,15 +2478,62 @@ action main(args: string[k]): i32 {
 ```output
 [name, years, note]
 {"name":"Ada","years":[1815,1852],"note":"aé"}
-line 1, column 7: not a value
+line 1, column 7: $[2]: a value expected
+```
+
+`decode<T>(text)` reads a JSON text directly into a type of the program,
+and `encode(x)` writes a value: for each type, the compiler writes the
+functions that read and write it (in Isocron, as the module). `T` is made
+of `boolean`, the integers (each checked in its range), `f64`, `f32`,
+`string`, `Option` (`null` or missing), arrays (of a fixed size or any),
+tuples (arrays of JSON of that length) and records (objects); a type that
+JSON cannot carry (a `Map`, a function, a sum type other than `Option`,
+`bigint`) is an error of compilation naming its place in `T`. A member of
+the text that `T` does not name is checked, then left; of two members of
+one name, the last counts, as in JavaScript. An error names the path of
+the value that does not fit `T`. A record is written with its fields in the
+order of their names.
+
+```isc
+import * as json from "json";
+
+type Point = { x: f64, y: f64, label: Option<string> };
+type Path = { name: string, points: Point[k] };
+
+action main(args: string[k]): i32 {
+    const text = "{\"name\": \"ab\", \"points\": [{\"x\": 1, \"y\": 2}, {\"x\": 3.5, \"y\": -1, \"label\": \"end\"}], \"version\": 2}";
+    match (json.decode<Path>(text)) {
+        Ok(p) => {
+            print(sum(map(p.points, (q) => q.x)));
+            print(json.encode(p));
+        },
+        Err(e) => print(json.message(e)),
+    };
+    match (json.decode<Path>("{\"name\": \"ab\", \"points\": [{\"x\": 1, \"y\": \"2\"}]}")) {
+        Ok(p) => print(p.name),
+        Err(e) => print(json.message(e)),
+    };
+    print(json.encode([1e21, 0.5, -0.0]));
+    return 0;
+}
+```
+
+```output
+4.5
+{"name":"ab","points":[{"label":null,"x":1,"y":2},{"label":"end","x":3.5,"y":-1}]}
+line 1, column 41: $.points[0].y: a number expected
+[1e+21,0.5,0]
 ```
 
 ## Performance model
 
 * **Fusion.** Element-wise operations, `map` and `iota` feeding a single
   consumer (`map`, `reduce`, `fold`, indexing) are fused into one loop: no
-  intermediate array is built. Every function call is inlined, so fusion
-  crosses function boundaries.
+  intermediate array is built. A function call is inlined, so fusion
+  crosses function boundaries; but a recursive function, or one whose
+  body would be too large once inlined (more than 4000 nodes, or more than
+  2000 nodes in all its copies when it has at least 100), is compiled once
+  and called (D336): its arguments are then values in memory.
 * **Vectorization.** `map`, element-wise operators and `reduce` (in its fixed
   order) are compiled to SIMD code for the host processor. With few vector
   registers (SSE: 16 registers of two doubles), the compiler updates the 32

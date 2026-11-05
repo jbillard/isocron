@@ -1,0 +1,76 @@
+import * as json from "json";
+
+type Ints = { a: i8, b: u8, c: i16, d: u16, e: i32, f: u32, g: i64, h: u64, x: f32 };
+type Grid = { name: string, rows: f64[r][c] };
+type Item = { id: i64, xs: f64[k] };
+
+function show(r: Result<string, json.JsonError>): string {
+    return match (r) {
+        Ok(s) => s,
+        Err(e) => json.message(e),
+    };
+}
+
+action main(args: string[k]): i32 {
+    // integers at the ends of their ranges, a float of 32 bits
+    print(show(match (json.decode<Ints>("{\"a\": -128, \"b\": 255, \"c\": -32768, \"d\": 65535, \"e\": -2147483648, \"f\": 4294967295, \"g\": -9223372036854775808, \"h\": 18446744073709551615, \"x\": 0.1}")) {
+        Ok(v) => Ok(json.encode(v)),
+        Err(e) => Err(e),
+    }));
+    const outside = ["{\"a\": 128}", "{\"b\": -1}", "{\"h\": 18446744073709551616}", "{\"e\": 1e3}", "{\"g\": 01}", "{\"g\": -}"];
+    print(map(outside, (t) => show(match (json.decode<{ a: Option<i8>, b: Option<u8>, e: Option<i32>, g: Option<i64>, h: Option<u64> }>(t)) {
+        Ok(v) => Ok(json.encode(v)),
+        Err(e) => Err(e),
+    })));
+    // arrays of arrays, fixed sizes, tuples, a value at the top that is not an object
+    print(show(match (json.decode<Grid>("{\"name\": \"g\", \"rows\": [[1, 2, 3], [4, 5, 6]]}")) {
+        Ok(g) => Ok(`${g.name} ${g.rows.length} ${json.encode(map(g.rows, (r) => sum(r)))}`),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<Grid>("{\"name\": \"g\", \"rows\": [[1, 2, 3], [4, 5]]}")) {
+        Ok(g) => Ok("accepted"),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<Item[n]>("[{\"id\": 1, \"xs\": [1, 2]}, {\"id\": 2, \"xs\": [3, 4]}]")) {
+        Ok(items) => Ok(json.encode(items)),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<Item[n]>("[{\"id\": 1, \"xs\": [1, 2]}, {\"id\": 2, \"xs\": [3]}]")) {
+        Ok(items) => Ok("accepted"),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<f64[3]>("[1, 2, 3]")) {
+        Ok(v) => Ok(json.encode(v * 2.0)),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<f64[3]>("[1, 2]")) {
+        Ok(v) => Ok("accepted"),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<[string, i64, boolean]>("[\"a\", 2, false]")) {
+        Ok(t) => Ok(json.encode(t)),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<Option<string>[k]>("[\"a\", null, \"\\u00e9\\\"\"]")) {
+        Ok(v) => Ok(json.encode(v)),
+        Err(e) => Err(e),
+    }));
+    // the last of two members of one name, members of other names checked
+    // and left, keys with escapes, spaces
+    print(show(match (json.decode<{ id: i64 }>(" {\"id\": 1, \"other\": {\"deep\": [true, {\"x\": null}]}, \"i\\u0064\": 2} ")) {
+        Ok(v) => Ok(json.encode(v)),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<{ id: i64 }>("{\"id\": 1, \"other\": {\"deep\": [tru]}}")) {
+        Ok(v) => Ok("accepted"),
+        Err(e) => Err(e),
+    }));
+    print(show(match (json.decode<{ id: i64 }>("{\"id\": 1}\n{\"id\": 2}")) {
+        Ok(v) => Ok("accepted"),
+        Err(e) => Err(e),
+    }));
+    // NaN and the infinities written as null, as JavaScript does
+    print(json.encode([1.0 / 0.0, 0.0 / 0.0, -0.0, 1e300, 5e-324]));
+    print(json.encode({ s: "tab\t, nul" + stringOf([0u8, 31u8]) + ", é", n: [[1, 2], [3, 4]], o: Some([true]) }));
+    return 0;
+}

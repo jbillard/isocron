@@ -957,6 +957,27 @@ impl P {
     fn postfix(&mut self) -> Result<Expr> {
         let mut e = self.primary()?;
         loop {
+            // `f<T>(x)`: type arguments when what follows `<` reads as types
+            // closed by `>` and followed by `(`, else a comparison (D336)
+            if self.is(S::Lt) && matches!(e.kind, ExprKind::Var(_)) {
+                let save = self.pos;
+                let span = self.bump().span;
+                let mut ts = Vec::new();
+                let ok = loop {
+                    match self.ty() {
+                        Ok(t) => ts.push(t),
+                        Err(_) => break false,
+                    }
+                    if !self.eat(S::Comma) {
+                        break self.eat(S::Gt) && self.is(S::LParen);
+                    }
+                };
+                if ok {
+                    e = Expr { kind: ExprKind::TypeApp(Box::new(e), ts), span };
+                    continue;
+                }
+                self.pos = save;
+            }
             if self.is(S::LParen) {
                 let span = self.bump().span;
                 let args = self.args(S::RParen)?;

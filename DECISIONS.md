@@ -6566,3 +6566,80 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the interpreter, compiled, Valgrind) and the guide ("JSON: `json`").
     To come: `decode<T>` and `encode<T>` (D325), the microbenchmark and
     its floor.
+- **D336 — `json.decode<T>` and `json.encode`: the functions of each type
+  written by the compiler; what they asked of the language (2026-11-05).**
+  - The type arguments of a call, `f<T>(x)` as in TypeScript (D325):
+    `ExprKind::TypeApp`, read when what follows `<` reads as types closed by
+    `>` and followed by `(`, else a comparison; their number checked, each
+    unified with the parameter it gives. A size that a type argument names
+    and the function has not is any size (a size of inference), or, for
+    `json.decode`, the size of the value read (existential, as a result).
+  - A size bound by an array in a record or a tuple of a parameter
+    (`SymOrigin::ParamPath`: `r: { xs: f64[k] }`, `k` the length of
+    `r.xs`), or by the rows of an array of a parameter (`t: f64[r][c]`,
+    `{ xs: f64[k] }[n]`): these are known to the types only, not values of
+    the function (the block keeps its columns, but the interpreter has no
+    row of an empty array), so the use of one as a value is refused at
+    compile time. The arrays of a record or a tuple are tested at the call
+    as the array itself when only the run time knows their sizes; on entry
+    of a function that is not inlined, only for the parameters that a call
+    could not prove (`unproved_params`): n-body's `steps(b: Bodies, n)`
+    keeps its code (its calls prove the sizes 5 of its tuple).
+  - Three defects found on the way, older than this work, each general:
+    a row of a producer of rows was computed alone, its memory owned by no
+    one (`t[0]` of a `map` building rows, refused by the verifier of
+    memory: the producer is now evaluated, the row a view of it); an array
+    of records holding arrays did not free their arrays (`holds_owned`
+    counted no array in a tuple: Valgrind found 3 blocks lost for
+    `map(iota(3), (i) => ({ id: i, xs: map(...) }))`, now none, the views
+    stored in such records copied); `toString` of a float wrote into 64
+    bytes and cut the rest (5e-324 has 326: `"0."` compiled, the whole
+    number interpreted), now 352 bytes for an `f64`.
+  - Inlining with a limit (SPEC section 7): a function is called rather
+    than inlined when its nodes, the functions it inlines counted, exceed
+    4000, or when it has at least 100 and all its copies more than 2000
+    (decided again until nothing changes; not `main`, not a function that
+    takes or returns a function). The decoders made it necessary: the
+    program of the test of decoding (twelve types) took 50 s to compile;
+    21 s once each element was checked once (a fault was computed twice,
+    the code doubling at each level), 17.7 s with limits of 300 and 20000,
+    2.93 s with 100 and 2000. The ten programs and the microbenchmarks:
+    no function concerned (the largest product of size and copies is
+    328), their LLVM IR byte for byte the same as before.
+  - The decoders (`codec.rs`): the form of `T` (booleans, integers of
+    every width checked in their range, `f64`, `f32`, strings, `Option`,
+    arrays fixed or not, tuples, records); for each form `codecCheck`,
+    `codecBuild`, `codecEncode` (and `codecShape` when it holds arrays)
+    written in Isocron, added to the module `json` and checked as it is.
+    A first check of the program finds the calls of the placeholders
+    `decode<T>` and `encode<T>` (their parameter of any class: they are
+    never specialized); the program is checked again with the functions of
+    each type, and each call is given those of its type when its types are
+    resolved (`zonk_expr`). Two passes over the index of the text: the
+    check, whose fault carries its place and its path on the way back
+    (`$.points[0].y`), then the building, which cannot fail; an array of
+    values holding arrays checks that their lengths agree (the rows of an
+    array of arrays have one length) before it is built. A member unknown
+    to `T` is checked, then left; the last of two members of one name
+    counts. A type that JSON cannot carry is refused with its place in `T`
+    (`a function at .f`); so is a type parameter (the type must be known
+    where `decode` is called: v1).
+  - `parse` written the same way, in two passes: the descent of D335
+    filled each array by a recursion whose array parameter was copied at
+    each step (8000 elements: 0.223 s; now 0.004 s; a million 0.295 s, its
+    `stringify` with it); the strings without recursion (each escape found
+    by the index, decoded by `map`, joined: the recursion of D335 copied
+    its text at each escape and searched each backslash to the end); the
+    brackets checked level by level (a closing of the other kind is found
+    at its place, not at the opening it shifts); a missing comma reported
+    at the word after the value. The numbers are written as JavaScript
+    writes them (an exponent from 1e21 and below 1e-6, -0 as 0).
+  - Tested by `sizes_bound_by_arrays_in_records_tuples_and_rows`,
+    `type_arguments_of_calls`, `texts_of_long_floats`,
+    `json_decoded_into_types_and_encoded` (four programs: integers at the
+    ends of their ranges, rows of other lengths, fixed sizes, tuples,
+    escapes, faults with their paths), `json_types_refused_at_compile_time`
+    (all in `stdlib.rs`: the interpreter, compiled with 1 and 4 threads,
+    Valgrind), `json_on_windows` (`windows.rs`: four of these programs in
+    the Windows VM, the same outputs with 1 and 4 threads) and the guide.
+    The tests of JSON took 564 s before the limit of inlining, 52 s after.

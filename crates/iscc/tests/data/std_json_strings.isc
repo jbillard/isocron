@@ -1,0 +1,23 @@
+import * as json from "json";
+
+action main(args: string[k]): i32 {
+    const texts = ["\"a\\u00e9\\ud83d\\ude00\\n\\t\\\"\\\\\\/\\b\\f\\r-\"", "\"\\ud83d\"", "\"\\ude00\"", "\"\\u12\"", "\"x\\ud83d\\u0041\"", "[\"a\" \"b\"]", "{\"a\": true false}", "[1 2]", "{\"a\": -1 x}", "\"" + stringOf([9u8]) + "\""];
+    print(map(texts, (t) => match (json.parse(t)) {
+        Ok(j) => json.stringify(j),
+        Err(e) => json.message(e),
+    }));
+    print(map(["[1 2]", "[1, true 3]"], (t) => match (json.decode<i64[k]>(t)) {
+        Ok(v) => "ok",
+        Err(e) => json.message(e),
+    }));
+    print(map(["[true false]"], (t) => match (json.decode<boolean[k]>(t)) {
+        Ok(v) => "ok",
+        Err(e) => json.message(e),
+    }));
+    const long = "\"" + join(map(iota(20000), (i) => "ab\\n"), "") + "\"";
+    match (json.parse(long)) {
+        Ok(j) => print(json.stringify(j).length),
+        Err(e) => print(json.message(e)),
+    };
+    return 0;
+}

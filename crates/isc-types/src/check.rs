@@ -241,6 +241,49 @@ struct SigCtx<'a> {
 /// The names each file imports by name (D150): file -> local -> `m.x`.
 type Imports = HashMap<u32, HashMap<String, String>>;
 
+/// The path (the indices of fields and elements of tuples, `ELEMENT` for
+/// the elements of an array when `through`) from `t` to an array whose
+/// size is exactly the symbol `s` (D336); not through sum types, whose
+/// arrays are not one per value of `t`.
+pub fn array_path(t: &Ty, s: SymId, through: bool, path: &mut Vec<u32>) -> bool {
+    match t {
+        Ty::Array(Size::Poly(p), e) => {
+            if p.as_sym() == Some(s) {
+                return true;
+            }
+            if through {
+                path.push(crate::tast::ELEMENT);
+                if array_path(e, s, through, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        Ty::Record(fs) => {
+            for (i, (_, f)) in fs.iter().enumerate() {
+                path.push(i as u32);
+                if array_path(f, s, through, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        Ty::Tuple(ts) => {
+            for (i, f) in ts.iter().enumerate() {
+                path.push(i as u32);
+                if array_path(f, s, through, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 /// The payload types of a variant of `def` for the type arguments `args`
 /// and the sizes `sizes` of its payload (D335).
 fn payload_sized(def: &SumDef, variant: usize, args: &[Ty], sizes: &[Size]) -> Vec<Ty> {
@@ -376,7 +419,11 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
         if generics.iter().any(|(n, _): &(String, Classes)| n == &g.name) {
             return err(g.span, format!("duplicate type parameter `{}`", g.name));
         }
-        generics.push((g.name.clone(), class_bits(g.class)));
+        // the type of `json.decode` and `json.encode` is any type that JSON
+        // carries: never specialized, each call given the functions written
+        // for its type (D336)
+        let classes = if d.name == DECODE || d.name == ENCODE { 0 } else { class_bits(g.class) };
+        generics.push((g.name.clone(), classes));
     }
     for (_, sp) in &d.modifiers {
         if d.is_action {
@@ -419,13 +466,30 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
             }
         }
     }
+    // then by an array in a record or a tuple of a parameter, then by the
+    // elements of an array of a parameter (D336)
+    for through in [false, true] {
+        for s in 0..syms.len() {
+            if bound[s] {
+                continue;
+            }
+            for (i, t) in param_tys.iter().enumerate() {
+                let mut path = Vec::new();
+                if array_path(t, s as SymId, through, &mut path) && !path.is_empty() {
+                    bound[s] = true;
+                    syms[s].origin = SymOrigin::ParamPath(i, path);
+                    break;
+                }
+            }
+        }
+    }
     for (i, b) in bound.iter().enumerate() {
         if !b {
             return err(
                 d.span,
                 format!(
-                    "size variable `{}` must appear alone as the size of an array parameter (`x: [{}]T`) in the POC",
-                    syms[i].name, syms[i].name
+                    "size variable `{}` must appear alone as the size of an array of a parameter (`x: T[{}]`, `r: {{ xs: T[{}] }}`)",
+                    syms[i].name, syms[i].name, syms[i].name
                 ),
             );
         }
@@ -475,7 +539,8 @@ enum UErr {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Strict,
-    /// Unprovable top-level size equality becomes a run-time test.
+    /// Unprovable top-level size equality becomes a run-time test (of an
+    /// array, or of an array in a record or a tuple, D336).
     Dynamic,
 }
 
@@ -522,6 +587,11 @@ struct Globals {
     heads: Vec<(String, usize)>,
     ctors: HashMap<String, (u32, u32)>,
     imports: Imports,
+    /// The functions `codecDecode`, `codecEncode` written for each type of
+    /// `json.decode<T>` and `json.encode(x)`, by its key (D336).
+    codecs: HashMap<String, (FnId, FnId)>,
+    /// The placeholders `json.decode` and `json.encode`.
+    placeholders: (Option<FnId>, Option<FnId>),
 }
 
 impl<'g> FnCx<'g> {
@@ -842,9 +912,11 @@ impl<'g> FnCx<'g> {
             (Ty::Int(k1), Ty::Int(k2)) if k1 == k2 => Ok(()),
             (Ty::F64, Ty::F64) | (Ty::F32, Ty::F32) | (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Str, Ty::Str) | (Ty::BigInt, Ty::BigInt) | (Ty::RegExp, Ty::RegExp) => Ok(()),
             (Ty::Param(p), Ty::Param(q)) if p == q => Ok(()),
+            // the arrays of a record or a tuple are tested as the array
+            // itself (the lowering tests each one, D336)
             (Ty::Tuple(x), Ty::Tuple(y)) if x.len() == y.len() => {
                 for (s, t) in x.iter().zip(y.iter()) {
-                    self.unify_in(s, t, mode, false)?;
+                    self.unify_in(s, t, mode, top)?;
                 }
                 Ok(())
             }
@@ -856,7 +928,7 @@ impl<'g> FnCx<'g> {
             }
             (Ty::Record(x), Ty::Record(y)) if x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| a.0 == b.0) => {
                 for ((_, s), (_, t)) in x.iter().zip(y.iter()) {
-                    self.unify_in(s, t, mode, false)?;
+                    self.unify_in(s, t, mode, top)?;
                 }
                 Ok(())
             }
@@ -941,7 +1013,14 @@ impl<'g> FnCx<'g> {
     fn sym_by_name(&self, name: &str) -> Option<SymId> {
         self.syms
             .iter()
-            .position(|s| s.name == name && matches!(s.origin, SymOrigin::Param(_) | SymOrigin::SizeParam(_)))
+            .position(|s| {
+                s.name == name
+                    && match &s.origin {
+                        SymOrigin::Param(_) | SymOrigin::SizeParam(_) => true,
+                        SymOrigin::ParamPath(_, p) => crate::tast::path_has_value(p),
+                        _ => false,
+                    }
+            })
             .map(|i| i as SymId)
     }
 
@@ -1132,6 +1211,7 @@ impl<'g> FnCx<'g> {
                 Ok(self.mk(TExprKind::Match(Box::new(x), out), ty, span))
             }
             ExprKind::Call(f, args) => self.check_call(f, args, span, expected),
+            ExprKind::TypeApp(..) => err(span, "type arguments are given to a function that is called: `f<T>(x)`"),
             ExprKind::Index(a, i) => {
                 let a = self.check(a, None)?;
                 let elem = self.expect_array(&a.ty, a.span, "an indexed value")?;
@@ -1591,6 +1671,9 @@ impl<'g> FnCx<'g> {
         if NOT_IN_POC.contains(&name) {
             return Err(poc(span, &format!("`{}`", name)));
         }
+        if self.syms.iter().any(|s| s.name == name && matches!(&s.origin, SymOrigin::ParamPath(_, p) if !crate::tast::path_has_value(p))) {
+            return err(span, format!("the size `{}` of the elements of an array of a parameter is known to the types only: read it from an element (`x[0].length`)", name));
+        }
         err(span, format!("unknown variable `{}`", name))
     }
 
@@ -1724,6 +1807,27 @@ impl<'g> FnCx<'g> {
                 return self.check_call(&callee, &all, span, expected);
             }
         }
+        // `f<T>(x)`: the type parameters of `f` given (D336)
+        if let ExprKind::TypeApp(inner, ts) = &f.kind {
+            let ExprKind::Var(name) = &inner.kind else {
+                return err(f.span, "type arguments are given to a function by its name: `f<T>(x)`");
+            };
+            if self.lookup(name).is_some() || self.sym_by_name(name).is_some() {
+                return err(inner.span, format!("`{}` is a variable: type arguments are given to a function of the program or of a module", name));
+            }
+            let q = self.q(name);
+            let Some(&id) = self.g.names.get(q.as_str()) else {
+                return err(inner.span, format!("unknown function `{}`", name));
+            };
+            // the sizes that the type of `json.decode` names are those of
+            // the value read: fixed by the call, as those of a result
+            let existential = q == DECODE;
+            let mut tys = Vec::new();
+            for t in ts {
+                tys.push(self.type_arg(t, existential)?);
+            }
+            return self.check_call_fn_with(id, args, span, Some(&tys));
+        }
         if let ExprKind::Var(name) = &f.kind {
             // `m.keys()` with a local `keys` that is not a function: the
             // function `keys`, as in TypeScript
@@ -1807,6 +1911,51 @@ impl<'g> FnCx<'g> {
     }
 
     fn check_call_fn(&mut self, id: FnId, args: &[ast::Expr], span: Span) -> Result<TExpr> {
+        self.check_call_fn_with(id, args, span, None)
+    }
+
+    /// A type argument of a call (D336): it may name the type parameters
+    /// and sizes of the function; a size it names that the function has not
+    /// is any size (`decode<Point[k]>`).
+    fn type_arg(&mut self, t: &ast::TypeExpr, existential: bool) -> Result<Ty> {
+        let mut syms: Vec<SymInfo> = self.syms.clone();
+        let generics = self.generics.clone();
+        let n = syms.len();
+        let ty = type_from_ast(t, &mut SigCtx { generics: &generics, sums: &self.g.heads, syms: &mut syms, allow_new: true, result: false, module: self.module.as_deref(), imports: self.g.imports.get(&self.file) })?;
+        for s in n..syms.len() {
+            if !alone_in(&ty, s as SymId) {
+                return err(t.span, format!("the new size `{}` of a type argument stands alone as the size of an array (`T[{}]`)", syms[s].name, syms[s].name));
+            }
+        }
+        if existential {
+            for s in syms.iter_mut().skip(n) {
+                s.name = format!("{}@{}:{}", s.name, t.span.line, t.span.col);
+            }
+            self.syms = syms;
+            return Ok(ty);
+        }
+        let fresh: Vec<Size> = (n..syms.len()).map(|_| self.fresh_size(t.span)).collect();
+        fn open(t: &Ty, n: usize, fresh: &[Size]) -> Ty {
+            match t {
+                Ty::Array(Size::Poly(p), e) => {
+                    let e = Box::new(open(e, n, fresh));
+                    match p.as_sym() {
+                        Some(s) if s as usize >= n => Ty::Array(fresh[s as usize - n].clone(), e),
+                        _ => Ty::Array(Size::Poly(p.clone()), e),
+                    }
+                }
+                Ty::Array(s, e) => Ty::Array(s.clone(), Box::new(open(e, n, fresh))),
+                Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| open(t, n, fresh)).collect()),
+                Ty::Record(fs) => Ty::Record(fs.iter().map(|(k, t)| (k.clone(), open(t, n, fresh))).collect()),
+                Ty::Sum { id, name, args } => Ty::Sum { id: *id, name: name.clone(), args: args.iter().map(|t| open(t, n, fresh)).collect() },
+                Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| open(t, n, fresh)).collect(), Box::new(open(r, n, fresh))),
+                other => other.clone(),
+            }
+        }
+        Ok(open(&ty, n, &fresh))
+    }
+
+    fn check_call_fn_with(&mut self, id: FnId, args: &[ast::Expr], span: Span, explicit: Option<&[Ty]>) -> Result<TExpr> {
         let g = self.g;
         let sig = &g.sigs[id];
         if sig.is_action && !self.can_act() {
@@ -1822,6 +1971,14 @@ impl<'g> FnCx<'g> {
         }
         self.arity(&sig.name, sig.param_tys.len(), args.len(), span)?;
         let type_args: Vec<Ty> = sig.generics.iter().map(|gc| self.fresh(gc.1, LitKind::None, span)).collect();
+        if let Some(ex) = explicit {
+            if ex.len() != type_args.len() {
+                return err(span, format!("`{}` takes {} type argument(s), but {} were given", sig.name, type_args.len(), ex.len()));
+            }
+            for (a, t) in type_args.iter().zip(ex) {
+                self.unify(a, t, span)?;
+            }
+        }
         // Check the arguments, with hints for lambdas.
         let mut targs = Vec::new();
         for (a, p) in args.iter().zip(sig.param_tys.iter()) {
@@ -1863,6 +2020,52 @@ impl<'g> FnCx<'g> {
                     },
                 };
                 sym_map[s] = Some(Size::Poly(size));
+            }
+            // an array in a record or a tuple of the argument (D336)
+            if let SymOrigin::ParamPath(i, path) = &info.origin {
+                let mut at = self.shallow(&targs[*i].ty);
+                let mut pt = sig.param_tys[*i].clone();
+                for &k in path {
+                    let (next, pnext) = match (&at, &pt) {
+                        (Ty::Array(_, e), Ty::Array(_, pe)) if k == crate::tast::ELEMENT => (Some((**e).clone()), (**pe).clone()),
+                        (Ty::Record(fs), Ty::Record(ps)) => {
+                            let name = &ps[k as usize].0;
+                            (fs.iter().find(|(n, _)| n == name).map(|(_, t)| t.clone()), ps[k as usize].1.clone())
+                        }
+                        (Ty::Tuple(ts), Ty::Tuple(ps)) if ts.len() == ps.len() => (Some(ts[k as usize].clone()), ps[k as usize].clone()),
+                        _ => (None, pt.clone()),
+                    };
+                    match next {
+                        Some(n) => {
+                            at = self.shallow(&n);
+                            pt = pnext;
+                        }
+                        None => {
+                            return err(
+                                targs[*i].span,
+                                format!(
+                                    "type mismatch: expected `{}`, found `{}`",
+                                    self.show_sig_ty(id, &sig.param_tys[*i]),
+                                    self.show(&targs[*i].ty)
+                                ),
+                            )
+                        }
+                    }
+                }
+                let at = if let Ty::Var(_) = at {
+                    return err(targs[*i].span, "the type of this argument must be known here (an array in it gives a size of the function)");
+                } else {
+                    at
+                };
+                match at {
+                    Ty::Array(sz, _) => sym_map[s] = Some(self.size_res(&sz)),
+                    other => {
+                        return err(
+                            targs[*i].span,
+                            format!("type mismatch: expected an array, found `{}`", self.show(&other)),
+                        )
+                    }
+                }
             }
             if let SymOrigin::Param(i) = info.origin {
                 let at = self.shallow(&targs[i].ty);
@@ -2870,9 +3073,20 @@ impl<'g> FnCx<'g> {
             }
             TExprKind::Call { callee, args, .. } => {
                 match callee {
-                    Callee::Fn { type_args, .. } => {
+                    Callee::Fn { id, type_args } => {
                         for t in type_args.iter_mut() {
                             *t = self.zonk(t)?;
+                        }
+                        // `json.decode<T>`, `json.encode(x)`: the function
+                        // written for `T` (D336)
+                        let (d, en) = self.g.placeholders;
+                        if !self.g.codecs.is_empty() && (Some(*id) == d || Some(*id) == en) {
+                            if let Some(k) = type_args.first().and_then(|t| crate::codec::codec_key(t, &self.g.sums)) {
+                                if let Some(&(dec, enc)) = self.g.codecs.get(&k) {
+                                    *id = if Some(*id) == d { dec } else { enc };
+                                    type_args.clear();
+                                }
+                            }
                         }
                     }
                     Callee::Value(f) => self.zonk_expr(f)?,
@@ -3029,7 +3243,58 @@ fn contains_fn(t: &Ty) -> bool {
 
 /// Checks a program. `prelude` is the standard library written in
 /// Isocron; user declarations shadow prelude declarations of the same name.
+/// The name of the placeholders `decode` and `encode` of the module `json`
+/// (D336).
+const DECODE: &str = "std:json.decode";
+const ENCODE: &str = "std:json.encode";
+
 pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TProgram> {
+    let first = check_program_with(user, prelude, &HashMap::new())?;
+    // `json.decode<T>` and `json.encode(x)` (D325, D336): the functions of
+    // each `T`, written in the module `json`, then the program checked again
+    // with them, each call given those of its type
+    let ids: Vec<(usize, bool)> = first.fns.iter().enumerate().filter(|(_, f)| f.name == DECODE || f.name == ENCODE).map(|(i, f)| (i, f.name == DECODE)).collect();
+    if ids.is_empty() {
+        return Ok(first);
+    }
+    let mut wanted: Vec<(Ty, Span, bool)> = Vec::new();
+    fn calls(e: &TExpr, ids: &[(usize, bool)], out: &mut Vec<(Ty, Span, bool)>) {
+        if let TExprKind::Call { callee: Callee::Fn { id, type_args }, .. } = &e.kind {
+            if let Some((_, decode)) = ids.iter().find(|(i, _)| i == id) {
+                if let Some(t) = type_args.first() {
+                    out.push((t.clone(), e.span, *decode));
+                }
+            }
+        }
+        for_each_child(e, &mut |c| calls(c, ids, out));
+    }
+    for f in &first.fns {
+        calls(&f.body, &ids, &mut wanted);
+    }
+    if wanted.is_empty() {
+        return Ok(first);
+    }
+    let (src, keys) = crate::codec::codec_source(&wanted, &first.sums)?;
+    let file = user
+        .decls
+        .iter()
+        .find_map(|d| match d {
+            ast::Decl::Fn(f) if f.name == DECODE => Some(f.span.file),
+            _ => None,
+        })
+        .unwrap_or(crate::USER_FILE);
+    let generated = isc_syntax::parse(&src, file).map_err(|d| Diagnostic::new(d.span, format!("the functions of JSON written by the compiler: {} (a defect of the compiler)", d.message)))?;
+    let mut with = user.clone();
+    for d in generated.decls {
+        if let ast::Decl::Fn(mut f) = d {
+            f.name = format!("std:json.{}", f.name);
+            with.decls.push(ast::Decl::Fn(f));
+        }
+    }
+    check_program_with(&with, prelude, &keys)
+}
+
+fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &HashMap<String, usize>) -> Result<TProgram> {
     // the types of the prelude (`Result`, D138) after those of the program,
     // unless the program declares one of their names: then they, and the
     // functions of the prelude whose signature mentions them, are left out
@@ -3149,7 +3414,15 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
             sigs.push(sig);
         }
     }
-    let globals = Globals { sigs, names, first_extern, sums, heads, ctors, imports };
+    // the functions written for the types of `decode` and `encode` (D336)
+    let mut codec_ids: HashMap<String, (FnId, FnId)> = HashMap::new();
+    for (k, i) in codecs {
+        if let (Some(&d), Some(&e)) = (names.get(&format!("std:json.codecDecode{}", i)), names.get(&format!("std:json.codecEncode{}", i))) {
+            codec_ids.insert(k.clone(), (d, e));
+        }
+    }
+    let placeholders = (names.get(DECODE).copied(), names.get(ENCODE).copied());
+    let globals = Globals { sigs, names, first_extern, sums, heads, ctors, imports, codecs: codec_ids, placeholders };
     let mut fns = Vec::new();
     for (id, (d, from_prelude)) in decls.iter().enumerate() {
         fns.push(check_fn(&globals, id, d, *from_prelude)?);
@@ -3170,6 +3443,7 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
         certain_panics(&f.body)?;
     }
     let recursive = recursive_fns(&fns);
+    let recursive = outline_large(&fns, recursive, main);
     // a constant computed from itself would never end (D159)
     for (id, f) in fns.iter().enumerate() {
         if recursive[id] && globals.sigs[id].is_const {
@@ -3716,6 +3990,112 @@ fn collect_calls(e: &TExpr, out: &mut Vec<(FnId, Span)>) {
 
 /// The functions that can call themselves, directly or through others (SPEC
 /// section 11: they are not inlined).
+/// The size above which a function is called rather than inlined (D336):
+/// its nodes once the functions it calls are inlined in it.
+const INLINE_LIMIT: usize = 4000;
+/// A function of at least `COPY_MIN` nodes is called rather than inlined
+/// when its copies would hold more than `COPY_LIMIT` nodes (D336).
+const COPY_MIN: usize = 100;
+const COPY_LIMIT: usize = 2000;
+
+/// The functions called rather than inlined because of their size (D336):
+/// a function whose nodes, the bodies it inlines counted, exceed
+/// `INLINE_LIMIT`, or whose copies in the program (one at each place where
+/// it is inlined) would exceed `COPY_LIMIT`; decided again until nothing
+/// changes, as each such function is compiled once. Not a function that
+/// takes or returns a function (each call specializes it, SPEC section 11),
+/// nor `main`.
+fn outline_large(fns: &[TFn], mut called: Vec<bool>, main: FnId) -> Vec<bool> {
+    fn nodes(e: &TExpr) -> usize {
+        let mut n = 1;
+        for_each_child(e, &mut |c| n += nodes(c));
+        n
+    }
+    fn holds_fn(t: &Ty) -> bool {
+        match t {
+            Ty::Fn(..) => true,
+            Ty::Tuple(ts) => ts.iter().any(holds_fn),
+            Ty::Record(fs) => fs.iter().any(|(_, t)| holds_fn(t)),
+            Ty::Array(_, e) => holds_fn(e),
+            Ty::Sum { args, .. } => args.iter().any(holds_fn),
+            _ => false,
+        }
+    }
+    let n = fns.len();
+    let own: Vec<usize> = fns.iter().map(|f| nodes(&f.body)).collect();
+    let calls: Vec<Vec<FnId>> = fns
+        .iter()
+        .map(|f| {
+            let mut v = Vec::new();
+            collect_calls(&f.body, &mut v);
+            v.into_iter().map(|(g, _)| g).collect()
+        })
+        .collect();
+    // the functions that the program reaches
+    let mut reached = vec![false; n];
+    let mut todo = vec![main];
+    while let Some(f) = todo.pop() {
+        if !std::mem::replace(&mut reached[f], true) {
+            todo.extend(calls[f].iter().copied());
+        }
+    }
+    let eligible: Vec<bool> = (0..n).map(|f| f != main && reached[f] && !fns[f].param_tys.iter().any(holds_fn) && !holds_fn(&fns[f].ret)).collect();
+    loop {
+        // the size of each function with what it inlines, from the leaves
+        fn size(f: FnId, calls: &[Vec<FnId>], own: &[usize], called: &[bool], sizes: &mut Vec<Option<usize>>) -> usize {
+            if let Some(s) = sizes[f] {
+                return s;
+            }
+            sizes[f] = Some(1);
+            let mut s = own[f];
+            for &g in &calls[f] {
+                if !called[g] {
+                    s += size(g, calls, own, called, sizes);
+                }
+            }
+            sizes[f] = Some(s);
+            s
+        }
+        let mut sizes = vec![None; n];
+        let sz: Vec<usize> = (0..n).map(|f| size(f, &calls, &own, &called, &mut sizes)).collect();
+        // the copies of each function: one in each copy of a function that
+        // inlines it; a called function is one
+        fn copies(f: FnId, callers: &[Vec<FnId>], called: &[bool], main: FnId, memo: &mut Vec<Option<usize>>) -> usize {
+            if let Some(c) = memo[f] {
+                return c;
+            }
+            memo[f] = Some(0);
+            let mut c = 0usize;
+            for &g in &callers[f] {
+                c = c.saturating_add(if called[g] || g == main { 1 } else { copies(g, callers, called, main, memo) });
+            }
+            memo[f] = Some(c);
+            c
+        }
+        let mut callers: Vec<Vec<FnId>> = vec![Vec::new(); n];
+        for f in (0..n).filter(|&f| reached[f]) {
+            for &g in &calls[f] {
+                callers[g].push(f);
+            }
+        }
+        let mut memo = vec![None; n];
+        let mut changed = false;
+        for f in 0..n {
+            if called[f] || !eligible[f] {
+                continue;
+            }
+            let c = copies(f, &callers, &called, main, &mut memo);
+            if sz[f] > INLINE_LIMIT || (sz[f] >= COPY_MIN && c >= 2 && sz[f].saturating_mul(c) > COPY_LIMIT) {
+                called[f] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return called;
+        }
+    }
+}
+
 fn recursive_fns(fns: &[TFn]) -> Vec<bool> {
     let edges: Vec<Vec<FnId>> = fns
         .iter()

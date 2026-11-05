@@ -1275,13 +1275,20 @@ pub unsafe extern "C" fn isc_str_from_bytes(out: *mut IscStr, p: *const u8, n: i
     *out = new_str(b);
 }
 
-/// A writer into a small buffer (the text of a scalar).
-struct Small {
-    buf: [u8; 64],
+/// A writer into a buffer of `N` bytes (the text of a scalar). A float is
+/// written without exponent (D108): 5e-324 takes 326 bytes, so the buffer
+/// of an `f64` holds 352 (D336: a buffer of 64 cut such texts).
+struct Small<const N: usize> {
+    buf: [u8; N],
     len: usize,
 }
 
-impl Write for Small {
+/// The longest text of an `f64` (`-0.` and 323 zeros then a digit; 309
+/// digits for the largest) and of an `f32` (48 bytes), with room.
+const F64_TEXT: usize = 352;
+const F32_TEXT: usize = 64;
+
+impl<const N: usize> Write for Small<N> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let b = s.as_bytes();
         if self.len + b.len() > self.buf.len() {
@@ -1307,14 +1314,14 @@ pub unsafe extern "C" fn isc_to_string_u64(out: *mut IscStr, v: u64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_to_string_f64(out: *mut IscStr, v: f64) {
-    let mut s = Small { buf: [0; 64], len: 0 };
+    let mut s = Small::<F64_TEXT> { buf: [0; F64_TEXT], len: 0 };
     let _ = sem::write_f64(&mut s, v);
     *out = new_str(&s.buf[..s.len]);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn isc_to_string_f32(out: *mut IscStr, v: f32) {
-    let mut s = Small { buf: [0; 64], len: 0 };
+    let mut s = Small::<F32_TEXT> { buf: [0; F32_TEXT], len: 0 };
     let _ = sem::write_f32(&mut s, v);
     *out = new_str(&s.buf[..s.len]);
 }

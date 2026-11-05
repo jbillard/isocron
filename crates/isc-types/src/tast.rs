@@ -474,10 +474,25 @@ pub struct Local {
     pub span: Span,
 }
 
+/// The step of a `SymOrigin::ParamPath` to the elements of an array (D336).
+pub const ELEMENT: u32 = u32::MAX;
+
+/// The size bound by this path is a value of the function (its path does
+/// not go through the elements of an array).
+pub fn path_has_value(path: &[u32]) -> bool {
+    !path.contains(&ELEMENT)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SymOrigin {
     /// Bound by the size of the given (top-level array) parameter.
     Param(usize),
+    /// Bound by the size of the array at this path in the given parameter:
+    /// the indices of the fields of records (in their order of names) and of
+    /// the elements of tuples (`r: { xs: f64[k] }`, D336); `ELEMENT` for the
+    /// elements of an array (the rows of `t: f64[r][c]`): a size known to
+    /// the types only, not a value of the function.
+    ParamPath(usize, Vec<u32>),
     /// The value of the given `size` parameter (`k: size`).
     SizeParam(usize),
     /// The value of a local `i64` variable, given as a `size` argument.

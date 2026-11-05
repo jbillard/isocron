@@ -271,7 +271,7 @@ action main(args: string[k]): i32 {
     assert_eq!(find(&es, "stack", 5).len(), 2, "{}", d);
     assert_eq!(find(&es, "loop", 13)[0].what, "`walk`", "{}", d);
     let up = find(&es, "alloc", 21);
-    assert!(up.iter().any(|e| e.rule == Some("M2") && e.why.contains("recursive function `up`")), "{}", d);
+    assert!(up.iter().any(|e| e.rule == Some("M2") && e.why.contains("the function `up`, called")), "{}", d);
 }
 
 /// A node of a recursive type is a `refcount` entry; one more owner of a

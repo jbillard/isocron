@@ -1,12 +1,13 @@
-// The module `json` of the standard library (SPEC section 18, D335): JSON
-// (RFC 8259) read and written in Isocron. The text is indexed first, in
-// passes over its bytes and no loop: a `scan` tells the bytes inside a
+// The module `json` of the standard library (SPEC section 18, D335, D336):
+// JSON (RFC 8259) read and written in Isocron. The text is indexed first,
+// in passes over its bytes and no loop: a `scan` tells the bytes inside a
 // string (a state 0 outside, 1 inside, 2 after a backslash), another the
 // depth of the brackets outside strings; an opening and its closing have
 // the same level and follow each other in the order (level, place), so
 // that one sort pairs them; the commas of a container are a run of the
-// commas in that order, found by halving. The values are then read from
-// there, each array by a `map` over its elements.
+// commas in that order, found by halving. A value is then checked, its
+// faults found with their path, and built, which cannot fail: the elements
+// of each container by a `map`, in parallel.
 
 export type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) | Obj(string[m], Json[m]);
 
@@ -18,42 +19,63 @@ export type JsonError = { line: i64, column: i64, message: string };
 // and their closings; the commas by (level, place) as keys and their
 // places; the places of the quotes that end strings; the depth after each
 // byte
-type Index = Ix(i64[s1], i64[s2], i64[s3], i64[s4], i64[s5], i64[s6], i64[s7]);
+type Index = Ix(i64[s1], i64[s2], i64[s3], i64[s4], i64[s5], i64[s6], i64[s7], i64[s8]);
 
 function ixOpens(ix: Index): i64[k] {
     return match (ix) {
-        Ix(b, o, c, ck, cm, e, d) => o,
+        Ix(b, o, c, ck, cm, e, d, al) => o,
     };
 }
 
 function ixCloses(ix: Index): i64[k] {
     return match (ix) {
-        Ix(b, o, c, ck, cm, e, d) => c,
+        Ix(b, o, c, ck, cm, e, d, al) => c,
     };
 }
 
 function ixCommaKeys(ix: Index): i64[k] {
     return match (ix) {
-        Ix(b, o, c, ck, cm, e, d) => ck,
+        Ix(b, o, c, ck, cm, e, d, al) => ck,
     };
 }
 
 function ixCommas(ix: Index): i64[k] {
     return match (ix) {
-        Ix(b, o, c, ck, cm, e, d) => cm,
+        Ix(b, o, c, ck, cm, e, d, al) => cm,
     };
 }
 
 function ixEnds(ix: Index): i64[k] {
     return match (ix) {
-        Ix(b, o, c, ck, cm, e, d) => e,
+        Ix(b, o, c, ck, cm, e, d, al) => e,
     };
 }
 
 function ixDepth(ix: Index): i64[k] {
     return match (ix) {
-        Ix(b, o, c, ck, cm, e, d) => d,
+        Ix(b, o, c, ck, cm, e, d, al) => d,
     };
+}
+
+// the state before each byte (0 outside a string, 1 inside, 2 after a
+// backslash)
+function ixBefore(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d, al) => b,
+    };
+}
+
+// the keys of all the brackets, in their order
+function ixAll(ix: Index): i64[k] {
+    return match (ix) {
+        Ix(b, o, c, ck, cm, e, d, al) => al,
+    };
+}
+
+// the key of a bracket of level `level` at `p` in a text of `w - 1` bytes:
+// in the order (level, place), positive (a level is above `-w`)
+function bracketKey(level: i64, p: i64, w: i64): i64 {
+    return (level + w) * w + p;
 }
 
 // the error at the byte `at` of `b`
@@ -142,70 +164,102 @@ function utf8Of(u: i64): string {
     return stringOf([u8(0xF0 | (u >> 18)), u8(0x80 | ((u >> 12) & 0x3F)), u8(0x80 | ((u >> 6) & 0x3F)), u8(0x80 | (u & 0x3F))]);
 }
 
-// the text of the string whose bytes are from `at` to `end`, its escapes
-// read, after `acc`
-function unescape(b: u8[n], text: string, at: i64, end: i64, acc: string): Result<string, JsonError> {
-    if (at >= end) {
-        return Ok(acc);
-    }
-    // the bytes up to the next backslash, as they are
-    const next = fold(iota(end - at), -1, (s, j) => s < 0 && b[at + j] == 92u8 ? at + j : s);
-    if (next < 0) {
-        return Ok(acc + text.slice(at, end));
-    }
-    const head = acc + text.slice(at, next);
-    if (next + 1 >= end) {
-        return Err(errorAt(b, next, "a backslash at the end of a string"));
-    }
-    const c = b[next + 1];
-    if (c == 117u8) {
-        const u = hex4(b, next + 2);
-        if (u < 0) {
-            return Err(errorAt(b, next, "an escape \\u without four hexadecimal digits"));
-        }
-        // a surrogate pair
-        if (u >= 0xD800 && u < 0xDC00) {
-            const low = next + 8 <= end && b[next + 6] == 92u8 && b[next + 7] == 117u8 ? hex4(b, next + 8) : -1;
-            if (low < 0xDC00 || low >= 0xE000) {
-                return Err(errorAt(b, next, "a high surrogate without its low one"));
-            }
-            return unescape(b, text, next + 12, end, head + utf8Of(0x10000 + ((u - 0xD800) << 10) + (low - 0xDC00)));
-        }
-        if (u >= 0xDC00 && u < 0xE000) {
-            return Err(errorAt(b, next, "a low surrogate alone"));
-        }
-        return unescape(b, text, next + 6, end, head + utf8Of(u));
-    }
-    const plain = c == 34u8 ? "\"" : (c == 92u8 ? "\\" : (c == 47u8 ? "/" : (c == 98u8 ? stringOf([8u8]) : (c == 102u8 ? stringOf([12u8]) : (c == 110u8 ? "\n" : (c == 114u8 ? "\r" : (c == 116u8 ? "\t" : "")))))));
-    if (plain == "") {
-        return Err(errorAt(b, next, "an unknown escape"));
-    }
-    return unescape(b, text, next + 2, end, head + plain);
+// the escapes of the string whose bytes are from `a` to `z`: the places of
+// their backslashes (a backslash not itself escaped, by the index)
+function escapesIn(b: u8[n], ix: Index, a: i64, z: i64): i64[k] {
+    const before = ixBefore(ix);
+    return map(filter(iota(z - a), (j) => b[a + j] == 92u8 && before[a + j] == 1), (j) => a + j);
 }
 
-// the string that opens at `at` (a quote) and the place after it
-function stringAt(b: u8[n], text: string, ix: Index, at: i64): Result<[string, i64], JsonError> {
+// the code of the escape \u at `p` that is a high surrogate followed by its
+// low one, or -1
+function pairAt(b: u8[n], p: i64, z: i64): i64 {
+    const u = hex4(b, p + 2);
+    if (u < 0xD800 || u >= 0xDC00 || p + 12 > z || b[p + 6] != 92u8 || b[p + 7] != 117u8) {
+        return -1;
+    }
+    const low = hex4(b, p + 8);
+    return low >= 0xDC00 && low < 0xE000 ? 0x10000 + ((u - 0xD800) << 10) + (low - 0xDC00) : -1;
+}
+
+// the escape at `ps[i]` is the low surrogate of the escape before it
+function consumed(b: u8[n], ps: i64[k], i: i64, z: i64): boolean {
+    return i > 0 && ps[i - 1] + 6 == ps[i] && b[ps[i - 1] + 1] == 117u8 && pairAt(b, ps[i - 1], z) >= 0;
+}
+
+// the fault of the escape at `p` (the `i`-th of `ps`), or -1
+function escapeFault(b: u8[n], ps: i64[k], i: i64, z: i64): [i64, string] {
+    const p = ps[i];
+    const c = b[p + 1];
+    if (c == 117u8) {
+        const u = hex4(b, p + 2);
+        if (u < 0 || p + 6 > z) {
+            return [p, ": an escape \\u without four hexadecimal digits"] as const;
+        }
+        if (u >= 0xD800 && u < 0xDC00 && pairAt(b, p, z) < 0) {
+            return [p, ": a high surrogate without its low one"] as const;
+        }
+        if (u >= 0xDC00 && u < 0xE000 && !consumed(b, ps, i, z)) {
+            return [p, ": a low surrogate alone"] as const;
+        }
+        return fine();
+    }
+    return c == 34u8 || c == 92u8 || c == 47u8 || c == 98u8 || c == 102u8 || c == 110u8 || c == 114u8 || c == 116u8 ? fine() : [p, ": an unknown escape"] as const;
+}
+
+// the bytes that the escape at `ps[i]` takes
+function escapeLength(b: u8[n], ps: i64[k], i: i64, z: i64): i64 {
+    const p = ps[i];
+    if (b[p + 1] != 117u8) {
+        return 2;
+    }
+    return pairAt(b, p, z) >= 0 ? 12 : 6;
+}
+
+// the text of the escape at `ps[i]`
+function escapeText(b: u8[n], ps: i64[k], i: i64, z: i64): string {
+    const p = ps[i];
+    const c = b[p + 1];
+    if (c == 117u8) {
+        if (consumed(b, ps, i, z)) {
+            return "";
+        }
+        const pair = pairAt(b, p, z);
+        return utf8Of(pair >= 0 ? pair : hex4(b, p + 2));
+    }
+    return c == 34u8 ? "\"" : (c == 92u8 ? "\\" : (c == 47u8 ? "/" : (c == 98u8 ? stringOf([8u8]) : (c == 102u8 ? stringOf([12u8]) : (c == 110u8 ? "\n" : (c == 114u8 ? "\r" : "\t"))))));
+}
+
+// the string that opens at `at` (a quote), its escapes read, and the place
+// after it; or the place of its fault and what it is
+function stringAt(b: u8[n], text: string, ix: Index, at: i64): Result<[string, i64], [i64, string]> {
     const k = lowerBound(ixEnds(ix), at + 1, 0, ixEnds(ix).length);
     if (k >= ixEnds(ix).length) {
-        return Err(errorAt(b, at, "a string without its end"));
+        return Err([at, ": a string without its end"] as const);
     }
-    const end = ixEnds(ix)[k];
-    if (count(iota(end - at - 1), (j) => b[at + 1 + j] < 32u8) > 0) {
-        return Err(errorAt(b, at, "a control character in a string"));
+    const z = ixEnds(ix)[k];
+    const a = at + 1;
+    const controls = filter(iota(z - a), (j) => b[a + j] < 32u8);
+    if (controls.length > 0) {
+        return Err([a + controls[0], ": a control character in a string"] as const);
     }
-    return match (unescape(b, text, at + 1, end, "")) {
-        Ok(s) => Ok([s, end + 1] as const),
-        Err(e) => Err(e),
-    };
-}
-
-// the end of the number at `at`: its bytes of digits, signs, dots, exponents
-function numberEnd(b: u8[n], at: i64): i64 {
-    if (at >= b.length) {
-        return at;
+    const ps = escapesIn(b, ix, a, z);
+    if (ps.length == 0) {
+        return Ok([text.slice(a, z), z + 1] as const);
     }
-    const c = b[at];
-    return (c >= 48u8 && c <= 57u8) || c == 45u8 || c == 43u8 || c == 46u8 || c == 101u8 || c == 69u8 ? numberEnd(b, at + 1) : at;
+    const faults = map(iota(ps.length), (i) => escapeFault(b, ps, i, z));
+    const bad = filter(iota(ps.length), (i) => {
+        const [p, why] = faults[i];
+        return p >= 0;
+    });
+    if (bad.length > 0) {
+        return Err(faults[bad[0]]);
+    }
+    // each escape after the text before it (an escape taken by the one
+    // before it: nothing)
+    const ends = map(iota(ps.length), (i) => consumed(b, ps, i, z) ? ps[i] + 6 : ps[i] + escapeLength(b, ps, i, z));
+    const pieces = map(iota(ps.length), (i) => consumed(b, ps, i, z) ? "" : text.slice(i == 0 ? a : ends[i - 1], ps[i]) + escapeText(b, ps, i, z));
+    return Ok([join(pieces, "") + text.slice(ends[ps.length - 1], z), z + 1] as const);
 }
 
 // the digits from `at` (at least one when `one`): the place after them
@@ -236,135 +290,8 @@ function numberOk(b: u8[n], at: i64, end: i64): boolean {
     return e > sg && e == end;
 }
 
-// the starts of the `m` elements of the container that opens at `p` and
-// closes at `c`, its commas from the `lo`-th of their order
-function elementStart(ix: Index, p: i64, lo: i64, j: i64): i64 {
-    return j == 0 ? p + 1 : ixCommas(ix)[lo + j - 1] + 1;
-}
-
-// the value at `at` and the place after it (spaces after it skipped)
-function valueAt(b: u8[n], text: string, ix: Index, at0: i64): Result<[Json, i64], JsonError> {
-    const at = skip(b, at0);
-    if (at >= b.length) {
-        return Err(errorAt(b, at, "a value expected"));
-    }
-    const c = b[at];
-    if (c == 34u8) {
-        return match (stringAt(b, text, ix, at)) {
-            Ok([s, e]) => Ok([Str(s), skip(b, e)] as const),
-            Err(e) => Err(e),
-        };
-    }
-    if (c == 91u8 || c == 123u8) {
-        return containerAt(b, text, ix, at);
-    }
-    if (c == 116u8 && text.slice(at, Math.min(at + 4, b.length)) == "true") {
-        return Ok([Bool(true), skip(b, at + 4)] as const);
-    }
-    if (c == 102u8 && text.slice(at, Math.min(at + 5, b.length)) == "false") {
-        return Ok([Bool(false), skip(b, at + 5)] as const);
-    }
-    if (c == 110u8 && text.slice(at, Math.min(at + 4, b.length)) == "null") {
-        return Ok([Null, skip(b, at + 4)] as const);
-    }
-    const end = numberEnd(b, at);
-    if (end > at && numberOk(b, at, end)) {
-        return Ok([Num(parseF64(text.slice(at, end))), skip(b, end)] as const);
-    }
-    return Err(errorAt(b, at, "not a value"));
-}
-
-// the member `"key": value` at `at`
-function memberAt(b: u8[n], text: string, ix: Index, at0: i64): Result<[[string, Json], i64], JsonError> {
-    const at = skip(b, at0);
-    if (at >= b.length || b[at] != 34u8) {
-        return Err(errorAt(b, at, "a key expected"));
-    }
-    return match (stringAt(b, text, ix, at)) {
-        Ok([key, e]) => memberValue(b, text, ix, key, skip(b, e)),
-        Err(err) => Err(err),
-    };
-}
-
-// the value of the member `key` whose colon is expected at `colon`
-function memberValue(b: u8[n], text: string, ix: Index, key: string, colon: i64): Result<[[string, Json], i64], JsonError> {
-    if (colon >= b.length || b[colon] != 58u8) {
-        return Err(errorAt(b, colon, "a colon expected"));
-    }
-    return match (valueAt(b, text, ix, colon + 1)) {
-        Ok([value, after]) => Ok([[key, value] as const, after] as const),
-        Err(err) => Err(err),
-    };
-}
-
-// the array or object that opens at `p`
-function containerAt(b: u8[n], text: string, ix: Index, p: i64): Result<[Json, i64], JsonError> {
-    const level = ixDepth(ix)[p];
-    const key = level * (b.length + 1) + p;
-    const k = lowerBound(ixOpens(ix), key, 0, ixOpens(ix).length);
-    if (k >= ixOpens(ix).length || ixOpens(ix)[k] != key) {
-        return Err(errorAt(b, p, "a bracket without its end"));
-    }
-    const c = ixCloses(ix)[k];
-    const array = b[p] == 91u8;
-    if (b[c] != (array ? 93u8 : 125u8)) {
-        return Err(errorAt(b, c, "a bracket closed by the other kind"));
-    }
-    const lo = lowerBound(ixCommaKeys(ix), key, 0, ixCommaKeys(ix).length);
-    const hi = lowerBound(ixCommaKeys(ix), level * (b.length + 1) + c, 0, ixCommaKeys(ix).length);
-    const empty = skip(b, p + 1) == c;
-    if (empty && hi > lo) {
-        return Err(errorAt(b, p, "a comma without values"));
-    }
-    const m = empty ? 0 : hi - lo + 1;
-    if (array) {
-        return match (arrayFrom(b, text, ix, p, lo, m, c, 0, fill(m, Null))) {
-            Ok(xs) => Ok([Arr(xs), skip(b, c + 1)] as const),
-            Err(e) => Err(e),
-        };
-    }
-    return match (objectFrom(b, text, ix, p, lo, m, c, 0, fill(m, ""), fill(m, Null))) {
-        Ok([ks, vs]) => Ok([Obj(ks, vs), skip(b, c + 1)] as const),
-        Err(e) => Err(e),
-    };
-}
-
-// the end of the element `j` of `m` of the container: the next comma, or
-// its closing `c`
-function endOf(ix: Index, lo: i64, m: i64, c: i64, j: i64): i64 {
-    return j + 1 < m ? ixCommas(ix)[lo + j] : c;
-}
-
-// the elements from `j` of the array that opens at `p`, into `acc`
-// (updated where it is)
-function arrayFrom(b: u8[n], text: string, ix: Index, p: i64, lo: i64, m: i64, c: i64, j: i64, acc: Json[m]): Result<Json[m], JsonError> {
-    if (j == m) {
-        return Ok(acc);
-    }
-    const at = elementStart(ix, p, lo, j);
-    return match (valueAt(b, text, ix, at)) {
-        Ok([v, e]) => e != endOf(ix, lo, m, c, j) ? Err(errorAt(b, e, "a comma or a bracket expected after a value")) : arrayFrom(b, text, ix, p, lo, m, c, j + 1, acc.with(j, v)),
-        Err(e) => Err(e),
-    };
-}
-
-// the members from `j` of the object that opens at `p`, into `keys` and
-// `values`
-function objectFrom(b: u8[n], text: string, ix: Index, p: i64, lo: i64, m: i64, c: i64, j: i64, keys: string[m], values: Json[m]): Result<[string[m], Json[m]], JsonError> {
-    if (j == m) {
-        return Ok([keys, values] as const);
-    }
-    const at = elementStart(ix, p, lo, j);
-    return match (memberAt(b, text, ix, at)) {
-        Ok([kv, e]) => e != endOf(ix, lo, m, c, j) ? Err(errorAt(b, e, "a comma or a brace expected after a member")) : match (kv) {
-            [k, v] => objectFrom(b, text, ix, p, lo, m, c, j + 1, keys.with(j, k), values.with(j, v)),
-        },
-        Err(e) => Err(e),
-    };
-}
-
 // the index of a text `b`
-function indexOf(b: u8[n]): Index {
+function indexed(b: u8[n]): Index {
     const st = scan(map(b, (c) => i64(c)), (s, c) => s == 0 ? (c == 34 ? 1 : 0) : (s == 1 ? (c == 92 ? 2 : (c == 34 ? 0 : 1)) : 1), 0);
     const before = map(iota(b.length), (i) => i == 0 ? 0 : st[i - 1]);
     const isOpen = (i: i64) => before[i] == 0 && (b[i] == 91u8 || b[i] == 123u8);
@@ -373,31 +300,65 @@ function indexOf(b: u8[n]): Index {
     const w = b.length + 1;
     // the openings and closings by (level, place): consecutive pairs
     const brackets = filter(iota(b.length), (i) => isOpen(i) || isClose(i));
-    const keys = map(brackets, (i) => (isOpen(i) ? depth[i] : depth[i] + 1) * w + i);
+    const keys = map(brackets, (i) => bracketKey(isOpen(i) ? depth[i] : depth[i] + 1, i, w));
     const order = argsort(keys);
     const pairs = brackets.length / 2;
     const opens = map(iota(pairs), (k) => keys[order[2 * k]]);
     const closes = map(iota(pairs), (k) => brackets[order[2 * k + 1]]);
+    const all = map(order, (j) => keys[j]);
     const commaPlaces = filter(iota(b.length), (i) => before[i] == 0 && b[i] == 44u8);
     const ckeys = map(commaPlaces, (i) => depth[i] * w + i);
     const corder = argsort(ckeys);
-    return Ix(before, opens, closes, map(corder, (j) => ckeys[j]), map(corder, (j) => commaPlaces[j]), filter(iota(b.length), (i) => before[i] == 1 && b[i] == 34u8), depth);
+    return Ix(before, opens, closes, map(corder, (j) => ckeys[j]), map(corder, (j) => commaPlaces[j]), filter(iota(b.length), (i) => before[i] == 1 && b[i] == 34u8), depth, all);
 }
 
 // the JSON value of `text`
 export function parse(text: string): Result<Json, JsonError> {
     const b = bytes(text);
-    if (!utf8(b)) {
-        return Err({ line: 1, column: 1, message: "not UTF-8" });
+    const ix = indexed(b);
+    const [tat, twhy] = checkText(b, ix);
+    if (tat >= 0) {
+        return Err(errorAt(b, tat, twhy));
     }
-    const ix = indexOf(b);
-    if (b.length > 0 && max(ixDepth(ix)) > 512) {
-        return Err(errorAt(b, 0, "deeper than 512"));
+    const [at, why] = checkAny(b, text, ix, 0, b.length);
+    if (at >= 0) {
+        return Err(errorAt(b, at, "$" + why));
     }
-    return match (valueAt(b, text, ix, 0)) {
-        Ok([v, e]) => e == b.length ? Ok(v) : Err(errorAt(b, e, "text after the value")),
-        Err(e) => Err(e),
-    };
+    return Ok(buildAny(b, text, ix, 0, b.length));
+}
+
+// an object of the keys `ks` and the values `vs` (their sizes tested equal
+// where it is called)
+function objectOf(ks: string[m], vs: Json[m]): Json {
+    return Obj(ks, vs);
+}
+
+// the value of a checked segment: the elements of a container built in
+// parallel, by `map`
+function buildAny(b: u8[n], text: string, ix: Index, s: i64, e: i64): Json {
+    const [a, z] = trim(b, s, e);
+    const c = b[a];
+    if (c == 34u8) {
+        return Str(stringValue(b, text, ix, s, e));
+    }
+    if (c == 91u8) {
+        const [ss, es] = elements(b, ix, a, z - 1);
+        return Arr(map(iota(ss.length), (j) => buildAny(b, text, ix, ss[j], es[j])));
+    }
+    if (c == 123u8) {
+        const [ks, vs, ve, at, why] = members(b, text, ix, a, z - 1);
+        return objectOf(ks, map(iota(ks.length), (j) => buildAny(b, text, ix, vs[j], ve[j])));
+    }
+    if (c == 116u8) {
+        return Bool(true);
+    }
+    if (c == 102u8) {
+        return Bool(false);
+    }
+    if (c == 110u8) {
+        return Null;
+    }
+    return Num(parseF64(text.slice(a, z)));
 }
 
 // the text of `e`: `line L, column C: message`
@@ -422,9 +383,396 @@ export function stringify(j: Json): string {
     return match (j) {
         Null => "null",
         Bool(x) => x ? "true" : "false",
-        Num(x) => x == x && x != 1.0 / 0.0 && x != -1.0 / 0.0 ? toString(x) : "null",
+        Num(x) => numberText(x),
         Str(s) => quote(s),
         Arr(xs) => "[" + join(map(xs, stringify), ",") + "]",
         Obj(ks, vs) => "{" + join(map(iota(ks.length), (i) => quote(ks[i]) + ":" + stringify(vs[i])), ",") + "}",
     };
+}
+
+// ----- decoding into a type of the program (D336) ---------------------
+//
+// `decode<T>(text)` and `encode<T>(x)` are placeholders: at each call the
+// compiler gives the functions it writes for `T` in this module (named
+// `codec*`), over the functions below. A value of the text is a segment
+// [s, e) of its bytes, spaces around it allowed; a check returns the place
+// of the first fault and what it is (-1 and "" when none), its path given
+// by the containers on the way back ("[3].x: a number expected").
+
+// the value of `text` decoded into `T`: `decode<Point>(text)`
+export function decode<T>(text: string): Result<T, JsonError> {
+    return Err({ line: 0, column: 0, message: "decode" });
+}
+
+// `x` as text of JSON
+export function encode<T>(x: T): string {
+    return "";
+}
+
+function fine(): [i64, string] {
+    return [-1, ""] as const;
+}
+
+// the text is UTF-8, at most 512 levels deep
+function checkText(b: u8[n], ix: Index): [i64, string] {
+    if (!utf8(b)) {
+        return [0, "not UTF-8"] as const;
+    }
+    if (b.length > 0 && max(ixDepth(ix)) > 512) {
+        return [0, "deeper than 512"] as const;
+    }
+    return checkBrackets(b, ix);
+}
+
+// the brackets paired: in the order (level, place), the brackets of each
+// level alternate an opening and its closing, of its kind
+function checkBrackets(b: u8[n], ix: Index): [i64, string] {
+    const all = ixAll(ix);
+    const w = b.length + 1;
+    const m = all.length;
+    const lev = map(all, (k) => k / w);
+    const place = map(all, (k) => k % w);
+    // the first bracket of the level of each
+    const first = scan(map(iota(m), (i) => i == 0 || lev[i] != lev[i - 1] ? i : 0), (x, y) => Math.max(x, y), 0);
+    const opening = map(iota(m), (i) => b[place[i]] == 91u8 || b[place[i]] == 123u8);
+    const wrong = filter(iota(m), (i) => (i - first[i]) % 2 == 1 && !opening[i] && opening[i - 1] && b[place[i]] != b[place[i - 1]] + 2u8);
+    if (wrong.length > 0) {
+        return [min(map(wrong, (i) => place[i])), "a bracket closed by the other kind"] as const;
+    }
+    const unopened = filter(iota(m), (i) => (i - first[i]) % 2 == 0 && !opening[i]);
+    if (unopened.length > 0) {
+        return [min(map(unopened, (i) => place[i])), "a closing bracket without its opening"] as const;
+    }
+    const unclosed = filter(iota(m), (i) => (i - first[i]) % 2 == 0 && opening[i] && (i + 1 == m || lev[i + 1] != lev[i]));
+    if (unclosed.length > 0) {
+        return [min(map(unclosed, (i) => place[i])), "a bracket without its end"] as const;
+    }
+    return fine();
+}
+
+// the place after the last byte of [a, z) that is not a space
+function back(b: u8[n], a: i64, z: i64): i64 {
+    return z > a && isSpace(b[z - 1]) ? back(b, a, z - 1) : z;
+}
+
+// the segment [s, e) without its spaces
+function trim(b: u8[n], s: i64, e: i64): [i64, i64] {
+    const a = Math.min(skip(b, s), e);
+    return [a, back(b, a, e)] as const;
+}
+
+// the end of the first word of [a, z): its first space, or `z`
+function wordEnd(b: u8[n], a: i64, z: i64): i64 {
+    return a < z && !isSpace(b[a]) ? wordEnd(b, a + 1, z) : a;
+}
+
+// a value followed by another word: the comma missing between them
+function commaMissing(b: u8[n], w: i64): [i64, string] {
+    return [skip(b, w), ": a comma or a closing bracket expected"] as const;
+}
+
+function checkNumber(b: u8[n], s: i64, e: i64): [i64, string] {
+    const [a, z] = trim(b, s, e);
+    if (a < z && numberOk(b, a, z)) {
+        return fine();
+    }
+    const w = wordEnd(b, a, z);
+    return w < z && numberOk(b, a, w) ? commaMissing(b, w) : [a, ": a number expected"] as const;
+}
+
+function numberValue(b: u8[n], text: string, s: i64, e: i64): f64 {
+    const [a, z] = trim(b, s, e);
+    return parseF64(text.slice(a, z));
+}
+
+// the magnitude of the digits from `a` to `z`, saturated at the largest
+// `u64` with a flag
+function magnitude(b: u8[n], a: i64, z: i64): [u64, boolean] {
+    return fold(iota(z - a), [0u64, false] as const, (acc, j) => {
+        const [v, over] = acc;
+        const d = u64(b[a + j] - 48u8);
+        return over || v > (18446744073709551615u64 - d) / 10u64 ? [18446744073709551615u64, true] as const : [v * 10u64 + d, false] as const;
+    });
+}
+
+// an integer of JSON (`-?(0|[1-9][0-9]*)`) from `-negMax` to `posMax`
+function checkInteger(b: u8[n], s: i64, e: i64, negMax: u64, posMax: u64, what: string): [i64, string] {
+    const [a, z0] = trim(b, s, e);
+    const w = wordEnd(b, a, z0);
+    const z = w < z0 && numberOk(b, a, w) ? w : z0;
+    const neg = a < z && b[a] == 45u8;
+    const d = neg ? a + 1 : a;
+    if (d >= z || digitsEnd(b, d, z) != z || (b[d] == 48u8 && z - d > 1)) {
+        return [a, `: an integer expected (${what})`] as const;
+    }
+    const [m, over] = magnitude(b, d, z);
+    if (over || m > (neg ? negMax : posMax)) {
+        return [a, `: out of the range of ${what}`] as const;
+    }
+    return z < z0 ? commaMissing(b, z) : fine();
+}
+
+// the integer of a checked segment, as an `i64` (modulo 2^64 for a `u64`)
+function integerValue(b: u8[n], s: i64, e: i64): i64 {
+    const [a, z] = trim(b, s, e);
+    const neg = b[a] == 45u8;
+    const [m, over] = magnitude(b, neg ? a + 1 : a, z);
+    return neg ? -i64(m) : i64(m);
+}
+
+function unsignedValue(b: u8[n], s: i64, e: i64): u64 {
+    const [a, z] = trim(b, s, e);
+    const [m, over] = magnitude(b, a, z);
+    return m;
+}
+
+function checkBool(b: u8[n], text: string, s: i64, e: i64): [i64, string] {
+    const [a, z] = trim(b, s, e);
+    const t = text.slice(a, z);
+    if (t == "true" || t == "false") {
+        return fine();
+    }
+    const w = wordEnd(b, a, z);
+    const first = text.slice(a, w);
+    return w < z && (first == "true" || first == "false") ? commaMissing(b, w) : [a, ": true or false expected"] as const;
+}
+
+function boolValue(b: u8[n], s: i64, e: i64): boolean {
+    const [a, z] = trim(b, s, e);
+    return b[a] == 116u8;
+}
+
+function isNull(b: u8[n], text: string, s: i64, e: i64): boolean {
+    const [a, z] = trim(b, s, e);
+    return text.slice(a, z) == "null";
+}
+
+function checkString(b: u8[n], text: string, ix: Index, s: i64, e: i64): [i64, string] {
+    const [a, z] = trim(b, s, e);
+    if (a >= z || b[a] != 34u8) {
+        return [a, ": a string expected"] as const;
+    }
+    return match (stringAt(b, text, ix, a)) {
+        Ok([v, end]) => end == z ? fine() : [skip(b, end), ": text after the string"] as const,
+        Err(fault) => fault,
+    };
+}
+
+function stringValue(b: u8[n], text: string, ix: Index, s: i64, e: i64): string {
+    const [a, z] = trim(b, s, e);
+    return match (stringAt(b, text, ix, a)) {
+        Ok([v, end]) => v,
+        Err(_) => "",
+    };
+}
+
+// the container opening with `open` ([ or {) that is the segment: its
+// opening, its closing, and a fault
+function containerOf(b: u8[n], ix: Index, s: i64, e: i64, open: u8): [i64, i64, i64, string] {
+    const [a, z] = trim(b, s, e);
+    const what = open == 91u8 ? ": an array expected" : ": an object expected";
+    if (a >= z || b[a] != open) {
+        return [a, 0, a, what] as const;
+    }
+    const key = bracketKey(ixDepth(ix)[a], a, b.length + 1);
+    const k = lowerBound(ixOpens(ix), key, 0, ixOpens(ix).length);
+    if (k >= ixOpens(ix).length || ixOpens(ix)[k] != key) {
+        return [a, 0, a, ": a bracket without its end"] as const;
+    }
+    const c = ixCloses(ix)[k];
+    if (b[c] != open + 2u8) {
+        return [a, c, c, ": a bracket closed by the other kind"] as const;
+    }
+    if (c + 1 != z) {
+        return [a, c, skip(b, c + 1), ": text after the value"] as const;
+    }
+    return [a, c, -1, ""] as const;
+}
+
+// the segments of the elements of the container from `a` to `c`
+function elements(b: u8[n], ix: Index, a: i64, c: i64): [i64[m], i64[m]] {
+    const level = ixDepth(ix)[a];
+    const w = b.length + 1;
+    const lo = lowerBound(ixCommaKeys(ix), level * w + a, 0, ixCommaKeys(ix).length);
+    const hi = lowerBound(ixCommaKeys(ix), level * w + c, 0, ixCommaKeys(ix).length);
+    const m = skip(b, a + 1) == c && hi == lo ? 0 : hi - lo + 1;
+    const commas = ixCommas(ix);
+    return [map(iota(m), (j) => j == 0 ? a + 1 : commas[lo + j - 1] + 1), map(iota(m), (j) => j + 1 < m ? commas[lo + j] : c)] as const;
+}
+
+// the elements of an array checked: its segments
+function countOf(b: u8[n], ix: Index, s: i64, e: i64): i64 {
+    const [a, z] = trim(b, s, e);
+    const [ss, es] = elements(b, ix, a, z - 1);
+    return ss.length;
+}
+
+// a member `"key": value` from `s` to `e`: its key, the segment of its
+// value, a fault
+function memberOf(b: u8[n], text: string, ix: Index, s: i64, e: i64): [string, i64, i64, i64, string] {
+    const a = skip(b, s);
+    if (a >= e || b[a] != 34u8) {
+        return ["", 0, 0, a, ": a key expected"] as const;
+    }
+    return match (stringAt(b, text, ix, a)) {
+        Ok([k, after]) => {
+            const colon = skip(b, after);
+            return colon < e && b[colon] == 58u8 ? [k, colon + 1, e, -1, ""] as const : ["", 0, 0, colon, ": a colon expected"] as const;
+        },
+        Err(fault) => {
+            const [p, why] = fault;
+            return ["", 0, 0, p, why] as const;
+        },
+    };
+}
+
+// the members of the object from `a` to `c`: keys, segments of values, the
+// first fault
+function members(b: u8[n], text: string, ix: Index, a: i64, c: i64): [string[m], i64[m], i64[m], i64, string] {
+    const [ss, es] = elements(b, ix, a, c);
+    const ms = map(iota(ss.length), (j) => memberOf(b, text, ix, ss[j], es[j]));
+    const bad = filter(iota(ss.length), (j) => {
+        const [k, vs, ve, at, why] = ms[j];
+        return at >= 0;
+    });
+    const [k0, vs0, ve0, at0, why0] = bad.length > 0 ? ms[bad[0]] : ["", 0, 0, -1, ""] as const;
+    return [map(ms, (x) => {
+        const [k, vs, ve, at, why] = x;
+        return k;
+    }), map(ms, (x) => {
+        const [k, vs, ve, at, why] = x;
+        return vs;
+    }), map(ms, (x) => {
+        const [k, vs, ve, at, why] = x;
+        return ve;
+    }), at0, why0] as const;
+}
+
+// the place of the last member named `name`, or -1 (the last wins, as in
+// JavaScript)
+function lastKey(ks: string[m], name: string): i64 {
+    return fold(iota(ks.length), -1, (p, j) => ks[j] == name ? j : p);
+}
+
+// the first fault of the elements [ss, es] by `check`, its index before it
+// (each element checked once: in parallel, by `map`)
+function firstFault(ss: i64[m], es: i64[m], check: (i64, i64) => [i64, string]): [i64, string] {
+    const faults = map(iota(ss.length), (j) => check(ss[j], es[j]));
+    const bad = filter(iota(ss.length), (j) => {
+        const [at, why] = faults[j];
+        return at >= 0;
+    });
+    if (bad.length == 0) {
+        return fine();
+    }
+    const [at, why] = faults[bad[0]];
+    return [at, `[${bad[0]}]${why}`] as const;
+}
+
+// the first fault of the members whose names are `ks` by `check`, the name
+// before it
+function firstMemberFault(ks: string[m], vs: i64[m], ve: i64[m], check: (string, i64, i64) => [i64, string]): [i64, string] {
+    const faults = map(iota(ks.length), (j) => check(ks[j], vs[j], ve[j]));
+    const bad = filter(iota(ks.length), (j) => {
+        const [at, why] = faults[j];
+        return at >= 0;
+    });
+    if (bad.length == 0) {
+        return fine();
+    }
+    const [at, why] = faults[bad[0]];
+    return [at, `.${ks[bad[0]]}${why}`] as const;
+}
+
+// any value, checked (a member that the type does not name)
+function checkAny(b: u8[n], text: string, ix: Index, s: i64, e: i64): [i64, string] {
+    const [a, z] = trim(b, s, e);
+    if (a >= z) {
+        return [a, ": a value expected"] as const;
+    }
+    const c = b[a];
+    if (c == 34u8) {
+        return checkString(b, text, ix, s, e);
+    }
+    if (c == 91u8) {
+        const [o, cl, at, why] = containerOf(b, ix, s, e, 91u8);
+        if (at >= 0) {
+            return [at, why] as const;
+        }
+        const [ss, es] = elements(b, ix, o, cl);
+        return firstFault(ss, es, (x, y) => checkAny(b, text, ix, x, y));
+    }
+    if (c == 123u8) {
+        const [o, cl, at, why] = containerOf(b, ix, s, e, 123u8);
+        if (at >= 0) {
+            return [at, why] as const;
+        }
+        const [ks, vs, ve, kat, kwhy] = members(b, text, ix, o, cl);
+        if (kat >= 0) {
+            return [kat, kwhy] as const;
+        }
+        return firstMemberFault(ks, vs, ve, (k, x, y) => checkAny(b, text, ix, x, y));
+    }
+    const t = text.slice(a, z);
+    if (t == "true" || t == "false" || t == "null" || numberOk(b, a, z)) {
+        return fine();
+    }
+    const w = wordEnd(b, a, z);
+    const first = text.slice(a, w);
+    if (w < z && (first == "true" || first == "false" || first == "null" || numberOk(b, a, w))) {
+        return commaMissing(b, w);
+    }
+    return [a, ": not a value"] as const;
+}
+
+// the first place from `at` whose byte is not `c`
+function firstNot(b: u8[n], c: u8, at: i64): i64 {
+    return at < b.length && b[at] == c ? firstNot(b, c, at + 1) : at;
+}
+
+// the last place before `at` whose byte is not `c`, plus one
+function lastNot(b: u8[n], c: u8, at: i64): i64 {
+    return at > 0 && b[at - 1] == c ? lastNot(b, c, at - 1) : at;
+}
+
+// the digits of `t` (a number written without exponent: `-0.0005`,
+// `1000`) with an exponent, as JavaScript writes them: `5e-4`, `1e+3`
+function exponentForm(t: string): string {
+    const neg = t.slice(0, 1) == "-";
+    const body = neg ? t.slice(1, t.length) : t;
+    const dot = body.indexOf(".");
+    const whole = dot < 0 ? body : body.slice(0, dot);
+    const part = dot < 0 ? "" : body.slice(dot + 1, body.length);
+    const digits = bytes(whole + part);
+    const lead = firstNot(digits, 48u8, 0);
+    const end = lastNot(digits, 48u8, digits.length);
+    const sig = stringOf(digits).slice(lead, Math.max(end, lead + 1));
+    const exp = whole.length - 1 - lead;
+    const mantissa = sig.length > 1 ? sig.slice(0, 1) + "." + sig.slice(1, sig.length) : sig;
+    return `${neg ? "-" : ""}${mantissa}e${exp >= 0 ? "+" : "-"}${Math.abs(exp)}`;
+}
+
+// a number as text of JSON, as JavaScript writes it (`JSON.stringify`):
+// its shortest digits, with an exponent from 1e21 and below 1e-6, -0 as 0,
+// NaN and the infinities as `null`
+function numberText(x: f64): string {
+    if (x != x || x == 1.0 / 0.0 || x == -1.0 / 0.0) {
+        return "null";
+    }
+    if (x == 0.0) {
+        return "0";
+    }
+    const a = Math.abs(x);
+    return a < 1e21 && a >= 1e-6 ? toString(x) : exponentForm(toString(x));
+}
+
+function number32Text(x: f32): string {
+    if (x != x || x == 1.0f32 / 0.0f32 || x == -1.0f32 / 0.0f32) {
+        return "null";
+    }
+    if (x == 0.0f32) {
+        return "0";
+    }
+    const a = Math.abs(f64(x));
+    return a < 1e21 && a >= 1e-6 ? toString(x) : exponentForm(toString(x));
 }

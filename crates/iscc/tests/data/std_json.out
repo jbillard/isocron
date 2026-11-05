@@ -1,1 +1,1 @@
-[{"a":[1,2.5,-300,true,null],"b":{"c":"x\nyé😀"},"d":[]}, [], 42, line 1, column 4: not a value, line 1, column 6: a colon expected, line 1, column 2: an unknown escape, line 1, column 4: a comma or a bracket expected after a value, line 1, column 1: not a value, {}, [[[]]]]
+[{"a":[1,2.5,-300,true,null],"b":{"c":"x\nyé😀"},"d":[]}, [], 42, line 1, column 4: $[1]: a value expected, line 1, column 6: $: a colon expected, line 1, column 2: $: an unknown escape, line 1, column 4: $[0]: a comma or a closing bracket expected, line 1, column 1: $: not a value, {}, [[[]]]]

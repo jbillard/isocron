@@ -136,6 +136,27 @@ pub struct Lower<'p> {
     stored: Vec<(SlotKey, Vec<(StoredKey, FuncVal<'p>)>)>,
     known: Vec<(SlotKey, Vec<(StoredKey, FuncVal<'p>)>)>,
     stored_grew: bool,
+    /// The parameters (function, index) that a call cannot prove the sizes
+    /// of: those of the arrays in their records and tuples are tested on
+    /// entry of a function that is not inlined (D336).
+    unproved: HashSet<(FnId, usize)>,
+}
+
+/// The parameters that a call tests the sizes of (`size_checks`).
+fn unproved_params(p: &TProgram) -> HashSet<(FnId, usize)> {
+    fn walk(e: &tast::TExpr, out: &mut HashSet<(FnId, usize)>) {
+        if let tast::TExprKind::Call { callee: tast::Callee::Fn { id, .. }, size_checks, .. } = &e.kind {
+            for &i in size_checks {
+                out.insert((*id, i));
+            }
+        }
+        isc_types::check::for_each_child(e, &mut |c| walk(c, out));
+    }
+    let mut out = HashSet::new();
+    for f in &p.fns {
+        walk(&f.body, &mut out);
+    }
+    out
 }
 
 /// A slot of a function in a sum type: (type, its arguments, variant,
@@ -173,6 +194,7 @@ impl<'p> Lower<'p> {
             stored: Vec::new(),
             known: Vec::new(),
             stored_grew: false,
+            unproved: unproved_params(p),
         }
     }
 
@@ -2021,10 +2043,16 @@ impl<'p> Lower<'p> {
             body = Expr::new(ExprKind::CheckNonNegative(Box::new(k), Box::new(body)), ty, span);
         }
         for &i in checks.iter().rev() {
-            if let (Ty::Array(Size::Poly(p), _), Some((v, t))) = (&f.param_tys[i], &pvars[i]) {
-                let d = self.size(&env, p, span)?;
-                let actual =
-                    Expr::new(ExprKind::Len(Box::new(Expr::var(*v, t.clone(), span))), Type::Int(IntKind::I64), span);
+            let Some((v, t)) = &pvars[i] else { continue };
+            // the arrays of the parameter, in records and tuples too (D336)
+            let mut arrays = Vec::new();
+            array_paths(&f.param_tys[i], &mut Vec::new(), &mut arrays);
+            for (path, p) in arrays.into_iter().rev() {
+                if binds(&f.syms, i, &path, &p) {
+                    continue;
+                }
+                let d = self.size(&env, &p, span)?;
+                let actual = Expr::new(ExprKind::Len(Box::new(proj_path(*v, t, &path, span))), Type::Int(IntKind::I64), span);
                 let ty = body.ty.clone();
                 body = Expr::new(ExprKind::CheckSize(Box::new(d), Box::new(actual), Box::new(body)), ty, span);
             }
@@ -2083,6 +2111,12 @@ impl<'p> Lower<'p> {
             if let tast::SymOrigin::Param(i) = info.origin {
                 if let Some((v, t)) = &pvars[i] {
                     let len = Expr::new(ExprKind::Len(Box::new(Expr::var(*v, t.clone(), span))), Type::Int(IntKind::I64), span);
+                    env.sizes.insert(s as SymId, len);
+                }
+            }
+            if let tast::SymOrigin::ParamPath(i, path) = &info.origin {
+                if let (Some((v, t)), true) = (&pvars[*i], tast::path_has_value(path)) {
+                    let len = Expr::new(ExprKind::Len(Box::new(proj_path(*v, t, path, span))), Type::Int(IntKind::I64), span);
                     env.sizes.insert(s as SymId, len);
                 }
             }
@@ -2247,6 +2281,14 @@ impl<'p> Lower<'p> {
                 let len = Expr::new(ExprKind::Len(Box::new(Expr::var(v, t, fspan))), Type::Int(IntKind::I64), fspan);
                 env.sizes.insert(s as SymId, len);
             }
+            if let tast::SymOrigin::ParamPath(i, path) = &info.origin {
+                if !tast::path_has_value(path) {
+                    continue;
+                }
+                let (v, t) = pv(*i, self);
+                let len = Expr::new(ExprKind::Len(Box::new(proj_path(v, &t, path, fspan))), Type::Int(IntKind::I64), fspan);
+                env.sizes.insert(s as SymId, len);
+            }
             if let tast::SymOrigin::SizeParam(i) = info.origin {
                 let (v, t) = pv(i, self);
                 env.sizes.insert(s as SymId, Expr::var(v, t.clone(), fspan));
@@ -2260,18 +2302,22 @@ impl<'p> Lower<'p> {
         }
         // the size of each array parameter not fixed by itself: tested on
         // entry (a call site cannot prove it for every call)
+        // and of each array in a record or a tuple of a parameter that a
+        // call cannot prove (D336)
         for (i, pt) in f.param_tys.iter().enumerate().rev() {
-            let Ty::Array(Size::Poly(p), _) = pt else { continue };
-            let own = p.as_sym().map(|s| matches!(f.syms[s as usize].origin, tast::SymOrigin::Param(j) if j == i)).unwrap_or(false);
-            if own {
-                continue;
+            let mut arrays = Vec::new();
+            array_paths(pt, &mut Vec::new(), &mut arrays);
+            for (path, p) in arrays.into_iter().rev() {
+                if binds(&f.syms, i, &path, &p) || (!path.is_empty() && !self.unproved.contains(&(id, i))) {
+                    continue;
+                }
+                let d = self.size(&env, &p, fspan)?;
+                let Some(pi) = pvars[i] else { continue };
+                let t = self.vars[pi as usize].ty.clone();
+                let actual = Expr::new(ExprKind::Len(Box::new(proj_path(pi, &t, &path, fspan))), Type::Int(IntKind::I64), fspan);
+                let ty = body.ty.clone();
+                body = Expr::new(ExprKind::CheckSize(Box::new(d), Box::new(actual), Box::new(body)), ty, fspan);
             }
-            let d = self.size(&env, p, fspan)?;
-            let pi = pvars[i].expect("an array parameter");
-            let t = self.vars[pi as usize].ty.clone();
-            let actual = Expr::new(ExprKind::Len(Box::new(Expr::var(pi, t, fspan))), Type::Int(IntKind::I64), fspan);
-            let ty = body.ty.clone();
-            body = Expr::new(ExprKind::CheckSize(Box::new(d), Box::new(actual), Box::new(body)), ty, fspan);
         }
         let require_tail = f.requires.iter().find(|(m, _)| *m == isc_syntax::ast::Modifier::RequireTail).map(|(_, s)| *s);
         self.reassoc_body(f, &mut body);
@@ -2721,4 +2767,52 @@ impl<'p> Lower<'p> {
         };
         Ok(Expr::new(kind, ty, span))
     }
+}
+
+/// The value at `path` (indices of fields and of elements of tuples) in the
+/// variable `v` of type `t` (D336).
+fn proj_path(v: VarId, t: &Type, path: &[u32], span: Span) -> Expr {
+    let mut e = Expr::var(v, t.clone(), span);
+    let mut ty = t.clone();
+    for &k in path {
+        let Type::Tuple(ts) = &ty else { unreachable!("a path through records and tuples") };
+        let nt = ts[k as usize].clone();
+        e = Expr::new(ExprKind::Proj(Box::new(e), k), nt.clone(), span);
+        ty = nt;
+    }
+    e
+}
+
+/// The arrays of a value of type `t` with their paths, through records
+/// and tuples (D336): the array itself (an empty path), or those of its
+/// fields and elements.
+fn array_paths(t: &Ty, path: &mut Vec<u32>, out: &mut Vec<(Vec<u32>, Poly)>) {
+    match t {
+        Ty::Array(Size::Poly(p), _) => out.push((path.clone(), p.clone())),
+        Ty::Record(fs) => {
+            for (i, (_, f)) in fs.iter().enumerate() {
+                path.push(i as u32);
+                array_paths(f, path, out);
+                path.pop();
+            }
+        }
+        Ty::Tuple(ts) => {
+            for (i, f) in ts.iter().enumerate() {
+                path.push(i as u32);
+                array_paths(f, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The size `p` of the array at `path` in the parameter `i` is the size
+/// variable that this array binds: nothing to check.
+fn binds(syms: &[tast::SymInfo], i: usize, path: &[u32], p: &Poly) -> bool {
+    p.as_sym().is_some_and(|s| match &syms[s as usize].origin {
+        tast::SymOrigin::Param(j) => *j == i && path.is_empty(),
+        tast::SymOrigin::ParamPath(j, q) => *j == i && q.as_slice() == path,
+        _ => false,
+    })
 }

@@ -248,7 +248,8 @@ Chaque valeur a un type connu à la compilation, et aucune conversion entre vale
 
 - `T[n]` : `n` éléments de type `T`, contigus en mémoire. `n` est une constante (`u32[256]`) ou une variable de taille (`f64[n]`).
 - **Indices** : tout type entier est accepté comme indice. Un indice négatif ou trop grand est une panne.
-- **Variables de taille** : une variable de taille apparaissant dans le type d'un paramètre est liée par l'argument reçu, et utilisable comme valeur `i64`.
+- **Variables de taille** : une variable de taille apparaissant dans le type d'un paramètre est liée par l'argument reçu, et utilisable comme valeur `i64` : par le paramètre tableau lui-même (`x: T[n]`), ou par un tableau d'un de ses records ou tuples (`r: { xs: f64[k] }` : `k` vaut la longueur de `r.xs`, D336). La taille des lignes d'un tableau de tableaux (`t: f64[r][c]`, `{ xs: f64[k] }[n]`) est connue des types seulement : ce n'est pas une valeur de la fonction (`t[0].length` la lit). Deux tableaux d'un paramètre d'une même taille sont testés égaux à l'appel quand seule l'exécution les connaît.
+- **Charges de types sommes** : une taille nommée dans la charge d'un constructeur (`Branch(Tree[k])`) est propre à chaque valeur : quelconque à la construction, nouvelle et existentielle là où un motif la défait (D335).
 - **Paramètres de taille** : un paramètre déclaré `k: size` est une valeur `i64` positive ou nulle utilisable dans les types : `function window<T>(x: T[n], k: size): T[n - k + 1][k]`.
 - **Tailles existentielles** : une variable de taille qui n'apparaît que dans le type du résultat est fixée à l'exécution par la fonction : `readF64(path)` est de type `f64[k]`. La forme bornée `T[k <= n]` (résultat de `filter`) précise en plus que `k` ne dépasse pas `n`.
 - **Expressions de taille** : sommes et produits de constantes et de variables de taille (`T[n - k + 1]`, `T[2 * n]`). Deux tailles sont égales à la compilation si leurs formes polynomiales normalisées sont identiques ; sinon, un test est inséré à l'entrée de la fonction. Un échec est une panne (section 5) ; chaque test restant figure dans le memory report.
@@ -281,7 +282,7 @@ type Result<T, E> = Ok(T) | Err(E);
 
 ### Génériques et classes
 
-- Paramètres de type : `function first<T>(x: T[n]): T`.
+- Paramètres de type : `function first<T>(x: T[n]): T`. Les arguments de type d'un appel sont inférés, ou donnés après son nom comme en TypeScript : `first<f64>(x)`, `none<i64>()`. `f<` est lu comme une liste d'arguments de type quand ce qui suit se lit comme des types fermés par `>` et suivis de `(` ; sinon c'est une comparaison (D325, D336).
 - Monomorphisation obligatoire : une version compilée par combinaison de types utilisée, aucune valeur emballée (boxing).
 - Classes prédéfinies, non extensibles en v0 : `Num` (+ − × ÷, élément neutre `0` et `1`), `Ord` (comparaisons : entiers, flottants, booléens, chaînes, `bigint`), `Eq` (égalité), `Key` (clés d'un `Map` : entiers, booléens, chaînes, `bigint` ; ni les flottants, dont l'égalité n'en est pas une pour NaN, D158). Exemple : `function sum<T extends Num>(x: T[n]): T`.
 
@@ -347,7 +348,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 Une fusion évite de créer un tableau intermédiaire en mémoire ; les règles ci-dessous sont garanties, et ce sont les seules sur lesquelles `requireFused` s'appuie.
 
-Préalable : avant la fusion, **toute** fonction non récursive est intégrée à son point d'appel (inlining), sans seuil, et toute fonction d'ordre supérieur est spécialisée (section 11). Un seuil d'inlining rendrait la fusion dépendante de l'implémentation ; la croissance du code qui en résulte est mesurée et acceptée (section 16, D329).
+Préalable : avant la fusion, toute fonction non récursive est intégrée à son point d'appel (inlining), et toute fonction d'ordre supérieur est spécialisée (section 11). Seule exception, une fonction trop grande pour être recopiée partout : plus de 4000 nœuds une fois ses appels intégrés, ou au moins 100 nœuds et plus de 2000 dans toutes ses copies. Elle est compilée une fois et appelée, comme une fonction récursive ; ni `main`, ni une fonction qui prend ou rend une fonction (D336). Les seuils sont choisis loin des programmes de calcul (le plus grand des dix programmes de mesure pèse 569 nœuds ; aucune de leurs fonctions n'est concernée, leur code est identique) : ils bornent la croissance du code que les décodeurs écrits pour chaque type feraient sinon exploser.
 
 ### Règles de fusion
 
@@ -562,7 +563,7 @@ Les fonctions passées en argument sont résolues à la compilation : aucune fer
 - Récursion terminale directe : doit être compilée en boucle, sans croissance de pile.
 - Récursion terminale mutuelle (D113) : un appel en position terminale d'une fonction récursive à une autre réutilise le cadre quand les tableaux qu'il passe sont des paramètres de l'appelant et que la boucle de l'appelant ne possède aucun tableau ; `@requireTail` l'accepte.
 - Récursion non terminale : autorisée, utilise la pile, signalée dans le memory report. Un dépassement de pile est une panne.
-- Une `function` récursive n'est pas inlinée ; son résultat tableau est matérialisé (règle M2).
+- Une `function` récursive n'est pas inlinée, ni une fonction trop grande (section 7, D336) ; son résultat tableau est matérialisé (règle M2).
 
 ## 12. Effets et entrées/sorties
 
@@ -798,7 +799,7 @@ Une question nouvelle est ajoutée ici et tranchée avant d'être implémentée 
 | Coût du mode reproductible | Il reste le mode par défaut. Mesuré : il égale ou bat la meilleure variante stricte de chaque langage (`results/xeon-summary.md`) ; face aux variantes réassociées de C et Zig, 5,69 µs contre 5,24 µs sur le petit `std_dev` (dans les caches), rien sur les grandes tailles (lues en mémoire). `allowReassoc` reste hors de la v1 (une erreur). |
 | `@requireVectorized` et cibles multiples | Hors de la v1 (section 1). Quand il viendra : vérifié pour chaque cible construite, l'erreur nomme la cible. |
 | Débordement entier modulaire | Gardé, défini. Aucun des écarts des dix programmes à leur plancher ne vient de lui (`results/floors.md`, l'attribution de D263). |
-| Croissance du code due à l'inlining total | Gardé sans seuil : les dix programmes font de 68 Ko à 296 Ko, sauf regex-redux (1,6 Mo : le moteur des expressions régulières qu'il emporte, pas l'inlining). |
+| Croissance du code due à l'inlining total | Gardé, avec un seuil loin des programmes de calcul (D336) : les dix programmes font de 68 Ko à 296 Ko, sauf regex-redux (1,6 Mo : le moteur des expressions régulières qu'il emporte, pas l'inlining). Les décodeurs de JSON, écrits pour chaque type, ont donné le seuil : sans lui, un programme de douze types demandait 50 s de compilation. |
 | Seuil de placement sur la pile | 32 Kio (D86) : les tableaux de travail de taille constante jusque-là sur la pile, au-delà sur le tas. |
 | Précision des fonctions transcendantes | Celle de l'implémentation de musl (crate `libm`, D108), la même sur toutes les cibles, dans l'interpréteur comme en code compilé : la reproductibilité avant la vitesse. |
 | Disposition automatique | Les colonnes toujours (section 4) en v1 ; un choix automatique hors de la v1. |
@@ -939,12 +940,14 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 
 - `type Json = Null | Bool(boolean) | Num(f64) | Str(string) | Arr(Json[k]) | Obj(string[m], Json[m])` : les clés d'un objet et leurs valeurs dans deux tableaux, dans l'ordre du texte (D335 : une charge de type somme a ses propres tailles).
 - `parse(text): Result<Json, JsonError>`. Le texte suit RFC 8259 : UTF-8 vérifié, échappements `\uXXXX` et paires de substitution, profondeur au plus 512. `JsonError = { line: i64, column: i64, message: string }`.
-- `stringify(j): string` écrit un texte sans espaces. Un nombre y est écrit sous la forme la plus courte qui se relit en la même valeur, comme `print`. NaN et l'infini sont écrits `null`, comme en JavaScript.
+- `stringify(j): string` écrit un texte sans espaces. Un nombre y est écrit comme `JSON.stringify` de JavaScript : les chiffres les plus courts qui se relisent en la même valeur, un exposant à partir de 1e21 et au-dessous de 1e-6, -0 écrit 0, NaN et l'infini écrits `null`.
+- Une erreur nomme sa ligne, sa colonne et le chemin de la valeur fautive (`$` le texte, `[2]` un élément, `.nom` un membre). Le texte est lu en passes sans boucle : l'état de chaque octet (hors chaîne, dans une chaîne, après `\`) par `scan`, la profondeur par `scan`, les crochets appariés par un tri sur (niveau, place), vérifiés niveau par niveau ; puis chaque valeur est vérifiée, puis construite, ce qui ne peut plus échouer, les éléments d'un conteneur par `map`, en parallèle.
 - **Le décodage dans un type de l'utilisateur.** `decode<T>(text): Result<T, JsonError>` et `encode<T>(x: T): string`. Un appel peut porter ses arguments de type comme en TypeScript (`decode<Point>(text)`). `f<` est lu comme une liste d'arguments de type quand ce qui suit se lit comme des types fermés par `>` et suivis de `(` ; sinon c'est une comparaison (D325).
-  - Le compilateur écrit, pour chaque `T` employé, son décodeur et son encodeur en Isocron, à la spécialisation. Le décodeur lit le texte une seule fois, sans construire de `Json` intermédiaire.
-  - `T` peut être `i64`, `f64`, `boolean`, `string`, un tableau, un tuple (un tableau JSON de cette longueur), un record de ces types, ou `Option<U>`. `Option<U>` vaut `None` pour un champ absent ou `null`.
-  - Un champ du record absent du texte, d'un autre type, ou un `i64` qui n'est pas un entier exact, est une erreur du décodage qui nomme le chemin du champ (`$.points[3].x`). Un champ du texte que `T` n'a pas est ignoré.
-  - Un `T` que JSON ne peut pas porter (une fonction, un `Map`, un type somme autre qu'`Option`) est **une erreur de compilation** qui nomme le champ.
+  - Le compilateur écrit, pour chaque `T` employé, ses fonctions de lecture et d'écriture en Isocron, ajoutées au module `json` et vérifiées comme lui ; le programme est vérifié une seconde fois avec elles, chaque appel recevant celles de son type (D336). Le décodeur lit l'index du texte, sans construire de `Json` intermédiaire, en deux passes : la vérification, dont la faute nomme le chemin de la valeur, puis la construction, qui ne peut plus échouer. Un tableau de valeurs qui contiennent des tableaux vérifie que ces lignes ont une même longueur avant d'être construit : un tableau de tableaux a des lignes d'une longueur.
+  - `T` peut être `boolean`, un entier (chacun vérifié dans son intervalle, écrit en entier : `1e3` n'est pas un entier), `f64`, `f32`, `string`, un tableau (de taille fixe ou quelconque), un tuple (un tableau JSON de cette longueur), un record, ou `Option<U>`. `Option<U>` vaut `None` pour un champ absent ou `null`. Le type de `decode` n'est pas un paramètre de type : il est connu là où `decode` est appelé.
+  - Un champ du record absent du texte, d'un autre type, ou un entier hors de son intervalle, est une erreur du décodage qui nomme le chemin du champ (`$.points[3].x`). Un membre du texte que `T` n'a pas est vérifié, puis laissé ; de deux membres d'un même nom, le dernier compte, comme en JavaScript.
+  - Un `T` que JSON ne peut pas porter (une fonction, un `Map`, un type somme autre qu'`Option`, `bigint`, `Option<Option<U>>`) est **une erreur de compilation** qui nomme sa place dans `T`.
+  - `encode` écrit les champs d'un record dans l'ordre de leurs noms, `None` en `null`, les nombres comme `stringify`.
 - Aucune primitive : le texte et les nombres existent déjà (`parseF64` suit les règles de JavaScript).
 
 #### `sha256`

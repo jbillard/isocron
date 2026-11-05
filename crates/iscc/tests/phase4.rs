@@ -288,7 +288,7 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ",
-        &["the result of the recursive function `up` (rule M2)"],
+        &["the result of the function `up`, called (rule M2)"],
     );
 }
 

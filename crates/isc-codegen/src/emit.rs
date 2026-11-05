@@ -571,7 +571,10 @@ pub struct Gen<'p> {
 fn holds_owned(t: &Type) -> bool {
     match t {
         Type::Rec(_) | Type::Str | Type::Big => true,
-        Type::Tuple(ts) => ts.iter().any(holds_owned),
+        // an array in a tuple is a block of its own (an array of records
+        // holding arrays: each record its own, freed and copied with it,
+        // D336), not a row of the block of an array of arrays
+        Type::Tuple(ts) => ts.iter().any(|c| c.is_array() || holds_owned(c)),
         Type::Array(e, _) => holds_owned(e),
         _ => false,
     }

@@ -263,6 +263,9 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     Record(Vec<(String, Expr)>),
     Call(Box<Expr>, Vec<Expr>),
+    /// The type arguments of a call, `f<T>(x)` (D336): the callee of a
+    /// `Call`, as in TypeScript.
+    TypeApp(Box<Expr>, Vec<TypeExpr>),
     Index(Box<Expr>, Box<Expr>),
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, String),
@@ -425,6 +428,12 @@ fn visit_expr(e: &mut Expr, f: &mut NameVisitor) -> crate::Result<()> {
             visit_expr(c, f)?;
             for x in args.iter_mut() {
                 visit_expr(x, f)?;
+            }
+        }
+        ExprKind::TypeApp(c, ts) => {
+            visit_expr(c, f)?;
+            for t in ts.iter_mut() {
+                visit_type(t, f)?;
             }
         }
         ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) | ExprKind::Pow(a, b) => {

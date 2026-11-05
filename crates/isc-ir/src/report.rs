@@ -376,7 +376,7 @@ impl<'p> Walk<'p> {
                     // the value of the `let` itself: as its context says
                     Some("result") => ("a result".into(), None),
                     Some("call") => (
-                        "an argument of a recursive function, which reads it in memory (rule M2: not inlined)".into(),
+                        "an argument of a function that is called (recursive, or too large to inline, D336), which reads it in memory (rule M2: not inlined)".into(),
                         Some("M2"),
                     ),
                     Some("action") => ("given to an action (rule M3)".into(), Some("M3")),
@@ -392,7 +392,7 @@ impl<'p> Walk<'p> {
             }
             Ctx::Action => ("given to an action (rule M3)".into(), Some("M3")),
             Ctx::CallArg => (
-                "an argument of a recursive function, which reads it in memory (rule M2: not inlined)".into(),
+                "an argument of a function that is called (recursive, or too large to inline, D336), which reads it in memory (rule M2: not inlined)".into(),
                 Some("M2"),
             ),
             Ctx::FoldInit => ("the accumulator of a `fold` (rule M2)".into(), Some("M2")),
@@ -485,12 +485,12 @@ impl<'p> Walk<'p> {
                 } else if self.others.contains(&(e as *const Expr)) {
                     self.push(e, "tail", format!("`{}`", name), None, "a tail call: its frame replaces the frame of the caller".into(), None);
                 } else {
-                    self.push(e, "stack", format!("`{}`", name), None, "a call of a recursive function: it uses the stack".into(), None);
+                    self.push(e, "stack", format!("`{}`", name), None, "a call of a function that is not inlined (recursive, or too large, D336): it uses the stack".into(), None);
                 }
                 // a jump gives no result of its own
                 if e.ty.has_heap() && !tail {
                     let (what, bytes) = self.size(e);
-                    self.push(e, "alloc", what, bytes, format!("the result of the recursive function `{}` (rule M2)", name), Some("M2"));
+                    self.push(e, "alloc", what, bytes, format!("the result of the function `{}`, called (rule M2)", name), Some("M2"));
                 }
             }
             CheckNonNegative(a, _) => {

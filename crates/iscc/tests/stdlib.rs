@@ -834,3 +834,196 @@ fn payloads_hold_arrays_of_their_own_size() {
 fn json_read_and_written() {
     agree(include_str!("data/std_json.isc"), "std_json", &[], include_str!("data/std_json.out"));
 }
+
+const SIZES_IN_PARAMETERS: &str = r##"function total(r: { name: string, xs: f64[k] }): f64 {
+    return sum(r.xs) + f64(k);
+}
+
+function pair(t: [i64, f64[n]], ys: f64[n]): f64 {
+    const [a, xs] = t;
+    return sum(xs * ys) + f64(a);
+}
+
+function both(r: { xs: f64[k], ys: f64[k] }): f64 {
+    return sum(r.xs * r.ys);
+}
+
+function make(n: i64): { name: string, xs: f64[k] } {
+    return { name: "a", xs: map(iota(n), (i) => f64(i)) };
+}
+
+function rows(t: f64[r][c]): i64 {
+    return r * 100 + (r > 0 ? t[0].length : 0);
+}
+
+function sums(t: f64[r][c]): f64[r] {
+    return map(t, (row) => sum(row));
+}
+
+function firstRow(t: f64[r][c]): f64[c] {
+    return t[0];
+}
+
+function inner(t: { xs: f64[k], name: string }[n]): string[n] {
+    return map(t, (x) => `${x.name}:${x.xs.length}`);
+}
+
+function mk(i: i64): { xs: f64[k], name: string } {
+    return { xs: map(iota(2), (j) => f64(i * 10 + j)), name: `n${i}` };
+}
+
+action main(args: string[k]): i32 {
+    print(total({ name: "a", xs: [1.0, 2.0] }));
+    print(total(make(4)));
+    print(pair([3, [1.0, 2.0]] as const, [10.0, 100.0]));
+    print(both({ xs: [1.0, 2.0], ys: [3.0, 4.0] }));
+    const m = make(args.length + 2);
+    print(both({ xs: m.xs, ys: map(m.xs, (x) => x * 2.0) }));
+    const t = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+    print([rows(t), rows(map(iota(0), (i) => [1.0, 2.0])), rows(map(iota(2), (i) => [f64(i), 2.0]))]);
+    print(sums(t));
+    print(firstRow(t) + [10.0, 20.0, 30.0]);
+    print(firstRow(map(iota(3), (i) => [f64(i), f64(i * i)])));
+    const ms = map(iota(3), (i) => mk(i));
+    print(ms);
+    print(inner(ms));
+    return 0;
+}
+"##;
+
+/// D336: a size of a function bound by an array in a record or a tuple of
+/// a parameter (`r: { xs: f64[k] }`, its value the length of `r.xs`), or by
+/// the rows of an array of a parameter (`t: f64[r][c]`, `c` known to the
+/// types only); two arrays of one size in a record tested at the call;
+/// rows of a `map` given to a function, built or constant (a row of a
+/// producer is no longer computed alone, D336); an array of records
+/// holding arrays; the interpreter, compiled, Valgrind.
+#[test]
+fn sizes_bound_by_arrays_in_records_tuples_and_rows() {
+    agree(
+        SIZES_IN_PARAMETERS,
+        "sizes_in_parameters",
+        &[],
+        "5\n10\n213\n11\n2\n[203, 0, 202]\n[6, 15]\n[11, 22, 33]\n[0, 0]\n[{name: n0, xs: [0, 1]}, {name: n1, xs: [10, 11]}, {name: n2, xs: [20, 21]}]\n[n0:2, n1:2, n2:2]\n",
+    );
+    // the sizes of two arrays of a record: tested where the function is
+    // called when only the run time knows them
+    let mismatch = "function both(r: { xs: f64[k], ys: f64[k] }): f64 {\n    return sum(r.xs * r.ys);\n}\n\naction main(args: string[k]): i32 {\n    const xs = map(iota(args.length + 2), (i) => f64(i));\n    print(both({ xs: xs, ys: filter(xs, (x) => x > 0.5) }));\n    return 0;\n}\n";
+    assert_eq!(interp_panic(mismatch, &[]), "panic at line 7, column 15: size mismatch: 2 != 1");
+    let r = run_bin(&compile(mismatch, "sizes_in_records_mismatch"), &[]);
+    assert_eq!((r.code, r.stderr.trim()), (101, "panic at line 7, column 15: size mismatch: 2 != 1"));
+    // the size of rows is not a value of the function
+    let e = match iscc::frontend("rows.isc", "function w(t: f64[r][c]): i64 {\n    return c;\n}\n\naction main(args: string[k]): i32 {\n    print(w([[1.0]]));\n    return 0;\n}\n") {
+        Ok(_) => panic!("the size of rows read as a value"),
+        Err(e) => format!("{}", e),
+    };
+    assert!(e.contains("2:12") && e.contains("known to the types only"), "{}", e);
+}
+
+const TYPE_ARGUMENTS: &str = r##"function first<T>(xs: T[n]): T {
+    return xs[0];
+}
+
+function two<A, B>(a: A, b: B): [A, B] {
+    return [a, b] as const;
+}
+
+function none<T>(): Option<T> {
+    return None;
+}
+
+action main(args: string[k]): i32 {
+    print(first<f64>([2.5, 1.0]));
+    print(first<string>(["a"]));
+    print(two<i32, string>(3, "x"));
+    print(none<i64>() ?? 7);
+    const a = 1;
+    const b = 2;
+    const c = 3;
+    print(a < b);
+    print([a < b, b > c, (a < b) == (c > b)]);
+    return 0;
+}
+"##;
+
+/// D336: the type arguments of a call, `f<T>(x)` as in TypeScript: read as
+/// types when types closed by `>` and followed by `(` come after `<`,
+/// else a comparison; their number checked.
+#[test]
+fn type_arguments_of_calls() {
+    agree(TYPE_ARGUMENTS, "type_arguments", &[], "2.5\na\n(3, x)\n7\ntrue\n[true, false, true]\n");
+    let e = match iscc::frontend("ta.isc", "function id<T>(x: T): T {\n    return x;\n}\n\naction main(args: string[k]): i32 {\n    print(id<i64, f64>(1));\n    return 0;\n}\n") {
+        Ok(_) => panic!("two type arguments given to one parameter"),
+        Err(e) => format!("{}", e),
+    };
+    assert!(e.contains("takes 1 type argument(s), but 2 were given"), "{}", e);
+    let e = match iscc::frontend("ta.isc", "function id<T>(x: T): T {\n    return x;\n}\n\naction main(args: string[k]): i32 {\n    print(id<f64>(1u8));\n    return 0;\n}\n") {
+        Ok(_) => panic!("a type argument not followed"),
+        Err(e) => format!("{}", e),
+    };
+    assert!(e.contains("mismatch"), "{}", e);
+}
+
+/// D336: the text of a float as long as it is (5e-324: 326 bytes), the
+/// same compiled as in the interpreter (a buffer of 64 bytes cut it).
+#[test]
+fn texts_of_long_floats() {
+    agree(
+        "action main(args: string[k]): i32 {\n    const xs = [5e-324, 1e21, 1.5e300, -1.7976931348623157e308, 1e-7];\n    print(map(xs, (x) => toString(x).length));\n    print(toString(1e-45f32).length);\n    print(toString(-1.7976931348623157e308).slice(0, 18));\n    return 0;\n}\n",
+        "texts_of_long_floats",
+        &[],
+        "[326, 22, 301, 310, 9]\n47\n-17976931348623157\n",
+    );
+}
+
+/// D336: `json.decode<T>(text)` and `json.encode(x)`: a record with an
+/// array of records holding an `Option`, fields unknown to the type
+/// skipped, the path of each fault (a field missing, of another type, an
+/// integer out of range, a bracket of the other kind) with its line and
+/// column; the integers of every width at the ends of their ranges, `f32`;
+/// arrays of arrays and arrays of records holding arrays, whose rows of
+/// other lengths are faults; fixed sizes, tuples, `Option` at the top, the
+/// last of two members of one name, escapes in keys; NaN, the infinities,
+/// -0 and the exponents written as JavaScript does; the brackets checked
+/// level by level; escapes and surrogate pairs read by `filter`, `map`
+/// and `join` (20000 escapes in one string), their faults at their place,
+/// a missing comma at the word after the value; the interpreter, compiled,
+/// Valgrind.
+#[test]
+fn json_decoded_into_types_and_encoded() {
+    agree(include_str!("data/std_json_types.isc"), "std_json_types", &[], include_str!("data/std_json_types.out"));
+    agree(include_str!("data/std_json_decode.isc"), "std_json_decode", &[], include_str!("data/std_json_decode.out"));
+    agree(include_str!("data/std_json_text.isc"), "std_json_text", &[], include_str!("data/std_json_text.out"));
+    agree(include_str!("data/std_json_strings.isc"), "std_json_strings", &[], include_str!("data/std_json_strings.out"));
+}
+
+/// D336: a type that JSON cannot carry, refused at compile time with the
+/// place of the part that it cannot carry.
+#[test]
+fn json_types_refused_at_compile_time() {
+    let cases: &[(&str, &str)] = &[
+        ("json.decode<{ m: Map<string, i64> }>(\"{}\")", "a `Map`"),
+        ("json.decode<{ a: { b: bigint } }>(\"{}\")", "a `bigint` (JSON numbers are read as `f64` or integers of 64 bits) at `.a.b`"),
+        ("json.decode<{ f: (i64) => i64 }>(\"{}\")", "a function at `.f`"),
+        ("json.decode<Option<Option<i64>>>(\"1\")", "an `Option` of an `Option`"),
+        ("json.decode<Shape>(\"1\")", "the sum type `Shape`"),
+        ("json.decode(\"1\")", "`void`"),
+        ("json.encode(None)", "`void`"),
+        ("json.decode<Option<f64[k]>[m]>(\"[]\")", "an `Option` holding an array, in an array"),
+    ];
+    for (call, want) in cases {
+        let src = format!("import * as json from \"json\";\n\ntype Shape = Dot(f64) | Line(f64, f64);\n\naction main(args: string[k]): i32 {{\n    const r = {};\n    return 0;\n}}\n", call);
+        let e = match iscc::frontend("bad.isc", &src) {
+            Ok(_) => panic!("accepted: {}", call),
+            Err(e) => format!("{}", e),
+        };
+        assert!(e.contains("JSON cannot carry the type of") && e.contains(want) && e.contains("bad.isc:6:"), "{}: {}", call, e);
+    }
+    // a type parameter: the type must be known where it is called
+    let generic = "import * as json from \"json\";\n\nfunction load<T>(s: string): Result<T, json.JsonError> {\n    return json.decode<T>(s);\n}\n\naction main(args: string[k]): i32 {\n    print(match (load<f64>(\"1\")) {\n        Ok(x) => x,\n        Err(e) => 0.0,\n    });\n    return 0;\n}\n";
+    let e = match iscc::frontend("bad.isc", generic) {
+        Ok(_) => panic!("decode of a type parameter accepted"),
+        Err(e) => format!("{}", e),
+    };
+    assert!(e.contains("a type parameter (the type must be known where it is called)") && e.contains("bad.isc:4:"), "{}", e);
+}

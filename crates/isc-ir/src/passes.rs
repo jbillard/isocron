@@ -134,6 +134,10 @@ fn is_wrapped_producer(e: &Expr) -> bool {
 pub(crate) fn fusable_slots(e: &Expr) -> Vec<usize> {
     match &e.kind {
         ExprKind::Map(ins, _) => (0..ins.len()).collect(),
+        // a row of a producer of rows is not computed alone: its memory
+        // would have no owner (the lambda may build it or return a view,
+        // D336); the producer is evaluated, the row a view of it
+        ExprKind::Index(..) if e.ty.is_array() => vec![],
         ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Index(..) | ExprKind::Len(_) => vec![0],
         // the source of a slice: a producer there is read from `a` to `b`
         ExprKind::Slice(..) => vec![0],

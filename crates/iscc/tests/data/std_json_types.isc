@@ -1,0 +1,30 @@
+import * as json from "json";
+
+type Point = { x: f64, y: f64, label: Option<string> };
+type Shape = { name: string, points: Point[k], tags: string[m], id: i64 };
+
+action main(args: string[k]): i32 {
+    const text = "{\"name\": \"tri\", \"id\": 7, \"points\": [{\"x\": 1, \"y\": 2.5}, {\"x\": -3e1, \"y\": 0, \"label\": \"top\"}], \"tags\": [\"a\", \"b\\n\"], \"extra\": {\"z\": [1, null]}}";
+    match (json.decode<Shape>(text)) {
+        Ok(s) => {
+            print(s.name);
+            print(s.id);
+            print(map(s.points, (p) => p.x + p.y));
+            print(map(s.points, (p) => match (p.label) {
+                Some(l) => l,
+                None => "-",
+            }));
+            print(s.tags);
+            print(json.encode(s));
+        },
+        Err(e) => print(json.message(e)),
+    };
+    const bad = ["{\"name\": \"t\", \"id\": 1.5, \"points\": [], \"tags\": []}", "{\"name\": \"t\", \"id\": 1, \"points\": [{\"x\": 1}], \"tags\": []}", "{\"name\": 3}", "[1]", "{\"name\": \"t\", \"id\": 1, \"points\": [], \"tags\": [\"a\", 2]}", "{\"name\": \"t\", \"id\": 99999999999999999999, \"points\": [], \"tags\": []}", "{\"name\": \"t\", \"id\": 1, \"points\": [], \"tags\": [], \"extra\": [1, }"];
+    print(map(bad, (t) => match (json.decode<Shape>(t)) {
+        Ok(s) => "ok",
+        Err(e) => json.message(e),
+    }));
+    print(json.encode([1.5, 2.0]));
+    print(json.encode({ a: [1, 2], b: "x\"y", c: true, d: [Some(1), None] }));
+    return 0;
+}

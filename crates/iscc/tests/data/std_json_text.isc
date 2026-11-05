@@ -1,0 +1,12 @@
+import * as json from "json";
+
+action main(args: string[k]): i32 {
+    const texts = ["{\"a\": [1, }", "[[1, 2]", "[1]]", "]", "[{]}", "{\"a\": [[], {}], \"b\": {\"c\": [1, [2, {}]]}}", "[1, [2, 3]", "{} {}", "[\"]\"]"];
+    print(map(texts, (t) => match (json.parse(t)) {
+        Ok(j) => json.stringify(j),
+        Err(e) => json.message(e),
+    }));
+    print(json.encode([1e21, 1e20, 123456789012345680000.0, 1.5e300, -2.5e-7, 1e-6, 0.000001234, 5e-324, 1.7976931348623157e308, -0.0, 0.1, 100.0]));
+    print(json.encode([1e30f32, 3.4028235e38f32, 1.0e-7f32, 0.5f32]));
+    return 0;
+}

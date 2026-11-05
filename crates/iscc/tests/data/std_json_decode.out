@@ -1,0 +1,15 @@
+{"a":-128,"b":255,"c":-32768,"d":65535,"e":-2147483648,"f":4294967295,"g":-9223372036854775808,"h":18446744073709551615,"x":0.1}
+[line 1, column 7: $.a: out of the range of i8, line 1, column 7: $.b: out of the range of u8, line 1, column 7: $.h: out of the range of u64, line 1, column 7: $.e: an integer expected (i32), line 1, column 7: $.g: an integer expected (i64), line 1, column 7: $.g: an integer expected (i64)]
+g 2 [6,15]
+line 1, column 35: $.rows[1]: an array of another length than in the first element (an array of arrays has rows of one length)
+[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}]
+line 1, column 27: $[1]: an array of another length than in the first element (an array of arrays has rows of one length)
+[2,4,6]
+line 1, column 1: $: an array of 3 elements expected
+["a",2,false]
+["a",null,"é\""]
+{"id":2}
+line 1, column 30: $.other.deep[0]: not a value
+line 2, column 1: $: text after the value
+[null,null,0,1e+300,5e-324]
+{"n":[[1,2],[3,4]],"o":[true],"s":"tab\t, nul\u0000\u001f, é"}
