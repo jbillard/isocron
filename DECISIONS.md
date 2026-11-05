@@ -5858,3 +5858,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   interpreter). Test `lanes_find_the_matches_of_the_masks` (alternatives of
   1 to 16 places, texts of 0 to 4099 bytes, bytes outside ASCII, every
   start and end).
+- **D307 — The Benchmarks Game measured again at `d49c22a` (2026-11-05).**
+  The README still showed the publication of D262 (`c77e61b`), before D264
+  to D306. The protocol of D249 and D260 again (the image with the iscc of
+  the host, every program built and checked: 102 outputs the same as their
+  references; `bench/machine.sh apply parallel`, 4 threads, the lowest of
+  3 runs), the Windows VM stopped. Isocron, against D262: fasta 18 -> 11
+  ms, k-nucleotide 1070 -> 863 ms, regex-redux 289 -> 129 ms,
+  reverse-complement 61 -> 42 ms; the fastest of 10 of the 10 programs;
+  over their floors fasta 4.8, regex-redux 4.3, k-nucleotide 3.2,
+  reverse-complement 2.5 (under 3 now). The six others are slower in this
+  run (binary-trees 669 -> 698 ms, spectral-norm 195 -> 199, n-body 1897
+  -> 1919, pidigits 490 -> 496, fannkuch-redux 1663 -> 1677, mandelbrot
+  639 -> 640), and so are the programs of the other languages, the same
+  binaries as in D262 (Rust binary-trees 868 -> 877 ms, C++ k-nucleotide
+  1176 -> 1210, Rust spectral-norm 205 -> 212, C fannkuch-redux 2467 ->
+  2475): the state of the machine during the run. The six built by the
+  compiler of `c77e61b` and by that of `d49c22a`, alternated rounds on the
+  cores of the measurements: binary-trees -0.65 % [-1.76 %, -0.14 %],
+  spectral-norm +0.43 % [-0.65 %, +0.58 %], n-body +0.05 % [-0.27 %,
+  +0.90 %], pidigits -0.14 % [-0.42 %, +0.19 %], fannkuch-redux -0.05 %
+  [-0.12 %, -0.00 %], mandelbrot +0.01 % [-0.09 %, +0.22 %]: none slower.
+  `results/benchmarks_game.md`, the summary of the README and its chart
+  (`report.py`), the table of `results/floors.md` (`floors.py`) made
+  again; its attribution of the gaps (D263) stays that of `c77e61b`, said
+  so.

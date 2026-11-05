@@ -53,20 +53,20 @@ same Docker image on the same machine
 
 <!-- results:begin -->
 
-**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `c77e61b`, DECISIONS D262; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
+**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `d49c22a`, DECISIONS D307; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
 
 | | benchmark | Isocron | fastest other | Isocron / fastest | floor | Isocron / floor |
 | :-: | :-- | --: | :-- | :-: | --: | :-: |
-| 🟢 | binary-trees | 669 ms | Rust 868 ms | $\color{green}{\textbf{0.77}}$ | 394.7 ms | $\color{orange}{1.7}$ |
-| 🟢 | fannkuch-redux | 1663 ms | C 2467 ms | $\color{green}{\textbf{0.67}}$ | 883.5 ms | $\color{orange}{1.9}$ |
-| 🟢 | fasta | 18 ms | Rust 755 ms | $\color{green}{\textbf{0.02}}$ | 2.3 ms | $\color{red}{7.8}$ |
-| 🟢 | k-nucleotide | 1070 ms | C++ 1176 ms | $\color{green}{\textbf{0.91}}$ | 268.0 ms | $\color{red}{4.0}$ |
-| 🟢 | mandelbrot | 639 ms | C++ 796 ms | $\color{green}{\textbf{0.80}}$ | 436.3 ms | $\color{green}{1.5}$ |
-| 🟡 | n-body | 1897 ms | C 1945 ms | $\color{orange}{\textbf{0.98}}$ | 1315.5 ms | $\color{green}{1.4}$ |
-| 🟢 | pidigits | 490 ms | C 681 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.5}$ |
-| 🟢 | regex-redux | 289 ms | Rust 754 ms | $\color{green}{\textbf{0.38}}$ | 29.7 ms | $\color{red}{9.7}$ |
-| 🟢 | reverse-complement | 61 ms | Rust 67 ms | $\color{green}{\textbf{0.91}}$ | 16.8 ms | $\color{red}{3.6}$ |
-| 🟡 | spectral-norm | 195 ms | Rust 205 ms | $\color{orange}{\textbf{0.95}}$ | 107.1 ms | $\color{orange}{1.8}$ |
+| 🟢 | binary-trees | 698 ms | Rust 877 ms | $\color{green}{\textbf{0.80}}$ | 394.7 ms | $\color{orange}{1.8}$ |
+| 🟢 | fannkuch-redux | 1677 ms | C 2475 ms | $\color{green}{\textbf{0.68}}$ | 883.5 ms | $\color{orange}{1.9}$ |
+| 🟢 | fasta | 11 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{red}{4.8}$ |
+| 🟢 | k-nucleotide | 863 ms | C++ 1210 ms | $\color{green}{\textbf{0.71}}$ | 268.0 ms | $\color{red}{3.2}$ |
+| 🟢 | mandelbrot | 640 ms | C++ 788 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
+| 🟡 | n-body | 1919 ms | C 1947 ms | $\color{orange}{\textbf{0.99}}$ | 1315.5 ms | $\color{green}{1.5}$ |
+| 🟢 | pidigits | 496 ms | C 689 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.6}$ |
+| 🟢 | regex-redux | 129 ms | Rust 763 ms | $\color{green}{\textbf{0.17}}$ | 29.7 ms | $\color{red}{4.3}$ |
+| 🟢 | reverse-complement | 42 ms | Rust 68 ms | $\color{green}{\textbf{0.62}}$ | 16.8 ms | $\color{orange}{2.5}$ |
+| 🟢 | spectral-norm | 199 ms | Rust 212 ms | $\color{green}{\textbf{0.94}}$ | 107.1 ms | $\color{orange}{1.9}$ |
 
 🟢 Isocron the fastest · 🟡 within 5 % of the fastest · 🔴 behind. Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$.
 
