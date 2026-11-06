@@ -21,38 +21,38 @@ and lighttpd are landmarks. The cores: the CPU time of the server over the
 time of the run (all its threads and processes). The servers of several
 threads or processes have one for each CPU they are given, wrk one for
 each CPU of the client (at most one a connection). Measured at 5712a39
-(D377), 10 s a point.
+(D377; the table of 2 cores at 070a376, D379), 10 s a point.
 
 ## The server on 2 cores, the client on 6
 
 The servers are the limit here (each keeps its 2 cores busy from 16
-connections on): the measure of the cost of a request.
+connections on): the measure of the cost of a request. At 070a376 (D379).
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 70306 (0.58 cores) | 381773 (2.02 cores) | 427716 (2.00 cores) | 352451 (1.98 cores) |
-| Isocron `serveAction` | 70362 (0.59 cores) | 199283 (1.06 cores) | 203726 (1.20 cores) | 165795 (1.30 cores) |
-| nginx (2 workers) | 72701 (0.56 cores) | 365982 (2.02 cores) | 373032 (2.00 cores) | 362714 (2.00 cores) |
-| lighttpd | 71554 (0.62 cores) | 185351 (1.01 cores) | 189786 (1.00 cores) | 182385 (0.99 cores) |
-| ceiling, 1 thread | 82950 (0.46 cores) | 267610 (1.01 cores) | 279379 (1.00 cores) | 262409 (0.99 cores) |
-| ceiling, 2 threads | 82342 (0.47 cores) | 516809 (2.02 cores) | 548700 (2.00 cores) | 525840 (1.97 cores) |
+| Isocron `serve` | 72951 (0.57 cores) | 372213 (2.02 cores) | 440296 (2.00 cores) | 416612 (2.00 cores) |
+| Isocron `serveAction` | 69623 (0.58 cores) | 201043 (1.07 cores) | 209652 (1.30 cores) | 191464 (1.28 cores) |
+| nginx (2 workers) | 73508 (0.56 cores) | 365220 (2.02 cores) | 375660 (2.00 cores) | 363116 (1.99 cores) |
+| lighttpd | 71652 (0.63 cores) | 185247 (1.01 cores) | 194364 (1.00 cores) | 185654 (1.00 cores) |
+| ceiling, 1 thread | 81573 (0.47 cores) | 267827 (1.01 cores) | 290847 (1.00 cores) | 265322 (1.00 cores) |
+| ceiling, 2 threads | 82900 (0.47 cores) | 521358 (2.02 cores) | 552039 (1.99 cores) | 545614 (1.99 cores) |
 
 | Isocron `serve` over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| nginx | 96.7 % | 104.3 % | 114.7 % | 97.2 % |
-| the ceiling of 2 threads | 85.4 % | 73.9 % | 78.0 % | 67.0 % |
+| nginx | 99.2 % | 101.9 % | 117.2 % | 114.7 % |
+| the ceiling of 2 threads | 88.0 % | 71.4 % | 79.8 % | 76.4 % |
 
 `serve` runs a loop of events on each thread of the pool, each on its own
 listener of the port (D374). Against the measure of D374 on the same
-cores: +10.4, +7.9 and +9.6 % with 16, 256 and 1024 connections (D371:
-the small blocks moved between the caches of the threads by whole lists;
-D376: the vectors of a wait kept from one wait to the next). The ceiling
-is 41 to 47 % above nginx: there is room to be far above it. The cost of
-a request with 16 connections (D376, `perf stat -p`): 18534 cycles, the
-kernel 12205 and the program 6329; the ceiling 13113, 12425 and 688. Both
-make the same system calls (one `recv` and one `send` a request, one
-`epoll_wait` for about 6 of them): the whole gap is in the program (about
-43 allocations a request after D377, none in the ceiling).
+cores (345784, 396260 and 321534 requests a second with 16, 256 and 1024
+connections): D371 (the small blocks moved between the caches of the
+threads by whole lists), D376 (the vectors of a wait kept from one wait to
+the next), D377 and D379 (no block for an allocation of 0 bytes, 12.77 of
+45.67 allocations a request). The ceiling is still 42.8 to 50.3 % above nginx from 16 connections on.
+The cost of a request with 16 connections (D376, `perf stat -p`): 18534
+cycles, the kernel 12205 and the program 6329; the ceiling 13113, 12425
+and 688; both make the same system calls (one `recv` and one `send` a
+request, one `epoll_wait` for about 6 of them): the gap is in the program.
 
 ## The server on 4 cores, the client on 4
 
