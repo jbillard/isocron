@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.4.0 — 2026-11-06
+
+One `serve` and one `map` for a pure function or an action, a loop of
+events on each core, and faster code. The Benchmarks Game measured again:
+the fastest on 10 of 10, each program below three times its floor, against
+floors closer to the machine (D390, D391). A version 0.4.0 (as Cargo
+counts): names of 0.3 are removed.
+
+### The language
+
+* `mapParallel(x, f)`: an action applied to each element at the same time
+  on the threads of the pool, the effects of one application in its order,
+  none between two (D373).
+* The purity of a lambda is inferred: written where an action is expected,
+  it is an action only when its body has an effect (D386).
+* `isPure(f)`: whether the function received is pure, a constant of each
+  compiled call; in the first branch of `if (isPure(h))`, `h` is a pure
+  function (D386).
+* `map(x, f)` takes an action in an action: applied to each element in
+  order, once each; a pure function still in parallel (D387).
+* A lambda that reads a function of its context can be given to a
+  recursive function (D387).
+* **Removed**: `mapAction` (use `map`).
+
+### The library
+
+* `http.serve`, `serveOn`, `serveServer`, `https.serveTls`, `serveTlsOn`
+  take a pure function or an action (D386); under Linux `serve` runs a
+  loop of events on each thread of the pool (`SO_REUSEPORT`, D374), with
+  either handler (D385). On 2 cores, 104.9 to 116.6 % of nginx from 16
+  connections on, a handler that is an action as fast as a pure one
+  (`results/http_servers.md`).
+* **Removed**: `http.serveAction`, `serveActionOn`, `serveActionServer`,
+  `https.serveTlsAction`, `serveTlsActionOn` (use `serve`, `serveOn`,
+  `serveServer`, `serveTls`, `serveTlsOn`).
+* `time.now` by the vDSO, 149.7 -> 20.7 ns (D360); `sys.env` without a
+  block of the heap, -47.8 % (D370).
+
+### The compiler
+
+* Templates written in their one block, their integers never made as
+  texts, their literals constants: `formatIso` 215 -> 82 ns (D359, D363).
+* Literals kept as strings without a copy (D361); a filter whose predicate
+  may panic is vector code (D362); a concatenation with a literal and short
+  copies by moves (D368, D369); the payload of a match on a temporary taken
+  out of it (D367).
+* A row of bytes that reads a table in registers in one vector of 64
+  lanes: reverse-complement 40 -> 31 ms (D388).
+* The quotient `(a * k + b) / c` of bigints from the leading words:
+  pidigits 490 -> 338 ms (D389).
+* An `iscc` on Windows links the runtime of the level of its processor:
+  regex-redux 158.0 -> 113.4 ms on Windows (D382).
+* The memory report names the arrays made by blocks and by windows (D383).
+
+### The runtime
+
+* Each parallel loop chooses the pool or the calling thread by its
+  measured runs, the pool asleep sooner (D357).
+* Small blocks moved between the caches of the threads by whole lists
+  (D371, D372); no block for an allocation of 0 bytes (D379).
+
+### The measurements
+
+* The floors closer to the machine: tables of k-mers of 4 to 256
+  counters, trees in the L3 cache, the next permutation of fannkuch-redux
+  without a branch, its flips by eight chains (D390).
+* A microbenchmark and a floor for every function of `sys`, `path` and
+  `time` (`results/primitives.md`, D392).
+
 ## 0.3.2 — 2026-11-06
 
 Actions as values, a server whose handler can act, and a server that

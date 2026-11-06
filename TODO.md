@@ -398,3 +398,4 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.3.0 (D345)
 - [x] Release 0.3.1: the example of the server of the README, a port listened to twice refused everywhere (D349, D350)
 - [x] Release 0.3.2: actions as values, the server with many connections, rule A (D351 to D356)
+- [x] Release 0.4.0: one `serve` and one `map` for a pure function or an action, the loops of events on each core, reverse-complement and pidigits faster, floors closer to the machine (D357 to D393)

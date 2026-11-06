@@ -8856,3 +8856,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `replaceAll` in a row), `sys.envAll` 7.0, `readText.4k` 3.6,
   `ioError.message` 3.4 (TODO); the others of `time` 1.0 to 1.8, the system
   calls 1.0 to 1.3.
+- **D393 — Release 0.4.0 (2026-11-06).** The author: « quand tu
+  l'estimeras nécessaire il faudra penser à faire puis pousser une release
+  ». After 0.3.2: one `serve` and one `map` for a pure function or an
+  action (D385 to D387), the loops of events on each core (D373, D374),
+  reverse-complement and pidigits faster (D388, D389), the floors closer to
+  the machine (D390), the Benchmarks Game measured again (D391: the
+  fastest on 10 of 10, each program below three times its floor), the
+  microbenchmarks of `sys`, `path` and `time` (D392). A version 0.4.0 (as
+  Cargo counts): `mapAction`, `serveAction`, `serveActionOn`,
+  `serveActionServer`, `serveTlsAction` and `serveTlsActionOn` removed.
+  The archives as for 0.3.2 (`build_iscc.sh` for Linux and Windows in the
+  images of the releases, from the sources of the commit of the release;
+  `package.sh`; the extension of VS Code at 0.4.0), tried before they are
+  published (`selftest_linux.sh`, `selftest_windows.py`, the example of the
+  README by the `iscc` of the archive). `CHANGELOG.md`, the links of the
+  README and of `tools/vscode/README.md` at 0.4.0.
