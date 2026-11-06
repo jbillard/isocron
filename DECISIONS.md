@@ -8781,3 +8781,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     small numbers; ten calls in the code for its ten quotients; the
     interpreter's results; a division by zero: the panic of the
     interpreter and of the code before, at line 3, column 24).
+- **D390 — Floors closer to the machine: small tables of k-mers, trees in
+  the L3 cache, the next permutation without a branch, the flips by eight
+  chains (2026-11-06).** TODO.md and the warning of `results/floors.md`:
+  some primitives of `bench/floor/floor.c` were still above what the
+  machine allows (D222). `floor.c` now measures, `floors.py` uses (4
+  threads, fixed frequency, the third of three runs of `run.sh`):
+  - the counts of k-mers in tables of 4, 16, 64 and 256 counters (k = 1 to
+    4, in the L1 cache), as for 4096: 0.786, 0.692, 0.665 and 0.643 ns an
+    update against 0.657: no cheaper (the 4 counters of the 1-mers
+    increased one after the other); each frame counted at the cost of its
+    table;
+  - trees of depth 16 and 18 (in the L3 cache) besides 12 and 20: by a loop
+    and an explicit stack 1.598 and 3.331 ns a node against 4.451 at 20;
+    each depth of binary-trees at the cost measured at it or at the next
+    one above;
+  - the next permutation of fannkuch-redux without a branch per level: the
+    counter in factorial base in one vector, the level of its carry by one
+    comparison with the radixes, the digits below it cleared and the next
+    one increased by tables, the rotations `rot[1] .. rot[level]` one
+    shuffle composed beforehand (checked against the counter with a branch
+    on each of the 479001599 permutations of 12: the same levels and
+    permutations): 1.969 -> 1.447 ns a permutation;
+  - the flips with each of the 8 vectors taking its next permutations from
+    a part of its own of the pool (8 chains of the place in the pool
+    instead of one through the vectors): 0.691 -> 0.673 ns a flip.
+  The file read by blocks in the caches measured 34.2 and 35.7 GB/s in the
+  runs of the day (30.2 on 2026-11-05). Floors: binary-trees 0.3947 ->
+  0.3286 s, fannkuch-redux 0.8835 -> 0.8057, reverse-complement 0.01683 ->
+  0.01424, k-nucleotide 0.2680 -> 0.2725 (the 1-mers dearer), the six
+  others within 1 %. The warning of `floors.md` gone with the next
+  publication (D391).

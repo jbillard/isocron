@@ -57,14 +57,17 @@ rows = []
 # stretch tree and the long-lived one alone. A node at the cheaper of a
 # recursion and of a loop with an explicit stack.
 def binarytrees():
-    small = min(c4("tree_node_depth12"), c4("tree_loop_depth12"))
-    large = min(c4("tree_node_depth20"), c4("tree_loop_depth20"))
+    node = lambda d: min(c4("tree_node_depth%d" % d), c4("tree_loop_depth%d" % d))
+    small, large = node(12), node(20)
     seq = ((2 ** 23 - 1) + (2 ** 22 - 1)) * min(c1("tree_node_depth20"), c1("tree_loop_depth20")) * ns
     par = 0.0
     for d in range(4, 22, 2):
         trees, nodes = 2 ** (21 - d + 4), 2 ** (d + 1) - 1
-        par += trees * nodes * (small if d <= 14 else large) * ns
-    return seq + par / T, "each node made in an arena and visited through its pointers: %.2f ns per node (%.2f in memory)" % (small, large), "measured"
+        # the cost measured at the depth, or at the nearest one below it
+        # that is larger (the trees of 16 and 18 in the L3 cache)
+        at = 12 if d <= 14 else (16 if d <= 16 else (18 if d <= 18 else 20))
+        par += trees * nodes * node(at) * ns
+    return seq + par / T, "each node made in an arena and visited through its pointers: %.2f ns per node (%.2f and %.2f in the L3 cache, %.2f in memory)" % (small, node(16), node(18), large), "measured"
 rows.append(("binarytrees", binarytrees()))
 
 # fannkuch-redux 12: every permutation made (the order of the program) and
@@ -72,8 +75,10 @@ rows.append(("binarytrees", binarytrees()))
 # permutations are independent: interleaved, 4 permutations per vector
 def fannkuch():
     perms, flips = K["perms"], K["flips"]
-    f = c4("fannkuch_flip")
-    g = c4("fannkuch_next_permutation")
+    # the cheaper of one chain of the next permutations and of one per vector
+    f = min(c4("fannkuch_flip"), c4("fannkuch_flip_split"))
+    # the cheaper of the counter with a branch per level and without
+    g = min(c4("fannkuch_next_permutation"), c4("fannkuch_next_permutation_flat"))
     return (perms * g + flips * f) * ns / T, "%.2e flips (%.3f ns, 4 permutations per vector), %.2e permutations (%.3f ns)" % (flips, f, perms, g), "measured"
 rows.append(("fannkuchredux", fannkuch()))
 
@@ -91,15 +96,15 @@ def fasta():
 rows.append(("fasta", fasta()))
 
 # k-nucleotide: the input read by every thread into new pages, then 7
-# frames of 125e6 windows counted: frames 1 to 6 in tables of at most 4096
-# counters (one per part of the sequence), 12 and 18 in hash tables of about
-# 140 000 keys (2 MiB, random increments)
+# frames of 125e6 windows counted: frames 1 to 6 in tables of 4^k counters
+# (one per part of the sequence; 4 to 256 in the L1 cache), 12 and 18 in
+# hash tables of about 140 000 keys (2 MiB, random increments)
 def knucleotide():
     b = 254166745
     read = b / (c4("file_read_new") * 1e9)
-    small = sum(K["kmers_%d" % k][0] for k in (1, 2, 3, 4, 6)) * c4("count_table_4096")
+    small = sum(K["kmers_%d" % k][0] * c4("count_table_%d" % 4 ** k) for k in (1, 2, 3, 4, 6))
     large = sum(K["kmers_%d" % k][0] for k in (12, 18)) * c4("random_increment_2048KiB")
-    return read + (small + large) * ns / T, "read %.3f s (4 threads), 8.75e8 counts: %.3f ns (tables of 4096), %.3f ns (%d and %d keys for 12, 18)" % (read, c4("count_table_4096"), c4("random_increment_2048KiB"), K["kmers_12"][1], K["kmers_18"][1]), "measured"
+    return read + (small + large) * ns / T, "read %.3f s (4 threads), 8.75e8 counts: %.3f ns (tables of 4096; %.3f to %.3f for 4 to 256), %.3f ns (%d and %d keys for 12, 18)" % (read, c4("count_table_4096"), min(c4("count_table_%d" % 4 ** k) for k in (1, 2, 3, 4)), max(c4("count_table_%d" % 4 ** k) for k in (1, 2, 3, 4)), c4("random_increment_2048KiB"), K["kmers_12"][1], K["kmers_18"][1]), "measured"
 rows.append(("knucleotide", knucleotide()))
 
 # mandelbrot 16000: the 7 operations of an iteration as written (zr zr, zi

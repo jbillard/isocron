@@ -268,7 +268,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
   - [x] The memory report counts as allocated whole the arrays made by blocks (D225) and by windows (D293): reported as `blocks` and `windows` (D383)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
-  - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)
+  - [x] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222): measured and used, the next permutation without a branch 1.969 -> 1.447 ns, the flips by 8 chains 0.691 -> 0.673 ns, the tables of 4 to 256 counters no cheaper than 4096, trees of 16 and 18 at 1.598 and 3.331 ns a node (D390)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)
 - [x] (8) revcomp (7.47 times the fastest) and spectralnorm (2.61), found behind by the measurement (both the fastest since D262)
   - [x] `filter` by blocks in parallel: revcomp 0.531 s -> 0.415 s on 4 threads (D178)
