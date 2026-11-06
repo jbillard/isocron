@@ -8549,3 +8549,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `alloc`. reverse-complement: its lines (`blocks`) and its bases
   (`windows`). Tested by `arrays_made_by_parts_are_reported_so`
   (`report.rs`, on reverse-complement); SPEC section 8.
+- **D384 — The rest of regex-redux left as it is (2026-11-06).** TODO.md
+  kept open the engine of shapes and the replacements of regex-redux. In the
+  publication of D381 regex-redux takes 82 ms: 2.8 times its floor of
+  29.7 ms (under the 3 of the goal), 0.11 of the fastest of the other
+  languages (Rust, 753 ms). The rest measured (2a59c94): the vector of the
+  bounds of the matches of the third replacement, kept as starts of 4 bytes
+  instead of pairs of 8, about 2.5 ms in a program in C alone, about 3 % of
+  regex-redux; it would change the bounds of every match through the engine
+  (`Found`, `merge_runs_with`, `Run`, the writers of the replacements). Not
+  made: the author judged it not worth it (2026-11-06), the effort going to
+  the server (D374 onward).
