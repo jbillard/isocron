@@ -356,7 +356,10 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] A state between the requests: `action (S, Request) => [S, Response]` (D352, after the two above)
   - [x] The server against servers of C made for production under wrk, in Docker: 94 % of nginx with one connection, 11 times below it with 1024 (`results/http_servers.md`, D353)
   - [x] The server with many connections: a table of the connections by their number, only those that received bytes read: 1024 connections 67277 -> 158735 requests a second, as lighttpd (D354)
-  - [ ] A loop of events for each core (nginx 3.5 to 4.5 times above with many connections, its 4 processes each with its loop, D354)
+  - [x] The ceiling of the machine for the server (`ceiling.c`): Isocron 57 to 85 % of the ceiling of one loop, 20 to 26 % of that of 4 cores with many connections (D355)
+  - [ ] A loop of events on each core, toward the ceiling of 4 cores (D355; needs actions in parallel on the pool, D352)
+  - [ ] The cost of a request of the loop down to that of the ceiling of one loop (5.2 µs against 3.6 at 16 connections, D355)
+  - [ ] The pool idle when it has nothing to do: 4 cores busy for the work of one loop (D355)
 - [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)

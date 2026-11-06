@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.2 — 2026-11-06
+
+Actions as values, a server whose handler can act, and a server that
+holds many connections.
+
+### The language
+
+* An action can be given as an argument: its type is `action (T) => U`; a
+  pure function goes where one is expected, a lambda written there may
+  print, read or write; actions can have type parameters; the call of such
+  a value is an effect, only in an action; each call compiled for the
+  action it receives, no closure at run time (D352).
+* The prelude: `forEach(x, f)` and `mapAction(x, f)`, an action applied to
+  each element in order (D352).
+* The message of an effect where none is allowed names the action and
+  says why (a pure lambda, a `function`) (D352).
+
+### The library
+
+* `http.serveAction`, `serveActionOn`, `https.serveTlsAction`,
+  `serveTlsActionOn`: a handler that is an action (it may print, read
+  files, call other services), the requests answered one at a time in
+  their order (D352).
+* The server with many connections: a table of the connections by their
+  numbers, only those that received bytes read: 1024 connections kept
+  alive 67277 -> 158735 requests a second, as lighttpd; measured against
+  nginx and lighttpd under wrk (`results/http_servers.md`, D353, D354).
+
+### The compiler
+
+* Rule A: the accumulator of a tail recursion and the state of a loop
+  owned, the left text of a concatenation written after it in its block: a
+  string built piece by piece in linear time (100000 pieces 122.2 -> 3.7
+  ms), `path.normalize` 229.85 -> 208.28 ns (D351, D354).
+
 ## 0.3.1 — 2026-11-06
 
 A correction of 0.3.0: the example of the server in the README, and a

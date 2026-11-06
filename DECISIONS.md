@@ -7584,3 +7584,31 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     in quarantine, events 1116 and 1117 at 01:16:59 and 01:17:04; the same
     in a second run, its file the same), the server of D354 run there by
     `net_on_windows`.
+- **D355 — The ceiling of the machine for a server of HTTP (2026-11-06).**
+  The author: "je ne veux pas 'rejoindre nginx', je veux que ton objectif
+  ce soit le plancher, comme d'hab ... enfin là du coup le plafond ...
+  pour peu qu'il existe". For a throughput the reference is the ceiling:
+  the requests a second of the cheapest server known for the same work on
+  the same cores, nginx and lighttpd only landmarks.
+  - `bench/http_servers/ceiling.c`: a loop of `epoll` for each thread and
+    its own listener (`SO_REUSEPORT`), a request found by its end (CR LF CR
+    LF), the 130 bytes of the response of Isocron (its date made again each
+    second) copied, one `recv` and one `send` for the requests a read
+    brings; nothing else. `measure.sh` gains it (1 and 4 threads) and the
+    cores each server keeps busy (its CPU time over the time of the run,
+    every thread and process).
+  - At fixed frequency, 10 s a point (`results/http_servers.md`): the
+    ceiling of one loop 79736, 275472, 289710, 264138 requests a second for
+    1, 16, 256, 1024 connections, its core full (0.99 to 1.01); the ceiling
+    of 4 cores 82216, 737056, 791806, 767472, with 3.05 to 3.22 cores busy:
+    there the client (wrk on 4 cores) saturates first, so this ceiling is a
+    bound below. Isocron `serve` 67962, 190973, 203414, 151777: 85, 69, 70,
+    57 % of the ceiling of one loop, 83, 26, 26, 20 % of that of 4 cores,
+    with 3.95 to 4.04 cores busy (its pool waiting for work while one loop
+    works). nginx 81 to 89 % of the bound of 4 cores, lighttpd 63 to 67 %
+    of the ceiling of one loop.
+  - So the way to the ceiling, in TODO: a loop of events on each core
+    (actions in parallel on the pool, D352); the cost of a request of the
+    loop down to that of the ceiling (5.2 µs against 3.6 at 16 connections,
+    the inverses of 190973 and 275472); the pool idle when it has nothing
+    to do (4 cores busy for the work of one).
