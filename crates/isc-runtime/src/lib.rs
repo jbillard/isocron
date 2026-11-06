@@ -542,6 +542,11 @@ fn alloc_bytes(bytes: i64, zero: bool) -> *mut u8 {
 /// case saves no register.
 #[no_mangle]
 pub extern "C" fn isc_alloc(bytes: i64) -> *mut u8 {
+    // nothing to hold (an empty array or text): the empty block of the
+    // runtime, read only and never freed (D379)
+    if bytes <= 0 {
+        return empty_ptr();
+    }
     #[cfg(not(target_os = "wasi"))]
     if HEAP_MODE.load(Ordering::Relaxed) == 2 && bytes <= 1024 {
         let p = unsafe { heap::alloc_cached((bytes.max(1) as usize).div_ceil(ARRAY_ALIGN) * ARRAY_ALIGN) };
@@ -659,6 +664,9 @@ pub extern "C" fn isc_node_free(p: *mut u8, bytes: i64) {
 
 #[no_mangle]
 pub extern "C" fn isc_alloc_zeroed(bytes: i64) -> *mut u8 {
+    if bytes <= 0 {
+        return empty_ptr();
+    }
     alloc_bytes(bytes, true)
 }
 

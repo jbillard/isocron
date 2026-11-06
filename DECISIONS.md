@@ -8456,3 +8456,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   it goes only if a string that lives inside one expression is placed
   elsewhere than in the heap (on the stack, by an analysis of where it
   escapes: TODO), a general change of the compiler, not of `padStart`.
+- **D379 — No block for an allocation of 0 bytes (2026-11-06).** The
+  allocations of `serve` counted by size (a counter in `isc_alloc`, not
+  kept; 2 threads, 16 connections, 2373379 requests): 45.67 a request, of
+  which 12.77 of 0 bytes (empty arrays and texts: an empty array made by a
+  `map`, a `filter` or a slice, the bytes left of a connection after its
+  requests), 14.26 of 1 to 16 bytes, 6.10 of 33 to 64, 12.07 above. Each
+  took a block of 64 bytes and gave it back. Now `isc_alloc(0)` and
+  `isc_alloc_zeroed(0)` give the empty block of the runtime (`EMPTY_BYTES`,
+  read only, 64 bytes aligned on 64, the one of the empty strings of
+  `new_str`, D337), which `isc_free` recognizes first and `room` gives no
+  room in; every free of a block goes through `isc_free` (the generated
+  code never touches the caches of the heap).
+  - The server on 2 cores, 3 alternated runs of 10 s: 1024 connections
+    354310.59 -> 411264.45 requests a second (+16.1 %, medians; 350764 to
+    367420 against 409756 to 412953), 16 connections 382278.92 ->
+    384972.39 (+0.7 %, the runs overlapping). That the gain at 1024
+    connections comes from the empty bytes left of each connection kept
+    in its table (up to 1024 blocks of 64 bytes alive, now one block for
+    all) is a hypothesis.
+  - The ten programs (7 alternated runs): the same outputs, minimums -3.71
+    % (fasta, runs of 5 ms) to +1.19 % (n-body; 11 runs again: +0.45 %,
+    medians +0.02 %, the code of its program the same bytes). The forms of
+    `json`, `http`, `strings` and `sys` (9 alternated runs): `env` -3.5 %,
+    `parseI64.7` -3.3 %, `serveAction.pipelined` -3.0 %, the others within
+    -1.7 to +0.5 % but `lines.line` +2.3, +2.4 and +1.9 % in three series;
+    alone in a program 14.585 -> 14.707 ns (+0.8 %) with the same
+    instructions (995.59 against 994.78 M) and 1.6 % more cycles, the uops
+    of the decoders and the DSB the same: the place of the code again
+    (D371), not more work.
+  - Tested by the whole suite (its runs under Valgrind among them: a write
+    into a block of 0 bytes would now be a fault in read-only memory).
