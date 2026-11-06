@@ -8533,3 +8533,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   after, the same output, 158.0 -> 113.4 ms (minimums; medians 168.2 ->
   122.6). Tested by the tests of Windows (`windows.rs`, 11 of 11, among them
   `iscc_on_windows`: programs built by `iscc.exe` in the machine).
+- **D383 — The memory report names the arrays made by parts
+  (2026-11-06).** TODO.md: the report counted as allocated whole the arrays
+  that the code generator makes by blocks (D225: an array of bytes made only
+  for `printBytes`, by blocks of 1 MiB) and by windows (D293: a `filter`
+  read only by the blocks of an array written by blocks). Their recognition
+  (`print_stream_ok`, `windowed_filter` and their helpers: `streamable`,
+  `stream_map_ok`, `windowed_uses`, `windowed_stream`, `windowed_lambda`,
+  `interval_ok`, `inner_loop`, `free_vars`, `mentions`) moves from the code
+  generator to `isc_ir::blocks`, unchanged, so that both use the same: the
+  binaries of reverse-complement and regex-redux the same bytes after the
+  move. The report gives the value of such a `let`, outside any loop (where
+  the code generator takes these paths), the context `Blocks` or `Windows`,
+  and reports the array as `blocks` or `windows`, without bytes, instead of
+  `alloc`. reverse-complement: its lines (`blocks`) and its bases
+  (`windows`). Tested by `arrays_made_by_parts_are_reported_so`
+  (`report.rs`, on reverse-complement); SPEC section 8.

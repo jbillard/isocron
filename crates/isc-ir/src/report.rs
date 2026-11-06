@@ -47,6 +47,10 @@ enum Ctx<'e> {
     ViewSource,
     /// The source of a window, whose elements are read by several windows.
     WindowSource,
+    /// An array of bytes made only to be written, by blocks (D225, D383).
+    Blocks,
+    /// A `filter` that the code generator makes by windows (D293, D383).
+    Windows,
     /// An argument of a recursive function.
     CallArg,
     /// The result of the program or of a function (through `let` bodies and
@@ -399,6 +403,8 @@ impl<'p> Walk<'p> {
             Ctx::UpdateTarget => ("the array of a `with`".into(), None),
             Ctx::Part => ("a part of a new value (a tuple, a row of a literal)".into(), None),
             Ctx::ViewSource => ("read through a view".into(), None),
+            // (not reached: `walk_in` reports these before asking why)
+            Ctx::Blocks | Ctx::Windows => ("made by parts, never whole".into(), None),
             Ctx::WindowSource => (
                 "read through a window: each element is read by several windows (rule M1)".into(),
                 Some("M1"),
@@ -497,6 +503,16 @@ impl<'p> Walk<'p> {
                 let shown = format!("{} >= 0", show(a, self.p));
                 self.push(e, "size", shown, None, "size not proved non-negative: checked at run time".into(), None);
             }
+            // made by parts, never whole (D383): what the code generator
+            // does with them
+            _ if Self::allocates(e) && matches!(ctx, Ctx::Blocks) => {
+                let (what, _) = self.size(e);
+                self.push(e, "blocks", what, None, "made by blocks of 1 MiB, each written by `printBytes` while it is in the caches: never whole (D225)".into(), None);
+            }
+            _ if Self::allocates(e) && matches!(ctx, Ctx::Windows) => {
+                let (what, _) = self.size(e);
+                self.push(e, "windows", what, None, "made by windows: each block of the array that reads it, written by blocks, makes the part it reads: never whole (D293)".into(), None);
+            }
             _ if Self::allocates(e) => {
                 let (what, bytes) = self.size(e);
                 let (why, rule) = self.why(e, ctx);
@@ -518,6 +534,10 @@ impl<'p> Walk<'p> {
             let fused = slots.contains(&i) && (is_producer(c) || matches!(c.kind, Filter(..)));
             let cctx = match &e.kind {
                 _ if fused => Ctx::Read,
+                // the arrays the code generator makes by blocks or by windows
+                // (D225, D293): outside any loop, as it does
+                Let { var, init, body, .. } if i == 0 && self.loops.is_empty() && crate::blocks::print_stream_ok(*var, init, body) => Ctx::Blocks,
+                Let { var, init, body, .. } if i == 0 && self.loops.is_empty() && crate::blocks::windowed_filter(*var, init, body).is_some() => Ctx::Windows,
                 Let { var, body, .. } => {
                     if i == 0 {
                         Ctx::Let(*var, body)

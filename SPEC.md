@@ -440,6 +440,8 @@ Memory report — analysis.isc
   line 40  bounds      1 remaining check: x[i + 1]
 ```
 
+Un tableau que le compilateur fabrique par morceaux, jamais entier, y figure comme tel : `blocks` pour un tableau d'octets fait par blocs de 1 Mio et écrit par `printBytes` (D225), `windows` pour un `filter` fait par fenêtres pour les blocs qui le lisent (D293) (D383).
+
 ## 9. Exigences de performance
 
 Une exigence est une garantie écrite par le programmeur ; si le compilateur ne peut pas la tenir, la compilation échoue avec l'explication.

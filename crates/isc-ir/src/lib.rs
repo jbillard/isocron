@@ -13,6 +13,7 @@
 
 pub use isc_types::tast::{Fallible, MathFn, SysOp};
 
+pub mod blocks;
 pub mod lower;
 pub mod passes;
 pub mod print;

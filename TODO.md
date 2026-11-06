@@ -264,7 +264,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Release 0.2.2: each program of the Benchmarks Game below three times its floor (D319, D320)
   - [x] Release 0.3.0: the standard library (D322 to D343, D345)
   - [ ] Arrays made by blocks for other consumers read once in order (a `filter`, a `map` read by index in another order: revcomp, k-nucleotide)
-  - [ ] The memory report counts as allocated whole the arrays made by blocks (D225) and by windows (D293)
+  - [x] The memory report counts as allocated whole the arrays made by blocks (D225) and by windows (D293): reported as `blocks` and `windows` (D383)
   - [x] The ten floors redone from what each result requires, at the measured costs of the machine, never the time of a program (the floor of revcomp was beaten by Rust: D221, D222)
   - [ ] Primitives still above the machine: the flips and the next permutation of fannkuch, counts in the L1 cache, trees of depth 16 and 18 in the L3 cache (D222)
 - [x] (7) The ten programs measured against the fastest C, C++, Rust and Go in Docker; `results/benchmarks_game.md` (D177)

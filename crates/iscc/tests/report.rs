@@ -358,3 +358,18 @@ fn tuples_of_folds_and_records_without_copies() {
     assert_eq!(isc_interp::run(&p, &[], &mut out).unwrap(), 0);
     assert_eq!(String::from_utf8(out).unwrap(), "[2, 3]\n[6, 8]\n[10, 12]\n[5, 6]\n");
 }
+
+/// D383: the arrays the code generator makes by parts, never whole, are
+/// reported so: the lines of reverse-complement made by blocks of 1 MiB for
+/// `printBytes` (D225), its bases made by windows (D293); neither an
+/// allocation of the whole array.
+#[test]
+fn arrays_made_by_parts_are_reported_so() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/benchmarks_game/revcomp.isc")).unwrap();
+    let es = report(&src);
+    let line_of = |needle: &str| src.lines().position(|l| l.contains(needle)).unwrap() as u32 + 1;
+    let (lines, bases) = (line_of("return map(iota(length)"), line_of("const bases = "));
+    assert!(!find(&es, "blocks", lines).is_empty(), "{}", dump(&es));
+    assert!(!find(&es, "windows", bases).is_empty(), "{}", dump(&es));
+    assert!(find(&es, "alloc", lines).is_empty() && find(&es, "alloc", bases).is_empty(), "{}", dump(&es));
+}
