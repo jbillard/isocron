@@ -96,6 +96,16 @@ impl Type {
         matches!(self, Type::Array(e, _) if !matches!(**e, Type::Tuple(_) | Type::Array(_, _)))
     }
 
+    /// Holds a node of a recursive type (counted owners, D129, D175).
+    pub fn has_nodes(&self) -> bool {
+        match self {
+            Type::Rec(_) => true,
+            Type::Array(e, _) => e.has_nodes(),
+            Type::Tuple(ts) => ts.iter().any(|t| t.has_nodes()),
+            _ => false,
+        }
+    }
+
     pub fn has_heap(&self) -> bool {
         match self {
             // a string is owned and freed as an array of bytes (D134)

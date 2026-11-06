@@ -7562,7 +7562,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     it another value (the state of a loop, `serveLoop(s, next, ...)`), its
     exits freeing it (`consumes`); kept only when the memory check holds.
     The ten programs: the IR of pidigits only other, the same output, 10
-    alternate runs on 4 threads, medians -0.05 %.
+    alternate runs on 4 threads, medians -0.05 %. The parameters that hold nodes of
+    a recursive type left out (of rule A too): their nodes keep their own
+    owners, counted, not atomic inside a task (D175); owned, a list given
+    to tasks broke the memory of glibc (`unaligned tcache chunk detected`,
+    `recursive_types_in_parallel_tasks` under `ISC_ALLOC=glibc`, suite 160)
+    and `drop_n` no longer counted its new owner (`verify.rs`); the IR of
+    the ten programs the same with or without them.
   - wrk in Docker, fixed frequency (`results/http_servers.md`): at 1024
     connections 67277 -> 158735 requests a second (2.36 times), 256
     connections 151520 -> 202600; lighttpd (one process, as the loop of

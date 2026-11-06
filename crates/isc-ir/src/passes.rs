@@ -2707,7 +2707,9 @@ fn accumulators(p: &Program, fi: usize) -> Vec<usize> {
         .filter(|&k| {
             let pv = f.params[k];
             let ty = &p.vars[pv as usize].ty;
-            if !all_tail || f.consumed.get(k).copied().unwrap_or(false) || !ty.has_heap() || matches!(ty, Type::Tuple(_)) {
+            // (the nodes of recursive types keep their own owners: counted,
+            // not atomic inside a task, D175)
+            if !all_tail || f.consumed.get(k).copied().unwrap_or(false) || !ty.has_heap() || ty.has_nodes() || matches!(ty, Type::Tuple(_)) {
                 return false;
             }
             // an accumulator given back, or the state of a loop that each
