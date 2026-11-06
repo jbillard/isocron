@@ -284,7 +284,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] A slice or the bytes of a string read where it is: a view, `slice` 10.11 -> 2.17 ns, `bytes` 8.39 -> 1.96 ns, k-nucleotide -1.50 % (D303)
 - [x] Reductions of integers from their neutral value in one accumulator, not V in memory: `equal` 5.66 -> 4.94 ns, `bytes` 1.96 -> 1.63 ns (D304)
 - [x] Lines and parts of a text in one block, found by masks of 32 bytes, freed by blocks: `lines` 47.21 -> 15.34 ns, `split` 170.23 -> 75.87 ns, k-nucleotide -2.78 % (D305)
-- [ ] The strings still above their floor: `padStart` (6.0 -> 5.1, D369: its block made and freed, where the floor writes into a buffer), templates (3.6 -> 1.4, D359, D363), `concat` (2.9 -> 2.0, D368)
+- [ ] The strings still above their floor: templates (3.6 -> 1.4, D359, D363), `concat` (2.9 -> 2.0, D368)
+  - [x] `padStart` 4.9 times its floor, shown by measure: 8.7 of its 31.3 cycles a call to free the block of its result, 15.9 to take it, fill and copy; the floor makes no block (D378)
+  - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378)
 - [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
 - [x] The fixed alternatives of a search by lanes of AVX-512: a count 0.29 -> 0.20 ns a byte, regex-redux -13.31 % (D306)
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)

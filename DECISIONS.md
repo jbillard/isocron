@@ -8442,3 +8442,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   noisy), its instructions 10801 and 10680 against 11377 and 10584. No
   gain shown: not kept. That the 9.70 % were samples of the work around
   these calls (skid) rather than their own cost is a hypothesis.
+- **D378 — The gap of `padStart` to its floor shown by measure
+  (2026-11-06).** `padStart` of `strings` is 4.9 times its floor (9.711
+  against 1.963 ns, `results/primitives.md`): `l.slice(0, 10).padStart(20,
+  "0").length` summed over 4096 texts. Alone in a program (one thread, at
+  fixed frequency, 2000 rounds): 31.3 user cycles and 152.5 instructions
+  a call (`perf stat`); by function (`perf record`): `isc_pad` 50.76 %
+  (15.9 cycles: the block of the result taken from the cache of the
+  thread, the fill, the copy), `isc_free` 27.79 % (8.7 cycles: the block
+  given back), the loop 20.59 % (6.4 cycles). The floor writes the 20
+  bytes into a buffer (`take`, a bump of a pointer) and frees nothing. The
+  gap is the block that a string value owns, made and freed at each call;
+  it goes only if a string that lives inside one expression is placed
+  elsewhere than in the heap (on the stack, by an analysis of where it
+  escapes: TODO), a general change of the compiler, not of `padStart`.
