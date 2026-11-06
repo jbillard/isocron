@@ -8410,3 +8410,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Next, by the same counts: `readyOf` (30.1 % of the calls of
     `isc_alloc` in the LBR stacks, 24 of them in its code), the task of the
     responses (15.2 %, 40), the rest of `serveLoop` (46.5 %).
+- **D377 — The arrays of the requests ready of a connection kept as they
+  are when all are taken (2026-11-06).** `readyOf` returned the slices
+  `0 .. take` of its four arrays; a slice of an array of records (`frames`,
+  `heads`) is a new array (`slice_is_view`: views only for arrays of
+  scalars), the arrays of the lines of each head copied with it. When all
+  the requests are taken (the common case) the arrays are now returned as
+  they are. The allocations counted (a counter in `isc_alloc`, not kept),
+  `serve` on 2 threads, 16 connections, one load of 6 s each: 49.96 ->
+  42.69 a request (125370368 for 2509619 requests, 116391936 for
+  2726632). Requests a second at fixed frequency, 3 alternated runs of
+  10 s: 16 connections 380782.29 -> 373927.01 (-1.8 %, the runs
+  overlapping: 370107 to 381545 against 370937 to 379388), 1024
+  connections 348906.57 -> 353523.06 (+1.3 %): 7 allocations fewer of
+  about 50 are within the noise of this measure, about 1 % of the cost of
+  a request (18534 cycles, D376). Tested by the tests of the server
+  (`std_http.rs`: pipelines cut by a body, by `Connection: close`, faults).

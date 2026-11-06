@@ -737,6 +737,11 @@ function readyOf(buf: u8[]): Ready {
     const last = take - 1;
     const used = take == 0 ? 0 : (frames[last].fault != 0 ? buf.length : ends[last] + frames[last].length);
     const closes = take > 0 && (frames[last].fault != 0 || !frames[last].keep);
+    // all of them taken (the common case): the arrays as they are, without
+    // the copies of a slice (one of records is a new array, D377)
+    if (take == ends.length) {
+        return { starts: starts, ends: ends, frames: frames, heads: heads, used: used, closes: closes };
+    }
     return { starts: starts.slice(0, take), ends: ends.slice(0, take), frames: frames.slice(0, take), heads: heads.slice(0, take), used: used, closes: closes };
 }
 
