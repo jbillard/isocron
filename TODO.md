@@ -169,7 +169,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Replacements by the bounds of the matches, ECMAScript's empty matches, searches shared out among threads: regexredux 3.7 s -> 3.0 s (D174)
   - [x] Teddy in AVX2: a runtime built for x86-64-v3, linked for the targets that have it: regexredux 3.013 s -> 2.684 s (D188)
   - [x] Global searches split among the threads, a replacement searched once: regexredux 2.686 s -> 1.146 s (D189)
-  - [ ] The literals of a case-insensitive search on ASCII text: one case (the haystack lowered)
+  - [x] The literals of a case-insensitive search on ASCII text: one case (the haystack lowered): closed by measure (2026-11-06, 4 threads, fixed frequency, 15 alternated runs, the same outputs): regex-redux with its counts `ig` 81.3 ms, with `g` 82.8 ms (medians -0.14 %; the old against itself +0.00 %): the engine of shapes takes both cases at each byte for nothing, lowering the text would add a pass
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
   - [x] The costs of the machine measured, the floor of each program (`results/floors.md`, D182): Isocron over its floor fasta 57.8, regexredux 10.1, knucleotide 8.1, revcomp 5.4, nbody 4.9, pidigits 3.7, binarytrees 3.0, fannkuchredux 2.9, mandelbrot 1.5, spectralnorm 1.0
   - [ ] A microbenchmark and a floor for each primitive of the library
