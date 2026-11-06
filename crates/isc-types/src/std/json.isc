@@ -314,13 +314,50 @@ export function message(e: JsonError): string {
 
 // `s` as a string of JSON, between quotes
 export function quote(s: string): string {
+    // its bytes tested by masks (D396), one text made (D397: 9.4 times its
+    // floor, two concatenations)
     const b = bytes(s);
-    if (count(iota(b.length), (i) => b[i] < 32u8 || b[i] == 34u8 || b[i] == 92u8) == 0) {
-        return "\"" + s + "\"";
+    if (count(b, (c) => c < 32u8 || c == 34u8 || c == 92u8) == 0) {
+        return `"${s}"`;
     }
-    const named = s.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("\n", "\\n").replaceAll("\r", "\\r").replaceAll("\t", "\\t");
-    const controls = filter(iota(32), (c) => c != 9 && c != 10 && c != 13 && count(iota(b.length), (i) => i64(b[i]) == c) > 0);
-    return "\"" + fold(controls, named, (t, c) => t.replaceAll(stringOf([u8(c)]), "\\u00" + (c < 16 ? "0" : "1") + "0123456789abcdef".slice(c % 16, c % 16 + 1))) + "\"";
+    return escapeFrom(s, b, 0, 0, "\"") + "\"";
+}
+
+// the escape of a byte of a string of JSON: `\"`, `\\`, `\n`, `\r`, `\t`,
+// `\u00XY` for the other controls
+function escapeOf(c: u8): string {
+    if (c == 34u8) {
+        return "\\\"";
+    }
+    if (c == 92u8) {
+        return "\\\\";
+    }
+    if (c == 10u8) {
+        return "\\n";
+    }
+    if (c == 13u8) {
+        return "\\r";
+    }
+    if (c == 9u8) {
+        return "\\t";
+    }
+    const k = i64(c);
+    return `\\u00${k < 16 ? "0" : "1"}${"0123456789abcdef".slice(k % 16, k % 16 + 1)}`;
+}
+
+// the text of `s` escaped from its byte `i`, those from `from` to `i` not
+// yet written, after `acc` (owned: each part written after it in its
+// block, rule A): one pass (D397: six `replaceAll` and a count of the text
+// for each control, 14.1 times its floor)
+function escapeFrom(s: string, b: u8[n], from: i64, i: i64, acc: string): string {
+    if (i == b.length) {
+        return acc + s.slice(from, i);
+    }
+    const c = b[i];
+    if (c >= 32u8 && c != 34u8 && c != 92u8) {
+        return escapeFrom(s, b, from, i + 1, acc);
+    }
+    return escapeFrom(s, b, i + 1, i + 1, acc + s.slice(from, i) + escapeOf(c));
 }
 
 // `j` as text, without spaces; a number in its shortest form, NaN and the

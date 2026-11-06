@@ -8931,3 +8931,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `counts_by_the_masks_of_their_condition` (`vector_index.rs`: bytes and
   `i64`, lengths 0, 31, 33, 1000, 300007, a condition that reads past its
   array, one on the index; the interpreter's results, 1 and 4 threads).
+- **D397 — `json.quote` in one pass (2026-11-07).** D394: `quote.escaped`
+  14.1 times its floor, `quote.plain` 9.4; `stringify` quotes every text
+  and key by it. The text to escape went through six `replaceAll` over the
+  whole text, then a count of the text for each of the 32 controls; the
+  plain one through two concatenations. Now the bytes tested by masks
+  (D396) and one template for a text without anything to escape; else
+  `escapeFrom`, a tail recursion that appends to its owned accumulator
+  (rule A, D351) each run of plain bytes and the escape of the byte after
+  it (`escapeOf`: `\"`, `\\`, `\n`, `\r`, `\t`, `\u00XY` in lower case).
+  The same texts: 2002 texts of every control, quotes, backslashes,
+  Unicode, empty, quoted by the old and the new module, interpreted and
+  compiled, the same bytes. Measured (one CPU, fixed frequency, 9
+  alternated runs of the old and new binaries): `quote.escaped` 273.42 ->
+  96.29 ns (-64.8 %), `quote.plain` 15.38 -> 13.93 ns (-9.5 %), the other
+  forms of `json` within 1.7 %; the code of the ten programs the same.
+  Test `json_quotes_in_one_pass` (`stdlib.rs`).

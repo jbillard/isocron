@@ -1352,3 +1352,37 @@ fn branches_of_arrays_of_two_sizes() {
 fn sha256_of_the_vectors_of_the_nist() {
     agree(include_str!("data/std_sha256.isc"), "std_sha256", &[], include_str!("data/std_sha256.out"));
 }
+
+/// D397: `json.quote` in one pass: each of the 32 controls (`\n`, `\r`,
+/// `\t` by name, the others `\u00XY` in lower case), a quote, a backslash,
+/// text that is not ASCII as it is, runs of plain bytes between them, an
+/// empty text; the texts of the version of six `replaceAll` before it; the
+/// interpreter and compiled.
+#[test]
+fn json_quotes_in_one_pass() {
+    let src = "import * as json from \"json\";
+
+action main(args: string[k]): i32 {
+    print(join(map(iota(32), (c) => json.quote(stringOf([u8(65), u8(c), u8(66)]))), \" \"));
+    print(json.quote(\"say \\\"hi\\\" \\\\ é日本\\n\"));
+    print(json.quote(\"\"));
+    print(json.quote(\"plain\"));
+    return 0;
+}
+";
+    let mut controls = Vec::new();
+    for c in 0..32u8 {
+        let e = match c {
+            9 => "\\t".to_string(),
+            10 => "\\n".to_string(),
+            13 => "\\r".to_string(),
+            _ => format!("\\u{:04x}", c),
+        };
+        controls.push(format!("\"A{}B\"", e));
+    }
+    let want = format!("{}\n\"say \\\"hi\\\" \\\\ é日本\\n\"\n\"\"\n\"plain\"\n", controls.join(" "));
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "json_quotes");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+}
