@@ -8812,3 +8812,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   0.01424, k-nucleotide 0.2680 -> 0.2725 (the 1-mers dearer), the six
   others within 1 %. The warning of `floors.md` gone with the next
   publication (D391).
+- **D391 — The Benchmarks Game measured again in Docker after D388 to
+  D390 (2026-11-06).** At c6614dc, `image.sh`, `run.sh build`, `check`
+  and `measure 4 12 native` at fixed frequency (the protocol of D381):
+  Isocron the fastest on 10 of 10. Its times (ms, the lowest of 12 runs):
+  binary-trees 664, fannkuch-redux 1660, fasta 5, k-nucleotide 678,
+  mandelbrot 637, n-body 1882, pidigits 338 (490 at D381: D389),
+  regex-redux 82, reverse-complement 31 (40: D388), spectral-norm 195; the
+  fastest of the others rust-5 841, gcc-6 2462, rust-7 754, gpp-2 1161,
+  gpp-4 782, gcc-9 1944, gcc-2 680, rust-7 754, gcc-7 62, rust-6 204.
+  Against the floors of D390 (`results/floors.md` regenerated): regex-redux
+  2.79, k-nucleotide 2.49, fasta 2.19, reverse-complement 2.18 (2.4 at
+  D381), fannkuch-redux 2.06 (1.9 against its floor before D390),
+  binary-trees 2.02 (1.7 before D390), spectral-norm 1.82, pidigits 1.73
+  (2.5), mandelbrot 1.46, n-body 1.43: each below 3.
+  `results/benchmarks_game.md`, the summary of the README and its chart
+  regenerated (`report.py`).
