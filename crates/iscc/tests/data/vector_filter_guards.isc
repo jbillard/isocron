@@ -1,0 +1,30 @@
+// D362: filters whose predicate can panic in its lanes (`&&` before a read
+// of an array): vector code, the mask replayed one element at a time when a
+// check fails: a guard that keeps the last lanes from reading past the end,
+// a real fault behind `&&` (the panic of the same element).
+function ends(buf: u8[]): i64[] {
+    return map(filter(iota(Math.max(buf.length - 3, 0)), (i) => buf[i] == 13u8 && buf[i + 1] == 10u8 && buf[i + 2] == 13u8 && buf[i + 3] == 10u8), (i) => i + 4);
+}
+
+// guarded: the last lanes would read past the end, but their guard is false
+function pairs(b: u8[], c: u8): i64[] {
+    return filter(iota(b.length), (i) => i + 1 < b.length && b[i] == c && b[i + 1] == c);
+}
+
+// a real fault behind `&&`: the first `x` whose next-but-four is past the end
+function far(b: u8[]): i64[] {
+    return filter(iota(b.length), (i) => b[i] == 120u8 && b[i + 5] == 120u8);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const b = bytes(join(map(iota(n), (i) => "GET /hello HTTP/1.1\r\nHost: bench\r\n\r\n"), ""));
+    print(ends(b).length);
+    print(ends(b).slice(0, 3));
+    const t = bytes(join(map(iota(n), (i) => i % 3 == 0 ? "aa" : "ab"), "") + "aa");
+    print(pairs(t, 97u8).length);
+    print(sum(pairs(t, 97u8)));
+    const x = bytes(join(map(iota(n), (i) => i % 7 == 0 ? "x....x" : "......"), "") + (n % 2 == 0 ? "x" : "."));
+    print(far(x).length);
+    return 0;
+}

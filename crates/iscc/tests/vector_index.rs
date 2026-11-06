@@ -763,3 +763,32 @@ fn rows_take_their_equalities_and_remainders_out_of_their_loop() {
         }
     }
 }
+
+/// D362: a `filter` whose predicate can panic in its lanes (`a && b[i + 1]
+/// == c`, the end of the head of HTTP requests) is vector code: its mask
+/// computed again one element at a time when a check fails, so that a
+/// guard keeps the last lanes from panicking and a real fault is the one of
+/// the same element as the interpreter; one block and several, 1 and 4
+/// threads.
+#[test]
+fn filters_with_guards_replay_their_masks() {
+    let src = include_str!("data/vector_filter_guards.isc");
+    let bin = compile(src, "vector_filter_guards");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let f = isc_codegen::backend::host_features();
+    if f.split(',').any(|y| y == "+avx512f") {
+        assert!(ll.matches("masked.compressstore.v16i64").count() >= 6, "the filters with guards are not compressed");
+    }
+    for a in ["5", "37", "201", "2001", "20001"] {
+        let want = interp_ok(src, &[a]);
+        for t in [1, 4] {
+            let run = run_bin_threads(&bin, &[a], Some(t));
+            assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} on {} threads: {}", a, t, run.stderr);
+        }
+    }
+    for a in ["200", "20000"] {
+        let want = interp_panic(src, &[a]);
+        let run = run_bin_threads(&bin, &[a], Some(1));
+        assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", a);
+    }
+}

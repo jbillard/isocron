@@ -1959,6 +1959,15 @@ fn lam_ok(l: &Lambda) -> bool {
     vec_ok(&l.body, &mut varying)
 }
 
+/// `lam_ok` for vector code whose failed checks are replayed one element
+/// at a time (D185): the predicate of a `filter` (D362).
+fn lam_ok_replay(l: &Lambda) -> bool {
+    let before = REPLAY.with(|r| r.replace(true));
+    let ok = lam_ok(l);
+    REPLAY.with(|r| r.set(before));
+    ok
+}
+
 /// What a split `fold` may compute before its loop (D260): arithmetic on
 /// scalars (no integer division), roots, `fma`, elements of arrays of
 /// variables; no call, no loop, nothing that allocates. Its only checks are
@@ -8011,12 +8020,58 @@ impl<'p> Gen<'p> {
         if matches!(x.kind, ExprKind::Iota(_)) {
             INDEX_VARS.with(|s| s.borrow_mut().insert(l.params[0]));
         }
-        if size_ok && src_vec_ok(x) && lam_ok(l) {
+        // a predicate that can panic in its lanes (`a && b[i + 1] == c`, the
+        // index of a branch) too: its mask computed again one element at a
+        // time when a check fails (`kept_mask`, D362)
+        if size_ok && src_vec_ok(x) && (lam_ok(l) || lam_ok_replay(l)) {
             // bytes: 32 per vector (a `ymm` register); wider: 16 lanes
             if esize(elem_ty) == 1 { 32 } else { 16 }
         } else {
             1
         }
+    }
+
+    /// The mask of the elements `i .. i + w` of `src` (their vector `el`)
+    /// that `l` keeps, in vector code; a predicate that can panic in its
+    /// lanes (D362) jumps on a failed check to the replay of the vector, the
+    /// predicate of each element computed again in order, so that the panic
+    /// is the one of the scalar loop (its element, its site) and a check of
+    /// a lane the scalar code would not have made panics not (D185).
+    fn kept_mask(&mut self, src: &Src, l: &Lambda, i: &str, w: u32, el: &V) -> R<V> {
+        self.bind(l.params[0], el.clone());
+        if lam_ok(l) {
+            let keep = self.ex(&l.body, w)?;
+            return Ok(self.widen(&keep, w));
+        }
+        let lfail = self.label();
+        let lcont = self.label();
+        let saved = std::mem::replace(&mut self.vec_fail, Some(lfail.clone()));
+        let keep = self.ex(&l.body, w);
+        self.vec_fail = saved;
+        let keep = self.widen(&keep?, w);
+        let lvec = self.current_label(&lfail);
+        self.br(&lcont);
+        self.block(&lfail);
+        let kt = keep.t.clone();
+        let slot = self.alloca(&kt);
+        self.emit(format!("store {} zeroinitializer, ptr {}", kt, slot));
+        self.for_range_scalar("0", &w.to_string(), 1, &mut |g, j| {
+            let k = g.ins(format!("add i64 {}, {}", i, j));
+            let x = g.elem(src, &k, 1)?;
+            g.bind(l.params[0], x);
+            let kv = g.ex(&l.body, 1)?;
+            let cur = g.ins(format!("load {}, ptr {}", kt, slot));
+            let nv = g.ins(format!("insertelement {} {}, i1 {}, i64 {}", kt, cur, kv.r, j));
+            g.emit(format!("store {} {}, ptr {}", kt, nv, slot));
+            Ok(())
+        })?;
+        let rv = self.ins(format!("load {}, ptr {}", kt, slot));
+        let lrep = self.current_label(&lfail);
+        self.br(&lcont);
+        self.block(&lcont);
+        let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", kt, keep.r, lvec, rv, lrep));
+        self.bind(l.params[0], el.clone());
+        Ok(V { r, t: kt, uni: false })
     }
 
     /// The elements of `lo .. hi` of `src` that `l` keeps, counted: `w` at
@@ -8032,9 +8087,7 @@ impl<'p> Gen<'p> {
             self.decls.insert(format!("declare i{w} @llvm.ctpop.i{w}(i{w})", w = w));
             self.for_range(lo, &vend, w as i64, &mut |g, i| {
                 let el = g.elem(src, i, w)?;
-                g.bind(l.params[0], el);
-                let keep = g.ex(&l.body, w)?;
-                let keep = g.widen(&keep, w);
+                let keep = g.kept_mask(src, l, i, w, &el)?;
                 let bits = g.ins(format!("bitcast <{} x i1> {} to i{}", w, keep.r, w));
                 let k = g.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
                 let k64 = g.ins(format!("zext i{} {} to i64", w, k));
@@ -8081,9 +8134,7 @@ impl<'p> Gen<'p> {
             self.for_range(lo, &vend, w as i64, &mut |g, i| {
                 let el = g.elem(src, i, w)?;
                 let el = g.widen(&el, w);
-                g.bind(l.params[0], el.clone());
-                let keep = g.ex(&l.body, w)?;
-                let keep = g.widen(&keep, w);
+                let keep = g.kept_mask(src, l, i, w, &el)?;
                 // none kept: nothing written; all kept: the vector stored;
                 // some: compressed into memory (the instruction is slow:
                 // only when it is needed)

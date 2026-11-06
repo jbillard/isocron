@@ -7841,3 +7841,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     written, sorted, made by the threads of a `map`, the empty literal;
     the text of the interpreter with 1 and 4 threads, Valgrind; three
     copies left in the IR, none of a literal).
+- **D362 — A `filter` whose predicate can panic in its lanes is vector
+  code (2026-11-06).** The server 1.6 times its floor: 2363.6 user cycles
+  and 7596 instructions a request against 613.6 and 1602 for the floor in
+  C (the kernel 3050.4 cycles against 2969.5: the gap is in the program);
+  a quarter of its instructions in `headEnds` of `http` (`filter(iota(n),
+  (i) => buf[i] == 13u8 && buf[i + 1] == 10u8 && ...)`), 20.2 instructions
+  and 4.2 cycles a byte alone: scalar. `filter` was vector code (D195) only
+  for a predicate that cannot panic or has one site: `a && b` is an `if`
+  whose branch `b` reads an array, accepted in vector code only when its
+  failed checks are replayed one element at a time (D185), which the
+  vector loops of `filter` did not do.
+  - `kept_mask`: the mask of the elements a `filter` keeps, in vector code;
+    for a predicate that needs it (`lam_ok` refuses it, `lam_ok_replay`
+    accepts it), a failed check jumps to the replay of the vector: the
+    predicate of each of its elements computed again in order, so that the
+    panic is that of the scalar loop (its element, its site) and the check
+    of a lane the scalar code would not make (a guard false) panics not.
+    `count_kept` and `write_kept` (the two passes, every `filter`, in
+    order and by blocks) read it.
+  - `headEnds` alone: 4.2 -> 1.2 cycles and 20.2 -> 4.3 instructions a
+    byte. The server: 2363.6 -> 2116.8 user cycles and 7596.2 -> 6469.3
+    instructions a request; an A/B of the group `http` (medians of 9 runs)
+    `serve.pipelined` 1486.8 -> 1408.6 ns (-5.3 %), `serveAction.pipelined`
+    -4.4 %, `exchange.small` +0.7, `exchange.chunked64` -0.4.
+  - `results/primitives.md` (a whole run): `decode` 526.05 -> 473.31 ns
+    (6.0 -> 5.5 times its floor), `parse` 1120.94 -> 1024.22 (6.7 -> 6.1;
+    16 functions of the group changed: the filters of `json` guarded by
+    `&&`), `serve.pipelined` 1486.44 -> 1405.74 (1.6 -> 1.5),
+    `serveAction.pipelined` -4.4 %. `startsWith.1`, `startsWith.8`,
+    `endsWith.2`, `slice`, `bytes` of `strings` -3.6 to -4.8 %: the IR of
+    the group the same (0 functions of 46 changed), the drift between runs.
+  - The ten programs: their IR the same, their binaries the same bytes as
+    at D361.
+  - Tested by `filters_with_guards_replay_their_masks` (`vector_index.rs`,
+    `data/vector_filter_guards.isc`: the ends of heads of requests, a guard
+    `i + 1 < n &&` that keeps the last lanes from reading past the end, a
+    real fault behind `&&` at the end of 7200 and of 120001 bytes, one
+    block and several, 1 and 4 threads, against the interpreter; the
+    filters compressed in the IR).
