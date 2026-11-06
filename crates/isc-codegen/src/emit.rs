@@ -2585,6 +2585,25 @@ impl<'p> Gen<'p> {
         (name, n)
     }
 
+    /// A literal kept as a string (D361): its bytes 4 bytes past a multiple
+    /// of 16 (`is_literal` of the runtime), the pointer to them.
+    fn owned_literal(&mut self, s: &str) -> (String, usize) {
+        let key = format!("\u{0}owned:{}", s);
+        if let Some(x) = self.strs.get(&key) {
+            return x.clone();
+        }
+        let name = format!("@.olit.{}", self.strs.len());
+        let n = s.len();
+        let bytes = if n == 0 { "zeroinitializer".to_string() } else { format!("c\"{}\"", llvm_string(s)) };
+        self.globals.push(format!(
+            "{} = private unnamed_addr constant <{{ [4 x i8], [{} x i8] }}> <{{ [4 x i8] zeroinitializer, [{} x i8] {} }}>, align 16",
+            name, n, n, bytes
+        ));
+        let p = format!("getelementptr inbounds (i8, ptr {}, i64 4)", name);
+        self.strs.insert(key, (p.clone(), n));
+        (p, n)
+    }
+
     fn str_const(&mut self, s: &str) -> (String, usize) {
         if let Some(x) = self.strs.get(s) {
             return x.clone();
@@ -4141,6 +4160,15 @@ impl<'p> Gen<'p> {
                 self.ex(body, w)
             }
             Zero => Ok(v(Self::zero(&e.ty), lt(&e.ty))),
+            // a literal kept: its bytes where they are in the program, 4 bytes
+            // past a multiple of 16, which the runtime never frees nor writes
+            // (D361), not a copy in a block
+            Copy(x) if matches!(&x.kind, StrLit(_)) && x.ty == Type::Str => {
+                let StrLit(t) = &x.kind else { unreachable!() };
+                let (g, n) = self.owned_literal(t);
+                let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", g));
+                Ok(v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, n)), "{ ptr, i64 }"))
+            }
             Copy(x) => {
                 let xv = self.ex(x, 1)?;
                 Ok(self.copy_value(&xv, &x.ty))

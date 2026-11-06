@@ -1,0 +1,53 @@
+// D361: literals kept as strings without a copy (their bytes where they are
+// in the program): grown as accumulators (no room: a new block), replaced
+// where they would be written (copied), sorted, in tuples of arrays, made
+// by the threads of a `map`, returned, freed with their owners; the empty
+// literal too.
+type R = { status: i64, headers: [string, string][k], body: u8[] };
+
+function resp(status: i64, s: string): R {
+    return { status: status, headers: [["Content-Type", "text/plain; charset=utf-8"] as const, ["Server", "isocron"] as const], body: bytes(s) };
+}
+
+function zone(o: i64): string {
+    if (o == 0) {
+        return "Z";
+    }
+    return `+${o}`;
+}
+
+function grow(i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    return grow(i + 1, n, acc + (i % 3 == 0 ? "ab" : "c"));
+}
+
+function word(i: i64): string {
+    return i % 3 == 0 ? "three" : (i % 2 == 0 ? "two" : "one");
+}
+
+action main(args: string[k]): i32 {
+    const v = parseI64(args[0]);
+    const r = resp(200, "hello");
+    print(r.headers);
+    print([zone(v), zone(0), zone(v + 1)] as const);
+    const g = grow(0, 1000 + v, "start:");
+    print(`${g.length} ${g.slice(0, 16)}`);
+    const words = map(iota(10000), (i) => word(i + v));
+    print(count(words, (w) => w == "three"));
+    print(sort(map(iota(7), (i) => word(i))));
+    const replaced = word(v).replaceAll("e", "E");
+    print(replaced);
+    const same = word(3).replaceAll(/e/g, "x");
+    print(same);
+    const joined = join(map(iota(5), (i) => word(i)), "-");
+    print(joined);
+    print(word(v) + "!" + word(v + 1));
+    // the empty literal kept too: in an array made by threads, the start
+    // of an accumulator
+    const empties = map(iota(1000), (i) => (i + v) % 2 == 0 ? "" : "a");
+    print(join(empties, "").length);
+    print(`[${grow(0, 3 + v, "")}]`);
+    return 0;
+}

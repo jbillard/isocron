@@ -579,6 +579,11 @@ pub extern "C" fn isc_free(p: *mut u8) {
     if HEAP_MODE.load(Ordering::Relaxed) == 2 && unsafe { heap::free_cached(p) } {
         return;
     }
+    // a literal of the program kept as a string, the empty one too (D361):
+    // nothing owned, without the call of the cold path
+    if is_literal(p) {
+        return;
+    }
     free_cold(p)
 }
 
@@ -589,6 +594,10 @@ fn free_cold(p: *mut u8) {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     if mapped::owns(p) {
         unsafe { mapped::free(zap_pages) };
+        return;
+    }
+    // a literal of the program kept as a string (D361): nothing owned
+    if is_literal(p) {
         return;
     }
     // a line of the block of the lines of a text (D298): 8 bytes past a
@@ -1239,7 +1248,9 @@ fn empty_bytes() -> *mut u8 {
 /// Isocron knows it; with glibc's (`ISC_ALLOC=glibc`) or under WASI, none
 /// counted (a new block).
 fn room(p: *mut u8) -> usize {
-    if p == empty_ptr() {
+    // only a block of the heap (aligned on 64 bytes) has room: not a literal
+    // of the program (D361), a line of `lines`, the empty string
+    if p == empty_ptr() || p as usize % 64 != 0 {
         return 0;
     }
     #[cfg(not(target_os = "wasi"))]
@@ -2577,8 +2588,18 @@ fn writable(p: *const u8) -> bool {
     if mapped::owns(p) {
         return false;
     }
-    let _ = p;
-    true
+    // nor a literal of the program (D361), in its read-only data
+    !is_literal(p)
+}
+
+/// A literal of the program kept as a string without a copy (D361): its
+/// bytes in the read-only data of the program, 4 bytes past a multiple of
+/// 16, where no block starts (the blocks of the heap aligned on 64 bytes,
+/// the lines of `lines` 8 bytes past a multiple of 16, those of `malloc` and
+/// `HeapAlloc` on 16): never freed, never written, without room.
+#[inline(always)]
+fn is_literal(p: *const u8) -> bool {
+    p as usize % 16 == 4
 }
 
 /// `given`: the text `s` is moved into the replacement at its last use

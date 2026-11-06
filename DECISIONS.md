@@ -7795,3 +7795,49 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `data/std_clock.isc`): a million readings never back, the second of
     the system; `strace` sees no `clock_gettime` of the program; under
     Valgrind (no vDSO) the system call gives the same.
+- **D361 — Literals kept as strings without a copy (2026-11-06).** A
+  literal a consumer keeps (returned, stored in a record, an array or a
+  tuple, the start of an accumulator) was copied into a block of the heap
+  (`copy` of a `string "..."` in the IR: `isc_str_new`), freed with its
+  owner: 4.14 copies a request of the server (the headers of
+  `textResponse` among them, D342), 22 calls a record of `decode` (15 of
+  them the empty `why` of the tuples of its results), the `"Z"` of
+  `formatIso`.
+  - Such a copy is now the literal itself, its bytes in the read-only data
+    of the program 4 bytes past a multiple of 16 (`owned_literal`: a
+    pad of 4 bytes, align 16), a place where no block starts: the blocks of
+    the heap are aligned on 64 bytes, the lines of `lines` 8 bytes past a
+    multiple of 16 (D298), those of `malloc` and `HeapAlloc` on 16. The
+    runtime never frees it (`is_literal` in `isc_free`, after the fast path
+    and before the cold one), never writes it (`writable`, the replacement
+    in place of D315) and gives it no room (`room`: only a block of the
+    heap, aligned on 64, has room; a text grown from it gets a new block,
+    D351).
+  - Counted with gdb (2 rounds less 1): the server 4.14 -> 2.00 copies a
+    request; `decode` 22 -> 7 calls of `isc_str_new` a record.
+  - The first version left the empty literal out: `decode` +2.7 % in an
+    A/B (534.2 to 538.1 ns against 549.1 to 554.0), the same calls of the
+    runtime in both binaries, the instructions moved between functions:
+    LLVM inlined otherwise once the paths of errors were shorter (three
+    tasks of `json` now functions of 801 bytes each, `isc_bench_1` +1263
+    bytes, `isc_bench_2` +550). With the empty literal kept too, `decode`
+    -1.8 % in the same A/B.
+  - An A/B of the binaries of D360 and D361 at fixed frequency (medians of
+    9 runs): `formatIso` -5.5 %, `decode` -1.8, `stringify` -1.5, `parse`
+    -0.9, `serve.pipelined` -1.2, `serveAction.pipelined` +1.0 then +0.5
+    (overlapping: 1779.7 to 1852.5 ns against 1806.9 to 1843.6), `parseIso`
+    +1.8 then +0.9 (overlapping: 37.4 to 39.3 against 38.2 to 39.4).
+    `results/primitives.md` (a whole run): `formatIso` 129.47 -> 122.41 ns
+    (2.8 -> 2.7), `basename` -3.0 %, `decode` -1.5 %, no other form
+    beyond 2.5 %.
+  - The ten programs (every binary changed: `isc_free`; k-nucleotide keeps
+    10 literals, regex-redux 18), an A/B on 4 threads of 8 runs each:
+    within -0.30 and +0.68 % for the lowest except regex-redux +1.85;
+    again with 16 runs, k-nucleotide -0.48 / -0.23 %, n-body +0.51 /
+    +0.02, regex-redux -0.14 / +1.11, reverse-complement +0.20 / +0.70.
+  - Tested by `literals_kept_without_a_copy` (`strings.rs`,
+    `data/strings_literals_kept.isc`: literals returned, in records and
+    tuples of arrays, grown as accumulators, replaced where they would be
+    written, sorted, made by the threads of a `map`, the empty literal;
+    the text of the interpreter with 1 and 4 threads, Valgrind; three
+    copies left in the IR, none of a literal).

@@ -1054,3 +1054,28 @@ fn integers_written_in_the_block_of_their_template() {
     // the accumulators give their left text to the concatenation
     assert!(ll.contains("store i64 65536,"), "the left text of an accumulator not given");
 }
+
+/// D361: a literal kept as a string (returned, stored in a record or an
+/// array, the start of an accumulator, made by the threads of a `map`) is
+/// not copied into a block: its bytes where they are in the program, never
+/// freed, never written (a replacement or a text grown from it makes a new
+/// block); the text of the interpreter with 1 and 4 threads, Valgrind clean,
+/// no copy of a literal in the IR.
+#[test]
+fn literals_kept_without_a_copy() {
+    let src = include_str!("data/strings_literals_kept.isc");
+    let bin = compile(src, "literals_kept");
+    for a in ["0", "1", "2"] {
+        let want = interp_ok(src, &[a]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[a], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} on {} threads: {}", a, t, r.stderr);
+        }
+    }
+    valgrind_clean(src, "literals_kept", &["1"]);
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    // the copies left are not of literals: the accumulator of `grow` at its
+    // entry (rule A, D351) and the elements `sort` puts in its array (twice)
+    assert_eq!(ll.matches("call void @isc_str_new(").count(), 3, "a literal copied");
+    assert!(ll.matches("@.olit.").count() >= 16, "the literals not kept where they are");
+}
