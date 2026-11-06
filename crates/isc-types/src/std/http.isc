@@ -745,16 +745,37 @@ function headEnds(buf: u8[]): i64[] {
     return map(filter(iota(Math.max(buf.length - 3, 0)), (i) => buf[i] == 13u8 && buf[i + 1] == 10u8 && buf[i + 2] == 13u8 && buf[i + 3] == 10u8), (i) => i + 4);
 }
 
-// the arrivals `xs` added to the bytes pending of each connection, those
-// of new connections after; the numbers of the connections that ended
-function arrive(ps: Pending[n], xs: net.Arrival[m]): [Pending[], i64[]] {
+// the place of the connection `id` in `ps` (sorted by their numbers) from
+// `lo` to `hi`, or -1
+function placeOf(ps: Pending[n], id: i64, lo: i64, hi: i64): i64 {
+    if (lo >= hi) {
+        return -1;
+    }
+    const mid = (lo + hi) / 2;
+    if (ps[mid].id == id) {
+        return mid;
+    }
+    return ps[mid].id < id ? placeOf(ps, id, mid + 1, hi) : placeOf(ps, id, lo, mid);
+}
+
+// the arrivals `xs` added to the bytes pending of each connection (`ps`
+// sorted by their numbers: each found by halving, its bytes added in place),
+// those of new connections put at their places; the
+// places of the connections that received bytes, and the numbers of those
+// that ended (D354)
+function arrive(ps: Pending[n], xs: net.Arrival[m]): [Pending[], i64[], i64[]] {
+    const at = map(xs, (a) => placeOf(ps, a.id, 0, ps.length));
     const ended = map(filter(xs, (a) => a.bytes.length == 0), (a) => a.id);
-    const known = map(filter(ps, (p) => count(ended, (e) => e == p.id) == 0), (p) => {
-        const mine = filter(xs, (a) => a.id == p.id);
-        return mine.length == 0 ? p : pendingOf(p.id, concat(p.buf, mine[0].bytes));
-    });
-    const fresh = map(filter(xs, (a) => a.bytes.length > 0 && count(ps, (p) => p.id == a.id) == 0), (a) => pendingOf(a.id, a.bytes));
-    return [concat(known, fresh), ended] as const;
+    const grown = fold(iota(xs.length), ps, (acc, j) => at[j] >= 0 && xs[j].bytes.length > 0 ? acc.with(at[j], pendingOf(xs[j].id, concat(acc[at[j]].buf, xs[j].bytes))) : acc);
+    const fresh = map(filter(iota(xs.length), (j) => at[j] < 0 && xs[j].bytes.length > 0), (j) => pendingOf(xs[j].id, xs[j].bytes));
+    // (a connection is numbered when it is accepted, its first bytes may come
+    // after those of one accepted later: the whole table sorted again)
+    const all = fresh.length == 0 ? grown : concat(grown, fresh).sortBy((p) => p.id);
+    const kept = ended.length == 0 ? all : filter(all, (p) => count(ended, (e) => e == p.id) == 0);
+    // (a connection that ended in the same turn not read; each once)
+    const read = filter(iota(xs.length), (j) => xs[j].bytes.length > 0 && count(ended, (e) => e == xs[j].id) == 0 && count(iota(j), (q) => xs[q].id == xs[j].id && xs[q].bytes.length > 0) == 0);
+    const places = map(read, (j) => placeOf(kept, xs[j].id, 0, kept.length));
+    return [kept, places, ended] as const;
 }
 
 // the connections `ids` from the `i`-th closed
@@ -788,45 +809,51 @@ function owner(ends: i64[], j: i64, lo: i64, hi: i64): i64 {
     return ends[mid] > j ? owner(ends, j, lo, mid) : owner(ends, j, mid + 1, hi);
 }
 
-// after the responses `outs` to the requests ready: sent, the connections
-// closed after their last response or whose send failed, the bytes after the
-// requests kept for the next ones (the two loops, D352)
-action afterAnswers(s: net.Server, ps: Pending[n], readies: Ready[n], outs: Out[k]): Pending[] {
+// after the responses `outs` to the requests ready of the connections at
+// the places `changed`: sent, the connections closed after their last
+// response or whose send failed, the bytes after the requests kept (in
+// place); the connections to read again (those that gave requests: more may
+// be complete) (the two loops, D352, D354)
+action afterAnswers(s: net.Server, ps: Pending[n], changed: i64[c], readies: Ready[c], outs: Out[k]): [Pending[], i64[]] {
     const failed = sendAll(s, outs, 0, []);
-    // the connections closed after their last response, or whose send
-    // failed; the bytes after the requests kept for the next ones
-    const closing = map(filter(iota(ps.length), (i) => readies[i].closes || count(failed, (x) => x == ps[i].id) > 0), (i) => ps[i].id);
+    const closing = map(filter(iota(changed.length), (i) => readies[i].closes || count(failed, (x) => x == ps[changed[i]].id) > 0), (i) => ps[changed[i]].id);
     closeAll(s, closing, 0);
-    return map(filter(iota(ps.length), (i) => count(closing, (x) => x == ps[i].id) == 0), (i) => readies[i].used == 0 ? ps[i] : pendingOf(ps[i].id, ps[i].buf.slice(readies[i].used, ps[i].buf.length)));
+    const cut = fold(iota(changed.length), ps, (acc, i) => readies[i].used == 0 ? acc : acc.with(changed[i], pendingOf(acc[changed[i]].id, acc[changed[i]].buf.slice(readies[i].used, acc[changed[i]].buf.length))));
+    const again = map(filter(iota(changed.length), (i) => readies[i].used > 0), (i) => cut[changed[i]].id);
+    const left = closing.length == 0 ? cut : filter(cut, (p) => count(closing, (x) => x == p.id) == 0);
+    const live = filter(again, (id) => count(closing, (x) => x == id) == 0);
+    return [left, map(live, (id) => placeOf(left, id, 0, left.length))] as const;
 }
 
 // the responses to the requests ready from the `j`-th on, each asked to the
 // action `handler` in its turn (a fault answered without it), written into
 // `acc` (owned: changed in place, rule A of D351) (D352)
-action respondFrom(handler: action (Request) => Response, ps: Pending[n], readies: Ready[n], items: [i64, i64][m], j: i64, acc: Response[m]): Response[m] {
+action respondFrom(handler: action (Request) => Response, ps: Pending[n], changed: i64[c], readies: Ready[c], items: [i64, i64][m], j: i64, acc: Response[m]): Response[m] {
     if (j == items.length) {
         return acc;
     }
     const [i, k] = items[j];
     const r = readies[i];
     const f = r.frames[k];
-    const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[i].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
-    return respondFrom(handler, ps, readies, items, j + 1, acc.with(j, response));
+    const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
+    return respondFrom(handler, ps, changed, readies, items, j + 1, acc.with(j, response));
 }
 
 // the loop of `serveAction`: as `serveLoop`, the requests ready answered one
 // at a time by the action `handler` (D352)
-action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps: Pending[n], answered: i64, limit: i64): Result<void, IoError> {
-    const readies = map(ps, (p) => readyOf(p.buf));
+action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps: Pending[n], changed: i64[c], answered: i64, limit: i64): Result<void, IoError> {
+    // only the connections that received bytes, or gave requests the turn
+    // before, read (D354)
+    const readies = map(changed, (i) => readyOf(ps[i].buf));
     const counts = map(readies, (r) => r.ends.length);
     const upto = scan(counts, (a, b) => a + b, 0);
     const total = upto.length == 0 ? 0 : upto[upto.length - 1];
     if (total == 0) {
         return match (net.wait(s, READ_LIMIT, -1)) {
             Ok(xs) => {
-                const [next, ended] = arrive(ps, xs);
+                const [next, places, ended] = arrive(ps, xs);
                 closeAll(s, ended, 0);
-                return serveActionLoop(s, handler, next, answered, limit);
+                return serveActionLoop(s, handler, next, places, answered, limit);
             },
             Err(e) => {
                 net.closeServer(s);
@@ -835,42 +862,44 @@ action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps:
         };
     }
     const date = httpDate(time.now());
-    // the requests ready (a connection, a request of it), each answered by
-    // `handler` in its turn, a fault without it; then the bytes to send
+    // the requests ready (a place in `changed`, a request of it), each
+    // answered by `handler` in its turn, a fault without it; then the bytes
     const items = map(iota(total), (j) => {
         const i = owner(upto, j, 0, upto.length);
         return [i, j - (upto[i] - counts[i])] as const;
     });
-    const responses = respondFrom(handler, ps, readies, items, 0, fill(total, textResponse(500, "")));
+    const responses = respondFrom(handler, ps, changed, readies, items, 0, fill(total, textResponse(500, "")));
     const outs = map(iota(total), (j) => {
         const [i, k] = items[j];
         const f = readies[i].frames[k];
         const keep = f.fault == 0 && f.keep;
-        return outOf(ps[i].id, responseBytes(responses[j], keep, f.head, date), keep);
+        return outOf(ps[changed[i]].id, responseBytes(responses[j], keep, f.head, date), keep);
     });
-    const left = afterAnswers(s, ps, readies, outs);
+    const [left, again] = afterAnswers(s, ps, changed, readies, outs);
     const all = answered + total;
     if (limit > 0 && all >= limit) {
         net.closeServer(s);
         return Ok(());
     }
-    return serveActionLoop(s, handler, left, all, limit);
+    return serveActionLoop(s, handler, left, again, all, limit);
 }
 
 // the loop of the server: the requests ready answered, all at once (the
 // handler by `map`, in parallel), else the bytes that come waited for;
 // `answered` requests so far, until `limit` (0: no end)
-action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], answered: i64, limit: i64): Result<void, IoError> {
-    const readies = map(ps, (p) => readyOf(p.buf));
+action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], changed: i64[c], answered: i64, limit: i64): Result<void, IoError> {
+    // only the connections that received bytes, or gave requests the turn
+    // before, read (D354)
+    const readies = map(changed, (i) => readyOf(ps[i].buf));
     const counts = map(readies, (r) => r.ends.length);
     const upto = scan(counts, (a, b) => a + b, 0);
     const total = upto.length == 0 ? 0 : upto[upto.length - 1];
     if (total == 0) {
         return match (net.wait(s, READ_LIMIT, -1)) {
             Ok(xs) => {
-                const [next, ended] = arrive(ps, xs);
+                const [next, places, ended] = arrive(ps, xs);
                 closeAll(s, ended, 0);
-                return serveLoop(s, handler, next, answered, limit);
+                return serveLoop(s, handler, next, places, answered, limit);
             },
             Err(e) => {
                 net.closeServer(s);
@@ -885,23 +914,23 @@ action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], 
         const k = j - (upto[i] - counts[i]);
         const f = r.frames[k];
         const keep = f.fault == 0 && f.keep;
-        const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[i].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
-        return outOf(ps[i].id, responseBytes(response, keep, f.head, date), keep);
+        const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
+        return outOf(ps[changed[i]].id, responseBytes(response, keep, f.head, date), keep);
     });
-    const left = afterAnswers(s, ps, readies, outs);
+    const [left, again] = afterAnswers(s, ps, changed, readies, outs);
     const all = answered + total;
     if (limit > 0 && all >= limit) {
         net.closeServer(s);
         return Ok(());
     }
-    return serveLoop(s, handler, left, all, limit);
+    return serveLoop(s, handler, left, again, all, limit);
 }
 
 // the requests to the listener `l` (taken) answered by `handler`, until
 // `limit` of them (0: no end): the server closed then
 export action serveOn(l: net.Listener, handler: (Request) => Response, limit: i64): Result<void, IoError> {
     return match (net.serverOf(l)) {
-        Ok(s) => serveLoop(s, handler, [], 0, limit),
+        Ok(s) => serveLoop(s, handler, [], [], 0, limit),
         Err(e) => Err(e),
     };
 }
@@ -909,7 +938,7 @@ export action serveOn(l: net.Listener, handler: (Request) => Response, limit: i6
 // the requests to the server `s` of `net` (taken: one of TLS, `https`)
 // answered by `handler`, until `limit` of them (0: no end)
 export action serveServer(s: net.Server, handler: (Request) => Response, limit: i64): Result<void, IoError> {
-    return serveLoop(s, handler, [], 0, limit);
+    return serveLoop(s, handler, [], [], 0, limit);
 }
 
 // the requests to `port` of every address of the machine answered by
@@ -925,7 +954,7 @@ export action serve(port: i64, handler: (Request) => Response): Result<void, IoE
 // action `handler`, until `limit` of them (0: no end) (D352)
 export action serveActionOn(l: net.Listener, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
     return match (net.serverOf(l)) {
-        Ok(s) => serveActionLoop(s, handler, [], 0, limit),
+        Ok(s) => serveActionLoop(s, handler, [], [], 0, limit),
         Err(e) => Err(e),
     };
 }
@@ -933,7 +962,7 @@ export action serveActionOn(l: net.Listener, handler: action (Request) => Respon
 // the requests to the server `s` of `net` (taken: one of TLS, `https`)
 // answered one at a time by the action `handler` (D352)
 export action serveActionServer(s: net.Server, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
-    return serveActionLoop(s, handler, [], 0, limit);
+    return serveActionLoop(s, handler, [], [], 0, limit);
 }
 
 // the requests to `port` of every address of the machine answered one at a

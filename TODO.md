@@ -349,13 +349,14 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `http`: a server `serve(port, handler)`, the handler a pure function applied in parallel on the pool (D342)
   - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
   - [ ] The server above its floor: `serve.pipelined` 1.5 (D342: about 1600 user cycles a request more; 10.1 blocks, 4.1 copies of literal texts, 4.0 texts of bytes checked as UTF-8 again, 2 chains and a `join` a request, none in C): literals kept without a copy, a text of bytes already checked, fewer blocks for a request
-  - [ ] Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
+  - [x] (D354) Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
   - [x] Actions as values (D352): the type `action (T) => U`, the checker, the lowering; `forEach`, `mapAction`; `serveAction`, `serveActionOn`, `serveTlsAction`; tests on Linux and in the VM; `serveAction.pipelined` 1.9 times its floor
   - [ ] A lambda that reads a function of its context given to a recursive function ("not supported in the POC", SPEC section 11): `mapAction(xs, (x) => handler(x))` refused (D352)
   - [ ] Actions in parallel on the pool: the primitives of the runtime checked from several threads (the buffer of `print`, files, sockets, TLS), then `serveAction` by `map` of actions (D352)
   - [ ] A state between the requests: `action (S, Request) => [S, Response]` (D352, after the two above)
   - [x] The server against servers of C made for production under wrk, in Docker: 94 % of nginx with one connection, 11 times below it with 1024 (`results/http_servers.md`, D353)
-  - [ ] The server with many connections: a table of the connections by their number, only those that received bytes read, the handler in parallel only for turns of many requests (D353: the cost of a request grows with the connections)
+  - [x] The server with many connections: a table of the connections by their number, only those that received bytes read: 1024 connections 67277 -> 158735 requests a second, as lighttpd (D354)
+  - [ ] A loop of events for each core (nginx 3.5 to 4.5 times above with many connections, its 4 processes each with its loop, D354)
 - [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)

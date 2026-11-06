@@ -2682,15 +2682,38 @@ fn results(e: &Expr, fi: u32, pv: VarId, tails: &mut usize, states: &mut usize) 
 /// that grows it in place) and given back without a copy.
 fn accumulators(p: &Program, fi: usize) -> Vec<usize> {
     let f = &p.fns[fi];
+    let fu = fi as u32;
+    // the calls of `e` to `fi` in its tail positions
+    fn tail_self(e: &Expr, fi: u32) -> usize {
+        match &e.kind {
+            ExprKind::If(_, t, f) => tail_self(t, fi) + tail_self(f, fi),
+            ExprKind::Let { body, .. } | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => tail_self(body, fi),
+            ExprKind::Call(g, args) if *g == fi => args.iter().all(|a| calls(a, fi) == 0) as usize,
+            _ => 0,
+        }
+    }
+    // a call to `fi` gives its parameter `k` another value than `pv`
+    fn changes(e: &Expr, fi: u32, k: usize, pv: VarId) -> bool {
+        if let ExprKind::Call(g, args) = &e.kind {
+            if *g == fi && !matches!(args[k].kind, ExprKind::Var(v, _) if v == pv) {
+                return true;
+            }
+        }
+        e.children().into_iter().any(|c| changes(c, fi, k, pv))
+    }
+    let tails = tail_self(&f.body, fu);
+    let all_tail = tails > 0 && calls(&f.body, fu) == tails;
     (0..f.params.len())
         .filter(|&k| {
             let pv = f.params[k];
             let ty = &p.vars[pv as usize].ty;
-            if f.consumed.get(k).copied().unwrap_or(false) || !ty.has_heap() || matches!(ty, Type::Tuple(_)) {
+            if !all_tail || f.consumed.get(k).copied().unwrap_or(false) || !ty.has_heap() || matches!(ty, Type::Tuple(_)) {
                 return false;
             }
-            let (mut tails, mut states) = (0, 0);
-            results(&f.body, fi as u32, pv, &mut tails, &mut states) && calls(&f.body, fi as u32) == tails && tails > 0 && states > 0
+            // an accumulator given back, or the state of a loop that each
+            // turn may change (`serveLoop(s, next)`), its exits freeing it
+            let (mut t, mut states) = (0, 0);
+            (results(&f.body, fu, pv, &mut t, &mut states) && states > 0) || changes(&f.body, fu, k, pv)
         })
         .collect()
 }

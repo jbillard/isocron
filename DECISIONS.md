@@ -7542,3 +7542,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     received bytes read, the arrivals written into the table in place; and
     the `map` of the handler in parallel only when the turn holds enough
     requests. Open in TODO.
+- **D354 — The server with many connections: a table by their numbers;
+  the state of a loop owned (2026-11-06).** The cause of D353 removed.
+  - The pending connections (`ps`) kept sorted by their numbers: each
+    arrival found by halving (`placeOf`) and its bytes added in place
+    (`fold` with `.with`); the new ones put at their places (a connection is
+    numbered when it is accepted, its first bytes may come after those of
+    one accepted later: the table sorted again when new ones come, a first
+    form that appended them broke the order and a search found -1, a panic
+    under the clients of `server_against_clients_of_the_test`); the bytes
+    of a connection that ended in the same turn not read; each turn reads
+    only the connections that received bytes or gave requests the turn
+    before (`changed`: after a response, what is left of a buffer may hold
+    a request the pipeline stopped before); the table built again only when
+    a connection closes.
+  - So that the table changes in place, rule A of D351 extended: a
+    parameter that holds memory, not a tuple, of a function whose calls to
+    itself are all tail calls, is owned also when one of those calls gives
+    it another value (the state of a loop, `serveLoop(s, next, ...)`), its
+    exits freeing it (`consumes`); kept only when the memory check holds.
+    The ten programs: the IR of pidigits only other, the same output, 10
+    alternate runs on 4 threads, medians -0.05 %.
+  - wrk in Docker, fixed frequency (`results/http_servers.md`): at 1024
+    connections 67277 -> 158735 requests a second (2.36 times), 256
+    connections 151520 -> 202600; lighttpd (one process, as the loop of
+    Isocron) 177463 and 194181: Isocron 89 % and 104 % of it; the threads
+    no longer cost (1 thread 153792, 4 threads 156128 at 1024). nginx
+    still 3.5 to 4.5 times above with more connections: its 4 processes,
+    each with its loop and its connections; a loop of events for each
+    core, open in TODO. `serve.pipelined` (8 connections) 1474.56 ->
+    1480.00 ns, the same.
+  - Tests: the HTTP and HTTPS test files (their server against clients of
+    every form at once, interpreted, compiled, Valgrind); in the VM 9 of
+    10: `https_client_on_windows` stopped by Defender (its executable put
+    in quarantine, events 1116 and 1117 at 01:16:59 and 01:17:04; the same
+    in a second run, its file the same), the server of D354 run there by
+    `net_on_windows`.
