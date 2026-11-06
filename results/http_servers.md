@@ -2,7 +2,7 @@
 
 `bench/http_servers/` (DECISIONS D353): `hello, world!` (13 bytes) to every
 request, by the server of Isocron (`http.serve`, a pure handler; and
-`http.serveAction`, an action), nginx 1.26 (a worker for each CPU of the
+`http.serve` given an action, D386), nginx 1.26 (a worker for each CPU of the
 server, the text from its configuration) and lighttpd (one process, the
 text from a file); h2o is not in Debian trixie. In the Docker image
 `isocron-http` (that of the Benchmarks Game, with nginx, lighttpd and wrk),
@@ -31,7 +31,7 @@ connections on): the measure of the cost of a request. At b7592dd (D385).
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
 | Isocron `serve` | 71453 (0.57 cores) | 388309 (2.02 cores) | 431762 (1.99 cores) | 410859 (1.99 cores) |
-| Isocron `serveAction` | 72128 (0.57 cores) | 385368 (2.02 cores) | 435994 (2.00 cores) | 407856 (1.99 cores) |
+| Isocron `serve`, an action | 72128 (0.57 cores) | 385368 (2.02 cores) | 435994 (2.00 cores) | 407856 (1.99 cores) |
 | nginx (2 workers) | 72431 (0.56 cores) | 367315 (2.02 cores) | 374020 (2.00 cores) | 359669 (1.98 cores) |
 | lighttpd | 70686 (0.63 cores) | 183592 (1.01 cores) | 187932 (1.00 cores) | 179096 (0.99 cores) |
 | ceiling, 1 thread | 82320 (0.47 cores) | 268672 (1.01 cores) | 283144 (1.00 cores) | 265843 (1.00 cores) |
@@ -40,9 +40,9 @@ connections on): the measure of the cost of a request. At b7592dd (D385).
 | Isocron over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
 | `serve` over nginx | 98.6 % | 105.7 % | 115.4 % | 114.2 % |
-| `serveAction` over nginx | 99.6 % | 104.9 % | 116.6 % | 113.4 % |
+| `serve`, an action, over nginx | 99.6 % | 104.9 % | 116.6 % | 113.4 % |
 | `serve` over the ceiling of 2 threads | 86.4 % | 74.7 % | 76.4 % | 75.2 % |
-| `serveAction` over the ceiling of 2 threads | 87.3 % | 74.2 % | 77.2 % | 74.6 % |
+| `serve`, an action, over the ceiling of 2 threads | 87.3 % | 74.2 % | 77.2 % | 74.6 % |
 
 `serve` runs a loop of events on each thread of the pool, each on its own
 listener of the port (D374). Against the measure of D374 on the same
@@ -50,7 +50,7 @@ cores (345784, 396260 and 321534 requests a second with 16, 256 and 1024
 connections): D371 (the small blocks moved between the caches of the
 threads by whole lists), D376 (the vectors of a wait kept from one wait to
 the next), D377 and D379 (no block for an allocation of 0 bytes, 12.77 of
-45.67 allocations a request). The ceiling is still 41.5 to 52.0 % above nginx from 16 connections on. `serveAction` runs a loop on each thread too since D385, its responses written in one pass (at 070a376 it answered 201043, 209652 and 191464 requests a second with 16, 256 and 1024 connections, on 1.07 to 1.30 cores).
+45.67 allocations a request). The ceiling is still 41.5 to 52.0 % above nginx from 16 connections on. `serve` given an action (`serveAction` before D386) runs a loop on each thread too since D385, its responses written in one pass (at 070a376 `serveAction` answered 201043, 209652 and 191464 requests a second with 16, 256 and 1024 connections, on 1.07 to 1.30 cores).
 The cost of a request with 16 connections (D376, `perf stat -p`): 18534
 cycles, the kernel 12205 and the program 6329; the ceiling 13113, 12425
 and 688; both make the same system calls (one `recv` and one `send` a
