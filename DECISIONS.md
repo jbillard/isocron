@@ -8500,3 +8500,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Not done: the size of the installed `iscc` is not worth the time of every
   build; an inflated copy kept between builds would remove that time, with
   a cache to keep valid.
+- **D381 — The Benchmarks Game measured again in Docker (2026-11-06).**
+  After the changes of the runtime of D371 to D380 (the batches of blocks,
+  the cache at a fixed place of its page, the print lock, the vectors of a
+  wait, no block for 0 bytes), the publication again at f3e1ef8: the image
+  `isocron-bg` rebuilt with this `iscc` (`image.sh`), every program built
+  and checked (`run.sh build`, `run.sh check`: 98 of their outputs the
+  reference's; `mandelbrot.gpp-4` differs from it at N=200 and is
+  Isocron's at N=16000, as before), then measured at fixed frequency
+  (`run.sh measure 4 12 native`, the lowest of 12 runs). Isocron the
+  fastest on 10 of 10, its times 664 (677 before), 1659 (1666), 5 (5), 676
+  (684), 637 (638), 1887 (1906), 490 (491), 82 (83), 40 (41) and 195 (196)
+  ms for binary-trees, fannkuch-redux, fasta, k-nucleotide, mandelbrot,
+  n-body, pidigits, regex-redux, reverse-complement and spectral-norm.
+  `results/floors.md` generated again: every program below three times its
+  floor, at most regex-redux 2.8, k-nucleotide 2.6 -> 2.5;
+  `results/benchmarks_game.md`, the summary of the README and its figure
+  generated again (`report.py`).
