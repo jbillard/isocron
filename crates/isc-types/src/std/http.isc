@@ -830,18 +830,21 @@ action afterAnswers(s: net.Server, ps: Pending[n], changed: i64[c], readies: Rea
     return [left, map(live, (id) => placeOf(left, id, 0, left.length))] as const;
 }
 
-// the responses to the requests ready from the `j`-th on, each asked to the
-// action `handler` in its turn (a fault answered without it), written into
-// `acc` (owned: changed in place, rule A of D351) (D352)
-action respondFrom(handler: action (Request) => Response, ps: Pending[n], changed: i64[c], readies: Ready[c], items: [i64, i64][m], j: i64, acc: Response[m]): Response[m] {
-    if (j == items.length) {
+// the bytes of the responses to the requests ready from the `j`-th on,
+// each asked to the action `handler` in its turn (a fault answered without
+// it), written into `acc` (owned: changed in place, rule A of D351) as the
+// `map` of `serveLoop` writes them (D352, D385)
+action respondFrom(handler: action (Request) => Response, ps: Pending[n], changed: i64[c], readies: Ready[c], upto: i64[u], counts: i64[c], date: string, j: i64, acc: Out[m]): Out[m] {
+    if (j == acc.length) {
         return acc;
     }
-    const [i, k] = items[j];
+    const i = owner(upto, j, 0, upto.length);
     const r = readies[i];
+    const k = j - (upto[i] - counts[i]);
     const f = r.frames[k];
+    const keep = f.fault == 0 && f.keep;
     const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
-    return respondFrom(handler, ps, changed, readies, items, j + 1, acc.with(j, response));
+    return respondFrom(handler, ps, changed, readies, upto, counts, date, j + 1, acc.with(j, outOf(ps[changed[i]].id, responseBytes(response, keep, f.head, date), keep)));
 }
 
 // the loop of `serveAction`: as `serveLoop`, the requests ready answered one
@@ -867,19 +870,9 @@ action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps:
         };
     }
     const date = httpDate(time.now());
-    // the requests ready (a place in `changed`, a request of it), each
-    // answered by `handler` in its turn, a fault without it; then the bytes
-    const items = map(iota(total), (j) => {
-        const i = owner(upto, j, 0, upto.length);
-        return [i, j - (upto[i] - counts[i])] as const;
-    });
-    const responses = respondFrom(handler, ps, changed, readies, items, 0, fill(total, textResponse(500, "")));
-    const outs = map(iota(total), (j) => {
-        const [i, k] = items[j];
-        const f = readies[i].frames[k];
-        const keep = f.fault == 0 && f.keep;
-        return outOf(ps[changed[i]].id, responseBytes(responses[j], keep, f.head, date), keep);
-    });
+    // the requests ready, each answered by `handler` in its turn (a fault
+    // without it), its bytes written at once
+    const outs = respondFrom(handler, ps, changed, readies, upto, counts, date, 0, fill(total, outOf(0, [], false)));
     const [left, again] = afterAnswers(s, ps, changed, readies, outs);
     const all = answered + total;
     if (limit > 0 && all >= limit) {
@@ -1007,12 +1000,35 @@ export action serveActionServer(s: net.Server, handler: action (Request) => Resp
     return serveActionLoop(s, handler, [], [], 0, limit);
 }
 
-// the requests to `port` of every address of the machine answered one at a
-// time by the action `handler` (it may print, read files, call other
-// services), with no end (D352)
+// the requests to `port` of every address of the machine answered by the
+// action `handler` (it may print, read files, call other services), with
+// no end (D352): as `serve`, a loop on each thread of the pool under Linux
+// (D374), each answering its requests one at a time, in their order; two
+// loops at the same time, as the actions of `mapParallel` (D373, D385)
 export action serveAction(port: i64, handler: action (Request) => Response): Result<void, IoError> {
+    const k = sysThreads();
     return match (net.listen("0.0.0.0", port)) {
-        Ok(l) => serveActionOn(l, handler, 0),
+        Ok(l) => {
+            if (k <= 1 || port == 0 || sysPlatform() != 0) {
+                return serveActionOn(l, handler, 0);
+            }
+            net.closeListener(l);
+            return firstError(mapParallel(iota(k), (i) => serveActionShared(port, handler)), 0);
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// one of the loops of `serveAction` (D385), on a listener of its own of
+// `port` (`Ok(0)` when it ends, which it does not)
+action serveActionShared(port: i64, handler: action (Request) => Response): Result<i64, IoError> {
+    const [l, code] = sysListenShared("0.0.0.0", port);
+    if (code != 0) {
+        sysCloseListener(l);
+        return Err(ioError(code, `0.0.0.0:${port}`));
+    }
+    return match (serveActionOn(l, handler, 0)) {
+        Ok(_) => Ok(0),
         Err(e) => Err(e),
     };
 }

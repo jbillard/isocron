@@ -368,7 +368,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] The lock of `print` (D373): the version with 6.5 instructions more a line measured +1.06 to +1.37 %, the first with 9.02 more +0.37 % (one A/B): the cause not shown
   - [ ] A lambda that reads a function of its context given to a recursive function ("not supported in the POC", SPEC section 11): `mapAction(xs, (x) => handler(x))` refused (D352)
   - [x] Actions in parallel on the pool: `mapParallel(x, f)`, a task of the pool for each element (the node `Tasks`, `isc_parallel_actions`); the primitives of the runtime checked from several threads: a line of `print` held whole by its thread while tasks run, sockets, listeners and servers linear (never shared), files by path (D373)
-  - [ ] `serveAction` and `serveTls` with a loop on each thread (D374 keeps one: the action handler answers one request at a time, D352; the servers of TLS not measured yet)
+  - [x] `serveAction` with a loop on each thread, its responses written in one pass: 2 cores, 199602 -> 380690, 215475 -> 437783 and 188792 -> 408195 requests a second with 16, 256 and 1024 connections, 99.9, 99.4 and 98.4 % of `serve` (D385)
+  - [ ] `serveTls` and `serveTlsAction` with a loop on each thread (the servers of TLS not measured yet)
   - [ ] A state between the requests: `action (S, Request) => [S, Response]` (D352, after the two above)
   - [x] The server against servers of C made for production under wrk, in Docker: 94 % of nginx with one connection, 11 times below it with 1024 (`results/http_servers.md`, D353)
   - [x] The server with many connections: a table of the connections by their number, only those that received bytes read: 1024 connections 67277 -> 158735 requests a second, as lighttpd (D354)

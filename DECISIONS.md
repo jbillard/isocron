@@ -8560,3 +8560,49 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`Found`, `merge_runs_with`, `Run`, the writers of the replacements). Not
   made: the author judged it not worth it (2026-11-06), the effort going to
   the server (D374 onward).
+- **D385 — `serveAction` with a loop on each thread, its responses
+  written in one pass (2026-11-06).** `serveAction` (a handler that is an
+  action, D352) answered at 94.7, 55.0, 55.8 and 52.7 % of nginx with 1,
+  16, 256 and 1024 connections (results/http_servers.md, 2 cores), on
+  1.07 to 1.30 of its 2 cores: one loop, one request at a time. The author:
+  « tu peux passer là-dessus en priorité », then « idéalement il faudrait
+  arriver au moins au même niveau de performance que serve ».
+  - The language: under Linux `serveAction(port, handler)` runs, as `serve`
+    does (D374), a loop on each thread of the pool, each on a listener of
+    its own of the port, by `mapParallel`. Each loop answers its requests
+    one at a time, in their order; the requests of one connection stay in
+    their order (a connection belongs to one loop). Two loops run at the
+    same time, the effects of their requests in no order between them: the
+    rule of the actions of `mapParallel` (D373). Chosen over a new name for
+    the parallel form: `serve` changed the same way in D374, and the order
+    of all the requests stays where it is asked for, `serveActionOn(l,
+    handler, limit)` (one loop, as `serveOn`), for a handler that reads a
+    file then writes it again. One loop under Windows, with one thread,
+    for the port 0, and for the servers of TLS. SPEC sections 12 and 18,
+    the guide.
+  - The loop: `respondFrom` wrote each `Response` into an array filled
+    first with `textResponse(500, "")`, after an array of the places of the
+    requests (`items`), and a second `map` made their bytes; it now writes
+    the `Out` of each request (`responseBytes`) into an array of `Out`s,
+    as the `map` of `serveLoop` does, in one pass.
+  - Measured (the server on 2 cores, wrk on 6, `ISC_THREADS=2`, 3
+    alternated runs of 10 s, medians, requests a second, 16 / 256 / 1024
+    connections): the loops 199602 -> 368261 (+84.5 %), 215475 -> 410494
+    (+90.5 %), 188792 -> 385182 (+104.0 %), then `serve` 376703, 446502,
+    422177 (97.8, 91.9, 91.2 %); the one pass 364589 -> 380690 (+4.4 %),
+    416267 -> 437783 (+5.2 %), 385768 -> 408195 (+5.8 %), `serve` 381057,
+    440508, 414704 (99.9, 99.4, 98.4 %; the runs overlap with 16 and 256).
+    With 1024 connections, four runs more (under `perf`): `serveAction`
+    419232, 413859, 408149, 413348, `serve` 413371, 421346, 405381,
+    408537; the means of the seven 99.4 %. A request (`perf stat`, 5 s in
+    a run, two runs each): user instructions 10915 and 10934 against 10507
+    and 10461 (about 430 more, not attributed: the two forms are compiled
+    into other functions, the handler of `serve` inlined into its task),
+    user cycles 4554 and 4466 against 4331 and 4452, kernel instructions
+    13863 and 13954 against 14008 and 13852.
+  - Tests: `serve_action_runs_a_loop_on_each_thread` (`std_http.rs`, the
+    test of `serve`'s loops made a function of the program: 4 listeners
+    with 4 threads, 1 interpreted, a second server refused, 64
+    connections of 50 requests each answered in their order, the handler
+    an action that prints); `server_with_a_handler_that_is_an_action`
+    unchanged.

@@ -1,0 +1,18 @@
+import * as http from "http";
+
+// an action: it prints each request (the lines of the loops never cut, D373)
+action answer(r: http.Request): http.Response {
+    print(`${r.method} ${r.path}`);
+    return http.textResponse(200, `${r.method} ${r.path}`);
+}
+
+action main(args: string[k]): i32 {
+    const port = parseI64(args[0]);
+    return match (http.serveAction(port, answer)) {
+        Ok(_) => 0,
+        Err(e) => {
+            print("error");
+            return 1;
+        },
+    };
+}

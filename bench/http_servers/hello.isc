@@ -1,6 +1,6 @@
 // The server of Isocron measured against nginx and h2o: `hello, world!` to
 // every request, by `serve` (a pure handler, in parallel) or by
-// `serveAction` (an action, one request at a time).
+// `serveAction` (an action: on each loop one request at a time, D385).
 //   hello PORT [action]
 import * as http from "http";
 import * as sys from "sys";

@@ -2776,14 +2776,21 @@ text.
 A handler that needs effects (print, read a file, call another service)
 is an action, given to `serveAction(port, handler)` or
 `serveActionOn(l, handler, limit)`: `action (Request) => Response`
-([actions as values](#actions-as-values)). The requests are then answered
-one at a time, in the order they are ready; a pure handler given to them
-works too. `https` has `serveTlsAction` and `serveTlsActionOn`.
+([actions as values](#actions-as-values)). `serveActionOn` answers the
+requests one at a time, in the order they are ready. Under Linux,
+`serveAction` runs a loop on each thread of the pool, as `serve` does:
+each loop answers its requests one at a time, in their order, and two
+loops run at the same time, the effects of their requests in no order
+between them, as the actions of `mapParallel`. A handler that needs one
+order for all the requests (read a file, then write it again) is given
+to `serveActionOn`. A pure handler given to them works too. `https` has
+`serveTlsAction` and `serveTlsActionOn`, one loop each.
 
 Under Linux, `serve(port, handler)` runs a loop of events on each thread
 of the pool, each on a listener of its own of the port (`SO_REUSEPORT`:
-the kernel shares the connections out among them), by `mapParallel`; one
-loop under Windows, with one thread, for the port 0 and for `serveOn`.
+the kernel shares the connections out among them), by `mapParallel`;
+`serveAction` too. One loop under Windows, with one thread, for the port
+0, for `serveOn` and for `serveActionOn`.
 
 ```isc
 import * as http from "http";

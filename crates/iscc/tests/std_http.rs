@@ -404,12 +404,23 @@ fn listeners_of(port: u16) -> usize {
 /// requests each all answered.
 #[test]
 fn serve_runs_a_loop_on_each_thread() {
+    loops_on_each_thread(include_str!("data/std_http_serve_loops.isc"), "std_http_serve_loops");
+}
+
+/// D385: `serveAction(port, handler)` too, its handler an action that
+/// prints: 4 listeners with 4 threads, 1 interpreted, a second server
+/// refused, the requests of each connection answered in their order.
+#[test]
+fn serve_action_runs_a_loop_on_each_thread() {
+    loops_on_each_thread(include_str!("data/std_http_serve_action_loops.isc"), "std_http_serve_action_loops");
+}
+
+fn loops_on_each_thread(src: &str, name: &str) {
     use std::io::BufReader;
-    let src = include_str!("data/std_http_serve_loops.isc");
-    let bin = compile(src, "std_http_serve_loops");
-    let dir = tmp("std_http_serve_loops_src");
+    let bin = compile(src, name);
+    let dir = tmp(&format!("{}_src", name));
     let _ = std::fs::create_dir_all(&dir);
-    let file = dir.join("serve_loops.isc");
+    let file = dir.join(format!("{}.isc", name));
     std::fs::write(&file, src).unwrap();
     for (name, loops) in [("compiled", 4), ("interpreted", 1)] {
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
