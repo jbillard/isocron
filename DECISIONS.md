@@ -7924,3 +7924,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `isc_put_int`, its 17 literals of one byte stored as constants, the
     accumulator by `isc_str_reserve`) and the other tests of templates of
     `strings.rs`, against the interpreter, 1 and 4 threads, Valgrind.
+- **D364 — The test of the HTTPS client waits for its server
+  (2026-11-06).** Suite 169 (at 3a6c2aa, run alone after a forced reboot
+  of the machine, its caches cold, a load average of 11.58): `std_https`
+  failed with Isocron's allocator, every connection of the interpreted
+  client refused (`refused localhost:34657`, 7 times), while the same
+  binary alone passed 6 times of 6 (3 with each allocator). `s_server` of
+  the test waited at most 5 s for `openssl s_server` to open its port,
+  then went on without it; its port, taken by `free_port` and given back,
+  may also be taken by another test before the server binds it. Now it
+  waits up to 30 s, and a server that stopped or did not open its port is
+  started again on another port, five times at most, the test panicking
+  with that message otherwise. The code of the compiler and the runtime
+  unchanged.

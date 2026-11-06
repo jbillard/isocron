@@ -43,25 +43,37 @@ fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
-/// `openssl s_server` on `port`, serving the files of `dir/www` (`-WWW`),
-/// accepting connections until it is killed.
-fn s_server(dir: &Path, port: u16) -> std::process::Child {
-    let c = Command::new("openssl")
-        .args(["s_server", "-quiet", "-accept", &port.to_string(), "-cert", "../server.pem", "-key", "../server.key", "-WWW"])
-        .current_dir(dir.join("www"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    // its port open
-    for _ in 0..500 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            break;
+/// `openssl s_server` on a free port, serving the files of `dir/www`
+/// (`-WWW`), accepting connections until it is killed: its port once it
+/// accepts. A server that has not opened its port after 30 s or that
+/// stopped (its port taken by another test between `free_port` and its
+/// start) is started again on another port, five times at most; the test
+/// does not go on without it (suite 169: all the connections of the client
+/// refused, the file alone passing 6 times of 6).
+fn s_server(dir: &Path) -> (std::process::Child, u16) {
+    for _ in 0..5 {
+        let port = free_port();
+        let mut c = Command::new("openssl")
+            .args(["s_server", "-quiet", "-accept", &port.to_string(), "-cert", "../server.pem", "-key", "../server.key", "-WWW"])
+            .current_dir(dir.join("www"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        for _ in 0..3000 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return (c, port);
+            }
+            if let Ok(Some(_)) = c.try_wait() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let _ = c.kill();
+        let _ = c.wait();
     }
-    c
+    panic!("openssl s_server did not open its port");
 }
 
 fn valgrind_bin() -> Option<PathBuf> {
@@ -78,8 +90,7 @@ fn valgrind_bin() -> Option<PathBuf> {
 #[test]
 fn client_against_openssl() {
     let Some(dir) = certificates("std_https_client_certs") else { return };
-    let port = free_port();
-    let mut server = s_server(&dir, port);
+    let (mut server, port) = s_server(&dir);
     let src = include_str!("data/std_https_client.isc");
     let big: u64 = (0..3_000_000u64).map(|i| i % 253).sum();
     let want = format!(
