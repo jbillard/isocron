@@ -545,6 +545,44 @@ fn rows_narrower_than_the_vector_are_masked() {
     }
 }
 
+/// D388: a whole row of 33 to 64 bytes that reads a table of bytes in
+/// registers (`table[source[...]]`, as the lines of reverse-complement):
+/// one vector of 64 lanes, the table permuted on 512 bits (the source's
+/// bytes from 0 to 255: the entries below 64, from 64, from 128 and from
+/// 192 all read, the four parts of 64 bytes and the choice of bit 7; the
+/// table printable), the source read downwards and
+/// upwards, rows of 33, 61 and 64, lengths cut in the middle of a row, a
+/// table of 200 bytes and one of 256. The interpreter's results, 1 and 4
+/// threads.
+#[test]
+fn rows_that_read_a_table_in_registers_take_64_lanes() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const t = parseI64(args[1]);
+    const table = map(iota(t), (c) => u8(33 + (c * 7 + 3) % 90));
+    const source = map(iota(n + 5), (i) => u8((i * 37 + i / 3) % t));
+    const m = source.length;
+    printBytes(map(iota(n), (q) => q % 61 == 60 || q == n - 1 ? 10u8 : table[i64(source[m - 1 - (q / 61 * 60 + q % 61)])]));
+    printBytes(map(iota(n), (q) => q % 33 == 32 ? 10u8 : table[i64(source[q / 33 * 32 + q % 33])]));
+    printBytes(map(iota(n), (q) => table[i64(source[m - 1 - q])]));
+    return 0;
+}
+";
+    let bin = compile(src, "rows_of_a_table");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let f = isc_codegen::backend::host_features();
+    if ["+avx512bw", "+avx512vl", "+avx512vbmi"].iter().all(|x| f.split(',').any(|y| y == *x)) {
+        assert!(ll.contains("vpermi2var.qi.512"), "the table is not permuted on 64 lanes");
+    }
+    for args in [["0", "256"], ["1", "256"], ["61", "256"], ["1000", "256"], ["100003", "256"], ["5000", "200"]] {
+        let Outcome::Exit(0, want) = interp(src, &args) else { panic!("{:?}: the interpreter did not end with 0", args) };
+        for th in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(th));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?} {} threads: {}", args, th, r.stderr);
+        }
+    }
+}
+
 /// D273: a table read at `x % c` (c a literal from the lanes to 4096) is
 /// copied before the vector loop with its period continued, every vector
 /// then one load wherever its remainders start: bytes in lines written as

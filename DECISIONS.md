@@ -8700,3 +8700,45 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     its context refused); the refusals of `actions.rs` moved from `map` to
     `fold` and `filter`; `std_env_names.isc` on `map`; an example of the
     guide; SPEC section 12.
+- **D388 — A row of bytes that reads a table in registers in one vector
+  of 64 lanes (2026-11-06).** TODO.md: the lines of reverse-complement
+  about 19 ms against about 6, « one byte at a time ». Profile (4 threads,
+  fixed frequency, 10 runs of `perf record`, the input of 254166745
+  bytes): the lines are vector code already, by rows of 61 (D214, D318),
+  two vectors of 32 lanes a row, each with its reversed masked load
+  (`vpermb`), the table of 256 bytes permuted by four `vpermi2b` of 32
+  lanes and three selections, its masks and its reloads from the stack
+  (the « one byte at a time » of TODO was wrong). `isc_task_3` (the bases
+  of each block and the lines) 73.39 % of the 874 million user
+  instructions and 61.08 % of the user cycles, `isc_task_4` (the count of
+  the heads, 16 bytes a step) 18.35 and 17.61 %, `isc_task_1` (the count of
+  the bases, D293) 7.35 and 15.50 %; those two wait for memory (78.6 % and
+  52.2 % of their cycles on the instruction after their load), at about
+  the speed of the floor; the times of the samples: the heads from 0 to
+  6.6 ms, the records from 6.9 to about 37 ms. The rows of 33 to 64 bytes
+  in one vector of 64 lanes (D274) left out the `map`s that read a table
+  in registers (D198), whose permutations were of 32 lanes at most.
+  - The code: `permute_bytes` for 64 lanes, the table in 4 parts of 64
+    bytes (its 8 registers of 32 joined, out of the loop), two
+    `vpermi2var.qi.512` of 128 entries (bits 0 to 6 of each index) and the
+    selection of bit 7; the read of a table on 64 lanes only for a table in
+    registers; `byte_window` (32 lanes at most) a gather beyond; the rows
+    of D274 with tables. A first version read any array of bytes on 64
+    lanes through the test of 256 bytes and the permutations: fasta +4.0 %
+    instructions (143.7 -> 149.4 million), +1.10 and +0.88 % (minimums of
+    41 alternated runs, the old against itself +0.00 %); with the read
+    for the tables in registers only, fasta's code is the old one. A rule
+    tried on the way (no 64 lanes for rows that compute floats, from the
+    hypothesis that fasta's draws spilled) changed nothing: removed.
+  - Measured (4 threads, fixed frequency, 11 alternated runs, the same
+    outputs): reverse-complement 40.0 -> 31.9 ms (-20.14 %, medians
+    -20.67 %), 873.7 -> 582.6 million user instructions, 458.4 -> 350.9
+    million user cycles, 157.35 -> 123.66 ms of CPU: about 1.9 times its
+    floor of 16.832 ms. The code of the other nine programs the same
+    (`objdump`, the addresses of the runtime set aside).
+  - Test `rows_that_read_a_table_in_registers_take_64_lanes`
+    (`vector_index.rs`: rows of 61 downwards and of 33 upwards, the
+    source's bytes from 0 to 255 through the four parts and bit 7, tables
+    of 256 and 200 bytes, lengths cut in a row, `vpermi2var.qi.512` in
+    the IR on a host with AVX-512 VBMI; the interpreter's results, 1 and 4
+    threads).

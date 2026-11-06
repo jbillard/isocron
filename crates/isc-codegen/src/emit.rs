@@ -4478,7 +4478,11 @@ impl<'p> Gen<'p> {
             let x = if dir == 1 { x } else { self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> {}", vm, x, vm, w, rev)) };
             return Ok(V { r: x, t: vm, uni: false });
         }
-        if esize(&elem) == 1 && matches!(elem, Type::Int(_)) && w <= 32 && BYTE_LOOKUP.with(|b| b.get()) {
+        // 64 lanes: only a table in registers (D388; any array of bytes
+        // read on 64 lanes took the test and the permutations too: fasta +4
+        // % instructions)
+        let in_registers = matches!(a.kind, ExprKind::Var(v, _) if self.f.table_parts.contains_key(&v));
+        if esize(&elem) == 1 && matches!(elem, Type::Int(_)) && (w <= 32 || (w == 64 && in_registers)) && BYTE_LOOKUP.with(|b| b.get()) {
             // a table of at most 256 bytes: permutations of its bytes in
             // registers (AVX-512 VBMI), a gather beyond (D185)
             let small = self.ins(format!("icmp ule i64 {}, 256", n));
@@ -4530,6 +4534,10 @@ impl<'p> Gen<'p> {
     /// loads of 32 bytes from the lowest index (nothing past the end) and
     /// one `vpermi2b` of the indices relative to it; a gather otherwise.
     fn byte_window(&mut self, ptr: &str, n: &str, idx: &str, elem: &Type, w: u32) -> String {
+        // a window of 64 bytes holds the lanes of 32 indices at most
+        if w > 32 {
+            return self.gather(ptr, idx, elem, w);
+        }
         let vt = format!("<{} x i64>", w);
         let (lo_in, hi_in) = match self.mask.clone() {
             Some(m) => (
@@ -4630,6 +4638,18 @@ impl<'p> Gen<'p> {
     /// The bytes of the table of `parts` at the lanes of `idx`.
     fn permute_bytes(&mut self, parts: &[String], idx: &str, w: u32) -> String {
         let i8v = self.ins(format!("trunc <{} x i64> {} to <{} x i8>", w, idx, w));
+        if w == 64 {
+            // 64 lanes (D388): the table in 4 parts of 64 bytes (two of 32
+            // each, joined once out of the loop), two permutations of 128 of
+            // them (bits 0 to 6 of each index), the one of bit 7
+            self.decls.insert("declare <64 x i8> @llvm.x86.avx512.vpermi2var.qi.512(<64 x i8>, <64 x i8>, <64 x i8>)".into());
+            let all = (0..64).map(|j| format!("i32 {}", j)).collect::<Vec<_>>().join(", ");
+            let t: Vec<String> = (0..4).map(|j| self.ins(format!("shufflevector <32 x i8> {}, <32 x i8> {}, <64 x i32> <{}>", parts[2 * j], parts[2 * j + 1], all))).collect();
+            let q0 = self.ins(format!("call <64 x i8> @llvm.x86.avx512.vpermi2var.qi.512(<64 x i8> {}, <64 x i8> {}, <64 x i8> {})", t[0], i8v, t[1]));
+            let q1 = self.ins(format!("call <64 x i8> @llvm.x86.avx512.vpermi2var.qi.512(<64 x i8> {}, <64 x i8> {}, <64 x i8> {})", t[2], i8v, t[3]));
+            let s7 = self.ins(format!("icmp slt <64 x i8> {}, zeroinitializer", i8v));
+            return self.ins(format!("select <64 x i1> {}, <64 x i8> {}, <64 x i8> {}", s7, q1, q0));
+        }
         let iv = if w == 32 {
             i8v
         } else {
@@ -6459,10 +6479,11 @@ impl<'p> Gen<'p> {
         // the lanes after the row masked (D274): the work of a row that does
         // not depend on its places (a remainder, the checks) once, not twice
         let rows = if w > 1 { row_split(src, w) } else { None };
+        // a table of bytes read in the row: permuted in registers for 64
+        // lanes too (D388)
         let wide = matches!(&rows, Some((c, _, _)) if *c > w as i64 && *c <= 2 * w as i64)
             && w == 2 * MAP_WIDTH
             && matches!(et, Type::Int(k) if k.bits() == 8)
-            && tables.is_empty()
             && BYTE_MASKS.with(|b| b.get());
         let pw = if wide { 2 * w } else { w };
         // the tables read at `x % c`, copied with their period continued
