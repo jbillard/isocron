@@ -1108,3 +1108,14 @@ fn concatenations_with_literals_written_by_the_code() {
     assert!(!ll.contains("call void @isc_str_concat"), "a concatenation with a literal given to the runtime");
     assert!(ll.matches("call void @isc_put_text(").count() >= 5, "the texts not written by the compiled code");
 }
+
+/// D369: `padStart` and `padEnd` of a text by a fill of one byte write the
+/// text and the fill by moves: fills of 0 to 40 bytes before and after
+/// texts of 0 to 20 bytes, a fill of several bytes (the other way), the
+/// text of the interpreter.
+#[test]
+fn texts_padded_by_moves() {
+    let src = "function text(n: i64): string {\n    return stringOf(map(iota(n), (j) => u8(97 + (n + j) % 26)));\n}\naction main(args: string[k]): i32 {\n    const v = parseI64(args[0]);\n    const ts = map(iota(21), (n) => text(n));\n    print(map(iota(21 * 41), (i) => ts[i % 21].padStart(i / 21 + v, \"*\")).join(\"|\"));\n    print(map(iota(21 * 41), (i) => ts[i % 21].padEnd(i / 21 + v, \".\")).join(\"|\"));\n    print(map(iota(30), (i) => ts[i % 5].padStart(i, \"ab\")).join(\"|\"));\n    return 0;\n}\n";
+    agree(src, "texts_padded", &["0"], &interp_ok(src, &["0"]));
+    agree(src, "texts_padded", &["3"], &interp_ok(src, &["3"]));
+}

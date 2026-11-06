@@ -8045,3 +8045,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     bytes around literals, an accumulator grown by literals, replacements
     whose matches are 0 to 80 bytes apart; the text of the interpreter with
     1 and 4 threads, Valgrind; no `isc_str_concat` in the IR).
+- **D369 — A text padded by a fill of one byte written by moves
+  (2026-11-06).** `padStart` of `strings` (a slice of 10 bytes padded to
+  20 by `"0"`) 5.8 times its floor: alone, 37.69 cycles and 178.89
+  instructions a call, `isc_pad` 45.6 %, `free` 27.0 %, `memcpy` 7.6 %,
+  `memset` 4.7 %: the fast way of D302 wrote the text by
+  `write_copy_of_slice` and the fill by a loop that LLVM made a call of
+  `memset`.
+  - `isc_pad` and `isc_pad_int` write the text by `copy_short` and the fill
+    by `fill_short` (D359) into the block of `isc_alloc`.
+  - `padStart` alone: 37.69 -> 32.18 cycles and 178.89 -> 152.89
+    instructions a call. An A/B of the group at fixed frequency (medians of
+    9 runs): `padStart` 11.755 -> 10.181 ns (-13.4 %), `concat`,
+    `template`, `trim`, `toUpperCase`, `formatIso`, `parseIso` within -0.3
+    and +0.8 %. `results/primitives.md` (a whole run): `padStart` 11.81 ->
+    10.21 ns (5.8 -> 5.1 times its floor); `env` +3.8 % (it calls neither
+    function, the runtime of the binary changed only in them: the places of
+    the code and of the stack, D363). What is left: the block made and
+    freed (`free` 30 % of the 32.18 cycles), where the floor writes into a
+    buffer.
+  - The ten programs: nine binaries the same bytes as at D368; pidigits
+    (`padEnd` of its lines) and regex-redux an A/B of 16 runs on 4
+    threads, the lowest and the median: +0.06 / -0.01 % and -0.03 / -0.40
+    %, the same outputs.
+  - Tested by `texts_padded_by_moves` (`strings.rs`: fills of 0 to 40
+    bytes before and after texts of 0 to 20 bytes, a fill of two bytes;
+    compiled, interpreted, Valgrind).

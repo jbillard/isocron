@@ -1494,13 +1494,12 @@ pub unsafe extern "C" fn isc_pad_int(out: *mut IscStr, v: i64, signed: i32, len:
         return;
     }
     let (total, gap) = (len as usize, len as usize - t.len());
-    *out = made(total, |d| {
-        let (at, from) = if start != 0 { (gap, 0) } else { (0, t.len()) };
-        d[at..at + t.len()].write_copy_of_slice(t);
-        for o in &mut d[from..from + gap] {
-            o.write(c as u8);
-        }
-    });
+    // by moves, as `isc_pad` (D369)
+    let r = isc_alloc(total as i64);
+    let (at, from) = if start != 0 { (gap, 0) } else { (0, t.len()) };
+    copy_short(t.as_ptr(), r.add(at), t.len());
+    fill_short(r.add(from), c as u8, gap);
+    *out = IscStr { ptr: r, len: total as i64 };
 }
 
 #[no_mangle]
@@ -2619,13 +2618,13 @@ pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i6
     if fill.len() == 1 {
         let (b, c, total) = (s.as_bytes(), fill.as_bytes()[0], len as usize);
         let gap = total - b.len();
-        *out = made(total, |d| {
-            let (t, f) = if start != 0 { (gap, 0) } else { (0, b.len()) };
-            d[t..t + b.len()].write_copy_of_slice(b);
-            for o in &mut d[f..f + gap] {
-                o.write(c);
-            }
-        });
+        // the text and the fill by moves (`copy_short`, `fill_short`), not
+        // by the calls of `memcpy` and `memset` (D369)
+        let r = isc_alloc(total as i64);
+        let (t, f) = if start != 0 { (gap, 0) } else { (0, b.len()) };
+        copy_short(b.as_ptr(), r.add(t), b.len());
+        fill_short(r.add(f), c, gap);
+        *out = IscStr { ptr: r, len: total as i64 };
         return;
     }
     *out = written(&|w| sem::pad(w, s, len, fill, start != 0));
