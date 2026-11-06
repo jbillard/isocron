@@ -8664,3 +8664,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     a lambda that calls one); the tests of `std_http.rs` and `std_https.rs`
     on the new names; an example in `docs/language.md`; SPEC sections 12
     and 18.
+- **D387 — `map` for a pure function or an action; a lambda that reads a
+  function of its context given to a recursive function (2026-11-06).**
+  The other pair of D386: `map` (pure, in parallel) and `mapAction` (an
+  action, in order, D352).
+  - The language: in an action, the function of `map(x, f)` may be an
+    action (a lambda written there checked as one may act, its purity
+    inferred as in D386): applied to each element in order, once each, the
+    result of the size of `x`; a pure function, or a lambda without an
+    effect, applied in parallel as before. `fold`, `filter` and the other
+    functions of arrays stay pure. `mapAction` is removed from the
+    language: its code stays in the prelude as `mapInOrder`, which the
+    lowering calls for a `map` of an action (`fn_pure` false), not
+    documented. The message of an effect in a pure lambda names `fold`,
+    `filter` and the others, `map` and `mapParallel` aside.
+  - The lowering: `map(x, (v) => h(v) * 2)`, `h` an action given to the
+    action that calls it, reached the limit of the POC « a recursive
+    function given a function that reads a function of its context » (TODO,
+    D352: `mapInOrder` is recursive). A function of the context of a lambda
+    is known when the program is compiled (defunctionalization, D107): the
+    key of the specialization (`FnKey::Lambda`) now holds the keys of the
+    functions the lambda reads, two such lambdas two specializations; a
+    function read that reads values or sizes of its own context is still
+    refused (they would not be in the specialized function).
+  - The code: the ten programs of the Benchmarks Game built by the `iscc`
+    of 785b2cf and by the new one: the code of their functions the same
+    (`objdump`, the addresses of the runtime set aside: no line differs),
+    `.text` and `.rodata` of the same sizes.
+  - Tests: `map_takes_an_action` (`actions.rs`: an action by its name, a
+    lambda that prints, a lambda that calls the action it is given, an
+    empty array, maps inside maps, a sum of 100000 in parallel, `apply` of
+    a lambda that reads `g` for two `g`; the interpreter and compiled on 1
+    and 4 threads); the IR test of D152 (`ir.rs`: two specializations of
+    `apply`, one per function read; a function read that reads a value of
+    its context refused); the refusals of `actions.rs` moved from `map` to
+    `fold` and `filter`; `std_env_names.isc` on `map`; an example of the
+    guide; SPEC section 12.

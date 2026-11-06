@@ -311,9 +311,9 @@ action main(args: string[k]): i32 {
     let p = lower(&t).unwrap();
     assert_eq!(p.fns.len(), 1);
     assert_eq!(p.fns[0].params.len(), 2, "n and the size m");
-    // a lambda that reads a function of its context: no specialization yet
-    let t = isc_types::check_source(
-        "function apply(f: (i64) => i64, n: i64): i64 {
+    // a lambda that reads a function of its context which reads nothing of
+    // its own: that function part of the key of the specialization (D387)
+    let src = "function apply(f: (i64) => i64, n: i64): i64 {
     if (n == 0) {
         return 0;
     } else {
@@ -327,13 +327,16 @@ function twice(g: (i64) => i64): i64 {
 
 action main(args: string[k]): i32 {
     print(twice((v) => v + 1));
+    print(twice((v) => v * 3));
     return 0;
 }
-",
-    )
-    .unwrap();
+";
+    let p = lower(&isc_types::check_source(src).unwrap()).unwrap();
+    assert_eq!(p.fns.iter().filter(|f| f.name.starts_with("apply")).count(), 2, "one `apply` for each function read: {:?}", p.fns.iter().map(|f| &f.name).collect::<Vec<_>>());
+    // a function read that reads a value of its own context: refused
+    let t = isc_types::check_source(&src.replace("print(twice((v) => v * 3));", "const k = i64(args.length);\n    print(twice((v) => v * k));")).unwrap();
     let e = lower(&t).unwrap_err();
-    assert!(e.message.contains("a recursive function given a function that reads a function of its context"), "{}", e);
+    assert!(e.message.contains("a recursive function given a function that reads a function of its context which reads values of its own"), "{}", e);
 }
 
 /// Uniqueness in the branches of an `if` (D105): the last use of a variable

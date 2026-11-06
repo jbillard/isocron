@@ -5,7 +5,7 @@ action applied(h: action (i64) => i64, x: i64[n]): i64[] {
         // given to `map`: in parallel; 1000 more, to show the way taken
         return map(x, (v) => h(v) + 1000);
     }
-    return mapAction(x, h);
+    return map(x, h);
 }
 
 // `isPure` given on: a choice of two functions, one an action

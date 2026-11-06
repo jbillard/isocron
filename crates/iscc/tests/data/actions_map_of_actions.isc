@@ -1,0 +1,37 @@
+// D387: `map` given an action in an action: applied in order, once each;
+// a pure function or a lambda without an effect in parallel, as before
+action loud(v: i64): i64 {
+    print(`loud ${v}`);
+    return v + 1;
+}
+
+// a lambda that calls the action it is given: an action
+action through(h: action (i64) => i64, x: i64[n]): i64[] {
+    return map(x, (v) => h(v) * 2);
+}
+
+// a recursive function given a lambda that reads a function of its
+// context (D387): that function part of its specialization
+function apply(f: (i64) => i64, n: i64): i64 {
+    return n == 0 ? 0 : f(n) + apply(f, n - 1);
+}
+
+function twice(g: (i64) => i64): i64 {
+    return apply((v) => g(g(v)), 3);
+}
+
+action main(args: string[k]): i32 {
+    print(map([1, 2, 3], loud));
+    print(map(["a", "b"], (s) => {
+        print(`each ${s}`);
+        return s.length;
+    }));
+    print(through(loud, [10, 20]));
+    const e: i64[] = [];
+    print(map(e, loud));
+    // a lambda without an effect: pure, in parallel; one inside another
+    print(map([3, 4], (v) => map([10, 20], (w) => w + v)));
+    print(sum(map(iota(100000), (i) => i % 7)));
+    print(`${twice((v) => v + 1)} ${twice((v) => v * 3)}`);
+    return 0;
+}

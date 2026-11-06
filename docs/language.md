@@ -2048,9 +2048,12 @@ pure function is an action without effect), not the reverse. A lambda
 written where an action is expected may print, read or write; it is an
 action only when its body has an effect, a pure function otherwise.
 Calling such a value is an effect, so only an `action` can do it,
-and a `function` has no parameter of an action type. `map`, `fold` and the
-other functions of arrays stay pure: `forEach(x, f)` applies an action to
-each element, in order. An action can have type parameters.
+and a `function` has no parameter of an action type. In an action,
+`map(x, f)` takes an action too: it is applied to each element in order,
+once each (a pure function, or a lambda without an effect, still in
+parallel). `fold`, `filter` and the other functions of arrays stay pure;
+`forEach(x, f)` applies an action to each element for its effects only.
+An action can have type parameters.
 
 ```isc
 action twice(f: action (i64) => i64, x: i64): i64 {
@@ -2073,6 +2076,7 @@ action main(args: string[k]): i32 {
     forEach(["a", "b"], (s) => {
         print(`each ${s}`);
     });
+    print(map([7, 8], shown));
     return 0;
 }
 ```
@@ -2084,6 +2088,9 @@ shown 2
 20
 each a
 each b
+shown 7
+shown 8
+[8, 9]
 ```
 
 Each call is compiled for the action it receives, as the higher-order
@@ -2093,15 +2100,18 @@ functions are: no closure at run time.
 `function`, a lambda without an effect, an operator. It is a constant of
 each compiled call, and the branch not taken is never compiled. In the
 first branch of `if (isPure(f))`, `f` is a pure function: it can be
-called where only one can, in a `map` (in parallel). That is how
-`http.serve` keeps its parallel way for a pure handler.
+called where only one can, in a lambda of `fold` or `filter`, or in a
+lambda of `map` that runs in parallel. That is how `http.serve` keeps its
+parallel way for a pure handler.
 
 ```isc
 action applied(f: action (i64) => i64, x: i64[n]): i64[] {
     if (isPure(f)) {
+        // in parallel
         return map(x, (v) => f(v));
     }
-    return mapAction(x, f);
+    // in order, one at a time
+    return map(x, f);
 }
 
 action shown(x: i64): i64 {

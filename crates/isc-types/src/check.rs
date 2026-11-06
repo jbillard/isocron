@@ -1607,7 +1607,7 @@ impl<'g> FnCx<'g> {
                             _ => String::new(),
                         };
                         let why = if self.is_action {
-                            "this lambda is pure, as the functions given to `map`, `fold`, `filter` and the other functions of arrays are (a lambda is an action only where an `action (T) => U` is expected, SPEC section 12)"
+                            "this lambda is pure, as the functions given to `fold`, `filter` and the other functions of arrays are, but `map` and `mapParallel` (a lambda is an action only where an `action (T) => U` is expected, SPEC section 12)"
                         } else {
                             "a `function` computes a value and has no effect; effects go in an `action` (a handler with effects: an action given to `http.serve`, D352, D386)"
                         };
@@ -2729,11 +2729,13 @@ impl<'g> FnCx<'g> {
             s.mk(TExprKind::Call { callee: Callee::Prim(p), args: kind_args, size_checks: Vec::new() }, ty, span)
         };
         match p {
+            // in an action, its function may be an action: applied to each
+            // element in order, once each (D387); a pure one in parallel
             Prim::Map => {
                 let x = self.check(&args[0], None)?;
                 let a = self.expect_array(&x.ty, x.span, "the first argument of `map`")?;
                 let b = self.fresh(class::ELEM, LitKind::None, span);
-                let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()), false);
+                let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()), self.can_act());
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 let size = match self.shallow(&x.ty) {

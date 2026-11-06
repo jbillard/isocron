@@ -80,13 +80,13 @@ fn actions_refused_where_they_would_have_an_effect() {
     let main = "\naction main(args: string[k]): i32 {\n    return 0;\n}\n";
     let cases: [(&str, &str); 6] = [
         (
-            "action show(x: i64): i64 {\n    print(x);\n    return x;\n}\naction go(): void {\n    print(map([1, 2], show));\n}\n",
-            "expected `(_) => _`, found `action (i64) => i64`",
+            "action show(x: i64): i64 {\n    print(x);\n    return x;\n}\naction go(): void {\n    print(filter([1, 2], show));\n}\n",
+            "found `action (i64) => i64`",
         ),
-        ("action go(): void {\n    print(map([1, 2], (x) => {\n        print(x);\n        return x;\n    }));\n}\n", "(`print` is one): this lambda is pure"),
+        ("action go(): void {\n    print(fold([1, 2], 0, (a, x) => {\n        print(x);\n        return a + x;\n    }));\n}\n", "(`print` is one): this lambda is pure"),
         ("function apply(f: action (i64) => i64, x: i64): i64 {\n    return x;\n}\n", "the parameter `f` of the `function` `apply` is an action"),
         ("action show(x: i64): i64 {\n    return x;\n}\nfunction pick(): i64 {\n    const f = show;\n    return 1;\n}\n", "the action `show` is a value only inside an `action`"),
-        ("action twice(f: action (i64) => i64, xs: i64[n]): void {\n    print(map(xs, (x) => f(x)));\n}\n", "the action `f` cannot be called inside a lambda that is not an action"),
+        ("action twice(f: action (i64) => i64, xs: i64[n]): void {\n    print(fold(xs, 0, (a, x) => a + f(x)));\n}\n", "the action `f` cannot be called inside a lambda that is not an action"),
         ("action run(f: action (i64)): void {\n}\n", "expected `=>` after the parameters of the type of an action"),
     ];
     for (src, want) in cases {
@@ -161,7 +161,7 @@ fn actions_in_parallel_refused() {
     let main = "\naction main(args: string[k]): i32 {\n    return 0;\n}\n";
     let cases: [(&str, &str); 4] = [
         ("function f(xs: i64[n]): i64[n] {\n    return mapParallel(xs, (x) => x + 1);\n}\n", "a `function` cannot call the action `mapParallel`"),
-        ("action f(xs: i64[n]): void {\n    print(map(xs, (x) => mapParallel([x], (y) => y).length));\n}\n", "the action `mapParallel` cannot be called inside a lambda"),
+        ("action f(xs: i64[n]): void {\n    print(fold(xs, 0, (a, x) => a + mapParallel([x], (y) => y).length));\n}\n", "the action `mapParallel` cannot be called inside a lambda"),
         ("action f(n: i64): void {\n    print(mapParallel(iota(n), (i) => iota(i)).length);\n}\n", "`mapParallel` over arrays of arrays is not supported in the POC"),
         (
             "import * as net from \"net\";\naction f(c: net.Conn): void {\n    print(mapParallel([1, 2], (i) => match (net.writeText(c, \"x\")) {\n        Ok(_) => 1,\n        Err(e) => 0,\n    }));\n    net.close(c);\n}\n",
@@ -193,12 +193,13 @@ fn the_purity_of_the_function_received() {
 }
 
 /// D386: `isPure` refused on what is not a function; an action still one
-/// outside the first branch of `if (isPure(h))` (given to `map`: refused).
+/// outside the first branch of `if (isPure(h))` (called in a lambda of
+/// `fold`: refused).
 #[test]
 fn the_purity_test_refused() {
     let e = error("action main(args: string[k]): i32 {\n    print(`${isPure(3)}`);\n    return 0;\n}\n");
     assert!(e.contains("`isPure` takes a function"), "{}", e);
-    let e = error("action f(h: action (i64) => i64, x: i64[n]): i64[] {\n    if (isPure(h)) {\n        return x;\n    }\n    return map(x, (v) => h(v));\n}\naction main(args: string[k]): i32 {\n    return 0;\n}\n");
+    let e = error("action f(h: action (i64) => i64, x: i64[n]): i64 {\n    if (isPure(h)) {\n        return 0;\n    }\n    return fold(x, 0, (a, v) => a + h(v));\n}\naction main(args: string[k]): i32 {\n    return 0;\n}\n");
     assert!(e.contains("cannot be called inside a lambda that is not an action"), "{}", e);
 }
 
@@ -217,5 +218,22 @@ fn serve_takes_the_way_of_its_handler() {
     for h in ["logged", "(r) => logged(r)"] {
         let ns = names(&main(h));
         assert!(has(&ns, "serveActionLoop") && !has(&ns, "serveLoop"), "{}: {:?}", h, ns);
+    }
+}
+
+/// D387: `map` given an action (by its name, a lambda that prints, a
+/// lambda that calls the action it is given, an empty array) applies it in
+/// order, once each; a lambda without an effect, and maps inside maps,
+/// as before; a recursive function given a lambda that reads a function
+/// of its context. The interpreter and compiled on 1 and 4 threads.
+#[test]
+fn map_takes_an_action() {
+    let src = include_str!("data/actions_map_of_actions.isc");
+    let want = "loud 1\nloud 2\nloud 3\n[2, 3, 4]\neach a\neach b\n[1, 1]\nloud 10\nloud 20\n[22, 42]\n[]\n[[13, 23], [14, 24]]\n299995\n12 54\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "actions_map_of_actions");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want), "{} threads: {}", t, r.stderr);
     }
 }

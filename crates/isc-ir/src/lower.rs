@@ -391,13 +391,14 @@ fn is_fn_ty(t: &Ty) -> bool {
 }
 
 /// The identity of a function given to a recursive function: part of the
-/// key of its specialization (D128). A lambda by its expression.
+/// key of its specialization (D128). A lambda by its expression and the
+/// functions of its context it reads (D387).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum FnKey {
     Global(FnId, Vec<Ty>),
     Prim(Prim),
     Op(BinOp),
-    Lambda(*const TExpr),
+    Lambda(*const TExpr, Vec<(LocalId, FnKey)>),
 }
 
 /// The key of a function given to a recursive function, when it reads
@@ -416,9 +417,19 @@ fn fn_key(f: &FuncVal) -> Option<FnKey> {
             let mut free = Vec::new();
             let mut sizes = Vec::new();
             free_locals(body, &mut bound, &mut free, &mut sizes);
-            let all_values = free.iter().all(|l| matches!(env.locals.get(l), Some(Binding::Var(_))));
+            // a function of its context it reads: known when the program is
+            // compiled, part of the key, when it reads nothing of its own
+            // context (a value of the caller would not be there, D387)
+            let mut fns = Vec::new();
+            for l in &free {
+                match env.locals.get(l) {
+                    Some(Binding::Var(_)) => {}
+                    Some(Binding::Func(g)) if captured_vars(g).is_empty() && captured_sizes(g).is_empty() => fns.push((*l, fn_key(g)?)),
+                    _ => return None,
+                }
+            }
             let all_sizes = sizes.iter().all(|s| env.sizes.contains_key(s));
-            (all_sizes && all_values).then_some(FnKey::Lambda(*body as *const TExpr))
+            all_sizes.then_some(FnKey::Lambda(*body as *const TExpr, fns))
         }
         _ => None,
     }
@@ -2234,7 +2245,7 @@ impl<'p> Lower<'p> {
                 }
                 Arg::Func(f) => {
                     let Some(k) = fn_key(&f) else {
-                        return poc(span, "a recursive function given a function that reads a function of its context (SPEC section 11)");
+                        return poc(span, "a recursive function given a function that reads a function of its context which reads values of its own (SPEC section 11)");
                     };
                     // the values it captures, then the sizes it reads:
                     // arguments after the others
@@ -2540,6 +2551,19 @@ impl<'p> Lower<'p> {
             Prim::Map => {
                 let x = self.expr(env, &args[0])?;
                 let fv = self.fn_value(env, &args[1])?;
+                // an action: applied in order, once each, by `mapInOrder` of
+                // the prelude (D387)
+                if !self.fn_pure(&fv) {
+                    let Some(id) = self.p.fns.iter().position(|f| f.from_prelude && f.name == "mapInOrder") else {
+                        return internal(span, "`mapInOrder` is not in the prelude");
+                    };
+                    let elem = |t: Ty| match t {
+                        Ty::Array(_, e) => Ok(*e),
+                        _ => internal(span, "`map` of what is not an array"),
+                    };
+                    let type_args = vec![elem(self.conc(env, &args[0].ty))?, elem(self.conc(env, &e.ty))?];
+                    return self.apply(&FuncVal::Global { id: id as FnId, type_args }, vec![Arg::Val(x), Arg::Func(fv)], &ty, span);
+                }
                 let et = x.ty.elem().clone();
                 let lam = self.lambda_of(&fv, &[et], ty.elem(), span)?;
                 ExprKind::Map(vec![x], lam)
