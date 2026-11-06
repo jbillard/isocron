@@ -277,6 +277,89 @@ fn write_all(fd: c_int, mut p: *const u8, mut n: usize) {
     }
 }
 
+/// The tasks of `mapParallel` running (D373). While there are any, a line
+/// of `print` is written whole: the thread that writes its first part holds
+/// the buffer (`OUT_HOLDER`) until its newline. Otherwise `out` reads only
+/// this count.
+static ACTIONS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// The thread that holds the buffer of `print` (`thread_id`), 0 none.
+static OUT_HOLDER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// A number of the calling thread, not 0, that no other running thread has.
+#[cfg(not(target_os = "wasi"))]
+fn thread_id() -> usize {
+    heap::thread_id()
+}
+
+/// One thread under WASI.
+#[cfg(target_os = "wasi")]
+fn thread_id() -> usize {
+    1
+}
+
+/// The buffer of `print` held by the calling thread, when tasks of actions
+/// run (D373); at once when it already holds it.
+#[inline(always)]
+fn hold_out() {
+    if ACTIONS.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+        hold_out_shared();
+    }
+}
+
+#[cold]
+fn hold_out_shared() {
+    use core::sync::atomic::Ordering;
+    let me = thread_id();
+    if OUT_HOLDER.load(Ordering::Relaxed) == me {
+        return;
+    }
+    let mut spins = 0u32;
+    while OUT_HOLDER.compare_exchange_weak(0, me, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        if spins < SPIN {
+            core::hint::spin_loop();
+            spins += 1;
+        } else {
+            pause_briefly();
+        }
+    }
+}
+
+/// `hold_out` before the end of the program by a panic: after about 0.1 s
+/// without the buffer, taken anyway.
+fn hold_out_at_end() {
+    use core::sync::atomic::Ordering;
+    if ACTIONS.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    let me = thread_id();
+    for _ in 0..2048 {
+        let h = OUT_HOLDER.load(Ordering::Relaxed);
+        if h == me || OUT_HOLDER.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            return;
+        }
+        pause_briefly();
+    }
+    OUT_HOLDER.store(me, Ordering::Release);
+}
+
+/// The buffer of `print` let go, if the calling thread holds it: at the end
+/// of a line, of `printBytes`, of a flush.
+#[inline(always)]
+fn release_out() {
+    use core::sync::atomic::Ordering;
+    let h = OUT_HOLDER.load(Ordering::Relaxed);
+    if h != 0 && h == thread_id() {
+        OUT_HOLDER.store(0, Ordering::Release);
+    }
+}
+
+/// The buffer written out (by the thread that holds it when tasks run).
+fn flush_stdout_held() {
+    hold_out();
+    flush_stdout();
+    release_out();
+}
+
 fn flush_stdout() {
     unsafe {
         let o = &mut *core::ptr::addr_of_mut!(OUT);
@@ -286,6 +369,13 @@ fn flush_stdout() {
 }
 
 fn out(bytes: &[u8]) {
+    hold_out();
+    out_held(bytes)
+}
+
+/// `out` by the thread that holds the buffer, or when no task of actions
+/// runs.
+fn out_held(bytes: &[u8]) {
     unsafe {
         let o = &mut *core::ptr::addr_of_mut!(OUT);
         if o.len + bytes.len() > o.data.len() {
@@ -340,6 +430,9 @@ fn die(line: i32, col: i32, msg: &dyn fmt::Display) -> ! {
             core::hint::spin_loop();
         }
     }
+    // the line another task is writing ended first (D373), waited for at
+    // most about 0.1 s (that task may have stopped in the middle of it)
+    hold_out_at_end();
     flush_stdout();
     let _ = sem::write_panic(&mut Stderr, line as u32, col as u32, msg);
     let _ = Stderr.write_str("\n");
@@ -671,7 +764,7 @@ fn os_error<'a>(code: c_int) -> (&'a str, c_int) {
 /// The whole standard input (D155), read until end of file.
 unsafe fn read_stdin_all(line: i32, col: i32) -> IscArray {
     // what the program wrote first is out (a question before its answer)
-    flush_stdout();
+    flush_stdout_held();
     // a regular file (`< file`): the bytes left in it, the size of the
     // buffer, read without copies (D179); a pipe: a guess that grows
     let cur = lseek(0, 0, SEEK_CUR);
@@ -1167,20 +1260,33 @@ pub unsafe extern "C" fn isc_print_str(p: *const u8, len: i64) {
 /// The end of `main`: what `printBytes` left in the buffer (D136).
 #[no_mangle]
 pub extern "C" fn isc_flush() {
-    flush_stdout();
+    flush_stdout_held();
 }
 
 /// `printBytes(x)` (D136): the bytes, in the buffer of `print`.
 #[no_mangle]
 pub unsafe extern "C" fn isc_print_bytes(p: *const u8, n: i64) {
-    out(bytes_of(p, n));
+    if ACTIONS.load(core::sync::atomic::Ordering::Relaxed) == 0 {
+        return out_held(bytes_of(p, n));
+    }
+    hold_out_shared();
+    out_held(bytes_of(p, n));
+    release_out();
 }
 
 #[no_mangle]
 pub extern "C" fn isc_print_newline() {
-    out(b"\n");
+    // one test of the tasks for the newline and the end of the line (D373)
+    let shared = ACTIONS.load(core::sync::atomic::Ordering::Relaxed) != 0;
+    if shared {
+        hold_out_shared();
+    }
+    out_held(b"\n");
     if out_by_lines() {
         flush_stdout();
+    }
+    if shared {
+        release_out();
     }
 }
 
@@ -3944,6 +4050,13 @@ pub extern "C" fn isc_parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_byt
 }
 
 fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: bool, contiguous: bool) {
+    parallel_job(n, task, ctx, ctx_bytes, dynamic, contiguous, false)
+}
+
+/// `parallel_for`; `sleep`: the caller, once its share is done, sleeps as
+/// the workers do while it waits for the others (the tasks of actions,
+/// which may wait for the system for long, D373), instead of spinning.
+fn parallel_job(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: bool, contiguous: bool, sleep: bool) {
     if n <= 0 {
         return;
     }
@@ -4000,8 +4113,21 @@ fn parallel_for(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: b
     run_share(0, threads);
     JOB.finished.fetch_add(1, Ordering::AcqRel);
     let gen = GEN.gen.load(Ordering::Relaxed);
-    help_until_done(gen, threads, false);
+    help_until_done(gen, threads, sleep);
     BUSY.store(false, Ordering::Release);
+}
+
+/// `mapParallel(x, f)` (D373): `task(ctx, i)` for `i` in `0..n`, at the same
+/// time on the threads of the pool, each task taken by the next thread
+/// free (the caller's too), never on the calling thread alone for being
+/// faster (an action waits for the system: two that wait for each other
+/// must run at the same time). While tasks run, a line of `print` is
+/// written whole (`hold_out`).
+#[no_mangle]
+pub extern "C" fn isc_parallel_actions(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64) {
+    ACTIONS.fetch_add(1, Ordering::SeqCst);
+    parallel_job(n, task, ctx, ctx_bytes, true, false, true);
+    ACTIONS.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// A parallel loop is running (`isc_parallel_for`).

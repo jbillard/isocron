@@ -346,6 +346,11 @@ pub enum ExprKind {
     /// The elements of `x` where the lambda is true, in order: a new array
     /// (SPEC section 6; rule F2 fuses it with its consumer, phase 2).
     Filter(Box<Expr>, Lambda),
+    /// `mapParallel(x, f)` (D373): the action of the lambda applied to each
+    /// element of `x` (a variable), each application a task of the pool,
+    /// at the same time; a new array of the results, in the order of `x`.
+    /// Never fused, never removed (an action).
+    Tasks(Box<Expr>, Lambda),
     /// Inclusive cumulation from left to right (SPEC section 6): a new array,
     /// out[i] = op(out[i - 1], x[i]) with out[-1] = e (rule M2).
     Scan(Box<Expr>, Lambda, Box<Expr>),
@@ -505,7 +510,7 @@ impl Expr {
                 v.push(&l.body);
                 v
             }
-            Filter(x, l) => vec![x, &l.body],
+            Filter(x, l) | Tasks(x, l) => vec![x, &l.body],
             Reduce(x, l, e) | Scan(x, l, e) => vec![x, e, &l.body],
             Fold(x, i, l) => vec![x, i, &l.body],
         }
@@ -526,7 +531,7 @@ impl Expr {
                 v.push(&mut l.body);
                 v
             }
-            Filter(x, l) => vec![x, &mut l.body],
+            Filter(x, l) | Tasks(x, l) => vec![x, &mut l.body],
             Reduce(x, l, e) | Scan(x, l, e) => vec![x, e, &mut l.body],
             Fold(x, i, l) => vec![x, i, &mut l.body],
         }

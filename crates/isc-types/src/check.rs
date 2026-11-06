@@ -118,6 +118,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
     };
     Some(match name {
         "map" => Prim::Map,
+        "mapParallel" => Prim::MapParallel,
         "zip" => Prim::Zip,
         "scan" => Prim::Scan,
         "filter" => Prim::Filter,
@@ -2572,7 +2573,8 @@ impl<'g> FnCx<'g> {
                 let s = self.fresh_size(span);
                 (vec![Ty::Str, i64t.clone(), Ty::Array(s, Box::new(Ty::Int(IntKind::U8))), i64t.clone()], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()]))
             }
-            SysOp::Platform => (vec![], i64t.clone()),
+            SysOp::Platform | SysOp::Threads => (vec![], i64t.clone()),
+            SysOp::ListenShared => (vec![Ty::Str, i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Listener), i64t.clone()])),
             SysOp::Resolve => (vec![Ty::Str], Ty::Tuple(vec![exist(self, Ty::Str), i64t.clone()])),
         };
         if args.len() != params.len() {
@@ -2627,7 +2629,7 @@ impl<'g> FnCx<'g> {
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
             Prim::OrError(_) => 1,
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
-            Prim::Map | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
+            Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
             Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts => 1,
             Prim::ParseInt => {
@@ -2678,6 +2680,26 @@ impl<'g> FnCx<'g> {
                 let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()), false);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
+                let size = match self.shallow(&x.ty) {
+                    Ty::Array(s, _) => s,
+                    _ => unreachable!(),
+                };
+                Ok(mk(vec![x, f], Ty::Array(size, Box::new(b)), self))
+            }
+            // the action of the lambda on each element, at the same time
+            // (D373): its results are not arrays (in the POC)
+            Prim::MapParallel => {
+                let x = self.check(&args[0], None)?;
+                let a = self.expect_array(&x.ty, x.span, "the first argument of `mapParallel`")?;
+                let b = self.fresh(class::ELEM, LitKind::None, span);
+                let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()), true);
+                let f = self.check(&args[1], Some(&fty))?;
+                self.unify(&fty, &f.ty, f.span)?;
+                for (t, what) in [(&a, "its elements"), (&b, "its results")] {
+                    if matches!(self.shallow(t), Ty::Array(..)) {
+                        return err(span, format!("`mapParallel` over arrays of arrays is not supported in the POC ({} are arrays; a record may hold one)", what));
+                    }
+                }
                 let size = match self.shallow(&x.ty) {
                     Ty::Array(s, _) => s,
                     _ => unreachable!(),

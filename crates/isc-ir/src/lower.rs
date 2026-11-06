@@ -2511,6 +2511,18 @@ impl<'p> Lower<'p> {
                 let lam = self.lambda_of(&fv, &[et], ty.elem(), span)?;
                 ExprKind::Map(vec![x], lam)
             }
+            // `mapParallel` (D373): its array bound to a variable, which the
+            // tasks read
+            Prim::MapParallel => {
+                let x = self.expr(env, &args[0])?;
+                let fv = self.fn_value(env, &args[1])?;
+                let et = x.ty.elem().clone();
+                let lam = self.lambda_of(&fv, &[et], ty.elem(), span)?;
+                let xt = x.ty.clone();
+                let xs = self.new_var("tasks", xt.clone());
+                let t = Expr::new(ExprKind::Tasks(Box::new(Expr::var(xs, xt, span)), lam), ty.clone(), span);
+                return Ok(self.let_(xs, x, t, true, span));
+            }
             Prim::Min | Prim::Max => {
                 let op = if p == Prim::Min { BinOp::Min } else { BinOp::Max };
                 if args.len() == 2 {

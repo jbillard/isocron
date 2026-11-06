@@ -930,6 +930,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @llvm.stackrestore.p0(ptr)",
     "declare void @isc_parallel_for(i64, ptr, ptr, i64)",
     "declare void @isc_parallel_for_dynamic(i64, ptr, ptr, i64)",
+    "declare void @isc_parallel_actions(i64, ptr, ptr, i64)",
     "declare void @isc_parallel_for_fill(i64, ptr, ptr, i64)",
     "declare i64 @isc_thread_count()",
     "declare ptr @isc_cstr(ptr, i64, ptr, i64, i32, i32)",
@@ -1131,7 +1132,7 @@ fn free_vars(e: &Expr, bound: &mut HashSet<VarId>, out: &mut Vec<VarId>) {
         }
         _ => {
             match &e.kind {
-                ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+                ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => {
                     for p in &l.params {
                         bound.insert(*p);
                     }
@@ -1163,7 +1164,7 @@ fn sole_concat_part(e: &Expr, v: VarId) -> bool {
     fn at(e: &Expr, v: VarId) -> bool {
         match &e.kind {
             ExprKind::StrOp(isc_ir::StrOp::Concat, es) if es.iter().any(|x| matches!(x.kind, ExprKind::Var(w, _) if w == v)) => true,
-            ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => false,
+            ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Tasks(..) => false,
             _ => e.children().into_iter().any(|c| at(c, v)),
         }
     }
@@ -1202,7 +1203,7 @@ fn sole_pad_text(e: &Expr, v: VarId) -> bool {
     fn at_pad(e: &Expr, v: VarId) -> bool {
         match &e.kind {
             ExprKind::StrOp(isc_ir::StrOp::PadStart | isc_ir::StrOp::PadEnd, es) if matches!(es[0].kind, ExprKind::Var(w, _) if w == v) => true,
-            ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => false,
+            ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Tasks(..) => false,
             _ => e.children().into_iter().any(|c| at_pad(c, v)),
         }
     }
@@ -1426,7 +1427,7 @@ fn stack_array(v: VarId, e: &Expr) -> bool {
             Map(ins, l) => ins.iter().all(|x| src(x, v)) && ok(&l.body, v),
             Reduce(x, l, z) | Scan(x, l, z) => src(x, v) && ok(&l.body, v) && ok(z, v),
             Fold(x, init, l) => src(x, v) && ok(init, v) && ok(&l.body, v),
-            Filter(x, l) => src(x, v) && ok(&l.body, v),
+            Filter(x, l) | Tasks(x, l) => src(x, v) && ok(&l.body, v),
             _ => e.children().into_iter().all(|c| ok(c, v)),
         }
     }
@@ -1711,7 +1712,7 @@ fn windowed_lambda<'a>(e: &'a Expr, x: VarId, q: VarId, outer: &HashSet<VarId>, 
         }
         // inside another function (a `reduce`, a `map` of its own): only
         // the length
-        ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => windowed_uses(e, x),
+        ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Tasks(..) => windowed_uses(e, x),
         _ => e.children().into_iter().all(|c| windowed_lambda(c, x, q, outer, scope)),
     }
 }
@@ -4147,6 +4148,7 @@ impl<'p> Gen<'p> {
             Reduce(x, l, z) => self.reduce(e, x, l, z),
             Scan(x, l, z) => self.scan(e, x, l, z),
             Filter(x, l) => self.filter(e, x, l),
+            Tasks(x, l) => self.tasks(e, x, l),
             Fold(x, init, l) if w > 1 => self.fold_vec(x, init, l, w),
             Fold(x, init, l) if last_where(x, l).is_some() => {
                 let c = last_where(x, l).unwrap();
@@ -7987,6 +7989,33 @@ impl<'p> Gen<'p> {
     /// More than one block and more than one thread: by blocks, in
     /// parallel (`filter_parallel`); the same array for any number of
     /// threads (D178).
+    /// `mapParallel(x, f)` (D373): a task of the pool for each element of
+    /// `x`, the action of the lambda applied to it and its result written at
+    /// its place; `isc_parallel_actions` runs them at the same time on the
+    /// threads of the pool (never on the calling thread alone).
+    fn tasks(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
+        let et = e.ty.elem().clone();
+        let xt = x.ty.elem().clone();
+        if et.is_array() || xt.is_array() {
+            return Err(format!("{}:{}: `mapParallel` over arrays or of arrays is not supported in the POC", e.span.line, e.span.col));
+        }
+        let xv = self.ex(x, 1)?;
+        let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+        let p = self.alloc_elems(&n, &et);
+        let (task, ctx, ctx_bytes) = self.outline_task(&[e], &[v(p.clone(), "ptr")], &mut |g, extra, i| {
+            let xv = g.ex(x, 1)?;
+            let xp = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+            let xn = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+            let el = g.load_elem(&xp, &xn, i, &xt, 1);
+            g.bind(l.params[0], el);
+            let r = g.ex(&l.body, 1)?;
+            g.store_elem(&extra[0].r, &xn, i, &et, &r, 1);
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_parallel_actions(i64 {}, ptr {}, ptr {}, i64 {})", n, task, ctx, ctx_bytes));
+        Ok(self.arr(&p, &n))
+    }
+
     fn filter(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
         let elem_ty = x.ty.elem().clone();
         let (src, n) = self.prepare_src(x)?;
@@ -8696,7 +8725,7 @@ impl<'p> Gen<'p> {
                 ExprKind::Let { var, .. } => {
                     out.insert(*var);
                 }
-                ExprKind::Map(_, f) | ExprKind::Reduce(_, f, _) | ExprKind::Fold(_, _, f) | ExprKind::Scan(_, f, _) | ExprKind::Filter(_, f) => out.extend(f.params.iter().copied()),
+                ExprKind::Map(_, f) | ExprKind::Reduce(_, f, _) | ExprKind::Fold(_, _, f) | ExprKind::Scan(_, f, _) | ExprKind::Filter(_, f) | ExprKind::Tasks(_, f) => out.extend(f.params.iter().copied()),
                 _ => {}
             }
             for c in e.children() {
@@ -8724,7 +8753,7 @@ impl<'p> Gen<'p> {
             }
         }
         // not inside another function (its own loop, its own index)
-        let nested = |e: &Expr| matches!(e.kind, ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..));
+        let nested = |e: &Expr| matches!(e.kind, ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Tasks(..));
         walk(
             &l.body,
             &mut |e: &'a Expr| {

@@ -2088,6 +2088,39 @@ each b
 Each call is compiled for the action it receives, as the higher-order
 functions are: no closure at run time.
 
+### Actions in parallel: `mapParallel`
+
+`mapParallel(x, f)` applies the action `f` to each element of `x`, the
+applications **at the same time** on the threads of the pool (as many at
+once as the pool has threads, the others waiting for one to be free), and
+returns their results in the order of `x`. The effects of one application
+keep the order of its statements; those of two applications have no order
+between them, so their lines of `print` may come in any order, but a line
+is never cut by another. Nothing is shared that two applications could
+write: values are immutable, and a connection or a listener cannot be
+captured by the lambda (each application opens its own). With one thread
+(`ISC_THREADS=1`, and in the interpreter) the applications run one after
+the other, in order: a program must not make one wait for another. Its
+results are not arrays (in the POC), and it is called only in an action.
+
+```isc
+// an action: it reads the clock around its work (a time not printed)
+action timed(i: i64): i64 {
+    const t0 = clock();
+    const r = reduce(map(iota(1000), (k) => k * i), (a, b) => a + b, 0);
+    return clock() >= t0 ? r : -1;
+}
+
+action main(args: string[k]): i32 {
+    print(mapParallel(iota(4), timed));
+    return 0;
+}
+```
+
+```output
+[0, 499500, 999000, 1498500]
+```
+
 ### C functions: `declare function`
 
 `declare function name(parameters): type;` declares a C function (System V x86-64
@@ -2746,6 +2779,11 @@ is an action, given to `serveAction(port, handler)` or
 ([actions as values](#actions-as-values)). The requests are then answered
 one at a time, in the order they are ready; a pure handler given to them
 works too. `https` has `serveTlsAction` and `serveTlsActionOn`.
+
+Under Linux, `serve(port, handler)` runs a loop of events on each thread
+of the pool, each on a listener of its own of the port (`SO_REUSEPORT`:
+the kernel shares the connections out among them), by `mapParallel`; one
+loop under Windows, with one thread, for the port 0 and for `serveOn`.
 
 ```isc
 import * as http from "http";

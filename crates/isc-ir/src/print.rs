@@ -89,6 +89,7 @@ pub fn expr(e: &Expr, p: &Program, ind: usize, s: &mut String) {
         Reduce(..) => format!("reduce -> {}", type_str(&e.ty)),
         Scan(..) => format!("scan -> {}", type_str(&e.ty)),
         Filter(..) => format!("filter -> {}", type_str(&e.ty)),
+        Tasks(..) => format!("mapParallel -> {}", type_str(&e.ty)),
         Fold(..) => format!("fold -> {}", type_str(&e.ty)),
         Zeros(_) => format!("zeros {}", type_str(&e.ty)),
         Iota(_) => "iota".into(),

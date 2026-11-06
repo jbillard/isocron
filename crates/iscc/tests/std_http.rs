@@ -384,3 +384,77 @@ fn server_with_a_handler_that_is_an_action() {
     }
     assert!(!d.join("isc-serve-action.txt").exists(), "the file of the test left");
 }
+
+/// The listening sockets of `port` (IPv4) of the machine.
+fn listeners_of(port: u16) -> usize {
+    let t = std::fs::read_to_string("/proc/net/tcp").unwrap();
+    t.lines()
+        .skip(1)
+        .filter(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.len() > 3 && f[3] == "0A" && f[1].rsplit(':').next().and_then(|p| u16::from_str_radix(p, 16).ok()) == Some(port)
+        })
+        .count()
+}
+
+/// D374: `serve(port, handler)` runs a loop of events on each thread of the
+/// pool under Linux, each on a listener of its own of the port (the kernel
+/// shares the connections out): 4 listeners with 4 threads, 1 interpreted
+/// (one loop); a second server on the port refused; 64 connections of 50
+/// requests each all answered.
+#[test]
+fn serve_runs_a_loop_on_each_thread() {
+    use std::io::BufReader;
+    let src = include_str!("data/std_http_serve_loops.isc");
+    let bin = compile(src, "std_http_serve_loops");
+    let dir = tmp("std_http_serve_loops_src");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("serve_loops.isc");
+    std::fs::write(&file, src).unwrap();
+    for (name, loops) in [("compiled", 4), ("interpreted", 1)] {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut c = if name == "compiled" {
+            let mut c = std::process::Command::new(&bin);
+            c.arg(port.to_string()).env("ISC_THREADS", "4");
+            c
+        } else {
+            let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"));
+            c.arg("run").arg(&file).arg(port.to_string());
+            c
+        };
+        let mut child = c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let start = std::time::Instant::now();
+        while listeners_of(port) < loops {
+            assert!(start.elapsed() < std::time::Duration::from_secs(60), "{}: {} listeners", name, listeners_of(port));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(listeners_of(port), loops, "{}", name);
+        // a second server on the port refused, whatever its threads: it
+        // never joins the listeners of the first
+        let mut second = std::process::Command::new(&bin);
+        let o = second.arg(port.to_string()).env("ISC_THREADS", "4").output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "error\n".to_string()), "{}: a second server", name);
+        assert_eq!(listeners_of(port), loops, "{}: after the second server", name);
+        let threads: Vec<_> = (0..64)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    let s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    s.set_read_timeout(Some(std::time::Duration::from_secs(60))).unwrap();
+                    let mut r = BufReader::new(s.try_clone().unwrap());
+                    let mut w = s;
+                    let mut ok = 0;
+                    for i in 0..50 {
+                        write!(w, "GET /c{}.{} HTTP/1.1\r\nHost: test\r\n\r\n", t, i).unwrap();
+                        let (status, _, body) = read_response(&mut r);
+                        ok += (status == 200 && body == format!("GET /c{}.{}", t, i).into_bytes()) as usize;
+                    }
+                    ok
+                })
+            })
+            .collect();
+        let answered: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+        child.kill().unwrap();
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(answered, 64 * 50, "{}: {}", name, String::from_utf8_lossy(&o.stderr));
+    }
+}

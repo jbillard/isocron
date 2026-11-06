@@ -354,13 +354,17 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
     - [x] The search of the ends of the heads in vector code (a `filter` guarded by `&&`): 7596 -> 6469 instructions a request, `serve.pipelined` -5.4 % (D362); left: 2116.8 user cycles a request against 613.6 for the floor in C, the kernel the same
   - [x] (D354) Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
   - [x] Actions as values (D352): the type `action (T) => U`, the checker, the lowering; `forEach`, `mapAction`; `serveAction`, `serveActionOn`, `serveTlsAction`; tests on Linux and in the VM; `serveAction.pipelined` 1.9 times its floor
+  - [ ] `mapParallel` over arrays and of arrays (refused at compile time in the POC, D373)
+  - [ ] The lock of `print` (D373): the version with 6.5 instructions more a line measured +1.06 to +1.37 %, the first with 9.02 more +0.37 % (one A/B): the cause not shown
   - [ ] A lambda that reads a function of its context given to a recursive function ("not supported in the POC", SPEC section 11): `mapAction(xs, (x) => handler(x))` refused (D352)
-  - [ ] Actions in parallel on the pool: the primitives of the runtime checked from several threads (the buffer of `print`, files, sockets, TLS), then `serveAction` by `map` of actions (D352)
+  - [x] Actions in parallel on the pool: `mapParallel(x, f)`, a task of the pool for each element (the node `Tasks`, `isc_parallel_actions`); the primitives of the runtime checked from several threads: a line of `print` held whole by its thread while tasks run, sockets, listeners and servers linear (never shared), files by path (D373)
+  - [ ] `serveAction` and `serveTls` with a loop on each thread (D374 keeps one: the action handler answers one request at a time, D352; the servers of TLS not measured yet)
   - [ ] A state between the requests: `action (S, Request) => [S, Response]` (D352, after the two above)
   - [x] The server against servers of C made for production under wrk, in Docker: 94 % of nginx with one connection, 11 times below it with 1024 (`results/http_servers.md`, D353)
   - [x] The server with many connections: a table of the connections by their number, only those that received bytes read: 1024 connections 67277 -> 158735 requests a second, as lighttpd (D354)
   - [x] The ceiling of the machine for the server (`ceiling.c`): Isocron 57 to 85 % of the ceiling of one loop, 20 to 26 % of that of 4 cores with many connections (D355)
-  - [ ] A loop of events on each core, toward the ceiling of 4 cores (D355; needs actions in parallel on the pool, D352)
+  - [x] A loop of events on each core, toward the ceiling of 4 cores: `serve` on a listener of its own for each thread (`SO_REUSEPORT`), 16, 256 and 1024 connections 201587, 206674, 155344 -> 581516, 776540, 656243 requests a second, 78, 96 and 84 % of the ceiling of 4 cores (D374)
+  - [ ] Far above nginx: by busy core, Isocron 151043, 194135 and 165718 requests a second against nginx's 173596, 198777 and 190249 and the ceiling's 229924, 246481 and 253246 (16, 256 and 1024 connections, D374); the measure with the server on fewer cores than the client (wrk saturates first: the ceiling only 3.0 % above nginx with 256 connections); the cost of a request of the loop down to the ceiling's
   - [ ] The cost of a request of the loop down to that of the ceiling of one loop (5.2 µs against 3.6 at 16 connections, D355; 4.96 against 3.63 after D359 to D363, D366)
   - [x] Each parallel loop chooses the pool or the calling thread by its measured runs, the pool asleep sooner: the server's cores 4.04 -> 2.24 for the same requests (D357)
   - [ ] The cores still busy beyond the loop of the server (2.24 for the work of one loop, D357; 1.40, 2.10 and 1.81 with 16, 256 and 1024 connections, D366)

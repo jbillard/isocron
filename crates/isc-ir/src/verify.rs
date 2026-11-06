@@ -505,6 +505,13 @@ impl<'p> Checker<'p> {
                 self.lambda(l, &[el], |_, _, _| Ok(()))?;
                 Ok(Val::Fresh)
             }
+            // each result moved into the new array (D373)
+            Tasks(x, l) => {
+                let xv = self.eval_src(x, false)?;
+                let el = self.elem_of(&xv, x);
+                self.lambda(l, &[el], |c, v, b| c.consume(v, b))?;
+                Ok(Val::Fresh)
+            }
             Fold(x, init, l) => {
                 let xv = self.eval_src(x, true)?;
                 let el = self.elem_of(&xv, x);

@@ -147,7 +147,7 @@ pub(crate) fn fusable_slots(e: &Expr) -> Vec<usize> {
 
 pub fn is_pure(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Action(..) | ExprKind::Bench(..) => false,
+        ExprKind::Action(..) | ExprKind::Bench(..) | ExprKind::Tasks(..) => false,
         _ => e.children().into_iter().all(is_pure),
     }
 }
@@ -186,7 +186,7 @@ pub(crate) fn lambda_body_index(e: &Expr) -> Option<usize> {
     match &e.kind {
         ExprKind::Map(ins, _) => Some(ins.len()),
         ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) => Some(2),
-        ExprKind::Filter(..) => Some(1),
+        ExprKind::Filter(..) | ExprKind::Tasks(..) => Some(1),
         ExprKind::Bench(..) => Some(1),
         _ => None,
     }
@@ -647,7 +647,7 @@ fn free_in(e: &Expr, bound: &mut Vec<VarId>, out: &mut HashSet<VarId>) {
     }
     let lam = lambda_body_index(e);
     let params: Vec<VarId> = match &e.kind {
-        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => {
             l.params.clone()
         }
         _ => Vec::new(),
@@ -670,7 +670,7 @@ fn bound_in(e: &Expr, out: &mut HashSet<VarId>) {
         ExprKind::Let { var, .. } => {
             out.insert(*var);
         }
-        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => {
             out.extend(&l.params);
         }
         _ => {}
@@ -1294,7 +1294,7 @@ fn total(e: &Expr, lens: &HashMap<VarId, i64>) -> bool {
 /// a root.
 fn dear(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Sqrt(_) => true,
+        ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Tasks(..) | ExprKind::Sqrt(_) => true,
         ExprKind::Binary(BinOp::Div | BinOp::Rem, a, _) if matches!(a.ty, Type::F64 | Type::F32) => true,
         _ => e.children().into_iter().any(dear),
     }
@@ -1350,7 +1350,7 @@ fn rename_bound(e: &mut Expr, vars: &mut Vec<VarInfo>) {
                     *var = *w;
                 }
             }
-            ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+            ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => {
                 for p in l.params.iter_mut() {
                     if let Some(w) = map.get(p) {
                         *p = *w;
@@ -1958,7 +1958,7 @@ fn region_children(e: &Expr) -> Vec<bool> {
 
 fn lambda_of(e: &Expr) -> Option<&Lambda> {
     match &e.kind {
-        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => Some(l),
+        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => Some(l),
         _ => None,
     }
 }
@@ -2285,6 +2285,16 @@ impl<'a> Rewriter<'a> {
                 self.walk(&mut l.body)?;
                 if let Some(k) = found {
                     self.reusable.insert(e as *const Expr, k);
+                }
+                return Ok(Own::Fresh);
+            }
+            // the results of `mapParallel` (D373): each new, moved into the
+            // array (a borrowed one copied)
+            ExprKind::Tasks(x, l) => {
+                self.walk(x)?;
+                let o = self.walk(&mut l.body)?;
+                if matches!(o, Own::Borrowed(..)) {
+                    self.make_fresh(&mut l.body, o, false)?;
                 }
                 return Ok(Own::Fresh);
             }

@@ -1,0 +1,42 @@
+import * as net from "net";
+
+// one side listens on the port and reads what comes, the other connects
+// (again until the listener is there) and writes: two actions that wait for
+// each other, run at the same time
+action listening(port: i64): string {
+    return match (net.listen("127.0.0.1", port)) {
+        Ok(l) => {
+            const got = match (net.accept(l)) {
+                Ok([c, peer]) => {
+                    const r = match (net.read(c, 64)) {
+                        Ok(b) => stringOf(b),
+                        Err(e) => "read failed",
+                    };
+                    net.close(c);
+                    return r;
+                },
+                Err(e) => "accept failed",
+            };
+            net.closeListener(l);
+            return got;
+        },
+        Err(e) => "listen failed",
+    };
+}
+
+action connecting(port: i64, tries: i64): string {
+    return match (net.connect("127.0.0.1", port)) {
+        Ok(c) => {
+            const w = net.writeText(c, "hello from the other task");
+            net.close(c);
+            return "sent";
+        },
+        Err(e) => tries > 0 ? connecting(port, tries - 1) : "connect failed",
+    };
+}
+
+action main(args: string[k]): i32 {
+    const port = parseI64(args[0]);
+    print(mapParallel(iota(2), (i) => i == 0 ? listening(port) : connecting(port, 100000)));
+    return 0;
+}

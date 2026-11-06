@@ -1,0 +1,12 @@
+import * as http from "http";
+
+action main(args: string[k]): i32 {
+    const port = parseI64(args[0]);
+    return match (http.serve(port, (r) => http.textResponse(200, `${r.method} ${r.path}`))) {
+        Ok(_) => 0,
+        Err(e) => {
+            print("error");
+            return 1;
+        },
+    };
+}

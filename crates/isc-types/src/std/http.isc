@@ -5,7 +5,7 @@
 // `chunked`, or to the end of the stream; the redirections are given as
 // they are. `https://` is the module `https`'s. The server gives each
 // request to a pure function, the requests ready at once by `map` (D327).
-import { IoError, message as ioMessage } from "sys";
+import { IoError, ioError, message as ioMessage } from "sys";
 import * as net from "net";
 import * as time from "time";
 
@@ -942,10 +942,47 @@ export action serveServer(s: net.Server, handler: (Request) => Response, limit: 
 }
 
 // the requests to `port` of every address of the machine answered by
-// `handler`, with no end
+// `handler`, with no end: under Linux a loop of events on each thread of
+// the pool, each on a listener of its own of `port` (D374: the kernel
+// shares the connections out among them, `SO_REUSEPORT`); one loop under
+// Windows, with one thread or for the port 0. A port that another socket
+// listens to is refused first by a listener of its own (`AlreadyExists`):
+// a second server, of this program or another, never shares it
 export action serve(port: i64, handler: (Request) => Response): Result<void, IoError> {
+    const k = sysThreads();
     return match (net.listen("0.0.0.0", port)) {
-        Ok(l) => serveOn(l, handler, 0),
+        Ok(l) => {
+            if (k <= 1 || port == 0 || sysPlatform() != 0) {
+                return serveOn(l, handler, 0);
+            }
+            net.closeListener(l);
+            return firstError(mapParallel(iota(k), (i) => serveShared(port, handler)), 0);
+        },
+        Err(e) => Err(e),
+    };
+}
+
+// one of the loops of `serve` (D374), on a listener of its own of `port`
+// (`Ok(0)` when it ends, which it does not)
+action serveShared(port: i64, handler: (Request) => Response): Result<i64, IoError> {
+    const [l, code] = sysListenShared("0.0.0.0", port);
+    if (code != 0) {
+        sysCloseListener(l);
+        return Err(ioError(code, `0.0.0.0:${port}`));
+    }
+    return match (serveOn(l, handler, 0)) {
+        Ok(_) => Ok(0),
+        Err(e) => Err(e),
+    };
+}
+
+// the first error of the loops from `i` (each ends only on an error)
+function firstError(rs: Result<i64, IoError>[n], i: i64): Result<void, IoError> {
+    if (i >= rs.length) {
+        return Ok(());
+    }
+    return match (rs[i]) {
+        Ok(_) => firstError(rs, i + 1),
         Err(e) => Err(e),
     };
 }

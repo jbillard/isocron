@@ -29,6 +29,12 @@ pub struct AcceptOut {
     pub code: i64,
 }
 
+/// `sysThreads()`: the threads of the pool (D373), 1 under WASI.
+#[no_mangle]
+pub unsafe extern "C" fn isc_sys_threads(out: *mut i64) {
+    *out = crate::isc_thread_count();
+}
+
 /// `sysPlatform()`: 0 Linux, 1 Windows, 2 WASI.
 #[no_mangle]
 pub unsafe extern "C" fn isc_sys_platform(out: *mut i64) {
@@ -251,6 +257,7 @@ mod imp {
     const SOCK_CLOEXEC: usize = 0o2000000;
     const SOL_SOCKET: usize = 1;
     const SO_REUSEADDR: usize = 2;
+    const SO_REUSEPORT: usize = 15;
     const SO_RCVTIMEO: usize = 20;
     const SO_SNDTIMEO: usize = 21;
     const MSG_NOSIGNAL: usize = 0x4000;
@@ -313,6 +320,20 @@ mod imp {
     /// `sysListen(address, port)`: the address reusable at once.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_listen(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
+        listen_on(out, p, n, port, false)
+    }
+
+    /// `sysListenShared(address, port)` (D374): a listener whose port the
+    /// other listeners of the program with this option share
+    /// (`SO_REUSEPORT`): the kernel shares the new connections out among
+    /// them (`socket(7)`: the option set on each socket before `bind`, all
+    /// of the same effective user).
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_listenshared(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
+        listen_on(out, p, n, port, true)
+    }
+
+    unsafe fn listen_on(out: *mut HandleCode, p: *const u8, n: i64, port: i64, shared: bool) {
         let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
             *out = HandleCode { h: -1, code: -22 };
             return;
@@ -324,6 +345,14 @@ mod imp {
         }
         let one: c_int = 1;
         syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_REUSEADDR, &one as *const c_int as usize, 4, 0);
+        if shared {
+            let r = syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_REUSEPORT, &one as *const c_int as usize, 4, 0);
+            if r < 0 {
+                linux::close(fd as c_int);
+                *out = HandleCode { h: -1, code: net_code(r) };
+                return;
+            }
+        }
         let mut r = syscall6(SYS_BIND, fd as usize, addr.as_ptr() as usize, len, 0, 0, 0);
         if r >= 0 {
             r = syscall6(SYS_LISTEN, fd as usize, 128, 0, 0, 0, 0);
@@ -1045,6 +1074,15 @@ mod imp {
             return;
         }
         *out = HandleCode { h: s as i64, code: 0 };
+    }
+
+    /// `sysListenShared`: not under Windows (its headers have no
+    /// `SO_REUSEPORT`, only `SO_REUSEADDR` and `SO_EXCLUSIVEADDRUSE`, D374;
+    /// whether `SO_REUSEADDR` would share the connections out is not
+    /// known here): the code of `EOPNOTSUPP`; `serve` keeps one loop there.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_listenshared(out: *mut HandleCode, _p: *const u8, _n: i64, _port: i64) {
+        *out = HandleCode { h: -1, code: -95 };
     }
 
     #[no_mangle]

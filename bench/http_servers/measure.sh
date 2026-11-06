@@ -2,12 +2,16 @@
 # Inside the image `isocron-http`: each server on the CPUs SERVER (4), wrk
 # on the CPUs CLIENT (4), for each number of connections, DURATION seconds;
 # one line each: server, connections, requests a second, the latency at
-# 50 % and 99 % (wrk). The servers answer `hello, world!`.
+# 50 % and 99 % (wrk). The servers answer `hello, world!`. The servers of
+# several threads or processes have one for each CPU of SERVER, wrk one for
+# each CPU of CLIENT (at most one a connection).
 #   measure.sh SERVER CLIENT DURATION
 set -euo pipefail
 server_cpus=$1
 client_cpus=$2
 duration=$3
+nserver=$(echo "$server_cpus" | tr ',' '\n' | wc -l)
+nclient=$(echo "$client_cpus" | tr ',' '\n' | wc -l)
 cd /work
 iscc build hello.isc -o /tmp/hello > /dev/null
 gcc -O2 -o /tmp/ceiling ceiling.c -lpthread
@@ -38,7 +42,7 @@ run() {
     local hz
     hz=$(getconf CLK_TCK)
     for c in 1 16 256 1024; do
-        local t=$(( c < 4 ? c : 4 ))
+        local t=$(( c < nclient ? c : nclient ))
         local t0
         t0=$(ticks "$comm")
         out=$(taskset -c "$client_cpus" wrk -t"$t" -c"$c" -d"${duration}s" --latency "http://127.0.0.1:$port$path" 2>&1)
@@ -51,13 +55,14 @@ run() {
         printf '%s\t%s\t%s\t%s\t%s\t%s cores\t%s\n' "$name" "$c" "$rps" "$p50" "$p99" "$cores" "$errs"
     done
 }
-ISC_THREADS=4 taskset -c "$server_cpus" /tmp/hello 8080 & pid=$!
+ISC_THREADS=$nserver taskset -c "$server_cpus" /tmp/hello 8080 & pid=$!
 run isocron-serve 8080 / hello
 kill $pid; wait $pid 2>/dev/null || true
-ISC_THREADS=4 taskset -c "$server_cpus" /tmp/hello 8083 action & pid=$!
+ISC_THREADS=$nserver taskset -c "$server_cpus" /tmp/hello 8083 action & pid=$!
 run isocron-serveAction 8083 / hello
 kill $pid; wait $pid 2>/dev/null || true
-taskset -c "$server_cpus" /usr/sbin/nginx -c /work/nginx.conf & pid=$!
+sed "s/^worker_processes 4;/worker_processes $nserver;/" /work/nginx.conf > /tmp/nginx.conf
+taskset -c "$server_cpus" /usr/sbin/nginx -c /tmp/nginx.conf & pid=$!
 run nginx 8081 / nginx
 kill $pid; wait $pid 2>/dev/null || true
 taskset -c "$server_cpus" /usr/sbin/lighttpd -D -f /work/lighttpd.conf > /dev/null 2>&1 & pid=$!
@@ -66,6 +71,6 @@ kill $pid; wait $pid 2>/dev/null || true
 taskset -c "$server_cpus" /tmp/ceiling 8084 1 & pid=$!
 run ceiling-1-thread 8084 / ceiling
 kill $pid; wait $pid 2>/dev/null || true
-taskset -c "$server_cpus" /tmp/ceiling 8085 4 & pid=$!
-run ceiling-4-threads 8085 / ceiling
+taskset -c "$server_cpus" /tmp/ceiling 8085 "$nserver" & pid=$!
+run "ceiling-$nserver-threads" 8085 / ceiling
 kill $pid; wait $pid 2>/dev/null || true

@@ -385,6 +385,14 @@ unsafe fn thread_cache() -> *mut ThreadCache {
     p
 }
 
+/// A number of the calling thread, not 0, that no other running thread has:
+/// the address of its cache (D373).
+pub fn thread_id() -> usize {
+    // SAFETY: the address of the thread-local storage of this thread, not
+    // read
+    unsafe { thread_cache() as usize }
+}
+
 struct State {
     /// Large classes: the cache (the small classes are in SMALL_FREE).
     free: [*mut Header; CLASSES],

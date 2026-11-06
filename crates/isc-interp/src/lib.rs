@@ -508,7 +508,7 @@ fn stack_address() -> usize {
 fn bound_vars(e: &Expr, out: &mut Vec<VarId>) {
     match &e.kind {
         ExprKind::Let { var, .. } => out.push(*var),
-        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) => {
+        ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => {
             out.extend(&l.params)
         }
         _ => {}
@@ -918,6 +918,17 @@ impl<'a> Interp<'a> {
                     acc = self.call(l, vec![acc, arr.get(i)])?;
                 }
                 acc
+            }
+            // one after the other, in order: the interpreter has one thread
+            // (D373)
+            Tasks(x, l) => {
+                let arr = self.array(x)?;
+                let mut out = Array::with_capacity(e.ty.elem(), arr.len());
+                for i in 0..arr.len() {
+                    let v = self.call(l, vec![arr.get(i)])?;
+                    out.push(v);
+                }
+                Value::Array(Rc::new(out))
             }
             Filter(x, l) => {
                 let arr = self.array(x)?;

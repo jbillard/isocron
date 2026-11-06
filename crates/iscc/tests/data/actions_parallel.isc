@@ -1,0 +1,33 @@
+action lines(i: i64): i64 {
+    const row = map(iota(12), (k) => i * 100 + k);
+    forEach(iota(300), (k) => print(row));
+    return i * i;
+}
+
+action labelled(w: string): Result<i64, string> {
+    print(`word ${w}`);
+    return w.length > 2 ? Err(`long ${w}`) : Ok(w.length);
+}
+
+function square(x: i64): i64 {
+    return x * x;
+}
+
+action inner(i: i64): i64 {
+    const rs = mapParallel(iota(3), (j) => lines(i * 10 + j));
+    return reduce(rs, (a, b) => a + b, 0);
+}
+
+action main(args: string[k]): i32 {
+    const a = mapParallel(iota(16), (i) => lines(i));
+    print(`sum ${reduce(a, (x, y) => x + y, 0)}`);
+    const b = mapParallel(["a", "bb", "ccc"], labelled);
+    print(map(b, (r) => match (r) {
+        Ok(n) => `ok ${n}`,
+        Err(s) => s,
+    }));
+    print(mapParallel([1, 2, 3], square));
+    print(mapParallel(iota(2), inner));
+    print(mapParallel(iota(0), (i) => lines(i)).length);
+    return 0;
+}

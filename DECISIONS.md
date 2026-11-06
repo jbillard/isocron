@@ -8097,3 +8097,118 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     longer than the variable that starts like it, an empty value, a value
     that is not UTF-8, an empty name, a name with `=`; compiled and
     interpreted).
+- **D373 — Actions in parallel: `mapParallel` (2026-11-06).** The author
+  put the loop of events on each core next (« ça après », then « ok et
+  ensuite »), which needs actions run at the same time (D352, D355).
+  - The language (SPEC, « Actions en parallèle »): `mapParallel(x, f)`,
+    `action (T[n], action (T) => U) => U[n]`, the action applied to each
+    element at the same time on the threads of the pool, its results in
+    the order of `x`; the effects of one application in its order, none
+    between two; with one thread (the interpreter, `ISC_THREADS=1`) one
+    after the other, in order. Refused at compile time: in a `function`,
+    in a pure lambda, over arrays or of arrays (the POC: the rows of an
+    array of arrays are written by `materialize_rows`), a lambda that
+    captures a connection or a listener (linear, D339: two tasks never
+    hold the same socket or server).
+  - The compiler: a node `Tasks(x, lambda)` of the IR (`x` bound to a
+    variable by the lowering, the lambda that of `map`), never fused,
+    never removed (`is_pure` false), its results each new (the ownership
+    pass, the verifier); the code: the lambda outlined as the task of a
+    `map` is (`outline_task`, its captures in the context), each task
+    reading its element and writing its result, given to
+    `isc_parallel_actions`. The runtime: a dynamic job of the pool, each
+    task taken by the next thread free, the caller's too, its wait after
+    its share asleep as the workers' (an action may wait for the system
+    for long), never on the calling thread alone for being faster (D357:
+    two actions that wait for each other must run at the same time).
+    A `map` written in the lambda is compiled inline, as in any task (`if
+    self.in_task` in the code generator); one inside a function that the
+    lambda calls goes through the pool, a nested loop (D201) that the
+    threads free share.
+  - The primitives of the runtime from several threads: sockets,
+    listeners and servers of `net` are linear, so each belongs to one
+    task; files go by their path; the allocator has its caches by thread.
+    The buffer of `print` was a global without a lock: while tasks run
+    (`ACTIONS`, a count), the thread that writes the first part of a line
+    holds it (`OUT_HOLDER`, the address of its cache of the heap) until
+    its newline, `printBytes` for its bytes; a panic waits for the line of
+    another task 2048 pauses of at least 50 µs (about 0.1 s), then takes
+    the buffer. Without tasks, one load of the
+    count per call of `out` and one per newline: 6.5 instructions more a
+    line of `print(i)` (`perf stat`, 10 million lines: 2850456620 ->
+    2915749942 instructions), 0.7 and 2.0 cycles more a line in two runs
+    (`cycles:u`, of about 125 a line), +1.10, +1.37 and +1.06 % for a
+    program that only prints 10 million short lines into `/dev/null`
+    (medians of 11 alternated runs; old against old +0.00 %). A first
+    version with a third load (the holder at each newline) had 9.02
+    instructions more a line, 1.15 and 0.85 cycles, and +0.37 % in its one
+    A/B: why the version with fewer instructions measured slower is not
+    shown (TODO).
+  - `sysThreads()` (the threads of the pool, 1 in the interpreter and
+    under WASI, whose `thread_count` is 1) for the modules.
+  - The ten programs, A/B at fixed frequency (7 alternated runs, 4
+    threads): the same outputs, binary-trees -0.07 % (medians), fannkuch
+    -0.23, fasta +1.07 (5 ms runs; minimums +0.17), k-nucleotide +0.25,
+    mandelbrot -0.04, n-body +0.20, pidigits -0.43, regex-redux -0.33,
+    reverse-complement -0.06, spectral-norm -0.11.
+  - Tests (`actions.rs`): `actions_in_parallel` (16 tasks of 300 lines
+    each, no line cut, an action by its name, a pure function,
+    `mapParallel` inside a task, an empty array; the lines and results of
+    the interpreter, compiled on 1 and 4 threads),
+    `actions_in_parallel_wait_for_each_other` (one task listens and reads,
+    the other connects again until the listener is there and writes; 2
+    and 4 threads), `actions_in_parallel_refused`; an example in
+    `docs/language.md`.
+- **D374 — A loop of events on each thread of the pool for `serve`
+  (2026-11-06).** One loop of events took 1.40 to 2.10 cores and 58 to 73
+  % of the ceiling of one loop (D366), against a ceiling of 4 cores of
+  742655 to 808459 requests a second.
+  - Under Linux, `serve(port, handler)` runs `mapParallel` over the
+    threads of the pool (`sysThreads`), each task opening a listener of
+    its own of the port with `SO_REUSEPORT` (`sysListenShared`: the kernel
+    shares the new connections out among the listeners of the group,
+    `socket(7)`; seen here: 64 connections answered by the 4 loops, the CPU
+    time of the server on its 4 threads) and running `serveOn` on it; the first error of the
+    loops is the result (they end only on one). A listener that cannot be
+    opened ends its loop at once; the others share the port. One loop
+    under Windows (its headers, those of mingw-w64, define `SO_REUSEADDR`
+    and `SO_EXCLUSIVEADDRUSE` and no `SO_REUSEPORT`; whether `SO_REUSEADDR`
+    would share the connections out was not checked: `sysListenShared`
+    gives the code of `EOPNOTSUPP`), with one thread, for
+    the port 0 and for `serveOn`; (port 0: each listener gets a port of its own, even with
+    `SO_REUSEPORT`, checked: three sockets bound to 0, three ports);
+    `serveAction` keeps one loop (its handler answers one
+    request at a time, D352), and so do the servers of `https` (not
+    measured yet). The interpreter has one loop (one thread);
+    `sysListenShared` is `sysListen` there.
+  - A port already listened to is refused first: `serve` opens a listener
+    of its own on it (without `SO_REUSEPORT`), which fails if another
+    socket listens there (`AlreadyExists`), and closes it before opening
+    the shared ones. Without it, a second copy of a server on the same
+    port joined the group of the first (the kernel lets the sockets of one
+    user with the option share a port) and served too: the test of the
+    README (`every_example_of_the_readme_works`, a second copy that must
+    end with `already exists`) waited for it without end in the suite. A
+    process of the same user that binds the port with `SO_REUSEPORT` in
+    the moment between the two, or later, still shares it (the kernel's
+    rule).
+  - Measured in `isocron-http` (`isocron_only.sh`, 10 s a point, fixed
+    frequency, the server on 4 CPUs, wrk on 4 others): 1, 16, 256 and 1024
+    connections 71749, 581516, 776540, 656243 requests a second (3.85,
+    4.00, 3.96 cores with 16 or more), against 70564, 201587, 206674,
+    155344 with one loop (D366): 2.9, 3.8 and 4.2 times with 16, 256 and
+    1024 connections; 78, 96 and 84 % of the ceiling of 4 cores (742655,
+    808459, 782530), nginx 630152, 785171, 753388.
+  - By busy core (requests a second over cores): Isocron 151043, 194135,
+    165718; nginx 173596, 198777, 190249; the ceiling 229924, 246481,
+    253246: Isocron 87.0, 97.7 and 87.1 % of nginx. In this measure the
+    ceiling keeps only 3.09 to 3.28 of its 4 cores busy and is 3.0 %
+    above nginx with 256 connections, 3.9 % with 1024: something outside
+    the servers limits them, most likely wrk (its CPU time not measured,
+    a hypothesis). Being far above nginx needs a measure where the server
+    is the limit (fewer cores for it than for the client), and the cost
+    of a request of the loop brought down to the ceiling's (TODO).
+  - Tested by `serve_runs_a_loop_on_each_thread` (`std_http.rs`: 4
+    listeners of the port with 4 threads, 1 interpreted; a second server on
+    the port refused, the listeners of the first the same; 64 connections
+    of 50 requests each answered) and by the server of the README.

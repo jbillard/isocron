@@ -36,10 +36,11 @@ and 1024 connections, its pool 3.95 to 4.04 cores busy):
 | Isocron `serve` over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
 | the ceiling of one loop | 84 % | 73 % | 72 % | 58 % |
-| the ceiling of 4 cores (a bound below: the client saturates first) | 85 % | 27 % | 26 % | 20 % |
+| the ceiling of 4 cores (a bound below: it does not saturate its cores) | 85 % | 27 % | 26 % | 20 % |
 
 The ceiling of 4 cores is a bound below: it keeps 3.09 to 3.28 of its 4
-cores busy, the client (wrk, 4 threads on 4 cores) saturating first; one
+cores busy, so something outside it limits it, most likely the client (wrk,
+4 threads on 4 cores; its CPU time not measured: a hypothesis); one
 loop on one core is saturated (0.99 to 1.01 cores). Isocron has one loop
 of events, as lighttpd: it reaches 58 to 73 % of the ceiling of one loop
 with more connections (84 % with one), its pool now idle when it has

@@ -465,7 +465,7 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             let r = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(text(&vs[0])).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
             code(r)
         }
-        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Resolve | S::Shutdown | S::TlsStart => net(o, vs),
+        S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Threads | S::ListenShared | S::Resolve | S::Shutdown | S::TlsStart => net(o, vs),
         S::ServerOpen | S::ServerWait | S::ServerSend | S::ServerDrop | S::ServerClose | S::ServerOpenTls => serve(o, vs),
     }
 }
@@ -516,7 +516,8 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             Ok(Ok(c)) => tuple(vec![handle(Some(Resource::Conn(c))), Value::Int(0)]),
             Ok(Err(e)) | Err(e) => tuple(vec![handle(None), Value::Int(e)]),
         },
-        S::Listen => match address(&text(&vs[0]), int(&vs[1])).map(|a| TcpListener::bind(a).map_err(|e| io_code(&e))) {
+        // one listener: the interpreter has one loop of events (D374)
+        S::Listen | S::ListenShared => match address(&text(&vs[0]), int(&vs[1])).map(|a| TcpListener::bind(a).map_err(|e| io_code(&e))) {
             Ok(Ok(l)) => tuple(vec![handle(Some(Resource::Listener(l))), Value::Int(0)]),
             Ok(Err(e)) | Err(e) => tuple(vec![handle(None), Value::Int(e)]),
         },
@@ -662,6 +663,8 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
             }
         }
         S::Platform => Value::Int(if cfg!(windows) { 1 } else { 0 }),
+        // one thread: the tasks of `mapParallel` one after the other (D373)
+        S::Threads => Value::Int(1),
         S::Resolve => {
             let strs = |v: Vec<String>| Value::Array(Rc::new(Array::Str(v.into_iter().map(|x| Rc::from(x.as_str())).collect())));
             if !cfg!(windows) {

@@ -60,6 +60,9 @@ impl Fallible {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Prim {
     Map,
+    /// `mapParallel(x, f)` (D373): the action `f` applied to each element,
+    /// the applications at the same time on the threads of the pool.
+    MapParallel,
     /// `scan(x, op, e)`: the inclusive cumulation, from left to right.
     Scan,
     /// `filter(x, p)`: the elements where `p` is true, in order.
@@ -283,6 +286,13 @@ pub enum SysOp {
     UdpQuery,
     /// `sysPlatform() => 0` Linux, `1` Windows, `2` WASI
     Platform,
+    /// `sysThreads() => n`: the threads of the pool (D373; 1 in the
+    /// interpreter and under WASI)
+    Threads,
+    /// `sysListenShared(address, port) => [listener, code]`: a listener that
+    /// shares its port with the other ones of the program (`SO_REUSEPORT`,
+    /// D374: the kernel shares the connections out); Linux only
+    ListenShared,
     /// `sysResolve(host) => [addresses, code]`: the resolver of Windows
     /// (Linux: the module resolves, code 7)
     Resolve,
@@ -311,7 +321,7 @@ pub enum SysOp {
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 32] = [
+    pub const ALL: [SysOp; 34] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -335,6 +345,8 @@ impl SysOp {
         SysOp::LocalPort,
         SysOp::UdpQuery,
         SysOp::Platform,
+        SysOp::Threads,
+        SysOp::ListenShared,
         SysOp::Resolve,
         SysOp::Shutdown,
         SysOp::ServerOpen,
@@ -371,6 +383,7 @@ impl SysOp {
                 | SysOp::CloseListener
                 | SysOp::SetTimeout
                 | SysOp::LocalPort
+                | SysOp::ListenShared
                 | SysOp::UdpQuery
                 | SysOp::Resolve
                 | SysOp::Shutdown
@@ -410,6 +423,8 @@ impl SysOp {
             SysOp::LocalPort => "sysLocalPort",
             SysOp::UdpQuery => "sysUdpQuery",
             SysOp::Platform => "sysPlatform",
+            SysOp::Threads => "sysThreads",
+            SysOp::ListenShared => "sysListenShared",
             SysOp::Resolve => "sysResolve",
             SysOp::Shutdown => "sysShutdown",
             SysOp::ServerOpen => "sysServerOpen",
@@ -428,6 +443,7 @@ impl Prim {
         matches!(
             self,
             Prim::Sys(_)
+                | Prim::MapParallel
                 | Prim::ReadF64
                 | Prim::ReadF32
                 | Prim::ReadBytes
