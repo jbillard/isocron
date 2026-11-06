@@ -830,3 +830,44 @@ fn filters_with_guards_replay_their_masks() {
         assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", a);
     }
 }
+
+/// D396: `count(x, p)` over bytes (the sum of a `map` that gives 1 or 0 by
+/// `p`) counted by the bits of the masks of `p`, as a `filter` counts; over
+/// integers of 64 bits and indices by the sum, as before: lengths not a
+/// multiple of 32, empty, a large array
+/// counted by blocks in parallel, a condition that reads past its array in
+/// some lanes (the panic of the scalar code, its place), a condition on the
+/// index; the interpreter's results, 1 and 4 threads.
+#[test]
+fn counts_by_the_masks_of_their_condition() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const t = parseI64(args[1]);
+    const b = map(iota(n), (i) => u8((i * 37 + i / 7) % 251));
+    const w = map(iota(n), (i) => (i * 2654435761) % 1000003 - 500000);
+    const short = map(iota(t), (i) => i % 5);
+    print(count(b, (x) => x >= 128u8));
+    print(count(b, (x) => x == 7u8 || x == 200u8));
+    print(count(w, (x) => x < 0));
+    print(count(iota(n), (i) => b[i] > b[n - 1 - i]));
+    print(count(iota(n), (i) => short[i % 40] == 3));
+    return 0;
+}
+";
+    let bin = compile(src, "counts_by_masks");
+    for args in [["0", "40"], ["31", "40"], ["33", "40"], ["1000", "40"], ["300007", "40"], ["5000", "39"]] {
+        let want = interp(src, &args);
+        assert_eq!(matches!(want, Outcome::Panic(..)), args[1] == "39", "{:?}", args);
+        for th in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(th));
+            match &want {
+                Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?} {} threads: {}", args, th, r.stderr),
+                Outcome::Panic(m, _) => {
+                    assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+                    let site = if th == 1 { m.as_str() } else { m.split(": the index is").next().unwrap() };
+                    assert!(r.stderr.contains(site), "{:?} {} threads: {} / {}", args, th, r.stderr, m);
+                }
+            }
+        }
+    }
+}

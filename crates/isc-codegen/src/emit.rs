@@ -1199,6 +1199,43 @@ fn muladd_div<'a>(t: VarId, init: &'a Expr, body: &'a Expr) -> Option<(&'a Expr,
     Some((&xy[0], &xy[1], z, &d[1], body.span))
 }
 
+/// A count (D396): the sum, from 0, of a `map` of one input whose value is
+/// 1 or 0 by a condition (`count` of the prelude): that input, the
+/// condition as a lambda of the parameter of the `map`, and the lanes of
+/// its masks, counted by the bits of its masks as a `filter` counts them
+/// (`count_kept`), where the sum widened each element to 64 bits
+/// (`http.text`: the test of its bytes 69 % of its cycles).
+fn count_parts<'a, 'e>(src: &'a Src<'e>, l: &Lambda, z: &V, t: &Type) -> Option<(&'a Src<'e>, Lambda, u32)> {
+    let Src::Map(ins, ml) = src else { return None };
+    let lit = |e: &Expr, k: i64| matches!(e.kind, ExprKind::Lit(Lit::Int(c)) if c == k);
+    let add = l.params.len() == 2
+        && matches!(&l.body.kind, ExprKind::Binary(BinOp::Add, a, b) if matches!((&a.kind, &b.kind), (ExprKind::Var(x, _), ExprKind::Var(y, _)) if (*x == l.params[0] && *y == l.params[1]) || (*x == l.params[1] && *y == l.params[0])));
+    if ins.len() != 1 || *t != Type::Int(IntKind::I64) || z.r != "0" || !add || ml.params.len() != 1 {
+        return None;
+    }
+    let ExprKind::If(c, a, b) = &ml.body.kind else { return None };
+    if !lit(a, 1) || !lit(b, 0) {
+        return None;
+    }
+    // bytes only (32 a vector, as `filter_width`): the sum widened each to
+    // 64 bits, 8 times its width; wider elements (an index, `i64`) kept by
+    // the sum (their counts on short texts, `json.quote`, +8.7 % by the
+    // masks, whose elements left go one at a time)
+    if src_elem_size(&ins[0]) != 1 {
+        return None;
+    }
+    Some((&ins[0], Lambda { params: ml.params.clone(), body: c.clone(), drop_params: ml.drop_params.clone() }, 32))
+}
+
+/// The bytes of an element of `src` (8 for an index or a value made).
+fn src_elem_size(src: &Src) -> i64 {
+    match src {
+        Src::Mat { elem, .. } => esize(elem),
+        Src::Offset { inner, .. } => src_elem_size(inner),
+        _ => 8,
+    }
+}
+
 /// A length of an array fixed by the type `t` (D204).
 fn has_fixed(t: &Type) -> bool {
     match t {
@@ -7140,6 +7177,19 @@ impl<'p> Gen<'p> {
 
     /// `reduce_block` of section 10 over elements `start .. start + m`.
     fn reduce_block(&mut self, src: &Src, start: &str, m: &str, l: &Lambda, z: &V, t: &Type, w: u32) -> R<V> {
+        // a count of bytes by the masks of its condition (D396)
+        if w > 1 {
+            if let Some((ins, pred, cw)) = count_parts(src, l, z, t) {
+                let end = self.ins(format!("add i64 {}, {}", start, m));
+                let k = self.count_kept(ins, &pred, start, &end, cw)?;
+                return Ok(V { r: k, t: "i64".into(), uni: true });
+            }
+        }
+        self.reduce_block_sum(src, start, m, l, z, t, w)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_block_sum(&mut self, src: &Src, start: &str, m: &str, l: &Lambda, z: &V, t: &Type, w: u32) -> R<V> {
         let st = lt(t);
         if w > 1 {
             let vty = format!("<{} x {}>", w, st);

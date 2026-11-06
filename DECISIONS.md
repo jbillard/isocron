@@ -8909,3 +8909,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   against the floor 1.6 and 1.7. Test `header_of_by_bytes` (`std_http.rs`:
   the last of a name, mixed cases, a name missing, empty, a prefix, longer,
   not ASCII; interpreted and compiled); SPEC section 18, the guide.
+- **D396 — A count of bytes by the masks of its condition (2026-11-07).**
+  D394: `http.text.1k` 9.3 times its floor. Profile (one CPU, fixed
+  frequency): the task of `count(b, (x) => x >= 0x80u8)`, the test of UTF-8
+  of `text`, 69.06 % of the cycles: `count` of the prelude is `sum(map(x,
+  (v) => p(v) ? 1 : 0))`, each byte widened to 64 bits (`vpmovzxbw`,
+  `vpmovzxwq`, `vpaddq`), 32 a turn. `filter` already counts by the bits of
+  its masks (`count_kept`, D195). Now `reduce_block` takes such a sum (of
+  `i64`, from 0, by `+`, a `map` of one input whose body is `c ? 1 : 0`) of
+  bytes to `count_kept`, the condition `c` its predicate, 32 bytes a vector.
+  Tried on the way: `count` written `filter(x, p).length` in the prelude:
+  fasta 5.0 -> 1578.0 ms (a `filter` in each lane of its lines, made for
+  each element); counts of every width by the masks: `json.quote.escaped`
+  +8.7 % (its counts over indices of texts of 16 to 19 bytes: the elements
+  left one at a time); with a test at run time (4 vectors at least) the
+  short counts paid it, `http.parseUrl` +14.1 %: bytes only, no test.
+  Measured (one CPU, fixed frequency, 7 alternated runs of the old and new
+  binaries of the groups `strings`, `sys`, `http`, `json`, 63 forms):
+  `http.text.1k` 151.10 -> 89.91 ns (-40.5 %), no form slower by 3 % or
+  more; the code of the ten programs of the Benchmarks Game the same. Test
+  `counts_by_the_masks_of_their_condition` (`vector_index.rs`: bytes and
+  `i64`, lengths 0, 31, 33, 1000, 300007, a condition that reads past its
+  array, one on the index; the interpreter's results, 1 and 4 threads).

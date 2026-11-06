@@ -347,7 +347,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7 -> 3.3 (D351, D368), `basename` 5.3 -> 1.9 (D346), `env` 3.2 -> 1.9 (D367, D370), `readFile.4k` 2.3
   - [ ] Above 3 times their floors (D392): `time.format` 12.1 (eight `replaceAll` in a row), `sys.envAll` 7.0, `sys.readText.4k` 3.6, `sys.ioError.message` 3.4
   - [x] `http.header` and `headerOf` 14.7 and 14.6 times their floors: the names compared byte by byte, 1.7 and 1.6 (D395)
-  - [ ] Above 3 times their floors (D394): `json.quote.escaped` 14.1 (six `replaceAll`), `http.httpDate` 11.1, `http.message` 10.3, `json.quote.plain` 9.4, `http.text.1k` 9.3, `http.textResponse` 8.4, `sha256.hex.32` 7.9, `http.parseUrl` 5.7, `json.message` 4.0
+  - [ ] Above 3 times their floors (D394): `json.quote.escaped` 14.1 (six `replaceAll`), `http.httpDate` 11.1, `http.message` 10.3, `json.quote.plain` 9.4, `http.text.1k` 9.3 (5.6 after D396: its count of bytes by masks), `http.textResponse` 8.4, `sha256.hex.32` 7.9, `http.parseUrl` 5.7, `json.message` 4.0
 - [x] `time`: dates and times (D334)
   - [x] `time` above its floor: `now` 8.5 -> 1.2, the clock of the vDSO (D360); `formatIso` 8.3 -> 2.8 (D348, D359)
 - [x] `json`: read and written, decoded into a type of the program, its fields checked at compile time (D335, D336; its speed below)
