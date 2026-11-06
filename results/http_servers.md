@@ -20,31 +20,38 @@ copied, one `recv` and one `send` for the requests a read brings), on one
 core and on the 4 of the server. nginx and lighttpd are landmarks. The
 cores: the CPU time of the server over the time of the run (all its
 threads and processes). Measured at fixed frequency, 10 s a point
-(`measure.sh`, D355):
+(`measure.sh`), at 5d7f925 (D366, after D359 to D363; at D355 the server
+of Isocron reached 69, 70 and 57 % of the ceiling of one loop with 16, 256
+and 1024 connections, its pool 3.95 to 4.04 cores busy):
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 67962 (0.58 cores) | 190973 (4.04 cores) | 203414 (3.99 cores) | 151777 (3.95 cores) |
-| Isocron `serveAction` | 66845 (0.59 cores) | 170294 (4.04 cores) | 188229 (3.98 cores) | 139567 (3.95 cores) |
-| lighttpd | 69356 (0.63 cores) | 185718 (1.01 cores) | 187777 (1.00 cores) | 166916 (0.99 cores) |
-| nginx | 69989 (0.56 cores) | 599925 (3.62 cores) | 700410 (3.92 cores) | 684214 (3.86 cores) |
-| ceiling, 1 core | 79736 (0.46 cores) | 275472 (1.01 cores) | 289710 (1.00 cores) | 264138 (0.99 cores) |
-| ceiling, 4 cores | 82216 (0.47 cores) | 737056 (3.19 cores) | 791806 (3.22 cores) | 767472 (3.05 cores) |
+| Isocron `serve` | 70564 (0.58 cores) | 201587 (1.40 cores) | 206674 (2.10 cores) | 155344 (1.81 cores) |
+| Isocron `serveAction` | 70573 (0.59 cores) | 196294 (1.12 cores) | 195828 (2.06 cores) | 151148 (1.75 cores) |
+| lighttpd | 71401 (0.62 cores) | 187464 (1.01 cores) | 196662 (1.00 cores) | 182843 (0.99 cores) |
+| nginx | 72784 (0.56 cores) | 630152 (3.63 cores) | 785171 (3.95 cores) | 753388 (3.96 cores) |
+| ceiling, 1 core | 83536 (0.47 cores) | 275431 (1.01 cores) | 288547 (1.00 cores) | 265892 (0.99 cores) |
+| ceiling, 4 cores | 83002 (0.47 cores) | 742655 (3.23 cores) | 808459 (3.28 cores) | 782530 (3.09 cores) |
 
 | Isocron `serve` over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| the ceiling of one loop | 85 % | 69 % | 70 % | 57 % |
-| the ceiling of 4 cores (a bound below: the client saturates first) | 83 % | 26 % | 26 % | 20 % |
+| the ceiling of one loop | 84 % | 73 % | 72 % | 58 % |
+| the ceiling of 4 cores (a bound below: the client saturates first) | 85 % | 27 % | 26 % | 20 % |
 
-The ceiling of 4 cores is a bound below: it keeps 3.05 to 3.22 of its 4
+The ceiling of 4 cores is a bound below: it keeps 3.09 to 3.28 of its 4
 cores busy, the client (wrk, 4 threads on 4 cores) saturating first; one
 loop on one core is saturated (0.99 to 1.01 cores). Isocron has one loop
-of events, as lighttpd: it reaches 57 to 70 % of the ceiling of one loop
-with more connections (83 % with one), while its pool keeps 4 cores busy
-(3.95 to 4.04) for work that one core does. The way to the ceiling: a loop
-of events on each core (actions in parallel on the pool, D352), the cost of
-a request of the loop down to that of the ceiling, the pool idle when it
-has nothing to do.
+of events, as lighttpd: it reaches 58 to 73 % of the ceiling of one loop
+with more connections (84 % with one), its pool now idle when it has
+nothing to do (1.40 to 2.10 cores busy, D357; 3.95 to 4.04 at D355). D359
+to D363 took 8.6 % of the time of a request away in the benchmark of one
+thread (`serve.pipelined` 1491.87 -> 1363.77 ns, all in the program: the
+kernel 3045.8 cycles a request against 2969.5 for the floor in C, the
+program 2116.8 against 613.6 at D362): under wrk, +2.1, -0.2 and -0.5 %
+against D357, a request taking 4.96 and 4.84 µs of the loop with 16 and
+256 connections, of which the kernel takes about 59 %. The way to the ceiling: a loop of
+events on each core (actions in parallel on the pool, D352), the cost of a
+request of the loop down to that of the ceiling.
 
 ## Before: against nginx and lighttpd
 

@@ -7956,3 +7956,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the windows tests 10 of 10. The intermittent failure of SChannel on a
   first run after a start of the VM is not explained: it is recorded here
   to be looked for again if it comes back.
+- **D366 — The server under load measured again after D359 to D363
+  (2026-11-06).** `measure.sh` at 5d7f925 (fixed frequency, the server on
+  4 CPUs, wrk on 4 others, 10 s a point, `results/http_servers.md`):
+  `serve` 70564, 201587, 206674 and 155344 requests a second with 1, 16,
+  256 and 1024 connections (1.40, 2.10 and 1.81 cores busy with 16 to
+  1024), +2.1, -0.2 and -0.5 % against D357 (197367, 207104, 156049);
+  84, 73, 72 and 58 % of the ceiling of one loop (83536, 275431, 288547,
+  265892, the same as at D355). The benchmark of one thread took 8.6 % of
+  a request away (`serve.pipelined` 1491.87 -> 1363.77 ns), all in the
+  program; under wrk a request takes 4.96 µs of the loop with 16
+  connections (3.63 for the ceiling), the kernel about 59 % of the cycles
+  of a request (3045.8 of 5162.6 at D362): the gains of the program are a
+  few per cent of it. nginx 630152 to 785171 on 4 cores, lighttpd 187464 to
+  196662 on one. Open: a loop of events on each core, the cost of a
+  request of the loop.
