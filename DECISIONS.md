@@ -1817,7 +1817,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   4 327 380 ns after (Rust's `opt` 4 415 955 ns). Tried and left out:
   the store form of the compression (`llvm.masked.compressstore`, one
   `vcompresspd` to memory): 5 444 ns against 5 522 ns on the small size,
-  4 017 541 ns against 3 973 068 ns on the large one, and very slow on AMD
+  4 017 541 ns against 3 973 068 ns on the large one, and very slow on AMD [a hypothesis: D375]
   Zen 4 and 5; 512-bit vectors for the whole function: 5 551 ns against
   5 431 ns.
 - **D120 — `reduce` of a filter on several threads.** The stream of D99,
@@ -1890,7 +1890,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   compression (1 927 759 ns), the odd tasks counting first (1 911 076 ns),
   two chunks of 16 Ki per thread and round (1 853 752 ns), chunks of 16 Ki
   (1 792 001 ns) and 64 Ki (2 009 369 ns): the cache of each core (512
-  KiB of L2) cannot hold the chunk being computed and the next one. With
+  KiB of L2) cannot hold the chunk being computed and the next one [contradicted in part: D375]. With
   2 and 4 threads Isocron is about twice as fast as that loop (3 024 826
   against 6 375 759 ns, 2 009 870 against 3 244 530 ns).
 - **D123 — `allow_reassoc` in the measurements.** Section 14 compares the
@@ -2174,8 +2174,8 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     (as Rust and Python: above the comparisons, unlike C). `<<` and `>>`
     are two adjacent `<` or `>` tokens, so `Opt<Opt<i64>>` still parses.
     `>>` is arithmetic on signed types, logical on unsigned ones; the
-    shift amount is taken modulo the number of bits (as Java and the x86
-    instructions): one `and`, no check, vectorizable. `(&)`, `(|)` and
+    shift amount is taken modulo the number of bits (as Java; not as the x86
+    instructions for 8 and 16 bits: D375): one `and`, no check, vectorizable. `(&)`, `(|)` and
     `(xor)` are functions.
   - `a ++ b` of arrays: `[n]T ++ [m]T -> [n + m]T` (an existential size
     when a size is unknown), lowered to `map(iota(len(a) + len(b)), (i) ->
@@ -3341,7 +3341,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   nothing written; all kept, the vector stored; some, compressed into
   memory (`llvm.masked.compressstore`). A first form compressed every
   vector: the headers (3 kept of 254 million) took 0.697 s on one thread
-  instead of 0.625 s, the instruction into memory being slow; and a
+  instead of 0.625 s, the instruction into memory being slow [not isolated: D375]; and a
   parameter of a `filter` bound to an `iota` is now the index of the loop
   (D185), so that `data[i]` is a load. reverse-complement at fixed
   frequency: 0.294 s -> 0.258 s on 4 threads, 0.664 s -> 0.561 s on one;
@@ -3618,7 +3618,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   most 512 bits keeping some of its elements compressed into a register
   (`llvm.x86.avx512.mask.compress`) and stored by a mask of its first
   lanes, instead of `llvm.masked.compressstore` (the compression into
-  memory, slow on Intel's cores). At fixed frequency, 4 threads:
+  memory, slow on Intel's cores [not shown: D375]). At fixed frequency, 4 threads:
   reverse-complement 0.231 s -> 0.230 s, k-nucleotide 1.442 s -> 1.443 s,
   the same outputs: no gain. The vectors that keep some of their elements
   are not what the filter of reverse-complement pays (60 ms of its 0.23 s,
@@ -3702,7 +3702,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   size pidigits reaches), the operands aligned or one byte off (the
   magnitudes start after the sign byte): assembly 0.786 and 0.792 ns per
   word, Rust 0.848 and 0.855 ns. The alignment changes nothing, and the
-  loop is at the floor of the machine (0.739 ns per word, `mulx` and
+  loop is at the floor of the machine [contradicted: D375] (0.739 ns per word, `mulx` and
   `adc`, `results/machine_floor.txt`): pidigits loses its time elsewhere
   than in this loop, to be measured (`big256::op`, 38 % of its cycles,
   and the work around the loops).
@@ -4268,7 +4268,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     committed (Windows does not commit on first touch), a part given back
     decommitted and the address space released once nothing of it is
     committed, MADV_DONTNEED as decommit and commit (zeros, as on Linux),
-    `mremap` as a copy (Windows cannot move pages), the advice on huge
+    `mremap` as a copy (Windows cannot move pages [only true of `VirtualAlloc`: D375]), the advice on huge
     pages ignored. The thread caches of the heap and of the nodes are in
     the section `.tls$`, read through `gs:[0x58]`, `_tls_index` and
     `@SECREL32` (the generated code reads `isc_node_thread` the way LLVM
@@ -4362,7 +4362,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - iscc embeds what LLD links with: for Linux, the start files of glibc
     of the build (`Scrt1.o`, `crti.o`, `crtn.o`, and `libc_nonshared.a`,
     whose `__libc_csu_init` and `__libc_csu_fini` the `Scrt1.o` of glibc
-    2.28 calls; from glibc 2.34 on, `__libc_start_main` ignores them and
+    2.28 calls; from glibc 2.34 on, `__libc_start_main` ignores them [contradicted for the init: D375] and
     runs the constructors itself), a program then linked with the
     `libc.so.6` and `libm.so.6` of the machine (no development files: the
     program uses the glibc of the system, as with `cc`); the MinGW-w64
@@ -5166,7 +5166,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   one call per thread (2026-11-04).** A large file given as the standard
   input is mapped (D257), its pages touched by every thread, one read per
   page (`touch_pages`): where the page cache holds the file in pages of 4
-  KiB (a tmpfs, here after the memory of the machine was short), each page
+  KiB (a tmpfs, here after the memory of the machine was short [contradicted: D375]), each page
   is a fault, 63629 for the 254 MB of reverse-complement, 29 % of its CPU
   in their handling. Each thread now asks the kernel for the pages of its
   part in one call (`madvise(MADV_POPULATE_READ)`, Linux 5.14), touching
@@ -5176,7 +5176,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   5459 faults): 58.6 ms either way. The same output. Measured on the way:
   the inputs of the measurements are now on the disk (`target`), as the
   inputs of the publication are, not in the tmpfs, where their pages
-  change with the memory of the machine. Tests: the standard input mapped
+  change with the memory of the machine [a hypothesis: D375]. Tests: the standard input mapped
   (D257, `stdin.rs`).
 - **D286 — The threads of reverse-complement waiting at the end of its
   writing passes: explained, nothing to gain (2026-11-04).** TODO.md held
@@ -5654,7 +5654,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   shows it), by blocks of 64 KiB into a regular file or a character device
   that is not a terminal (`fstat`, then `ioctl(TCGETS)` under Linux;
   `GetFileType`, then `GetConsoleMode` under Windows; at each newline
-  under WASI), as C's standard output does; all of it is written at the
+  under WASI), as C's standard output does [only into a file: D375]; all of it is written at the
   end of `main`, before a panic, before the standard input is read and
   before a C function is called (whose own buffer stays C's). At fixed
   frequency: a million lines of a number into `/dev/null` 185.5 -> 22.2
@@ -5987,7 +5987,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   14.5 cycles a step for the ports 0 and 1, busy two cycles of three with
   the other operations of the step, and the divider; the last 3.6 cycles
   (3.0 %) are what the simulation leaves out (the front of the processor,
-  the 39 accesses to the stack). n-body is 1.5 times its floor.
+  the 39 accesses to the stack [30 after the split of D261: D375]). n-body is 1.5 times its floor.
 - **D313 — The parts of a search by masks and of a replacement, several
   per thread, each thread its range first (2026-11-05).** Profiled alone
   (`a[NSt]|BY` on the 50 MB of regex-redux, 40 calls, 4 threads): the four
@@ -6479,7 +6479,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   program in C built by `zig cc -target wasm32-wasi` and run by
   `wasmtime`): 144 bytes, the mode at 24, the size at 48, the time of the
   last change at 88 (seconds, 64 bits) and 96 (nanoseconds, 32 bits); the
-  name of a `dirent` at 9; `nlink_t` is 32 bits there, so the layout of
+  name of a `dirent` at 9; `nlink_t` is 32 bits there [contradicted: D375], so the layout of
   Linux would have been wrong. The codes of WASI for the kinds: 44 not
   found, 2 and 63 permission denied, 20 already exists, 55 not empty, 14
   refused, 73 timed out (`wasi/api.h`). Tested by `sys_under_wasi`
@@ -8212,3 +8212,81 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     listeners of the port with 4 threads, 1 interpreted; a second server on
     the port refused, the listeners of the first the same; 64 connections
     of 50 requests each answered) and by the server of the README.
+- **D375 — The claims of this log checked again (2026-11-06).** I wrote
+  « sous WASI, le programme n'a pas accès aux fichiers » to explain a
+  failing test and changed an example on it; it was false (the test runs
+  wasmtime with `--dir=/::/`: only a relative path failed, the current
+  folder not being opened). The author: « tu racontes n'importe quoi et du
+  coup tu te bases sur ces fake news pour coder ? », « ça me fait peur par
+  rapport à tout ce que tu as pu faire dans ce sens ». Two independent
+  readings of the whole log listed every claim about the system, a
+  library or a cause that its entry does not support by a measure, a test
+  or a source: 96, of which 35 confirmed afterwards (a header, a manual,
+  `/sys`, the code), 10 contradicted, 51 not checked. The tests check what
+  the programs do, not the reasons written here: none of the contradicted
+  claims makes the code wrong, two weighed on a choice (the first two
+  below).
+  - Contradicted, each marked where it stands:
+    - The entry « the product of a big integer by a word in assembly »
+      (after D214): the loop « at the floor of the machine (0.739 ns per
+      word) ». `results/machine_floor.txt` has `mul_word_asm 0.332
+      ns_per_word`; D222 corrected it (0.33 ns in assembly). The assembly
+      was dropped on a wrong floor.
+    - D285: a tmpfs « after the memory of the machine was short » holding
+      a file in pages of 4 KiB. `transparent_hugepage/shmem_enabled` is
+      `[never]` here and `/tmp` has no `huge=`: a tmpfs has pages of 4 KiB
+      always. The cause of the faults is not shown (a hypothesis: pages
+      swapped out).
+    - D248: « from glibc 2.34 on, `__libc_start_main` ignores » the init.
+      glibc 2.41 here: `__libc_start_main@@GLIBC_2.34` and `@GLIBC_2.2.5`
+      at the same address (0x29ce0), `mov %rcx,%r14` ... `test %r14,%r14`
+      ... `call *%r14`: a non-null init is called. Embedding
+      `__libc_csu_init` stays right, for another reason.
+    - D137: the shift amount modulo the bits « as the x86 instructions ».
+      Measured on this processor: `shlb` of 1 by 8, 9 and 10 gives 0,
+      `shlw` by 16 to 19 gives 0 (the count masked to 5 bits, not to the
+      width). The language is right (an explicit `and`; `u8` and `u16`
+      shifts by 0 to 35 the same interpreted and compiled).
+    - D332: « `nlink_t` is 32 bits » under WASI. `__typedef_nlink_t.h` of
+      wasi-libc: `unsigned long long`. The offsets measured there are right.
+    - D246: « Windows cannot move pages ». True of `VirtualAlloc` only:
+      the headers of mingw-w64 have `VirtualAlloc2`, `MapViewOfFile3`,
+      `MEM_RESERVE_PLACEHOLDER` and `MEM_REPLACE_PLACEHOLDER` (memory of a
+      section mapped again elsewhere).
+    - D299: the output by lines « as C's standard output does ».
+      `stdout(3)`: C buffers by lines only into a terminal; into a pipe or
+      a socket by blocks, where Isocron writes each line.
+    - D312: « the 39 accesses to the stack » of n-body; D261 measured 30
+      after its split. Not measured again.
+    - D195 and the entry « kept elements compressed into a register »: the
+      compression into memory « slow on Intel's cores ». D119 measured that
+      form within about 1 % (5444 against 5522 ns, 4.018 against 3.973
+      ms); the 0.697 against 0.625 s of D195 does not isolate it.
+    - D120: « the L2 cannot hold the chunk being computed and the next
+      one »: chunks of 16 Ki lost too, two of which fit in its 512 KiB.
+  - Not checked: hypotheses written as facts. Those that led to a choice
+    are to be measured (TODO): the reason of V = 32 (D55: latency and
+    adders not counted), the prefetchers of L2 (D77, D78) and the worst
+    case of 4K aliasing at 64 bytes (D81) behind the places of large
+    arrays, the 32-byte windows of the decoders behind the alignment of
+    the whole runtime (D256), the states of a core while its sibling
+    sleeps (D261) and the desktop session on cores 0 to 3 (D300) behind
+    the protocol of the measures, and the static programs with only
+    `R_X86_64_RELATIVE` relocations (D289: pidigits has 24 of them and no
+    `RELR` table, but `isc_start` skips any other kind without a word).
+    The others: D2 (the default target of `zig cc`), D46, D48, D64, D65
+    and D74 (the memory modules), D67, D68, D74, D81 (the prefetcher, a
+    locked add), D85, D92, D95, D115, D116, D117, D119 (AMD Zen), D121,
+    D122, D140, D170 (« tens of cycles » a division, against D228), D174,
+    D189, D198, D199, D205, D222, D223, the entry after D214 (`mulx` and
+    `rdx`), D235, D239, D241, D265, D268, D270, D285 (ext4), D288 (two
+    causes), D294, D298 and D361 (the alignment of the blocks of WASI's
+    dlmalloc), D305, D343 (OpenSSL and `MSG_NOSIGNAL`), D354, D359 and
+    D360 (a coincidence of the binary).
+  - Confirmed with limits the entry left out: D257, a read lease breaks
+    within `/proc/sys/fs/lease-break-time` (45 s here), after which the
+    kernel removes it; an `O_NONBLOCK` open fails at once.
+  - From now on: no claim about the system, a library or a cause is
+    written here, in a comment or to the author without the check that
+    shows it (a run, a counter, a header, a manual, the source) named next
+    to it; otherwise it is written as a hypothesis.

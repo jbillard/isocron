@@ -322,6 +322,11 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] WASI without wasi-libc; Windows with `kernel32` only
 - [x] The step HTTPS of the standard library decided again: the TLS of the system as the goal of 2026-11-05 asks (SChannel, OpenSSL loaded at run time), confined to one module of the runtime, only for the programs that import `https` (D328)
 - [ ] The primitives of a runtime written in Isocron designed in SPEC: typed system calls on arrays, bounded regions of memory, atomics, in a module of the system only, checked by the compiler (D290); then the pure functions of the runtime moved to Isocron one by one, each kept in Rust while its Isocron version is slower; then the allocator, the pool and the start
+- [ ] The claims of DECISIONS.md checked (D375): 10 contradicted marked, 51 hypotheses written as facts
+  - [ ] A static program checked at its build to hold only `R_X86_64_RELATIVE` relocations and no `RELR` table (`isc_start` skips any other kind without a word, D289)
+  - [ ] The hypotheses behind choices measured: the reason of V = 32 (D55), the prefetchers of L2 and the 4K aliasing behind the places of large arrays (D77, D78, D81), the windows of the decoders behind the alignment of the runtime (D256, its DSB and MITE counters), the core whose sibling sleeps (D261) and the desktop session on cores 0 to 3 (D300)
+  - [ ] The faults of a file in a tmpfs (D285: its pages always of 4 KiB here, the cause given contradicted)
+  - [ ] The growth of large blocks under Windows by moving pages (`VirtualAlloc2`, placeholders) instead of a copy (D246, D375)
 - [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron
 
 ## The standard library (the goal of 2026-11-05, part 2)

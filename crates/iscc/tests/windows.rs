@@ -472,3 +472,49 @@ fn a_port_listened_to_twice_on_windows() {
         assert_eq!(String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), "refused: already exists\n", "interpreted on Windows: {}", String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// The output of `actions_parallel.isc` cut at each line printed outside
+/// `mapParallel`: the lines of its tasks (in any order) sorted, then that
+/// line (as in `actions.rs`).
+fn parallel_segments(out: &[u8]) -> Vec<(Vec<String>, String)> {
+    let (mut segs, mut cur) = (Vec::new(), Vec::new());
+    for l in String::from_utf8_lossy(out).lines() {
+        if (l.starts_with('[') && l.matches(',').count() == 11) || l.starts_with("word ") {
+            cur.push(l.to_string());
+        } else {
+            cur.sort();
+            segs.push((std::mem::take(&mut cur), l.to_string()));
+        }
+    }
+    segs
+}
+
+/// D373: `mapParallel` under Windows: 16 tasks printing at the same time
+/// (no line cut: the lock of `print` with the thread-local storage of
+/// Windows), the same lines and results as under Linux on 1 and 4 threads;
+/// two tasks that wait for each other through a socket, on 2 and 4 threads.
+#[test]
+fn actions_in_parallel_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let src = include_str!("data/actions_parallel.isc");
+    let bin = compile(src, "winlinux_actions_parallel");
+    let exe = compile_windows(src, "win_actions_parallel");
+    let d = dir("actions_parallel");
+    for t in [1, 4] {
+        let l = run_linux(&bin, &d, &[], None, t);
+        let w = run_windows(&runner, &exe, &d, &[], None, t);
+        assert_eq!((w.0, l.0), (0, 0), "{} threads; stderr: {}", t, String::from_utf8_lossy(&w.2));
+        assert!(parallel_segments(&w.1) == parallel_segments(&l.1), "{} threads: other lines on Windows", t);
+        assert_eq!(parallel_segments(&w.1).len(), 5, "{} threads", t);
+    }
+    let src = include_str!("data/actions_parallel_wait.isc");
+    let exe = compile_windows(src, "win_actions_parallel_wait");
+    let d = dir("actions_parallel_wait");
+    for t in [2, 4] {
+        let w = run_windows(&runner, &exe, &d, &["18766"], None, t);
+        assert_eq!((w.0, String::from_utf8_lossy(&w.1).into_owned()), (0, "[hello from the other task, sent]\n".to_string()), "{} threads; stderr: {}", t, String::from_utf8_lossy(&w.2));
+    }
+}
