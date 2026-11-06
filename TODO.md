@@ -215,7 +215,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
     - regex-redux profiled (2026-11-06, 4 threads, `perf record` of its user cycles): `rx::simple` `bounds_from` 30.09 %, `group_lanes` 14.39 %, `bounds_groups` 13.57 %, the writing of the replacements (`replace_parallel::write`) 23.26 %, copies 7.5 %: the counts are the lanes of D311 (`group_lanes`, `bounds_groups`); the searches of the replacements (`bounds_from`) and their writing first
   - [x] The product of a big integer by a word in assembly, one chain of `adc`: pidigits 0.888 s -> 0.697 s (D239)
   - [x] A quotient of one word certain from the top words, without a pass over the words: pidigits 0.696 s -> 0.503 s (D240)
-  - [ ] pidigits: `num * 3 + acc` and `num * 4 + acc` made whole only to be divided (the top words would do)
+  - [x] pidigits: `num * 3 + acc` and `num * 4 + acc` made whole only to be divided: the quotient from the leading words, 490.3 -> 337.8 ms (D389)
+  - [ ] pidigits 337.8 ms against its floor of 194: `(acc + num * 2) * k2` and `(acc - den * d) * 10` three passes each where the floor counts two (a product by a word and a sum in one pass)
   - [x] A runtime for x86-64-v4 (AVX-512): the masks of 64 bytes in one comparison; the additions of big integers in assembly: regexredux 0.305 s -> 0.294 s, pidigits 0.503 s -> 0.490 s (D241)
   - [x] k-nucleotide by the rules: every k-mer of 3, 4, 6, 12, 18 counted in a table (it counted only the 5 asked: less work than the others), 1.141 s -> 3.061 s (D242)
   - [x] Groups of integer keys with the key in its slot, by parts in parallel, prefetched: k-nucleotide 3.057 s -> 2.563 s (D243)

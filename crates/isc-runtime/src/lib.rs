@@ -2828,6 +2828,17 @@ pub unsafe extern "C" fn isc_big_op(out: *mut IscStr, p: *const u8, n: i64, q: *
     }
 }
 
+/// `(a * b + c) / d` (D389): the quotient from the leading words when they
+/// decide it, the product and the sum not made.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn isc_big_muladd_div(out: *mut IscStr, a: *const u8, an: i64, b: *const u8, bn: i64, c: *const u8, cn: i64, d: *const u8, dn: i64, line: i32, col: i32) {
+    match sem::big256::muladd_div(bytes_of(a, an), bytes_of(b, bn), bytes_of(c, cn), bytes_of(d, dn)) {
+        Ok(v) => *out = adopt(alloc::string::String::from_utf8_unchecked(v)),
+        Err(e) => die(line, col, &e),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_cmp(p: *const u8, n: i64, q: *const u8, m: i64) -> i32 {
     sem::big256::cmp(bytes_of(p, n), bytes_of(q, m)) as i32

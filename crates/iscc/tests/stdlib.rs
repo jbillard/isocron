@@ -706,6 +706,56 @@ fn big_integers_times_a_word() {
     }
 }
 
+/// D389: the quotient of a multiply-add of bigints, `(a * k + b) / c`,
+/// in one call of the runtime, from the leading words when they decide it:
+/// numbers of 1 to 40 words, `k` of one word first or second, `b` first or
+/// second, sums that are exact multiples of `c` and one less (the bounds
+/// then apart: the whole computation), negative operands, a `k` of two
+/// words, small numbers; the call in the code; the interpreter's results;
+/// a division by zero, the panic of the division.
+#[test]
+fn big_quotients_of_a_multiply_add() {
+    let src = "function quotient(a: bigint, k: bigint, b: bigint, c: bigint): bigint {
+    return (a * k + b) / c;
+}
+
+function swapped(a: bigint, k: bigint, b: bigint, c: bigint): bigint {
+    return (b + k * a) / c;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    forEach(iota(n), (i) => {
+        const w = i + 1;
+        const c = 3n ** BigInt(40 * w + 1) + BigInt(w);
+        const a = 7n ** BigInt(33 * w + 3);
+        const k = BigInt(w * 1000003 + 3);
+        const b = 5n ** BigInt(41 * w);
+        const q = quotient(a, k, b, c);
+        const e = q * c - a * k;
+        print([q, swapped(a, k, b, c), quotient(k, a, b, c), quotient(a, k, e, c), quotient(a, k, e - 1n, c)]);
+        print([quotient(-a, k, b, c), quotient(a, k, -b, c), quotient(a, k, b, -c), quotient(a, 2n ** 70n + 1n, b, c), quotient(BigInt(w), 3n, 4n, 7n)]);
+    });
+    return 0;
+}
+";
+    let bin = compile(src, "big_muladd_div");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    // the two functions inlined at their 10 calls: one call of the runtime each
+    assert_eq!(ll.matches("call void @isc_big_muladd_div").count(), 10, "a quotient is not one call");
+    for n in ["1", "3", "40"] {
+        let want = interp_ok(src, &[n]);
+        let r = run_bin(&bin, &[n]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}: {}", n, r.stderr);
+    }
+    let zero = "action main(args: string[k]): i32 {\n    const a = 3n ** 200n;\n    print((a * 3n + a) / BigInt(args.length - 1));\n    return 0;\n}\n";
+    let bin = compile(zero, "big_muladd_div_zero");
+    let r = run_bin(&bin, &["x"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    // the panic of the interpreter and of the code before (D389)
+    assert!(r.stderr.contains("panic at line 3, column 24: integer division by zero"), "{}", r.stderr);
+}
+
 const COUNTS_BY_LINES: &str = r##"function key(i: i64): i64 {
     if (i % 1009 == 0) {
         return -(i % 50) - 1;

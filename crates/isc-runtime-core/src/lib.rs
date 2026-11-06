@@ -1205,6 +1205,19 @@ macro_rules! big_module {
         Ok(encode(&r))
     }
 
+    /// `(a * b + c) / d` (D389): from the leading words when they decide
+    /// it, else the product, the sum and the quotient made whole.
+    pub fn muladd_div(a: &[u8], b: &[u8], c: &[u8], d: &[u8]) -> Result<Vec<u8>, Panic<'static>> {
+        if $radix == 256 {
+            if let Some(q) = super::limbs::muladd_quot(a, b, c, d) {
+                return Ok(q);
+            }
+        }
+        let p = op(2, a, b)?;
+        let s = op(0, &p, c)?;
+        op(3, &s, d)
+    }
+
     pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
         if $radix == 256 {
             return super::limbs::cmp(a, b);
@@ -1803,6 +1816,70 @@ mod limbs {
             q -= 1;
         }
         Some(q)
+    }
+
+    /// The bits of a magnitude (zero for zero).
+    fn bits(m: &[u8]) -> u64 {
+        match m.last() {
+            Some(&t) => 8 * (m.len() as u64 - 1) + 8 - t.leading_zeros() as u64,
+            None => 0,
+        }
+    }
+
+    /// `m / 2^e`, its bits at most `e + 120` (16 bytes read from the byte
+    /// of `e`).
+    fn window(m: &[u8], e: u64) -> u128 {
+        let s = (e / 8) as usize;
+        let mut b = [0u8; 16];
+        if s < m.len() {
+            let n = (m.len() - s).min(16);
+            b[..n].copy_from_slice(&m[s..s + n]);
+        }
+        u128::from_le_bytes(b) >> (e % 8)
+    }
+
+    /// The quotient `(a * k + b) / c` from the leading words alone (D389),
+    /// all of them non-negative, `k` (or `a`) of one word, `c` of more than
+    /// 128 bits, `a` and `b` of at most 56 bits more than `c`. Each cut at
+    /// the bit `e = bits(c) - 64`: `a = A 2^e + a'`,
+    /// the same for `b` and `c` (C from 2^63 to 2^64), so that
+    /// `(A k + B) 2^e <= a k + b < (A k + B + k + 1) 2^e` and
+    /// `C 2^e <= c < (C + 1) 2^e`: the quotient lies from `(A k + B) / (C +
+    /// 1)` to `(A k + B + k) / C`. When both are the same it is the
+    /// quotient; None otherwise, and outside these conditions (the caller
+    /// computes it whole).
+    pub fn muladd_quot(x: &[u8], y: &[u8], z: &[u8], w: &[u8]) -> Option<Vec<u8>> {
+        let ((nx, mx), (ny, my), (nz, mz), (nw, mw)) = (split(x), split(y), split(z), split(w));
+        if nx || ny || nz || nw || mw.is_empty() {
+            return None;
+        }
+        let (a, k) = if my.len() <= 8 {
+            (mx, word(my, 0))
+        } else if mx.len() <= 8 {
+            (my, word(mx, 0))
+        } else {
+            return None;
+        };
+        let cb = bits(mw);
+        if cb <= 128 {
+            return None;
+        }
+        let e = cb - 64;
+        // `a` and `b` may be longer than `c` (a quotient above one): their
+        // windows of 120 bits at most, the products checked
+        if bits(a) > e + 120 || bits(mz) > e + 120 {
+            return None;
+        }
+        let c = window(mw, e);
+        let lo = window(a, e).checked_mul(k as u128)?.checked_add(window(mz, e))?;
+        let q = lo / (c + 1);
+        if q != lo.checked_add(k as u128)? / c {
+            return None;
+        }
+        let mut out = Out::new(false, 2);
+        out.push(q as u64);
+        out.push((q >> 64) as u64);
+        Some(out.done())
     }
 
     /// `+ - * / %` and the negation (`op` 0 to 4, 6) of two values of

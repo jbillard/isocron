@@ -8742,3 +8742,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     of 256 and 200 bytes, lengths cut in a row, `vpermi2var.qi.512` in
     the IR on a host with AVX-512 VBMI; the interpreter's results, 1 and 4
     threads).
+- **D389 — The quotient of a multiply-add of bigints from the leading
+  words (2026-11-06).** TODO.md: pidigits made `num * 3 + acc` and `num * 4
+  + acc` whole only to divide them by `den`, a quotient of one digit; the
+  floor (bench/floor/floors.py) takes it from the leading words. Profile
+  (one CPU, fixed frequency, 10000 digits): 490 ms, 1.56 G user cycles,
+  4.61 G instructions; `limbs::mul_word` 58.82 % of the cycles,
+  `big256::op` 26.10 % (the division of Knuth inlined: both operands
+  copied and shifted, then multiplied and subtracted), `limbs::sub` 10.57
+  %.
+  - The runtime: `muladd_quot(a, k, b, c)` (isc-runtime-core) for all of
+    them non-negative, `k` (or `a`) of one word, `c` of more than 128 bits,
+    `a` and `b` of at most 56 bits more than `c`: each cut at the bit `e =
+    bits(c) - 64` (`a = A 2^e + a'` and the same for `b` and `c`, C from
+    2^63 to 2^64), so that `(A k + B) 2^e <= a k + b < (A k + B + k + 1)
+    2^e` and `C 2^e <= c < (C + 1) 2^e`: the quotient lies from `(A k + B)
+    / (C + 1)` to `(A k + B + k) / C`, two divisions on 128 bits; when they
+    are the same it is the quotient, without a pass over the words.
+    Otherwise, and outside these conditions, `muladd_div` makes the
+    product, the sum and the quotient whole (`isc_big_muladd_div`): the
+    same values and panics as before. A first version took `a` and `b` of
+    at most the bits of `c` only: pidigits -5.49 %, its `num` most of the
+    time longer than `den` (the sum up to ten times `den`); the windows of
+    120 bits then.
+  - The compiler: `let t = (let p = x * y in p + z) in t / c` of bigints
+    (the temporaries of the lowering, each read once there, no operand
+    moved), `z + p` too, is one call (`muladd_div` of the code generator),
+    its operands in the same order, the panic at the place of the
+    division. The interpreter unchanged (its IR the same).
+  - Measured (one CPU, fixed frequency, 11 alternated runs, the same
+    outputs for 1, 27, 1000 and 10000 digits): pidigits 490.3 -> 337.8 ms
+    (-31.10 %, medians -31.17 %), 4606 -> 3220 million instructions, 1557
+    -> 1071 million user cycles: about 1.7 times its floor of 0.194 s. The
+    code of the other nine programs the same.
+  - Test `big_quotients_of_a_multiply_add` (`stdlib.rs`: numbers of 1 to
+    40 words, `k` first or second, `b` first or second, sums that are exact
+    multiples of `c` and one less, negative operands, a `k` of two words,
+    small numbers; ten calls in the code for its ten quotients; the
+    interpreter's results; a division by zero: the panic of the
+    interpreter and of the code before, at line 3, column 24).

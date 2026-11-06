@@ -896,6 +896,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare double @isc_js_number(ptr, i64, i32, i64)",
     "declare void @isc_print_big(ptr, i64)",
     "declare void @isc_big_op(ptr, ptr, i64, ptr, i64, i32, i32, i32)",
+    "declare void @isc_big_muladd_div(ptr, ptr, i64, ptr, i64, ptr, i64, ptr, i64, i32, i32)",
     "declare i32 @isc_big_cmp(ptr, i64, ptr, i64)",
     "declare void @isc_big_from_i64(ptr, i64)",
     "declare void @isc_big_from_u64(ptr, i64)",
@@ -1171,6 +1172,31 @@ fn sole_pad_text(e: &Expr, v: VarId) -> bool {
         }
     }
     uses(e, v) == 1 && at_pad(e, v)
+}
+
+/// `let t = (let p = x * y in p + z) in t / c` of bigints, `p` and `t`
+/// temporaries read once there, no operand moved (D389): `x`, `y`, `z`,
+/// `c` and the place of the division.
+fn muladd_div<'a>(t: VarId, init: &'a Expr, body: &'a Expr) -> Option<(&'a Expr, &'a Expr, &'a Expr, &'a Expr, Span)> {
+    use isc_ir::BigOp as B;
+    let is = |e: &Expr, v: VarId| matches!(e.kind, ExprKind::Var(w, _) if w == v);
+    let moved = |e: &Expr| matches!(e.kind, ExprKind::Var(_, Use::Move));
+    let ExprKind::StrOp(isc_ir::StrOp::Big(B::Div), d) = &body.kind else { return None };
+    if d.len() != 2 || !is(&d[0], t) || mentions(&d[1], &HashSet::from([t])) {
+        return None;
+    }
+    let ExprKind::Let { var: p, init: m, body: a, drop: true, stmt: false } = &init.kind else { return None };
+    let ExprKind::StrOp(isc_ir::StrOp::Big(B::Mul), xy) = &m.kind else { return None };
+    let ExprKind::StrOp(isc_ir::StrOp::Big(B::Add), zs) = &a.kind else { return None };
+    if xy.len() != 2 || zs.len() != 2 {
+        return None;
+    }
+    let z = if is(&zs[0], *p) { &zs[1] } else if is(&zs[1], *p) { &zs[0] } else { return None };
+    let all = [&xy[0], &xy[1], z, &d[1]];
+    if mentions(z, &HashSet::from([*p])) || all.iter().any(|o| moved(o) || mentions(o, &HashSet::from([t]))) {
+        return None;
+    }
+    Some((&xy[0], &xy[1], z, &d[1], body.span))
 }
 
 /// A length of an array fixed by the type `t` (D204).
@@ -3432,6 +3458,21 @@ impl<'p> Gen<'p> {
             Let { var, init, body, .. } if w == 1 && print_stream_ok(*var, init, body) => {
                 self.print_stream_any(init)?;
                 Ok(v("false", "i1"))
+            }
+            // `(a * k + b) / c` of bigints, the product and the sum bound to
+            // temporaries read once: one call, the quotient from the leading
+            // words when they decide it, neither made (D389)
+            Let { var, init, body, drop: true, stmt: false } if muladd_div(*var, init, body).is_some() => {
+                let (x, y, z, c, span) = muladd_div(*var, init, body).unwrap();
+                let mut parts = Vec::new();
+                for o in [x, y, z, c] {
+                    let val = self.ex(o, 1)?;
+                    parts.push(self.str_parts(&val));
+                }
+                let out = self.alloca("{ ptr, i64 }");
+                let args = parts.iter().map(|(p, n)| format!("ptr {}, i64 {}", p, n)).collect::<Vec<_>>().join(", ");
+                self.emit(format!("call void @isc_big_muladd_div(ptr {}, {}, {})", out, args, Self::pos(span)));
+                Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
             }
             // keys made only to be grouped: grouped as they are made (D244)
             Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body).is_some() => self.group_stream(init, group_let_ok(*var, init, body) == Some(true)),
