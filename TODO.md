@@ -172,7 +172,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] The literals of a case-insensitive search on ASCII text: one case (the haystack lowered): closed by measure (2026-11-06, 4 threads, fixed frequency, 15 alternated runs, the same outputs): regex-redux with its counts `ig` 81.3 ms, with `g` 82.8 ms (medians -0.14 %; the old against itself +0.00 %): the engine of shapes takes both cases at each byte for nothing, lowering the text would add a pass
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
   - [x] The costs of the machine measured, the floor of each program (`results/floors.md`, D182): Isocron over its floor fasta 57.8, regexredux 10.1, knucleotide 8.1, revcomp 5.4, nbody 4.9, pidigits 3.7, binarytrees 3.0, fannkuchredux 2.9, mandelbrot 1.5, spectralnorm 1.0
-  - [ ] A microbenchmark and a floor for each primitive of the library
+  - [ ] A microbenchmark and a floor for each primitive of the library: `sys`, `path` and `time` done (D392); left: `json.message`, `json.quote`, `sha256.digestText`, the pure functions of `http` (`message`, `parseUrl`, `headerOf`, `header`, `text`, `textResponse`, `httpDate`), the functions of `net` not measured, `http.request`/`get`/`serve`, the forms of `https`
     - [x] The functions of strings written by the runtime, once: replaceAll 341 -> 171 ms, toUpperCase 412 -> 119 ms (D190, `bench/micro/strings.isc`)
   - [x] fasta (57.8 times its floor): the reduction of an exact operator over fewer elements than lanes in one loop, 1.135 s -> 0.391 s (D183)
   - [x] knucleotide (8.1 times its floor): a size of every lane and shifted indices in vector code, 3.199 s -> 2.098 s (D184)
@@ -345,6 +345,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `sys` under WASI (wasi-libc, in the folders the host opens; D332)
   - [x] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor (D333)
   - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7 -> 3.3 (D351, D368), `basename` 5.3 -> 1.9 (D346), `env` 3.2 -> 1.9 (D367, D370), `readFile.4k` 2.3
+  - [ ] Above 3 times their floors (D392): `time.format` 12.1 (eight `replaceAll` in a row), `sys.envAll` 7.0, `sys.readText.4k` 3.6, `sys.ioError.message` 3.4
 - [x] `time`: dates and times (D334)
   - [x] `time` above its floor: `now` 8.5 -> 1.2, the clock of the vDSO (D360); `formatIso` 8.3 -> 2.8 (D348, D359)
 - [x] `json`: read and written, decoded into a type of the program, its fields checked at compile time (D335, D336; its speed below)

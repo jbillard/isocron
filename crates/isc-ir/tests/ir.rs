@@ -336,7 +336,7 @@ action main(args: string[k]): i32 {
     // a function read that reads a value of its own context: refused
     let t = isc_types::check_source(&src.replace("print(twice((v) => v * 3));", "const k = i64(args.length);\n    print(twice((v) => v * k));")).unwrap();
     let e = lower(&t).unwrap_err();
-    assert!(e.message.contains("a recursive function given a function that reads a function of its context which reads values of its own"), "{}", e);
+    assert!(e.message.contains("a recursive function given a function that reads, of its context, a size or a function that reads values of its own"), "{}", e);
 }
 
 /// Uniqueness in the branches of an `if` (D105): the last use of a variable

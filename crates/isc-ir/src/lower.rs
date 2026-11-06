@@ -2245,7 +2245,7 @@ impl<'p> Lower<'p> {
                 }
                 Arg::Func(f) => {
                     let Some(k) = fn_key(&f) else {
-                        return poc(span, "a recursive function given a function that reads a function of its context which reads values of its own (SPEC section 11)");
+                        return poc(span, "a recursive function given a function that reads, of its context, a size or a function that reads values of its own (SPEC section 11)");
                     };
                     // the values it captures, then the sizes it reads:
                     // arguments after the others

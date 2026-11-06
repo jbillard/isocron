@@ -8828,3 +8828,31 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (2.5), mandelbrot 1.46, n-body 1.43: each below 3.
   `results/benchmarks_game.md`, the summary of the README and its chart
   regenerated (`report.py`).
+- **D392 — A microbenchmark and a floor for every function of `sys`,
+  `path` and `time` (2026-11-06).** TODO.md (audit 6): « a microbenchmark
+  and a floor for each primitive of the library »; 28 forms measured for
+  about 91 exported functions. Added to `bench/primitives` (each in
+  Isocron and the same work in C, the checksums equal):
+  - `time`: `isLeapYear`, `daysInMonth`, `weekday`, `addDays`,
+    `addMonths`, `daysBetween`, `toInstant`, `formatDateTime`, `format`, on
+    4096 dates, times and years;
+  - `path`: `isAbsolute`, `join`, `dirname`, `extension` (one path in three
+    absolute);
+  - `sys`: `ioError.message` (the 8 kinds), `envAll`, `cwd`, `isFile`,
+    `isDir`, `fileSize`, `modified`, `makeDir.remove`,
+    `makeDirs.removeAll`, `rename.2`, `readText.4k`, `writeText.4k`,
+    `appendFile.64`, `appendText.64`, by an action `loopOf` given the call
+    to repeat (D387); the floor of `makeDirs` the cheapest way (the full
+    path first, the parents when missing), of `removeAll` a walk of the
+    folders; the C program starts and ends with a new folder (the files of
+    its runs before were counted by `listDir`, now `listDir.66`).
+  Two floors corrected on the way: `daysBetween`'s checksum 0 (a sum that
+  cancels: each date paired with the one at half its index), `toInstant`
+  beaten by Isocron (0.4: the C made the date again from the day; now
+  given, as the `DateTime` holds it: 1.0). `run.py` keeps the rows of the
+  groups not measured (measuring two groups wrote a page of those two
+  alone). Measured (one CPU, fixed frequency, the medians of 5 runs of 200
+  rounds): 75 forms; new gaps above 3: `time.format` 12.1 (eight
+  `replaceAll` in a row), `sys.envAll` 7.0, `readText.4k` 3.6,
+  `ioError.message` 3.4 (TODO); the others of `time` 1.0 to 1.8, the system
+  calls 1.0 to 1.3.

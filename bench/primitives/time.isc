@@ -35,5 +35,27 @@ action main(args: string[k]): i32 {
     print(`parseIso ${f64(t4) / each} ${a3}`);
     const [a4, t5] = bench(r, () => sum(map(iota(n), (i) => time.daysOf(time.dateOf(i * 37 - 70000)))));
     print(`dateOf.daysOf ${f64(t5) / each} ${a4}`);
+    // the other functions of the module (D392): 4096 dates, times and
+    // years each
+    const dates = map(iota(n), (i) => time.dateOf(i * 37 - 70000));
+    const times = map(ins, (i) => time.toDateTime(i, 60));
+    const [a5, t6] = bench(r, () => count(iota(n), (i) => time.isLeapYear(1600 + i)));
+    print(`isLeapYear ${f64(t6) / each} ${a5}`);
+    const [a6, t7] = bench(r, () => sum(map(iota(n), (i) => time.daysInMonth(1900 + i / 12, i % 12 + 1))));
+    print(`daysInMonth ${f64(t7) / each} ${a6}`);
+    const [a7, t8] = bench(r, () => sum(map(dates, (d) => time.weekday(d))));
+    print(`weekday ${f64(t8) / each} ${a7}`);
+    const [a8, t9] = bench(r, () => sum(map(iota(n), (i) => time.addDays(dates[i], i - 2000).day)));
+    print(`addDays ${f64(t9) / each} ${a8}`);
+    const [a9, t10] = bench(r, () => sum(map(iota(n), (i) => time.addMonths(dates[i], i % 25 - 12).day)));
+    print(`addMonths ${f64(t10) / each} ${a9}`);
+    const [a10, t11] = bench(r, () => sum(map(iota(n), (i) => time.daysBetween(dates[i], dates[i / 2]))));
+    print(`daysBetween ${f64(t11) / each} ${a10}`);
+    const [a11, t12] = bench(r, () => count(iota(n), (i) => time.toInstant(times[i]) == ins[i]));
+    print(`toInstant ${f64(t12) / each} ${a11}`);
+    const [a12, t13] = bench(r, () => sum(map(times, (d) => time.formatDateTime(d).length)));
+    print(`formatDateTime ${f64(t13) / each} ${a12}`);
+    const [a13, t14] = bench(r, () => sum(map(times, (d) => time.format(d, "YYYY/MM/DD HH:mm:ss.SSS Z").length)));
+    print(`format ${f64(t14) / each} ${a13}`);
     return 0;
 }

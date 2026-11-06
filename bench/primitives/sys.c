@@ -6,6 +6,7 @@
 //   sys <rounds>
 #define _GNU_SOURCE
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,10 +80,57 @@ static long normalize(const char *p, char *out) {
     return m;
 }
 
+// the folder `p` and the folders above it that are not there: the full
+// path first, its parent only when it is missing (D392)
+static int make_dirs(char *p) {
+    if (mkdir(p, 0777) == 0) return 0;
+    struct stat st;
+    if (errno == EEXIST) return stat(p, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
+    if (errno != ENOENT) return -1;
+    char *slash = strrchr(p, '/');
+    if (!slash || slash == p) return -1;
+    *slash = 0;
+    int r = make_dirs(p);
+    *slash = '/';
+    return r == 0 ? mkdir(p, 0777) : -1;
+}
+
+// the file or the folder `p` with all it holds (D392)
+static int remove_all(const char *p) {
+    struct stat st;
+    if (lstat(p, &st) != 0) return -1;
+    if (!S_ISDIR(st.st_mode)) return unlink(p);
+    DIR *d = opendir(p);
+    if (!d) return -1;
+    struct dirent *e;
+    char sub[512];
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        snprintf(sub, sizeof sub, "%s/%s", p, e->d_name);
+        remove_all(sub);
+    }
+    closedir(d);
+    return rmdir(p);
+}
+
+// the bytes of `x` (n of them) written to `p`, appended or not
+static int put_file(const char *p, const char *x, long n, int append) {
+    int fd = open(p, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
+    if (fd < 0) return 0;
+    int ok = write(fd, x, n) == n;
+    close(fd);
+    return ok;
+}
+
+extern char **environ;
+
 int main(int argc, char **argv) {
     long r = argc > 1 ? atol(argv[1]) : 10;
     const char *dir = "/tmp/isc-bench-sys-c";
     char path[256], buf[8192], x[4096];
+    // a new folder, as `sys.isc` (D392: the files of the runs before it
+    // counted by `listDir`)
+    remove_all(dir);
     mkdir(dir, 0777);
     for (int i = 0; i < 4096; i++) x[i] = i % 251;
     for (int i = 0; i < 64; i++) {
@@ -92,6 +140,12 @@ int main(int argc, char **argv) {
         close(fd);
     }
     sprintf(path, "%s/f7.bin", dir);
+    // the text of 4096 letters, in the folder before it is listed, as
+    // `sys.isc` (D392)
+    char words[4096], tpath[256];
+    for (int i = 0; i < 4096; i++) words[i] = 'a' + i % 26;
+    sprintf(tpath, "%s/t.txt", dir);
+    put_file(tpath, words, sizeof words, 0);
     long acc = 0;
     double t0 = now();
     // 100 calls a round, as `sys.isc` (D346)
@@ -129,7 +183,7 @@ int main(int argc, char **argv) {
     acc = 0;
     for (long i = 0; i < r; i++) acc += list(dir);
     double t5 = now();
-    printf("listDir.65 %.3f %ld\n", (t5 - t4) / r, acc / r);
+    printf("listDir.66 %.3f %ld\n", (t5 - t4) / r, acc / r);
     static char ps[4096][40], out[64];
     for (int i = 0; i < 4096; i++) sprintf(ps[i], "a/./b%d/../c//d/e%d.txt", i % 10, i);
     acc = 0;
@@ -146,11 +200,168 @@ int main(int argc, char **argv) {
         }
     double t8 = now();
     printf("basename %.3f %ld\n", (t8 - t7) / ((double)r * 4096), acc / r);
+    // the other functions of `path` (D392): one path in three absolute
+    static char qs[4096][48], jo[64];
+    for (int i = 0; i < 4096; i++) sprintf(qs[i], i % 3 == 0 ? "/x/%s" : "%s", ps[i]);
+    acc = 0;
+    double t9 = now();
+    for (long k = 0; k < r; k++)
+        for (int i = 0; i < 4096; i++) {
+            const char *p = qs[i];
+            acc += p[0] == '/' || (p[0] && p[1] == ':' && (p[2] == '/' || p[2] == '\\'));
+        }
+    double t10 = now();
+    printf("isAbsolute %.3f %ld\n", (t10 - t9) / ((double)r * 4096), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (int i = 0; i < 4096; i++) {
+            const char *p = qs[i];
+            size_t n = strlen(p);
+            if (p[0] == '/') {
+                memcpy(jo, p, n);
+                acc += n;
+            } else {
+                memcpy(jo, "dir/sub/", 8);
+                memcpy(jo + 8, p, n);
+                acc += 8 + n;
+            }
+        }
+    double t11 = now();
+    printf("join %.3f %ld\n", (t11 - t10) / ((double)r * 4096), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (int i = 0; i < 4096; i++) {
+            const char *p = ps[i], *e = strrchr(p, '/');
+            long n = e ? e - p : -1;
+            while (n > 0 && p[n - 1] == '/') n--;
+            acc += n < 0 ? 1 : (n == 0 ? 1 : n);
+        }
+    double t12 = now();
+    printf("dirname %.3f %ld\n", (t12 - t11) / ((double)r * 4096), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (int i = 0; i < 4096; i++) {
+            const char *b = strrchr(ps[i], '/');
+            b = b ? b + 1 : ps[i];
+            const char *d = strrchr(b, '.');
+            acc += d && d > b && strcmp(b, "..") ? (long)strlen(d) : 0;
+        }
+    double t13 = now();
+    printf("extension %.3f %ld\n", (t13 - t12) / ((double)r * 4096), acc / r);
+    // the other functions of `sys` (D392): the text of an error of each of
+    // 8 kinds about `f.txt`
+    static const char *kinds[6] = {"not found: ", "permission denied: ", "already exists: ", "not empty: ", "refused: ", "timed out: "};
+    char msg[64];
+    acc = 0;
+    double u0 = now();
+    for (long k = 0; k < r; k++)
+        for (int i = 0; i < 4096; i++) {
+            int code = i % 8 + 1;
+            long n;
+            if (code <= 6) {
+                n = strlen(kinds[code - 1]);
+                memcpy(msg, kinds[code - 1], n);
+            } else {
+                n = sprintf(msg, "error %d of the system: ", -code);
+            }
+            memcpy(msg + n, "f.txt", 5);
+            acc += n + 5;
+        }
+    double u1 = now();
+    printf("ioError.message %.3f %ld\n", (u1 - u0) / ((double)r * 4096), acc / r);
+    char p2[256], p3[256];
+    acc = 0;
+    for (long i = 0; i < r; i++) {
+        // each variable a name and a value made
+        long k = 0;
+        for (char **e = environ; *e; e++) {
+            const char *eq = strchr(*e, '=');
+            if (!eq) continue;
+            char *name = strndup(*e, eq - *e), *value = strdup(eq + 1);
+            free(name);
+            free(value);
+            k++;
+        }
+        acc += k;
+    }
+    double u2 = now();
+    printf("envAll %.3f %ld\n", (u2 - u1) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) acc += getcwd(p2, sizeof p2) ? (long)strlen(p2) : -1;
+    double u3 = now();
+    printf("cwd %.3f %ld\n", (u3 - u2) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) acc += stat(path, &st) == 0 && S_ISREG(st.st_mode);
+    double u4 = now();
+    printf("isFile %.3f %ld\n", (u4 - u3) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) acc += stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
+    double u5 = now();
+    printf("isDir %.3f %ld\n", (u5 - u4) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) acc += stat(path, &st) == 0 ? st.st_size : -1;
+    double u6 = now();
+    printf("fileSize %.3f %ld\n", (u6 - u5) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) acc += stat(path, &st) == 0 ? st.st_mtim.tv_sec > 0 : -1;
+    double u7 = now();
+    printf("modified %.3f %ld\n", (u7 - u6) / r, acc / r);
+    acc = 0;
+    sprintf(p2, "%s/m", dir);
+    for (long i = 0; i < r; i++) acc += (mkdir(p2, 0777) == 0) + (rmdir(p2) == 0);
+    double u8 = now();
+    printf("makeDir.remove %.3f %ld\n", (u8 - u7) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) {
+        sprintf(p2, "%s/a/b/c", dir);
+        sprintf(p3, "%s/a", dir);
+        acc += (make_dirs(p2) == 0) + (remove_all(p3) == 0);
+    }
+    double u9 = now();
+    printf("makeDirs.removeAll %.3f %ld\n", (u9 - u8) / r, acc / r);
+    acc = 0;
+    sprintf(p2, "%s/g7.bin", dir);
+    for (long i = 0; i < r; i++) acc += (rename(path, p2) == 0) + (rename(p2, path) == 0);
+    double u10 = now();
+    printf("rename.2 %.3f %ld\n", (u10 - u9) / r, acc / r);
+    acc = 0;
+    for (long i = 0; i < r; i++) {
+        int fd = open(tpath, O_RDONLY | O_CLOEXEC);
+        long n = 0, k;
+        while ((k = read(fd, buf + n, sizeof buf - n)) > 0) n += k;
+        close(fd);
+        // the text checked as UTF-8: ASCII here, 8 bytes at a time
+        long bad = 0;
+        for (long j = 0; j + 8 <= n; j += 8) {
+            unsigned long w;
+            memcpy(&w, buf + j, 8);
+            bad |= w & 0x8080808080808080ul;
+        }
+        acc += bad ? -1 : n;
+    }
+    double u11 = now();
+    printf("readText.4k %.3f %ld\n", (u11 - u10) / r, acc / r);
+    acc = 0;
+    sprintf(p2, "%s/wt.txt", dir);
+    for (long i = 0; i < r; i++) acc += put_file(p2, words, sizeof words, 0);
+    double u12 = now();
+    printf("writeText.4k %.3f %ld\n", (u12 - u11) / r, acc / r);
+    acc = 0;
+    sprintf(p2, "%s/ap.bin", dir);
+    for (long i = 0; i < r; i++) acc += put_file(p2, x, 64, 1);
+    double u13 = now();
+    printf("appendFile.64 %.3f %ld\n", (u13 - u12) / r, acc / r);
+    acc = 0;
+    sprintf(p2, "%s/at.txt", dir);
+    for (long i = 0; i < r; i++) acc += put_file(p2, words, 64, 1);
+    double u14 = now();
+    printf("appendText.64 %.3f %ld\n", (u14 - u13) / r, acc / r);
     for (int i = 0; i < 64; i++) {
         sprintf(path, "%s/f%d.bin", dir, i);
         unlink(path);
     }
     unlink(wpath);
     rmdir(dir);
+    remove_all(dir);
     return 0;
 }

@@ -55,6 +55,41 @@ action listLoop(p: string, r: i64, acc: i64): i64 {
     return listLoop(p, r - 1, acc + n);
 }
 
+// `f` called `r` times, its results summed (D392)
+action loopOf(f: action (i64) => i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return loopOf(f, r - 1, acc + f(r));
+}
+
+// the variables of the environment (their count: a size the loop of
+// `timed` does not take with the function, D387)
+action envCount(): i64 {
+    return sys.envAll().length;
+}
+
+// 64 bytes of `x` appended to `p`
+action append64(p: string, x: u8[n]): i64 {
+    return ok(sys.appendFile(p, x.slice(0, 64)));
+}
+
+// `g` called `r` times: the line of the form `name`
+action timed(name: string, g: action (i64) => i64, r: i64): void {
+    const t0 = clock();
+    const a = loopOf(g, r, 0);
+    const t1 = clock();
+    print(`${name} ${f64(t1 - t0) / f64(r)} ${a / r}`);
+}
+
+// 1 for a result that is not an error
+action ok(x: Result<void, sys.IoError>): i64 {
+    return match (x) {
+        Ok(_) => 1,
+        Err(e) => 0,
+    };
+}
+
 // the files of the folder from `i`
 action makeFiles(dir: string, x: u8[n], i: i64): i64 {
     if (i == 64) {
@@ -72,6 +107,9 @@ action main(args: string[k]): i32 {
     const x = map(iota(4096), (i) => u8(i % 251));
     const files = makeFiles(dir, x, 0);
     const one = path.join(dir, "f7.bin");
+    const words = stringOf(map(iota(4096), (i) => u8(97 + i % 26)));
+    const text = path.join(dir, "t.txt");
+    const madeText = sys.writeText(text, words);
     // `env` takes about 55 ns: 100 calls a round, so that its window is not
     // only its first calls, cold (D346: 200 calls, 13 µs, gave 14.9 % more
     // in one layout of the same code, 2000 rounds 2.7 %, 20000 -1.5 %)
@@ -90,12 +128,51 @@ action main(args: string[k]): i32 {
     print(`writeFile.4k ${f64(t4 - t3) / f64(r)} ${a4 / r}`);
     const a5 = listLoop(dir, r, 0);
     const t5 = clock();
-    print(`listDir.65 ${f64(t5 - t4) / f64(r)} ${a5 / r}`);
+    print(`listDir.66 ${f64(t5 - t4) / f64(r)} ${a5 / r}`);
     const ps = map(iota(4096), (i) => `a/./b${i % 10}/../c//d/e${i}.txt`);
     const [a6, t6] = bench(r, () => sum(map(ps, (p) => path.normalize(p).length)));
     print(`normalize ${f64(t6) / f64(r * 4096)} ${a6}`);
     const [a7, t7] = bench(r, () => sum(map(ps, (p) => path.basename(p).length)));
     print(`basename ${f64(t7) / f64(r * 4096)} ${a7}`);
+    // the other functions of `path` (D392): one path in three absolute
+    const qs = map(iota(4096), (i) => i % 3 == 0 ? `/x/${ps[i]}` : ps[i]);
+    const [a8, t8] = bench(r, () => count(qs, (p) => path.isAbsolute(p)));
+    print(`isAbsolute ${f64(t8) / f64(r * 4096)} ${a8}`);
+    const [a9, t9] = bench(r, () => sum(map(qs, (p) => path.join("dir/sub", p).length)));
+    print(`join ${f64(t9) / f64(r * 4096)} ${a9}`);
+    const [a10, t10] = bench(r, () => sum(map(ps, (p) => path.dirname(p).length)));
+    print(`dirname ${f64(t10) / f64(r * 4096)} ${a10}`);
+    const [a11, t11] = bench(r, () => sum(map(ps, (p) => path.extension(p).length)));
+    print(`extension ${f64(t11) / f64(r * 4096)} ${a11}`);
+    // the other functions of `sys` (D392): their system calls against the
+    // same in C
+    const [a12, t12] = bench(r, () => sum(map(iota(4096), (i) => sys.message(sys.ioError(i % 8 + 1, "f.txt")).length)));
+    print(`ioError.message ${f64(t12) / f64(r * 4096)} ${a12}`);
+    timed("envAll", (i) => envCount(), r);
+    timed("cwd", (i) => match (sys.cwd()) {
+        Ok(c) => c.length,
+        Err(e) => -1,
+    }, r);
+    timed("isFile", (i) => sys.isFile(one) ? 1 : 0, r);
+    timed("isDir", (i) => sys.isDir(dir) ? 1 : 0, r);
+    timed("fileSize", (i) => match (sys.fileSize(one)) {
+        Ok(n) => n,
+        Err(e) => -1,
+    }, r);
+    timed("modified", (i) => match (sys.modified(one)) {
+        Ok(t) => t > 0 ? 1 : 0,
+        Err(e) => -1,
+    }, r);
+    timed("makeDir.remove", (i) => ok(sys.makeDir(`${dir}/m`)) + ok(sys.remove(`${dir}/m`)), r);
+    timed("makeDirs.removeAll", (i) => ok(sys.makeDirs(`${dir}/a/b/c`)) + ok(sys.removeAll(`${dir}/a`)), r);
+    timed("rename.2", (i) => ok(sys.rename(one, `${dir}/g7.bin`)) + ok(sys.rename(`${dir}/g7.bin`, one)), r);
+    timed("readText.4k", (i) => match (sys.readText(text)) {
+        Ok(t) => t.length,
+        Err(e) => -1,
+    }, r);
+    timed("writeText.4k", (i) => ok(sys.writeText(`${dir}/wt.txt`, words)), r);
+    timed("appendFile.64", (i) => append64(`${dir}/ap.bin`, x), r);
+    timed("appendText.64", (i) => ok(sys.appendText(`${dir}/at.txt`, words.slice(0, 64))), r);
     const gone = sys.removeAll(dir);
     return 0;
 }

@@ -118,6 +118,14 @@ def main():
                 sys.exit("%s: %s computes %s, its floor %s" % (g, name, checks["isc"][name], checks["c"][name]))
             isc, floor = statistics.median(times["isc"][name]), statistics.median(times["c"][name])
             rows.append((g, name, isc, floor))
+    # the rows of the groups not measured this time kept (D392: measuring
+    # some groups wrote a page of those alone)
+    old = os.path.join(root, "results", "primitives.tsv")
+    if os.path.exists(old):
+        for line in open(old):
+            g, name, isc, floor = line.rstrip("\n").split("\t")
+            if g not in groups:
+                rows.append((g, name, float(isc), float(floor)))
     rows.sort(key=lambda r: -r[2] / r[3])
     with open(os.path.join(root, "results", "primitives.tsv"), "w") as f:
         for g, name, isc, floor in rows:

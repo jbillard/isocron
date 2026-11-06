@@ -141,5 +141,91 @@ int main(int argc, char **argv) {
         }
     double t5 = now();
     printf("dateOf.daysOf %.3f %ld\n", (t5 - t4) / ((double)r * N), acc / r);
+    // the other functions of the module (D392)
+    static long dy[N], dm[N], dd[N];
+    static long tday[N], tsec[N], tnano[N], ty[N], tm[N], td[N];
+    for (long i = 0; i < N; i++) {
+        date_of(i * 37 - 70000, &dy[i], &dm[i], &dd[i]);
+        long t = ins[i] + 3600000000000L;
+        tday[i] = fdiv(t, 86400000000000L);
+        long rr = t - tday[i] * 86400000000000L;
+        tsec[i] = rr / 1000000000;
+        tnano[i] = rr % 1000000000;
+        // the date of each time made once, as the `DateTime`s of
+        // `time.isc` hold it
+        date_of(tday[i], &ty[i], &tm[i], &td[i]);
+    }
+    double t6 = now();
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) {
+            long y = 1600 + i;
+            acc += y % 4 == 0 && (y % 100 || y % 400 == 0);
+        }
+    double t7 = now();
+    printf("isLeapYear %.3f %ld\n", (t7 - t6) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) acc += dim(1900 + i / 12, i % 12 + 1);
+    double t8 = now();
+    printf("daysInMonth %.3f %ld\n", (t8 - t7) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) {
+            long z = days_of(dy[i], dm[i], dd[i]) + 3;
+            acc += z - fdiv(z, 7) * 7 + 1;
+        }
+    double t9 = now();
+    printf("weekday %.3f %ld\n", (t9 - t8) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) {
+            long y, m, d;
+            date_of(days_of(dy[i], dm[i], dd[i]) + i - 2000, &y, &m, &d);
+            acc += d;
+        }
+    double t10 = now();
+    printf("addDays %.3f %ld\n", (t10 - t9) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) {
+            long total = dy[i] * 12 + dm[i] - 1 + i % 25 - 12, y = fdiv(total, 12), m = total - y * 12 + 1, lim = dim(y, m);
+            acc += dd[i] < lim ? dd[i] : lim;
+        }
+    double t11 = now();
+    printf("addMonths %.3f %ld\n", (t11 - t10) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) acc += days_of(dy[i / 2], dm[i / 2], dd[i / 2]) - days_of(dy[i], dm[i], dd[i]);
+    double t12 = now();
+    printf("daysBetween %.3f %ld\n", (t12 - t11) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) acc += days_of(ty[i], tm[i], td[i]) * 86400000000000L + tsec[i] * 1000000000L + tnano[i] - 3600000000000L == ins[i];
+    double t13 = now();
+    printf("toInstant %.3f %ld\n", (t13 - t12) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) {
+            // the text of `format_iso` at +01:00 (the offset for the Z)
+            long n = format_iso(ins[i] + 3600000000000L, out) - 1;
+            memcpy(out + n, "+01:00", 6);
+            acc += n + 6;
+        }
+    double t14 = now();
+    printf("formatDateTime %.3f %ld\n", (t14 - t13) / ((double)r * N), acc / r);
+    acc = 0;
+    for (long k = 0; k < r; k++)
+        for (long i = 0; i < N; i++) {
+            long y, m, d, s = tsec[i];
+            date_of(tday[i], &y, &m, &d);
+            char *p = out;
+            p = put(p, y, 4); *p++ = '/'; p = put(p, m, 2); *p++ = '/'; p = put(p, d, 2); *p++ = ' ';
+            p = put(p, s / 3600, 2); *p++ = ':'; p = put(p, s / 60 % 60, 2); *p++ = ':'; p = put(p, s % 60, 2); *p++ = '.';
+            p = put(p, tnano[i] / 1000000, 3); *p++ = ' '; memcpy(p, "+01:00", 6); p += 6;
+            acc += p - out;
+        }
+    double t15 = now();
+    printf("format %.3f %ld\n", (t15 - t14) / ((double)r * N), acc / r);
     return 0;
 }
