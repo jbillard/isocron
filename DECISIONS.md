@@ -8426,3 +8426,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   about 50 are within the noise of this measure, about 1 % of the cost of
   a request (18534 cycles, D376). Tested by the tests of the server
   (`std_http.rs`: pipelines cut by a body, by `Connection: close`, faults).
+- **Rejected after measurement: the loops of a task of `mapParallel` run
+  at once when no thread of the pool is free (2026-11-06).** In the
+  profile of the user cycles of `serve` (2 threads, 16 connections),
+  `isc_parallel_for_site` and `parallel_job` took 9.70 and 1.75 % of the
+  samples: the maps of `serveLoop` given to the pool, where no thread is
+  free (each runs its loop of events), through the counts of their place
+  (two `rdtsc`, stores into words that the two loops share) and a slot of
+  the nested loops. A test (`ACTIONS`, `BUSY`, `JOB.finished`) ran them at
+  once instead: `isc_parallel_for_site` 1.46 % of the samples after, the
+  other functions larger by as much; the server, 3 alternated runs of 10
+  s: 16 connections 384464.60 -> 383414.16 (-0.3 %), 1024 connections
+  361042.48 -> 361912.14 (+0.2 %), the runs overlapping; the user cycles
+  a request 4630 and 5663 before, 4620 and 4236 after (two loads each,
+  noisy), its instructions 10801 and 10680 against 11377 and 10584. No
+  gain shown: not kept. That the 9.70 % were samples of the work around
+  these calls (skid) rather than their own cost is a hypothesis.
