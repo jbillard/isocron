@@ -8517,3 +8517,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   floor, at most regex-redux 2.8, k-nucleotide 2.6 -> 2.5;
   `results/benchmarks_game.md`, the summary of the README and its figure
   generated again (`report.py`).
+- **D382 — An iscc on Windows links the runtime of the level of its
+  processor (2026-11-06).** TODO.md asked for the runtimes of x86-64-v3 and
+  v4 under Windows. `build.rs` builds the runtimes of the target of `iscc`
+  at the base level and for x86-64-v3 and v4 (D188, D241); for `iscc.exe`
+  that target is Windows (D247), so those three are runtimes of Windows
+  already. But a build for Windows took `RUNTIME_WINDOWS` (the base level,
+  built for the option `--target x86_64-windows` of an iscc of Linux),
+  `Options::windows` being `cfg!(windows)`: an iscc on Windows never linked
+  its own v3 or v4. Now an iscc that runs on Windows chooses among its own
+  runtimes by its processor, as under Linux (`runtime_v4`, `runtime_v3`);
+  `RUNTIME_WINDOWS` stays for an iscc of Linux that builds for Windows.
+  Measured in the virtual machine of Windows (4 threads, 7 alternated
+  runs, `Measure-Command`): regex-redux built by the `iscc.exe` before and
+  after, the same output, 158.0 -> 113.4 ms (minimums; medians 168.2 ->
+  122.6). Tested by the tests of Windows (`windows.rs`, 11 of 11, among them
+  `iscc_on_windows`: programs built by `iscc.exe` in the machine).

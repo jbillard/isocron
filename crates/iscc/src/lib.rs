@@ -75,7 +75,10 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     let obj = opts.output.with_extension("o");
     isc_codegen::backend::compile_for(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows)?;
     // the embedded runtime, written next to the object file for the linker
-    let (var, bytes, triple) = if windows {
+    // (an iscc on Windows: its own runtimes are those of Windows, for the
+    // levels of its processor below, D382; RUNTIME_WINDOWS, the base level,
+    // for an iscc that builds for Windows from elsewhere)
+    let (var, bytes, triple) = if windows && !cfg!(windows) {
         ("ISC_RUNTIME_WINDOWS", RUNTIME_WINDOWS, "x86_64-pc-windows-gnu")
     } else if threads {
         ("ISC_RUNTIME_WASM_THREADS", RUNTIME_WASM_THREADS, "wasm32-wasip1-threads")

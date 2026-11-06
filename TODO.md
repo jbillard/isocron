@@ -241,7 +241,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] reverse-complement: the lines and the output about 19 ms against about 6 (170 instructions a line of 61 bytes): `lines(m, base)`, a `map` over `iota` whose byte `q` is `\n` when `q % 61 == 60`, else `table[bases[m - 1 - (q - q / 61)]]`, one byte at a time (2026-11-06, 4 threads, the input of 254166745 bytes: 879792636 user instructions, 1.73 a cycle; `isc_task_3` 61.94 % and `isc_task_4` 18.08 % of the user cycles); to vectorize: an index affine by pieces, a table of 256 bytes read through a reversed source
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
-  - [ ] Windows: the runtimes for x86-64-v3 and v4, the console in UTF-8, the MSVC ABI, timings
+  - [x] Windows: the runtimes for x86-64-v3 and v4 linked by an iscc on Windows by its processor, timed: regex-redux 158.0 -> 113.4 ms in the machine of Windows (D382)
+  - [ ] Windows: the console in UTF-8, the MSVC ABI
   - [x] An iscc that needs nothing else, on Linux (glibc from 2.28 on) and on Windows: LLVM and LLD inside (D248)
   - [x] A first release, 0.1.0: the compilers for Linux and Windows, LICENSE, the notices of third parties, the archives, the measurements published again (D249)
   - [x] A smaller iscc: the embedded runtimes compressed, closed by measure: 43348588 -> 10721556 bytes with gzip, but 31 to 34 ms to inflate one at each build of 38 to 49 ms, and the archives compressed already: not done (D380)
