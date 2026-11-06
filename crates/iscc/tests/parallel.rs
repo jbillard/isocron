@@ -397,3 +397,37 @@ fn fills_by_tasks_of_16_kib_do_not_depend_on_threads() {
         }
     }
 }
+
+/// D371: the small blocks of the first 16 classes move between the caches
+/// of the threads and the global lists by whole batches (a full list kept
+/// in reserve, a reserve given to all the threads in one step): blocks made
+/// by the threads of a `map`, freed by `main`, made again by the threads,
+/// 40 rounds; nothing wrong in their contents with 1, 2 and 4 threads.
+#[test]
+fn small_blocks_move_between_threads_by_batches() {
+    let src = include_str!("data/heap_batches.isc");
+    let bin = compile(src, "heap_batches");
+    for t in [1, 2, 4] {
+        let r = run_bin_threads(&bin, &["40", "20000"], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, "0\n"), "{} threads: {}", t, r.stderr);
+    }
+}
+
+/// D372: the TLS block of a compiled program aligned on a page of 4 KiB
+/// (the segment `PT_TLS`, its alignment 4096), so that the cache of the
+/// allocator of each thread is at the same place of its page in every
+/// program, whatever the static data of the runtime.
+#[test]
+fn thread_caches_at_a_fixed_place_of_their_page() {
+    let bin = compile("action main(args: string[k]): i32 {\n    print(sum(map(iota(100000), (i) => `${i}`.length)));\n    return 0;\n}\n", "tls_page");
+    let b = std::fs::read(&bin).unwrap();
+    let rd = |at: usize, n: usize| -> u64 { b[at..at + n].iter().rev().fold(0u64, |a, &x| (a << 8) | x as u64) };
+    assert_eq!(&b[0..4], b"\x7fELF");
+    let (phoff, phentsize, phnum) = (rd(0x20, 8) as usize, rd(0x36, 2) as usize, rd(0x38, 2) as usize);
+    let tls = (0..phnum).map(|i| phoff + i * phentsize).find(|&ph| rd(ph, 4) == 7).expect("no PT_TLS");
+    assert_eq!(rd(tls + 0x30, 8), 4096, "the TLS segment not aligned on a page");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, "488890\n"), "{}", r.stderr);
+    }
+}

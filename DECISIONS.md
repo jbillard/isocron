@@ -8290,3 +8290,92 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     written here, in a comment or to the author without the check that
     shows it (a run, a counter, a header, a manual, the source) named next
     to it; otherwise it is written as a hypothesis.
+- **D371 — The small blocks moved between the caches of the threads by
+  whole lists (2026-11-06).** The profile of `serve` (D374: a loop on each
+  of 2 threads, 1024 connections, wrk on 6 other cores, `perf record -p`):
+  44.38 % of the cycles in the program, of which the allocator 25.75 %
+  of all the cycles, `refill` 12.81, `isc_free` 4.94, `isc_alloc` 4.37,
+  `spill` 3.63; the LBR stacks give 90.6 % of the samples of `refill` to
+  `serveLoop` (`isc_fn_11`, by its signature in the IR). A turn of the
+  loop takes and gives back more blocks of a class than the cache of the
+  thread holds (256 at most): `refill` took half of the limit from the
+  global list one block at a time under its lock (each `next` read a
+  miss), `spill` gave half back the same way.
+  - Now, for the 16 first classes (64 bytes to 1 KiB): a full list becomes
+    the batch in reserve of the thread in one step, the batch before goes
+    to the batches of all the threads (one lock, one step); an empty list
+    takes the batch in reserve, else a batch of the others, else the old
+    path (`SMALL_BATCHES`, the count of a batch in the `len` of its first
+    block, the next batch in its `prev`). The counts of the cache in 16
+    bits, so that the reserve fits in its 1024 bytes (2048 bytes moved the
+    cache of the nodes and slowed binary-trees, measured before this
+    commit). The larger classes keep the old path.
+  - The server after: `refill` and `spill` gone from the top of the
+    profile, `isc_alloc` 13.90 % (the header of a block of a batch read
+    when it is taken: the miss moved there), `isc_free` 5.50 %, the
+    program 39.0 %. Requests a second on 2 cores, 3 alternated runs of 10
+    s: 1024 connections 317385.04 -> 343805.29 (+8.3 %, medians) and
+    319112.74 -> 340456.92 (+6.7 %) in a second series; 16 connections
+    347674.98 -> 342406.56 and 339923.83 -> 335309.11 (-1.5 and -1.4 %,
+    the runs of both overlapping: 337338 to 345308 against 338370 to
+    348551, and 334522 to 344767 against 334808 to 343136).
+  - The forms (`results/primitives.md`, a whole run against the run of
+    D370): `json.parse` -15.2 %, `serveAction.pipelined` -9.9 %,
+    `stringify` -6.2 %, `bytes`, `endsWith.2`, `startsWith`, `slice` -3.0
+    to -3.7 %, `serve.pipelined` -2.7 %, `decode` -2.6 %. Above +2 %:
+    `parseI64.7` +7.2 %, `toString.i64` +2.9 %, `connect` +2.6 %,
+    `template` +2.4 %, `env` +2.1 %. Alternated (9 runs): `toString.i64`
+    +0.0 %, `template` +0.7 %, `concat` +1.2 %, `parseI64.7` +7.1 %.
+    `parseI64.7` allocates nothing (`sum(map(nums, parseI64))`): the same
+    code placed elsewhere. A program of that form alone, padded so that
+    the runtime lands at four places 64 bytes apart: 9.112 and 9.111 ns
+    with `parse_i64` at 0x13f40 and 0x13f80, 9.431 and 9.433 ns at 0x13fc0
+    and 0x14000 (the place in the binary of `strings` now), the same
+    1031 M instructions; 238.06 to 239.46 M cycles against 246.18 to
+    247.57 M, `idq_uops_not_delivered.core` 302.42 and 302.62 M against
+    343.99 and 344.62 M slots (about 5 slots a cycle more, the width of
+    the core), the cycles with no micro-op delivered, the uops of the DSB
+    and of the decoders, the mispredicted branches, the 4K aliasing and
+    the blocked stores the same. The uop cache delivers fewer micro-ops a
+    cycle with the code 64 bytes further; why, not shown (it is not the
+    page: at 0x14000 the function is in one page). A coincidence of the
+    place of the runtime, shown by moving it, not by D371's code.
+  - The ten programs (7 alternated runs, 4 threads, against the runtime of
+    D374): the same outputs, minimums -1.15 % (fasta, runs of 5 ms) to
+    +0.07 % (mandelbrot), binary-trees -0.12 %. binary-trees counted:
+    instructions 26416 -> 26428 M, 4K aliasing 283.7 -> 83.2 and 91.2 M,
+    misses of L1 176.0 -> 176.2 M; its user cycles 7550.7 and 7567.5 M
+    against 7597.9 and 7734.1 M, its medians +1.52 and -1.56 % in two
+    series of 11 runs: the waiting of its pool, which these counters
+    count, varies from one run to the next.
+  - Tested by `small_blocks_move_between_threads_by_batches`
+    (`parallel.rs`, `data/heap_batches.isc`: blocks made by threads and
+    freed by others, in batches, the results of the interpreter) and the
+    tests of the allocator (`heap.rs`).
+- **D372 — The cache of the heap at a fixed place of its page; the
+  benchmark of `now` (2026-11-06).** With D371, 640 bytes of static data
+  more moved the block of TLS of the main thread (`MAIN_TLS` of
+  `process.rs`, in `.bss`): `counts[0]` came where the header of the block
+  that `concat` takes and gives back lay, +51 % (measured before this
+  commit, in this session). Now the TLS section of the cache is aligned on
+  4 KiB, 64 bytes into its page: `place_tls` aligns the thread pointer of
+  every thread on the largest of the alignment of the segment and 64 (the
+  code), so `heads` and `counts` are at the same place of their pages in
+  every program; the block of the main thread no longer fits in
+  `MAIN_TLS` and is mapped. In a program linked with glibc, glibc places
+  it (not checked). The test `thread_caches_at_a_fixed_place_of_their_page`
+  (`parallel.rs`) reads the alignment of the TLS segment of a program
+  (4096). The benchmark of `now` timed r calls (200 calls, 4 µs: a cost
+  paid once of about 2 µs counted as 10 ns a call); it now times r times n
+  calls (`time.isc`, `time.c`): 20.28 ns against a floor of 16.92.
+- **Rejected after measurement: the header of the next block prefetched
+  at each allocation (2026-11-06).** After D371 the miss of `serve` is the
+  header of the block taken (86.5 % of the samples of `isc_alloc` on the
+  instruction after its read). A `prefetcht0` of the next block of the
+  list in `alloc_cached`: the server on 2 cores, 3 alternated runs, 1024
+  connections 345705.85 against 340456.92 for D371 (+1.5 %), 16
+  connections 344588.82 against 335309.11, all runs overlapping; the small
+  forms of `strings` +0.5 to +4.8 % against the runtime of D374 (`concat`
+  6.251 -> 6.548 ns) where D371 alone is -3.3 to +0.7 %: a loop that takes
+  and gives back one block fetches a line it does not use, at every call.
+  Not kept.

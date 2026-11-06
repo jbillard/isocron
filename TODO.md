@@ -370,6 +370,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] The ceiling of the machine for the server (`ceiling.c`): Isocron 57 to 85 % of the ceiling of one loop, 20 to 26 % of that of 4 cores with many connections (D355)
   - [x] A loop of events on each core, toward the ceiling of 4 cores: `serve` on a listener of its own for each thread (`SO_REUSEPORT`), 16, 256 and 1024 connections 201587, 206674, 155344 -> 581516, 776540, 656243 requests a second, 78, 96 and 84 % of the ceiling of 4 cores (D374)
   - [ ] Far above nginx: by busy core, Isocron 151043, 194135 and 165718 requests a second against nginx's 173596, 198777 and 190249 and the ceiling's 229924, 246481 and 253246 (16, 256 and 1024 connections, D374); the measure with the server on fewer cores than the client (wrk saturates first: the ceiling only 3.0 % above nginx with 256 connections); the cost of a request of the loop down to the ceiling's
+  - [x] The allocator in the profile of the server on 2 cores (25.75 % of its cycles, `refill` and `spill` 16.44): whole lists moved between the caches, 1024 connections +8.3 % (D371)
+  - [ ] The headers of the blocks taken cold in the server (`isc_alloc` 13.90 % after D371): fewer blocks a request, or blocks reused while hot
+  - [ ] The micro-ops delivered fewer a cycle with the runtime 64 bytes further (`parseI64.7` +7.1 %, D371): the rule of the uop cache, and code placed so that it does not depend on it
   - [ ] The cost of a request of the loop down to that of the ceiling of one loop (5.2 µs against 3.6 at 16 connections, D355; 4.96 against 3.63 after D359 to D363, D366)
   - [x] Each parallel loop chooses the pool or the calling thread by its measured runs, the pool asleep sooner: the server's cores 4.04 -> 2.24 for the same requests (D357)
   - [ ] The cores still busy beyond the loop of the server (2.24 for the work of one loop, D357; 1.40, 2.10 and 1.81 with 16, 256 and 1024 connections, D366)

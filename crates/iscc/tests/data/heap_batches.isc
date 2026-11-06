@@ -1,0 +1,26 @@
+// D371: small blocks moved between the threads by batches: strings and
+// arrays of the 16 classes of batches (64 bytes to 1 KiB) and of larger
+// ones, made by the threads of a `map`, kept, freed by `main`, then made
+// again by the threads, round after round; their contents checked.
+function block(i: i64, r: i64): string {
+    const n = (i * 37 + r * 11) % 1500;
+    return stringOf(map(iota(n), (j) => u8(97 + (i + j + r) % 26)));
+}
+
+function check(xs: string[k], r: i64): i64 {
+    return count(iota(xs.length), (i) => xs[i] != block(i, r));
+}
+
+action rounds(r: i64, n: i64, bad: i64): i64 {
+    if (r == 0) {
+        return bad;
+    }
+    const xs = map(iota(n), (i) => block(i, r));
+    const ys = map(iota(n / 2), (i) => [i, i * r, i + r]);
+    return rounds(r - 1, n, bad + check(xs, r) + count(iota(n / 2), (i) => ys[i][1] != i * r));
+}
+
+action main(args: string[k]): i32 {
+    print(rounds(parseI64(args[0]), parseI64(args[1]), 0));
+    return 0;
+}

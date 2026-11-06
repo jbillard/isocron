@@ -103,12 +103,13 @@ int main(int argc, char **argv) {
     long acc = 0;
     double t0 = now();
     struct timespec ts;
-    for (long i = 0; i < r; i++) {
+    // r times N calls, as `time.isc` (D372)
+    for (long i = 0; i < r * N; i++) {
         clock_gettime(CLOCK_REALTIME, &ts);
         acc += ts.tv_sec > 0;
     }
     double t1 = now();
-    printf("now %.3f %ld\n", (t1 - t0) / r, acc / r);
+    printf("now %.3f %ld\n", (t1 - t0) / (r * N), acc / (r * N));
     acc = 0;
     for (long k = 0; k < r; k++)
         for (long i = 0; i < N; i++) {

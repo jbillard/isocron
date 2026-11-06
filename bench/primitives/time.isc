@@ -17,10 +17,12 @@ action main(args: string[k]): i32 {
     const n = 4096;
     const ins = map(iota(n), (i) => 1767225600000000000 + i * 997123456789);
     const texts = map(ins, (i) => time.formatIso(i));
+    // r times n calls (D372: r calls, 4 µs for 200, counted a cost paid
+    // once of about 2 µs as 10 ns a call)
     const t0 = clock();
-    const a0 = nowLoop(r, 0);
+    const a0 = nowLoop(r * n, 0);
     const t1 = clock();
-    print(`now ${f64(t1 - t0) / f64(r)} ${a0 / r}`);
+    print(`now ${f64(t1 - t0) / f64(r * n)} ${a0 / (r * n)}`);
     const each = f64(r * n);
     const [a1, t2] = bench(r, () => sum(map(ins, (i) => time.toDateTime(i, 60).time.minute)));
     print(`toDateTime ${f64(t2) / each} ${a1}`);

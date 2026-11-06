@@ -198,7 +198,9 @@ const _: () = assert!(core::mem::size_of::<Header>() == HEADER);
 #[repr(C)]
 struct ThreadCache {
     heads: [*mut Header; SMALL_CLASSES],
-    counts: [u32; SMALL_CLASSES],
+    /// (at most THREAD_BLOCKS_MAX: 16 bits, so that the batches in reserve
+    /// fit in the 1024 bytes of the cache, D371)
+    counts: [u16; SMALL_CLASSES],
     /// 1 once the end of the thread will give the cache back.
     registered: u32,
     /// The medium blocks of at most MEDIUM_CACHED bytes the thread freed
@@ -209,9 +211,24 @@ struct ThreadCache {
     /// new small blocks are carved from (D294).
     span: usize,
     span_end: usize,
+    /// For each of the first SPARE_CLASSES classes, a batch of free blocks
+    /// kept in reserve (D371): the list of the class when it was full, its
+    /// count in the `len` of its first block; given to or taken from the
+    /// list in one step.
+    spare: [*mut Header; SPARE_CLASSES],
 }
 
+/// The classes whose lists hold many blocks (64 bytes to 1 KiB: 128 to 256
+/// blocks), that move between the threads by batches (D371); a list of a
+/// larger class holds at most 128 KiB of a few blocks, still moved one by
+/// one. (The cache keeps its 1024 bytes: 2048 moved the cache of the nodes
+/// of the thread, `isc_node_thread`, and binary-trees met 460 to 528 M
+/// loads waiting for a store at the same place of another page instead of
+/// 181 to 282 M, 2.2 % slower.)
+const SPARE_CLASSES: usize = 16;
+
 const _: () = assert!(core::mem::size_of::<ThreadCache>() <= 1024);
+const _: () = assert!(THREAD_BLOCKS_MAX <= u16::MAX as usize);
 
 // 1024 bytes of zeros in the static TLS block of every thread. The runtime
 // is linked into the executable: the local-exec model applies, and the
@@ -229,10 +246,25 @@ core::arch::global_asm!(
     ".text",
 );
 
+// Under Linux the cache starts 64 bytes after a page of 4 KiB of the TLS
+// block (D372): its section aligned on 4 KiB, `place_tls` of `process.rs`
+// aligns the thread pointer of every thread on 4 KiB (the largest of the
+// alignment of the segment and 64), so that the places of `heads` and
+// `counts` in their pages are the same in every program and every thread
+// (the block of the main thread no longer fits in `MAIN_TLS` and is mapped;
+// a program linked with glibc has its TLS placed by glibc: not checked).
+// Before, the block of the main thread was in `MAIN_TLS`, in `.bss`, where
+// the static data before it put it: 640 bytes of static data more (D371)
+// moved `counts[0]` to 0x100 in its page, where the header of the block
+// that `concat` of `strings` takes and gives back at each call lay (`free`
+// waiting for the store of the count: +51 %). 64 bytes: `heads[0]` and
+// `counts[0]` are never where a header of the first class is (its blocks
+// 128 bytes apart from the start of a page).
 #[cfg(not(windows))]
 core::arch::global_asm!(
     ".section .tbss,\"awT\",@nobits",
-    ".p2align 6",
+    ".p2align 12",
+    ".skip 64",
     ".globl isc_heap_thread",
     ".hidden isc_heap_thread",
     ".type isc_heap_thread,@object",
@@ -617,6 +649,11 @@ pub unsafe fn register_with_key(tc: *mut c_void) {
 /// that threads that refill or spill different classes do not wait for each
 /// other. The chunk being carved is under CHUNK_LOCK, taken last.
 static mut SMALL_FREE: [*mut Header; SMALL_CLASSES] = [null_mut(); SMALL_CLASSES];
+/// The batches of free blocks of each class that the threads gave (D371),
+/// under the lock of the class: each a list of free blocks, its count in
+/// the `len` of its first block, the next batch in its `prev` (fields that a
+/// free small block does not use).
+static mut SMALL_BATCHES: [*mut Header; SMALL_CLASSES] = [null_mut(); SMALL_CLASSES];
 static CLASS_LOCKS: [AtomicBool; SMALL_CLASSES] = [const { AtomicBool::new(false) }; SMALL_CLASSES];
 static CHUNK_LOCK: AtomicBool = AtomicBool::new(false);
 /// The chunk being carved of each group of sizes (`group`).
@@ -663,6 +700,14 @@ unsafe extern "C" fn thread_end(p: *mut c_void) {
         }
         (*tc).heads[c] = null_mut();
         (*tc).counts[c] = 0;
+        if c < SPARE_CLASSES {
+            let b = (*tc).spare[c];
+            if !b.is_null() {
+                (*b).prev = SMALL_BATCHES[c];
+                SMALL_BATCHES[c] = b;
+                (*tc).spare[c] = null_mut();
+            }
+        }
         unlock_small(c);
     }
     for i in 0..2 {
@@ -885,10 +930,33 @@ unsafe fn give_small(h: *mut Header) {
 
 }
 
-/// The cache of class `class` of the thread is empty: takes up to half of
-/// its limit from the global list (or new blocks), returns one of them.
+/// The cache of class `class` of the thread is empty: its batch in reserve,
+/// else a batch of all the threads (D371), else up to half of its limit from
+/// the global list (or new blocks); returns one of them.
 #[cold]
 unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header {
+    // the batch the thread kept in reserve, else one that a thread gave
+    // (D371): a whole list in one step, its blocks not walked (taking 128
+    // blocks one by one from the global list, each a miss of the cache,
+    // was 11 % of `json.parse`)
+    if class < SPARE_CLASSES {
+        let mut b = (*tc).spare[class];
+        if !b.is_null() {
+            (*tc).spare[class] = null_mut();
+        } else {
+            lock_small(class);
+            b = SMALL_BATCHES[class];
+            if !b.is_null() {
+                SMALL_BATCHES[class] = (*b).prev;
+            }
+            unlock_small(class);
+        }
+        if !b.is_null() {
+            (*tc).heads[class] = (*b).next;
+            (*tc).counts[class] = ((*b).len - 1) as u16;
+            return b;
+        }
+    }
     let batch = (THREAD_LIMIT[class] / 2).max(1) as usize;
     let mut first: *mut Header = null_mut();
     let mut got = 0usize;
@@ -926,22 +994,54 @@ unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header
     first
 }
 
-/// The cache of class `class` of the thread is full: the block and half of
-/// the cache go to the global list, with one lock.
+/// The cache of class `class` of the thread is full: the full list kept in
+/// reserve, the batch in reserve before given to all the threads, the block
+/// freed the new list (D371).
 #[cold]
 unsafe fn spill(tc: *mut ThreadCache, class: usize, h: *mut Header) {
-    lock_small(class);
-    give_small(h);
-    for _ in 0..THREAD_LIMIT[class] / 2 {
-        let b = (*tc).heads[class];
-        if b.is_null() {
-            break;
+    if class >= SPARE_CLASSES {
+        // a few large blocks: the block and half of the list to the global
+        // list, one by one, with one lock
+        lock_small(class);
+        give_small(h);
+        for _ in 0..THREAD_LIMIT[class] / 2 {
+            let b = (*tc).heads[class];
+            if b.is_null() {
+                break;
+            }
+            (*tc).heads[class] = (*b).next;
+            (*tc).counts[class] -= 1;
+            give_small(b);
         }
-        (*tc).heads[class] = (*b).next;
-        (*tc).counts[class] -= 1;
-        give_small(b);
+        unlock_small(class);
+        return;
     }
-    unlock_small(class);
+    // the list of the class full: it becomes the batch in reserve (one
+    // step), the batch in reserve before goes to those of all the threads
+    // (one lock, one step), the block freed starts the list again (D371;
+    // half of the list walked to the global list before). A thread that
+    // takes and gives blocks back at the limit stays in its own cache.
+    let old = (*tc).spare[class];
+    if !old.is_null() {
+        lock_small(class);
+        (*old).prev = SMALL_BATCHES[class];
+        SMALL_BATCHES[class] = old;
+        unlock_small(class);
+    }
+    let full = (*tc).heads[class];
+    if full.is_null() {
+        // (a limit of 0 blocks: none kept)
+        lock_small(class);
+        give_small(h);
+        unlock_small(class);
+        (*tc).spare[class] = null_mut();
+        return;
+    }
+    (*full).len = (*tc).counts[class] as usize;
+    (*tc).spare[class] = full;
+    (*h).next = null_mut();
+    (*tc).heads[class] = h;
+    (*tc).counts[class] = 1;
 }
 
 // ---------------------------------------------------------------------
@@ -1459,7 +1559,7 @@ pub unsafe fn free_cached(p: *mut u8) -> bool {
         let class = (*h).class as usize;
         if class < SMALL_CLASSES && (*h).state == IN_USE {
             let tc = thread_cache();
-            if (*tc).registered != 0 && (*tc).counts[class] < THREAD_LIMIT[class] {
+            if (*tc).registered != 0 && ((*tc).counts[class] as u32) < THREAD_LIMIT[class] {
                 // the head of the list read before the header of the block is
                 // written (no instruction more, D359): when both fall at the
                 // same place of their pages of 4 KiB, the read waited for
@@ -1594,7 +1694,7 @@ pub unsafe fn free(p: *mut u8) {
         if (*tc).registered == 0 {
             register(tc);
         }
-        if (*tc).counts[class] < THREAD_LIMIT[class] {
+        if ((*tc).counts[class] as u32) < THREAD_LIMIT[class] {
             (*h).next = (*tc).heads[class];
             (*tc).heads[class] = h;
             (*tc).counts[class] += 1;
