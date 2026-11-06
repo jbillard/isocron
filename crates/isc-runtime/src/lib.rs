@@ -1282,6 +1282,134 @@ unsafe fn append_parts(p: *mut u8, n: usize, parts: &[IscStr]) -> IscStr {
     IscStr { ptr: q, len: total as i64 }
 }
 
+/// The number of decimal digits of `v` (1 for 0), from its bits and a
+/// table of the powers of 10, without dividing.
+fn digit_count(v: u64) -> usize {
+    const P: [u64; 20] = {
+        let mut t = [1u64; 20];
+        let mut i = 1;
+        while i < 20 {
+            t[i] = t[i - 1] * 10;
+            i += 1;
+        }
+        t
+    };
+    let w = v | 1;
+    let t = ((64 - w.leading_zeros() as usize) * 1233) >> 12;
+    t - (w < P[t]) as usize + 1
+}
+
+/// The `n` decimal digits of `v` (`digit_count(v)`) written before `end`.
+unsafe fn write_digits(mut v: u64, end: *mut u8) {
+    let mut at = end;
+    while v >= 100 {
+        let r = (v % 100) as usize;
+        v /= 100;
+        at = at.sub(2);
+        core::ptr::copy_nonoverlapping(DIGIT_PAIRS.as_ptr().add(2 * r), at, 2);
+    }
+    if v >= 10 {
+        at = at.sub(2);
+        core::ptr::copy_nonoverlapping(DIGIT_PAIRS.as_ptr().add(2 * v as usize), at, 2);
+    } else {
+        *at.sub(1) = b'0' + v as u8;
+    }
+}
+
+/// A concatenation of `k` parts, texts and integers (D359): each part three
+/// words, a text its pointer, its length and 0 (and 1 << 16 for a first
+/// text given, its last use, D351); an integer its value, its padded length
+/// and 1 | signed 2 | padded 4 | `padStart` 8 | its fill << 8. The length of
+/// each integer counted, then its digits written in their place in the one
+/// block of the result (padded as `padStart` and `padEnd` do: the text alone
+/// when it has that length or more). A first text given is continued in its
+/// block when it has room, else copied to a block of at least twice its
+/// length and freed, as `isc_str_append` does.
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_build(out: *mut IscStr, parts: *const [i64; 3], k: i64) {
+    const GIVEN: i64 = 1 << 16;
+    // SAFETY: the code generator gives `k` parts at `parts`, each text
+    // holding its length
+    let ps = core::slice::from_raw_parts(parts, k as usize);
+    // an integer: its sign, its magnitude and the length of its text
+    let int_of = |p: &[i64; 3]| -> (bool, u64, usize) {
+        let neg = p[2] & 2 != 0 && p[0] < 0;
+        let mag = if p[2] & 2 != 0 { p[0].unsigned_abs() } else { p[0] as u64 };
+        (neg, mag, digit_count(mag) + neg as usize)
+    };
+    let width = |p: &[i64; 3], n: usize| if p[2] & 4 != 0 { (p[1].max(0) as usize).max(n) } else { n };
+    // the lengths of the texts of the first 32 integers kept for the writing
+    // below, at the rank of each integer: a rank that grows only at an
+    // integer (not a loop of the same work for each part, which LLVM made of
+    // `vpgatherqq` over the table: 721 cycles a `formatIso`, D359)
+    let mut lens = [core::mem::MaybeUninit::<u8>::uninit(); 32];
+    let (mut total, mut j) = (0usize, 0usize);
+    for p in ps {
+        if p[2] & 1 == 0 {
+            total += p[1] as usize;
+            continue;
+        }
+        let n = int_of(p).2;
+        if j < 32 {
+            lens[j].write(n as u8);
+        }
+        j += 1;
+        total += width(p, n);
+    }
+    let given = k > 0 && ps[0][2] & GIVEN != 0;
+    let (r, mut at, first) = if given {
+        let (p, n) = (ps[0][0] as usize as *mut u8, ps[0][1] as usize);
+        if total == n {
+            *out = IscStr { ptr: p, len: n as i64 };
+            return;
+        }
+        if room(p) >= total {
+            (p, n, 1)
+        } else {
+            let q = isc_alloc(total.max(2 * n) as i64);
+            if n > 0 {
+                core::ptr::copy_nonoverlapping(p, q, n);
+            }
+            isc_free(p);
+            (q, n, 1)
+        }
+    } else {
+        if total == 0 {
+            *out = new_str(b"");
+            return;
+        }
+        (isc_alloc(total as i64), 0usize, 0)
+    };
+    // the texts and the fills of a template are short ("-", ":", a digit
+    // of padding): written by moves, without the calls of `memcpy` and
+    // `memset` (10.7 and 4.9 % of `formatIso`, D359)
+    let mut j = 0usize;
+    for p in &ps[first..] {
+        let kind = p[2];
+        if kind & 1 == 0 {
+            let n = p[1] as usize;
+            copy_short(p[0] as usize as *const u8, r.add(at), n);
+            at += n;
+            continue;
+        }
+        let neg = kind & 2 != 0 && p[0] < 0;
+        let mag = if kind & 2 != 0 { p[0].unsigned_abs() } else { p[0] as u64 };
+        // SAFETY: written above for each of the first 32 integers
+        let n = if j < 32 { lens[j].assume_init() as usize } else { int_of(p).2 };
+        j += 1;
+        let w = width(p, n);
+        let gap = w - n;
+        let (ti, fi) = if kind & 8 != 0 { (at + gap, at) } else { (at, at + n) };
+        if neg {
+            *r.add(ti) = b'-';
+        }
+        write_digits(mag, r.add(ti + n));
+        fill_short(r.add(fi), ((kind >> 8) & 0xff) as u8, gap);
+        at += w;
+    }
+    *out = IscStr { ptr: r, len: total as i64 };
+}
+
 /// `a + b`, `a` given (D351).
 #[no_mangle]
 pub unsafe extern "C" fn isc_str_append(out: *mut IscStr, p: *mut u8, n: i64, q: *const u8, m: i64) {
@@ -2153,6 +2281,33 @@ unsafe fn copy_short(src: *const u8, dst: *mut u8, n: usize) {
         *dst = *src;
         *dst.add(n / 2) = *src.add(n / 2);
         *dst.add(n - 1) = *src.add(n - 1);
+    }
+}
+
+/// `n` bytes `c` from `dst`, as `copy_short` copies: by moves that overlap,
+/// a call of the fill of the system from 32 bytes on (D359).
+#[inline(always)]
+unsafe fn fill_short(dst: *mut u8, c: u8, n: usize) {
+    use core::ptr::write_unaligned as wr;
+    if n >= 32 {
+        core::ptr::write_bytes(dst, c, n);
+    } else if n >= 8 {
+        let v = u64::from_ne_bytes([c; 8]);
+        if n >= 16 {
+            wr(dst as *mut u64, v);
+            wr(dst.add(8) as *mut u64, v);
+            wr(dst.add(n - 16) as *mut u64, v);
+        }
+        wr(dst.add(n - 8) as *mut u64, v);
+        wr(dst as *mut u64, v);
+    } else if n >= 4 {
+        let v = u32::from_ne_bytes([c; 4]);
+        wr(dst as *mut u32, v);
+        wr(dst.add(n - 4) as *mut u32, v);
+    } else if n > 0 {
+        *dst = c;
+        *dst.add(n / 2) = c;
+        *dst.add(n - 1) = c;
     }
 }
 

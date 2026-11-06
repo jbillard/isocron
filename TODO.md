@@ -149,7 +149,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] An array literal of scalar constants is data of the program: nbody 6.9 s -> 6.4 s (D173)
   - [x] Parameters of a tail-recursive function owned (nbody: 3 copies per step) (no copy a step since D206 to D208; the 3 copies of the report are those of `start`, once)
   - [x] Fast path of the allocator: 63 -> 25 instructions per allocation, 43 -> 28 per free; nbody 9.9 s -> 8.4 s (D165)
-  - [ ] Small arrays of a fixed size without the heap
+  - [x] Small arrays of a fixed size without the heap: closed by measurement, none made at each iteration of a loop of the ten programs (D358)
     - [x] Array literals only read by their scope on the stack: nbody 6.441 s -> 6.111 s (D191)
   - [x] Nodes in cells of their size without a header, a free list per thread: binarytrees 21 on 4 threads 43.3 s -> 4.3 s (D166)
   - [x] A constructor without payload of a recursive type without allocation: binarytrees 21 on 4 threads 4.3 s -> 2.5 s (D169)
@@ -301,7 +301,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The Benchmarks Game measured again at 2ef9e9f with the library: the fastest on 10 of 10, each program below three times its floor (regex-redux 2.76, k-nucleotide 2.55, pidigits 2.53, reverse-complement 2.38, fasta 2.16); three programs 0.4 to 1.0 % above D319 shown to be noise by an A/B against the binaries of 0.2.2 (D344)
 - [x] `==` against a literal of at most 16 bytes in place; rule L, the last index of a `fold` from the end; `getenv` without a block of the heap: `basename` 25.64 -> 9.07 ns, `normalize` 335.43 -> 228.61, `env` measured warm (D346)
 - [x] `toString(x).padStart(n, c)` of an integer in one block: `formatIso` 314.00 -> 216.46 ns (D348)
-- [ ] The parts of a template written in its block (integers, padded integers, the results of calls): `formatIso` 4.7, its eight parts each a block made, copied, freed (D348)
+- [x] The parts of a template written in its block (integers, padded integers): `formatIso` 215.06 -> 129.29 ns (4.7 -> 2.8 times its floor), `template` 3.1 -> 2.4 (D359)
+- [ ] The parts of a template written by the compiled code itself (the length summed, the literals stored in place): `formatIso` 2.8, `isc_str_build` 68 % of it, about 15 cycles a part (D359)
 - [x] The examples of the README run by the tests; a port listened to twice `AlreadyExists` on Linux, Windows and in the interpreter (D349)
 - [ ] The payload of a `match` on a temporary taken out of it, not copied (`x ?? d`, `match (f()) { Ok(v) => ... }`: a copy and a free of the payload each time, D346)
 - [x] `path.normalize` with its text grown in place (rule A): 240.7 -> 213.3 ns; a string built piece by piece linear, 100000 pieces 122.2 -> 3.7 ms (D351)

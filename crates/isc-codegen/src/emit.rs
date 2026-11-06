@@ -535,7 +535,12 @@ pub struct Gen<'p> {
     str_lits: HashMap<VarId, String>,
     /// The variables bound to `toString(x)` of an integer whose only use is
     /// the text of a `padStart` or `padEnd` (D348): `x` as an `i64`, signed.
-    int_texts: HashMap<VarId, (String, bool)>,
+    int_texts: HashMap<VarId, IntText>,
+    /// The `padStart` at the end of the value of a `let` whose only use is a
+    /// part of a concatenation (D359): described, not made.
+    defer_pad: Option<*const Expr>,
+    /// The description it gave.
+    padded: Option<IntText>,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -874,6 +879,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
     "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
+    "declare void @isc_str_build(ptr, ptr, i64)",
     "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
     "declare void @isc_str_append(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_str_append_n(ptr, ptr, i64)",
@@ -963,6 +969,8 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         prechecked: HashSet::new(),
         str_lits: HashMap::new(),
         int_texts: HashMap::new(),
+        defer_pad: None,
+        padded: None,
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -1124,6 +1132,54 @@ fn free_vars(e: &Expr, bound: &mut HashSet<VarId>, out: &mut Vec<VarId>) {
                 free_vars(c, bound, out);
             }
         }
+    }
+}
+
+/// The text of an integer not made (D348, D359): the integer (an `i64`), its
+/// sign, and its padding (the length, the byte of the fill, `padStart`).
+#[derive(Clone)]
+struct IntText {
+    x: String,
+    signed: bool,
+    pad: Option<(String, u8, bool)>,
+}
+
+/// `v` is read once in `e`, as a part of a concatenation (a chain, a
+/// template), outside the functions of a `map` and the others (D359).
+fn sole_concat_part(e: &Expr, v: VarId) -> bool {
+    fn uses(e: &Expr, v: VarId) -> usize {
+        matches!(e.kind, ExprKind::Var(w, _) if w == v) as usize + e.children().into_iter().map(|c| uses(c, v)).sum::<usize>()
+    }
+    fn at(e: &Expr, v: VarId) -> bool {
+        match &e.kind {
+            ExprKind::StrOp(isc_ir::StrOp::Concat, es) if es.iter().any(|x| matches!(x.kind, ExprKind::Var(w, _) if w == v)) => true,
+            ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => false,
+            _ => e.children().into_iter().any(|c| at(c, v)),
+        }
+    }
+    uses(e, v) == 1 && at(e, v)
+}
+
+/// The `padStart` or `padEnd` at the end of `e` (after its `let`s) of the
+/// text of an integer bound by one of those `let`s (`pad(x, n)` of `time`,
+/// inlined), and no other in `e` (D359).
+fn tail_pad(e: &Expr) -> Option<&Expr> {
+    fn pads(e: &Expr) -> usize {
+        matches!(e.kind, ExprKind::StrOp(isc_ir::StrOp::PadStart | isc_ir::StrOp::PadEnd, _)) as usize + e.children().into_iter().map(pads).sum::<usize>()
+    }
+    let mut t = e;
+    let mut texts = Vec::new();
+    while let ExprKind::Let { var, init, body, .. } = &t.kind {
+        if let ExprKind::StrOp(isc_ir::StrOp::ToString, xs) = &init.kind {
+            if matches!(xs[0].ty, Type::Int(_)) {
+                texts.push(*var);
+            }
+        }
+        t = body;
+    }
+    match &t.kind {
+        ExprKind::StrOp(isc_ir::StrOp::PadStart | isc_ir::StrOp::PadEnd, es) if pads(e) == 1 && matches!(es[0].kind, ExprKind::Var(w, _) if texts.contains(&w)) => Some(t),
+        _ => None,
     }
 }
 
@@ -3551,9 +3607,12 @@ impl<'p> Gen<'p> {
                 // `toString(x)` of an integer read only as the text of one
                 // `padStart` or `padEnd`: `x` now, its text written padded by
                 // that operation, no string between (D348)
-                if let (StrOp(isc_ir::StrOp::ToString, xs), true, 1) = (&init.kind, *drop, w) {
+                // (and, D359, one read only as a part of a concatenation, the
+                // left one given to it too: its text written by the
+                // concatenation in its block)
+                if let (StrOp(isc_ir::StrOp::ToString, xs), 1) = (&init.kind, w) {
                     if let Type::Int(k) = xs[0].ty {
-                        if !*stmt && sole_pad_text(body, *var) {
+                        if !*stmt && ((*drop && sole_pad_text(body, *var)) || sole_concat_part(body, *var)) {
                             let xv = self.ex(&xs[0], 1)?;
                             let x = if k.bits() < 64 {
                                 let op = if k.signed() { "sext" } else { "zext" };
@@ -3561,11 +3620,35 @@ impl<'p> Gen<'p> {
                             } else {
                                 xv.r.clone()
                             };
-                            self.int_texts.insert(*var, (x, k.signed()));
+                            self.int_texts.insert(*var, IntText { x, signed: k.signed(), pad: None });
                             let r = self.ex(body, w);
                             self.int_texts.remove(var);
                             return r;
                         }
+                    }
+                }
+                // a padded text of an integer read only as a part of a
+                // concatenation: its `let`s made, its padding described, the
+                // concatenation writing it (D359)
+                if w == 1 && !*stmt && sole_concat_part(body, *var) {
+                    if let Some(t) = tail_pad(init) {
+                        let saved = self.defer_pad.replace(t as *const Expr);
+                        let iv = self.ex(init, 1);
+                        self.defer_pad = saved;
+                        let iv = iv?;
+                        if let Some(it) = self.padded.take() {
+                            self.int_texts.insert(*var, it);
+                            let r = self.ex(body, w);
+                            self.int_texts.remove(var);
+                            return r;
+                        }
+                        self.bind(*var, iv.clone());
+                        let r = self.ex(body, w)?;
+                        if *drop {
+                            let t = self.var_ty(*var).clone();
+                            self.drop_value(&iv, &t);
+                        }
+                        return Ok(r);
                     }
                 }
                 let iv = self.ex(init, w)?;
@@ -10610,6 +10693,48 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// A concatenation whose parts are texts and texts of integers not made
+    /// (`int_texts`, D359): a table of three words a part (a text: its
+    /// pointer, its length, 0; an integer: its value, its padded length, 1 |
+    /// signed 2 | padded 4 | `padStart` 8 | its fill << 8), the result made
+    /// by `isc_str_build` in one block, each integer written there.
+    fn concat_parts_built(&mut self, es: &[Expr]) -> R<V> {
+        let k = es.len();
+        let table = self.alloca(&format!("[{} x [3 x i64]]", k));
+        for (i, x) in es.iter().enumerate() {
+            let words: [String; 3] = match &x.kind {
+                ExprKind::Var(t, _) if self.int_texts.contains_key(t) => {
+                    let it = self.int_texts[t].clone();
+                    let mut kind = 1 | (it.signed as i64) << 1;
+                    let len = match &it.pad {
+                        Some((len, fill, start)) => {
+                            kind |= 4 | (*start as i64) << 3 | (*fill as i64) << 8;
+                            len.clone()
+                        }
+                        None => "0".to_string(),
+                    };
+                    [it.x, len, kind.to_string()]
+                }
+                _ => {
+                    // a left text given (its last use, D351): continued in
+                    // its block by the runtime
+                    let given = i == 0 && matches!(x.kind, ExprKind::Var(_, Use::Move));
+                    let xv = self.ex(x, 1)?;
+                    let (p, n) = self.str_parts(&xv);
+                    let q = self.ins(format!("ptrtoint ptr {} to i64", p));
+                    [q, n, if given { (1i64 << 16).to_string() } else { "0".to_string() }]
+                }
+            };
+            for (j, w) in words.iter().enumerate() {
+                let slot = self.ins(format!("getelementptr inbounds [{} x [3 x i64]], ptr {}, i64 0, i64 {}, i64 {}", k, table, i, j));
+                self.emit(format!("store i64 {}, ptr {}", w, slot));
+            }
+        }
+        let out = self.alloca("{ ptr, i64 }");
+        self.emit(format!("call void @isc_str_build(ptr {}, ptr {}, i64 {})", out, table, k));
+        Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
+    }
+
     /// The string `p`, `n` starts (`start`) or ends with the bytes `t` (at
     /// most 16): at least as long, and its first or last bytes, read as
     /// one integer (up to 8) or two that overlap, equal to those of `t`.
@@ -10700,10 +10825,17 @@ impl<'p> Gen<'p> {
         // one byte, written in one block by the runtime; otherwise the text
         // made here, padded, then freed
         if let (S::PadStart | S::PadEnd, ExprKind::Var(t, _)) = (op, &es[0].kind) {
-            if let Some((x, signed)) = self.int_texts.get(t).cloned() {
+            if let Some(IntText { x, signed, .. }) = self.int_texts.get(t).cloned() {
                 let len = self.ex(&es[1], 1)?;
                 let fill = self.ex(&es[2], 1)?;
                 let start = (op == S::PadStart) as i32;
+                // described for the concatenation that reads it (D359)
+                if self.defer_pad == Some(e as *const Expr) {
+                    if let Some(f) = self.literal_of(&es[2]).filter(|f| f.len() == 1) {
+                        self.padded = Some(IntText { x, signed, pad: Some((len.r.clone(), f.as_bytes()[0], start == 1)) });
+                        return Ok(v("zeroinitializer".to_string(), "{ ptr, i64 }"));
+                    }
+                }
                 let out = self.alloca("{ ptr, i64 }");
                 match self.literal_of(&es[2]) {
                     Some(f) if f.len() == 1 => {
@@ -10722,6 +10854,9 @@ impl<'p> Gen<'p> {
                 }
                 return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"));
             }
+        }
+        if op == S::Concat && es.iter().any(|x| matches!(x.kind, ExprKind::Var(t, _) if self.int_texts.contains_key(&t))) {
+            return self.concat_parts_built(es);
         }
         let mut vals = Vec::new();
         for x in es {

@@ -1009,7 +1009,10 @@ action main(args: string[k]): i32 {
     agree(src, "padded_integers", &["0"], "(0000, 0, 000000, 0, 0****, ababab0, 00000)\n00:00\n");
     let bin = compile(src, "padded_integers_ir");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert_eq!(ll.matches("call void @isc_pad_int(").count(), 7, "integers padded in one block");
+    // the pads of the tuple in one block each; those of the template
+    // written by the concatenation itself (D359)
+    assert!(ll.matches("call void @isc_pad_int(").count() >= 5, "integers padded in one block");
+    assert!(ll.contains("call void @isc_str_build("), "the parts of the template not written in its block");
 }
 
 /// D351: `acc + x` where `acc` is the accumulator of a tail recursion
@@ -1025,4 +1028,29 @@ fn strings_grown_in_place() {
     let bin = compile(src, "strings_grown_ir");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     assert!(ll.contains("call void @isc_str_append"), "no text grown in place");
+}
+
+/// D359: the texts of integers that are parts of a concatenation (a
+/// template, a chain), padded or not, signed or not, never made: the
+/// concatenation writes them in its one block (`isc_str_build`), more than
+/// 16 parts too, the left part of an accumulator given (its text continued
+/// in its block, D351), fills and texts of 0 to 39 bytes; the same text as
+/// the interpreter, Valgrind clean, no text of an integer made.
+#[test]
+fn integers_written_in_the_block_of_their_template() {
+    let src = include_str!("data/strings_template_parts.isc");
+    let bin = compile(src, "template_parts");
+    for a in ["7", "-42", "0", "-9223372036854775807"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    valgrind_clean(src, "template_parts", &["5"]);
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.matches("call void @isc_str_build(").count() >= 8, "templates not written in their blocks");
+    // one text of an integer made: that of `${v}` alone, not a concatenation
+    assert_eq!(ll.matches("call void @isc_to_string_i64(").count(), 1, "a text of an integer made");
+    assert!(!ll.contains("call void @isc_pad_int("), "a padded text of an integer made");
+    // the accumulators give their left text to the concatenation
+    assert!(ll.contains("store i64 65536,"), "the left text of an accumulator not given");
 }

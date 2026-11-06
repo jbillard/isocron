@@ -7668,3 +7668,99 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     medians within -0.99 and +0.91 %, minimums within -4.07 and +0.14 %.
   - Tests: `parallel.rs` reads the calls of the IR by their mode (`i32 0`
     every `threads`-th task, `1` chunks in turn, `2` ranges).
+- **D358 — Small arrays of a fixed size without the heap: closed by
+  measurement (2026-11-06).** The open point of TODO (D164 to D191: the
+  arrays of n-body). The memory reports of the ten programs (`iscc build
+  --report`, at 99e284e): no array of a fixed size is made at each
+  iteration of a loop. Those of a fixed size (their bytes in the report)
+  are made once, at the start: fasta 2, k-nucleotide 2, n-body 4 (40 bytes
+  each, lines 20 to 27, and its 3 copies of lines 34 to 36 once), regex-redux
+  2, reverse-complement 1. The arrays made at each iteration have a size
+  known at run time: fannkuch-redux 2 (the parts of a chunk, lines 81 and
+  87), k-nucleotide 5 (the bytes and the keys of a frame, lines 24 to 49),
+  binary-trees 1 (its nodes: the work of the program). n-body's loop at
+  line 56 makes none. Nothing to gain there.
+- **D359 — The parts of a template written in its block (2026-11-06).**
+  `time.formatIso` 4.7 times its floor, `template` of `strings` 3.1 (D348:
+  each part a block made, copied into the result, freed). Profiled alone at
+  fixed frequency (`formatIso` in a loop, `perf stat`): 652.0 cycles and
+  2511.3 instructions a call.
+  - The text of an integer (`toString(x)`, the `${x}` of a template) bound
+    by a `let` whose only use, outside the functions of `map` and the
+    others, is a part of a concatenation (`sole_concat_part`; the left
+    part given to it too, D351): no string made, `x` described to the
+    concatenation (`int_texts`). A padded text (`pad(x, n)` of `time`
+    inlined: `let`s then a `padStart`/`padEnd` of a fill of one byte,
+    `tail_pad`) is described with its padding the same way.
+  - Such a concatenation (`concat_parts_built`) gives `isc_str_build` a
+    table of three words a part: a text (its pointer, its length), an
+    integer (its value, its padded width, signed, `padStart` or `padEnd`,
+    its fill). The runtime counts the length of each integer without
+    writing it (`digit_count`: its bits and a table of the powers of 10),
+    makes the one block, writes each integer where it goes (`write_digits`,
+    two digits at a time) and the texts and fills by moves (`copy_short`,
+    `fill_short`), without the calls of `memcpy` and `memset`. A left text
+    given (an accumulator, D351) is continued in its block when it has
+    room, as `isc_str_append` does: a string built piece by piece stays
+    linear (3 million pieces of `acc + toString(i) + ","` in 0.097 s).
+  - The first loop of `isc_str_build` (the total length) was made by LLVM
+    of `vpgatherqq` over the table, 3 to 13 parts: 721.4 cycles a
+    `formatIso` (the gathers about half of the samples of the function);
+    the lengths kept at the rank of each integer (a rank that grows only
+    at an integer, a loop LLVM does not vectorize): 510.5 cycles.
+  - `fraction` of `time` made `pad(nano, 9)` twice, its bytes, a `fold`, a
+    slice and a concatenation; now the zeros at its end counted on the
+    number (`nano` is `v` times 10 to the `z`) and `"." + pad(v, 9 - z)`
+    written in one block: 510.5 -> 425.3 cycles; the moves for the texts
+    and fills: 390.0 cycles and 1781.8 instructions (652.0 and 2511.3).
+    The new `fraction` gives the text of the old one for 3 million values
+    and the round ones (compiled and interpreted).
+  - `results/primitives.md` (a whole run): `formatIso` 215.06 -> 129.29 ns
+    (4.7 -> 2.8 times its floor), `template` 32.79 -> 25.59 ns (3.1 ->
+    2.4). What is left of `formatIso` (its profile): `isc_str_build` 68 %,
+    about 15 cycles a part (three words written by the compiled code, read
+    back in two passes, a branch on each kind), where the floor writes
+    each part in place: the parts written by the compiled code itself
+    (the length summed and the literals stored where they are), open in
+    TODO.
+  - `concat` of `strings` (`l + "!"`, one block made and freed a call)
+    10.00 ns against 9.38 at D357, +7.1 % in an A/B of the two binaries,
+    while a loop of the same `concat` alone costs the same with both
+    compilers (133.86 instructions, 31.7 to 32.1 cycles). The counter
+    `ld_blocks_partial.address_alias` (4K aliasing) of the binary of the
+    group 11.3 -> 15.4 M; gdb in the loop of `concat` (the same addresses
+    as without randomization, where the times are the same): the header of
+    its block at 0x100 in its page, the head of its class in the cache of
+    the thread at 0x100 in its own (the TLS segment of the same 0x510
+    bytes in both binaries: the place the loader gives the block of the
+    main thread moved, and the block by the history of the heap; at D357
+    0x180 and 0xf80). Each write of one followed by a
+    read of the other waited for the write. `free` now reads the head of
+    the list before it writes the header of the block (no instruction
+    more): 10.40 -> 10.00 ns, a third of the gap. The other pair (`alloc`
+    writes the head, `free` then reads the header) is excluded only by a
+    line of 64 bytes for each class, the head in its upper half (no header
+    can share its place): tried, 5 instructions and 2.5 cycles more for
+    each `alloc` and `free` (the address of the slot computed), for a
+    coincidence of about one position of a block in 64, in 2 classes of 8:
+    not kept. The gap is that coincidence of this binary.
+  - The other forms of the run outside 3 % against D357 (`startsWith.1`
+    +5.7 %, `endsWith.2` +4.4, `bytes` +4.2, `parse` of `json` +4.0,
+    `stringify` +3.1): in an A/B of the binaries of D357 and D359,
+    -4.2, -3.4, -1.9, +0.8 and +0.2 %: the drift between sessions (D346).
+  - The ten programs (their IR: the lines of their output only, in six;
+    an A/B at fixed frequency on 4 threads, the lowest and the median of 8
+    runs each, the same outputs): binary-trees +0.02 / -0.05 %,
+    fannkuch-redux -0.00 / +0.13, fasta -0.46 / -0.71, k-nucleotide -0.19
+    / -0.22, mandelbrot -0.03 / -0.06, n-body -0.34 / +0.59, pidigits
+    +1.22 / +0.74 (16 runs: +0.10 / +0.31), regex-redux +1.85 / +3.31 (16
+    runs: -1.95 / +0.89), reverse-complement -0.44 / -3.73, spectral-norm
+    -0.16 / -0.22.
+  - Tested by `integers_written_in_the_block_of_their_template`
+    (`strings.rs`, `data/strings_template_parts.isc`: signed, unsigned and
+    padded integers, `i64::MIN + 1`, 18 parts, accumulators of texts and of
+    padded texts, a template in a `map`, fills and texts of 0 to 39 bytes,
+    `formatIso`; the text of the interpreter, Valgrind; no text of an
+    integer made in a concatenation, the left text of an accumulator
+    given); `integers_padded_in_one_block` reads `isc_str_build` for its
+    template.

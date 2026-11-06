@@ -111,14 +111,21 @@ function zone(offset: i64): string {
     return `${offset < 0 ? "-" : "+"}${pad(a / 60, 2)}:${pad(a % 60, 2)}`;
 }
 
-// the fraction of a second, without its zeros at the end ("" for none)
+// the powers of 10 below 10^9
+function tens(): i64[9] {
+    return [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000];
+}
+
+// the fraction of a second, without its zeros at the end ("" for none):
+// `nano` is `v` times 10 to the `z` (`v` not a multiple of 10), written as
+// `v` on 9 - z digits (one text, D359)
 function fraction(nano: i64): string {
     if (nano == 0) {
         return "";
     }
-    const b = bytes(pad(nano, 9));
-    const last = fold(iota(9), 0, (a, i) => b[i] != 48u8 ? i : a);
-    return "." + pad(nano, 9).slice(0, last + 1);
+    const p = tens();
+    const z = fold(iota(8), 0, (z, j) => z == j && nano % (p[j] * 10) == 0 ? j + 1 : z);
+    return "." + pad(nano / p[z], 9 - z);
 }
 
 // `d` in RFC 3339 (`2026-11-05T14:03:00Z`, a fraction when it has one)

@@ -1452,8 +1452,13 @@ pub unsafe fn free_cached(p: *mut u8) -> bool {
         if class < SMALL_CLASSES && (*h).state == IN_USE {
             let tc = thread_cache();
             if (*tc).registered != 0 && (*tc).counts[class] < THREAD_LIMIT[class] {
+                // the head of the list read before the header of the block is
+                // written (no instruction more, D359): when both fall at the
+                // same place of their pages of 4 KiB, the read waited for
+                // the write (4K aliasing)
+                let head = (*tc).heads[class];
                 (*h).state = FREE;
-                (*h).next = (*tc).heads[class];
+                (*h).next = head;
                 (*tc).heads[class] = h;
                 (*tc).counts[class] += 1;
                 return true;

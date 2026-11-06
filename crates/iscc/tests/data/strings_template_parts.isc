@@ -1,0 +1,49 @@
+// D359: templates and chains whose parts are texts of integers, padded or
+// not (their texts written in the block of the result): more than 16 parts,
+// the left part given (an accumulator, its text written after it in its
+// block), fills and texts of 0 to 39 bytes, a template in a `map`.
+import * as time from "time";
+
+function pad(x: i64, n: i64): string {
+    return toString(x).padStart(n, "0");
+}
+
+function right(x: i64, n: i64): string {
+    return toString(x).padEnd(n, ".");
+}
+
+function many(v: i64): string {
+    return `${v}|${v + 1}|${v + 2}|${v + 3}|${v + 4}|${v + 5}|${v + 6}|${v + 7}|${v + 8}|${v + 9}|${v + 10}|${v + 11}|${v + 12}|${v + 13}|${v + 14}|${v + 15}|${v + 16}|${v + 17}`;
+}
+
+function build(i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    return build(i + 1, n, acc + toString(i) + ",");
+}
+
+function padded(i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    return padded(i + 1, n, acc + toString(i).padStart(4, "0"));
+}
+
+action main(args: string[k]): i32 {
+    const v = parseI64(args[0]);
+    const u = u8(v % 256);
+    print(`x${v}y${v * -3}z${u}`);
+    print(`[${pad(v, 6)}] [${pad(-v, 6)}] [${right(v, 6)}] [${pad(v, 1)}]`);
+    print(many(v));
+    print(time.formatIso(1762351380123456789 + v * 1000000007));
+    print(`${v}`);
+    print("a" + toString(v) + "b");
+    const s = build(0, 3000, "");
+    print(`${s.length} ${s.slice(0, 30)} ${s.slice(s.length - 15, s.length)}`);
+    const p = padded(0, 1000, "x");
+    print(`${p.length} ${p.slice(0, 21)} ${p.slice(p.length - 12, p.length)}`);
+    print(sum(map(iota(1000), (i) => `${i}-${i * v}`.length)));
+    print(map(iota(40), (n) => `<${pad(v, n)}|${right(-v, n)}|${"abcdefghijklmnopqrstuvwxyz0123456789abcd".slice(0, n)}>`).join("\n"));
+    return 0;
+}
