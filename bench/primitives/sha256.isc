@@ -22,5 +22,12 @@ action main(args: string[k]): i32 {
     const d = sha256.digest(big);
     const [a3, t3] = bench(r, () => sha256.hex(d).length);
     print(`hex.32 ${f64(t3) / f64(r)} ${a3}`);
+    // a text of 55 bytes (D392)
+    const text = stringOf(map(iota(55), (i) => u8(97 + i % 26)));
+    const [a4, t4] = bench(r, () => {
+        const h = sha256.digestText(text);
+        return i64(h[0]) + i64(h[31]) * 256;
+    });
+    print(`digestText.55 ${f64(t4) / f64(r)} ${a4}`);
     return 0;
 }

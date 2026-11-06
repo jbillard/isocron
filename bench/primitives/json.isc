@@ -39,5 +39,17 @@ action main(args: string[k]): i32 {
     const decoded = map(iota(n), (i) => ({ id: i, x: f64(i) * 0.5, name: `n${i}`, ok: i % 2 == 0 }));
     const [a4, t4] = bench(r, () => json.encode(decoded).length);
     print(`encode ${f64(t4) / each} ${a4}`);
+    // the other functions of the module (D392): 4096 errors, texts to quote
+    // with nothing to escape, and with a quote and a newline
+    const m = 4096;
+    const errs = map(iota(m), (i) => ({ line: i % 97 + 1, column: i % 41 + 1, message: "unexpected token" }));
+    const [a5, t5] = bench(r, () => sum(map(errs, (e) => json.message(e).length)));
+    print(`message ${f64(t5) / f64(r * m)} ${a5}`);
+    const plain = map(iota(m), (i) => `name number ${i}`);
+    const [a6, t6] = bench(r, () => sum(map(plain, (s) => json.quote(s).length)));
+    print(`quote.plain ${f64(t6) / f64(r * m)} ${a6}`);
+    const marked = map(iota(m), (i) => `say "hi"\nto ${i}`);
+    const [a7, t7] = bench(r, () => sum(map(marked, (s) => json.quote(s).length)));
+    print(`quote.escaped ${f64(t7) / f64(r * m)} ${a7}`);
     return 0;
 }

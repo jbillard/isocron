@@ -87,6 +87,34 @@ action exchanges(c: net.Conn, s: net.Conn, response: u8[n], r: i64, acc: i64): i
 
 action main(args: string[k]): i32 {
     const r = parseI64(args[0]);
+    // the pure functions of the module (D392): 4096 of each
+    const m = 4096;
+    const urls = map(iota(m), (i) => `http://host${i % 10}.example:${8000 + i % 100}/path/${i}?q=${i}`);
+    const [p1, u1] = bench(r, () => sum(map(urls, (u) => match (http.parseUrl(u)) {
+        Ok(x) => {
+            const [scheme, host, port, target] = x;
+            return port + target.length;
+        },
+        Err(e) => -1,
+    })));
+    print(`parseUrl ${f64(u1) / f64(r * m)} ${p1}`);
+    const hs = [["Server", "isc"] as const, ["Content-Type", "text/plain"] as const, ["Content-Length", "13"] as const, ["Date", "now"] as const, ["Connection", "keep-alive"] as const, ["X-Id", "42"] as const, ["Cache-Control", "no-cache"] as const, ["Vary", "Accept"] as const];
+    const names = ["content-length", "date", "x-id", "vary", "server", "missing", "CONNECTION", "cache-control"];
+    const [p2, u2] = bench(r, () => sum(map(iota(m), (i) => (http.headerOf(hs, names[i % 8]) ?? "").length)));
+    print(`headerOf ${f64(u2) / f64(r * m)} ${p2}`);
+    const resp: http.Response = { status: 200, headers: hs, body: bytes(join(map(iota(1024), (i) => "x"), "")) };
+    const [p3, u3] = bench(r, () => sum(map(iota(m), (i) => (http.header(resp, names[i % 8]) ?? "").length)));
+    print(`header ${f64(u3) / f64(r * m)} ${p3}`);
+    const [p4, u4] = bench(r, () => sum(map(iota(m), (i) => http.text(resp).length + i % 2)));
+    print(`text.1k ${f64(u4) / f64(r * m)} ${p4}`);
+    const bodies = map(iota(m), (i) => `hello number ${i}`);
+    const [p5, u5] = bench(r, () => sum(map(bodies, (b) => http.textResponse(200, b).body.length)));
+    print(`textResponse ${f64(u5) / f64(r * m)} ${p5}`);
+    const [p6, u6] = bench(r, () => sum(map(iota(m), (i) => http.httpDate(1767225600000000000 + i * 997123456789).length)));
+    print(`httpDate ${f64(u6) / f64(r * m)} ${p6}`);
+    const errs = map(iota(m), (i) => i % 3 == 0 ? http.Malformed("the head") : (i % 3 == 1 ? http.TooLarge(65536) : http.BadUrl("ftp://x")));
+    const [p7, u7] = bench(r, () => sum(map(errs, (e) => http.message(e).length)));
+    print(`message ${f64(u7) / f64(r * m)} ${p7}`);
     const small = bytes("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nhello, world!");
     const piece = join(map(iota(1024), (i) => "x"), "");
     const chunked = bytes("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + join(map(iota(64), (i) => "400\r\n" + piece + "\r\n"), "") + "0\r\n\r\n");
@@ -119,6 +147,6 @@ action main(args: string[k]): i32 {
     const [st, sb] = serveRounds(sr, 0u64, 0, false);
     print(`serve.pipelined ${f64(st) / f64(sr * CONNS * PER_CONN)} ${sb / (sr * CONNS * PER_CONN)}`);
     const [at, ab] = serveRounds(sr, 0u64, 0, true);
-    print(`serveAction.pipelined ${f64(at) / f64(sr * CONNS * PER_CONN)} ${ab / (sr * CONNS * PER_CONN)}`);
+    print(`serve.action.pipelined ${f64(at) / f64(sr * CONNS * PER_CONN)} ${ab / (sr * CONNS * PER_CONN)}`);
     return 0;
 }

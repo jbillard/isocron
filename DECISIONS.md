@@ -8872,3 +8872,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   published (`selftest_linux.sh`, `selftest_windows.py`, the example of the
   README by the `iscc` of the archive). `CHANGELOG.md`, the links of the
   README and of `tools/vscode/README.md` at 0.4.0.
+- **D394 — The microbenchmarks of the pure functions of `json`, `sha256`
+  and `http`; floors beaten made the cheapest known (2026-11-06).** After
+  D392, as it: `json.message`, `json.quote` (`quote.plain`: nothing to
+  escape; `quote.escaped`: a quote and a newline), `sha256.digestText.55`,
+  and the pure functions of `http`: `parseUrl`, `headerOf`, `header`,
+  `text.1k`, `textResponse`, `httpDate`, `message` (4096 of each, the
+  checksums equal to those of C); `serveAction.pipelined` named
+  `serve.action.pipelined` (D386). Floors that Isocron beat, so not the
+  cheapest: `quote.plain` (0.7, the C byte by byte: now the 32 bytes of the
+  text tested in one vector of AVX2 and written in one store, 1.65 ns),
+  `sha256.hex.32` (0.6, a loop of the bytes: now two shuffles of the 16
+  digits in AVX2, checked against the loop on 100000 random inputs, 2.63
+  ns); `json.encode` still beaten (0.6: the floats of C slower than those of
+  Isocron; TODO). Measured (one CPU, fixed frequency, 5 runs of 200
+  rounds), ratios above 3: `http.header` 14.7, `json.quote.escaped` 14.1,
+  `http.headerOf` 14.6, `http.httpDate` 11.1, `http.message` 10.3,
+  `json.quote.plain` 9.4, `http.text.1k` 9.3, `http.textResponse` 8.4,
+  `sha256.hex.32` 7.9, `http.parseUrl` 5.7, `json.message` 4.0 (TODO).

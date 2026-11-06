@@ -11,6 +11,7 @@
 // checksum.
 //   json <rounds>
 #define _GNU_SOURCE
+#include <immintrin.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -528,5 +529,73 @@ int main(int argc, char **argv) {
     t0 = now();
     for (long k = 0; k < r; k++) a4 = encode(&o, rs, c);
     printf("encode %.3f %ld\n", (now() - t0) * 1e9 / each, a4);
+    // the other functions of the module (D392)
+    enum { M = 4096 };
+    static char buf[128];
+    long a5 = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        a5 = 0;
+        for (long i = 0; i < M; i++) {
+            // `line L, column C: message`, the digits by hand
+            char *p = buf;
+            memcpy(p, "line ", 5); p += 5;
+            long l = i % 97 + 1, c = i % 41 + 1;
+            if (l >= 10) *p++ = '0' + l / 10;
+            *p++ = '0' + l % 10;
+            memcpy(p, ", column ", 9); p += 9;
+            if (c >= 10) *p++ = '0' + c / 10;
+            *p++ = '0' + c % 10;
+            memcpy(p, ": unexpected token", 18); p += 18;
+            a5 += p - buf;
+        }
+    }
+    printf("message %.3f %ld\n", (now() - t0) * 1e9 / ((double)r * M), a5);
+    static char plain[M][32], marked[M][32];
+    static size_t lens[2][M];
+    for (long i = 0; i < M; i++) {
+        sprintf(plain[i], "name number %ld", i);
+        sprintf(marked[i], "say \"hi\"\nto %ld", i);
+        lens[0][i] = strlen(plain[i]);
+        lens[1][i] = strlen(marked[i]);
+    }
+    for (int form = 0; form < 2; form++) {
+        long a = 0;
+        t0 = now();
+        for (long k = 0; k < r; k++) {
+            a = 0;
+            for (long i = 0; i < M; i++) {
+                const char *s = form ? marked[i] : plain[i];
+                char *p = buf;
+                *p++ = '"';
+                // nothing to escape: the 32 bytes of the text (its array has
+                // them) tested in one vector, then written in one store
+                // (D392: the floor byte by byte was beaten)
+                size_t n = lens[form][i];
+                __m256i v = _mm256_loadu_si256((const __m256i *)s);
+                __m256i bad = _mm256_or_si256(_mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"')), _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'))),
+                                              _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(31)), _mm256_set1_epi8(31)));
+                if (((unsigned)_mm256_movemask_epi8(bad) & ((1u << n) - 1)) == 0) {
+                    _mm256_storeu_si256((__m256i *)p, v);
+                    p += n;
+                    *p++ = '"';
+                    a += p - buf;
+                    continue;
+                }
+                for (; *s; s++) {
+                    unsigned char ch = *s;
+                    if (ch == '"' || ch == '\\') { *p++ = '\\'; *p++ = ch; }
+                    else if (ch == '\n') { *p++ = '\\'; *p++ = 'n'; }
+                    else if (ch == '\r') { *p++ = '\\'; *p++ = 'r'; }
+                    else if (ch == '\t') { *p++ = '\\'; *p++ = 't'; }
+                    else if (ch < 32) { p += sprintf(p, "\\u%04x", ch); }
+                    else *p++ = ch;
+                }
+                *p++ = '"';
+                a += p - buf;
+            }
+        }
+        printf("%s %.3f %ld\n", form ? "quote.escaped" : "quote.plain", (now() - t0) * 1e9 / ((double)r * M), a);
+    }
     return 0;
 }

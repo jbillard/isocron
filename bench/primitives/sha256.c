@@ -126,11 +126,28 @@ int main(int argc, char **argv) {
     char text[64];
     t0 = now();
     for (long k = 0; k < r; k++) {
-        for (int i = 0; i < 32; i++) text[2 * i] = hexd[h[i] >> 4], text[2 * i + 1] = hexd[h[i] & 15];
+        // the 64 digits in AVX2: the nibbles, one shuffle of the 16 digits
+        // each, interleaved (D392: the loop of the bytes was beaten)
+        __m256i v = _mm256_loadu_si256((const __m256i *)h), lo = _mm256_and_si256(v, _mm256_set1_epi8(15));
+        __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), _mm256_set1_epi8(15));
+        __m256i digits = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)hexd));
+        __m256i hd = _mm256_shuffle_epi8(digits, hi), ld = _mm256_shuffle_epi8(digits, lo);
+        __m256i a0 = _mm256_unpacklo_epi8(hd, ld), a1 = _mm256_unpackhi_epi8(hd, ld);
+        _mm256_storeu_si256((__m256i *)text, _mm256_permute2x128_si256(a0, a1, 0x20));
+        _mm256_storeu_si256((__m256i *)(text + 32), _mm256_permute2x128_si256(a0, a1, 0x31));
         sink += text[k % 64];
         acc = 64;
     }
     printf("hex.32 %.3f %ld\n", (now() - t0) * 1e9 / r, acc);
+    // a text of 55 bytes (D392)
+    static uint8_t words[55];
+    for (int i = 0; i < 55; i++) words[i] = (uint8_t)('a' + i % 26);
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        digest(words, 55, h, block);
+        acc = h[0] + h[31] * 256;
+    }
+    printf("digestText.55 %.3f %ld\n", (now() - t0) * 1e9 / r, acc);
     t0 = now();
     for (long k = 0; k < r; k++) {
         digest(big, 4096, h, block_ni);

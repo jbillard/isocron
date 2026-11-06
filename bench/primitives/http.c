@@ -200,8 +200,136 @@ static double serve_round(long *bytes) {
     return dt;
 }
 
+// the pure functions of the module (D392): the cheapest way known, by hand
+static long hfdiv(long a, long b) { return a / b - (a % b < 0); }
+
+static void hdate_of(long z, long *y, long *m, long *d) {
+    z += 719468;
+    long era = hfdiv(z, 146097), doe = z - era * 146097;
+    long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+    *d = doy - (153 * mp + 2) / 5 + 1;
+    *m = mp < 10 ? mp + 3 : mp - 9;
+    *y = yoe + era * 400 + (*m <= 2);
+}
+
+static char *hput(char *p, long v, int n) {
+    for (int i = n - 1; i >= 0; i--, v /= 10) p[i] = '0' + v % 10;
+    return p + n;
+}
+
+static void pure_forms(long r) {
+    enum { M = 4096 };
+    static char urls[M][64], buf[2048];
+    for (long i = 0; i < M; i++) sprintf(urls[i], "http://host%ld.example:%ld/path/%ld?q=%ld", i % 10, 8000 + i % 100, i, i);
+    struct timespec t0, t1;
+    long acc = 0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (long k = 0; k < r; k++) {
+        acc = 0;
+        for (long i = 0; i < M; i++) {
+            const char *u = urls[i], *sep = strstr(u, "://");
+            if (!sep || (sep - u != 4 && sep - u != 5) || strncasecmp(u, sep - u == 4 ? "http" : "https", sep - u)) { acc--; continue; }
+            const char *rest = sep + 3, *end = rest + strcspn(rest, "/?"), *colon = memchr(rest, ':', end - rest);
+            long port = 0;
+            for (const char *q = colon + 1; q < end; q++) port = port * 10 + (*q - '0');
+            long tl = strlen(end);
+            acc += port + (tl ? tl : 1);
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf("parseUrl %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+    static const char *hk[8] = {"Server", "Content-Type", "Content-Length", "Date", "Connection", "X-Id", "Cache-Control", "Vary"};
+    static const char *hv[8] = {"isc", "text/plain", "13", "now", "keep-alive", "42", "no-cache", "Accept"};
+    static const char *names[8] = {"content-length", "date", "x-id", "vary", "server", "missing", "CONNECTION", "cache-control"};
+    for (int form = 0; form < 2; form++) {
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (long k = 0; k < r; k++) {
+            acc = 0;
+            for (long i = 0; i < M; i++) {
+                const char *found = 0;
+                for (int j = 0; j < 8; j++)
+                    if (!strcasecmp(hk[j], names[i % 8])) found = hv[j];
+                acc += found ? (long)strlen(found) : 0;
+            }
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        printf("%s %.3f %ld\n", form ? "header" : "headerOf", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+    }
+    static char body[1024];
+    memset(body, 'x', sizeof body);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (long k = 0; k < r; k++) {
+        acc = 0;
+        for (long i = 0; i < M; i++) {
+            // checked as UTF-8 (ASCII: 8 bytes at a time), then a text made of it
+            unsigned long bad = 0;
+            for (int j = 0; j < 1024; j += 8) {
+                unsigned long w;
+                memcpy(&w, body + j, 8);
+                bad |= w & 0x8080808080808080ul;
+            }
+            char *t = malloc(1024);
+            memcpy(t, body, 1024);
+            acc += (bad ? -1 : 1024) + i % 2;
+            free(t);
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf("text.1k %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+    static char bodies[M][32];
+    for (long i = 0; i < M; i++) sprintf(bodies[i], "hello number %ld", i);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (long k = 0; k < r; k++) {
+        acc = 0;
+        for (long i = 0; i < M; i++) {
+            // the body copied into a block of its own, the header a constant
+            long n = strlen(bodies[i]);
+            char *b = malloc(n);
+            memcpy(b, bodies[i], n);
+            acc += n;
+            free(b);
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf("textResponse %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+    static const char days[7][4] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+    static const char months[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (long k = 0; k < r; k++) {
+        acc = 0;
+        for (long i = 0; i < M; i++) {
+            long ns = 1767225600000000000L + i * 997123456789L, dz = hfdiv(ns, 86400000000000L), s = (ns - dz * 86400000000000L) / 1000000000, y, mo, d;
+            hdate_of(dz, &y, &mo, &d);
+            long wd = (dz + 3) - hfdiv(dz + 3, 7) * 7;
+            char *p = buf;
+            memcpy(p, days[wd], 3); p += 3; *p++ = ','; *p++ = ' ';
+            p = hput(p, d, 2); *p++ = ' '; memcpy(p, months[mo - 1], 3); p += 3; *p++ = ' ';
+            p = hput(p, y, 4); *p++ = ' '; p = hput(p, s / 3600, 2); *p++ = ':'; p = hput(p, s / 60 % 60, 2); *p++ = ':'; p = hput(p, s % 60, 2);
+            memcpy(p, " GMT", 4); p += 4;
+            acc += p - buf;
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf("httpDate %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (long k = 0; k < r; k++) {
+        acc = 0;
+        for (long i = 0; i < M; i++) {
+            char *p = buf;
+            if (i % 3 == 0) { memcpy(p, "malformed: the head", 19); p += 19; }
+            else if (i % 3 == 1) { memcpy(p, "too large: more than ", 21); p += 21; p = hput(p, 65536, 5); memcpy(p, " bytes", 6); p += 6; }
+            else { memcpy(p, "bad url: ftp://x", 16); p += 16; }
+            acc += p - buf;
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf("message %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+}
+
 int main(int argc, char **argv) {
     long r = argc > 1 ? atol(argv[1]) : 10;
+    pure_forms(r);
     int l = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     int one = 1;
     setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -247,6 +375,6 @@ int main(int argc, char **argv) {
     st = 0;
     bytes = 0;
     for (long k = 0; k < sr; k++) st += serve_round(&bytes);
-    printf("serveAction.pipelined %.3f %ld\n", st * 1e9 / (sr * CONNS * PER_CONN), bytes / (sr * CONNS * PER_CONN));
+    printf("serve.action.pipelined %.3f %ld\n", st * 1e9 / (sr * CONNS * PER_CONN), bytes / (sr * CONNS * PER_CONN));
     return 0;
 }
