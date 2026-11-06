@@ -235,7 +235,8 @@ pub enum Ty {
     /// type arguments (`Option<f64>`).
     Sum { id: u32, name: String, args: Vec<Ty> },
     Array(Size, Box<Ty>),
-    Fn(Vec<Ty>, Box<Ty>),
+    /// The parameters, the result, and true for an action (D352).
+    Fn(Vec<Ty>, Box<Ty>, bool),
     /// Type parameter of the enclosing generic function.
     Param(u32),
     /// Inference variable (never present after checking).
@@ -361,7 +362,10 @@ impl fmt::Display for TyDisplay<'_> {
                 }
                 Ok(())
             }
-            Ty::Fn(ps, r) => {
+            Ty::Fn(ps, r, act) => {
+                if *act {
+                    write!(f, "action ")?;
+                }
                 write!(f, "(")?;
                 for (i, t) in ps.iter().enumerate() {
                     if i > 0 {

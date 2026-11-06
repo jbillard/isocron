@@ -282,9 +282,6 @@ impl P {
         self.bump();
         let (name, span) = self.ident("a function name")?;
         let generics = self.generics()?;
-        if is_action && !generics.is_empty() {
-            return Err(Diagnostic::new(span, "an action has no type parameters"));
-        }
         let params = self.params()?;
         self.expect(S::Colon)?;
         let ret = self.ty()?;
@@ -435,6 +432,15 @@ impl P {
 
     fn base_ty(&mut self) -> Result<TypeExpr> {
         let span = self.span();
+        // `action (T) => U`: the type of an action (D352)
+        if self.is_word("action") && matches!(self.peek_at(1), T::Sym(S::LParen)) {
+            self.bump();
+            let t = self.base_ty()?;
+            return match t.kind {
+                TypeKind::Fn(ps, r, _) => Ok(TypeExpr { kind: TypeKind::Fn(ps, r, true), span }),
+                _ => Err(Diagnostic::new(t.span, "expected `=>` after the parameters of the type of an action (`action (T) => U`)".to_string())),
+            };
+        }
         let kind = match self.peek().clone() {
             T::Ident(name) => {
                 self.bump();
@@ -514,7 +520,7 @@ impl P {
                 self.expect(S::RParen)?;
                 if self.eat(S::FatArrow) {
                     let r = self.ty()?;
-                    TypeKind::Fn(ps, Box::new(r))
+                    TypeKind::Fn(ps, Box::new(r), false)
                 } else if ps.len() == 1 {
                     return Ok(ps.pop().unwrap());
                 } else {
@@ -818,8 +824,10 @@ impl P {
         let body = if self.is(S::LBrace) {
             let lb = self.span();
             let stmts = self.block()?;
-            // a lambda is pure (it cannot call an action)
-            self.lower(&stmts, false, lb)?
+            // in an action, a lambda may be an action (D352): its block
+            // lowered as one, the checker refusing its statements when the
+            // lambda is pure
+            self.lower(&stmts, self.in_action, lb)?
         } else {
             self.expr()?
         };

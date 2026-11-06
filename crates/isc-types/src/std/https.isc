@@ -66,3 +66,21 @@ export action serveTls(port: i64, cert: string, key: string, handler: (http.Requ
         Err(e) => Err(e),
     };
 }
+
+// the requests to the listener `l` (taken) answered over TLS one at a time
+// by the action `handler`, until `limit` of them (0: no end) (D352)
+export action serveTlsActionOn(l: net.Listener, cert: string, key: string, handler: action (http.Request) => http.Response, limit: i64): Result<void, IoError> {
+    return match (net.serverOfTls(l, cert, key)) {
+        Ok(s) => http.serveActionServer(s, handler, limit),
+        Err(e) => Err(e),
+    };
+}
+
+// the requests to `port` answered over TLS one at a time by the action
+// `handler`, with no end (D352)
+export action serveTlsAction(port: i64, cert: string, key: string, handler: action (http.Request) => http.Response): Result<void, IoError> {
+    return match (net.listen("0.0.0.0", port)) {
+        Ok(l) => serveTlsActionOn(l, cert, key, handler, 0),
+        Err(e) => Err(e),
+    };
+}

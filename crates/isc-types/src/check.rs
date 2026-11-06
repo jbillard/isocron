@@ -424,10 +424,10 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
             fs.sort_by(|a, b| a.0.cmp(&b.0));
             Ty::Record(fs)
         }
-        TypeKind::Fn(ps, r) => Ty::Fn(
+        TypeKind::Fn(ps, r, act) => Ty::Fn(
             ps.iter().map(|t| type_from_ast(t, cx)).collect::<Result<_>>()?,
             Box::new(type_from_ast(r, cx)?),
-        ),
+        *act),
     })
 }
 
@@ -438,7 +438,7 @@ fn alone_in(t: &Ty, s: SymId) -> bool {
         Ty::Tuple(ts) => ts.iter().all(|t| alone_in(t, s)),
         Ty::Record(fs) => fs.iter().all(|(_, t)| alone_in(t, s)),
         Ty::Sum { args, .. } => args.iter().all(|t| alone_in(t, s)),
-        Ty::Fn(ps, r) => ps.iter().all(|t| alone_in(t, s)) && alone_in(r, s),
+        Ty::Fn(ps, r, _) => ps.iter().all(|t| alone_in(t, s)) && alone_in(r, s),
         _ => true,
     }
 }
@@ -480,6 +480,11 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
                 type_from_ast(t, &mut SigCtx { generics: &generics, sums: heads, syms: &mut syms, allow_new: true, result: false, module: module_of(&d.name), imports: imports.get(&d.span.file) })?
             }
         };
+        // an action as a parameter only of an action: a `function` has no
+        // effect (D352)
+        if !d.is_action && contains_action(&ty) {
+            return err(p.span, format!("the parameter `{}` of the `function` `{}` is an action: only an `action` takes one (SPEC section 12)", p.name, d.name));
+        }
         // `x: T[]`: a size of its own for the parameter (D341), named after it
         let ty = match ty {
             Ty::Array(Size::Own, e) => {
@@ -602,6 +607,8 @@ struct FnCx<'g> {
     file: u32,
     is_action: bool,
     lambda_depth: u32,
+    /// The enclosing lambdas that are actions (D352).
+    act_lambdas: u32,
     generics: Vec<(String, Classes)>,
     syms: Vec<SymInfo>,
     tvars: Vec<TVar>,
@@ -694,7 +701,7 @@ impl<'g> FnCx<'g> {
                 Ty::Sum { id, name, args: args.iter().map(|t| self.zonk_soft(t)).collect() }
             }
             Ty::Array(s, e) => Ty::Array(self.size_res(&s), Box::new(self.zonk_soft(&e))),
-            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| self.zonk_soft(t)).collect(), Box::new(self.zonk_soft(&r))),
+            Ty::Fn(ps, r, act) => Ty::Fn(ps.iter().map(|t| self.zonk_soft(t)).collect(), Box::new(self.zonk_soft(&r)), act),
             t => t,
         }
     }
@@ -708,7 +715,7 @@ impl<'g> FnCx<'g> {
             Ty::Record(fs) => fs.iter().any(|(_, t)| self.occurs(v, t)),
             Ty::Sum { args, .. } => args.iter().any(|t| self.occurs(v, t)),
             Ty::Array(_, e) => self.occurs(v, &e),
-            Ty::Fn(ps, r) => ps.iter().any(|t| self.occurs(v, t)) || self.occurs(v, &r),
+            Ty::Fn(ps, r, _) => ps.iter().any(|t| self.occurs(v, t)) || self.occurs(v, &r),
             _ => false,
         }
     }
@@ -1011,7 +1018,11 @@ impl<'g> FnCx<'g> {
             }
             // the parameters the other way: the function found must take what
             // the type expected passes (an array of its own size, D341)
-            (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) if p1.len() == p2.len() => {
+            // an action found only where an action is expected; a function
+            // where an action is: a pure function is an action without
+            // effect (D352)
+            (Ty::Fn(_, _, false), Ty::Fn(_, _, true)) => Err(UErr::Mismatch),
+            (Ty::Fn(p1, r1, _), Ty::Fn(p2, r2, _)) if p1.len() == p2.len() => {
                 for (s, t) in p1.iter().zip(p2.iter()) {
                     self.unify_in(t, s, Mode::Strict, false)?;
                 }
@@ -1137,7 +1148,7 @@ impl<'g> FnCx<'g> {
             Ty::Tuple(ts) => ts.iter().any(|t| self.holds_own(t)),
             Ty::Record(fs) => fs.iter().any(|(_, t)| self.holds_own(t)),
             Ty::Sum { args, .. } => args.iter().any(|t| self.holds_own(t)),
-            Ty::Fn(ps, r) => ps.iter().any(|t| self.holds_own(t)) || self.holds_own(&r),
+            Ty::Fn(ps, r, _) => ps.iter().any(|t| self.holds_own(t)) || self.holds_own(&r),
             _ => false,
         }
     }
@@ -1175,7 +1186,7 @@ impl<'g> FnCx<'g> {
     }
 
     fn can_act(&self) -> bool {
-        self.is_action && self.lambda_depth == 0
+        self.is_action && self.lambda_depth == self.act_lambdas
     }
 
     // ----- expressions --------------------------------------------------
@@ -1222,17 +1233,17 @@ impl<'g> FnCx<'g> {
             ExprKind::Var(name) => self.check_var(name, span),
             ExprKind::OpFn(op) => {
                 let ty = if op.is_logic() {
-                    Ty::Fn(vec![Ty::Bool, Ty::Bool], Box::new(Ty::Bool))
+                    Ty::Fn(vec![Ty::Bool, Ty::Bool], Box::new(Ty::Bool), false)
                 } else if op.is_arith() {
                     let a = self.fresh(class::NUM | class::SCALAR, LitKind::None, span);
-                    Ty::Fn(vec![a.clone(), a.clone()], Box::new(a))
+                    Ty::Fn(vec![a.clone(), a.clone()], Box::new(a), false)
                 } else if op.is_bitwise() {
                     let a = self.fresh(class::INTEGRAL | class::SCALAR, LitKind::None, span);
-                    Ty::Fn(vec![a.clone(), a.clone()], Box::new(a))
+                    Ty::Fn(vec![a.clone(), a.clone()], Box::new(a), false)
                 } else {
                     let c = if op.is_order() { class::ORD | class::SCALAR } else { class::EQ };
                     let a = self.fresh(c, LitKind::None, span);
-                    Ty::Fn(vec![a.clone(), a], Box::new(Ty::Bool))
+                    Ty::Fn(vec![a.clone(), a], Box::new(Ty::Bool), false)
                 };
                 Ok(self.mk(TExprKind::OpRef(*op), ty, span))
             }
@@ -1484,9 +1495,9 @@ impl<'g> FnCx<'g> {
             }
             ExprKind::Lambda(params, body) => {
                 let hint = expected.map(|t| self.shallow(t));
-                let (ptys, rhint) = match hint {
-                    Some(Ty::Fn(ps, r)) if ps.len() == params.len() => (ps, Some(*r)),
-                    _ => (params.iter().map(|(_, sp)| self.fresh(0, LitKind::None, *sp)).collect(), None),
+                let (ptys, rhint, act) = match hint {
+                    Some(Ty::Fn(ps, r, act)) if ps.len() == params.len() => (ps, Some(*r), act && self.can_act()),
+                    _ => (params.iter().map(|(_, sp)| self.fresh(0, LitKind::None, *sp)).collect(), None, false),
                 };
                 self.scopes.push(HashMap::new());
                 let mut ids = Vec::new();
@@ -1497,14 +1508,16 @@ impl<'g> FnCx<'g> {
                     ids.push(self.add_local(name, t.clone(), *sp));
                 }
                 self.lambda_depth += 1;
+                self.act_lambdas += act as u32;
                 let b = self.check(body, rhint.as_ref());
+                self.act_lambdas -= act as u32;
                 self.lambda_depth -= 1;
                 self.scopes.pop();
                 let b = b?;
                 if let Some(r) = &rhint {
                     self.unify(r, &b.ty, b.span)?;
                 }
-                let ty = Ty::Fn(ptys, Box::new(b.ty.clone()));
+                let ty = Ty::Fn(ptys, Box::new(b.ty.clone()), act);
                 Ok(self.mk(TExprKind::Lambda(ids, Box::new(b)), ty, span))
             }
             ExprKind::Block(stmts, result) => {
@@ -1540,10 +1553,22 @@ impl<'g> FnCx<'g> {
                 }
                 ast::Stmt::Expr(e) => {
                     if !self.can_act() {
-                        return err(
-                            e.span,
-                            "an expression statement is only allowed in an `action` (a `function` computes a value and has no effect)",
-                        );
+                        // the action called, when the statement is a call of one
+                        let called = match &e.kind {
+                            ExprKind::Call(f, _) => match &f.kind {
+                                ExprKind::Var(n) if prim_by_name(n).is_some_and(|p| p.is_action()) || self.g.names.get(n).is_some_and(|&id| self.g.sigs[id].is_action) => {
+                                    format!(" (`{}` is one)", n)
+                                }
+                                _ => String::new(),
+                            },
+                            _ => String::new(),
+                        };
+                        let why = if self.is_action {
+                            "this lambda is pure, as the functions given to `map`, `fold`, `filter` and the other functions of arrays are (a lambda is an action only where an `action (T) => U` is expected, SPEC section 12)"
+                        } else {
+                            "a `function` computes a value and has no effect; effects go in an `action` (a handler with effects: `http.serveAction`, D352)"
+                        };
+                        return err(e.span, format!("an expression statement is only allowed in an `action`{}: {}", called, why));
                     }
                     let v = self.check(e, None)?;
                     out.push(TStmt::Expr(v));
@@ -1807,55 +1832,58 @@ impl<'g> FnCx<'g> {
             if id >= self.g.first_extern {
                 return err(span, format!("the extern function `{}` cannot be used as a value", name));
             }
-            if sig.is_action {
-                return err(span, format!("the action `{}` cannot be used as a value", name));
+            if sig.is_action && !self.can_act() {
+                return err(
+                    span,
+                    format!("the action `{}` is a value only inside an `action` (a `function` has no effect, SPEC section 12)", name),
+                );
             }
             let (type_args, ptys, ret) = self.instantiate_value(id, span);
-            let ty = Ty::Fn(ptys, Box::new(ret));
+            let ty = Ty::Fn(ptys, Box::new(ret), sig.is_action);
             return Ok(self.mk(TExprKind::FnRef { id, type_args }, ty, span));
         }
         if let Some(p) = prim_by_name(name) {
             return match p {
                 Prim::Sqrt => {
                     let a = self.fresh(class::FLOAT | class::SCALAR, LitKind::None, span);
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone()], Box::new(a)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone()], Box::new(a), false), span))
                 }
                 Prim::Math(f) => {
                     let c = if f == MathFn::Abs { class::NUM } else { class::FLOAT };
                     let a = self.fresh(c | class::SCALAR, LitKind::None, span);
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone(); f.arity()], Box::new(a)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone(); f.arity()], Box::new(a), false), span))
                 }
                 Prim::Convert(t) => {
                     let a = self.fresh(class::NUM | class::SCALAR, LitKind::None, span);
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a], Box::new(t.to_ty())), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a], Box::new(t.to_ty()), false), span))
                 }
                 // the functions of strings whose result has no size of its
                 // own (D135): `map(xs, trim)`, `reduce(xs, (++), "")`
                 Prim::Trim | Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd => {
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str), false), span))
                 }
-                Prim::ParseI64 => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64))), span)),
-                Prim::ParseF64 | Prim::ParseFloat | Prim::JsNumber => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::F64)), span)),
-                Prim::StrLen => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64))), span)),
-                Prim::Concat => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str, Ty::Str], Box::new(Ty::Str)), span)),
+                Prim::ParseI64 => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64)), false), span)),
+                Prim::ParseF64 | Prim::ParseFloat | Prim::JsNumber => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::F64), false), span)),
+                Prim::StrLen => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64)), false), span)),
+                Prim::Concat => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str, Ty::Str], Box::new(Ty::Str), false), span)),
                 Prim::ToString => {
                     let a = self.fresh(class::SCALAR, LitKind::None, span);
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a], Box::new(Ty::Str)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a], Box::new(Ty::Str), false), span))
                 }
                 Prim::StringOf => {
                     let s = self.fresh_size(span);
                     let b = Ty::Array(s, Box::new(Ty::Int(IntKind::U8)));
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![b], Box::new(Ty::Str)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![b], Box::new(Ty::Str), false), span))
                 }
                 Prim::Join => {
                     let s = self.fresh_size(span);
                     let xs = Ty::Array(s, Box::new(Ty::Str));
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![xs, Ty::Str], Box::new(Ty::Str)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![xs, Ty::Str], Box::new(Ty::Str), false), span))
                 }
                 // as a value, the function of two numbers (`reduce(x, min, e)`)
                 Prim::Min | Prim::Max => {
                     let a = self.fresh(class::NUM | class::SCALAR, LitKind::None, span);
-                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone(), a.clone()], Box::new(a)), span))
+                    Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![a.clone(), a.clone()], Box::new(a), false), span))
                 }
                 _ => err(span, format!("the primitive `{}` must be called directly", name)),
             };
@@ -2052,16 +2080,30 @@ impl<'g> FnCx<'g> {
         }
         let callee = self.check(f, None)?;
         let ct = self.shallow(&callee.ty);
-        let (ptys, ret) = match ct {
-            Ty::Fn(ps, r) => (ps, *r),
+        let (ptys, ret, act) = match ct {
+            Ty::Fn(ps, r, act) => (ps, *r, act),
             Ty::Var(_) => {
                 let ps: Vec<Ty> = args.iter().map(|a| self.fresh(0, LitKind::None, a.span)).collect();
                 let r = self.fresh(0, LitKind::None, span);
-                self.unify(&Ty::Fn(ps.clone(), Box::new(r.clone())), &callee.ty, f.span)?;
-                (ps, r)
+                self.unify(&Ty::Fn(ps.clone(), Box::new(r.clone()), false), &callee.ty, f.span)?;
+                (ps, r, false)
             }
             other => return err(f.span, format!("this value of type `{}` is not a function", self.show(&other))),
         };
+        if act && !self.can_act() {
+            let what = match &f.kind {
+                ExprKind::Var(n) => format!("`{}`", n),
+                _ => "this value".to_string(),
+            };
+            return err(
+                f.span,
+                if self.is_action {
+                    format!("the action {} cannot be called inside a lambda that is not an action", what)
+                } else {
+                    format!("a `function` cannot call the action {} (SPEC section 12)", what)
+                },
+            );
+        }
         self.arity("this function", ptys.len(), args.len(), span)?;
         let mut targs = Vec::new();
         for (a, p) in args.iter().zip(ptys.iter()) {
@@ -2147,7 +2189,7 @@ impl<'g> FnCx<'g> {
                 Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| open(t, n, fresh)).collect()),
                 Ty::Record(fs) => Ty::Record(fs.iter().map(|(k, t)| (k.clone(), open(t, n, fresh))).collect()),
                 Ty::Sum { id, name, args } => Ty::Sum { id: *id, name: name.clone(), args: args.iter().map(|t| open(t, n, fresh)).collect() },
-                Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| open(t, n, fresh)).collect(), Box::new(open(r, n, fresh))),
+                Ty::Fn(ps, r, act) => Ty::Fn(ps.iter().map(|t| open(t, n, fresh)).collect(), Box::new(open(r, n, fresh)), *act),
                 other => other.clone(),
             }
         }
@@ -2447,10 +2489,10 @@ impl<'g> FnCx<'g> {
                 name: name.clone(),
                 args: args.iter().map(|t| self.subst_call(t, type_args, sym_map, span)).collect::<Result<_>>()?,
             },
-            Ty::Fn(ps, r) => Ty::Fn(
+            Ty::Fn(ps, r, act) => Ty::Fn(
                 ps.iter().map(|t| self.subst_call(t, type_args, sym_map, span)).collect::<Result<_>>()?,
                 Box::new(self.subst_call(r, type_args, sym_map, span)?),
-            ),
+            *act),
             Ty::Array(Size::Poly(p), e) => {
                 let e = self.subst_call(e, type_args, sym_map, span)?;
                 let size = if let Some(s) = p.as_sym() {
@@ -2633,7 +2675,7 @@ impl<'g> FnCx<'g> {
                 let x = self.check(&args[0], None)?;
                 let a = self.expect_array(&x.ty, x.span, "the first argument of `map`")?;
                 let b = self.fresh(class::ELEM, LitKind::None, span);
-                let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()));
+                let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()), false);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 let size = match self.shallow(&x.ty) {
@@ -2708,7 +2750,7 @@ impl<'g> FnCx<'g> {
                 let x = self.check(&args[0], None)?;
                 let a = self.expect_array(&x.ty, x.span, "the first argument of `reduce`")?;
                 self.require(&a, class::ELEM, x.span)?;
-                let fty = Ty::Fn(vec![a.clone(), a.clone()], Box::new(a.clone()));
+                let fty = Ty::Fn(vec![a.clone(), a.clone()], Box::new(a.clone()), false);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 let e = self.check(&args[2], Some(&a))?;
@@ -2741,7 +2783,7 @@ impl<'g> FnCx<'g> {
                 // `[k <= n]T`: k is known at run time (an existential size)
                 let x = self.check(&args[0], None)?;
                 let a = self.expect_array(&x.ty, x.span, "the first argument of `filter`")?;
-                let fty = Ty::Fn(vec![a.clone()], Box::new(Ty::Bool));
+                let fty = Ty::Fn(vec![a.clone()], Box::new(Ty::Bool), false);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 let s = self.syms.len() as SymId;
@@ -2753,7 +2795,7 @@ impl<'g> FnCx<'g> {
                 let x = self.check(&args[0], None)?;
                 let a = self.expect_array(&x.ty, x.span, "the first argument of `scan`")?;
                 self.require(&a, class::ELEM, x.span)?;
-                let fty = Ty::Fn(vec![a.clone(), a.clone()], Box::new(a.clone()));
+                let fty = Ty::Fn(vec![a.clone(), a.clone()], Box::new(a.clone()), false);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 let e = self.check(&args[2], Some(&a))?;
@@ -2766,7 +2808,7 @@ impl<'g> FnCx<'g> {
                 let t = self.expect_array(&x.ty, x.span, "the first argument of `fold`")?;
                 let init = self.check(&args[1], expected)?;
                 let acc = init.ty.clone();
-                let fty = Ty::Fn(vec![acc.clone(), t], Box::new(acc.clone()));
+                let fty = Ty::Fn(vec![acc.clone(), t], Box::new(acc.clone()), false);
                 let f = self.check(&args[2], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 Ok(mk(vec![x, init, f], acc, self))
@@ -3247,7 +3289,7 @@ impl<'g> FnCx<'g> {
                 let r = self.check(&args[0], Some(&Ty::Int(IntKind::I64)))?;
                 self.unify(&Ty::Int(IntKind::I64), &r.ty, r.span)?;
                 let u = self.fresh(0, LitKind::None, span);
-                let fty = Ty::Fn(vec![], Box::new(u.clone()));
+                let fty = Ty::Fn(vec![], Box::new(u.clone()), false);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
                 Ok(mk(vec![r, f], Ty::Tuple(vec![u, Ty::Int(IntKind::U64)]), self))
@@ -3367,7 +3409,7 @@ impl<'g> FnCx<'g> {
                     }
                 }
             }
-            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| self.zonk(t)).collect::<Result<_>>()?, Box::new(self.zonk(&r)?)),
+            Ty::Fn(ps, r, act) => Ty::Fn(ps.iter().map(|t| self.zonk(t)).collect::<Result<_>>()?, Box::new(self.zonk(&r)?), act),
             t => t,
         })
     }
@@ -3510,10 +3552,10 @@ fn subst_value(t: &Ty, type_args: &[Ty], sizes: &[Size]) -> Ty {
         Ty::Sum { id, name, args } => {
             Ty::Sum { id: *id, name: name.clone(), args: args.iter().map(|t| subst_value(t, type_args, sizes)).collect() }
         }
-        Ty::Fn(ps, r) => Ty::Fn(
+        Ty::Fn(ps, r, act) => Ty::Fn(
             ps.iter().map(|t| subst_value(t, type_args, sizes)).collect(),
             Box::new(subst_value(r, type_args, sizes)),
-        ),
+        *act),
         Ty::Array(Size::Poly(p), e) => {
             let size = match p.as_sym() {
                 Some(s) => sizes[s as usize].clone(),
@@ -3560,6 +3602,18 @@ fn holds_function(g: &Globals, t: &Ty, seen: &mut Vec<u32>) -> bool {
             let def = &g.sums[*id as usize];
             (0..def.variants.len()).any(|k| def.payload(k, args).iter().any(|x| holds_function(g, x, seen)))
         }
+        _ => false,
+    }
+}
+
+/// `t` holds the type of an action (D352).
+fn contains_action(t: &Ty) -> bool {
+    match t {
+        Ty::Fn(ps, r, act) => *act || ps.iter().any(contains_action) || contains_action(r),
+        Ty::Tuple(ts) => ts.iter().any(contains_action),
+        Ty::Record(fs) => fs.iter().any(|(_, t)| contains_action(t)),
+        Ty::Sum { args, .. } => args.iter().any(contains_action),
+        Ty::Array(_, e) => contains_action(e),
         _ => false,
     }
 }
@@ -3681,7 +3735,7 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
             K::Array(_, e) | K::BoundedArray(_, _, e) => mentions(e, names),
             K::Tuple(ts) => ts.iter().any(|a| mentions(a, names)),
             K::Record(fs) => fs.iter().any(|(_, a)| mentions(a, names)),
-            K::Fn(ps, r) => ps.iter().any(|a| mentions(a, names)) || mentions(r, names),
+            K::Fn(ps, r, _) => ps.iter().any(|a| mentions(a, names)) || mentions(r, names),
             K::Scalar(_) | K::Str | K::BigInt | K::Unit => false,
         }
     }
@@ -3932,7 +3986,7 @@ fn expand_aliases(p: &mut ast::Program, imports: &Imports) -> Result<()> {
             K::Array(_, e) | K::BoundedArray(_, _, e) => contains(e, target, aliases, depth),
             K::Tuple(ts) => ts.iter().any(|x| contains(x, target, aliases, depth)),
             K::Record(fs) => fs.iter().any(|(_, x)| contains(x, target, aliases, depth)),
-            K::Fn(ps, r) => ps.iter().any(|x| contains(x, target, aliases, depth)) || contains(r, target, aliases, depth),
+            K::Fn(ps, r, _) => ps.iter().any(|x| contains(x, target, aliases, depth)) || contains(r, target, aliases, depth),
             _ => false,
         }
     }
@@ -3949,7 +4003,7 @@ fn expand_aliases(p: &mut ast::Program, imports: &Imports) -> Result<()> {
             K::BoundedArray(k, sz, e) => K::BoundedArray(k.clone(), sz.clone(), Box::new(subst(e, gs, args))),
             K::Tuple(ts) => K::Tuple(ts.iter().map(|x| subst(x, gs, args)).collect()),
             K::Record(fs) => K::Record(fs.iter().map(|(n, x)| (n.clone(), subst(x, gs, args))).collect()),
-            K::Fn(ps, r) => K::Fn(ps.iter().map(|x| subst(x, gs, args)).collect(), Box::new(subst(r, gs, args))),
+            K::Fn(ps, r, act) => K::Fn(ps.iter().map(|x| subst(x, gs, args)).collect(), Box::new(subst(r, gs, args)), *act),
             k => k.clone(),
         };
         TypeExpr { kind, span: t.span }
@@ -4108,6 +4162,7 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         file: d.span.file,
         is_action: sig.is_action,
         lambda_depth: 0,
+        act_lambdas: 0,
         generics: sig.generics.clone(),
         syms: sig.syms.clone(),
         tvars: Vec::new(),

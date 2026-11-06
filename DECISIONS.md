@@ -7438,3 +7438,76 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     k)`, now of rule A (no copy left to remove): its recursion made not a
     tail call, so that the parameter stays borrowed and its copy is
     there.
+- **D352 — Actions as values (2026-11-06).** Asked by the author: a
+  handler of `serve` that prints, reads a file or calls another service
+  was refused (a `function` has no effect, D327), and "journaliser, c'est
+  réducteur, ça ne concernerait que le print"; the way of the pure
+  languages compared (Haskell: the handler of Warp an `IO` action, its
+  state in `IORef`, `MVar`, `STM`; Elm, Roc: effects as values, the state
+  threaded; Koka, Unison: effects in the types; Erlang: one process a
+  request, no shared memory), the author chose "la voie la plus
+  naturelle": the separation of `function` and `action` already in the
+  language, as Haskell's of pure code and `IO`.
+  - The language had no type of action: `f: action (i64) => i64` refused
+    by the parser; a function type (`Ty::Fn`) carries no effect; every
+    higher-order parameter is pure. So not only `http`: the servers of
+    `net`, a walk with effects over an array (no `forEach`), the wrappers
+    of actions (retry, timing, a folder made then removed).
+  - The rules (SPEC section 12, "Actions comme valeurs"): a type `action
+    (T...) => U`; a `function` accepted where it is expected (a pure
+    function is an action without effect), not the reverse; its values the
+    names of actions and functions, and the lambdas written in an action
+    (one that calls an action has an action type); its call an effect,
+    only in an action; no parameter of action type in a `function`;
+    compiled as the higher-order functions are (specialized for each
+    action given, a choice at run time by labels): no closure at run time;
+    called where it is written, in the order of the action; `map` and the
+    others stay pure.
+  - The library: `forEach(x, f)` in the prelude; `serveAction`,
+    `serveActionOn`, `serveTlsAction` in `http` and `https`, the requests
+    answered one at a time in the order they are ready; `serve` keeps its
+    pure handler and its parallel `map`. Actions run in parallel on the
+    pool only after the primitives of the runtime are checked from several
+    threads (the buffer of `print`, files, sockets, TLS): open in TODO.
+  - Done (2026-11-06). The type `action (T) => U`: a third field of the
+    function types (`Ty::Fn(ps, r, act)`, `TypeKind::Fn`), parsed after the
+    word `action`; unified so that an action found needs an action
+    expected; `can_act` true in an action whose enclosing lambdas are all
+    actions (`act_lambdas`); a lambda expected as an action where one can
+    act is one; the name of an action a value only in an action; the call
+    of an action value an effect; no parameter of an action type in a
+    `function`. The block of a lambda in an action lowered as an action
+    (the checker refusing its statements when the lambda is pure). Actions
+    may have type parameters (the parser refused them; nothing else did).
+    The interpreter runs the IR, where the actions given are already
+    specialized: unchanged. The ten programs: their IR the same.
+  - The message of a statement where no effect is allowed names the action
+    called and the reason: in a pure lambda of an action, in a `function`
+    (with the way to effects, `http.serveAction`).
+  - The prelude: `forEach`, and `mapAction` (the results of an action on
+    each element, in order: `U[]`, an array of its own size, since no value
+    of `U` fills an empty one; written in place by `.with` into an owned
+    accumulator, rule A: 20000 elements 20 ms, 80000 14 ms, linear).
+  - `serveActionLoop` of `http`: the requests ready found (pure), each
+    answered by the handler in its turn by `respondFrom` (a recursion that
+    takes `handler` as a parameter: a lambda that reads `handler` given to
+    the recursive `mapAction` is refused, "a recursive function given a
+    function that reads a function of its context", a limit of the POC, in
+    TODO), the bytes made (pure); the end shared with `serveLoop`
+    (`afterAnswers`). A first form built the responses by `concat(acc,
+    [out])`: quadratic, 19747.8 ns a request; then 2656.8.
+  - `bench/primitives/http.isc` gains `serveAction.pipelined` (the same
+    1600 requests answered by an action), its floor the same loop of
+    `epoll` in C measured again: one CPU at fixed frequency, 1764.63 ns
+    against 937.09 (1.9), `serve.pipelined` 1474.56 (1.6). The run also
+    gave `normalize` 229.85 -> 208.28 ns (D351) and `template` -9.4 %; four
+    forms of `strings` 5 to 9 % above the previous run, their IR the same:
+    A/B against the binary of 0.3.1, alternately, -0.3 to -2.6 %
+    (`template` -7.6 %): a drift between sessions.
+  - Tested by `actions.rs` (the uses allowed, interpreted and compiled on 1
+    and 4 threads, an action chosen at run time; the six uses refused and
+    their messages), `server_with_a_handler_that_is_an_action`
+    (`std_http.rs`: the requests of one connection printed in their order,
+    a file read, a pure function where an action is expected, `forEach`),
+    `net_on_windows` (the same program in the VM, compiled), the example
+    of `docs/language.md`.

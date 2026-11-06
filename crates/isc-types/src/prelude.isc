@@ -247,3 +247,40 @@ function delete<K extends Key, V>(m: Map<K, V>, k: K): Map<K, V> {
     const [ks, vs, order] = $mapParts(m);
     return $delete(ks, vs, order, k);
 }
+
+// `f` applied to each element of `x` from the `i`-th on, in order (D352)
+action forEachFrom<T>(x: T[n], f: action (T) => void, i: i64): void {
+    if (i < x.length) {
+        f(x[i]);
+        forEachFrom(x, f, i + 1);
+    }
+}
+
+// `f` applied to each element of `x`, in order, once each (D352)
+action forEach<T>(x: T[n], f: action (T) => void): void {
+    forEachFrom(x, f, 0);
+}
+
+// the results of `f` from the `i`-th element of `x` on, each written into
+// `acc` (owned: changed in place, D351) (D352)
+action mapActionFrom<T, U>(x: T[n], f: action (T) => U, i: i64, acc: U[n]): U[n] {
+    if (i == x.length) {
+        return acc;
+    }
+    const y = f(x[i]);
+    return mapActionFrom(x, f, i + 1, acc.with(i, y));
+}
+
+// the results of the action `f` applied to each element of `x`, in order,
+// once each, as many as `x` has (an array of its own size: no value of `U`
+// fills an empty one, D352)
+action mapAction<T, U>(x: T[n], f: action (T) => U): U[] {
+    return x.length == 0 ? [] : mapActionFirst(x, f);
+}
+
+// `mapAction` of `x` not empty: the first result fills the array the others
+// are written into (D352)
+action mapActionFirst<T, U>(x: T[n], f: action (T) => U): U[n] {
+    const first = f(x[0]);
+    return mapActionFrom(x, f, 1, fill(x.length, first));
+}

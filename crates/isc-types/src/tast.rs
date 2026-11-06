@@ -588,7 +588,7 @@ pub fn subst_params(t: &Ty, args: &[Ty]) -> Ty {
             Ty::Sum { id: *id, name: name.clone(), args: a.iter().map(|t| subst_params(t, args)).collect() }
         }
         Ty::Array(s, e) => Ty::Array(s.clone(), Box::new(subst_params(e, args))),
-        Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| subst_params(t, args)).collect(), Box::new(subst_params(r, args))),
+        Ty::Fn(ps, r, act) => Ty::Fn(ps.iter().map(|t| subst_params(t, args)).collect(), Box::new(subst_params(r, args)), *act),
         t => t.clone(),
     }
 }

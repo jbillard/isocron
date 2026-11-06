@@ -433,7 +433,7 @@ fn ty_syms(t: &Ty, out: &mut Vec<SymId>) {
         }
         Ty::Tuple(ts) => ts.iter().for_each(|x| ty_syms(x, out)),
         Ty::Record(fs) => fs.iter().for_each(|(_, x)| ty_syms(x, out)),
-        Ty::Fn(ps, r) => {
+        Ty::Fn(ps, r, _) => {
             ps.iter().for_each(|x| ty_syms(x, out));
             ty_syms(r, out);
         }
@@ -734,7 +734,7 @@ impl<'p> Lower<'p> {
                 Ty::Sum { id: *id, name: name.clone(), args: args.iter().map(|t| self.conc(env, t)).collect() }
             }
             Ty::Array(s, e) => Ty::Array(s.clone(), Box::new(self.conc(env, e))),
-            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|t| self.conc(env, t)).collect(), Box::new(self.conc(env, r))),
+            Ty::Fn(ps, r, act) => Ty::Fn(ps.iter().map(|t| self.conc(env, t)).collect(), Box::new(self.conc(env, r)), *act),
             t => t.clone(),
         }
     }

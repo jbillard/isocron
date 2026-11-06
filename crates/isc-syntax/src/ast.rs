@@ -156,7 +156,8 @@ pub enum TypeKind {
     BoundedArray(String, SizeExpr, Box<TypeExpr>),
     Tuple(Vec<TypeExpr>),
     Record(Vec<(String, TypeExpr)>),
-    Fn(Vec<TypeExpr>, Box<TypeExpr>),
+    /// `(T) => U`, or `action (T) => U` (true: an action, D352).
+    Fn(Vec<TypeExpr>, Box<TypeExpr>, bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -378,7 +379,7 @@ fn visit_type(t: &mut TypeExpr, f: &mut NameVisitor) -> crate::Result<()> {
                 visit_type(x, f)?;
             }
         }
-        TypeKind::Fn(ps, r) => {
+        TypeKind::Fn(ps, r, _) => {
             for x in ps.iter_mut() {
                 visit_type(x, f)?;
             }

@@ -350,6 +350,10 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] Arrays of their own size `T[]`: records of an array holding arrays of different sizes, function types of any sizes, JSON (D341)
   - [ ] The server above its floor: `serve.pipelined` 1.5 (D342: about 1600 user cycles a request more; 10.1 blocks, 4.1 copies of literal texts, 4.0 texts of bytes checked as UTF-8 again, 2 chains and a `join` a request, none in C): literals kept without a copy, a text of bytes already checked, fewer blocks for a request
   - [ ] Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
+  - [x] Actions as values (D352): the type `action (T) => U`, the checker, the lowering; `forEach`, `mapAction`; `serveAction`, `serveActionOn`, `serveTlsAction`; tests on Linux and in the VM; `serveAction.pipelined` 1.9 times its floor
+  - [ ] A lambda that reads a function of its context given to a recursive function ("not supported in the POC", SPEC section 11): `mapAction(xs, (x) => handler(x))` refused (D352)
+  - [ ] Actions in parallel on the pool: the primitives of the runtime checked from several threads (the buffer of `print`, files, sockets, TLS), then `serveAction` by `map` of actions (D352)
+  - [ ] A state between the requests: `action (S, Request) => [S, Response]` (D352, after the two above)
   - [ ] The server against servers of C made for production (nginx, h2o) under a generator of load (wrk), from 1 to thousands of connections, 1 and 4 threads, in the Docker image of the benchmarks (asked by the author, 2026-11-05): until then only `serve.pipelined` against a loop of `epoll` written for the same work (1.5)
 - [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)

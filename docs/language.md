@@ -1905,8 +1905,8 @@ true
 
 Input/output is only possible in an `action`. The statements of an action run
 in order, and the compiler never removes or reorders one. An action can call
-other actions and functions; a `function` (and a lambda) cannot call an
-action.
+other actions and functions; a `function` cannot call an action, nor can a
+lambda unless it is itself an action ([actions as values](#actions-as-values)).
 
 | Action | Type | Effect |
 | --- | --- | --- |
@@ -2039,6 +2039,54 @@ action main(args: string[k]): i32 {
 Without its arguments, the program prints its usage and exits with code 2;
 reading `args[0]` when there is none would be a panic (an index out of
 bounds).
+
+### Actions as values
+
+An action can be given as an argument, as a function can: its type is
+`action (T) => U`. A `function` is accepted where an action is expected (a
+pure function is an action without effect), not the reverse. A lambda
+written where an action is expected is an action: it may print, read or
+write. Calling such a value is an effect, so only an `action` can do it,
+and a `function` has no parameter of an action type. `map`, `fold` and the
+other functions of arrays stay pure: `forEach(x, f)` applies an action to
+each element, in order. An action can have type parameters.
+
+```isc
+action twice(f: action (i64) => i64, x: i64): i64 {
+    const a = f(x);
+    return f(a);
+}
+
+action shown(x: i64): i64 {
+    print(`shown ${x}`);
+    return x + 1;
+}
+
+function doubled(x: i64): i64 {
+    return 2 * x;
+}
+
+action main(args: string[k]): i32 {
+    print(twice(shown, 1));
+    print(twice(doubled, 5));
+    forEach(["a", "b"], (s) => {
+        print(`each ${s}`);
+    });
+    return 0;
+}
+```
+
+```output
+shown 1
+shown 2
+3
+20
+each a
+each b
+```
+
+Each call is compiled for the action it receives, as the higher-order
+functions are: no closure at run time.
 
 ### C functions: `declare function`
 
@@ -2691,6 +2739,13 @@ parallel, without a race. Connections are kept alive (HTTP/1.1, unless
 `chunked` 501, a body too long 413, without the handler. Each response
 has `Date` and `Content-Length`; `textResponse(status, s)` makes one of
 text.
+
+A handler that needs effects (print, read a file, call another service)
+is an action, given to `serveAction(port, handler)` or
+`serveActionOn(l, handler, limit)`: `action (Request) => Response`
+([actions as values](#actions-as-values)). The requests are then answered
+one at a time, in the order they are ready; a pure handler given to them
+works too. `https` has `serveTlsAction` and `serveTlsActionOn`.
 
 ```isc
 import * as http from "http";

@@ -1,0 +1,9 @@
+handled: GET /a x=1
+handled: POST /b 
+handled: GET /c 
+served
+HTTP/1.1 200 OK | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 14 |  | from a file /aHTTP/1.1 200 OK | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 14 |  | from a file /bHTTP/1.1 200 OK | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 14 | Connection: close |  | from a file /c
+served
+HTTP/1.1 200 OK | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 7 | Connection: close |  | pure /p
+each one
+each two

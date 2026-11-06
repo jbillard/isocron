@@ -242,5 +242,11 @@ int main(int argc, char **argv) {
     double st = 0;
     for (long k = 0; k < sr; k++) st += serve_round(&bytes);
     printf("serve.pipelined %.3f %ld\n", st * 1e9 / (sr * CONNS * PER_CONN), bytes / (sr * CONNS * PER_CONN));
+    // the same server measured again for `serveAction` (D352): the floor of
+    // a server that answers one request at a time is this loop too
+    st = 0;
+    bytes = 0;
+    for (long k = 0; k < sr; k++) st += serve_round(&bytes);
+    printf("serveAction.pipelined %.3f %ld\n", st * 1e9 / (sr * CONNS * PER_CONN), bytes / (sr * CONNS * PER_CONN));
     return 0;
 }

@@ -1,0 +1,67 @@
+// D352: a handler that is an action: it prints each request and reads a
+// file, the requests answered one at a time in their order; a pure function
+// given where an action is expected. The file: in the current folder.
+import * as http from "http";
+import * as net from "net";
+import * as sys from "sys";
+
+const FILE = "isc-serve-action.txt";
+
+action logged(r: http.Request): http.Response {
+    print(`handled: ${r.method} ${r.path} ${r.query}`);
+    const text = match (sys.readText(FILE)) {
+        Ok(t) => t,
+        Err(e) => sys.message(e),
+    };
+    return http.textResponse(200, `${text} ${r.path}`);
+}
+
+function pure(r: http.Request): http.Response {
+    return http.textResponse(200, `pure ${r.path}`);
+}
+
+// the bytes of `c` to the end of its stream
+action readAll(c: net.Conn, acc: string): string {
+    return match (net.read(c, 65536)) {
+        Ok(b) => b.length == 0 ? acc : readAll(c, acc + stringOf(b)),
+        Err(e) => acc + "<error>",
+    };
+}
+
+// the requests `rs` on one connection, the server run with `handler` until it
+// has answered `n`, then the responses printed (their dates hidden)
+action once(handler: action (http.Request) => http.Response, rs: string, n: i64): void {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            match (net.connect("127.0.0.1", net.port(l))) {
+                Ok(c) => {
+                    const w = net.writeText(c, rs);
+                    match (http.serveActionOn(l, handler, n)) {
+                        Ok(_) => print("served"),
+                        Err(e) => print(`serve failed: ${sys.message(e)}`),
+                    };
+                    const lines = map(readAll(c, "").split("\r\n"), (x) => x.startsWith("Date: ") ? "Date: -" : x);
+                    print(join(lines, " | "));
+                    net.close(c);
+                },
+                Err(e) => {
+                    print("connect failed");
+                    net.closeListener(l);
+                },
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const made = sys.writeText(FILE, "from a file");
+    const rs = "GET /a?x=1 HTTP/1.1\r\nHost: h\r\n\r\nPOST /b HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\nGET /c HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n";
+    once(logged, rs, 3);
+    once(pure, "GET /p HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n", 1);
+    forEach(["one", "two"], (s) => {
+        print(`each ${s}`);
+    });
+    const gone = sys.remove(FILE);
+    return 0;
+}

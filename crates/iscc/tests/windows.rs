@@ -309,6 +309,9 @@ fn net_on_windows() {
     // the server of HTTP on requests of every form (D342: `WSAPoll`)
     let d = dir("http_serve");
     same_on_windows(&runner, include_str!("data/std_http_serve.isc"), "http_serve", &d, &[], None);
+    // a handler that is an action (D352): it prints and reads a file
+    let d = dir("http_serve_action");
+    same_on_windows(&runner, include_str!("data/std_http_serve_action.isc"), "http_serve_action", &d, &[], None);
 }
 
 /// D343: the client of HTTPS on Windows (SChannel) against two servers of

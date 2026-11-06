@@ -577,6 +577,19 @@ Les effets n'existent que dans les `action`, qui forment la couche extérieure d
 - `declare function` déclare une fonction C (ABI System V x86-64), appelable uniquement depuis une `action`.
 - En v0, une erreur d'entrée/sortie est une panne.
 
+### Actions comme valeurs (décision D352)
+
+Une action peut être passée en argument, comme une fonction, pour les serveurs, les parcours avec effets et les enveloppes d'actions (réessayer, mesurer, nettoyer).
+
+- **Le type** `action (T1, ..., Tn) => U` est celui d'une action qui prend ces paramètres et rend `U`. Une `function` de type `(T1, ..., Tn) => U` est acceptée là où ce type est attendu : une fonction pure est une action sans effet. L'inverse est une erreur de typage.
+- **Ses valeurs** : le nom d'une `action` ou d'une `function` déclarée, ou une lambda écrite dans une action. Une lambda dont le corps appelle une action a le type `action`.
+- **L'appel** d'une valeur de type `action` est un effet : il n'est permis que dans une `action`. Une `function` ne peut pas avoir de paramètre de type `action`.
+- **La compilation** est celle des fonctions d'ordre supérieur : chaque appel est spécialisé pour l'action reçue, et un choix connu seulement à l'exécution devient un aiguillage sur des étiquettes. Aucune fermeture à l'exécution.
+- **L'ordre** : l'appel s'exécute là où il est écrit, dans l'ordre des instructions de l'action, comme tout appel d'action. `map`, `fold` et les autres restent purs ; leurs fonctions ne peuvent pas être des actions.
+- **Le prélude** ajoute `forEach(x, f)`, de type `action (T[n], action (T) => void) => void` : `f` appliquée à chaque élément, dans l'ordre, une seule fois chacun.
+- **Les serveurs** (`http`, `https`) ajoutent `serveAction(port, handler)`, `serveActionOn(l, handler, limit)` et `serveTlsAction(port, cert, key, handler)`, de handler `action (Request) => Response`. Les requêtes sont traitées une à une, dans l'ordre où elles sont prêtes. `serve`, au handler pur, reste parallèle. L'exécution des actions en parallèle sur le pool viendra après l'audit des primitives du runtime appelées depuis plusieurs threads.
+- L'interpréteur et le code compilé donnent les mêmes résultats.
+
 ### Ordre d'exécution dans une `action`
 
 Les instructions d'une `action` s'exécutent dans l'ordre écrit, **calculs purs compris** : la valeur d'un `const` est entièrement calculée avant l'instruction suivante. Le compilateur ne peut ni la déplacer au-delà d'une autre instruction, ni la supprimer, même si elle n'est pas utilisée ensuite. Sans cette règle, un calcul pur pourrait légalement sortir de la zone chronométrée (section 5, ordre libre).
@@ -869,7 +882,7 @@ But : des programmes de calcul qui sortent de leur fichier d'entrée. Ils lisent
    - ses tests sous Linux et dans la machine virtuelle Windows.
 
    Une primitive reçoit et rend des scalaires, des chaînes, des tableaux et des tuples, jamais d'adresse. Son résultat est un tuple `[valeur, code]`, où `code` est `0` ou l'erreur du système, comme les primitives `_or_error` de D138. Le module construit lui-même les `Result` (D323).
-3. **Les effets restent dans les actions.** Toute fonction qui lit ou change le système, l'horloge ou le réseau est une `action`. Une `function` reste pure. C'est ce qui permet à `serve` d'appeler son handler en parallèle (D327).
+3. **Les effets restent dans les actions.** Toute fonction qui lit ou change le système, l'horloge ou le réseau est une `action`. Une `function` reste pure. C'est ce qui permet à `serve` d'appeler son handler en parallèle (D327). Un handler qui a besoin d'effets (lire un fichier, appeler un autre service, journaliser) est une `action`, donnée à `serveAction`, qui traite les requêtes une à une (D352).
 4. **Les erreurs du système sont des valeurs.** Toute action qui peut échouer pour une raison extérieure au programme rend `Result<T, IoError>`. Les erreurs sont un fichier absent, un droit refusé ou une connexion refusée. Une panne reste réservée aux erreurs de programmation (D323) :
 
    ```

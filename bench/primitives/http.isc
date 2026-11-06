@@ -17,6 +17,11 @@ function hello(r: http.Request): http.Response {
     return http.textResponse(200, "hello, world!");
 }
 
+// the same answer by an action (D352): `serveActionOn`, one request at a time
+action helloAction(r: http.Request): http.Response {
+    return http.textResponse(200, "hello, world!");
+}
+
 // the bytes of `c` until `want` of them
 action readSome(c: net.Conn, got: i64, want: i64): i64 {
     if (got >= want) {
@@ -31,16 +36,16 @@ action readSome(c: net.Conn, got: i64, want: i64): i64 {
 // `n` connections to `port`, the requests written on each, the server run,
 // then the responses read: the nanoseconds of the server and the bytes of
 // the responses
-action conns(l: net.Listener, port: i64, n: i64, requests: string): [u64, i64] {
+action conns(l: net.Listener, port: i64, n: i64, requests: string, act: boolean): [u64, i64] {
     if (n == 0) {
         const t0 = clock();
-        const r = http.serveOn(l, hello, CONNS * PER_CONN);
+        const r = act ? http.serveActionOn(l, helloAction, CONNS * PER_CONN) : http.serveOn(l, hello, CONNS * PER_CONN);
         return [clock() - t0, 0] as const;
     }
     return match (net.connect("127.0.0.1", port)) {
         Ok(c) => {
             const w = net.writeText(c, requests);
-            const [t, got] = conns(l, port, n - 1, requests);
+            const [t, got] = conns(l, port, n - 1, requests, act);
             const mine = readSome(c, 0, 1099511627776);
             net.close(c);
             return [t, got + mine] as const;
@@ -53,7 +58,7 @@ action conns(l: net.Listener, port: i64, n: i64, requests: string): [u64, i64] {
 }
 
 // `r` rounds of the server: its nanoseconds and the bytes answered
-action serveRounds(r: i64, t: u64, bytes: i64): [u64, i64] {
+action serveRounds(r: i64, t: u64, bytes: i64, act: boolean): [u64, i64] {
     if (r == 0) {
         return [t, bytes] as const;
     }
@@ -61,8 +66,8 @@ action serveRounds(r: i64, t: u64, bytes: i64): [u64, i64] {
     return match (net.listen("127.0.0.1", 0)) {
         Ok(l) => {
             const port = net.port(l);
-            const [dt, got] = conns(l, port, CONNS, requests);
-            return serveRounds(r - 1, t + dt, bytes + got);
+            const [dt, got] = conns(l, port, CONNS, requests, act);
+            return serveRounds(r - 1, t + dt, bytes + got, act);
         },
         Err(e) => [t, -1] as const,
     };
@@ -110,7 +115,9 @@ action main(args: string[k]): i32 {
     };
     // the server: a tenth of the rounds, each of 1600 requests
     const sr = Math.max(r / 10, 1);
-    const [st, sb] = serveRounds(sr, 0u64, 0);
+    const [st, sb] = serveRounds(sr, 0u64, 0, false);
     print(`serve.pipelined ${f64(st) / f64(sr * CONNS * PER_CONN)} ${sb / (sr * CONNS * PER_CONN)}`);
+    const [at, ab] = serveRounds(sr, 0u64, 0, true);
+    print(`serveAction.pipelined ${f64(at) / f64(sr * CONNS * PER_CONN)} ${ab / (sr * CONNS * PER_CONN)}`);
     return 0;
 }

@@ -361,3 +361,26 @@ fn server_against_clients_of_the_test() {
         assert_eq!((o.status.code(), rest.as_str()), (Some(0), "done\n"), "{}: {}", name, String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// D352: a handler that is an action (`serveActionOn`): it prints each
+/// request and reads a file, the requests of one connection answered one at
+/// a time in their order; a pure function where an action is expected;
+/// `forEach` with a lambda that prints. Run in a folder of its own, the
+/// interpreter (`iscc run`) and compiled on 1 and 4 threads: the same output.
+#[test]
+fn server_with_a_handler_that_is_an_action() {
+    let src = include_str!("data/std_http_serve_action.isc");
+    let want = include_str!("data/std_http_serve_action.out");
+    let d = tmp("std_http_serve_action_dir");
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("serve_action.isc"), src).unwrap();
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_iscc")).args(["run", "serve_action.isc"]).current_dir(&d).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout), want, "interpreter: {}", String::from_utf8_lossy(&o.stderr));
+    let bin = compile(src, "std_http_serve_action");
+    for t in ["1", "4"] {
+        let o = std::process::Command::new(&bin).current_dir(&d).env("ISC_THREADS", t).output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(0), want.to_string()), "compiled, {} threads", t);
+    }
+    assert!(!d.join("isc-serve-action.txt").exists(), "the file of the test left");
+}

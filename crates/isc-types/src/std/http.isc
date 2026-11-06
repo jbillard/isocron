@@ -788,6 +788,75 @@ function owner(ends: i64[], j: i64, lo: i64, hi: i64): i64 {
     return ends[mid] > j ? owner(ends, j, lo, mid) : owner(ends, j, mid + 1, hi);
 }
 
+// after the responses `outs` to the requests ready: sent, the connections
+// closed after their last response or whose send failed, the bytes after the
+// requests kept for the next ones (the two loops, D352)
+action afterAnswers(s: net.Server, ps: Pending[n], readies: Ready[n], outs: Out[k]): Pending[] {
+    const failed = sendAll(s, outs, 0, []);
+    // the connections closed after their last response, or whose send
+    // failed; the bytes after the requests kept for the next ones
+    const closing = map(filter(iota(ps.length), (i) => readies[i].closes || count(failed, (x) => x == ps[i].id) > 0), (i) => ps[i].id);
+    closeAll(s, closing, 0);
+    return map(filter(iota(ps.length), (i) => count(closing, (x) => x == ps[i].id) == 0), (i) => readies[i].used == 0 ? ps[i] : pendingOf(ps[i].id, ps[i].buf.slice(readies[i].used, ps[i].buf.length)));
+}
+
+// the responses to the requests ready from the `j`-th on, each asked to the
+// action `handler` in its turn (a fault answered without it), written into
+// `acc` (owned: changed in place, rule A of D351) (D352)
+action respondFrom(handler: action (Request) => Response, ps: Pending[n], readies: Ready[n], items: [i64, i64][m], j: i64, acc: Response[m]): Response[m] {
+    if (j == items.length) {
+        return acc;
+    }
+    const [i, k] = items[j];
+    const r = readies[i];
+    const f = r.frames[k];
+    const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[i].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
+    return respondFrom(handler, ps, readies, items, j + 1, acc.with(j, response));
+}
+
+// the loop of `serveAction`: as `serveLoop`, the requests ready answered one
+// at a time by the action `handler` (D352)
+action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps: Pending[n], answered: i64, limit: i64): Result<void, IoError> {
+    const readies = map(ps, (p) => readyOf(p.buf));
+    const counts = map(readies, (r) => r.ends.length);
+    const upto = scan(counts, (a, b) => a + b, 0);
+    const total = upto.length == 0 ? 0 : upto[upto.length - 1];
+    if (total == 0) {
+        return match (net.wait(s, READ_LIMIT, -1)) {
+            Ok(xs) => {
+                const [next, ended] = arrive(ps, xs);
+                closeAll(s, ended, 0);
+                return serveActionLoop(s, handler, next, answered, limit);
+            },
+            Err(e) => {
+                net.closeServer(s);
+                return Err(e);
+            },
+        };
+    }
+    const date = httpDate(time.now());
+    // the requests ready (a connection, a request of it), each answered by
+    // `handler` in its turn, a fault without it; then the bytes to send
+    const items = map(iota(total), (j) => {
+        const i = owner(upto, j, 0, upto.length);
+        return [i, j - (upto[i] - counts[i])] as const;
+    });
+    const responses = respondFrom(handler, ps, readies, items, 0, fill(total, textResponse(500, "")));
+    const outs = map(iota(total), (j) => {
+        const [i, k] = items[j];
+        const f = readies[i].frames[k];
+        const keep = f.fault == 0 && f.keep;
+        return outOf(ps[i].id, responseBytes(responses[j], keep, f.head, date), keep);
+    });
+    const left = afterAnswers(s, ps, readies, outs);
+    const all = answered + total;
+    if (limit > 0 && all >= limit) {
+        net.closeServer(s);
+        return Ok(());
+    }
+    return serveActionLoop(s, handler, left, all, limit);
+}
+
 // the loop of the server: the requests ready answered, all at once (the
 // handler by `map`, in parallel), else the bytes that come waited for;
 // `answered` requests so far, until `limit` (0: no end)
@@ -819,12 +888,7 @@ action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], 
         const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[i].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
         return outOf(ps[i].id, responseBytes(response, keep, f.head, date), keep);
     });
-    const failed = sendAll(s, outs, 0, []);
-    // the connections closed after their last response, or whose send
-    // failed; the bytes after the requests kept for the next ones
-    const closing = map(filter(iota(ps.length), (i) => readies[i].closes || count(failed, (x) => x == ps[i].id) > 0), (i) => ps[i].id);
-    closeAll(s, closing, 0);
-    const left = map(filter(iota(ps.length), (i) => count(closing, (x) => x == ps[i].id) == 0), (i) => readies[i].used == 0 ? ps[i] : pendingOf(ps[i].id, ps[i].buf.slice(readies[i].used, ps[i].buf.length)));
+    const left = afterAnswers(s, ps, readies, outs);
     const all = answered + total;
     if (limit > 0 && all >= limit) {
         net.closeServer(s);
@@ -853,6 +917,31 @@ export action serveServer(s: net.Server, handler: (Request) => Response, limit: 
 export action serve(port: i64, handler: (Request) => Response): Result<void, IoError> {
     return match (net.listen("0.0.0.0", port)) {
         Ok(l) => serveOn(l, handler, 0),
+        Err(e) => Err(e),
+    };
+}
+
+// the requests to the listener `l` (taken) answered one at a time by the
+// action `handler`, until `limit` of them (0: no end) (D352)
+export action serveActionOn(l: net.Listener, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
+    return match (net.serverOf(l)) {
+        Ok(s) => serveActionLoop(s, handler, [], 0, limit),
+        Err(e) => Err(e),
+    };
+}
+
+// the requests to the server `s` of `net` (taken: one of TLS, `https`)
+// answered one at a time by the action `handler` (D352)
+export action serveActionServer(s: net.Server, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
+    return serveActionLoop(s, handler, [], 0, limit);
+}
+
+// the requests to `port` of every address of the machine answered one at a
+// time by the action `handler` (it may print, read files, call other
+// services), with no end (D352)
+export action serveAction(port: i64, handler: action (Request) => Response): Result<void, IoError> {
+    return match (net.listen("0.0.0.0", port)) {
+        Ok(l) => serveActionOn(l, handler, 0),
         Err(e) => Err(e),
     };
 }
