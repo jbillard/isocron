@@ -8890,3 +8890,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `http.headerOf` 14.6, `http.httpDate` 11.1, `http.message` 10.3,
   `json.quote.plain` 9.4, `http.text.1k` 9.3, `http.textResponse` 8.4,
   `sha256.hex.32` 7.9, `http.parseUrl` 5.7, `json.message` 4.0 (TODO).
+- **D395 — The names of headers compared byte by byte, the case of ASCII
+  ignored (2026-11-07).** D394: `http.headerOf` and `header` 14.6 and 14.7
+  times their floor (379 ns for 8 headers): each name made in lower case by
+  `toLowerCase` to be compared, and the headers found put in an array. Now
+  `sameName` compares the lengths then the bytes, each in lower case for
+  ASCII, and a `fold` keeps the place of the last one found: no text, no
+  array. SPEC said « sans casse »: the case of ASCII only now, as RFC 9110
+  compares the names of fields (tokens of ASCII; the module already refuses
+  to send a name that is not one, `tokenOk`): a name that is not ASCII is
+  compared by its bytes (`été` no longer finds `Été`, as `toLowerCase` made
+  it). A version that kept `toLowerCase` for the names that are not ASCII
+  (a letter of Unicode in lower case may change the length, or be one of
+  ASCII: the sign of Kelvin) scanned each name for them: 92 ns, not kept.
+  The floor in C, `strcasecmp`, was beaten: now the lengths then the bytes
+  too. Measured (one CPU, fixed frequency, 7 alternated runs of 200
+  rounds): `headerOf` 378.77 -> 19.05 ns, `header` 379.57 -> 20.62 ns;
+  against the floor 1.6 and 1.7. Test `header_of_by_bytes` (`std_http.rs`:
+  the last of a name, mixed cases, a name missing, empty, a prefix, longer,
+  not ASCII; interpreted and compiled); SPEC section 18, the guide.

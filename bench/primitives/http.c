@@ -242,15 +242,24 @@ static void pure_forms(long r) {
     static const char *hk[8] = {"Server", "Content-Type", "Content-Length", "Date", "Connection", "X-Id", "Cache-Control", "Vary"};
     static const char *hv[8] = {"isc", "text/plain", "13", "now", "keep-alive", "42", "no-cache", "Accept"};
     static const char *names[8] = {"content-length", "date", "x-id", "vary", "server", "missing", "CONNECTION", "cache-control"};
+    long klen[8], vlen[8], nlen[8];
+    for (int j = 0; j < 8; j++) klen[j] = strlen(hk[j]), vlen[j] = strlen(hv[j]), nlen[j] = strlen(names[j]);
     for (int form = 0; form < 2; form++) {
         clock_gettime(CLOCK_MONOTONIC, &t0);
         for (long k = 0; k < r; k++) {
             acc = 0;
             for (long i = 0; i < M; i++) {
-                const char *found = 0;
-                for (int j = 0; j < 8; j++)
-                    if (!strcasecmp(hk[j], names[i % 8])) found = hv[j];
-                acc += found ? (long)strlen(found) : 0;
+                // the lengths first, then the bytes, the case of ASCII ignored
+                // (D395: `strcasecmp` was beaten)
+                const char *found = 0, *nm = names[i % 8];
+                long nl = nlen[i % 8];
+                for (int j = 0; j < 8; j++) {
+                    if (klen[j] != nl) continue;
+                    long q = 0;
+                    while (q < nl && (hk[j][q] | 32) == (nm[q] | 32)) q++;
+                    if (q == nl) found = hv[j];
+                }
+                acc += found ? (long)vlen[found == hv[0] ? 0 : found == hv[1] ? 1 : found == hv[2] ? 2 : found == hv[3] ? 3 : found == hv[4] ? 4 : found == hv[5] ? 5 : found == hv[6] ? 6 : 7] : 0;
             }
         }
         clock_gettime(CLOCK_MONOTONIC, &t1);

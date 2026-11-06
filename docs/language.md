@@ -2788,7 +2788,7 @@ ping
 
 The client of HTTP/1.1: `get(url)` and `request(method, url, headers,
 body)` give a `Response` (`status`, `headers` as pairs, `body` in bytes;
-`header(r, name)` a header, its case ignored; `text(r)` the body as text)
+`header(r, name)` a header, the case of ASCII ignored (RFC 9110); `text(r)` the body as text)
 or an `HttpError` (`Io`, `Malformed`, `TooLarge`, `BadUrl`; `message(e)`
 its text). The body is read by its length, by chunks or to the end of the
 stream; a redirection is given as it is. `parseUrl(url)` gives the scheme,

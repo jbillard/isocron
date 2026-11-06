@@ -343,16 +343,27 @@ function utf8(b: u8[n]): boolean {
 
 // the value of the header `name` (its case ignored) of `hs`, the last one
 export function headerOf(hs: [string, string][k], name: string): Option<string> {
-    const low = name.toLowerCase();
-    const found = filter(hs, (h) => {
-        const [k, v] = h;
-        return k.toLowerCase() == low;
+    // each name compared to `name` byte by byte, the case of ASCII ignored:
+    // no text made for it, nor an array of those found (D395: 14.6 times
+    // its floor, a text in lower case for each header)
+    const at = fold(iota(hs.length), -1, (a, i) => {
+        const [k, v] = hs[i];
+        return sameName(k, name) ? i : a;
     });
-    if (found.length == 0) {
+    if (at < 0) {
         return None;
     }
-    const [k, v] = found[found.length - 1];
+    const [k, v] = hs[at];
     return Some(v);
+}
+
+// `k` and `n` the same name of a header, the case of ASCII ignored, as RFC
+// 9110 compares the names of fields (tokens of ASCII); the other bytes as
+// they are (D395)
+function sameName(k: string, n: string): boolean {
+    const b = bytes(k);
+    const w = bytes(n);
+    return b.length == w.length && count(iota(w.length), (i) => lower(b[i]) != lower(w[i])) == 0;
 }
 
 // the value of the header `name` of the response `r`

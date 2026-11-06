@@ -7,18 +7,16 @@ nanoseconds of one call, ranked by Isocron over its floor.
 
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
 | :-- | :-- | --: | --: | --: |
-| http | `header` | 379.41 | 25.77 | 14.7 |
-| http | `headerOf` | 378.91 | 25.93 | 14.6 |
 | json | `quote.escaped` | 272.74 | 19.39 | 14.1 |
 | time | `format` | 440.51 | 36.44 | 12.1 |
-| http | `httpDate` | 142.09 | 12.85 | 11.1 |
-| http | `message` | 12.97 | 1.26 | 10.3 |
+| http | `message` | 13.07 | 1.15 | 11.4 |
+| http | `httpDate` | 148.43 | 13.09 | 11.3 |
+| http | `textResponse` | 21.97 | 2.19 | 10.0 |
 | json | `quote.plain` | 15.45 | 1.65 | 9.4 |
-| http | `text.1k` | 148.76 | 15.93 | 9.3 |
-| http | `textResponse` | 21.04 | 2.52 | 8.4 |
 | sha256 | `hex.32` | 20.70 | 2.63 | 7.9 |
+| http | `text.1k` | 151.01 | 20.36 | 7.4 |
 | sys | `envAll` | 4110.27 | 586.36 | 7.0 |
-| http | `parseUrl` | 109.00 | 19.06 | 5.7 |
+| http | `parseUrl` | 111.56 | 18.75 | 5.9 |
 | json | `decode` | 450.35 | 87.59 | 5.1 |
 | json | `parse` | 851.03 | 166.89 | 5.1 |
 | strings | `padStart` | 9.71 | 1.96 | 4.9 |
@@ -28,8 +26,8 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sys | `ioError.message` | 48.37 | 14.34 | 3.4 |
 | sys | `isAbsolute` | 1.64 | 0.56 | 3.0 |
 | sys | `dirname` | 8.64 | 3.20 | 2.7 |
-| http | `exchange.chunked64` | 48584.69 | 19877.53 | 2.4 |
 | strings | `split.6` | 77.42 | 32.05 | 2.4 |
+| http | `exchange.chunked64` | 48496.92 | 20359.78 | 2.4 |
 | strings | `trim` | 14.05 | 6.00 | 2.3 |
 | sys | `readFile.4k` | 4241.62 | 1874.59 | 2.3 |
 | strings | `indexOf.1` | 6.72 | 3.08 | 2.2 |
@@ -42,9 +40,11 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `endsWith.2` | 1.79 | 1.01 | 1.8 |
 | time | `formatDateTime` | 84.84 | 48.45 | 1.8 |
 | strings | `lines.line` | 14.77 | 8.48 | 1.7 |
+| http | `header` | 20.60 | 11.83 | 1.7 |
 | time | `formatIso` | 81.62 | 47.98 | 1.7 |
 | strings | `toUpperCase` | 17.71 | 10.45 | 1.7 |
 | sys | `extension` | 12.32 | 7.37 | 1.7 |
+| http | `headerOf` | 19.06 | 11.74 | 1.6 |
 | time | `parseIso` | 36.99 | 23.48 | 1.6 |
 | strings | `equal` | 4.90 | 3.13 | 1.6 |
 | strings | `slice` | 1.99 | 1.32 | 1.5 |
@@ -52,15 +52,15 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sha256 | `digest.55` | 426.59 | 285.60 | 1.5 |
 | strings | `startsWith.1` | 1.74 | 1.17 | 1.5 |
 | sha256 | `digest.4k` | 25806.44 | 17455.28 | 1.5 |
-| http | `serve.action.pipelined` | 1379.28 | 952.45 | 1.4 |
 | strings | `startsWith.8` | 1.72 | 1.19 | 1.4 |
 | strings | `less` | 4.93 | 3.45 | 1.4 |
+| http | `serve.action.pipelined` | 1363.89 | 957.03 | 1.4 |
 | strings | `template` | 14.76 | 10.55 | 1.4 |
-| http | `serve.pipelined` | 1321.67 | 952.36 | 1.4 |
-| http | `exchange.small` | 7444.49 | 5602.80 | 1.3 |
+| http | `serve.pipelined` | 1311.53 | 959.67 | 1.4 |
 | sys | `cwd` | 437.40 | 332.58 | 1.3 |
 | sys | `makeDir.remove` | 3776.05 | 2913.41 | 1.3 |
 | sys | `join` | 6.80 | 5.26 | 1.3 |
+| http | `exchange.small` | 7071.57 | 5683.38 | 1.2 |
 | time | `isLeapYear` | 0.73 | 0.59 | 1.2 |
 | sys | `listDir.66` | 11126.11 | 9037.07 | 1.2 |
 | strings | `join.line` | 5.36 | 4.43 | 1.2 |

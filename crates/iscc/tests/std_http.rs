@@ -469,3 +469,28 @@ fn loops_on_each_thread(src: &str, name: &str) {
         assert_eq!(answered, 64 * 50, "{}: {}", name, String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// D395: `headerOf` compares the names byte by byte, the case of ASCII
+/// ignored, without making texts: the last header of a name, its case
+/// mixed; a name missing, empty, a prefix of another, longer; only the
+/// case of ASCII ignored, as RFC 9110 compares the names of fields (`été`
+/// does not find `Été`). The interpreter and compiled.
+#[test]
+fn header_of_by_bytes() {
+    let src = "import * as http from \"http\";
+
+action main(args: string[k]): i32 {
+    const hs = [[\"X-Id\", \"1\"] as const, [\"Server\", \"a\"] as const, [\"x-ID\", \"2\"] as const, [\"X-Ids\", \"3\"] as const, [\"Été\", \"4\"] as const, [\"\", \"5\"] as const];
+    const names = [\"x-id\", \"X-ID\", \"server\", \"x-ids\", \"x-i\", \"missing\", \"été\", \"Été\", \"\"];
+    forEach(names, (n) => {
+        print(`${n}=${http.headerOf(hs, n) ?? \"-\"}`);
+    });
+    return 0;
+}
+";
+    let want = "x-id=2\nX-ID=2\nserver=a\nx-ids=3\nx-i=-\nmissing=-\nété=-\nÉté=4\n=5\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "header_of_by_bytes");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}
