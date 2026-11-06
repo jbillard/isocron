@@ -8487,3 +8487,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (D371), not more work.
   - Tested by the whole suite (its runs under Valgrind among them: a write
     into a block of 0 bytes would now be a fault in read-only memory).
+- **D380 — The runtimes embedded in `iscc` kept as they are, measured
+  (2026-11-06).** TODO.md asked for a smaller `iscc`, its runtimes
+  compressed. `iscc` is 66895400 bytes, its six runtimes 43348588 of them
+  (8193344, 8426600, 8451420 for x86-64 and its levels v3 and v4, 5657162
+  and 5711684 for WebAssembly, 6908378 for Windows); compressed by `gzip
+  -6`, 10721556 bytes. But each build writes the runtime it links next to
+  the object file: inflating it first costs 31 to 34 ms with `gzip -d` for
+  the 8193344 bytes of x86-64, where a whole build of a small program
+  takes 38 to 49 ms (239 ms the first time). The archives of the releases
+  are compressed already (`tar.gz`, `zip`): the download gains little.
+  Not done: the size of the installed `iscc` is not worth the time of every
+  build; an inflated copy kept between builds would remove that time, with
+  a cache to keep valid.

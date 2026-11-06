@@ -243,7 +243,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] Windows: the runtimes for x86-64-v3 and v4, the console in UTF-8, the MSVC ABI, timings
   - [x] An iscc that needs nothing else, on Linux (glibc from 2.28 on) and on Windows: LLVM and LLD inside (D248)
   - [x] A first release, 0.1.0: the compilers for Linux and Windows, LICENSE, the notices of third parties, the archives, the measurements published again (D249)
-  - [ ] A smaller iscc: the embedded runtimes compressed
+  - [x] A smaller iscc: the embedded runtimes compressed, closed by measure: 43348588 -> 10721556 bytes with gzip, but 31 to 34 ms to inflate one at each build of 38 to 49 ms, and the archives compressed already: not done (D380)
   - [x] Programs for Windows with only the functions they use: a hello 1.5 MB -> 54 KB (D250)
   - [x] Release 0.1.1: the programs for Windows of D250, `iscc --version` (D251)
   - [x] The floor of fasta redone: one period of the generator (139968 values) and the output made from tables, not 2e8 numbers (D233)
