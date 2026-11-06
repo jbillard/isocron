@@ -541,6 +541,12 @@ pub struct Gen<'p> {
     defer_pad: Option<*const Expr>,
     /// The description it gave.
     padded: Option<IntText>,
+    /// The variables bound to a string literal (D363): parts of a template
+    /// written as constants.
+    lit_vars: HashMap<VarId, String>,
+    /// The table of the powers of 10 emitted (the lengths of the integers
+    /// of a template, D363).
+    pow10: bool,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -879,7 +885,9 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
     "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
-    "declare void @isc_str_build(ptr, ptr, i64)",
+    "declare ptr @isc_str_reserve(ptr, i64, i64)",
+    "declare void @isc_put_text(ptr, ptr, i64)",
+    "declare void @isc_put_int(ptr, i64, i64, i64, i64, i64)",
     "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
     "declare void @isc_str_append(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_str_append_n(ptr, ptr, i64)",
@@ -971,6 +979,8 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         int_texts: HashMap::new(),
         defer_pad: None,
         padded: None,
+        lit_vars: HashMap::new(),
+        pow10: false,
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -3629,6 +3639,9 @@ impl<'p> Gen<'p> {
                 self.ex(body, w)
             }
             Let { var, init, body, stmt, drop } => {
+                if let (StrLit(t), Type::Str) = (&init.kind, &init.ty) {
+                    self.lit_vars.insert(*var, t.clone());
+                }
                 if let (StrLit(t), Type::Str) = (&init.kind, &init.ty) {
                     self.str_lits.insert(*var, t.clone());
                 }
@@ -10773,45 +10786,120 @@ impl<'p> Gen<'p> {
     }
 
     /// A concatenation whose parts are texts and texts of integers not made
-    /// (`int_texts`, D359): a table of three words a part (a text: its
-    /// pointer, its length, 0; an integer: its value, its padded length, 1 |
-    /// signed 2 | padded 4 | `padStart` 8 | its fill << 8), the result made
-    /// by `isc_str_build` in one block, each integer written there.
+    /// (`int_texts`, D359), written by the compiled code (D363): the length
+    /// of each part computed here (the digits of an integer from its bits),
+    /// one block, each part written where it goes (D359 gave the runtime a
+    /// table of three words a part, `isc_str_build`, read twice: about 15
+    /// cycles a part).
     fn concat_parts_built(&mut self, es: &[Expr]) -> R<V> {
-        let k = es.len();
-        let table = self.alloca(&format!("[{} x [3 x i64]]", k));
+        // each part and its length, in order: a literal (a constant), a
+        // text, the text of an integer (its sign, its digits counted from its
+        // bits and the powers of 10, its width); a left text given (D351)
+        enum P {
+            Lit(String, usize),
+            Text(String, String),
+            Int { mag: String, neg: String, n: String, width: String, fs: i64 },
+        }
+        let mut parts = Vec::new();
+        let mut given: Option<(String, String)> = None;
+        let mut total = "0".to_string();
         for (i, x) in es.iter().enumerate() {
-            let words: [String; 3] = match &x.kind {
+            match &x.kind {
                 ExprKind::Var(t, _) if self.int_texts.contains_key(t) => {
                     let it = self.int_texts[t].clone();
-                    let mut kind = 1 | (it.signed as i64) << 1;
-                    let len = match &it.pad {
-                        Some((len, fill, start)) => {
-                            kind |= 4 | (*start as i64) << 3 | (*fill as i64) << 8;
-                            len.clone()
-                        }
-                        None => "0".to_string(),
+                    let (neg, mag) = if it.signed {
+                        let neg = self.ins(format!("icmp slt i64 {}, 0", it.x));
+                        let m = self.ins(format!("sub i64 0, {}", it.x));
+                        let mag = self.ins(format!("select i1 {}, i64 {}, i64 {}", neg, m, it.x));
+                        (self.ins(format!("zext i1 {} to i64", neg)), mag)
+                    } else {
+                        ("0".to_string(), it.x.clone())
                     };
-                    [it.x, len, kind.to_string()]
+                    if !self.pow10 {
+                        self.pow10 = true;
+                        let ps = (0..20).map(|k| format!("i64 {}", 10u64.pow(k))).collect::<Vec<_>>().join(", ");
+                        self.globals.push(format!("@.pow10 = private unnamed_addr constant [20 x i64] [{}]", ps));
+                    }
+                    self.decls.insert("declare i64 @llvm.ctlz.i64(i64, i1)".to_string());
+                    let w1 = self.ins(format!("or i64 {}, 1", mag));
+                    let lz = self.ins(format!("call i64 @llvm.ctlz.i64(i64 {}, i1 true)", w1));
+                    let bits = self.ins(format!("sub i64 64, {}", lz));
+                    let m = self.ins(format!("mul i64 {}, 1233", bits));
+                    let t = self.ins(format!("lshr i64 {}, 12", m));
+                    let pp = self.ins(format!("getelementptr inbounds [20 x i64], ptr @.pow10, i64 0, i64 {}", t));
+                    let p10 = self.ins(format!("load i64, ptr {}", pp));
+                    let lt = self.ins(format!("icmp ult i64 {}, {}", w1, p10));
+                    let ltz = self.ins(format!("zext i1 {} to i64", lt));
+                    let d = self.ins(format!("sub i64 {}, {}", t, ltz));
+                    let d1 = self.ins(format!("add i64 {}, 1", d));
+                    let n = self.ins(format!("add i64 {}, {}", d1, neg));
+                    let (width, fs) = match &it.pad {
+                        Some((len, fill, start)) => {
+                            self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".to_string());
+                            (self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", len, n)), (*fill as i64) | (*start as i64) << 8)
+                        }
+                        None => (n.clone(), 0),
+                    };
+                    total = self.ins(format!("add i64 {}, {}", total, width));
+                    parts.push(P::Int { mag, neg, n, width, fs });
                 }
-                _ => {
-                    // a left text given (its last use, D351): continued in
-                    // its block by the runtime
-                    let given = i == 0 && matches!(x.kind, ExprKind::Var(_, Use::Move));
+                // a left text given (its last use, D351): continued in its
+                // block when it has room
+                ExprKind::Var(_, Use::Move) if i == 0 => {
                     let xv = self.ex(x, 1)?;
                     let (p, n) = self.str_parts(&xv);
-                    let q = self.ins(format!("ptrtoint ptr {} to i64", p));
-                    [q, n, if given { (1i64 << 16).to_string() } else { "0".to_string() }]
+                    total = self.ins(format!("add i64 {}, {}", total, n));
+                    given = Some((p, n));
                 }
-            };
-            for (j, w) in words.iter().enumerate() {
-                let slot = self.ins(format!("getelementptr inbounds [{} x [3 x i64]], ptr {}, i64 0, i64 {}, i64 {}", k, table, i, j));
-                self.emit(format!("store i64 {}, ptr {}", w, slot));
+                ExprKind::Var(t, _) if self.lit_vars.contains_key(t) => {
+                    let lit = self.lit_vars[t].clone();
+                    let (g, n) = self.str_const(&lit);
+                    total = self.ins(format!("add i64 {}, {}", total, n));
+                    parts.push(P::Lit(g, n));
+                }
+                ExprKind::StrLit(lit) if x.ty == Type::Str => {
+                    let (g, n) = self.str_const(lit);
+                    total = self.ins(format!("add i64 {}, {}", total, n));
+                    parts.push(P::Lit(g, n));
+                }
+                _ => {
+                    let xv = self.ex(x, 1)?;
+                    let (p, n) = self.str_parts(&xv);
+                    total = self.ins(format!("add i64 {}, {}", total, n));
+                    parts.push(P::Text(p, n));
+                }
             }
         }
-        let out = self.alloca("{ ptr, i64 }");
-        self.emit(format!("call void @isc_str_build(ptr {}, ptr {}, i64 {})", out, table, k));
-        Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
+        // the one block (at least the byte of an integer), each part written
+        // where it goes: the literals by moves of constants (`memcpy` of a
+        // constant length, inlined), the texts and the integers by the
+        // runtime (D363)
+        let (base, mut at) = match &given {
+            Some((p, n)) => (self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total)), n.clone()),
+            None => (self.ins(format!("call ptr @isc_alloc(i64 {})", total)), "0".to_string()),
+        };
+        for part in &parts {
+            let dst = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, at));
+            let len = match part {
+                P::Lit(g, n) => {
+                    if *n > 0 {
+                        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, g, n));
+                    }
+                    n.to_string()
+                }
+                P::Text(p, n) => {
+                    self.emit(format!("call void @isc_put_text(ptr {}, ptr {}, i64 {})", dst, p, n));
+                    n.clone()
+                }
+                P::Int { mag, neg, n, width, fs } => {
+                    self.emit(format!("call void @isc_put_int(ptr {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {})", dst, mag, neg, n, width, fs));
+                    width.clone()
+                }
+            };
+            at = self.ins(format!("add i64 {}, {}", at, len));
+        }
+        let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", base));
+        Ok(v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, total)), "{ ptr, i64 }"))
     }
 
     /// The string `p`, `n` starts (`start`) or ends with the bytes `t` (at

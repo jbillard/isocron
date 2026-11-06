@@ -1012,7 +1012,7 @@ action main(args: string[k]): i32 {
     // the pads of the tuple in one block each; those of the template
     // written by the concatenation itself (D359)
     assert!(ll.matches("call void @isc_pad_int(").count() >= 5, "integers padded in one block");
-    assert!(ll.contains("call void @isc_str_build("), "the parts of the template not written in its block");
+    assert!(ll.contains("call void @isc_put_int("), "the parts of the template not written in its block");
 }
 
 /// D351: `acc + x` where `acc` is the accumulator of a tail recursion
@@ -1035,7 +1035,8 @@ fn strings_grown_in_place() {
 /// concatenation writes them in its one block (`isc_str_build`), more than
 /// 16 parts too, the left part of an accumulator given (its text continued
 /// in its block, D351), fills and texts of 0 to 39 bytes; the same text as
-/// the interpreter, Valgrind clean, no text of an integer made.
+/// the interpreter, Valgrind clean, no text of an integer made; the
+/// parts written by the compiled code (D363).
 #[test]
 fn integers_written_in_the_block_of_their_template() {
     let src = include_str!("data/strings_template_parts.isc");
@@ -1047,12 +1048,17 @@ fn integers_written_in_the_block_of_their_template() {
     }
     valgrind_clean(src, "template_parts", &["5"]);
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(ll.matches("call void @isc_str_build(").count() >= 8, "templates not written in their blocks");
+    // each integer written where it goes (D363), the literals between them
+    // stored as constants (`memcpy` of a constant length, inlined), not
+    // given to the runtime
+    assert!(!ll.contains("isc_str_build"), "a table of parts given to the runtime");
+    assert!(ll.matches("call void @isc_put_int(").count() >= 18, "templates not written in their blocks");
+    assert!(ll.matches(", i64 1, i1 false)").count() >= 17, "the literals of a template not stored as constants");
     // one text of an integer made: that of `${v}` alone, not a concatenation
     assert_eq!(ll.matches("call void @isc_to_string_i64(").count(), 1, "a text of an integer made");
     assert!(!ll.contains("call void @isc_pad_int("), "a padded text of an integer made");
     // the accumulators give their left text to the concatenation
-    assert!(ll.contains("store i64 65536,"), "the left text of an accumulator not given");
+    assert!(ll.contains("call ptr @isc_str_reserve("), "the left text of an accumulator not given");
 }
 
 /// D361: a literal kept as a string (returned, stored in a record or an

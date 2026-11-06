@@ -7880,3 +7880,47 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     real fault behind `&&` at the end of 7200 and of 120001 bytes, one
     block and several, 1 and 4 threads, against the interpreter; the
     filters compressed in the IR).
+- **D363 — The parts of a template written by the compiled code
+  (2026-11-06).** After D359, `isc_str_build` took 68 % of `formatIso`
+  (about 15 cycles a part: three words a part written by the compiled
+  code, read back in two passes, a branch on each kind) and 8 % of the
+  user cycles of the server (the head of a response, 10 parts).
+  - The compiled code computes the length of each part (a literal: a
+    constant; a text: its length; an integer: its sign and its digits from
+    its bits, `ctlz` and a table of the powers of 10 `@.pow10`, its width
+    `smax(len, n)` when padded), takes one block (`isc_alloc`, or
+    `isc_str_reserve` for a left text given, D351: its block when it has
+    room, else one of at least twice its length) and writes each part
+    where it goes: a literal (a variable bound to a literal, `lit_vars`) by
+    a `memcpy` of a constant length (moves of constants once inlined), a
+    text by `isc_put_text` (`copy_short`), an integer by `isc_put_int`
+    (its digits two at a time, its sign, its fill). `isc_str_build` and
+    `digit_count` are gone.
+  - `formatIso` alone: 390.0 -> 241.8 cycles and 1781.8 -> 958.8
+    instructions a call. An A/B at fixed frequency (medians of 9 runs):
+    `formatIso` 122.39 -> 82.28 ns (-32.8 %), `template` 25.71 -> 14.80
+    (-42.5 %), `serve.pipelined` -3.4 %, `serveAction.pipelined` -2.1 %,
+    `parseIso` +0.2, `concat` +0.1, `padStart` +1.1, `exchange.small`
+    +0.7. 3 million pieces of `acc + toString(i) + ","`: 0.067 s.
+  - `results/primitives.md` (a whole run): `template` 25.67 -> 14.80 ns
+    (2.4 -> 1.4 times its floor), `formatIso` 122.37 -> 81.90 (2.7 -> 1.8),
+    `serve.pipelined` 1405.74 -> 1363.77 (-3.0 %). `bytes`, `endsWith.2`,
+    `startsWith.8`, `slice`, `startsWith.1` of `strings` +6.3 to +8.1 %
+    (an A/B: +3.9 to +5.4 %), the forms of D362 at -3.6 to -4.8 % with the
+    same IR: their functions the same machine code at the same addresses
+    in both binaries (`isc_bench_1` at 0x7b0a0, `isc_alloc`, `isc_free`,
+    `isc_parallel_for_site` too), `main` moved and smaller. The same
+    binary with the stack moved by 0 to 3584 bytes (an environment
+    variable, without randomization): `bytes` of D362 1.537 to 1.730 ns,
+    of D363 1.598 to 1.720 (D363 the faster at +1024 bytes): the place of
+    the stack, not their code.
+  - The ten programs: fasta, n-body, reverse-complement, spectral-norm the
+    same bytes; the six others (the lines of their output) an A/B on 4
+    threads of 8 runs: within -0.25 and +0.60 % for the lowest except
+    regex-redux +2.78 (median -0.45); again with 16 runs binary-trees
+    +0.09, k-nucleotide -0.19, regex-redux +0.08.
+  - Tested by `integers_written_in_the_block_of_their_template` (no table
+    given to the runtime, the 18 integers of a template written by
+    `isc_put_int`, its 17 literals of one byte stored as constants, the
+    accumulator by `isc_str_reserve`) and the other tests of templates of
+    `strings.rs`, against the interpreter, 1 and 4 threads, Valgrind.

@@ -302,7 +302,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] `==` against a literal of at most 16 bytes in place; rule L, the last index of a `fold` from the end; `getenv` without a block of the heap: `basename` 25.64 -> 9.07 ns, `normalize` 335.43 -> 228.61, `env` measured warm (D346)
 - [x] `toString(x).padStart(n, c)` of an integer in one block: `formatIso` 314.00 -> 216.46 ns (D348)
 - [x] The parts of a template written in its block (integers, padded integers): `formatIso` 215.06 -> 129.29 ns (4.7 -> 2.8 times its floor), `template` 3.1 -> 2.4 (D359)
-- [ ] The parts of a template written by the compiled code itself (the length summed, the literals stored in place): `formatIso` 2.8, `isc_str_build` 68 % of it, about 15 cycles a part (D359)
+- [x] The parts of a template written by the compiled code itself (the length summed, the literals stored in place): `formatIso` 2.7 -> 1.8, `template` 2.4 -> 1.4 times their floors (D363)
 - [x] The examples of the README run by the tests; a port listened to twice `AlreadyExists` on Linux, Windows and in the interpreter (D349)
 - [ ] The payload of a `match` on a temporary taken out of it, not copied (`x ?? d`, `match (f()) { Ok(v) => ... }`: a copy and a free of the payload each time, D346)
 - [x] `path.normalize` with its text grown in place (rule A): 240.7 -> 213.3 ns; a string built piece by piece linear, 100000 pieces 122.2 -> 3.7 ms (D351)
