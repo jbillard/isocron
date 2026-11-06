@@ -1,0 +1,28 @@
+// D368: concatenations with literals written by the compiled code (the
+// literals as constants, the texts by moves): texts of 0 to 80 bytes before,
+// between and after literals, an accumulator grown by a literal; and the
+// copies of 33 to 64 bytes by two moves that overlap: replacements whose
+// matches are 0 to 80 bytes apart.
+function text(n: i64): string {
+    return stringOf(map(iota(n), (j) => u8(97 + (n + j * 7) % 26)));
+}
+
+function grow(i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    return grow(i + 1, n, acc + "<" + text(i % 70) + ">");
+}
+
+action main(args: string[k]): i32 {
+    const v = parseI64(args[0]);
+    const ts = map(iota(81), (n) => text(n));
+    print(sum(map(iota(81), (n) => (ts[n] + "!").length)));
+    print(map(iota(81), (n) => "[" + ts[n] + "|" + ts[80 - n] + "]").join("\n"));
+    const g = grow(0, 200 + v, "start");
+    print(`${g.length} ${g.slice(0, 40)} ${g.slice(g.length - 30, g.length)}`);
+    const spaced = join(map(iota(81), (n) => ts[n]), "X");
+    print(spaced.replaceAll("X", "--").length);
+    print(spaced.replaceAll(/X/g, "#"));
+    return 0;
+}

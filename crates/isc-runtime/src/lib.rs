@@ -2200,12 +2200,19 @@ unsafe fn rx_bounds(re: &RxEngine, s: &str) -> Found {
 /// `n` bytes from `src` to `dst` (D280): a few bytes, as most texts between
 /// the matches of a replacement and its replacements are (regex-redux: 3.5
 /// million matches 14 bytes apart), by two moves that overlap, without a
-/// call; a call of the copy of the system from 32 bytes on.
+/// call; a call of the copy of the system beyond 64 bytes (D368; from 32
+/// before).
 #[inline(always)]
 unsafe fn copy_short(src: *const u8, dst: *mut u8, n: usize) {
     use core::ptr::{read_unaligned as rd, write_unaligned as wr};
-    if n >= 32 {
+    if n > 64 {
         core::ptr::copy_nonoverlapping(src, dst, n);
+    } else if n >= 32 {
+        // two moves of 32 bytes that overlap (D368: a line of 60 bytes of a
+        // concatenation without the call of `memcpy`)
+        let (a, b) = (rd(src as *const [u8; 32]), rd(src.add(n - 32) as *const [u8; 32]));
+        wr(dst as *mut [u8; 32], a);
+        wr(dst.add(n - 32) as *mut [u8; 32], b);
     } else if n >= 16 {
         let (a, b) = (rd(src as *const u128), rd(src.add(n - 16) as *const u128));
         wr(dst as *mut u128, a);

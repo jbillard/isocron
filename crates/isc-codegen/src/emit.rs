@@ -11022,7 +11022,15 @@ impl<'p> Gen<'p> {
                 return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"));
             }
         }
-        if op == S::Concat && es.iter().any(|x| matches!(x.kind, ExprKind::Var(t, _) if self.int_texts.contains_key(&t))) {
+        // a concatenation with the text of an integer (D359) or a literal
+        // (D368): written by the compiled code, its literals as constants
+        if op == S::Concat
+            && es.iter().any(|x| match &x.kind {
+                ExprKind::Var(t, _) => self.int_texts.contains_key(t) || self.lit_vars.contains_key(t),
+                ExprKind::StrLit(_) => x.ty == Type::Str,
+                _ => false,
+            })
+        {
             return self.concat_parts_built(es);
         }
         let mut vals = Vec::new();

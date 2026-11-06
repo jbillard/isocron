@@ -8011,3 +8011,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     reads the temporary, the threads of a `map`; the text of the
     interpreter with 1 and 4 threads, Valgrind; the takes and the frees in
     the IR).
+- **D368 — A concatenation with a literal written by the compiled code;
+  short copies up to 64 bytes by moves (2026-11-06).** `concat` of
+  `strings` (`l + "!"`, a line of 60 bytes) 3.0 times its floor: alone,
+  29.93 cycles and 133.89 instructions a call, `isc_str_concat` 48 % (its
+  allocation inlined, six registers saved, two calls of `memcpy` through a
+  pointer), `free` 27 %, `memcpy` 15 %.
+  - A concatenation one of whose parts is a literal (a variable bound to
+    one, `lit_vars`) takes the way of D363 too: the length summed by the
+    compiled code, one block, the literals stored as constants, the texts
+    by `isc_put_text`, a left text given by `isc_str_reserve`.
+  - `copy_short` (`isc_put_text`, the replacements of D280 and D308)
+    copies 33 to 64 bytes by two moves of 32 bytes that overlap, a call of
+    `memcpy` beyond (from 32 before).
+  - `concat` alone: 29.93 -> 20.34 cycles and 133.89 -> 87.89 instructions
+    a call. An A/B of the groups at fixed frequency (medians of 9 runs):
+    `concat` 9.215 -> 6.278 ns (-31.9 %), `encode` -28.9 %, `stringify`
+    -20.9 %, `normalize` -17.4 %, `parseIso` -4.1 %, `decode` -3.6 %,
+    `parse` -1.0 %, the server -0.8 and -0.9 %, `template`, `padStart`,
+    `trim`, `formatIso`, `basename`, the exchanges within -0.9 and +0.5;
+    `env` +2.3 % (`envLoop` the same IR, `main` changed: the places of the
+    stack, D363). `results/primitives.md` (a whole run): `concat` 9.28 ->
+    6.27 ns (3.0 -> 2.0 times its floor), `encode` 181.66 -> 128.17 (0.8 ->
+    0.6), `stringify` 576.81 -> 451.63 (1.5 -> 1.2), `normalize` 209.57 ->
+    165.78 (4.2 -> 3.3), `env` -4.5 %, `decode` -3.3 %; no form slower by
+    2.5 % or more.
+  - The ten programs: nine binaries the same bytes as at D367; k-nucleotide
+    (the templates of its lines of output) and regex-redux (`copy_short` of
+    its replacements) an A/B of 16 runs on 4 threads, the lowest and the
+    median: +0.19 / +0.03 % and +1.17 / +0.16 %, the same outputs.
+  - Tested by `concatenations_with_literals_written_by_the_code`
+    (`strings.rs`, `data/strings_concat_literals.isc`: texts of 0 to 80
+    bytes around literals, an accumulator grown by literals, replacements
+    whose matches are 0 to 80 bytes apart; the text of the interpreter with
+    1 and 4 threads, Valgrind; no `isc_str_concat` in the IR).

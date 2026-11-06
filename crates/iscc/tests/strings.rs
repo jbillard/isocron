@@ -1085,3 +1085,26 @@ fn literals_kept_without_a_copy() {
     assert_eq!(ll.matches("call void @isc_str_new(").count(), 3, "a literal copied");
     assert!(ll.matches("@.olit.").count() >= 16, "the literals not kept where they are");
 }
+
+/// D368: a concatenation with a literal is written by the compiled code
+/// (the literals stored as constants, the texts by `isc_put_text`), not
+/// by `isc_str_concat`; the copies of 33 to 64 bytes by two moves that
+/// overlap: texts of 0 to 80 bytes around literals, an accumulator grown by
+/// literals, replacements whose matches are 0 to 80 bytes apart; the text
+/// of the interpreter with 1 and 4 threads, Valgrind clean.
+#[test]
+fn concatenations_with_literals_written_by_the_code() {
+    let src = include_str!("data/strings_concat_literals.isc");
+    let bin = compile(src, "concat_literals");
+    for a in ["0", "3"] {
+        let want = interp_ok(src, &[a]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[a], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} on {} threads: {}", a, t, r.stderr);
+        }
+    }
+    valgrind_clean(src, "concat_literals", &["1"]);
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(!ll.contains("call void @isc_str_concat"), "a concatenation with a literal given to the runtime");
+    assert!(ll.matches("call void @isc_put_text(").count() >= 5, "the texts not written by the compiled code");
+}
