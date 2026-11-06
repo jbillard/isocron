@@ -7612,3 +7612,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     loop down to that of the ceiling (5.2 µs against 3.6 at 16 connections,
     the inverses of 190973 and 275472); the pool idle when it has nothing
     to do (4 cores busy for the work of one).
+- **D356 — Release 0.3.2 (2026-11-06).** Actions as values (D352), the
+  server with many connections (D354) and its ceiling (D355), rule A
+  (D351, D354): a version compatible with 0.3.1 (as Cargo counts: the
+  language only grew, `action (T) => U` and actions with type parameters).
+  The Benchmarks Game measured again at 7370399 (the image made again with
+  its `iscc`, the 102 checks the same, `run.sh measure 4 12 native` at fixed
+  frequency): the fastest on 10 of 10, each program below three times its
+  floor (regex-redux 83 ms, 2.79; k-nucleotide 684, 2.55; pidigits 491,
+  2.53; reverse-complement 41, 2.44; fasta 5, 2.16), every time within 3 ms
+  of D344 (their IR the same, but pidigits: D354, the same time).
+  `results/benchmarks_game.md`, the README, `results/floors.md` made again.
+  The archives as for 0.3.1, tried before they are published (the
+  self-tests of Linux and Windows, the examples of the README run by the
+  `iscc` of each archive).

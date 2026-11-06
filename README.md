@@ -53,20 +53,20 @@ same Docker image on the same machine
 
 <!-- results:begin -->
 
-**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `2ef9e9f`, DECISIONS D344; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
+**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `7370399`, DECISIONS D356; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
 
 | | benchmark | Isocron | fastest other | Isocron / fastest | floor | Isocron / floor |
 | :-: | :-- | --: | :-- | :-: | --: | :-: |
-| 🟢 | binary-trees | 677 ms | Rust 851 ms | $\color{green}{\textbf{0.80}}$ | 394.7 ms | $\color{orange}{1.7}$ |
-| 🟢 | fannkuch-redux | 1663 ms | C 2470 ms | $\color{green}{\textbf{0.67}}$ | 883.5 ms | $\color{orange}{1.9}$ |
+| 🟢 | binary-trees | 677 ms | Rust 846 ms | $\color{green}{\textbf{0.80}}$ | 394.7 ms | $\color{orange}{1.7}$ |
+| 🟢 | fannkuch-redux | 1666 ms | C 2469 ms | $\color{green}{\textbf{0.67}}$ | 883.5 ms | $\color{orange}{1.9}$ |
 | 🟢 | fasta | 5 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{orange}{2.2}$ |
-| 🟢 | k-nucleotide | 684 ms | C++ 1170 ms | $\color{green}{\textbf{0.58}}$ | 268.0 ms | $\color{orange}{2.6}$ |
-| 🟢 | mandelbrot | 638 ms | C++ 788 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
-| 🟡 | n-body | 1904 ms | C 1949 ms | $\color{orange}{\textbf{0.98}}$ | 1315.5 ms | $\color{green}{1.4}$ |
-| 🟢 | pidigits | 491 ms | C 686 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.5}$ |
-| 🟢 | regex-redux | 82 ms | Rust 755 ms | $\color{green}{\textbf{0.11}}$ | 29.7 ms | $\color{orange}{2.8}$ |
-| 🟢 | reverse-complement | 40 ms | Rust 63 ms | $\color{green}{\textbf{0.63}}$ | 16.8 ms | $\color{orange}{2.4}$ |
-| 🟡 | spectral-norm | 196 ms | Rust 206 ms | $\color{orange}{\textbf{0.95}}$ | 107.1 ms | $\color{orange}{1.8}$ |
+| 🟢 | k-nucleotide | 684 ms | C++ 1177 ms | $\color{green}{\textbf{0.58}}$ | 268.0 ms | $\color{orange}{2.6}$ |
+| 🟢 | mandelbrot | 638 ms | C++ 785 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
+| 🟡 | n-body | 1906 ms | C 1946 ms | $\color{orange}{\textbf{0.98}}$ | 1315.5 ms | $\color{green}{1.4}$ |
+| 🟢 | pidigits | 491 ms | C 683 ms | $\color{green}{\textbf{0.72}}$ | 194.4 ms | $\color{orange}{2.5}$ |
+| 🟢 | regex-redux | 83 ms | Rust 755 ms | $\color{green}{\textbf{0.11}}$ | 29.7 ms | $\color{orange}{2.8}$ |
+| 🟢 | reverse-complement | 41 ms | Rust 63 ms | $\color{green}{\textbf{0.65}}$ | 16.8 ms | $\color{orange}{2.4}$ |
+| 🟢 | spectral-norm | 196 ms | Rust 207 ms | $\color{green}{\textbf{0.95}}$ | 107.1 ms | $\color{orange}{1.8}$ |
 
 🟢 Isocron the fastest · 🟡 within 5 % of the fastest · 🔴 behind. Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$.
 
@@ -196,12 +196,12 @@ they link programs with are inside. Linux x86-64 (glibc 2.28 or later) and
 Windows 10 and 11:
 
 ```sh
-curl -LO https://github.com/jbillard/isocron/releases/download/v0.3.1/isocron-0.3.1-x86_64-linux.tar.gz
-tar -xzf isocron-0.3.1-x86_64-linux.tar.gz
-./isocron-0.3.1-x86_64-linux/iscc --version
+curl -LO https://github.com/jbillard/isocron/releases/download/v0.3.2/isocron-0.3.2-x86_64-linux.tar.gz
+tar -xzf isocron-0.3.2-x86_64-linux.tar.gz
+./isocron-0.3.2-x86_64-linux/iscc --version
 ```
 
-On Windows, unpack `isocron-0.3.1-x86_64-windows.zip` from the
+On Windows, unpack `isocron-0.3.2-x86_64-windows.zip` from the
 [releases](https://github.com/jbillard/isocron/releases) and run `iscc.exe`.
 Beside the compiler, `isc-lsp` is the language server of the editors
 ([editors](docs/language.md#editors-the-language-server-isc-lsp)).

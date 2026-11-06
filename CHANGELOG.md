@@ -3,7 +3,8 @@
 ## 0.3.2 — 2026-11-06
 
 Actions as values, a server whose handler can act, and a server that
-holds many connections.
+holds many connections. The Benchmarks Game measured again: still the
+fastest on 10 of 10, each program below three times its floor (D356).
 
 ### The language
 
@@ -26,7 +27,9 @@ holds many connections.
 * The server with many connections: a table of the connections by their
   numbers, only those that received bytes read: 1024 connections kept
   alive 67277 -> 158735 requests a second, as lighttpd; measured against
-  nginx and lighttpd under wrk (`results/http_servers.md`, D353, D354).
+  the ceiling of the machine (the cheapest server known for the same work)
+  under wrk: 57 to 85 % of the ceiling of one loop of events
+  (`results/http_servers.md`, D353 to D355).
 
 ### The compiler
 

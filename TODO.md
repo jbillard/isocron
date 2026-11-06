@@ -366,3 +366,4 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] Windows: the server by SChannel (its credentials from a PKCS #12 made in memory), tested in the VM compiled and interpreted (D343)
 - [x] Release 0.3.0 (D345)
 - [x] Release 0.3.1: the example of the server of the README, a port listened to twice refused everywhere (D349, D350)
+- [x] Release 0.3.2: actions as values, the server with many connections, rule A (D351 to D356)
