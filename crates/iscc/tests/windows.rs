@@ -427,11 +427,21 @@ fn https_server_on_windows() {
         std::fs::copy(iscc, d.join("iscc.exe")).unwrap();
         ways.push(("interpreted", "iscc.exe run server.isc".to_string(), "iscc.exe run client.isc".to_string()));
     }
+    // the port of the server open, at most 60 s (D365: a fixed wait of 4 s
+    // was not always enough, the server opening its port after 1.1 to more
+    // than 4 s on the first runs after the start of the machine); the
+    // connection of this test is not a request of TLS, the server not
+    // counting it
+    std::fs::write(
+        d.join("wait.ps1"),
+        "param([int]$port)\r\n$s = Get-Date\r\nwhile (((Get-Date) - $s).TotalSeconds -lt 60) {\r\n  try { $c = New-Object System.Net.Sockets.TcpClient; $c.Connect('127.0.0.1', $port); $c.Close(); exit 0 } catch { Start-Sleep -Milliseconds 100 }\r\n}\r\nexit 1\r\n",
+    )
+    .unwrap();
     for (name, s, c) in ways {
         // the server in the background, its output in a file (written at
         // its end), the client when it listens
         let script = format!(
-            "@echo off\r\nstart \"\" /b cmd /c \"{} 47970 server.pem server.key 3 > server.txt 2>&1\"\r\nping -n 5 127.0.0.1 > nul\r\n{} 47970 ca.pem other.pem\r\nping -n 3 127.0.0.1 > nul\r\ntype server.txt\r\nexit /b 0\r\n",
+            "@echo off\r\nstart \"\" /b cmd /c \"{} 47970 server.pem server.key 3 > server.txt 2>&1\"\r\npowershell -NoProfile -ExecutionPolicy Bypass -File wait.ps1 47970\r\n{} 47970 ca.pem other.pem\r\nping -n 3 127.0.0.1 > nul\r\ntype server.txt\r\nexit /b 0\r\n",
             s, c
         );
         std::fs::write(d.join("pair.cmd"), script).unwrap();

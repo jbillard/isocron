@@ -7937,3 +7937,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   started again on another port, five times at most, the test panicking
   with that message otherwise. The code of the compiler and the runtime
   unchanged.
+- **D365 — The test of the HTTPS pair on Windows waits for the port of
+  its server (2026-11-06).** `https_server_on_windows` failed twice at
+  3a6c2aa (the second time with nothing else running on the machine): the
+  first request of the client refused (`refused: localhost:47970`), the
+  others answered, the server waiting for its third request (no `done`).
+  Its script started the server and waited a fixed 4 s (`ping -n 5`).
+  Timed in the VM with the same binaries (the opening of the port polled
+  every 100 ms): 1.97 then 0.53 s by `Start-Process`; by the launch of the
+  test (`start /b cmd /c`), 1.14 s on the first run after a start of the
+  VM, 0.02 s after; once, on the first run after a start of the VM, the
+  port still closed after 30 s and the server failing with
+  `0x8009030d of SChannel` (SEC_E_UNKNOWN_CREDENTIALS), the next run of the
+  same files in the same folder answering everything; not seen again in
+  the 5 runs after it (one after a new start of the VM, the service
+  KeyIso stopped at the start and running after). The script now waits
+  for the port to open (`wait.ps1`, at most 60 s), then runs the client:
+  the windows tests 10 of 10. The intermittent failure of SChannel on a
+  first run after a start of the VM is not explained: it is recorded here
+  to be looked for again if it comes back.
