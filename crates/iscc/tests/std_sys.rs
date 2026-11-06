@@ -126,3 +126,41 @@ fn normalize_as_before() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled, {} threads: {}", t, r.stderr);
     }
 }
+
+/// D360: `time.now()` and `clock()` read by the `clock_gettime` of the vDSO
+/// (no system call: `strace` sees none), by the system call without a vDSO
+/// (Valgrind gives none): the second of the system both ways, never back in
+/// a million readings.
+#[test]
+fn clocks_read_through_the_vdso() {
+    let src = include_str!("data/std_clock.isc");
+    let second = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let check = |out: &str, before: i64, how: &str| {
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!((lines.len(), lines[0], lines[2]), (3, "0", "true"), "{}: {}", how, out);
+        let s: i64 = lines[1].parse().unwrap();
+        assert!(s >= before && s <= second(), "{}: second {} not that of the system ({})", how, s, before);
+    };
+    let bin = compile(src, "std_clock");
+    let before = second();
+    let r = run_bin(&bin, &["1000000"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    check(&r.stdout, before, "compiled");
+    let strace = std::path::Path::new("/usr/bin/strace");
+    if strace.is_file() {
+        let log = bin.with_extension("strace");
+        let out = std::process::Command::new(strace).args(["-f", "-e", "trace=clock_gettime", "-o"]).arg(&log).arg(&bin).arg("1000").output().unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(!calls.contains("clock_gettime("), "the clocks read by system calls:\n{}", calls);
+    }
+    let vg = std::path::Path::new("/usr/bin/valgrind");
+    if vg.is_file() {
+        let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+        let bin = compile_glibc(src, "std_clock_vg", opts);
+        let before = second();
+        let out = std::process::Command::new(vg).args(["--error-exitcode=9", "-q"]).arg(&bin).arg("1000").env("ISC_ALLOC", "glibc").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+        check(&String::from_utf8_lossy(&out.stdout), before, "without a vDSO (Valgrind)");
+    }
+}

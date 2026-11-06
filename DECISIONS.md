@@ -7764,3 +7764,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     integer made in a concatenation, the left text of an accumulator
     given); `integers_padded_in_one_block` reads `isc_str_build` for its
     template.
+- **D360 — The clocks read by the vDSO (2026-11-06).** `time.now()` 8.5
+  times its floor (149.72 ns against 17.66): the runtime, without a C
+  library (D287), read `CLOCK_REALTIME` by the system call, where the
+  floor (`clock_gettime` of glibc) reads it by the vDSO, the code the
+  kernel maps into every process so that its clocks are read without
+  entering it (vdso(7)).
+  - `linux::clock_gettime` (`time.now()`, `clock()`) calls the
+    `__vdso_clock_gettime` of the process, found once: the auxiliary
+    vector after the environment noted by `isc_args` (`AT_SYSINFO_EHDR`,
+    the ELF image of the vDSO), its first `PT_LOAD` (where it was linked)
+    and its `PT_DYNAMIC` (its symbols, counted by `DT_HASH` or
+    `DT_GNU_HASH`), as the runtime of Go does without a C library. It is
+    the kernel's interface for its clocks, not a library: the program
+    still links no C library. Without a vDSO (`vdso=0`, Valgrind) or
+    without that function, the system call as before.
+  - `results/primitives.md` (a whole run): `now` 149.72 -> 20.70 ns (8.5
+    -> 1.2 times its floor); in an A/B of the group `time` at fixed
+    frequency 149.30 -> 20.82, the other forms -0.0 to +1.0 %. `concat` of
+    `strings` 10.00 -> 9.38 ns: its code moved again, the coincidence of
+    addresses of D359 gone. `env` of `sys` +3.7 % in the run: in an A/B
+    of the binaries of D359 and D360, +2.5 % then -1.0 %, their nine
+    times each overlapping (45.4 to 59.3 ns, 46.7 to 49.9): noise.
+  - The ten programs read no clock: eight binaries the same bytes as at
+    D359; pidigits and regex-redux differ by the places of the code of the
+    runtime (its tables of exceptions numbered 510 -> 512); an A/B of 16
+    runs on 4 threads, the lowest and the median: pidigits +0.00 / -0.04
+    %, regex-redux +0.91 / -1.66.
+  - Tested by `clocks_read_through_the_vdso` (`std_sys.rs`,
+    `data/std_clock.isc`): a million readings never back, the second of
+    the system; `strace` sees no `clock_gettime` of the program; under
+    Valgrind (no vDSO) the system call gives the same.

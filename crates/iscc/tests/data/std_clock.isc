@@ -1,0 +1,21 @@
+// D360: the clocks read many times (time.now, clock): never back, the
+// second of the system; read by the vDSO, or by the system call without it.
+import * as time from "time";
+
+action spin(r: i64, last: i64, bad: i64): i64 {
+    if (r == 0) {
+        return bad;
+    }
+    const t = time.now();
+    return spin(r - 1, t, bad + (t < last ? 1 : 0));
+}
+
+action main(args: string[k]): i32 {
+    const a = time.now();
+    const c0 = clock();
+    print(spin(parseI64(args[0]), a, 0));
+    const c1 = clock();
+    print(a / 1000000000);
+    print(c1 >= c0);
+    return 0;
+}

@@ -334,7 +334,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor (D333)
   - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7, `basename` 5.3, `env` 3.2, `readFile` 2.2
 - [x] `time`: dates and times (D334)
-  - [ ] `time` above its floor: `now` 8.6 (the clock of the vDSO, not a call of the kernel), `formatIso` 8.3
+  - [x] `time` above its floor: `now` 8.5 -> 1.2, the clock of the vDSO (D360); `formatIso` 8.3 -> 2.8 (D348, D359)
 - [ ] `json`: read and written, decoded into a type of the program, its fields checked at compile time
   - [x] A payload holds an array of its own size; `json` read and written (D335)
   - [x] `decode<T>` and `encode<T>`: the type arguments of a call, a decoder written for each type (D336)

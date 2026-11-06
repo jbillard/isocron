@@ -208,11 +208,151 @@ pub unsafe fn sched_getaffinity(pid: c_int, size: usize, mask: *mut u8) -> c_int
     unsafe { syscall6(SYS_SCHED_GETAFFINITY, pid as usize, size, mask as usize, 0, 0, 0) as c_int }
 }
 
+/// The `clock_gettime` of the vDSO of the process (D360), or `NO_VDSO`, or
+/// 0 before the first reading of a clock.
+static VDSO_CLOCK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const NO_VDSO: usize = 1;
+
+/// The time of a clock: by the `clock_gettime` of the vDSO (D360), the code
+/// the kernel maps into every process to read its clocks without entering
+/// it (vdso(7), as the runtime of Go does without a C library: 149.7 ns a
+/// `time.now()` by the system call, 17.7 for the floor by the vDSO); by the
+/// system call when the process has no vDSO (`vdso=0`, Valgrind) or it has
+/// not that function.
+///
 /// # Safety
 /// `ts` is a valid `Timespec`.
 pub unsafe fn clock_gettime(clk: c_int, ts: *mut super::Timespec) -> c_int {
+    use core::sync::atomic::Ordering::Relaxed;
+    let mut f = VDSO_CLOCK.load(Relaxed);
+    if f == 0 {
+        // SAFETY: the environment noted by `isc_args`, the first call of a
+        // program, is the one the kernel made (see `vdso_symbol`)
+        f = unsafe { vdso_symbol(b"__vdso_clock_gettime") }.unwrap_or(NO_VDSO);
+        VDSO_CLOCK.store(f, Relaxed);
+    }
+    if f != NO_VDSO {
+        // SAFETY: a function of the vDSO of this process, of the type of
+        // `clock_gettime` (vdso(7): `__vdso_clock_gettime`, LINUX_2.6); it
+        // writes one Timespec at `ts`
+        unsafe {
+            let g: unsafe extern "C" fn(c_int, *mut super::Timespec) -> c_int = core::mem::transmute(f);
+            return g(clk, ts);
+        }
+    }
     // SAFETY: the kernel writes one Timespec at `ts`
     unsafe { syscall6(SYS_CLOCK_GETTIME, clk as usize, ts as usize, 0, 0, 0, 0) as c_int }
+}
+
+/// The address of the function `name` of the vDSO, from the auxiliary
+/// vector the kernel puts after the environment on the first stack
+/// (`AT_SYSINFO_EHDR`, the ELF image of the vDSO), its program headers
+/// (the first `PT_LOAD` gives where it was linked, `PT_DYNAMIC` its tables)
+/// and its dynamic symbols (counted by `DT_HASH`, or `DT_GNU_HASH`); none
+/// when an image or a table is missing.
+///
+/// # Safety
+/// The environment noted by `isc_args` is that of the first stack of the
+/// process (`argv[argc + 1 ..]`), and the image the kernel mapped is whole.
+unsafe fn vdso_symbol(name: &[u8]) -> Option<usize> {
+    const AT_SYSINFO_EHDR: usize = 33;
+    const PT_LOAD: u32 = 1;
+    const PT_DYNAMIC: u32 = 2;
+    const DT_HASH: i64 = 4;
+    const DT_STRTAB: i64 = 5;
+    const DT_SYMTAB: i64 = 6;
+    const DT_GNU_HASH: i64 = 0x6fff_fef5;
+    const STT_FUNC: u8 = 2;
+    unsafe fn rd<T: Copy>(p: usize) -> T {
+        unsafe { core::ptr::read_unaligned(p as *const T) }
+    }
+    // SAFETY: the words of the first stack after the environment (its null,
+    // then the pairs of the auxiliary vector until AT_NULL), then the image
+    // of the vDSO, read within its headers and tables (see above)
+    unsafe {
+        let mut e = super::ENVIRON.load(core::sync::atomic::Ordering::Relaxed) as *const usize;
+        if e.is_null() {
+            return None;
+        }
+        while *e != 0 {
+            e = e.add(1);
+        }
+        let mut a = e.add(1);
+        let mut base = 0usize;
+        while *a != 0 {
+            if *a == AT_SYSINFO_EHDR {
+                base = *a.add(1);
+            }
+            a = a.add(2);
+        }
+        if base == 0 || rd::<[u8; 4]>(base) != *b"\x7fELF" || rd::<u8>(base + 4) != 2 {
+            return None;
+        }
+        let (phoff, phentsize, phnum) = (rd::<u64>(base + 0x20) as usize, rd::<u16>(base + 0x36) as usize, rd::<u16>(base + 0x38) as usize);
+        let (mut load, mut dynamic) = (None, 0usize);
+        for i in 0..phnum {
+            let ph = base + phoff + i * phentsize;
+            match rd::<u32>(ph) {
+                PT_LOAD if load.is_none() => load = Some(base.wrapping_add(rd::<u64>(ph + 8) as usize).wrapping_sub(rd::<u64>(ph + 16) as usize)),
+                PT_DYNAMIC => dynamic = base + rd::<u64>(ph + 8) as usize,
+                _ => {}
+            }
+        }
+        let load = load?;
+        if dynamic == 0 {
+            return None;
+        }
+        let (mut strtab, mut symtab, mut hash, mut gnu) = (0usize, 0usize, 0usize, 0usize);
+        let mut d = dynamic;
+        loop {
+            let tag = rd::<i64>(d);
+            let at = load.wrapping_add(rd::<u64>(d + 8) as usize);
+            match tag {
+                0 => break,
+                DT_HASH => hash = at,
+                DT_STRTAB => strtab = at,
+                DT_SYMTAB => symtab = at,
+                DT_GNU_HASH => gnu = at,
+                _ => {}
+            }
+            d += 16;
+        }
+        if strtab == 0 || symtab == 0 {
+            return None;
+        }
+        let count = if hash != 0 {
+            // nbucket, nchain: one entry of the chains a symbol
+            rd::<u32>(hash + 4) as usize
+        } else if gnu != 0 {
+            // the highest symbol of the buckets, then its chain to its end
+            let (nbuckets, symoffset, bloom) = (rd::<u32>(gnu) as usize, rd::<u32>(gnu + 4) as usize, rd::<u32>(gnu + 8) as usize);
+            let buckets = gnu + 16 + 8 * bloom;
+            let chains = buckets + 4 * nbuckets;
+            let mut last = (0..nbuckets).map(|i| rd::<u32>(buckets + 4 * i) as usize).max().unwrap_or(0);
+            if last < symoffset {
+                symoffset
+            } else {
+                while rd::<u32>(chains + 4 * (last - symoffset)) & 1 == 0 {
+                    last += 1;
+                }
+                last + 1
+            }
+        } else {
+            return None;
+        };
+        for i in 0..count {
+            let sym = symtab + 24 * i;
+            let (st_name, info, shndx, value) = (rd::<u32>(sym) as usize, rd::<u8>(sym + 4), rd::<u16>(sym + 6), rd::<u64>(sym + 8) as usize);
+            if shndx == 0 || info & 0xf != STT_FUNC {
+                continue;
+            }
+            let s = strtab + st_name;
+            if (0..name.len()).all(|j| rd::<u8>(s + j) == name[j]) && rd::<u8>(s + name.len()) == 0 {
+                return Some(load.wrapping_add(value));
+            }
+        }
+        None
+    }
 }
 
 /// A futex wait or wake (`FUTEX_WAIT_PRIVATE` with no timeout, or
