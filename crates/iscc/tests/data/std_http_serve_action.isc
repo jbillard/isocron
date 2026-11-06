@@ -36,7 +36,7 @@ action once(handler: action (http.Request) => http.Response, rs: string, n: i64)
             match (net.connect("127.0.0.1", net.port(l))) {
                 Ok(c) => {
                     const w = net.writeText(c, rs);
-                    match (http.serveActionOn(l, handler, n)) {
+                    match (http.serveOn(l, handler, n)) {
                         Ok(_) => print("served"),
                         Err(e) => print(`serve failed: ${sys.message(e)}`),
                     };

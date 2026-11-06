@@ -8,7 +8,7 @@ action answer(r: http.Request): http.Response {
 
 action main(args: string[k]): i32 {
     const port = parseI64(args[0]);
-    return match (http.serveAction(port, answer)) {
+    return match (http.serve(port, answer)) {
         Ok(_) => 0,
         Err(e) => {
             print("error");

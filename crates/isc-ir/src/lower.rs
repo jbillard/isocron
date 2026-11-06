@@ -32,7 +32,8 @@ enum Binding<'p> {
 
 #[derive(Clone)]
 enum FuncVal<'p> {
-    Lambda { params: &'p [LocalId], body: &'p TExpr, env: Rc<Env<'p>> },
+    /// `act`: the lambda has an effect (its type is an action, D386).
+    Lambda { params: &'p [LocalId], body: &'p TExpr, env: Rc<Env<'p>>, act: bool },
     Global { id: FnId, type_args: Vec<Ty> },
     Prim(Prim),
     Op(BinOp),
@@ -52,6 +53,11 @@ enum FuncVal<'p> {
 }
 
 /// A type that holds a function: passed and bound as a function value.
+/// `isPure(h)` (D386).
+fn is_pure_test(c: &TExpr) -> bool {
+    matches!(&c.kind, TExprKind::Call { callee: tast::Callee::Prim(Prim::IsPure), args, .. } if args.len() == 1)
+}
+
 fn holds_fn(t: &Ty) -> bool {
     match t {
         Ty::Fn(..) => true,
@@ -403,7 +409,7 @@ fn fn_key(f: &FuncVal) -> Option<FnKey> {
         FuncVal::Global { id, type_args } => Some(FnKey::Global(*id, type_args.clone())),
         FuncVal::Prim(p) => Some(FnKey::Prim(*p)),
         FuncVal::Op(o) => Some(FnKey::Op(*o)),
-        FuncVal::Lambda { params, body, env } => {
+        FuncVal::Lambda { params, body, env, .. } => {
             // its captured locals and the sizes it reads become parameters
             // of the specialization (D131, D152): values of the caller
             let mut bound: HashSet<LocalId> = params.iter().copied().collect();
@@ -523,7 +529,7 @@ fn free_locals(e: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, 
 /// The captured locals of a function given to a recursive function, with
 /// the variables of the caller that hold them (D131).
 fn captured_vars(f: &FuncVal) -> Vec<(LocalId, VarId)> {
-    let FuncVal::Lambda { params, body, env } = f else { return Vec::new() };
+    let FuncVal::Lambda { params, body, env, .. } = f else { return Vec::new() };
     let mut bound: HashSet<LocalId> = params.iter().copied().collect();
     let mut free = Vec::new();
     let mut sizes = Vec::new();
@@ -539,7 +545,7 @@ fn captured_vars(f: &FuncVal) -> Vec<(LocalId, VarId)> {
 /// The sizes of its context a function given to a recursive function reads
 /// (D152), with their values in the caller.
 fn captured_sizes(f: &FuncVal) -> Vec<(SymId, Expr)> {
-    let FuncVal::Lambda { params, body, env } = f else { return Vec::new() };
+    let FuncVal::Lambda { params, body, env, .. } = f else { return Vec::new() };
     let mut bound: HashSet<LocalId> = params.iter().copied().collect();
     let mut free = Vec::new();
     let mut sizes = Vec::new();
@@ -1156,6 +1162,13 @@ impl<'p> Lower<'p> {
                     Ok(Expr::new(ExprKind::Pow(Box::new(b), Box::new(k)), ty, span))
                 }
             }
+            // `if (isPure(h))`: the branch of the function received, the
+            // other never compiled (D386)
+            TExprKind::If(c, t, f) if is_pure_test(c) => {
+                let TExprKind::Call { args, .. } = &c.kind else { unreachable!() };
+                let fv = self.fn_value(env, &args[0])?;
+                self.expr(env, if self.fn_pure(&fv) { t } else { f })
+            }
             TExprKind::If(c, t, f) => {
                 let c = self.expr(env, c)?;
                 let t = self.expr(env, t)?;
@@ -1596,12 +1609,27 @@ impl<'p> Lower<'p> {
         }
     }
 
+    /// The function `f` has no effect (D386): a `function`, a lambda without
+    /// one, a primitive that is not an action, an operator; a choice or a
+    /// table of such functions.
+    fn fn_pure(&self, f: &FuncVal<'p>) -> bool {
+        match f {
+            FuncVal::Lambda { act, .. } => !act,
+            FuncVal::Global { id, .. } => !self.p.fns[*id as usize].is_action,
+            FuncVal::Prim(p) => !p.is_action(),
+            FuncVal::Op(_) => true,
+            FuncVal::Choice { then, other, .. } => self.fn_pure(then) && self.fn_pure(other),
+            FuncVal::Tuple(fs) | FuncVal::Array(fs) | FuncVal::Table { fns: fs, .. } => fs.iter().all(|f| self.fn_pure(f)),
+            FuncVal::Bound { inner, .. } => self.fn_pure(inner),
+        }
+    }
+
     fn fn_value(&mut self, env: &mut Env<'p>, e: &'p TExpr) -> R<FuncVal<'p>> {
         match &e.kind {
             TExprKind::Lambda(ps, body) => {
                 let mut snap = env.clone();
                 snap.pure = true;
-                Ok(FuncVal::Lambda { params: ps, body, env: Rc::new(snap) })
+                Ok(FuncVal::Lambda { params: ps, body, env: Rc::new(snap), act: !matches!(e.ty, Ty::Fn(_, _, false)) })
             }
             TExprKind::Local(l) => match env.locals.get(l) {
                 Some(Binding::Func(f)) => Ok(f.clone()),
@@ -1862,7 +1890,7 @@ impl<'p> Lower<'p> {
 
     fn apply(&mut self, fv: &FuncVal<'p>, args: Vec<Arg<'p>>, ret: &Type, span: Span) -> R<Expr> {
         match fv {
-            FuncVal::Lambda { params, body, env } => {
+            FuncVal::Lambda { params, body, env, .. } => {
                 let mut env2: Env<'p> = (**env).clone();
                 let mut lets = Vec::new();
                 for (p, a) in params.iter().zip(args.into_iter()) {
@@ -2274,7 +2302,7 @@ impl<'p> Lower<'p> {
             if caps.is_empty() && sizes.is_empty() {
                 continue;
             }
-            let FuncVal::Lambda { params: lp, body: lb, env: le } = fv else { continue };
+            let FuncVal::Lambda { params: lp, body: lb, env: le, act: la } = fv else { continue };
             let mut inner = (**le).clone();
             for (cl, cv) in caps {
                 let t = self.vars[cv as usize].ty.clone();
@@ -2290,7 +2318,7 @@ impl<'p> Lower<'p> {
                 params.push(p);
                 pvars.push(None);
             }
-            env.locals.insert(l, Binding::Func(FuncVal::Lambda { params: lp, body: lb, env: Rc::new(inner) }));
+            env.locals.insert(l, Binding::Func(FuncVal::Lambda { params: lp, body: lb, env: Rc::new(inner), act: *la }));
         }
         let ret = self.ty(&env, &f.ret, f.span)?;
         self.rets.push(ret);
@@ -2377,6 +2405,11 @@ impl<'p> Lower<'p> {
         let span = e.span;
         let ty = self.ty(env, &e.ty, span)?;
         let kind = match p {
+            // a constant of each call compiled (D386)
+            Prim::IsPure => {
+                let fv = self.fn_value(env, &args[0])?;
+                return Ok(Expr::new(ExprKind::Lit(Lit::Bool(self.fn_pure(&fv))), Type::Bool, span));
+            }
             // `Map<K, V>` (D158): its three arrays
             Prim::MapOf => ExprKind::Tuple(args.iter().map(|a| self.expr(env, a)).collect::<R<_>>()?),
             Prim::MapParts => return self.expr(env, &args[0]),

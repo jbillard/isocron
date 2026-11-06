@@ -2045,8 +2045,9 @@ bounds).
 An action can be given as an argument, as a function can: its type is
 `action (T) => U`. A `function` is accepted where an action is expected (a
 pure function is an action without effect), not the reverse. A lambda
-written where an action is expected is an action: it may print, read or
-write. Calling such a value is an effect, so only an `action` can do it,
+written where an action is expected may print, read or write; it is an
+action only when its body has an effect, a pure function otherwise.
+Calling such a value is an effect, so only an `action` can do it,
 and a `function` has no parameter of an action type. `map`, `fold` and the
 other functions of arrays stay pure: `forEach(x, f)` applies an action to
 each element, in order. An action can have type parameters.
@@ -2087,6 +2088,47 @@ each b
 
 Each call is compiled for the action it receives, as the higher-order
 functions are: no closure at run time.
+
+`isPure(f)` tells whether the function `f` received is pure: a
+`function`, a lambda without an effect, an operator. It is a constant of
+each compiled call, and the branch not taken is never compiled. In the
+first branch of `if (isPure(f))`, `f` is a pure function: it can be
+called where only one can, in a `map` (in parallel). That is how
+`http.serve` keeps its parallel way for a pure handler.
+
+```isc
+action applied(f: action (i64) => i64, x: i64[n]): i64[] {
+    if (isPure(f)) {
+        return map(x, (v) => f(v));
+    }
+    return mapAction(x, f);
+}
+
+action shown(x: i64): i64 {
+    print(`shown ${x}`);
+    return x + 1;
+}
+
+function doubled(x: i64): i64 {
+    return 2 * x;
+}
+
+action main(args: string[k]): i32 {
+    print(`${isPure(doubled)} ${isPure(shown)} ${isPure((v: i64) => v + 1)}`);
+    const a = applied(doubled, [1, 2, 3]);
+    const b = applied(shown, [1, 2]);
+    const c = applied((v) => v * 10, [4]);
+    print(`${a[2]} ${b[1]} ${c[0]}`);
+    return 0;
+}
+```
+
+```output
+true false true
+shown 1
+shown 2
+6 3 40
+```
 
 ### Actions in parallel: `mapParallel`
 
@@ -2773,24 +2815,23 @@ parallel, without a race. Connections are kept alive (HTTP/1.1, unless
 has `Date` and `Content-Length`; `textResponse(status, s)` makes one of
 text.
 
-A handler that needs effects (print, read a file, call another service)
-is an action, given to `serveAction(port, handler)` or
-`serveActionOn(l, handler, limit)`: `action (Request) => Response`
-([actions as values](#actions-as-values)). `serveActionOn` answers the
-requests one at a time, in the order they are ready. Under Linux,
-`serveAction` runs a loop on each thread of the pool, as `serve` does:
-each loop answers its requests one at a time, in their order, and two
-loops run at the same time, the effects of their requests in no order
-between them, as the actions of `mapParallel`. A handler that needs one
-order for all the requests (read a file, then write it again) is given
-to `serveActionOn`. A pure handler given to them works too. `https` has
-`serveTlsAction` and `serveTlsActionOn`, one loop each.
+The handler has the type `action (Request) => Response`: a pure function
+or an action ([actions as values](#actions-as-values)). A pure function,
+or a lambda without an effect, is applied to all the requests ready at
+once, by `map`, in parallel: no data race, by construction. A handler
+that needs effects (print, read a file, call another service) is an
+action; the requests are then answered one at a time, in the order they
+are ready. `https` has `serveTls` and `serveTlsOn`, the same.
 
 Under Linux, `serve(port, handler)` runs a loop of events on each thread
 of the pool, each on a listener of its own of the port (`SO_REUSEPORT`:
-the kernel shares the connections out among them), by `mapParallel`;
-`serveAction` too. One loop under Windows, with one thread, for the port
-0, for `serveOn` and for `serveActionOn`.
+the kernel shares the connections out among them), by `mapParallel`,
+whatever the handler: with an action, each loop answers its requests one
+at a time and two loops run at the same time, the effects of their
+requests in no order between them, as the actions of `mapParallel`. A
+handler that needs one order for all the requests (read a file, then
+write it again) is given to `serveOn(l, handler, limit)`. One loop under
+Windows, with one thread, for the port 0 and for `serveOn`.
 
 ```isc
 import * as http from "http";

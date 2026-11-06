@@ -1,0 +1,46 @@
+// D386: the purity of the function received, a constant of each call; the
+// first branch of `if (isPure(h))` takes `h` as a pure function
+action applied(h: action (i64) => i64, x: i64[n]): i64[] {
+    if (isPure(h)) {
+        // given to `map`: in parallel; 1000 more, to show the way taken
+        return map(x, (v) => h(v) + 1000);
+    }
+    return mapAction(x, h);
+}
+
+// `isPure` given on: a choice of two functions, one an action
+action chosen(c: boolean, h: action (i64) => i64): boolean {
+    return isPure(c ? h : doubled);
+}
+
+function doubled(v: i64): i64 {
+    return v * 2;
+}
+
+// an action without an effect is still an action: so declared
+action quiet(v: i64): i64 {
+    return v + 1;
+}
+
+action loud(v: i64): i64 {
+    print(`loud ${v}`);
+    return v + 1;
+}
+
+action main(args: string[k]): i32 {
+    const xs = [1, 2, 3];
+    print(`${isPure(doubled)} ${isPure(quiet)} ${isPure(loud)} ${isPure((v: i64) => v + 1)} ${isPure((a: i64, b: i64) => a + b)}`);
+    print(`${chosen(true, doubled)} ${chosen(true, loud)}`);
+    const a = applied(doubled, xs);
+    const b = applied(quiet, xs);
+    const c = applied(loud, xs);
+    const d = applied((v) => v * 10, xs);
+    const e = applied((v) => {
+        print(`lambda ${v}`);
+        return v - 1;
+    }, xs);
+    // a lambda that calls an action given to it is an action
+    const f = applied((v) => loud(v) * 2, [5]);
+    print(`${a[2]} ${b[2]} ${c[2]} ${d[2]} ${e[2]} ${f[0]}`);
+    return 0;
+}

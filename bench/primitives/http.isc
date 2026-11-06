@@ -17,7 +17,8 @@ function hello(r: http.Request): http.Response {
     return http.textResponse(200, "hello, world!");
 }
 
-// the same answer by an action (D352): `serveActionOn`, one request at a time
+// the same answer by an action (D352): `serveOn` answers one request at a
+// time (D386)
 action helloAction(r: http.Request): http.Response {
     return http.textResponse(200, "hello, world!");
 }
@@ -39,7 +40,7 @@ action readSome(c: net.Conn, got: i64, want: i64): i64 {
 action conns(l: net.Listener, port: i64, n: i64, requests: string, act: boolean): [u64, i64] {
     if (n == 0) {
         const t0 = clock();
-        const r = act ? http.serveActionOn(l, helloAction, CONNS * PER_CONN) : http.serveOn(l, hello, CONNS * PER_CONN);
+        const r = act ? http.serveOn(l, helloAction, CONNS * PER_CONN) : http.serveOn(l, hello, CONNS * PER_CONN);
         return [clock() - t0, 0] as const;
     }
     return match (net.connect("127.0.0.1", port)) {

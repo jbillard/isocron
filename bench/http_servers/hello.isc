@@ -1,6 +1,6 @@
 // The server of Isocron measured against nginx and h2o: `hello, world!` to
-// every request, by `serve` (a pure handler, in parallel) or by
-// `serveAction` (an action: on each loop one request at a time, D385).
+// every request, by `serve` given a pure function (in parallel) or an
+// action (on each loop one request at a time, D385, D386).
 //   hello PORT [action]
 import * as http from "http";
 import * as sys from "sys";
@@ -9,9 +9,13 @@ function hello(r: http.Request): http.Response {
     return http.textResponse(200, "hello, world!");
 }
 
+action helloAction(r: http.Request): http.Response {
+    return http.textResponse(200, "hello, world!");
+}
+
 action main(args: string[k]): i32 {
     const port = parseI64(args[0]);
-    const r = args.length > 1 ? http.serveAction(port, hello) : http.serve(port, hello);
+    const r = args.length > 1 ? http.serve(port, helloAction) : http.serve(port, hello);
     return match (r) {
         Ok(_) => 0,
         Err(e) => {

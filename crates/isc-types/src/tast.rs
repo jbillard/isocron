@@ -63,6 +63,10 @@ pub enum Prim {
     /// `mapParallel(x, f)` (D373): the action `f` applied to each element,
     /// the applications at the same time on the threads of the pool.
     MapParallel,
+    /// `isPure(f)` (D386): whether the function `f` is pure, a constant of
+    /// each call compiled; in the first branch of `if (isPure(h))`, `h` is
+    /// a pure function.
+    IsPure,
     /// `scan(x, op, e)`: the inclusive cumulation, from left to right.
     Scan,
     /// `filter(x, p)`: the elements where `p` is true, in order.

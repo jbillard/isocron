@@ -59,7 +59,7 @@ ISC_THREADS=$nserver taskset -c "$server_cpus" /tmp/hello 8080 & pid=$!
 run isocron-serve 8080 / hello
 kill $pid; wait $pid 2>/dev/null || true
 ISC_THREADS=$nserver taskset -c "$server_cpus" /tmp/hello 8083 action & pid=$!
-run isocron-serveAction 8083 / hello
+run isocron-serve-action 8083 / hello
 kill $pid; wait $pid 2>/dev/null || true
 sed "s/^worker_processes 4;/worker_processes $nserver;/" /work/nginx.conf > /tmp/nginx.conf
 taskset -c "$server_cpus" /usr/sbin/nginx -c /tmp/nginx.conf & pid=$!

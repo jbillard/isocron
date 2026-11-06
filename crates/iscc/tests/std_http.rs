@@ -362,7 +362,7 @@ fn server_against_clients_of_the_test() {
     }
 }
 
-/// D352: a handler that is an action (`serveActionOn`): it prints each
+/// D352: a handler that is an action (`serveOn`, D386): it prints each
 /// request and reads a file, the requests of one connection answered one at
 /// a time in their order; a pure function where an action is expected;
 /// `forEach` with a lambda that prints. Run in a folder of its own, the
@@ -407,7 +407,7 @@ fn serve_runs_a_loop_on_each_thread() {
     loops_on_each_thread(include_str!("data/std_http_serve_loops.isc"), "std_http_serve_loops");
 }
 
-/// D385: `serveAction(port, handler)` too, its handler an action that
+/// D385: `serve(port, handler)` given an action too (D386), one that
 /// prints: 4 listeners with 4 threads, 1 interpreted, a second server
 /// refused, the requests of each connection answered in their order.
 #[test]

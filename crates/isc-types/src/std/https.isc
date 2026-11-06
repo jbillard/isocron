@@ -48,10 +48,11 @@ export action getWith(url: string, ca: string): Result<http.Response, http.HttpE
     return requestWith(ca, "GET", url, [], []);
 }
 
-// the requests to the listener `l` (taken) answered by `handler` over TLS
-// with the certificate and the key of the PEM texts, until `limit` of them
-// (0: no end)
-export action serveTlsOn(l: net.Listener, cert: string, key: string, handler: (http.Request) => http.Response, limit: i64): Result<void, IoError> {
+// the requests to the listener `l` (taken) answered by `handler`, a pure
+// function or an action (as `http.serveServer`, D386), over TLS with the
+// certificate and the key of the PEM texts, until `limit` of them (0: no
+// end)
+export action serveTlsOn(l: net.Listener, cert: string, key: string, handler: action (http.Request) => http.Response, limit: i64): Result<void, IoError> {
     return match (net.serverOfTls(l, cert, key)) {
         Ok(s) => http.serveServer(s, handler, limit),
         Err(e) => Err(e),
@@ -59,28 +60,10 @@ export action serveTlsOn(l: net.Listener, cert: string, key: string, handler: (h
 }
 
 // the requests to `port` of every address of the machine answered by
-// `handler` over TLS, with no end
-export action serveTls(port: i64, cert: string, key: string, handler: (http.Request) => http.Response): Result<void, IoError> {
+// `handler`, a pure function or an action, over TLS, with no end
+export action serveTls(port: i64, cert: string, key: string, handler: action (http.Request) => http.Response): Result<void, IoError> {
     return match (net.listen("0.0.0.0", port)) {
         Ok(l) => serveTlsOn(l, cert, key, handler, 0),
-        Err(e) => Err(e),
-    };
-}
-
-// the requests to the listener `l` (taken) answered over TLS one at a time
-// by the action `handler`, until `limit` of them (0: no end) (D352)
-export action serveTlsActionOn(l: net.Listener, cert: string, key: string, handler: action (http.Request) => http.Response, limit: i64): Result<void, IoError> {
-    return match (net.serverOfTls(l, cert, key)) {
-        Ok(s) => http.serveActionServer(s, handler, limit),
-        Err(e) => Err(e),
-    };
-}
-
-// the requests to `port` answered over TLS one at a time by the action
-// `handler`, with no end (D352)
-export action serveTlsAction(port: i64, cert: string, key: string, handler: action (http.Request) => http.Response): Result<void, IoError> {
-    return match (net.listen("0.0.0.0", port)) {
-        Ok(l) => serveTlsActionOn(l, cert, key, handler, 0),
         Err(e) => Err(e),
     };
 }

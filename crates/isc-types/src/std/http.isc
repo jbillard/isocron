@@ -847,8 +847,8 @@ action respondFrom(handler: action (Request) => Response, ps: Pending[n], change
     return respondFrom(handler, ps, changed, readies, upto, counts, date, j + 1, acc.with(j, outOf(ps[changed[i]].id, responseBytes(response, keep, f.head, date), keep)));
 }
 
-// the loop of `serveAction`: as `serveLoop`, the requests ready answered one
-// at a time by the action `handler` (D352)
+// the loop of a server whose handler is an action: as `serveLoop`, the
+// requests ready answered one at a time by the action `handler` (D352)
 action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps: Pending[n], changed: i64[c], answered: i64, limit: i64): Result<void, IoError> {
     // only the connections that received bytes, or gave requests the turn
     // before, read (D354)
@@ -926,27 +926,35 @@ action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], 
 
 // the requests to the listener `l` (taken) answered by `handler`, until
 // `limit` of them (0: no end): the server closed then
-export action serveOn(l: net.Listener, handler: (Request) => Response, limit: i64): Result<void, IoError> {
+export action serveOn(l: net.Listener, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
     return match (net.serverOf(l)) {
-        Ok(s) => serveLoop(s, handler, [], [], 0, limit),
+        Ok(s) => serveServer(s, handler, limit),
         Err(e) => Err(e),
     };
 }
 
 // the requests to the server `s` of `net` (taken: one of TLS, `https`)
-// answered by `handler`, until `limit` of them (0: no end)
-export action serveServer(s: net.Server, handler: (Request) => Response, limit: i64): Result<void, IoError> {
-    return serveLoop(s, handler, [], [], 0, limit);
+// answered by `handler`, until `limit` of them (0: no end): a pure
+// function applied to the requests ready all at once, by `map`, in
+// parallel; an action (it may print, read files, call other services) to
+// one request at a time, in the order they are ready (D352, D386)
+export action serveServer(s: net.Server, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
+    if (isPure(handler)) {
+        return serveLoop(s, handler, [], [], 0, limit);
+    }
+    return serveActionLoop(s, handler, [], [], 0, limit);
 }
 
 // the requests to `port` of every address of the machine answered by
-// `handler`, with no end: under Linux a loop of events on each thread of
-// the pool, each on a listener of its own of `port` (D374: the kernel
-// shares the connections out among them, `SO_REUSEPORT`); one loop under
-// Windows, with one thread or for the port 0. A port that another socket
-// listens to is refused first by a listener of its own (`AlreadyExists`):
-// a second server, of this program or another, never shares it
-export action serve(port: i64, handler: (Request) => Response): Result<void, IoError> {
+// `handler`, a pure function or an action, with no end: under Linux a loop
+// of events on each thread of the pool, each on a listener of its own of
+// `port` (D374: the kernel shares the connections out among them,
+// `SO_REUSEPORT`), the requests of two loops at the same time, as the
+// actions of `mapParallel` (D373, D385); one loop under Windows, with one
+// thread or for the port 0. A port that another socket listens to is
+// refused first by a listener of its own (`AlreadyExists`): a second
+// server, of this program or another, never shares it
+export action serve(port: i64, handler: action (Request) => Response): Result<void, IoError> {
     const k = sysThreads();
     return match (net.listen("0.0.0.0", port)) {
         Ok(l) => {
@@ -962,7 +970,7 @@ export action serve(port: i64, handler: (Request) => Response): Result<void, IoE
 
 // one of the loops of `serve` (D374), on a listener of its own of `port`
 // (`Ok(0)` when it ends, which it does not)
-action serveShared(port: i64, handler: (Request) => Response): Result<i64, IoError> {
+action serveShared(port: i64, handler: action (Request) => Response): Result<i64, IoError> {
     const [l, code] = sysListenShared("0.0.0.0", port);
     if (code != 0) {
         sysCloseListener(l);
@@ -981,54 +989,6 @@ function firstError(rs: Result<i64, IoError>[n], i: i64): Result<void, IoError> 
     }
     return match (rs[i]) {
         Ok(_) => firstError(rs, i + 1),
-        Err(e) => Err(e),
-    };
-}
-
-// the requests to the listener `l` (taken) answered one at a time by the
-// action `handler`, until `limit` of them (0: no end) (D352)
-export action serveActionOn(l: net.Listener, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
-    return match (net.serverOf(l)) {
-        Ok(s) => serveActionLoop(s, handler, [], [], 0, limit),
-        Err(e) => Err(e),
-    };
-}
-
-// the requests to the server `s` of `net` (taken: one of TLS, `https`)
-// answered one at a time by the action `handler` (D352)
-export action serveActionServer(s: net.Server, handler: action (Request) => Response, limit: i64): Result<void, IoError> {
-    return serveActionLoop(s, handler, [], [], 0, limit);
-}
-
-// the requests to `port` of every address of the machine answered by the
-// action `handler` (it may print, read files, call other services), with
-// no end (D352): as `serve`, a loop on each thread of the pool under Linux
-// (D374), each answering its requests one at a time, in their order; two
-// loops at the same time, as the actions of `mapParallel` (D373, D385)
-export action serveAction(port: i64, handler: action (Request) => Response): Result<void, IoError> {
-    const k = sysThreads();
-    return match (net.listen("0.0.0.0", port)) {
-        Ok(l) => {
-            if (k <= 1 || port == 0 || sysPlatform() != 0) {
-                return serveActionOn(l, handler, 0);
-            }
-            net.closeListener(l);
-            return firstError(mapParallel(iota(k), (i) => serveActionShared(port, handler)), 0);
-        },
-        Err(e) => Err(e),
-    };
-}
-
-// one of the loops of `serveAction` (D385), on a listener of its own of
-// `port` (`Ok(0)` when it ends, which it does not)
-action serveActionShared(port: i64, handler: action (Request) => Response): Result<i64, IoError> {
-    const [l, code] = sysListenShared("0.0.0.0", port);
-    if (code != 0) {
-        sysCloseListener(l);
-        return Err(ioError(code, `0.0.0.0:${port}`));
-    }
-    return match (serveActionOn(l, handler, 0)) {
-        Ok(_) => Ok(0),
         Err(e) => Err(e),
     };
 }

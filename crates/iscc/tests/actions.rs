@@ -95,7 +95,7 @@ fn actions_refused_where_they_would_have_an_effect() {
     }
     // a function that prints: the action named, the way to effects given
     let e = error("function hello(x: i64): i64 {\n    print(x);\n    return x;\n}\naction main(args: string[k]): i32 {\n    return 0;\n}\n");
-    assert!(e.contains("(`print` is one): a `function` computes a value and has no effect") && e.contains("http.serveAction"), "{}", e);
+    assert!(e.contains("(`print` is one): a `function` computes a value and has no effect") && e.contains("an action given to `http.serve`"), "{}", e);
 }
 
 /// The output of `actions_parallel.isc` cut at each line printed outside
@@ -171,5 +171,51 @@ fn actions_in_parallel_refused() {
     for (src, want) in cases {
         let e = error(&format!("{}{}", src, main));
         assert!(e.contains(want), "{}\n--- gives ---\n{}", src, e);
+    }
+}
+
+/// D386: `isPure(f)` gives whether the function received is pure (a
+/// `function`, a lambda without an effect: true; an action, even one
+/// without an effect, a lambda that prints or calls an action: false), a
+/// constant of each call; its first branch takes `f` as pure, given to a
+/// `map`. The interpreter and the code compiled on 1 and 4 threads: the
+/// same output.
+#[test]
+fn the_purity_of_the_function_received() {
+    let src = include_str!("data/actions_pure_received.isc");
+    let want = "true false false true true\ntrue false\nloud 1\nloud 2\nloud 3\nlambda 1\nlambda 2\nlambda 3\nloud 5\n1006 4 4 1030 2 12\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "actions_pure_received");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want), "{} threads: {}", t, r.stderr);
+    }
+}
+
+/// D386: `isPure` refused on what is not a function; an action still one
+/// outside the first branch of `if (isPure(h))` (given to `map`: refused).
+#[test]
+fn the_purity_test_refused() {
+    let e = error("action main(args: string[k]): i32 {\n    print(`${isPure(3)}`);\n    return 0;\n}\n");
+    assert!(e.contains("`isPure` takes a function"), "{}", e);
+    let e = error("action f(h: action (i64) => i64, x: i64[n]): i64[] {\n    if (isPure(h)) {\n        return x;\n    }\n    return map(x, (v) => h(v));\n}\naction main(args: string[k]): i32 {\n    return 0;\n}\n");
+    assert!(e.contains("cannot be called inside a lambda that is not an action"), "{}", e);
+}
+
+/// D386: `http.serve` given a pure function (by its name or a lambda
+/// without an effect) answers by the `map` of `serveLoop`, never by the loop
+/// of actions; given an action, by `serveActionLoop` only.
+#[test]
+fn serve_takes_the_way_of_its_handler() {
+    let names = |src: &str| -> Vec<String> { iscc::frontend("test.isc", src).unwrap_or_else(|e| panic!("{}", e)).fns.iter().map(|f| f.name.clone()).collect() };
+    let has = |ns: &[String], n: &str| ns.iter().any(|f| f.contains(n));
+    let main = |handler: &str| format!("import * as http from \"http\";\n\nfunction hello(r: http.Request): http.Response {{\n    return http.textResponse(200, \"hello\");\n}}\n\naction logged(r: http.Request): http.Response {{\n    print(r.path);\n    return http.textResponse(200, \"hello\");\n}}\n\naction main(args: string[k]): i32 {{\n    return match (http.serve(8080, {})) {{\n        Ok(_) => 0,\n        Err(e) => 1,\n    }};\n}}\n", handler);
+    for h in ["hello", "(r) => http.textResponse(200, r.path)"] {
+        let ns = names(&main(h));
+        assert!(has(&ns, "serveLoop") && !has(&ns, "serveActionLoop"), "{}: {:?}", h, ns);
+    }
+    for h in ["logged", "(r) => logged(r)"] {
+        let ns = names(&main(h));
+        assert!(has(&ns, "serveActionLoop") && !has(&ns, "serveLoop"), "{}: {:?}", h, ns);
     }
 }

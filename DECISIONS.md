@@ -8606,3 +8606,61 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     connections of 50 requests each answered in their order, the handler
     an action that prints); `server_with_a_handler_that_is_an_action`
     unchanged.
+- **D386 — One `serve`, for a pure function or an action: the purity of
+  a lambda inferred, `isPure` (2026-11-06).** After D385 `serveAction`
+  answered as fast as `serve`; the author asked what `serve` was still for,
+  then: « Une seule fonction serve qui accepte les deux, et qui garde le
+  chemin parallèle quand le gestionnaire est pur, serait l'idéal : peux tu
+  partir là-dessus ? et d'ailleurs si d'autres items du langage sont dans
+  le même cas, en faire de même pour eux ». The pairs of the language: the
+  servers (`serve` / `serveAction`, `serveOn` / `serveActionOn`,
+  `serveServer` / `serveActionServer`, `serveTls` / `serveTlsAction`,
+  `serveTlsOn` / `serveTlsActionOn`) and `map` / `mapAction` (D387).
+  - The language: (1) a lambda written where an action is expected is an
+    action only when its body has an effect (the call of an action, of a
+    value of an action type or of a primitive of effects, the reference to
+    an action as a value, an expression statement); without one its type is
+    that of a pure function. The checker keeps for each enclosing lambda
+    that may act whether it had one (`act_effects`, `note_effect` where each
+    effect is allowed). The name of a declared `action` is an action, its
+    body with an effect or not. (2) `isPure(f)`: whether the function `f` is
+    pure, a constant of each call compiled, since each call is specialized
+    for the function it receives (no closure at run time): a `function`, a
+    lambda without an effect, an operator, a primitive that is not an
+    action, a choice or a table of such functions (`fn_pure` of the
+    lowering). (3) In the first branch of `if (isPure(h))`, `h` a parameter
+    or a local of an action type, `h` has the type of the pure function
+    (`pure_test` of the checker): it can be given to `map`. The lowering
+    compiles only the branch of the function received. Chosen over an
+    overloading by the purity of an argument (two declarations of one name)
+    and over a polymorphism of effects in the types: one test, checked
+    once, in the code of the library, and nothing new in the types.
+  - The library: `serve`, `serveOn`, `serveServer` of `http` and
+    `serveTls`, `serveTlsOn` of `https` take a handler `action (Request) =>
+    Response`; `serveServer` answers by `serveLoop` (the `map` in parallel,
+    no data race by construction) when `isPure(handler)`, else by
+    `serveActionLoop` (one request at a time, D352, D385). `serveAction`,
+    `serveActionOn`, `serveActionServer`, `serveTlsAction` and
+    `serveTlsActionOn` are removed (0.x: no promise of compatibility yet);
+    the programs that called them call `serve`, `serveOn`, `serveTls`,
+    `serveTlsOn`. The message of an effect in a `function` names
+    `http.serve` given an action.
+  - The code: the server of `bench/http_servers/hello.isc` built by the
+    `iscc` of ac32ac6 (`serveAction` given a declared action, `serve` a
+    function) and by the new one (`serve` given each): the same 125
+    functions of the program at the same addresses and sizes; their code
+    the same but for four constants that are places of the sources in the
+    messages of panics (lines of `http.isc`, columns of the program) and
+    the name of a function of the runtime (the old `iscc` a debug build):
+    the measures of D385 stand.
+  - Tests (`actions.rs`): `the_purity_of_the_function_received`
+    (`isPure` of a `function`, of a declared action without an effect, of
+    an action, of lambdas with and without effects, of a choice; the first
+    branch given to `map`, its results 1000 more to show the way; the
+    interpreter and compiled on 1 and 4 threads),
+    `the_purity_test_refused`, `serve_takes_the_way_of_its_handler` (the
+    functions of the IR: `serveLoop` and no `serveActionLoop` for a
+    function and a lambda without an effect, the reverse for an action and
+    a lambda that calls one); the tests of `std_http.rs` and `std_https.rs`
+    on the new names; an example in `docs/language.md`; SPEC sections 12
+    and 18.

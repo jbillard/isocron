@@ -119,6 +119,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
     Some(match name {
         "map" => Prim::Map,
         "mapParallel" => Prim::MapParallel,
+        "isPure" => Prim::IsPure,
         "zip" => Prim::Zip,
         "scan" => Prim::Scan,
         "filter" => Prim::Filter,
@@ -610,6 +611,9 @@ struct FnCx<'g> {
     lambda_depth: u32,
     /// The enclosing lambdas that are actions (D352).
     act_lambdas: u32,
+    /// For each enclosing lambda that may act, whether it has an effect so
+    /// far: one without any is pure (D386).
+    act_effects: Vec<bool>,
     generics: Vec<(String, Classes)>,
     syms: Vec<SymInfo>,
     tvars: Vec<TVar>,
@@ -1190,6 +1194,30 @@ impl<'g> FnCx<'g> {
         self.is_action && self.lambda_depth == self.act_lambdas
     }
 
+    /// The local `h` of `isPure(h)` and its type as a pure function, when
+    /// it is a function that may act (D386).
+    fn pure_test(&self, c: &ast::Expr) -> Option<(LocalId, Ty)> {
+        let ExprKind::Call(f, args) = &c.kind else { return None };
+        let ExprKind::Var(n) = &f.kind else { return None };
+        if n != "isPure" || args.len() != 1 || self.lookup(n).is_some() {
+            return None;
+        }
+        let ExprKind::Var(h) = &args[0].kind else { return None };
+        let id = self.lookup(h)?;
+        match self.shallow(&self.locals[id as usize].ty) {
+            Ty::Fn(ps, r, true) => Some((id, Ty::Fn(ps, r, false))),
+            _ => None,
+        }
+    }
+
+    /// An effect where one is allowed: each enclosing lambda is an action
+    /// (D386), all of them up to the action, since the effect is allowed.
+    fn note_effect(&mut self) {
+        for e in self.act_effects.iter_mut() {
+            *e = true;
+        }
+    }
+
     // ----- expressions --------------------------------------------------
 
     fn mk(&self, kind: TExprKind, ty: Ty, span: Span) -> TExpr {
@@ -1477,12 +1505,20 @@ impl<'g> FnCx<'g> {
                 Ok(self.mk(TExprKind::Pow(Box::new(b), Box::new(x)), ty, span))
             }
             ExprKind::If(c, t, f) => {
+                // `if (isPure(h))`, `h` a parameter or a local that may act:
+                // a pure function in the first branch (D386)
+                let narrowed = self.pure_test(c);
                 let c = self.check(c, Some(&Ty::Bool))?;
                 self.unify(&Ty::Bool, &c.ty, c.span)?;
                 // each branch given the form expected, not its sizes: arrays
                 // of two sizes have a size fixed at run time (D337)
                 let hint = expected.map(|e| self.loosen(e));
-                let t = self.check(t, hint.as_ref())?;
+                let saved = narrowed.map(|(id, pure)| (id, std::mem::replace(&mut self.locals[id as usize].ty, pure)));
+                let t = self.check(t, hint.as_ref());
+                if let Some((id, ty)) = saved {
+                    self.locals[id as usize].ty = ty;
+                }
+                let t = t?;
                 // the form of the first branch, or the form expected when it
                 // holds arrays of their own size (D341), which the first
                 // branch may have of a size
@@ -1510,7 +1546,13 @@ impl<'g> FnCx<'g> {
                 }
                 self.lambda_depth += 1;
                 self.act_lambdas += act as u32;
+                if act {
+                    self.act_effects.push(false);
+                }
                 let b = self.check(body, rhint.as_ref());
+                // a lambda where an action is expected is an action only
+                // when its body has an effect: else it is pure (D386)
+                let acted = act && self.act_effects.pop().unwrap_or(true);
                 self.act_lambdas -= act as u32;
                 self.lambda_depth -= 1;
                 self.scopes.pop();
@@ -1518,7 +1560,7 @@ impl<'g> FnCx<'g> {
                 if let Some(r) = &rhint {
                     self.unify(r, &b.ty, b.span)?;
                 }
-                let ty = Ty::Fn(ptys, Box::new(b.ty.clone()), act);
+                let ty = Ty::Fn(ptys, Box::new(b.ty.clone()), acted);
                 Ok(self.mk(TExprKind::Lambda(ids, Box::new(b)), ty, span))
             }
             ExprKind::Block(stmts, result) => {
@@ -1567,10 +1609,11 @@ impl<'g> FnCx<'g> {
                         let why = if self.is_action {
                             "this lambda is pure, as the functions given to `map`, `fold`, `filter` and the other functions of arrays are (a lambda is an action only where an `action (T) => U` is expected, SPEC section 12)"
                         } else {
-                            "a `function` computes a value and has no effect; effects go in an `action` (a handler with effects: `http.serveAction`, D352)"
+                            "a `function` computes a value and has no effect; effects go in an `action` (a handler with effects: an action given to `http.serve`, D352, D386)"
                         };
                         return err(e.span, format!("an expression statement is only allowed in an `action`{}: {}", called, why));
                     }
+                    self.note_effect();
                     let v = self.check(e, None)?;
                     out.push(TStmt::Expr(v));
                 }
@@ -1839,6 +1882,9 @@ impl<'g> FnCx<'g> {
                     format!("the action `{}` is a value only inside an `action` (a `function` has no effect, SPEC section 12)", name),
                 );
             }
+            if sig.is_action {
+                self.note_effect();
+            }
             let (type_args, ptys, ret) = self.instantiate_value(id, span);
             let ty = Ty::Fn(ptys, Box::new(ret), sig.is_action);
             return Ok(self.mk(TExprKind::FnRef { id, type_args }, ty, span));
@@ -2105,6 +2151,9 @@ impl<'g> FnCx<'g> {
                 },
             );
         }
+        if act {
+            self.note_effect();
+        }
         self.arity("this function", ptys.len(), args.len(), span)?;
         let mut targs = Vec::new();
         for (a, p) in args.iter().zip(ptys.iter()) {
@@ -2210,6 +2259,9 @@ impl<'g> FnCx<'g> {
                     format!("a `function` cannot call the {} `{}` (SPEC section 12)", what, sig.name)
                 },
             );
+        }
+        if sig.is_action {
+            self.note_effect();
         }
         self.arity(&sig.name, sig.param_tys.len(), args.len(), span)?;
         let type_args: Vec<Ty> = sig.generics.iter().map(|gc| self.fresh(gc.1, LitKind::None, span)).collect();
@@ -2605,6 +2657,7 @@ impl<'g> FnCx<'g> {
             if !self.can_act() {
                 return err(span, format!("the action `{}` cannot be called here (SPEC section 12)", name));
             }
+            self.note_effect();
             return self.check_sys(op, name, args, span);
         }
         if p.is_action() && !self.can_act() {
@@ -2617,11 +2670,14 @@ impl<'g> FnCx<'g> {
                 },
             );
         }
+        if p.is_action() {
+            self.note_effect();
+        }
         let n = match p {
             // checked by `check_sys`, which returned
             Prim::Sys(_) => unreachable!(),
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
-            Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print => 1,
+            Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
             Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString => 1,
             Prim::Concat => 2,
@@ -2919,6 +2975,15 @@ impl<'g> FnCx<'g> {
                 Ok(mk(vec![x], Ty::Unit, self))
             }
             Prim::Clock => Ok(mk(vec![], Ty::Int(IntKind::U64), self)),
+            // whether the function given is pure: a constant of each call
+            // compiled (D386)
+            Prim::IsPure => {
+                let f = self.check(&args[0], None)?;
+                if !matches!(self.shallow(&f.ty), Ty::Fn(..)) {
+                    return err(f.span, format!("`isPure` takes a function; this is a `{}`", self.show(&f.ty)));
+                }
+                Ok(mk(vec![f], Ty::Bool, self))
+            }
             Prim::ParseI64 => {
                 let x = self.check(&args[0], None)?;
                 self.unify(&Ty::Str, &x.ty, x.span)?;
@@ -4185,6 +4250,7 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         is_action: sig.is_action,
         lambda_depth: 0,
         act_lambdas: 0,
+        act_effects: Vec::new(),
         generics: sig.generics.clone(),
         syms: sig.syms.clone(),
         tvars: Vec::new(),
