@@ -1,0 +1,64 @@
+// D367: the payload of a `match` on a temporary taken out of it (not copied
+// then freed): `??`, `Ok(v) => v` with an error that owns memory too, a
+// match of three arms, a payload that is a tuple, an arm that reads the
+// temporary, made by the threads of a `map`.
+type E = { code: i64, text: string };
+type Shape = Dot | Line(string) | Box([string, i64]);
+
+function find(xs: string[n], k: i64): Option<string> {
+    return k >= 0 && k < xs.length ? Some(`${xs[k]}!`) : None;
+}
+
+function parse(s: string): Result<string, E> {
+    return s.length > 3 ? Ok(s.toUpperCase()) : Err({ code: s.length, text: `short: ${s}` });
+}
+
+function shape(i: i64): Shape {
+    return i % 3 == 0 ? Dot : (i % 3 == 1 ? Line(`line ${i}`) : Box([`box ${i}`, i] as const));
+}
+
+function name(i: i64): string {
+    return match (shape(i)) {
+        Dot => "dot",
+        Line(t) => t,
+        Box(b) => {
+            const [t, n] = b;
+            return `${t}/${n}`;
+        },
+    };
+}
+
+function pair(i: i64): [string, i64] {
+    return match (shape(i)) {
+        Box(b) => b,
+        _ => ["none", -1] as const,
+    };
+}
+
+function text(s: string): string {
+    return match (parse(s)) {
+        Ok(v) => v,
+        Err(e) => `${e.code}: ${e.text}`,
+    };
+}
+
+function measure(s: string): i64 {
+    return match (parse(s)) {
+        Ok(v) => v.length,
+        Err(e) => -e.code,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const xs = ["alpha", "beta", "gamma"];
+    const v = parseI64(args[0]);
+    print(find(xs, v) ?? "none");
+    print(find(xs, v + 5) ?? "none");
+    print([text("hello"), text("hi"), text(xs[v % 3])] as const);
+    print([measure("hello"), measure("hi")] as const);
+    print(map(iota(7), (i) => name(i + v)));
+    print(map(iota(4), (i) => pair(i + v)));
+    const many = map(iota(3000), (i) => find(xs, (i + v) % 5) ?? text(`${i}`));
+    print(`${many.length} ${many[0]} ${many[1]} ${many[2999]}`);
+    return 0;
+}

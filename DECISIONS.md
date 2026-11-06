@@ -7971,3 +7971,43 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   few per cent of it. nginx 630152 to 785171 on 4 cores, lighttpd 187464 to
   196662 on one. Open: a loop of events on each core, the cost of a
   request of the loop.
+- **D367 — The payload of a `match` on a temporary taken out of it
+  (2026-11-06).** The open point of D346: `f(x) ?? d` and `match (f(x)) {
+  Ok(v) => v, ... }` bind the result of the call to a temporary (`let drop
+  match = f(x)`), copy the payload in the branch that gives it (`copy (proj
+  1 match)`: a block made and its bytes copied for a string) and free the
+  whole temporary after the `if`.
+  - `take_payloads` (after the pass of ownership): in such a `let drop`
+    whose body is the `if`s of the match (their conditions reading only
+    scalar parts of it), the branch that gives a payload takes it (`take k
+    match`; the other parts that own memory taken and freed there, zero in
+    that branch: the error of an `Ok`), the other branches end by freeing
+    the temporary (`Free(match, e)`), and the temporary is no longer freed
+    after the `if`. Nothing taken: the body as it was. A function whose
+    memory check (`verify_fn`) fails after the rewrite is kept as it was,
+    `main` too (`verify`).
+  - The checker (D96) kept the parts taken out of a tuple (`Take`, D138)
+    for the whole program: a part taken in one branch made the read of the
+    tuple in the other an error (`match is used after a part of it was
+    taken`). The parts taken are now restored before the second branch, as
+    the states of the variables are, and those of both kept after the
+    `if`.
+  - No function of the benchmarks of the ten modules is kept as it was.
+    `env` of `sys` (`sys.env("HOME") ?? ""`), an A/B at fixed frequency
+    (medians of 9 runs): 46.81 -> 41.59 ns (-11.2 %); `parse`, `decode`,
+    `stringify`, `encode`, the forms of `http` and of `time` within -0.8 and
+    +1.1 %. `results/primitives.md` (a whole run): `env` 46.83 -> 40.90 ns
+    (4.1 -> 3.6 times its floor). The other forms beyond 2.5 % (`bytes`,
+    `endsWith.2`, `slice`, `startsWith.1`, `startsWith.8` of `strings` -6.0
+    to -6.9 %, `roundtrip.64`, `send.64k`, `connect` of `net` +2.5 to +4.1,
+    `normalize` +3.2, `writeFile.4k` -3.1): the IR of `strings` and `net`
+    the same (0 functions of 46 and of 67 changed), that of `sys` changed
+    in `envLoop` only, the runtime the same: the drift between runs (D363).
+  - The ten programs: their IR the same, the code generator and the
+    runtime unchanged since D363.
+  - Tested by `match_payloads_taken` (`result.rs`,
+    `data/match_payloads_taken.isc`: `??`, a `Result` whose error owns
+    memory, a match of three arms, a payload that is a tuple, an arm that
+    reads the temporary, the threads of a `map`; the text of the
+    interpreter with 1 and 4 threads, Valgrind; the takes and the frees in
+    the IR).

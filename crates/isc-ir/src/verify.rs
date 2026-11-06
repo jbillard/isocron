@@ -350,9 +350,22 @@ impl<'p> Checker<'p> {
             If(c, t, f) => {
                 self.eval(c)?;
                 let before = self.st.clone();
+                // the parts taken too: each branch from those taken before
+                // it (D367: a payload taken in one branch, the tuple read
+                // and freed in the other), then those of both
+                let taken_before = self.taken.clone();
                 let tv = self.eval(t)?;
                 let after_t = std::mem::replace(&mut self.st, before.clone());
+                let taken_t = std::mem::replace(&mut self.taken, taken_before);
                 let fv = self.eval(f)?;
+                for (k, parts) in taken_t {
+                    let t = self.taken.entry(k).or_default();
+                    for p in parts {
+                        if !t.contains(&p) {
+                            t.push(p);
+                        }
+                    }
+                }
                 let consumed = |s: &State| matches!(s, State::Owned { moved: Some(_), .. });
                 for (i, b) in before.iter().enumerate() {
                     if matches!(b, State::Unbound) {

@@ -2821,5 +2821,112 @@ pub fn ownership(p: &mut Program) -> R<()> {
         let f = &mut p.fns[fi];
         ownership_body(&mut f.body, &p.vars, None, &mut p.copy_reasons)?;
     }
+    take_payloads(p);
     Ok(())
+}
+
+/// The payload of a `match` on a temporary taken out of it (D367): `let
+/// drop m = f(x) in if (proj 0 m == 1) copy (proj 1 m) else e` (`f(x) ??
+/// d`, `match (f(x)) { Ok(v) => v, ... }`) copied the payload, then freed
+/// the temporary after the `if`. The branch that gives the payload now
+/// takes it (`take 1 m`, the other parts that own memory taken and freed:
+/// they are zero there), the others free `m` (`Free(m, e)`), and `m` is no
+/// longer freed after the `if`. A function whose memory check fails after
+/// the rewrite is kept as it was; `main` too.
+fn take_payloads(p: &mut Program) {
+    for fi in 0..p.fns.len() {
+        let saved = p.fns[fi].body.clone();
+        if rewrite_payloads(&mut p.fns[fi].body, &mut p.vars) && crate::verify::verify_fn(p, &p.fns[fi]).is_err() {
+            p.fns[fi].body = saved;
+        }
+    }
+    let saved = p.body.clone();
+    if rewrite_payloads(&mut p.body, &mut p.vars) && crate::verify::verify(p).is_err() {
+        p.body = saved;
+    }
+}
+
+/// `take_payloads` in `e`: whether something changed.
+fn rewrite_payloads(e: &mut Expr, vars: &mut Vec<VarInfo>) -> bool {
+    let mut changed = false;
+    for c in e.children_mut() {
+        changed |= rewrite_payloads(c, vars);
+    }
+    let span = e.span;
+    let ExprKind::Let { var, init, body, stmt, drop } = &mut e.kind else { return changed };
+    let Type::Tuple(ts) = &init.ty else { return changed };
+    if !*drop || *stmt || !matches!(body.kind, ExprKind::If(..)) {
+        return changed;
+    }
+    let heap: Vec<usize> = ts.iter().enumerate().filter(|(_, t)| t.has_heap()).map(|(k, _)| k).collect();
+    if heap.is_empty() {
+        return changed;
+    }
+    let (m, tt, ts) = (*var, init.ty.clone(), ts.clone());
+    let b = std::mem::replace(&mut **body, Expr::new(ExprKind::Zero, Type::Unit, span));
+    let (nb, took) = payload_branches(b, m, &tt, &ts, &heap, vars);
+    if took {
+        **body = nb;
+        *drop = false;
+        changed = true;
+    } else {
+        // nothing taken: as it was (the `Free`s of the branches undone)
+        **body = undo_frees(nb, m);
+    }
+    changed
+}
+
+/// The component of `m` that `e` reads (`proj k m`, or `let x = proj k m
+/// in x`), if that is all `e` is.
+fn payload_of(e: &Expr, m: VarId) -> Option<u32> {
+    match &e.kind {
+        ExprKind::Proj(x, k) if matches!(x.kind, ExprKind::Var(w, _) if w == m) => Some(*k),
+        ExprKind::Let { var, init, body, .. } if matches!(body.kind, ExprKind::Var(w, _) if w == *var) => payload_of(init, m),
+        _ => None,
+    }
+}
+
+/// `m` is read in `e` only by projections of scalar components.
+fn scalar_reads(e: &Expr, m: VarId, ts: &[Type]) -> bool {
+    match &e.kind {
+        ExprKind::Proj(x, k) if matches!(x.kind, ExprKind::Var(w, _) if w == m) => !ts[*k as usize].has_heap(),
+        ExprKind::Var(w, _) => *w != m,
+        _ => e.children().into_iter().all(|c| scalar_reads(c, m, ts)),
+    }
+}
+
+/// The branches of the `if`s at the top of the body of `let m`: the copy of
+/// a payload taken, the others ending with `m` freed; whether one takes.
+fn payload_branches(e: Expr, m: VarId, tt: &Type, ts: &[Type], heap: &[usize], vars: &mut Vec<VarInfo>) -> (Expr, bool) {
+    let (ty, span, reassoc) = (e.ty.clone(), e.span, e.reassoc);
+    match e.kind {
+        ExprKind::If(c, t, f) if scalar_reads(&c, m, ts) => {
+            let (t2, a) = payload_branches(*t, m, tt, ts, heap, vars);
+            let (f2, b) = payload_branches(*f, m, tt, ts, heap, vars);
+            (Expr { kind: ExprKind::If(c, Box::new(t2), Box::new(f2)), ty, span, reassoc }, a || b)
+        }
+        ExprKind::Copy(inner) if payload_of(&inner, m).is_some_and(|k| heap.contains(&(k as usize))) => {
+            let k = payload_of(&inner, m).unwrap();
+            let take = |j: u32| Expr::new(ExprKind::Take(Box::new(Expr::var(m, tt.clone(), span)), j), ts[j as usize].clone(), span);
+            let mut out = take(k);
+            for &j in heap.iter().filter(|&&j| j != k as usize) {
+                let v = vars.len() as VarId;
+                vars.push(VarInfo { name: "unused".into(), ty: ts[j].clone() });
+                out = Expr::new(ExprKind::Let { var: v, init: Box::new(take(j as u32)), body: Box::new(out), stmt: false, drop: true }, ty.clone(), span);
+            }
+            (out, true)
+        }
+        kind => (Expr::new(ExprKind::Free(m, Box::new(Expr { kind, ty: ty.clone(), span, reassoc })), ty, span), false),
+    }
+}
+
+/// The `Free(m, e)` that `payload_branches` put at the ends of the branches
+/// of the `if`s at the top of `e`, removed.
+fn undo_frees(e: Expr, m: VarId) -> Expr {
+    let (ty, span, reassoc) = (e.ty.clone(), e.span, e.reassoc);
+    match e.kind {
+        ExprKind::If(c, t, f) => Expr { kind: ExprKind::If(c, Box::new(undo_frees(*t, m)), Box::new(undo_frees(*f, m))), ty, span, reassoc },
+        ExprKind::Free(v, body) if v == m => *body,
+        kind => Expr { kind, ty, span, reassoc },
+    }
 }

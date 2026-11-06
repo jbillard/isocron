@@ -125,3 +125,27 @@ fn no_copy_of_what_is_read() {
     assert_eq!(run_bin(&bin, &[]).stdout, "[0.5, 1]\n[2, 4]\n");
     valgrind_clean(src, "result_take", &[]);
 }
+
+/// D367: the payload of a `match` on a temporary is taken out of it, not
+/// copied then freed: `?? d`, `Ok(v) => v` with an error that owns memory
+/// too (taken and freed in that branch), a match of three arms, a payload
+/// that is a tuple, an arm that reads the temporary and frees it, the
+/// threads of a `map`; the text of the interpreter with 1 and 4 threads,
+/// Valgrind clean, the takes and the frees in the IR.
+#[test]
+fn match_payloads_taken() {
+    let src = include_str!("data/match_payloads_taken.isc");
+    let bin = compile(src, "match_payloads_taken");
+    for a in ["0", "1", "2"] {
+        let want = interp_ok(src, &[a]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[a], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} on {} threads: {}", a, t, r.stderr);
+        }
+    }
+    valgrind_clean(src, "match_payloads_taken", &["1"]);
+    let p = iscc::frontend("t.isc", src).unwrap();
+    let ir = isc_ir::print::program(&p);
+    assert!(ir.matches("take 1").count() >= 8, "the payloads not taken:\n{}", ir);
+    assert!(ir.matches("free match").count() >= 8, "the other arms do not free the temporary:\n{}", ir);
+}
