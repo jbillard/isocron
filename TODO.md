@@ -212,6 +212,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Alternations of simple shapes of other lengths and kinds, at the start of a line: the cleaning of regexredux 0.066 s -> 0.030 s, regexredux 0.336 s -> 0.322 s (D237)
   - [x] The masks of the engine of shapes: a letter and its upper case compared once, the checks of bounds dropped: regexredux 0.324 s -> 0.305 s (D238)
   - [ ] The engine of shapes still 7 times the cost of the primitive of the floor (0.56 against 0.074 ns a byte): its loop of starts, the vectors of bounds of dense matches, a runtime for AVX-512
+    - regex-redux profiled (2026-11-06, 4 threads, `perf record` of its user cycles): `rx::simple` `bounds_from` 30.09 %, `group_lanes` 14.39 %, `bounds_groups` 13.57 %, the writing of the replacements (`replace_parallel::write`) 23.26 %, copies 7.5 %: the engine of shapes first, the literals of its case-insensitive counts (`RegExp(v, "ig")`) after
   - [x] The product of a big integer by a word in assembly, one chain of `adc`: pidigits 0.888 s -> 0.697 s (D239)
   - [x] A quotient of one word certain from the top words, without a pass over the words: pidigits 0.696 s -> 0.503 s (D240)
   - [ ] pidigits: `num * 3 + acc` and `num * 4 + acc` made whole only to be divided (the top words would do)
