@@ -208,7 +208,8 @@ fn loops_in_tasks_are_shared_and_do_not_depend_on_threads() {
         if line.starts_with("define") {
             in_task = line.contains("@isc_task_");
         }
-        if in_task && line.contains("call void @isc_parallel_for_dynamic") {
+        // a loop of chunks taken in turn: mode 1 of its site (D357)
+        if in_task && line.contains("call void @isc_parallel_for_site(") && line.ends_with("i32 1)") {
             nested += 1;
         }
     }
@@ -255,7 +256,9 @@ action main(args: string[k]): i32 {
     want += &String::from_utf8(text.iter().rev().copied().collect()).unwrap();
     let bin = compile(src, "p_new_arrays");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(ll.matches("call void @isc_parallel_for_fill").count() >= 6, "the arrays are not filled by isc_parallel_for_fill");
+    // a range of blocks for each thread: mode 2 of its site (D357)
+    let fills = ll.lines().filter(|l| l.contains("call void @isc_parallel_for_site(") && l.ends_with("i32 2)")).count();
+    assert!(fills >= 6, "the arrays are not filled by ranges (mode 2 of isc_parallel_for_site)");
     for t in THREADS {
         let run = run_bin_threads(&bin, &[], Some(t));
         assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
@@ -338,7 +341,9 @@ fn affine_recurrences_match_the_interpreter() {
         );
         let bin = compile(&src, &format!("p_rule_r{}", i));
         let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-        assert_eq!(ll.contains("call void @isc_parallel_for("), *rule, "case {}: rule R applied or not", i);
+        // the parts of rule R: a loop of mode 0 (D357)
+        let plain = ll.lines().any(|l| l.contains("call void @isc_parallel_for_site(") && l.ends_with("i32 0)"));
+        assert_eq!(plain, *rule, "case {}: rule R applied or not", i);
         let want = interp(&src, &[]);
         for t in THREADS {
             let run = run_bin_threads(&bin, &[], Some(t));

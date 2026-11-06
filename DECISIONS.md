@@ -7626,3 +7626,45 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   The archives as for 0.3.1, tried before they are published (the
   self-tests of Linux and Windows, the examples of the README run by the
   `iscc` of each archive).
+- **D357 — Each parallel loop chooses the pool or the calling thread by
+  its measured runs; the threads of the pool sleep sooner (2026-11-06).**
+  The server of D355 kept 4 cores busy for the work of one loop. Cause
+  measured: a `map` whose element is a loop of its own (`inner_loop`: a
+  `filter`, a `fold`, a call) was always given to the pool, whatever its
+  size; each turn of the server woke the pool for a few microseconds, and
+  its threads spun 65536 pauses (about a millisecond) after each job,
+  never sleeping. Giving a job to the pool and waiting for it costs about
+  1 µs: a `map` of 16 elements of 10 steps 96 ns on one thread, 1088 ns on
+  four; 16 elements of 1000 steps 2247 against 1264.
+  - Every call to the pool (the 20 places of the code generator:
+    `par_for`) goes through `isc_parallel_for_site`, with four words of its
+    own for its place in the program: the cycles of its runs on the pool
+    and alone (averages, seven eighths the one before: one run slowed by
+    the system does not turn it over), its runs, whether its last run was
+    alone (`rdtsc`, about twenty cycles). A loop whose runs on the pool take
+    less than 20 µs is tried alone after 256 runs (a try costs up to four
+    runs: at most 1.6 % of them), then the faster mode taken, alone unless
+    the pool is faster by an eighth (the other cores kept free), the other
+    tried again by two runs every 256; a run of the pool counted only after
+    a run of the pool (after runs alone the threads sleep, and the first
+    run pays for waking them: 12209 cycles for 16 elements of 10 steps,
+    which kept a loop alone where the pool was twice as fast). The tasks
+    write each its own results, whatever the thread (D121): the same
+    results either way.
+  - The threads of the pool spin 1024 pauses after a job, then sleep.
+  - Tries kept or not, measured: tried after the second run, and up to 20
+    µs, fasta 3.3 % slower in median (its loops of 2 to 20 µs run a few
+    times: the tries were never gained back); without tries its time came
+    back exactly (median 5.14 against 5.14 ms); hence the 256 runs. The
+    last run alone as the measure (no average) kept a loop alone after one
+    slow run of the pool (16 elements of 1000 steps 1819 ns).
+  - Measured: the small `map`s of four threads 666 -> 70 ns (4 elements of
+    10 steps) and 1088 -> 159 ns (16 of 10), the others as before (1304,
+    3199, 7013 ns for the larger ones); the server (`isocron_only.sh`,
+    fixed frequency, 10 s) 197367, 207104 and 156049 requests a second at
+    16, 256 and 1024 connections (190973, 203414, 151777 before), its cores
+    4.04, 3.99, 3.95 -> 2.24, 2.18, 1.91; eight programs of the Benchmarks
+    Game, the same outputs, 8 alternate runs against the binaries before:
+    medians within -0.99 and +0.91 %, minimums within -4.07 and +0.14 %.
+  - Tests: `parallel.rs` reads the calls of the IR by their mode (`i32 0`
+    every `threads`-th task, `1` chunks in turn, `2` ranges).

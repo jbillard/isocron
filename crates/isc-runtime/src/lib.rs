@@ -3328,7 +3328,7 @@ fn thread_count() -> usize {
 const FUTEX_WAIT_PRIVATE: c_int = 128;
 #[cfg(not(windows))]
 const FUTEX_WAKE_PRIVATE: c_int = 129;
-const SPIN: u32 = 1 << 16;
+const SPIN: u32 = 1 << 10;
 
 // The variables the threads of the pool share, in three lines of 128 bytes
 // (an aligned pair of cache lines, the unit of the L2 prefetcher), grouped
@@ -3698,6 +3698,85 @@ fn nested_for(n: i64, task: Task, ctx: *mut c_void) {
 #[no_mangle]
 pub extern "C" fn isc_parallel_for_dynamic(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64) {
     parallel_for(n, task, ctx, ctx_bytes, true, false)
+}
+
+/// The cycles of the time stamp counter (D357); 0 where there is none.
+#[inline(always)]
+fn stamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: `rdtsc` reads a counter, nothing else
+    unsafe {
+        return core::arch::x86_64::_rdtsc();
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    0
+}
+
+/// Cycles above which a loop is never run on the calling thread alone: its
+/// run on the pool takes 20 µs, far above what giving it to the pool costs
+/// (about 1 µs, D357).
+const SEQ_NEVER: u64 = 64000;
+/// The runs between two tries of the mode that was slower.
+const RETRY: u64 = 256;
+/// The runs of a loop on the pool before it is tried on the calling thread:
+/// a try costs up to the work of all the threads on one (four runs), which
+/// a loop run a few hundred times never gains back (D357: fasta 3.3 %
+/// slower with tries after 16 runs, its time back without them); after 256
+/// runs a try costs at most 1.6 % of them.
+const RUNS_BEFORE_TRY: u64 = 256;
+
+/// A parallel loop at a place of the program (D357), `mode` that of
+/// `isc_parallel_for` (0), `isc_parallel_for_dynamic` (1) or
+/// `isc_parallel_for_fill` (2):
+/// `site` keeps the cycles of its runs on the pool and of its runs on the
+/// calling thread (averages), its runs, and whether its last run was alone. The faster mode is taken; the other
+/// tried again once every RETRY runs; the calling thread never tried when a
+/// run on the pool took more than SEQ_NEVER cycles (a job given to the pool
+/// and waited for costs about 1 µs: 16 elements of 10 steps 96 ns on one
+/// thread, 1088 ns on four; 16 of 1000 steps 2247 against 1264). The tasks
+/// write each its own results, whatever the thread (D121): the same results
+/// either way.
+#[no_mangle]
+pub extern "C" fn isc_parallel_for_site(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, site: *const [AtomicU64; 4], mode: i32) {
+    // SAFETY: four words of the program, for this loop
+    let [par, seq, runs, last] = unsafe { &*site };
+    let (dynamic, contiguous) = (mode == 1, mode == 2);
+    let t0 = stamp();
+    if t0 == 0 || n <= 1 {
+        return parallel_for(n, task, ctx, ctx_bytes, dynamic, contiguous);
+    }
+    let (tp, ts) = (par.load(Ordering::Relaxed), seq.load(Ordering::Relaxed));
+    let k = runs.fetch_add(1, Ordering::Relaxed);
+    let small = tp != 0 && tp < SEQ_NEVER && k >= RUNS_BEFORE_TRY;
+    // the calling thread alone unless the pool is faster by an eighth: at
+    // the same time it keeps the other cores free (a server whose turns are
+    // small); the other mode tried by two runs in turn
+    let alone = if !small {
+        false
+    } else if ts == 0 {
+        true
+    } else {
+        let better = ts <= tp + tp / 8;
+        if k % RETRY >= RETRY - 2 { !better } else { better }
+    };
+    // each time an average of the runs, seven eighths the one before: one
+    // run slowed by the system does not turn the loop over for RETRY runs
+    let mean = |old: u64, t: u64| if old == 0 { t.max(1) } else { (old * 7 + t) / 8 }.max(1);
+    if alone {
+        for i in 0..n {
+            task(ctx, i);
+        }
+        seq.store(mean(ts, stamp().wrapping_sub(t0)), Ordering::Relaxed);
+        last.store(1, Ordering::Relaxed);
+    } else {
+        parallel_for(n, task, ctx, ctx_bytes, dynamic, contiguous);
+        // a run of the pool counted only when the run before was one too:
+        // after runs alone the threads sleep, and the first run pays for
+        // waking them (D357: 12209 cycles for 16 elements of 10 steps)
+        if last.swap(0, Ordering::Relaxed) == 0 {
+            par.store(mean(tp, stamp().wrapping_sub(t0)), Ordering::Relaxed);
+        }
+    }
 }
 
 /// `isc_parallel_for` whose tasks fill an array, each its own part (D254):

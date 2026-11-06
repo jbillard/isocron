@@ -874,6 +874,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
     "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
+    "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
     "declare void @isc_str_append(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_str_append_n(ptr, ptr, i64)",
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
@@ -5262,13 +5263,25 @@ impl<'p> Gen<'p> {
         // the chunks of elements that are loops: taken by the threads as they
         // finish the one before (D145)
         // the blocks of the array: each thread its range of them (D254)
-        let pf = if heavy { "isc_parallel_for_dynamic" } else { "isc_parallel_for_fill" };
-        self.emit(format!("call void @{}(i64 {}, ptr {}, ptr {}, i64 {})", pf, c, task, ctx, ctx_bytes));
+        self.par_for(if heavy { 1 } else { 2 }, &c, &task, &ctx, &ctx_bytes);
         if let Some(l) = ldone {
             self.br(&l);
             self.block(&l);
         }
         Ok(self.arr(&p, &n))
+    }
+
+    /// A loop of `n` tasks given to the pool (D357): through a word of its
+    /// own for this place of the program, which keeps how its runs on the
+    /// pool and on the calling thread went (`isc_parallel_for_site`); `mode`
+    /// 0 every `threads`-th task to a thread, 1 chunks taken in turn
+    /// (`isc_parallel_for_dynamic`), 2 a range for each thread
+    /// (`isc_parallel_for_fill`).
+    fn par_for(&mut self, mode: i32, n: &str, task: &str, ctx: &str, ctx_bytes: &str) {
+        let k = self.globals.iter().filter(|g| g.starts_with("@.parsite.")).count();
+        let site = format!("@.parsite.{}", k);
+        self.globals.push(format!("{} = private global [4 x i64] zeroinitializer, align 8", site));
+        self.emit(format!("call void @isc_parallel_for_site(i64 {}, ptr {}, ptr {}, i64 {}, ptr {}, i32 {})", n, task, ctx, ctx_bytes, site, mode));
     }
 
     /// `printBytes` of a `map` of bytes made only for it (D225): by blocks of
@@ -5396,7 +5409,7 @@ impl<'p> Gen<'p> {
                 Ok(())
             })
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", parts, task, ctx, ctx_bytes));
+        self.par_for(0, &parts, &task, &ctx, &ctx_bytes);
         self.emit(format!("call void @isc_groups_end(ptr {}, ptr {})", out, state));
         self.br(&ldone);
         self.block(&ldone);
@@ -5469,7 +5482,7 @@ impl<'p> Gen<'p> {
                     Ok(())
                 })?;
                 // each thread its range of the blocks of the chunk (D254)
-                g.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+                g.par_for(2, &c, &task, &ctx, &ctx_bytes);
             }
             let len = g.ins(format!("sub i64 {}, {}", hi, lo));
             g.emit(format!("call void @isc_print_bytes(ptr {}, i64 {})", buf, len));
@@ -5635,7 +5648,7 @@ impl<'p> Gen<'p> {
                 Ok(())
             })
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", groups, task, ctx, ctx_bytes));
+        self.par_for(0, &groups, &task, &ctx, &ctx_bytes);
         // 2. the place of each block: the sum of the counts before it
         let run = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", run));
@@ -5943,7 +5956,7 @@ impl<'p> Gen<'p> {
         } else {
             let extra = [v(places.clone(), "ptr"), v(out.clone(), "ptr"), v(k.clone(), "i64")];
             let (task, ctx, ctx_bytes) = self.outline_task(&[f], &extra, &mut |g, xs, j| block(g, j, &xs[0].r, &xs[1].r, &xs[2].r))?;
-            self.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+            self.par_for(2, &c, &task, &ctx, &ctx_bytes);
         }
         Ok(out)
     }
@@ -6193,7 +6206,7 @@ impl<'p> Gen<'p> {
                 let rv = g.ex(&ins[0], 1)?;
                 chunk(g, &rv, &extra[0].r, b)
             })?;
-            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", nb, task, ctx, ctx_bytes));
+            self.par_for(0, &nb, &task, &ctx, &ctx_bytes);
         }
         let fast = self.arr(&out, &rows);
         self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", fast.r, res));
@@ -6292,7 +6305,7 @@ impl<'p> Gen<'p> {
                     Ok(())
                 })
             })?;
-            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", chunks, task, ctx, ctx_bytes));
+            self.par_for(0, &chunks, &task, &ctx, &ctx_bytes);
         }
         Ok(self.nested(&block, &n, &m, &m))
     }
@@ -7460,7 +7473,7 @@ impl<'p> Gen<'p> {
                 g.store_elem(&extra[0].r, &extra[1].r, &jj, &t, &r, 1);
                 Ok(())
             })?;
-            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+            self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
             let lcopy = self.label();
             let ldone = self.label();
             self.cbr(&few, &lcopy, &ldone);
@@ -7576,7 +7589,7 @@ impl<'p> Gen<'p> {
             g.store_elem(&extra[0].r, &extra[1].r, &jj, &et, &V { r, t: st, uni: true }, 1);
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for_dynamic(i64 {}, ptr {}, ptr {}, i64 {})", c, task, ctx, ctx_bytes));
+        self.par_for(1, &c, &task, &ctx, &ctx_bytes);
         let st = lt(t);
         let acc = self.alloca(&st);
         self.emit(format!("store {} {}, ptr {}", st, zv.r, acc));
@@ -8054,7 +8067,7 @@ impl<'p> Gen<'p> {
             g.emit(format!("store i64 {}, ptr {}", c, slot));
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
         // 2. the place of each block: the sum of the counts before it
         let run = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", run));
@@ -8099,7 +8112,7 @@ impl<'p> Gen<'p> {
             Ok(())
         })?;
         // each thread its range of the blocks (D254)
-        self.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.par_for(2, &c0, &task, &ctx, &ctx_bytes);
         self.emit(format!("call void @isc_free(ptr {})", counts));
         Ok(self.arr(&out, &k))
     }
@@ -8164,7 +8177,7 @@ impl<'p> Gen<'p> {
             g.store_elem(&extra[0].r, &extra[1].r, j, &elem_ty, &v(p, alt.clone()), 1);
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
         // 2. the value before each block: z, then op(before, reduction)
         let run = self.alloca(&alt);
         self.emit(format!("store {} {}, ptr {}", alt, z.r, run));
@@ -8191,7 +8204,7 @@ impl<'p> Gen<'p> {
             g.scan_range_fast(&src, src_vec_ok(x), l, &before, &extra[2].r, &extra[3].r, &start, &end)?;
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
         self.emit(format!("call void @isc_free(ptr {})", parts));
         Ok(())
     }
@@ -8363,7 +8376,7 @@ impl<'p> Gen<'p> {
             g.store_elem(&extra[0].r, &extra[1].r, j, &elem_ty, &v(p, alt.clone()), 1);
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
         // 2. the carry of each block after the first, in parts[b]
         let run = self.alloca(&alt);
         let p0 = self.load_elem(&parts, &c0, "0", &elem_ty, 1);
@@ -8400,7 +8413,7 @@ impl<'p> Gen<'p> {
             g.block(&ldone);
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+        self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
         self.emit(format!("call void @isc_free(ptr {})", parts));
         Ok(())
     }
@@ -8968,7 +8981,7 @@ impl<'p> Gen<'p> {
             let stop = g.ins(format!("add i64 {}, {}", x[3].r, b));
             g.affine_range(&x[0].r, &x[1].r, &x[2].r, &start, &stop, f)
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", parts, task, ctx, ctx_bytes));
+        self.par_for(0, &parts, &task, &ctx, &ctx_bytes);
         self.br(&ljoin);
         self.block(&lone);
         self.affine_range(p, from, y, &lo, end, f)?;
@@ -9308,7 +9321,7 @@ impl<'p> Gen<'p> {
                 }
                 Ok(())
             })?;
-            self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", c0, task, ctx, ctx_bytes));
+            self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
         }
         // upper levels of each column, in place in its `parts`
         for i in 0..k {
@@ -9638,7 +9651,7 @@ impl<'p> Gen<'p> {
         let (task, ctx, ctx_bytes) = self.outline_task(&[x], &extra, &mut |g, extra, j| (count.borrow_mut())(g, extra, j))?;
         let m0 = self.ins(format!("icmp slt i64 {}, {}", nc, threads));
         let m = self.ins(format!("select i1 {}, i64 {}, i64 {}", m0, nc, threads));
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", m, task, ctx, ctx_bytes));
+        self.par_for(0, &m, &task, &ctx, &ctx_bytes);
         self.for_range_scalar("0", &rounds, 1, &mut |g, r| {
             let c_lo = g.ins(format!("mul i64 {}, {}", r, threads));
             let lim = g.ins(format!("add i64 {}, {}", c_lo, threads));
@@ -9695,7 +9708,7 @@ impl<'p> Gen<'p> {
                 let next = g.ins(format!("add i64 {}, {}", c, extra[7].r));
                 (count.borrow_mut())(g, extra, &next)
             })?;
-            g.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", m, task, ctx, ctx_bytes));
+            g.par_for(0, &m, &task, &ctx, &ctx_bytes);
             Ok(())
         })?;
         let kk = self.ins(format!("load i64, ptr {}", run));
@@ -10538,7 +10551,7 @@ impl<'p> Gen<'p> {
             g.block(&lstop);
             Ok(())
         })?;
-        self.emit(format!("call void @isc_parallel_for(i64 {}, ptr {}, ptr {}, i64 {})", tasks, task, ctx, ctx_bytes));
+        self.par_for(0, &tasks, &task, &ctx, &ctx_bytes);
         // the first failure, in the order of the tasks
         let unsigned = if is_signed(&gi.ty) { 0 } else { 1 };
         self.for_range("0", &tasks, 1, &mut |g, t| {

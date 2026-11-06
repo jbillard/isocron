@@ -359,7 +359,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] The ceiling of the machine for the server (`ceiling.c`): Isocron 57 to 85 % of the ceiling of one loop, 20 to 26 % of that of 4 cores with many connections (D355)
   - [ ] A loop of events on each core, toward the ceiling of 4 cores (D355; needs actions in parallel on the pool, D352)
   - [ ] The cost of a request of the loop down to that of the ceiling of one loop (5.2 µs against 3.6 at 16 connections, D355)
-  - [ ] The pool idle when it has nothing to do: 4 cores busy for the work of one loop (D355)
+  - [x] Each parallel loop chooses the pool or the calling thread by its measured runs, the pool asleep sooner: the server's cores 4.04 -> 2.24 for the same requests (D357)
+  - [ ] The cores still busy beyond the loop of the server (2.24 for the work of one loop, D357)
 - [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)
