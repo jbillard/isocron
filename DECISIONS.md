@@ -8071,3 +8071,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Tested by `texts_padded_by_moves` (`strings.rs`: fills of 0 to 40
     bytes before and after texts of 0 to 20 bytes, a fill of two bytes;
     compiled, interpreted, Valgrind).
+- **D370 — The variables of the environment found by their names where
+  they are (2026-11-06).** `env` of `sys` (`sys.env("HOME") ?? ""`) 3.6
+  times its floor (`getenv` of glibc): alone, 134.21 cycles and 499.34
+  instructions a call, `isc_sys_getenv` 63.7 % (the name copied with a
+  zero byte into a buffer of 256 bytes cleared at each call, scanned twice
+  for `=` and a zero byte, its length counted again, then each of the 36
+  variables compared byte by byte), `from_utf8` of the value 20.6 %.
+  - `env_value` (Linux) compares the name, without a copy, with each entry
+    of the environment noted by `isc_args`: rejected at its first byte, the
+    rest compared up to the first difference (an entry shorter than the
+    name differs at its zero byte); the value tested ASCII by words
+    (`is_ascii`) before `from_utf8`. Windows and WASI keep their `getenv`.
+  - `env` alone: 134.21 -> 66.61 cycles and 499.34 -> 302.34 instructions a
+    call. An A/B of the group `sys` at fixed frequency (medians of 9 runs):
+    `env` 43.313 -> 22.559 ns (-47.9 %), `normalize`, `basename` -0.1 %,
+    `exists` +2.3 % (a system call of 680 ns, its code the same).
+    `results/primitives.md` (a whole run): `env` 40.52 -> 21.17 ns (3.6 ->
+    1.9 times its floor); `bytes`, `endsWith.2`, `slice`, `startsWith.8`,
+    `startsWith.1` of `strings` +5.3 to +6.9 %, the binary of the group the
+    same bytes as at D369: the drift between runs.
+  - The ten programs: their binaries the same bytes as at D369.
+  - Tested by `environment_names_compared_where_they_are` (`std_sys.rs`,
+    `data/std_env_names.isc`: a name that is the start of another, a name
+    longer than the variable that starts like it, an empty value, a value
+    that is not UTF-8, an empty name, a name with `=`; compiled and
+    interpreted).

@@ -2390,35 +2390,64 @@ pub struct IscStrCode {
 #[no_mangle]
 pub unsafe extern "C" fn isc_sys_getenv(out: *mut IscStrCode, p: *const u8, n: i64) {
     let name = bytes_of(p, n);
-    // the name ended by a zero byte: on the stack when it is short (D346:
-    // a block of the heap made and freed by each call took about 20 of
-    // its 170 cycles)
-    let mut short = [0u8; 256];
-    let long;
-    let z: &[u8] = if name.len() < short.len() {
-        short[..name.len()].copy_from_slice(name);
-        &short[..name.len() + 1]
-    } else {
-        let mut v = alloc::vec::Vec::with_capacity(name.len() + 1);
-        v.extend_from_slice(name);
-        v.push(0);
-        long = v;
-        &long
-    };
-    let v = if name.is_empty() || name.contains(&0) || name.contains(&b'=') { core::ptr::null() } else { getenv(z.as_ptr() as *const c_char) };
-    if v.is_null() {
+    // the name compared where it is (D370: copied with a zero byte into a
+    // buffer of 256 bytes cleared at each call, then `strlen`, before)
+    let v = if name.is_empty() || name.iter().any(|&c| c == 0 || c == b'=') { None } else { env_value(name) };
+    let Some(value) = v else {
         *out = IscStrCode { s: adopt(alloc::string::String::new()), code: 0 };
         return;
-    }
-    // SAFETY: `getenv` gives a string ended by a zero byte
-    let value = core::slice::from_raw_parts(v as *const u8, strlen(v));
-    // valid UTF-8 (the common case) copied once; otherwise each invalid
-    // sequence replaced by U+FFFD
-    let s = match core::str::from_utf8(value) {
-        Ok(_) => new_str(value),
-        Err(_) => adopt(alloc::string::String::from_utf8_lossy(value).into_owned()),
+    };
+    // valid UTF-8 (the common case, ASCII tested first by words) copied
+    // once; otherwise each invalid sequence replaced by U+FFFD
+    let s = if value.is_ascii() || core::str::from_utf8(value).is_ok() {
+        new_str(value)
+    } else {
+        adopt(alloc::string::String::from_utf8_lossy(value).into_owned())
     };
     *out = IscStrCode { s, code: 1 };
+}
+
+/// The value of the variable `name` (not empty, without `=` nor a zero
+/// byte) of the environment noted by `isc_args` (D287), or none: each
+/// entry rejected at its first byte (D370), the rest compared up to the
+/// first difference (an entry shorter than the name differs at its zero
+/// byte).
+#[cfg(target_os = "linux")]
+unsafe fn env_value(name: &[u8]) -> Option<&'static [u8]> {
+    let mut e = ENVIRON.load(Ordering::Relaxed) as *const *const u8;
+    if e.is_null() {
+        return None;
+    }
+    let (first, n) = (name[0], name.len());
+    // SAFETY: the array of the environment, ending with a null, each entry
+    // a string ending with a zero byte: read up to its first difference
+    // with `name`, which holds no zero byte
+    unsafe {
+        while !(*e).is_null() {
+            let v = *e;
+            if *v == first && (1..n).all(|i| *v.add(i) == name[i]) && *v.add(n) == b'=' {
+                let at = v.add(n + 1);
+                return Some(core::slice::from_raw_parts(at, strlen(at as *const c_char)));
+            }
+            e = e.add(1);
+        }
+    }
+    None
+}
+
+/// The value of the variable `name` of the environment of the system, or
+/// none (Windows, WASI: their `getenv`).
+#[cfg(not(target_os = "linux"))]
+unsafe fn env_value(name: &[u8]) -> Option<&'static [u8]> {
+    let mut z = alloc::vec::Vec::with_capacity(name.len() + 1);
+    z.extend_from_slice(name);
+    z.push(0);
+    let v = getenv(z.as_ptr() as *const c_char);
+    if v.is_null() {
+        return None;
+    }
+    // SAFETY: `getenv` gives a string ended by a zero byte
+    Some(unsafe { core::slice::from_raw_parts(v as *const u8, strlen(v)) })
 }
 
 /// A `String` of the runtime as a string of the program: its buffer is a

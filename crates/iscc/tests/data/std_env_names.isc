@@ -1,0 +1,12 @@
+// D370: the variables of the environment found by their names compared
+// where they are: a name that is the start of another, a name longer than
+// the variable that starts like it, an empty value, a value that is not
+// UTF-8 (its bytes replaced), names that name none (empty, with `=`).
+import * as sys from "sys";
+
+action main(args: string[k]): i32 {
+    const names = ["ISC_ENV_A", "ISC_ENV_AB", "ISC_ENV_ABC", "ISC_ENV_ABCD", "ISC_ENV_EMPTY", "ISC_ENV_BAD", "ISC_ENV_", "", "ISC_ENV_A=x", "ISC_ENV_MISSING"];
+    print(mapAction(names, (n) => sys.env(n) ?? "absent"));
+    print(mapAction(names, (n) => (sys.env(n) ?? "").length));
+    return 0;
+}

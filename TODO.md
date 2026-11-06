@@ -332,7 +332,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `sys` under Windows (`kernel32`), tested in the machine of Windows (D331)
   - [x] `sys` under WASI (wasi-libc, in the folders the host opens; D332)
   - [x] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor (D333)
-  - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7, `basename` 5.3, `env` 3.2, `readFile` 2.2
+  - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7 -> 3.3 (D351, D368), `basename` 5.3 -> 1.9 (D346), `env` 3.2 -> 1.9 (D367, D370), `readFile.4k` 2.3
 - [x] `time`: dates and times (D334)
   - [x] `time` above its floor: `now` 8.5 -> 1.2, the clock of the vDSO (D360); `formatIso` 8.3 -> 2.8 (D348, D359)
 - [ ] `json`: read and written, decoded into a type of the program, its fields checked at compile time

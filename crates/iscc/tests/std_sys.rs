@@ -164,3 +164,31 @@ fn clocks_read_through_the_vdso() {
         check(&String::from_utf8_lossy(&out.stdout), before, "without a vDSO (Valgrind)");
     }
 }
+
+/// D370: `env` compares the name with each variable where it is: a name
+/// that is the start of another, a name longer than the variable that
+/// starts like it, an empty value, a value that is not UTF-8, names that
+/// name none; compiled and interpreted, the same text.
+#[test]
+fn environment_names_compared_where_they_are() {
+    use std::os::unix::ffi::OsStrExt;
+    let src = include_str!("data/std_env_names.isc");
+    let vars: [(&str, &[u8]); 4] = [("ISC_ENV_AB", b"two"), ("ISC_ENV_ABC", b"three"), ("ISC_ENV_EMPTY", b""), ("ISC_ENV_BAD", b"x\xffy")];
+    let want = "[absent, two, three, absent, , x\u{fffd}y, absent, absent, absent, absent]\n[0, 3, 5, 0, 0, 5, 0, 0, 0, 0]\n";
+    let bin = compile(src, "std_env_names");
+    let mut c = std::process::Command::new(&bin);
+    for (k, v) in vars {
+        c.env(k, std::ffi::OsStr::from_bytes(v));
+    }
+    let o = c.output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.to_string()), "compiled: {}", String::from_utf8_lossy(&o.stderr));
+    let file = tmp("std_env_names.isc");
+    std::fs::write(&file, src).unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"));
+    c.arg("run").arg(&file);
+    for (k, v) in vars {
+        c.env(k, std::ffi::OsStr::from_bytes(v));
+    }
+    let o = c.output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.to_string()), "interpreted: {}", String::from_utf8_lossy(&o.stderr));
+}
