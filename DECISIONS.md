@@ -7511,3 +7511,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     a file read, a pure function where an action is expected, `forEach`),
     `net_on_windows` (the same program in the VM, compiled), the example
     of `docs/language.md`.
+- **D353 — The server of HTTP against nginx and lighttpd (2026-11-06).**
+  Asked by the author ("as-tu fait des benchs d'un serveur http en C vs le
+  nôtre ?"): until then only `serve.pipelined`, a microbenchmark against a
+  loop of `epoll` written for the same work (1.5). Now `bench/http_servers/`:
+  an image `isocron-http` built from that of the Benchmarks Game (nginx,
+  lighttpd, wrk; h2o is not in Debian trixie, lighttpd taken instead),
+  without network, the server on 4 CPUs and wrk on 4 others, `hello,
+  world!` to every request, 1 to 1024 connections kept alive, 10 s each,
+  at fixed frequency (`results/http_servers.md`). One connection: 67459
+  requests a second against 71457 for nginx (94 %); 16 connections 197647
+  against 628909; 1024 connections 67277 against 739676 (nginx) and
+  174111 (lighttpd, one process). The author's fear confirmed: the server
+  holds with few connections and falls with many.
+  - The cause measured. The profile of the server under 1024 connections
+    (`perf record -p` of the process in the container, its symbols by
+    `--symfs`): `worker` of the pool 54.7 %, `heap::refill` 22.9 %,
+    `isc_free` 4.9 %, `spill` 1.65 %, the work a few percent; one thread
+    (`ISC_THREADS=1`): 206647 at 16 connections, 83632 at 1024 (4 threads:
+    198985, 66942): the threads cost about 20 % on such small work, and
+    the cost of a request grows with the connections even without them.
+    The model: each turn of `serveLoop` computes `readyOf` of every
+    pending connection and filters them all (`closing`, `left`), and
+    `arrive` matches each arrival to its connection by a linear search: a
+    turn costs in proportion to the connections, a request to the
+    connections over the requests of the turn. lighttpd, one process, keeps
+    its level (188598 at 16, 174111 at 1024).
+  - The way: the pending connections in a table by their number (the
+    runtime gives numbers that come back after a close), only those that
+    received bytes read, the arrivals written into the table in place; and
+    the `map` of the handler in parallel only when the turn holds enough
+    requests. Open in TODO.

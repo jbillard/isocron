@@ -354,7 +354,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] A lambda that reads a function of its context given to a recursive function ("not supported in the POC", SPEC section 11): `mapAction(xs, (x) => handler(x))` refused (D352)
   - [ ] Actions in parallel on the pool: the primitives of the runtime checked from several threads (the buffer of `print`, files, sockets, TLS), then `serveAction` by `map` of actions (D352)
   - [ ] A state between the requests: `action (S, Request) => [S, Response]` (D352, after the two above)
-  - [ ] The server against servers of C made for production (nginx, h2o) under a generator of load (wrk), from 1 to thousands of connections, 1 and 4 threads, in the Docker image of the benchmarks (asked by the author, 2026-11-05): until then only `serve.pipelined` against a loop of `epoll` written for the same work (1.5)
+  - [x] The server against servers of C made for production under wrk, in Docker: 94 % of nginx with one connection, 11 times below it with 1024 (`results/http_servers.md`, D353)
+  - [ ] The server with many connections: a table of the connections by their number, only those that received bytes read, the handler in parallel only for turns of many requests (D353: the cost of a request grows with the connections)
 - [x] `https`: the TLS of the system
   - [x] Linux: OpenSSL loaded at run time, the client and the server of `http` on connections of TLS, the interpreter the same (D343)
   - [x] Windows: the client by SChannel, tested in the VM against `openssl s_server` of the machine, the same outputs as Linux (D343)
