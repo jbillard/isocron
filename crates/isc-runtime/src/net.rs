@@ -152,7 +152,15 @@ struct ServerState<F: Copy> {
     /// each connection with whether its handshake is done.
     tls: usize,
     sessions: alloc::vec::Vec<(i64, usize, bool)>,
+    /// The vectors of a wait (the numbers, the lengths and the bytes read),
+    /// kept from one wait to the next with their room (D376): a wait reads
+    /// into the room it reserved for each connection, then copies.
+    scratch: (alloc::vec::Vec<i64>, alloc::vec::Vec<i64>, alloc::vec::Vec<u8>),
 }
+
+/// The room of the bytes of a wait kept for the next one, at most.
+#[cfg(not(target_os = "wasi"))]
+const SCRATCH_KEPT: usize = 1 << 20;
 
 #[cfg(not(target_os = "wasi"))]
 impl<F: Copy> ServerState<F> {
@@ -167,6 +175,22 @@ impl<F: Copy> ServerState<F> {
         self.next += 1;
         self.conns.push((id, fd));
         id
+    }
+
+    /// The vectors of a wait, empty, with the room of the waits before.
+    fn take_scratch(&mut self) -> (alloc::vec::Vec<i64>, alloc::vec::Vec<i64>, alloc::vec::Vec<u8>) {
+        let (mut a, mut b, mut c) = core::mem::take(&mut self.scratch);
+        a.clear();
+        b.clear();
+        c.clear();
+        (a, b, c)
+    }
+
+    /// The vectors of a wait kept for the next one (the bytes not, past
+    /// SCRATCH_KEPT of room: a large body read once).
+    fn keep_scratch(&mut self, v: (alloc::vec::Vec<i64>, alloc::vec::Vec<i64>, alloc::vec::Vec<u8>)) {
+        let (a, b, c) = v;
+        self.scratch = (a, b, if c.capacity() > SCRATCH_KEPT { alloc::vec::Vec::new() } else { c });
     }
 
     /// The connection `id` taken out: its socket.
@@ -576,7 +600,7 @@ mod imp {
             *out = HandleCode { h: -1, code: net_code(r) };
             return;
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new() });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default() });
         *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
     }
 
@@ -629,7 +653,7 @@ mod imp {
         };
         let max = max.clamp(1, 1 << 24) as usize;
         let mut evs = [EpollEvent { events: 0, data: 0 }; 64];
-        let (mut ids, mut lens, mut data) = (alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<u8>::new());
+        let (mut ids, mut lens, mut data) = st.take_scratch();
         // again while only connections were accepted (their bytes come with
         // the next wait), within the delay: as the interpreter, which gives
         // the first bytes or ends, or nothing at the end of the delay
@@ -638,6 +662,7 @@ mod imp {
             read_pending(st, max, &mut ids, &mut lens, &mut data);
             if !ids.is_empty() {
                 *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+                st.keep_scratch((ids, lens, data));
                 return;
             }
         }
@@ -650,6 +675,7 @@ mod imp {
             let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, 64, left as usize, 0, 0) });
             if n < 0 {
                 *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: net_code(n) };
+                st.keep_scratch((ids, lens, data));
                 return;
             }
             read_ready(st, &evs[..n as usize], max, &mut ids, &mut lens, &mut data);
@@ -658,6 +684,7 @@ mod imp {
             }
         }
         *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+        st.keep_scratch((ids, lens, data));
     }
 
     /// The events `evs` of a wait: the connections waiting accepted, the
@@ -1296,7 +1323,7 @@ mod imp {
             *out = HandleCode { h: -1, code };
             return;
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new() });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default() });
         *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
     }
 
@@ -1308,7 +1335,7 @@ mod imp {
             return;
         };
         let max = max.clamp(1, 1 << 24) as usize;
-        let (mut ids, mut lens, mut data) = (alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<i64>::new(), alloc::vec::Vec::<u8>::new());
+        let (mut ids, mut lens, mut data) = st.take_scratch();
         // the sessions of TLS that hold bytes already received: read first
         if st.tls != 0 {
             let ready: alloc::vec::Vec<i64> = st.sessions.iter().filter(|x| x.2 && tls::pending(tls::no_dl(), tls::Session(x.1)) > 0).map(|x| x.0).collect();
@@ -1317,6 +1344,7 @@ mod imp {
             }
             if !ids.is_empty() {
                 *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+                st.keep_scratch((ids, lens, data));
                 return;
             }
         }
@@ -1332,6 +1360,7 @@ mod imp {
             let r = WSAPoll(fds.as_mut_ptr(), fds.len() as u32, left);
             if r < 0 {
                 *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: last_code() };
+                st.keep_scratch((ids, lens, data));
                 return;
             }
             read_ready(st, &fds, max, &mut ids, &mut lens, &mut data);
@@ -1340,6 +1369,7 @@ mod imp {
             }
         }
         *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+        st.keep_scratch((ids, lens, data));
     }
 
     /// The results `fds` of a poll: the connections waiting accepted, the

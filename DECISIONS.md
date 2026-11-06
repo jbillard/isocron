@@ -8379,3 +8379,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   6.251 -> 6.548 ns) where D371 alone is -3.3 to +0.7 %: a loop that takes
   and gives back one block fetches a line it does not use, at every call.
   Not kept.
+- **D376 — The vectors of a wait of the server kept from one wait to the
+  next (2026-11-06).** The cost of a request of `serve` on 2 cores with 16
+  connections (`perf stat -p` over 5 s against the requests of wrk):
+  18534 cycles, 12205 of them in the kernel and 6329 in the program (11515
+  instructions); the ceiling in C 13113, 12425 and 688 (570 instructions).
+  The kernel the same: the same system calls a request for both (`strace
+  -c` over a load of 4 s: 249157 `sendto` and 249170 `recvfrom` for 249151
+  requests, one `epoll_wait` for 5.9 of them; the ceiling 184470, 184482
+  and one for 6.0, for 184465 requests); all the gap in the program. The
+  allocations counted (a counter of each size in `isc_alloc`, not kept):
+  about 49 a request (117.4 M for 2405614 requests), 35 of them of at most
+  64 bytes, and at each turn of the loop (588132 turns, 4.1 requests each)
+  a block of 64 KiB then one of 128 KiB: the vector of the bytes of
+  `isc_sys_serverwait`, which reserved 64 KiB for the first connection
+  ready, then grew by a copy, then was freed.
+  - Now the three vectors of a wait (numbers, lengths, bytes) are kept in
+    the state of the server with their room, cleared at each wait (the
+    bytes not kept past 1 MiB of room: a large body read once), under
+    Linux and Windows.
+  - The server on 2 cores, 3 alternated runs of 10 s: 16 connections
+    340013.07 -> 378100.35 requests a second (+11.2 %, medians; 335927 to
+    344731 against 366973 to 381463), 1024 connections 345238.01 ->
+    352274.40 (+2.0 %, the runs overlapping). The pipelined forms the same
+    (`serve.pipelined` -0.3 %, `serveAction.pipelined` -0.2 %: hundreds of
+    requests a turn there).
+  - Tested by the tests of the server and of TLS (`std_http.rs`,
+    `std_https.rs`, `std_net.rs`), whose waits read many sizes (bodies of
+    1 MiB, responses of 2000000 bytes, a body over the limit).
+  - Next, by the same counts: `readyOf` (30.1 % of the calls of
+    `isc_alloc` in the LBR stacks, 24 of them in its code), the task of the
+    responses (15.2 %, 40), the rest of `serveLoop` (46.5 %).
