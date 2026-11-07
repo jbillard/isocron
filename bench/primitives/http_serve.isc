@@ -1,0 +1,23 @@
+// The audit of every form against the machine (D301): `http.serve(port,
+// handler)` itself (D431), the server that answers without end, one thread,
+// against the requests of a client in C on the local machine
+// (`http_client.c`, started by `run.py`: `// bench-client: http`, the
+// server stopped once it is done): a request on a connection of its own,
+// then requests on one connection kept. The client prints the lines: a
+// name, the nanoseconds of one request, a checksum; against
+// `http_serve.c` (the floor: a server of one thread on the system's calls,
+// the same responses).
+// usage: http_serve <rounds> <port>
+// bench-client: http
+import * as http from "http";
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, "hello, world!");
+}
+
+action main(args: string[k]): i32 {
+    return match (http.serve(parseI64(args[1]), hello)) {
+        Ok(_) => 0,
+        Err(e) => 1,
+    };
+}

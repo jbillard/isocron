@@ -32,11 +32,15 @@ def bench_cpu():
     sys.exit("bench/machine.sh apply first")
 
 
-def run(cmd, cpu):
-    """`cmd` on the CPU `cpu` alone, in the slice of the measurements; its
-    lines as {name: (ns, checksum)}."""
+def run(cmd, cpu, env=()):
+    """`cmd` on the CPU `cpu` alone, in the slice of the measurements, with
+    the variables `env` (`NAME=value`) too; its lines as {name: (ns,
+    checksum)}."""
     full = ["sudo", "-n", "systemd-run", "--quiet", "--scope", "--slice=isc-bench", "-p", "AllowedCPUs=" + cpu,
-            "--uid=%d" % os.getuid(), "--gid=%d" % os.getgid(), "-E", "ISC_THREADS=1"] + cmd
+            "--uid=%d" % os.getuid(), "--gid=%d" % os.getgid(), "-E", "ISC_THREADS=1"]
+    for e in env:
+        full += ["-E", e]
+    full += cmd
     out = subprocess.run(full, check=True, stdout=subprocess.PIPE, text=True).stdout
     forms = {}
     for line in out.splitlines():
@@ -46,10 +50,11 @@ def run(cmd, cpu):
 
 
 def run_served(cmd, cpu, port, client):
-    """For a group that declares `// bench-client: tls` (D416): `cmd`, a server
-    on `port`, on the CPU `cpu` alone as `run` does, the command `client`
-    started once it listens (on the other CPUs); the lines of the client as
-    {name: (ns, checksum)}."""
+    """For a group that declares `// bench-client: tls` (D416) or `http`
+    (D431): `cmd`, a server on `port`, on the CPU `cpu` alone as `run` does,
+    the command `client` started once it listens (on the other CPUs), the
+    server stopped after it when it serves without end (`serve`); the lines
+    of the client as {name: (ns, checksum)}."""
     full = ["sudo", "-n", "systemd-run", "--quiet", "--scope", "--slice=isc-bench", "-p", "AllowedCPUs=" + cpu,
             "--uid=%d" % os.getuid(), "--gid=%d" % os.getgid(), "-E", "ISC_THREADS=1"] + cmd
     server = subprocess.Popen(full, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -61,7 +66,12 @@ def run_served(cmd, cpu, port, client):
             except OSError:
                 time.sleep(0.01)
         out = subprocess.run(client, check=True, stdout=subprocess.PIPE, text=True, timeout=600).stdout
-        server.wait(timeout=600)
+        try:
+            server.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            # a server without end: stopped (`sudo` gives it the signal)
+            server.terminate()
+            server.wait(timeout=60)
     finally:
         if server.poll() is None:
             server.kill()
@@ -172,7 +182,11 @@ def main():
         elif "// bench-server: dns" in open(os.path.join(here, g + ".isc")).read():
             server, extra = dns_server()
         served = None
-        if "// bench-client: tls" in text:
+        if "// bench-client: http" in text:
+            client = os.path.join(build, "http_client")
+            subprocess.run(["gcc", "-O2", os.path.join(here, "http_client.c"), "-o", client], check=True)
+            served = (None, client)
+        elif "// bench-client: tls" in text:
             # the files of TLS of `tls_server`, the server of openssl stopped:
             # the servers measured are the program and its floor
             tls, _ = tls_server()
@@ -191,10 +205,16 @@ def main():
                         s.bind(("127.0.0.1", 0))
                         port = s.getsockname()[1]
                         s.close()
-                        args = [str(a.rounds), str(port), os.path.join(d, "server.pem"), os.path.join(d, "server.key")]
-                        lines = run_served([b] + args, cpu, port, [client, str(a.rounds), str(port), os.path.join(d, "ca.pem")])
+                        if d is None:
+                            lines = run_served([b, str(a.rounds), str(port)], cpu, port, [client, str(a.rounds), str(port)])
+                        else:
+                            args = [str(a.rounds), str(port), os.path.join(d, "server.pem"), os.path.join(d, "server.key")]
+                            lines = run_served([b] + args, cpu, port, [client, str(a.rounds), str(port), os.path.join(d, "ca.pem")])
                     else:
-                        lines = run([b, str(a.rounds)] + extra, cpu)
+                        # the authority of the session as the authorities of
+                        # the system for both (`https.get`, D431)
+                        env = ["SSL_CERT_FILE=" + extra[1]] if "// bench-server: tls" in text else []
+                        lines = run([b, str(a.rounds)] + extra, cpu, env)
                     for name, (ns, check) in lines.items():
                         times[kind].setdefault(name, []).append(ns)
                         checks[kind][name] = check

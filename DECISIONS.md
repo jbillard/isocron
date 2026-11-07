@@ -9679,3 +9679,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`selftest_linux.sh`, `selftest_windows.py`, the example of the README
   by the `iscc` of the archive). `CHANGELOG.md`, the links of the README
   and of `tools/vscode/README.md` at 0.4.2.
+- **D431 — The last five functions of the library measured by their names
+  (2026-11-07).** After D424, 86 of the 91 were named by a form; the five
+  others only through the functions they are made of. Now each by its own
+  (`run.py`, 5 runs of 200 rounds, fixed frequency):
+  - `https.get` and `https.request`, the authorities of the system: an
+    empty authority makes the runtime call
+    `SSL_CTX_set_default_verify_paths`, which reads `SSL_CERT_FILE`;
+    `run.py` sets it to the authority of the session for the program and
+    its floor (whose client takes the system's paths the same way), so
+    that nothing is installed in the system: `get.system.small` 1.0,
+    `request.system.small` 1.0;
+  - `net.serverOfTls`: a server of TLS opened on a new listener and
+    closed, against the calls of the runtime in C (the context, the
+    certificate and the key read from their texts, `epoll`):
+    `serverOfTls.close` 1.0;
+  - `http.serve` and `https.serveTls`, which serve without end: groups
+    measured by a client in C (`// bench-client: http`, `http_client.c`,
+    `https_client.c`), the server stopped by a signal once the client is
+    done (`run_served`); against servers of one thread on the system's
+    calls (`http_serve.c`, `https_serve.c`): `http_serve` a request by
+    connection 1.1, on a connection kept 1.2; `https_serve_tls` 1.0 and
+    1.2 (as `serveTlsOn`, D416).
+  91 of 91 functions named by a form of `bench/primitives`
+  (`results/primitives.md`).

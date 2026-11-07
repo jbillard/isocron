@@ -1,0 +1,21 @@
+// The audit of every form against the machine (D301): `https.serveTls(port,
+// cert, key, handler)` itself (D431), the server of TLS that answers
+// without end (`serveTlsOn` on a listener of its own), one thread, against
+// the requests of `https_client.c` (`// bench-client: tls`, the server
+// stopped once it is done), as `https_serve.isc` measures `serveTlsOn`;
+// against `https_serve.c` (the floor, the same responses).
+// usage: https_serve_tls <rounds> <port> <cert.pem> <key.pem>
+// bench-client: tls
+import * as http from "http";
+import * as https from "https";
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, "hello, world!");
+}
+
+action main(args: string[k]): i32 {
+    return match (https.serveTls(parseI64(args[1]), readText(args[2]), readText(args[3]), hello)) {
+        Ok(_) => 0,
+        Err(e) => 1,
+    };
+}

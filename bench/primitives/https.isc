@@ -5,7 +5,11 @@
 // request, the response, the end), its body of 13 bytes, then of 64 KiB.
 // Each line: a name, the nanoseconds of one request (the mean over half of
 // `rounds`), a checksum; against `https.c` (the floor: OpenSSL called
-// directly, the same requests).
+// directly, the same requests). The requests with the authorities of the
+// system (`get`, `request`) read the authority of the session from
+// `SSL_CERT_FILE`, which `run.py` sets, as OpenSSL reads it (D431); a server
+// of TLS opened and closed on a listener (`serverOfTls`), its certificate
+// and its key next to the authority.
 // usage: https <rounds> <port> <authority.pem>
 // bench-server: tls
 import * as https from "https";
@@ -44,7 +48,65 @@ action main(args: string[k]): i32 {
     const h = handshakes(parseI64(args[1]), ca, r, 0);
     const t7 = clock();
     print(`startTls ${f64(t7 - t6) / f64(r)} ${h / r}`);
+    // with the authorities of the system (D431)
+    const t8 = clock();
+    const g = systemGets(base + "/hello.txt", r, 0);
+    const t9 = clock();
+    print(`get.system.small ${f64(t9 - t8) / f64(r)} ${g / r}`);
+    const t10 = clock();
+    const q = systemRequests(base + "/hello.txt", r, 0);
+    const t11 = clock();
+    print(`request.system.small ${f64(t11 - t10) / f64(r)} ${q / r}`);
+    // a server of TLS on a listener, opened and closed
+    const dir = args[2].slice(0, args[2].length - 6);
+    const cert = readText(dir + "server.pem");
+    const key = readText(dir + "server.key");
+    const t12 = clock();
+    const s = tlsServers(cert, key, r, 0);
+    const t13 = clock();
+    print(`serverOfTls.close ${f64(t13 - t12) / f64(r)} ${s / r}`);
     return 0;
+}
+
+// `n` requests `GET url` by `get`, the authorities of the system: the sum
+// of their statuses and lengths
+action systemGets(url: string, n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    return match (https.get(url)) {
+        Ok(r) => systemGets(url, n - 1, acc + r.status + r.body.length),
+        Err(e) => -1,
+    };
+}
+
+// `n` requests by `request`, a header, the authorities of the system
+action systemRequests(url: string, n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    return match (https.request("GET", url, [["Accept", "text/plain"] as const], [])) {
+        Ok(r) => systemRequests(url, n - 1, acc + r.status + r.body.length),
+        Err(e) => -1,
+    };
+}
+
+// `n` servers of TLS of a listener of a port of the system, each closed
+action tlsServers(cert: string, key: string, n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    const k = match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => match (net.serverOfTls(l, cert, key)) {
+            Ok(s) => {
+                net.closeServer(s);
+                return 1;
+            },
+            Err(e) => 0,
+        },
+        Err(e) => 0,
+    };
+    return tlsServers(cert, key, n - 1, acc + k);
 }
 
 // `n` requests `GET url` by `requestWith`: the sum of their statuses and lengths

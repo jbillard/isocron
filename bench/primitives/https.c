@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -35,6 +37,71 @@ int SSL_connect(SSL *s);
 int SSL_read(SSL *s, void *buf, int num);
 int SSL_write(SSL *s, const void *buf, int num);
 int SSL_shutdown(SSL *s);
+
+int SSL_CTX_set_default_verify_paths(SSL_CTX *c);
+const SSL_METHOD *TLS_server_method(void);
+typedef struct bio_st BIO;
+typedef struct x509_st X509;
+typedef struct evp_pkey_st EVP_PKEY;
+BIO *BIO_new_mem_buf(const void *buf, int len);
+int BIO_free(BIO *b);
+X509 *PEM_read_bio_X509(BIO *b, X509 **x, void *cb, void *u);
+EVP_PKEY *PEM_read_bio_PrivateKey(BIO *b, EVP_PKEY **x, void *cb, void *u);
+void X509_free(X509 *x);
+void EVP_PKEY_free(EVP_PKEY *k);
+void ERR_clear_error(void);
+int SSL_CTX_use_certificate(SSL_CTX *c, X509 *x);
+int SSL_CTX_use_PrivateKey(SSL_CTX *c, EVP_PKEY *k);
+int SSL_CTX_check_private_key(const SSL_CTX *c);
+long SSL_CTX_ctrl(SSL_CTX *c, int cmd, long larg, void *parg);
+
+// the file `name` next to the authority `ca` into `out`: its length
+static long read_file(const char *ca, const char *name, char *out, char *path) {
+    size_t n = strlen(ca);
+    while (n > 0 && ca[n - 1] != '/') n--;
+    snprintf(path, 4096, "%.*s%s", (int)n, ca, name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    long k = (long)fread(out, 1, 4095, f);
+    fclose(f);
+    return k;
+}
+
+// a server of TLS on a new listener (D431): its context with the
+// certificate and the key read from their texts, its `epoll` watching the
+// listener, then all closed: 1, or 0
+static long tls_server_once(const char *cert, long cn, const char *key, long kn) {
+    int l = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0), one = 1;
+    setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = 0, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    bind(l, (struct sockaddr *)&a, sizeof a);
+    listen(l, 128);
+    SSL_CTX *c = SSL_CTX_new(TLS_server_method());
+    SSL_CTX_ctrl(c, 123, 0x303, NULL);
+    SSL_CTX_set_options(c, 1ULL << 7);
+    SSL_CTX_ctrl(c, 33, 2, NULL);
+    BIO *b = BIO_new_mem_buf(cert, (int)cn);
+    X509 *x = PEM_read_bio_X509(b, NULL, NULL, NULL);
+    while (PEM_read_bio_X509(b, NULL, NULL, NULL)) {
+    }
+    ERR_clear_error();
+    BIO_free(b);
+    int ok = x && SSL_CTX_use_certificate(c, x) == 1;
+    X509_free(x);
+    BIO *kb = BIO_new_mem_buf(key, (int)kn);
+    EVP_PKEY *k = PEM_read_bio_PrivateKey(kb, NULL, NULL, NULL);
+    BIO_free(kb);
+    ok = ok && k && SSL_CTX_use_PrivateKey(c, k) == 1 && SSL_CTX_check_private_key(c) == 1;
+    EVP_PKEY_free(k);
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    fcntl(l, F_SETFL, fcntl(l, F_GETFL) | O_NONBLOCK);
+    struct epoll_event e = {.events = EPOLLIN, .data.u64 = 0};
+    epoll_ctl(ep, EPOLL_CTL_ADD, l, &e);
+    close(ep);
+    SSL_CTX_free(c);
+    close(l);
+    return ok;
+}
 
 static double now(void) {
     struct timespec t;
@@ -119,5 +186,27 @@ int main(int argc, char **argv) {
     }
     printf("startTls %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
     SSL_CTX_free(ctx);
+    // the authorities of the system: `SSL_CERT_FILE`, as for Isocron (D431)
+    SSL_CTX *sys = SSL_CTX_new(TLS_client_method());
+    SSL_CTX_set_verify(sys, 1, NULL);
+    SSL_CTX_set_default_verify_paths(sys);
+    SSL_CTX_set_options(sys, 1ULL << 7);
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) acc += get(sys, port, "/hello.txt");
+    printf("get.system.small %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) acc += get_with(sys, port, "/hello.txt", "Accept: text/plain\r\n");
+    printf("request.system.small %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    SSL_CTX_free(sys);
+    // a server of TLS on a listener, opened and closed: the calls of the
+    // runtime (`server_ctx`, then `serverOpen`)
+    char cert[4096], key[4096], path[4096];
+    long cn = read_file(argv[3], "server.pem", cert, path), kn = read_file(argv[3], "server.key", key, path);
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) acc += tls_server_once(cert, cn, key, kn);
+    printf("serverOfTls.close %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
     return 0;
 }
