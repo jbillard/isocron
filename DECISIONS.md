@@ -9892,3 +9892,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   environment is. The test of the buffer back in that IR; `stdlib.rs` and
   `strings.rs` pass whole; the LLVM IR of the ten programs the same as
   with D441.
+- **D443 — A count of fewer elements than a vector in one masked vector
+  (2026-11-07).** D437's model was wrong for `json.quote` of a name: its
+  count did not reach `count_kept`. Profile (alone, one CPU): 29 cycles
+  and 121 instructions a quote; an exact reduction of fewer elements than
+  its lanes (16 bytes, 32 lanes) goes to `reduce_loop`, one element at a
+  time, before the blocks. Now such a reduction that is a count
+  (`count_parts`) is made by `count_kept`, so by one masked vector on a
+  target with masked loads of bytes (AVX-512 BW and VL; elsewhere as
+  before). Measured (`run.py`, 5 runs of 200 rounds): `json.quote.plain`
+  9.7 -> 6.7 ns (4.1 times its floor), `json.message` 13.0 -> 8.4 ns,
+  `json.quote.escaped` 98.5 -> 93.7 ns; the LLVM IR of the ten programs
+  unchanged. In the same run `sys.env` 21.6 -> 27.0 ns with its floor
+  11.4 -> 16.1 ns (its ratio 1.9 -> 1.7: the measure of that series, its
+  code unchanged). Test `counts_with_a_masked_rest` (counts of 0 to 100
+  elements, so these short ones too, for the machine and for AVX2).

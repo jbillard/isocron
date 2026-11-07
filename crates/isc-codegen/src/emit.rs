@@ -8138,7 +8138,17 @@ impl<'p> Gen<'p> {
             let ljoin = self.label();
             self.cbr(&small, &lloop, &lfixed);
             self.block(&lloop);
-            let r = self.reduce_loop(&src, &n, l, &zv, &t)?;
+            // a count of fewer elements than a vector: in one masked vector
+            // when the target has them (D437), not one element at a time
+            // (D443: the count of `json.quote` over a name of 16 bytes)
+            let counted = match count_parts(&src, l, &zv, &t) {
+                Some((ins, pred, cw)) if w > 1 && cw > 1 && BYTE_MASKS.with(|b| b.get()) => Some(self.count_kept(ins, &pred, "0", &n, cw)?),
+                _ => None,
+            };
+            let r = match counted {
+                Some(k) => V { r: k, t: "i64".into(), uni: true },
+                None => self.reduce_loop(&src, &n, l, &zv, &t)?,
+            };
             self.emit(format!("store {} {}, ptr {}", lt(&t), r.r, slot));
             self.br(&ljoin);
             self.block(&lfixed);
