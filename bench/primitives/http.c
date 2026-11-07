@@ -332,14 +332,29 @@ static void pure_forms(long r) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     printf("httpDate %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
+    // the errors as data, as the program reads them (D457: the number
+    // 65536 a constant of the loop, GCC wrote its digits at compilation;
+    // `r < 0` keeps it a value of the run)
+    static struct { int kind, len; const char *s; long n; } errs[M];
+    for (long i = 0; i < M; i++) {
+        errs[i].kind = i % 3;
+        errs[i].s = i % 3 == 0 ? "the head" : "ftp://x";
+        errs[i].len = i % 3 == 0 ? 8 : 7;
+        errs[i].n = 65536 + (r < 0);
+    }
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (long k = 0; k < r; k++) {
         acc = 0;
         for (long i = 0; i < M; i++) {
             char *p = buf;
-            if (i % 3 == 0) { memcpy(p, "malformed: the head", 19); p += 19; }
-            else if (i % 3 == 1) { memcpy(p, "too large: more than ", 21); p += 21; p = hput(p, 65536, 5); memcpy(p, " bytes", 6); p += 6; }
-            else { memcpy(p, "bad url: ftp://x", 16); p += 16; }
+            if (errs[i].kind == 0) { memcpy(p, "malformed: ", 11); p += 11; memcpy(p, errs[i].s, errs[i].len); p += errs[i].len; }
+            else if (errs[i].kind == 1) {
+                long v = errs[i].n;
+                int d = 1;
+                for (long w = v; w >= 10; w /= 10) d++;
+                memcpy(p, "too large: more than ", 21); p += 21; p = hput(p, v, d); memcpy(p, " bytes", 6); p += 6;
+            }
+            else { memcpy(p, "bad url: ", 9); p += 9; memcpy(p, errs[i].s, errs[i].len); p += errs[i].len; }
             KEEP(buf);
             acc += p - buf;
         }

@@ -10143,3 +10143,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   ns of `http.message`: its constant texts written by a few stores of
   immediates). The ratios of `results/primitives.tsv` stand; the floors
   are now safe from it.
+- **D457 — The floor of `http.message` reads its errors as data
+  (2026-11-07).** `http.message` 6.0 times its floor. One call, one CPU at
+  fixed frequency (`perf stat`, 20.5 M calls): 21.7 cycles, 100
+  instructions, no block of the heap (its text on the stack, D404); the
+  code of the call 64.7 %, `isc_put_int` 17.5 % (the number of
+  `TooLarge`), `isc_put_text` 12.2 %. The floor wrote
+  `hput(p, 65536, 5)`: a constant of its loop, whose digits GCC wrote at
+  compilation as stores of immediates, and constant texts of fixed
+  lengths, where the program reads the error, its number and its text
+  from an array made at run time: 0.92 ns, about 3 cycles, less than the
+  work. Now the floor reads the errors from an array (their kind, text,
+  length, number; the number `65536 + (r < 0)`, a value of the run), counts
+  the digits of the number and copies the texts by their lengths: the
+  same checksum (91474). `run.py` (5 runs of 200 rounds): floor 1.1 ->
+  4.9 ns, Isocron 7.0 ns, 1.42 times. A fault of the measure, closed;
+  not a gain of Isocron.
