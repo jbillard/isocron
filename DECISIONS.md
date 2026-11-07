@@ -10585,3 +10585,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     bytes and of 100, both sides of every size of move, on the stack and in
     a block, for the machine and AVX2; with the moves of 32 a byte early it
     fails).
+- **D479 — The parts of a path searched from the end: rejected after
+  measure (2026-11-08).** `sys.dirname` about 3.0 times its floor: its
+  last `/` and the `/` at the end of its path found by folds over all its
+  bytes (`lastByte`, `trimEnd`, three folds). First a guard: the test
+  `path_parts_as_before` (`std_sys.rs`, `std_path_parts.isc` and `.out`):
+  `dirname`, `basename` and `extension` of every path of 0 to 3 parts among
+  9, with and without a root and a `/` at the end, 820 lines written by the
+  module of 0.4.5, compiled and interpreted. Then `lastByte` and `trimEnd`
+  searched from the end, one byte at a time (the same texts). Measured (the
+  old and new binaries of `sys`, 7 alternated runs): `basename` 9.17 ->
+  7.42 ns, `extension` 12.41 -> 10.47 ns, `normalize` -3.2 %, but
+  `dirname` 8.71 -> 9.91 ns (+13.8 %); with `trimEnd` by its fold again,
+  `dirname` +9.1 %: for its path of 23 bytes the fold in vectors costs less
+  than 8 steps one at a time. `dirname` is the form above 3: the module
+  stays as it was; the test stays.
+- **D480 — The Benchmarks Game measured again at 0d8a28d (2026-11-08).**
+  After D477 (no change of the ten programs) and D478 (the outputs of
+  k-nucleotide and regex-redux, templates, copied in their code): the
+  image built with the `iscc` of 0d8a28d, 102 checks against the
+  references (the same outputs; the known difference of C++ #4 of
+  mandelbrot at N = 200 only), measured in Docker (4 threads, 12 runs, the
+  lowest). The fastest on 10 of 10, every time within its scatter
+  (k-nucleotide 613 -> 614 ms, regex-redux 81 -> 82 ms, n-body 1896 ->
+  1885 ms, the others within 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.

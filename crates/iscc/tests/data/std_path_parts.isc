@@ -1,0 +1,20 @@
+// `dirname`, `basename` and `extension` of every path of 0 to 3 parts among
+// "", ".", "..", "a", "bc", ".x", "...", "a.b" and "c.tar.gz", with and
+// without a root, with and without a `/` at the end (D479): the texts of
+// the module of 0.4.5, written in `std_path_parts.out`.
+import * as path from "path";
+
+function pathOf(k: i64, n: i64): string {
+    const segs = ["", ".", "..", "a", "bc", ".x", "...", "a.b", "c.tar.gz"];
+    return join(map(iota(n), (j) => segs[(k / [1, 9, 81][j]) % 9]), "/");
+}
+
+function parts(p: string): string {
+    return `${p}|${path.dirname(p)}|${path.basename(p)}|${path.extension(p)}`;
+}
+
+action main(args: string[k]): i32 {
+    const all = concat(concat(map(iota(1), (k) => pathOf(k, 0)), map(iota(9), (k) => pathOf(k, 1))), concat(map(iota(81), (k) => pathOf(k, 2)), map(iota(729), (k) => pathOf(k, 3))));
+    print(join(map(all, (p) => `${parts(p)} ${parts("/" + p)} ${parts(p + "/")} ${parts("/" + p + "//")}`), "\n"));
+    return 0;
+}

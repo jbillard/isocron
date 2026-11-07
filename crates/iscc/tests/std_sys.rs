@@ -347,3 +347,20 @@ action main(args: string[k]): i32 {
     let got = interp_ok(src, &[]);
     assert!(got == want, "interpreter: {:?}", got.lines().zip(want.lines()).find(|(a, b)| a != b));
 }
+
+/// D479: `dirname`, `basename` and `extension` with their last `/` and the
+/// `/` at their end found from the end: every path of 0 to 3 parts among
+/// 9 (empty, `.`, `..`, names, dots, extensions), with and without a root,
+/// with and without `/` at the end; the texts of the module of 0.4.5,
+/// written in `std_path_parts.out`; compiled and interpreted.
+#[test]
+fn path_parts_as_before() {
+    let src = include_str!("data/std_path_parts.isc");
+    let want = include_str!("data/std_path_parts.out");
+    let first = |got: &str| got.lines().zip(want.lines()).enumerate().find(|(_, (a, b))| a != b).map(|(i, (a, b))| format!("line {}: {:?} against {:?}", i + 1, a, b));
+    let got = interp_ok(src, &[]);
+    assert!(got == want, "interpreter: {:?}", first(&got));
+    let r = run_bin(&compile(src, "path_parts"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "compiled: {:?}", first(&r.stdout));
+}
