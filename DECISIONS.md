@@ -10411,3 +10411,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the same with `grep -c ... > /dev/null` 0. Now both checks of the commit
   of a release (`Cargo.toml`, `CHANGELOG.md`) count with `grep -c`, which
   reads its whole input.
+- **D470 — The Benchmarks Game measured again at f6a0533 (2026-11-07).**
+  After 0.4.5 (D455 to D469: the runtime changed by D459, D460, D466 and
+  D467; the LLVM IR of the ten programs the same as at D454 but two
+  declarations): the image built with the `iscc` of f6a0533, 102 checks
+  against the references (the same outputs; the known difference of C++
+  #4 of mandelbrot at N = 200 only), measured in Docker (4 threads, 12
+  runs, the lowest). The fastest on 10 of 10, every time within 5 ms of
+  D454 (n-body 1880 -> 1885 ms, binary-trees 661 -> 659 ms, pidigits 300
+  -> 298 ms, the others the same to 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.

@@ -53,18 +53,18 @@ same Docker image on the same machine
 
 <!-- results:begin -->
 
-**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `2047582`, DECISIONS D454; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
+**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `f6a0533`, DECISIONS D470; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
 
 | | benchmark | Isocron | fastest other | Isocron / fastest | floor | Isocron / floor |
 | :-: | :-- | --: | :-- | :-: | --: | :-: |
-| 🟢 | binary-trees | 661 ms | Rust 842 ms | $\color{green}{\textbf{0.79}}$ | 328.6 ms | $\color{orange}{2.0}$ |
-| 🟢 | fannkuch-redux | 1659 ms | C 2461 ms | $\color{green}{\textbf{0.67}}$ | 805.7 ms | $\color{orange}{2.1}$ |
+| 🟢 | binary-trees | 659 ms | Rust 845 ms | $\color{green}{\textbf{0.78}}$ | 328.6 ms | $\color{orange}{2.0}$ |
+| 🟢 | fannkuch-redux | 1660 ms | C 2462 ms | $\color{green}{\textbf{0.67}}$ | 805.7 ms | $\color{orange}{2.1}$ |
 | 🟢 | fasta | 5 ms | Rust 754 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{orange}{2.2}$ |
-| 🟢 | k-nucleotide | 613 ms | C++ 1161 ms | $\color{green}{\textbf{0.53}}$ | 272.5 ms | $\color{orange}{2.2}$ |
-| 🟢 | mandelbrot | 637 ms | C++ 780 ms | $\color{green}{\textbf{0.82}}$ | 436.3 ms | $\color{green}{1.5}$ |
-| 🟡 | n-body | 1880 ms | C 1944 ms | $\color{orange}{\textbf{0.97}}$ | 1316.6 ms | $\color{green}{1.4}$ |
-| 🟢 | pidigits | 300 ms | C 680 ms | $\color{green}{\textbf{0.44}}$ | 195.5 ms | $\color{orange}{1.5}$ |
-| 🟢 | regex-redux | 81 ms | Rust 751 ms | $\color{green}{\textbf{0.11}}$ | 29.4 ms | $\color{orange}{2.8}$ |
+| 🟢 | k-nucleotide | 614 ms | C++ 1165 ms | $\color{green}{\textbf{0.53}}$ | 272.5 ms | $\color{orange}{2.3}$ |
+| 🟢 | mandelbrot | 637 ms | C++ 781 ms | $\color{green}{\textbf{0.82}}$ | 436.3 ms | $\color{green}{1.5}$ |
+| 🟡 | n-body | 1885 ms | C 1945 ms | $\color{orange}{\textbf{0.97}}$ | 1316.6 ms | $\color{green}{1.4}$ |
+| 🟢 | pidigits | 298 ms | C 681 ms | $\color{green}{\textbf{0.44}}$ | 195.5 ms | $\color{orange}{1.5}$ |
+| 🟢 | regex-redux | 80 ms | Rust 757 ms | $\color{green}{\textbf{0.11}}$ | 29.4 ms | $\color{orange}{2.7}$ |
 | 🟢 | reverse-complement | 27 ms | Rust 62 ms | $\color{green}{\textbf{0.44}}$ | 14.2 ms | $\color{orange}{1.9}$ |
 | 🟡 | spectral-norm | 195 ms | Rust 205 ms | $\color{orange}{\textbf{0.95}}$ | 107.3 ms | $\color{orange}{1.8}$ |
 
