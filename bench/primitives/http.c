@@ -23,6 +23,11 @@
 #include <time.h>
 #include <unistd.h>
 
+// the bytes written into `p` kept: an empty `asm` that may read the memory
+// (D456: GCC removed the writes of a text never read, and the floor
+// measured its length alone)
+#define KEEP(p) __asm__ volatile("" : : "r"(p) : "memory")
+
 static double now(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -321,6 +326,7 @@ static void pure_forms(long r) {
             p = hput(p, d, 2); *p++ = ' '; memcpy(p, months[mo - 1], 3); p += 3; *p++ = ' ';
             p = hput(p, y, 4); *p++ = ' '; p = hput(p, s / 3600, 2); *p++ = ':'; p = hput(p, s / 60 % 60, 2); *p++ = ':'; p = hput(p, s % 60, 2);
             memcpy(p, " GMT", 4); p += 4;
+            KEEP(buf);
             acc += p - buf;
         }
     }
@@ -334,6 +340,7 @@ static void pure_forms(long r) {
             if (i % 3 == 0) { memcpy(p, "malformed: the head", 19); p += 19; }
             else if (i % 3 == 1) { memcpy(p, "too large: more than ", 21); p += 21; p = hput(p, 65536, 5); memcpy(p, " bytes", 6); p += 6; }
             else { memcpy(p, "bad url: ftp://x", 16); p += 16; }
+            KEEP(buf);
             acc += p - buf;
         }
     }

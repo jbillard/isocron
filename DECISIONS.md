@@ -10129,3 +10129,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`run.py`, 5 runs of 200 rounds); the other forms of `http` within
   their scatter. Not a gain of Isocron: a fault of the measure, closed.
   The other floors with blocks of the heap keep their calls.
+- **D456 — The writes of the floors of texts kept (2026-11-07).** After
+  D455, the other floors of the library whose checksum takes the length of
+  a text written into a buffer, not its bytes: `http.httpDate`,
+  `http.message`, `json.message`, `json.quote` (both forms), `sys.normalize`,
+  `sys.join`, `sys.ioError.message`, `time.formatIso`,
+  `time.formatDateTime` (its text at an offset), `time.format`. Each now
+  passes its buffer to `KEEP`, an empty `asm` that may read the memory, so
+  that no compiler can drop the writes. Measured (5 alternated runs of
+  the old and new floors, one CPU at fixed frequency): every form within
+  4.5 % (`http.header` -4.4 %, `http.textResponse` +3.5 %, `json.message`
+  +4.5 %, the others within 3 %): GCC kept these writes already (the 0.92
+  ns of `http.message`: its constant texts written by a few stores of
+  immediates). The ratios of `results/primitives.tsv` stand; the floors
+  are now safe from it.

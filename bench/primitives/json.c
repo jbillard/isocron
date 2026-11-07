@@ -18,6 +18,11 @@
 #include <string.h>
 #include <time.h>
 
+// the bytes written into `p` kept: an empty `asm` that may read the memory
+// (D456: GCC removed the writes of a text never read, and the floor
+// measured its length alone)
+#define KEEP(p) __asm__ volatile("" : : "r"(p) : "memory")
+
 #define N 1000
 
 static char *arena, *bump;
@@ -551,6 +556,7 @@ int main(int argc, char **argv) {
             if (c >= 10) *p++ = '0' + c / 10;
             *p++ = '0' + c % 10;
             memcpy(p, ": unexpected token", 18); p += 18;
+            KEEP(buf);
             a5 += p - buf;
         }
     }
@@ -583,6 +589,7 @@ int main(int argc, char **argv) {
                     _mm256_storeu_si256((__m256i *)p, v);
                     p += n;
                     *p++ = '"';
+                    KEEP(buf);
                     a += p - buf;
                     continue;
                 }
@@ -596,6 +603,7 @@ int main(int argc, char **argv) {
                     else *p++ = ch;
                 }
                 *p++ = '"';
+                KEEP(buf);
                 a += p - buf;
             }
         }

@@ -16,6 +16,11 @@
 #include <time.h>
 #include <unistd.h>
 
+// the bytes written into `p` kept: an empty `asm` that may read the memory
+// (D456: GCC removed the writes of a text never read, and the floor
+// measured its length alone)
+#define KEEP(p) __asm__ volatile("" : : "r"(p) : "memory")
+
 static double now(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -205,7 +210,10 @@ int main(int argc, char **argv) {
     acc = 0;
     double t6 = now();
     for (long k = 0; k < r; k++)
-        for (int i = 0; i < 4096; i++) acc += normalize(ps[i], out);
+        for (int i = 0; i < 4096; i++) {
+            acc += normalize(ps[i], out);
+            KEEP(out);
+        }
     double t7 = now();
     printf("normalize %.3f %ld\n", (t7 - t6) / ((double)r * 4096), acc / r);
     acc = 0;
@@ -235,10 +243,12 @@ int main(int argc, char **argv) {
             size_t n = strlen(p);
             if (p[0] == '/') {
                 memcpy(jo, p, n);
+                KEEP(jo);
                 acc += n;
             } else {
                 memcpy(jo, "dir/sub/", 8);
                 memcpy(jo + 8, p, n);
+                KEEP(jo);
                 acc += 8 + n;
             }
         }
@@ -281,6 +291,7 @@ int main(int argc, char **argv) {
                 n = sprintf(msg, "error %d of the system: ", -code);
             }
             memcpy(msg + n, "f.txt", 5);
+            KEEP(msg);
             acc += n + 5;
         }
     double u1 = now();

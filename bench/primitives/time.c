@@ -9,6 +9,11 @@
 #include <string.h>
 #include <time.h>
 
+// the bytes written into `p` kept: an empty `asm` that may read the memory
+// (D456: GCC removed the writes of a text never read, and the floor
+// measured its length alone)
+#define KEEP(p) __asm__ volatile("" : : "r"(p) : "memory")
+
 #define N 4096
 
 static double now(void) {
@@ -121,7 +126,10 @@ int main(int argc, char **argv) {
     acc = 0;
     char out[40];
     for (long k = 0; k < r; k++)
-        for (long i = 0; i < N; i++) acc += format_iso(ins[i], out);
+        for (long i = 0; i < N; i++) {
+            acc += format_iso(ins[i], out);
+            KEEP(out);
+        }
     double t3 = now();
     printf("formatIso %.3f %ld\n", (t3 - t2) / ((double)r * N), acc / r);
     acc = 0;
@@ -210,6 +218,7 @@ int main(int argc, char **argv) {
             // the text of `format_iso` at +01:00 (the offset for the Z)
             long n = format_iso(ins[i] + 3600000000000L, out) - 1;
             memcpy(out + n, "+01:00", 6);
+            KEEP(out);
             acc += n + 6;
         }
     double t14 = now();
@@ -223,6 +232,7 @@ int main(int argc, char **argv) {
             p = put(p, y, 4); *p++ = '/'; p = put(p, m, 2); *p++ = '/'; p = put(p, d, 2); *p++ = ' ';
             p = put(p, s / 3600, 2); *p++ = ':'; p = put(p, s / 60 % 60, 2); *p++ = ':'; p = put(p, s % 60, 2); *p++ = '.';
             p = put(p, tnano[i] / 1000000, 3); *p++ = ' '; memcpy(p, "+01:00", 6); p += 6;
+            KEEP(out);
             acc += p - out;
         }
     double t15 = now();
