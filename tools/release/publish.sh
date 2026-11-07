@@ -33,8 +33,11 @@ run() {
 git diff --quiet && git diff --cached --quiet || fail "changes not committed"
 commit=$(git log --format=%H -1 --grep="^Release $v:" main)
 [ -n "$commit" ] || fail "no commit \"Release $v: ...\" on main"
-git show "$commit:Cargo.toml" | grep -qx "version = \"$v\"" || fail "Cargo.toml of $commit is not at version $v"
-git show "$commit:CHANGELOG.md" | grep -q "^## $v " || fail "CHANGELOG.md of $commit has no section $v"
+# `grep -c`, not `-q`: `-q` leaves at the first line found, `git show` then
+# dies of SIGPIPE, and `pipefail` fails the line (D469: the check of 0.4.5
+# failed once on a section present)
+git show "$commit:Cargo.toml" | grep -cx "version = \"$v\"" > /dev/null || fail "Cargo.toml of $commit is not at version $v"
+git show "$commit:CHANGELOG.md" | grep -c "^## $v " > /dev/null || fail "CHANGELOG.md of $commit has no section $v"
 
 # the files of the release
 assets=("$dir/isocron-$v-x86_64-linux.tar.gz" "$dir/isocron-$v-x86_64-windows.zip" "$dir/isocron-$v.vsix" "$dir/SHA256SUMS")

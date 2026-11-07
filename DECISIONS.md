@@ -10400,3 +10400,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   archives built from those sources in the images of the releases, tried
   before they are published. The ten programs of the Benchmarks Game:
   their LLVM IR the same as at D454 but two declarations (D458).
+- **D469 — The checks of `publish.sh` read the whole file (2026-11-07).**
+  The dry run of 0.4.5 failed with `CHANGELOG.md of 756583d... has no
+  section 0.4.5`, the section there; the real run then published (tag
+  `v0.4.5` at 756583d, its four files and their sums checked). Under
+  `set -o pipefail`, `git show ... | grep -q` fails when `grep -q` leaves
+  at the first line found while `git show` still writes: `git show` dies
+  of SIGPIPE (141) and the pipeline fails. Shown with a long output:
+  `(echo "## 0.4.5 x"; seq 1 5000000) | grep -q "^## 0.4.5 "` gives 141,
+  the same with `grep -c ... > /dev/null` 0. Now both checks of the commit
+  of a release (`Cargo.toml`, `CHANGELOG.md`) count with `grep -c`, which
+  reads its whole input.
