@@ -9982,3 +9982,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   a tuple and the pairs of `zip` of the same tuple as a sum, on 1 and 4
   threads, the interpreter's output, valgrind; with the records not left
   out, valgrind finds their texts lost).
+- **D449 — Release 0.4.3 (2026-11-07).** After 0.4.2: the fix of D442 (a
+  text on the stack freed as a block of the heap, in 0.4.2 already), and
+  D431 to D448: a microbenchmark for each function of the library by its
+  name, `net.lookup` on Windows, a component of a tuple moved out, the
+  small integers of templates written by their bytes, counts in masked
+  vectors, ASCII checked by blocks, null and the other variants of a sum
+  freed without a call; the Benchmarks Game measured again (D447, whose
+  ten programs have the same LLVM IR as today's). No name removed, the
+  language the same: 0.4.3. The steps of 0.4.2 (D430): the Windows tests
+  in the VM with the `iscc.exe` of the release's sources, the archives
+  built from those sources in the images of the releases, tried before
+  they are published.

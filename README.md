@@ -196,12 +196,12 @@ they link programs with are inside. Linux x86-64 (glibc 2.28 or later) and
 Windows 10 and 11:
 
 ```sh
-curl -LO https://github.com/jbillard/isocron/releases/download/v0.4.2/isocron-0.4.2-x86_64-linux.tar.gz
-tar -xzf isocron-0.4.2-x86_64-linux.tar.gz
-./isocron-0.4.2-x86_64-linux/iscc --version
+curl -LO https://github.com/jbillard/isocron/releases/download/v0.4.3/isocron-0.4.3-x86_64-linux.tar.gz
+tar -xzf isocron-0.4.3-x86_64-linux.tar.gz
+./isocron-0.4.3-x86_64-linux/iscc --version
 ```
 
-On Windows, unpack `isocron-0.4.2-x86_64-windows.zip` from the
+On Windows, unpack `isocron-0.4.3-x86_64-windows.zip` from the
 [releases](https://github.com/jbillard/isocron/releases) and run `iscc.exe`.
 Beside the compiler, `isc-lsp` is the language server of the editors
 ([editors](docs/language.md#editors-the-language-server-isc-lsp)).

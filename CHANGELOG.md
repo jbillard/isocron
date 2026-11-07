@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.3 — 2026-11-07
+
+A fix of the memory of the texts on the stack, and faster texts, dates,
+addresses and errors by general changes of the compiler and the runtime.
+The Benchmarks Game measured again: the fastest on 10 of 10 (D447).
+
+### Fixed
+
+* A text written into a buffer on the stack (D404) could be freed as a
+  block of the heap: the table of these texts was keyed by the names of
+  registers, which a task emitted inside the function numbers again; a
+  text of the task under the same name took the function's out (D442).
+
+### The compiler
+
+* A component of a new tuple that dies with it is moved out, not copied:
+  `http.textResponse` 22.5 -> 13.9 ns (D434).
+* The integers of one or two digits of a template, and those padded to two
+  digits by zeros, written by their bytes: `http.httpDate` 82.4 -> 57.1
+  ns, `time.formatDateTime` 73.8 -> 51.7 ns (D441, D446).
+* A count of bytes ends in one masked vector on AVX-512, a short one too:
+  `json.quote` of a name 9.7 -> 6.7 ns, `json.message` 13.0 -> 8.4 ns
+  (D437, D443).
+* A value of a sum type frees the fields of its variant only:
+  `http.parseUrl` 108.2 -> 63.2 ns with D445, `sys.ioError.message` 45.6
+  -> 12.6 ns (D448).
+
+### The runtime
+
+* The ASCII prefix of a text checked 64 bytes at a time, a short text
+  without `from_utf8`: `http.text` of 1 KiB 90.4 -> 74.8 ns, the server
+  -1.8 % a request (D436, D440).
+* A null pointer freed at once (the fields of the other variants of a sum
+  type, D445).
+* `sys.envAll` sorts its names measured once (D435).
+
+### The measurements and the tests
+
+* A microbenchmark and a floor for each of the 91 functions of the library,
+  by its name: `http.serve`, `https.serveTls` measured by a client, the
+  authorities of the system by `SSL_CERT_FILE` (D431).
+* `net.lookup` tested on Windows against a server of DNS of the machine
+  (D439).
+* The waiting of the threads of reverse-complement and the cycles of
+  n-body measured again (D432, D433).
+
 ## 0.4.2 — 2026-11-07
 
 Faster pidigits, reverse-complement and k-nucleotide by general changes of
