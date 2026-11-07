@@ -9874,3 +9874,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`strings.rs`: -120 to 120 and their multiples, 999 and 1000, the
   extremes of `i64`, `u8` and `i32`, a padded one, for the machine and
   for AVX2, the interpreter's text; with a table shifted by one it fails).
+- **D442 — The texts on the stack known by function (2026-11-07).** The
+  suite of D441 failed: `json_decoded_into_types_and_encoded` under
+  valgrind (AVX2, glibc's allocator) freed an address of the stack. Found:
+  the reduction to the decoded value printed and encoded fails whole and
+  passes without any one of its six statements; the code of the main body
+  the same as before D441 register for register but for one test: the
+  text of the name (`quote`, written into a buffer on the stack, D404)
+  freed without the test of its buffer. `stack_strs`, the texts on the
+  stack, is keyed by the names of registers, which each function and each
+  task numbers from 0; a task emitted inside the main body (the encoding
+  of the numbers of the points) had a text on the stack under the same
+  name, and took the main body's out when it ended. D441 had only moved
+  the numbers of the registers of that task (its integers written in the
+  code); the fault is D404's. Now the table is saved and emptied around
+  each task (`outline_task`) and each function (`emit_fn`), as the
+  environment is. The test of the buffer back in that IR; `stdlib.rs` and
+  `strings.rs` pass whole; the LLVM IR of the ten programs the same as
+  with D441.

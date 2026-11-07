@@ -2450,6 +2450,9 @@ impl<'p> Gen<'p> {
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let saved_counts = std::mem::take(&mut self.counts);
         let saved_count_param = self.count_param.take();
+        // the texts on the stack, by the names of the registers of a
+        // function (D442)
+        let saved_stack_strs = std::mem::take(&mut self.stack_strs);
         let mut ps = Vec::new();
         if in_region {
             ps.push("ptr %rg".to_string());
@@ -2566,6 +2569,7 @@ impl<'p> Gen<'p> {
         self.in_task = saved_task;
         self.counts = saved_counts;
         self.count_param = saved_count_param;
+        self.stack_strs = saved_stack_strs;
         r?;
         self.funcs.push(text);
         Ok(())
@@ -7809,6 +7813,11 @@ impl<'p> Gen<'p> {
         let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, true);
+        // the texts on the stack of the caller, known by the names of its
+        // registers, which the task numbers again from 0: not the task's
+        // (D442: a text of the task under the same name took the caller's
+        // out, its free without the test of its buffer)
+        let saved_stack_strs = std::mem::take(&mut self.stack_strs);
         // the regions of the caller are not the task's (D200)
         let saved_region = self.region.take();
         let saved_region_vars = std::mem::take(&mut self.region_vars);
@@ -7848,6 +7857,7 @@ impl<'p> Gen<'p> {
         self.divmod = saved_divmod;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
+        self.stack_strs = saved_stack_strs;
         self.task_shared = saved_shared;
         self.region = saved_region;
         self.region_vars = saved_region_vars;
