@@ -10102,3 +10102,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   language the same. The steps of 0.4.3 (D449). The ten programs of the
   Benchmarks Game: revcomp and k-nucleotide changed by D450 and D452,
   measured against the code of D447 (D452: within their scatter).
+- **D454 — The Benchmarks Game measured again at 2047582 (2026-11-07).**
+  After D450 (k-nucleotide: the names of its k-mers not checked) and D452
+  (revcomp and k-nucleotide: their counts of bytes 64 at a time): the
+  image built with the `iscc` of 2047582 (0.4.4), 102 checks against the
+  references (the same outputs; the known difference of C++ #4 of
+  mandelbrot at N = 200 only, the same as Isocron at N = 16000), measured
+  in Docker (4 threads, 12 runs,
+  the lowest). The fastest on 10 of 10, every time within its scatter of
+  D447 (k-nucleotide 618 -> 613 ms, revcomp 27 ms, the others the same to
+  1 ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
