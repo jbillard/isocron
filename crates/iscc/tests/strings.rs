@@ -1124,13 +1124,16 @@ fn texts_padded_by_moves() {
 /// written by their bytes (a pair of a table of `00` to `99`), the others
 /// by the runtime: every value from -120 to 120, around 999 and 1000, the
 /// extremes of `i64`, integers of 8 and 32 bits, several in one template,
-/// one padded (`padStart`, the runtime); the interpreter's text.
+/// one padded (`padStart`, the runtime); padded to 2 by zeros at the
+/// start from -20 to 129 (D446: two digits of the table below 100), by
+/// another fill, at the end; the interpreter's text.
 #[test]
 fn small_integers_in_templates() {
     let src = "action main(args: string[k]): i32 {
     print(map(iota(241), (i) => `${i - 120}|${(i - 120) * 7}`).join(\",\"));
     print([`${999}${1000}`, `${-9223372036854775807 - 1}`, `${9223372036854775807}`, `${u8(255)}:${i32(-5)}:${u8(7)}`]);
     print(map(iota(30), (i) => `${i / 10}${i % 10}-${toString(i).padStart(3, \"0\")}`).join(\" \"));
+    print(map(iota(130), (i) => `${toString(i - 20).padStart(2, \"0\")}:${toString(i).padStart(2, \"0\")}|${toString(i).padStart(2, \"*\")}|${toString(i).padEnd(2, \"0\")}`).join(\" \"));
     return 0;
 }
 ";

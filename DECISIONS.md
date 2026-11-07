@@ -9938,3 +9938,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `Option` and a type of the program whose variants hold strings and
   arrays, by thousands, kept in arrays and dropped in parallel `map`s, the
   interpreter's output on 1 and 4 threads, valgrind).
+- **D446 — An integer padded to two digits by zeros written from the
+  table of pairs (2026-11-07).** `time.format` 5.7 times its floor; its
+  fields of two digits are `pad(x, 2)`, an integer padded by zeros at its
+  start, which a template writes by `isc_put_int` (D359), one call a field.
+  Now such an integer that is not negative and below 100 is written as the
+  pair of the table of D441 (`00` to `99`: the zero of padding included);
+  the others call the runtime as before. Measured (`run.py`, 5 runs of 200
+  rounds): `time.format` 205.7 -> 182.9 ns (5.0 times its floor),
+  `time.formatDateTime` 73.8 -> 51.7 ns (1.07), `time.formatIso` 76.7 ->
+  64.9 ns; the forms of `http` within their scatter; the LLVM IR of the
+  ten programs unchanged. Test `small_integers_in_templates` (`strings.rs`)
+  with integers from -20 to 129 padded to 2 by zeros at the start, by
+  another fill, at the end, for the machine and for AVX2. TODO: the forms
+  above 3 times their floors given again with today's numbers.
