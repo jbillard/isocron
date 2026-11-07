@@ -10316,3 +10316,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (-45.7 %), the other forms within 3.3 %; `run.py` (5 runs of 200 rounds)
   164.9 -> 90.2 ns, 1.82 times its floor (`isAbsolute` +6.1 %, 1.9 ->
   2.0 ns, its code the same).
+- **D465 — `sys.isAbsolute`: the gap is the layout of an array of strings
+  (2026-11-07).** `sys.isAbsolute` 3.4 to 3.6 times its floor (2.0 ns
+  against 0.6). Its loop calls nothing: `startsWith` and the bytes tested
+  inline. The floor reads its 4096 paths in one array of 4096 rows of 48
+  bytes (`qs[4096][48]`, contiguous, tested up to their zero byte), where a
+  program of Isocron holds an array of strings: a pointer and a length for
+  each, its bytes in a block of its own (64 bytes aligned). Measured
+  (`bench/primitives/isabsolute_layout.c`, one CPU at fixed frequency, 3
+  runs of 2000 rounds): the same test in C on that layout 1.886, 1.926,
+  1.899 ns; on the rows with `strlen` 2.651, 2.654, 2.650 ns; Isocron
+  1.889, 1.876, 1.854 ns. Isocron is the machine on its own layout; the
+  rest is that layout (a line of the cache a string where the rows share
+  them), which no change of the code makes contiguous: the representation
+  of strings, as the lines of k-nucleotide (TODO). Closed by this measure.
