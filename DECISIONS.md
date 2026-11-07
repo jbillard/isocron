@@ -9767,3 +9767,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   found once (`sorted_entries`; the interpreter by a cached key), and the
   floor sorts as `envAll` does since D423 (by names measured once, then
   the entries): `envAll` 1958 ns against 1237 (1.6).
+- **D436 — The ASCII prefix of a text checked 64 bytes at a time
+  (2026-11-07).** `http.text` of 1 KiB took 89 to 90 ns, 277 cycles and
+  1040 instructions an iteration; its profile: `from_utf8` (the check of
+  `stringOf`) 43.7 % of the samples, the check of the module (`utf8`, in
+  vector code) 31.5 %, the copy 11.7 %. `from_utf8` tests ASCII by two
+  words a step. Now `utf8_check` (`isc-runtime-core`, safe code) tests
+  the ASCII prefix by blocks of 64 bytes, the `|` of each block compared
+  once (vector code), and gives the rest to `from_utf8` from the first
+  block with a byte of 128 or more (a character starts there): the same
+  answer and the same place of the fault. Used by `stringOf` (copied or
+  taking its block), `readText`, the text of the standard input. Measured
+  (`run.py`, 5 runs of 200 rounds): `http.text.1k` 90.4 -> 74.8 ns (5.2
+  times its floor); `readText.4k` 6484 -> 6433 ns, `json` and the other
+  forms within their scatter; regex-redux 81.0 -> 80.8 ms, k-nucleotide
+  612.7 -> 615.0 ms (15 alternated runs, the same outputs): their checks
+  were a small part. Test `utf8_check_is_from_utf8` (`isc-runtime-core`:
+  every length around the blocks, characters of 1 to 4 bytes, faults and
+  cut characters before, across and after the blocks, the answer of
+  `from_utf8`). Left: the body still checked twice (`utf8` of the module,
+  then `stringOf`): a text of bytes already checked needs a primitive that
+  checks once and says so, pure, which the primitives (actions) have not.

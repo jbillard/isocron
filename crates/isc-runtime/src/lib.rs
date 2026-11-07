@@ -1036,8 +1036,8 @@ pub unsafe extern "C" fn isc_read_stdin(out: *mut IscArray, line: i32, col: i32)
 #[no_mangle]
 pub unsafe extern "C" fn isc_read_stdin_text(out: *mut IscStr, line: i32, col: i32) {
     let a = read_stdin_all(line, col);
-    if let Err(e) = core::str::from_utf8(bytes_of(a.ptr, a.len)) {
-        die(line, col, &Panic::StdinNotUtf8(e.valid_up_to() as i64))
+    if let Err(at) = sem::utf8_check(bytes_of(a.ptr, a.len)) {
+        die(line, col, &Panic::StdinNotUtf8(at as i64))
     }
     *out = IscStr { ptr: a.ptr, len: a.len };
 }
@@ -1564,8 +1564,8 @@ pub unsafe extern "C" fn isc_str_cmp(p: *const u8, n: i64, q: *const u8, m: i64)
 #[no_mangle]
 pub unsafe extern "C" fn isc_str_from_bytes(out: *mut IscStr, p: *const u8, n: i64, line: i32, col: i32) {
     let b = bytes_of(p, n);
-    if let Err(e) = core::str::from_utf8(b) {
-        die(line, col, &Panic::NotUtf8(e.valid_up_to() as i64))
+    if let Err(at) = sem::utf8_check(b) {
+        die(line, col, &Panic::NotUtf8(at as i64))
     }
     *out = new_str(b);
 }
@@ -1575,8 +1575,8 @@ pub unsafe extern "C" fn isc_str_from_bytes(out: *mut IscStr, p: *const u8, n: i
 /// block (a block of the heap, or the empty block): no copy.
 #[no_mangle]
 pub unsafe extern "C" fn isc_str_adopt_bytes(out: *mut IscStr, p: *const u8, n: i64, line: i32, col: i32) {
-    if let Err(e) = core::str::from_utf8(bytes_of(p, n)) {
-        die(line, col, &Panic::NotUtf8(e.valid_up_to() as i64))
+    if let Err(at) = sem::utf8_check(bytes_of(p, n)) {
+        die(line, col, &Panic::NotUtf8(at as i64))
     }
     *out = IscStr { ptr: p as *mut u8, len: n };
 }
@@ -1666,8 +1666,8 @@ pub unsafe extern "C" fn isc_to_string_bool(out: *mut IscStr, b: i32) {
 pub unsafe extern "C" fn isc_read_text(out: *mut IscStr, path: *const u8, plen: i64, line: i32, col: i32) {
     let p = str_of(path, plen);
     let a = read_file(p, line, col);
-    if let Err(e) = core::str::from_utf8(bytes_of(a.ptr, a.len)) {
-        die(line, col, &Panic::TextNotUtf8 { path: p, at: e.valid_up_to() as i64 })
+    if let Err(at) = sem::utf8_check(bytes_of(a.ptr, a.len)) {
+        die(line, col, &Panic::TextNotUtf8 { path: p, at: at as i64 })
     }
     *out = IscStr { ptr: a.ptr, len: a.len };
 }
@@ -3477,9 +3477,9 @@ unsafe fn try_read_f64s(p: &str) -> Result<IscArray, Panic<'_>> {
 
 unsafe fn try_read_text(p: &str) -> Result<IscStr, Panic<'_>> {
     let a = try_read_file(p)?;
-    if let Err(e) = core::str::from_utf8(bytes_of(a.ptr, a.len)) {
+    if let Err(at) = sem::utf8_check(bytes_of(a.ptr, a.len)) {
         isc_free(a.ptr);
-        return Err(Panic::TextNotUtf8 { path: p, at: e.valid_up_to() as i64 });
+        return Err(Panic::TextNotUtf8 { path: p, at: at as i64 });
     }
     Ok(IscStr { ptr: a.ptr, len: a.len })
 }

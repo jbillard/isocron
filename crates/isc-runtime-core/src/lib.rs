@@ -2319,6 +2319,54 @@ mod limbs {
 big_module!(big, 128);
 big_module!(big256, 256);
 
+/// Whether the bytes `b` are UTF-8, or the length of their longest valid
+/// prefix (`valid_up_to` of `from_utf8`): their ASCII prefix by blocks of 64
+/// bytes, each the `|` of its bytes compared once (vector code), then the
+/// rest by `from_utf8` from the first block with a byte of 128 or more,
+/// which starts a character (D436: `from_utf8` tests ASCII 16 bytes a
+/// step; `stringOf` of 1 KiB spent 43.7 % of its cycles there).
+pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
+    let mut at = 0;
+    for c in b.chunks_exact(64) {
+        if c.iter().fold(0u8, |a, &x| a | x) >= 0x80 {
+            break;
+        }
+        at += 64;
+    }
+    match core::str::from_utf8(&b[at..]) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(at + e.valid_up_to()),
+    }
+}
+
+#[cfg(test)]
+mod utf8_check_tests {
+    use super::utf8_check;
+    extern crate alloc;
+    use alloc::vec::Vec;
+
+    /// D436: the same answer as `from_utf8` for texts of every length around
+    /// the blocks, with characters of 1 to 4 bytes, faults and cut
+    /// characters at every place, before, across and after the blocks.
+    #[test]
+    fn utf8_check_is_from_utf8() {
+        let want = |b: &[u8]| core::str::from_utf8(b).map(|_| ()).map_err(|e| e.valid_up_to());
+        let pieces: [&[u8]; 9] = [b"a", "é".as_bytes(), "日".as_bytes(), "𝄞".as_bytes(), b"\xff", b"\xc3", b"\xe6\x97", b"\x80", b"\xf4\x90\x80\x80"];
+        for n in [0usize, 1, 63, 64, 65, 127, 128, 129, 200, 1000] {
+            let base: Vec<u8> = (0..n).map(|i| b'a' + (i % 26) as u8).collect();
+            assert_eq!(utf8_check(&base), want(&base), "{} ASCII bytes", n);
+            for at in [0, n / 3, n.saturating_sub(1), n] {
+                for p in pieces {
+                    let mut b = base.clone();
+                    let at = at.min(b.len());
+                    b.splice(at..at, p.iter().copied());
+                    assert_eq!(utf8_check(&b), want(&b), "{} bytes, {:?} at {}", n, p, at);
+                }
+            }
+        }
+    }
+}
+
 /// The end of the last whole character of the UTF-8 bytes `b` (D408): before
 /// the first byte of a character cut at the end (a lead byte followed by
 /// fewer bytes than it announces), else the length (bytes that are not
