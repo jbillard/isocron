@@ -9661,3 +9661,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   series, D261; the others the same to 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D430 — Release 0.4.2 (2026-11-07).** The author: « quand tu
+  l'estimeras nécessaire il faudra penser à faire puis pousser une release
+  ». After 0.4.1: pidigits by ADX (D406), the keys of k-nucleotide hashed
+  once (D417, D418), the counts of reverse-complement made in the pass of
+  its heads (D426), a large join in parallel (D427), a join read by a
+  `map` never made (D428), the Windows console in UTF-8 (D408, D409),
+  `envAll` in the order of the names (D423), the MSVC ABI at the boundary
+  of a DLL (D425), an example in the guide (D421, run on Windows, D422)
+  and a microbenchmark (D412 to D416, D424) for each function of the
+  library; the Benchmarks Game measured again (D429). No name removed, the
+  language the same: 0.4.2. The Windows tests in the VM with the
+  `iscc.exe` of the release's sources first; the archives as for 0.4.1
+  (`build_iscc.sh` for Linux and Windows in the images of the releases,
+  from the sources of the commit of the release; `package.sh`; the
+  extension of VS Code at 0.4.2), tried before they are published
+  (`selftest_linux.sh`, `selftest_windows.py`, the example of the README
+  by the `iscc` of the archive). `CHANGELOG.md`, the links of the README
+  and of `tools/vscode/README.md` at 0.4.2.

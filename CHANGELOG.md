@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.4.2 — 2026-11-07
+
+Faster pidigits, reverse-complement and k-nucleotide by general changes of
+the compiler and the runtime, a Windows console in UTF-8, and each
+function of the library with a tested example, run on Windows too, and a
+microbenchmark against its floor. The Benchmarks Game measured again:
+the fastest on 10 of 10, reverse-complement 32 -> 27 ms, k-nucleotide 677 -> 622 ms (D429).
+
+### The compiler
+
+* `z + x * y` and `z - x * y` of bigints in one pass with ADX: pidigits
+  337.2 -> 298.3 ms (D406).
+* The keys of a count hashed once, in their own vector loop, and only the
+  first line of a key probed in the fast loop: k-nucleotide 682.7 ->
+  638.8 ms (D417, D418).
+* The counts of a later `filter` over the ranges of an array made by
+  blocks in the pass of an earlier one over that array, given to a
+  variant of the function that filters: reverse-complement reads its
+  input twice, 31.9 -> 27.7 ms (D426).
+* A join read once in order by a `map` of its bytes is never made: its
+  bytes gathered 16 KiB at a time and mapped; k-nucleotide 632.1 -> 615.0
+  ms (D428).
+* A loop inside a task writes no line that the other threads read: the
+  server -3.9 % of user cycles a request (D410).
+
+### The runtime
+
+* A join of 1 MiB or more made by ranges of its strings in parallel
+  (D427).
+* The output to a Windows console and the input from it in UTF-8
+  (`WriteConsoleW`, `ReadConsoleW`, D408, D409).
+
+### The library
+
+* `sys.envAll` in the order of the bytes of the names, as documented: a
+  name followed by a byte below `=` came before its own prefix
+  (`ProgramFiles(x86)` before `ProgramFiles`, D423).
+* `net.resolve` cuts into words only the lines of `/etc/hosts` that hold
+  the name: 5609.7 -> 4431.3 ns (D413).
+
+### Windows
+
+* The MSVC ABI at the boundary of a DLL, tested on Windows: functions of
+  DLLs built by Microsoft, and import libraries in the format of
+  `lib.exe` given by `--link` (D425).
+
+### The documentation
+
+* A tested example in the guide for each of the 91 functions of the
+  library (D421); the programs of the guide also run on Windows, with the
+  same output (D422).
+
+### The measurements
+
+* A microbenchmark and a floor for each function of the library, by its
+  name or through the one that is it: the client of `http` and the
+  functions of `net` (D412 to D414), the numbers of `json` (D415), the
+  server of `https` (D416), the server API of `net`, `setTimeout`,
+  `closeWrite`, `startTls`, `requestWith` (D424); `results/primitives.md`.
+
 ## 0.4.1 — 2026-11-07
 
 Faster texts, in the library and in the compiled code: a text that its

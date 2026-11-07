@@ -405,3 +405,4 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.3.2: actions as values, the server with many connections, rule A (D351 to D356)
 - [x] Release 0.4.0: one `serve` and one `map` for a pure function or an action, the loops of events on each core, reverse-complement and pidigits faster, floors closer to the machine (D357 to D393)
 - [x] Release 0.4.1: faster texts, a text that its scope only reads written on the stack, tables of names as data of the program, the pure functions of `json`, `sha256` and `http` against their floors (D394 to D405)
+- [x] Release 0.4.2: pidigits by ADX, the counts of reverse-complement in the pass of its heads, the join of k-nucleotide never made, the Windows console in UTF-8, an example and a microbenchmark for each function of the library (D406 to D429, D430)
