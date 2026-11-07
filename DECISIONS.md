@@ -9309,3 +9309,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   file split into lines and words, `replaceAll`, `trim`, a text for each,
   where the floor scans its bytes once). Left in TODO: `lookup` (a server of
   DNS on the local machine), the servers of `https`.
+- **D413 — `resolve` cuts into words only the lines of `/etc/hosts` that
+  hold the name (2026-11-07).** D412: `resolve.hosts` 2.9 times its floor,
+  each line of the file stripped of its comment, its tabs replaced, trimmed
+  and split into words. A word of a line is a part of its text (the tabs
+  and spaces between words, the comment cut away), so a line that does not
+  hold the name as a part of its text cannot name it: now each line is
+  first tested by `indexOf`, and only those that hold it are cut into
+  words; the same addresses. Checked: the parser of before and this one,
+  both copied into a program, over 98 cases (7 texts: tabs, comments,
+  blank lines, `\r`, a name inside a longer word, an empty name; 14 names):
+  the same; `resolve` of the names of the machine's `/etc/hosts`,
+  interpreted and compiled, old against new: the same text; the tests of
+  `std_net.rs` (4 passed). Measured (`run.py`, 5 runs of 200 rounds):
+  `resolve.hosts` 5609.73 -> 4431.34 ns (-21.0 %), 2.3 times its floor; the
+  other forms of `net` the same.

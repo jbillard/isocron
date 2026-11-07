@@ -44,7 +44,9 @@ function ipv6Text(b: u8[16]): string {
 
 // the addresses of `host` in the text of `/etc/hosts`
 function fromHosts(text: string, host: string): string[k] {
-    const lines = filter(map(text.split("\n"), (l) => {
+    // only the lines that hold the name somewhere cut into words (D413: a
+    // line without it cannot name it)
+    const lines = filter(map(filter(text.split("\n"), (l) => l.indexOf(host) >= 0), (l) => {
         const i = l.indexOf("#");
         return (i < 0 ? l : l.slice(0, i)).replaceAll("\t", " ").trim();
     }), (l) => l.length > 0);
