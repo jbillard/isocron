@@ -5,8 +5,12 @@
 // (D342): 8 connections with 200 requests each written first, then all of
 // them answered by `serveOn` (only it timed). Each line: a name, the
 // nanoseconds of one exchange or request (the mean over `rounds`), a
-// checksum; against `http.c` (the floor).
-// usage: http <rounds>
+// checksum; against `http.c` (the floor). The requests of the client on a
+// connection of their own (D412): `get` and `request` against
+// `hello_server.c` (started by `run.py`), the connection, the request, the
+// response to its end, the close.
+// usage: http <rounds> <port>
+// bench-server: http
 import * as http from "http";
 import * as net from "net";
 
@@ -148,5 +152,44 @@ action main(args: string[k]): i32 {
     print(`serve.pipelined ${f64(st) / f64(sr * CONNS * PER_CONN)} ${sb / (sr * CONNS * PER_CONN)}`);
     const [at, ab] = serveRounds(sr, 0u64, 0, true);
     print(`serve.action.pipelined ${f64(at) / f64(sr * CONNS * PER_CONN)} ${ab / (sr * CONNS * PER_CONN)}`);
+    // the client against the server of the port given (D412)
+    const base = `http://127.0.0.1:${args[1]}`;
+    const t4 = clock();
+    const g1 = gets(`${base}/`, r, 0);
+    const t5 = clock();
+    print(`get.small ${f64(t5 - t4) / f64(r)} ${g1 / r}`);
+    const t6 = clock();
+    const g2 = gets(`${base}/64k`, r, 0);
+    const t7 = clock();
+    print(`get.64k ${f64(t7 - t6) / f64(r)} ${g2 / r}`);
+    const payload = map(iota(64), (i) => u8(97 + i % 26));
+    const t8 = clock();
+    const g3 = posts(`${base}/form`, payload, r, 0);
+    const t9 = clock();
+    print(`request.post ${f64(t9 - t8) / f64(r)} ${g3 / r}`);
     return 0;
+}
+
+// `r` requests `GET url`: the sum of their status and body length
+action gets(url: string, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const n = match (http.get(url)) {
+        Ok(resp) => resp.status + resp.body.length,
+        Err(e) => -1,
+    };
+    return gets(url, r - 1, acc + n);
+}
+
+// `r` requests `POST url` with the body `x` and a header
+action posts(url: string, x: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (http.request("POST", url, [["Content-Type", "text/plain"] as const], x)) {
+        Ok(resp) => resp.status + resp.body.length,
+        Err(e) => -1,
+    };
+    return posts(url, x, r - 1, acc + k);
 }

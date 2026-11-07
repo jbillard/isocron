@@ -9286,3 +9286,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   its ranges uses (a fusion across expressions, the counts of the ranges
   from the counts of their blocks and their two ends): left open in TODO
   with this measure, the program at 2.2 times its floor.
+- **D412 — The client of `http` and more of `net` against their floors
+  (2026-11-07).** TODO, the audit (D301): `http.request`, `get` and the
+  functions of `net` not measured. `bench/primitives/hello_server.c`, a
+  server of C started by `run.py` for a group that declares `// bench-server:
+  http` (on a free port of the local machine, one connection at a time:
+  the request read to the end of its head and of its body, `hello, world!`
+  or 64 KiB for `/64k`, `Connection: close`). The forms: `get.small`,
+  `get.64k`, `request.post` (64 bytes and a header) in `http.isc`, each a
+  connection of its own; `listen.close` (a listener on a port of the
+  system, closed) and `resolve.hosts` (`ip6-localhost`, a name of
+  `/etc/hosts`) in `net.isc`. Their floors: the same bytes of request sent
+  in one write, the response read to the end of its body by its
+  `Content-Length`, the connection closed (`http.c`); `socket`, `bind`,
+  `listen`, `close`; `/etc/hosts` read and its lines scanned for the name
+  (`net.c`). The same checksums (the status and the length of the body;
+  the addresses, 100 each and their lengths). Measured (`run.py`, one CPU,
+  fixed frequency, 5 runs of 200 rounds): `get.small` 41581.86 against
+  37439.71 ns (1.1), `request.post` 41710.26 against 37567.40 (1.1),
+  `get.64k` 67064.79 against 53090.46 (1.3), `listen.close` 3874.55
+  against 3776.41 (1.0), `resolve.hosts` 5609.73 against 1925.74 (2.9: the
+  file split into lines and words, `replaceAll`, `trim`, a text for each,
+  where the floor scans its bytes once). Left in TODO: `lookup` (a server of
+  DNS on the local machine), the servers of `https`.

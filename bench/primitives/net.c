@@ -6,9 +6,11 @@
 //   net <rounds>
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -89,5 +91,53 @@ int main(int argc, char **argv) {
     }
     printf("connect %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
     close(l);
+    // a listener on a port of the system, closed (D412)
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        int x = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int one = 1;
+        setsockopt(x, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = 0, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        acc += bind(x, (struct sockaddr *)&a, sizeof a) == 0 && listen(x, 128) == 0;
+        close(x);
+    }
+    printf("listen.close %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    // a name of /etc/hosts: the file read, the lines that name it, their
+    // first word (D412)
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        static char buf[1 << 16];
+        int f = open("/etc/hosts", O_RDONLY | O_CLOEXEC);
+        ssize_t n = read(f, buf, sizeof buf - 1);
+        close(f);
+        if (n < 0) n = 0;
+        buf[n] = 0;
+        long found = 0, lens = 0;
+        for (char *line = buf; *line;) {
+            char *end = strchr(line, '\n');
+            if (!end) end = line + strlen(line);
+            char *hash = memchr(line, '#', end - line);
+            char *stop = hash ? hash : end;
+            char *w = line, *first = NULL;
+            size_t firstlen = 0;
+            int idx = 0, hit = 0;
+            while (w < stop) {
+                while (w < stop && (*w == ' ' || *w == '\t')) w++;
+                char *s = w;
+                while (w < stop && *w != ' ' && *w != '\t') w++;
+                if (w > s) {
+                    if (idx == 0) { first = s; firstlen = w - s; }
+                    else if ((size_t)(w - s) == 13 && memcmp(s, "ip6-localhost", 13) == 0) hit = 1;
+                    idx++;
+                }
+            }
+            if (hit && first) { found++; lens += firstlen; }
+            line = *end ? end + 1 : end;
+        }
+        acc += 100 * found + lens;
+    }
+    printf("resolve.hosts %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
     return 0;
 }

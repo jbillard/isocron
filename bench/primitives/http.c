@@ -336,6 +336,56 @@ static void pure_forms(long r) {
     printf("message %.3f %ld\n", ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / ((double)r * M), acc);
 }
 
+// One request on a connection of its own (D412): the bytes of the request
+// of `http.request` sent in one write, the response read to the end of its
+// body (by its `Content-Length`), the connection closed; its status plus
+// the length of its body.
+static long client_request(int port, const char *req, size_t reqlen) {
+    static char buf[1 << 17];
+    int c = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    if (connect(c, (struct sockaddr *)&a, sizeof a)) { close(c); return -1; }
+    if (send(c, req, reqlen, 0) != (ssize_t)reqlen) { close(c); return -1; }
+    size_t n = 0;
+    long head = -1, length = -1;
+    for (;;) {
+        ssize_t k = recv(c, buf + n, sizeof buf - n, 0);
+        if (k <= 0) break;
+        n += k;
+        if (head < 0) {
+            char *e = memmem(buf, n, "\r\n\r\n", 4);
+            if (!e) continue;
+            head = e + 4 - buf;
+            char *cl = memmem(buf, head, "Content-Length: ", 16);
+            length = cl ? atol(cl + 16) : -1;
+        }
+        if (length >= 0 && (long)n - head >= length) break;
+    }
+    close(c);
+    if (head < 0) return -1;
+    return atol(buf + 9) + ((long)n - head);
+}
+
+static void client_forms(long r, int port) {
+    char get_small[256], get_big[256], post[512];
+    int l1 = snprintf(get_small, sizeof get_small, "GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUser-Agent: isocron\r\nConnection: close\r\n\r\n", port);
+    int l2 = snprintf(get_big, sizeof get_big, "GET /64k HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUser-Agent: isocron\r\nConnection: close\r\n\r\n", port);
+    int l3 = snprintf(post, sizeof post, "POST /form HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUser-Agent: isocron\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 64\r\n\r\n", port);
+    for (int i = 0; i < 64; i++) post[l3 + i] = (char)(97 + i % 26);
+    l3 += 64;
+    const char *reqs[3] = {get_small, get_big, post};
+    int lens[3] = {l1, l2, l3};
+    const char *names[3] = {"get.small", "get.64k", "request.post"};
+    for (int f = 0; f < 3; f++) {
+        struct timespec t0, t1;
+        long acc = 0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (long k = 0; k < r; k++) acc += client_request(port, reqs[f], lens[f]);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        printf("%s %.3f %ld\n", names[f], ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / (double)r, acc / r);
+    }
+}
+
 int main(int argc, char **argv) {
     long r = argc > 1 ? atol(argv[1]) : 10;
     pure_forms(r);
@@ -385,5 +435,6 @@ int main(int argc, char **argv) {
     bytes = 0;
     for (long k = 0; k < sr; k++) st += serve_round(&bytes);
     printf("serve.action.pipelined %.3f %ld\n", st * 1e9 / (sr * CONNS * PER_CONN), bytes / (sr * CONNS * PER_CONN));
+    if (argc > 2) client_forms(r, atoi(argv[2]));
     return 0;
 }

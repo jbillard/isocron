@@ -3,7 +3,8 @@
 // connection (written, read by the peer, written back, read), a connection
 // made (`connect`, `accept`, both closed), 64 KiB sent and received. Each
 // line: a name, the nanoseconds of one (the mean over `rounds`), a
-// checksum; against `net.c` (the floor: the same calls of the system).
+// checksum; against `net.c` (the floor: the same calls of the system). A
+// listener opened and closed, a name of `/etc/hosts` resolved (D412).
 // usage: net <rounds>
 import * as net from "net";
 
@@ -90,5 +91,41 @@ action main(args: string[k]): i32 {
         },
         Err(e) => print("listen failed"),
     };
+    const t6 = clock();
+    const o = listens(r, 0);
+    const t7 = clock();
+    print(`listen.close ${f64(t7 - t6) / f64(r)} ${o / r}`);
+    const t8 = clock();
+    const h = resolves("ip6-localhost", r, 0);
+    const t9 = clock();
+    print(`resolve.hosts ${f64(t9 - t8) / f64(r)} ${h / r}`);
     return 0;
+}
+
+// `r` listeners on a port of the system, each closed: how many opened
+action listens(r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            net.closeListener(l);
+            return 1;
+        },
+        Err(e) => 0,
+    };
+    return listens(r - 1, acc + k);
+}
+
+// `r` resolutions of `host` (a name of `/etc/hosts`): its addresses, 100
+// each and their lengths
+action resolves(host: string, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (net.resolve(host)) {
+        Ok(xs) => 100 * xs.length + sum(map(xs, (x) => x.length)),
+        Err(e) => -1,
+    };
+    return resolves(host, r - 1, acc + k);
 }
