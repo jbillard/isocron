@@ -502,6 +502,13 @@ pub struct Gen<'p> {
     split_fresh: VarId,
     /// The array literals put on the stack (D191): never freed.
     stack_vars: HashSet<VarId>,
+    /// The concatenations that give the value of a text that its scope only
+    /// reads, and the buffer on the stack they write it into when it fits
+    /// (D404).
+    stack_concats: HashMap<*const Expr, String>,
+    /// Such a text (its value) and its buffer: freed only when it is not in
+    /// its buffer (D404).
+    stack_strs: HashMap<String, String>,
     /// While the sizes of a `CheckSize` are computed: no length fixed by a
     /// type is put into a value (D204), the test reads the real ones.
     no_fix: bool,
@@ -990,6 +997,8 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         split_fail: None,
         split_fresh: VarId::MAX,
         stack_vars: HashSet::new(),
+        stack_concats: HashMap::new(),
+        stack_strs: HashMap::new(),
         no_fix: false,
         builders: if opts.isa.is_wasm() { HashSet::new() } else { builders(p) },
         region: None,
@@ -1452,6 +1461,33 @@ fn stack_array(v: VarId, e: &Expr) -> bool {
         }
     }
     ok(e, v)
+}
+
+/// The bytes of the buffer on the stack of a text that its scope only
+/// reads (D404): the texts of messages, of dates, of keys; a longer one
+/// takes a block of the heap as before.
+const STACK_STR: i64 = 128;
+
+/// `v` is moved somewhere in `e` (given to an owner: a consumer, a call, a
+/// result), lambdas included.
+fn moves_var(e: &Expr, v: VarId) -> bool {
+    matches!(e.kind, ExprKind::Var(w, Use::Move) if w == v) || e.children().into_iter().any(|c| moves_var(c, v))
+}
+
+/// The concatenations whose text is the value of `e` (D404): `e` itself,
+/// the branches of an `if`, the body of a `let` or of a `Free`; not one
+/// given its left text (D351), which writes after it in its block.
+fn result_concats(e: &Expr, out: &mut Vec<*const Expr>) {
+    use ExprKind::*;
+    match &e.kind {
+        StrOp(isc_ir::StrOp::Concat, es) if e.ty == Type::Str && !es.is_empty() && !matches!(es[0].kind, Var(_, Use::Move)) => out.push(e as *const Expr),
+        If(_, t, f) => {
+            result_concats(t, out);
+            result_concats(f, out);
+        }
+        Let { body, .. } | Free(_, body) => result_concats(body, out),
+        _ => {}
+    }
 }
 
 /// `e` frees `v` somewhere (`Free`, D105).
@@ -2810,6 +2846,18 @@ impl<'p> Gen<'p> {
                 }
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
+            // a text in its buffer on the stack, or not (D404)
+            Type::Str if self.stack_strs.contains_key(&x.r) => {
+                let buf = self.stack_strs[&x.r].clone();
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+                let on = self.ins(format!("icmp eq ptr {}, {}", p, buf));
+                let (lfree, ljoin) = (self.label(), self.label());
+                self.cbr(&on, &ljoin, &lfree);
+                self.block(&lfree);
+                self.emit(format!("call void @isc_free(ptr {})", p));
+                self.br(&ljoin);
+                self.block(&ljoin);
+            }
             // a string: its bytes (D134)
             Type::Str | Type::Big => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
@@ -3586,7 +3634,30 @@ impl<'p> Gen<'p> {
                         return Ok(r);
                     }
                 }
-                let iv = self.ex(init, w)?;
+                // a text that its scope only reads (never moved): the
+                // concatenations that give it write it into a buffer on the
+                // stack when it fits (D404)
+                let mut leaves = Vec::new();
+                if w == 1 && *drop && !*stmt && init.ty == Type::Str && !moves_var(body, *var) {
+                    result_concats(init, &mut leaves);
+                }
+                let buf = if leaves.is_empty() {
+                    None
+                } else {
+                    let b = self.alloca(&format!("[{} x i8], align 16", STACK_STR));
+                    for l in &leaves {
+                        self.stack_concats.insert(*l, b.clone());
+                    }
+                    Some(b)
+                };
+                let iv = self.ex(init, w);
+                for l in &leaves {
+                    self.stack_concats.remove(l);
+                }
+                let iv = iv?;
+                if let Some(b) = &buf {
+                    self.stack_strs.insert(iv.r.clone(), b.clone());
+                }
                 self.bind(*var, iv.clone());
                 if *stmt && w == 1 {
                     self.black_box(&iv);
@@ -3600,12 +3671,17 @@ impl<'p> Gen<'p> {
                     let t = self.var_ty(*var).clone();
                     self.drop_value(&iv, &t);
                 }
-                let r = self.ex(body, w)?;
+                let r = self.ex(body, w);
                 if *drop && !early {
-                    let t = self.var_ty(*var).clone();
-                    self.drop_value(&iv, &t);
+                    if let Ok(_) = &r {
+                        let t = self.var_ty(*var).clone();
+                        self.drop_value(&iv, &t);
+                    }
                 }
-                Ok(r)
+                if buf.is_some() {
+                    self.stack_strs.remove(&iv.r);
+                }
+                r
             }
             Tuple(es) => {
                 let t = lt(&e.ty);
@@ -10762,7 +10838,7 @@ impl<'p> Gen<'p> {
     /// one block, each part written where it goes (D359 gave the runtime a
     /// table of three words a part, `isc_str_build`, read twice: about 15
     /// cycles a part).
-    fn concat_parts_built(&mut self, es: &[Expr]) -> R<V> {
+    fn concat_parts_built(&mut self, es: &[Expr], slot: Option<String>) -> R<V> {
         // each part and its length, in order: a literal (a constant), a
         // text, the text of an integer (its sign, its digits counted from its
         // bits and the powers of 10, its width); a left text given (D351)
@@ -10845,9 +10921,22 @@ impl<'p> Gen<'p> {
         // where it goes: the literals by moves of constants (`memcpy` of a
         // constant length, inlined), the texts and the integers by the
         // runtime (D363)
-        let (base, mut at) = match &given {
-            Some((p, n)) => (self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total)), n.clone()),
-            None => (self.ins(format!("call ptr @isc_alloc(i64 {})", total)), "0".to_string()),
+        let (base, mut at) = match (&given, slot) {
+            (Some((p, n)), _) => (self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total)), n.clone()),
+            // a text that its scope only reads: in its buffer on the stack
+            // when it fits, a block of the heap otherwise (D404)
+            (None, Some(buf)) => {
+                let fits = self.ins(format!("icmp ule i64 {}, {}", total, STACK_STR));
+                let (lheap, ljoin) = (self.label(), self.label());
+                let lfrom = self.current_label("entry");
+                self.cbr(&fits, &ljoin, &lheap);
+                self.block(&lheap);
+                let h = self.ins(format!("call ptr @isc_alloc(i64 {})", total));
+                self.br(&ljoin);
+                self.block(&ljoin);
+                (self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", buf, lfrom, h, lheap)), "0".to_string())
+            }
+            (None, None) => (self.ins(format!("call ptr @isc_alloc(i64 {})", total)), "0".to_string()),
         };
         for part in &parts {
             let dst = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, at));
@@ -11002,7 +11091,8 @@ impl<'p> Gen<'p> {
                 _ => false,
             })
         {
-            return self.concat_parts_built(es);
+            let slot = self.stack_concats.get(&(e as *const Expr)).cloned();
+            return self.concat_parts_built(es, slot);
         }
         let mut vals = Vec::new();
         for x in es {

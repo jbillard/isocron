@@ -9090,3 +9090,49 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   text grown at each field (`isc_str_reserve` 8.79 %, `heap::usable` 4.99
   %), where the floor writes into one buffer of its size. Test
   `time_format_fields_as_parts` (`stdlib.rs`).
+- **D404 — A text that its scope only reads, written on the stack
+  (2026-11-07).** D378 and the audit (D392, D394): many forms of the
+  library are a text made, read, then freed (`message(e).length`, a key, a
+  line printed); profile of `http.message` alone (one CPU, fixed
+  frequency): `isc_alloc` 33.68 % and `isc_free` 15.96 % of the cycles, the
+  two loads of the list of the cache of the thread one after the other (the
+  head of the list, then the header of the block: 80 and 92 of the 325
+  samples of `isc_alloc`), where the floor writes into a buffer. Now a
+  `let` of a text, freed at the end of its scope (`drop`) and never moved in
+  it (`moves_var`: no consumer, no call that takes it, not returned), gets
+  a buffer of 128 bytes on the stack (`alloca` in the entry of the
+  function, aligned on 16: never 4 bytes past a multiple of 16, the place
+  of a literal, D361); the concatenations whose text is its value (itself,
+  the branches of an `if`, the body of a `let` or a `Free`: `result_concats`,
+  not one given its left text, D351) write the text into that buffer when
+  its length is at most 128 bytes, into a block of the heap otherwise; the
+  value is freed only when it is not in its buffer (`drop_value`, by the
+  value: the end of the scope, a `Free`, the frees before a tail call). The
+  text dies with its scope, so the next time the `let` runs (a loop, a
+  tail recursion) the buffer is free again; a recursion has a buffer in
+  each frame. Measured (one CPU, fixed frequency, 7 alternated runs of the
+  old and new binaries of six groups, 81 forms): `http.message` 13.05 ->
+  6.49 ns (-50.3 %), `strings.concat` 6.20 -> 3.10 (-49.9 %), `sys.join`
+  6.89 -> 4.40 (-36.2 %), `json.quote.plain` 13.90 -> 9.72 (-30.1 %),
+  `json.message` 17.19 -> 13.09 (-23.9 %), `time.formatDateTime` 84.77 ->
+  76.61 (-9.6 %), `http.httpDate` 86.02 -> 80.84 (-6.0 %), nine others -4.2
+  to -5.6 %. Slower in that run: five forms of `strings` of 1.7 ns
+  (`startsWith.8` +8.7 %, `startsWith.1`, `slice`, `endsWith.2`, `bytes`
+  +6.5 to +7.6 %), `sys.envAll` +8.7 %, `strings.parseI64.7` +3.3 %. The
+  program of `startsWith.8` and `endsWith.2` alone: their timed functions
+  the same code at the same addresses in both binaries (`main` 64 bytes
+  longer, the runtime after it moved by 64 bytes); 200 rounds (1.4 ms a
+  form) +6.5 % and +6.9 %, 6000 rounds the same medians (1.72 and 1.72 ns,
+  1.76 and 1.77 ns) and the same instructions (519922597 and 519922486):
+  not their code. `envAll` alone 1341.33 -> 1354.65 ns (+1.0 %). The ten
+  programs: binary-trees, fannkuch-redux, mandelbrot and regex-redux
+  changed (the lines they print), the same outputs, binary-trees 663.8 ->
+  663.5 ms (21 alternated runs, medians +0.20 %), fannkuch-redux +0.10 %,
+  mandelbrot +0.03 %, regex-redux -0.13 % (11 runs); the six others the
+  same code. Against the floors (`run.py`, 5 runs): `http.message` 5.6
+  times (10.3 at D394), `json.quote.plain` 5.8 (9.4), `json.message` 3.0
+  (4.0). Test `texts_on_the_stack` (`stdlib.rs`: texts of a `match`, of
+  126 to 130 bytes and longer, an `if` of a new text and a borrowed one, a
+  tail recursion, a recursion that keeps its text over the call below, the
+  tasks of a `map`, a text read by lambdas in its scope, one returned; the
+  interpreter, 1 and 4 threads, Valgrind with the allocator of glibc).

@@ -736,6 +736,80 @@ fn arrays_of_string_literals() {
     agree(CONSTANT_STRINGS, "std_const_strings", &[], "[zero, uno, two, ]\n[zero, one, two, ]\n[nine, one, two, ]\n[zero, one, two, ]\nzero\nMon,Tue,Wed,Thu,Fri,Sat,Sun,Mon,Tue,Wed\na! bb! ccc! a! bb!\n19999\n[apple, fig, pear]\ntrue\n[ii, i]\n[2, 6, 0]\na-b-c\nSOLO\n[made, there]\nThuccc!two\n");
 }
 
+const STACK_TEXTS: &str = r##"type Err = Short(string) | Wide(i64) | Long(string);
+
+function text(e: Err): string {
+    return match (e) {
+        Short(w) => `short: ${w}`,
+        Wide(n) => `wide: ${n} of ${n * 3}`,
+        Long(w) => `long: ${w}${w}`,
+    };
+}
+
+function lengths(i: i64, n: i64, acc: i64): i64 {
+    if (i == n) {
+        return acc;
+    }
+    const t = `${i}:${"x".repeat(i % 140)}`;
+    return lengths(i + 1, n, acc + t.length);
+}
+
+function deep(i: i64): i64 {
+    if (i == 0) {
+        return 0;
+    }
+    const t = `level ${i}`;
+    const below = deep(i - 1);
+    return below + t.length + (t.endsWith(`${i}`) ? 1 : 0);
+}
+
+function pick(c: boolean, w: string): string {
+    return c ? `picked ${w}` : w;
+}
+
+function kept(i: i64): string {
+    return `kept ${i}`;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const errs = map(iota(n), (i) => i % 3 == 0 ? Short(`s${i}`) : (i % 3 == 1 ? Wide(i) : Long("y".repeat(i % 130))));
+    print(sum(map(errs, (e) => text(e).length)));
+    print(join(map(iota(6), (i) => text(errs[i])), "|"));
+    print(lengths(0, n, 0));
+    print(deep(50));
+    print(join(map(iota(4), (i) => {
+        const t = pick(i % 2 == 0, `w${i}`);
+        const u = `${t}/${t.length}`;
+        return u.slice(0, Math.min(u.length, 12));
+    }), ","));
+    print(join(map([126, 127, 128, 129, 130], (k) => {
+        const t = `${"z".repeat(k - 2)}${k % 10}!`;
+        return `${t.length}${t.slice(k - 2, k)}`;
+    }), " "));
+    print(map(iota(5), (i) => {
+        const t = `${i}-${i * i}`;
+        return t == "2-4" ? 100 : t.length;
+    }));
+    const outer = `outer ${n}`;
+    print(map(iota(3), (i) => `${outer}.${i}`.length + outer.length));
+    print(kept(7));
+    return 0;
+}
+"##;
+
+/// A text that its scope only reads is written into a buffer on the stack
+/// when it fits (D404): the texts of a `match` (by a function inlined),
+/// lengths of 126 to 130 bytes and longer (the heap), an `if` of a new text
+/// and a borrowed one, a loop of a tail recursion, a recursion that keeps
+/// its text over the call below, the tasks of a `map`, a text read by the
+/// lambdas of a `map` inside its scope, one returned (moved: the heap); the
+/// texts of the interpreter, 1 and 4 threads, Valgrind clean.
+#[test]
+fn texts_on_the_stack() {
+    agree(STACK_TEXTS, "std_stack_texts", &["300"], "14854\nshort: s0|wide: 1 of 3|long: yyyy|short: s3|wide: 4 of 12|long: yyyyyyyyyy\n20740\n441\npicked w0/9,w1/2,picked w2/9,w3/2\n1266! 1277! 1288! 1299! 1300!\n[3, 3, 100, 3, 4]\n[20, 20, 20]\nkept 7\n");
+}
+
 /// D239: the product of a big integer by a word, by 4 words in assembly
 /// (`mulx` and one chain of `adc`) then the rest: numbers of 1 to 41 words
 /// and a partial last word, words of all ones (every carry), signs, the

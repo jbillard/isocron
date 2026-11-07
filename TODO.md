@@ -291,7 +291,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Lines and parts of a text in one block, found by masks of 32 bytes, freed by blocks: `lines` 47.21 -> 15.34 ns, `split` 170.23 -> 75.87 ns, k-nucleotide -2.78 % (D305)
 - [ ] The strings still above their floor: templates (3.6 -> 1.4, D359, D363), `concat` (2.9 -> 2.0, D368)
   - [x] `padStart` 4.9 times its floor, shown by measure: 8.7 of its 31.3 cycles a call to free the block of its result, 15.9 to take it, fill and copy; the floor makes no block (D378)
-  - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378)
+  - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378); done for the concatenations that give a text its scope only reads (D404: a buffer of 128 bytes); left: the other operations that make a text (`padStart`, `toString`, `toUpperCase`, the copies), arrays
 - [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
 - [x] The fixed alternatives of a search by lanes of AVX-512: a count 0.29 -> 0.20 ns a byte, regex-redux -13.31 % (D306)
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)
@@ -347,7 +347,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7 -> 3.3 (D351, D368), `basename` 5.3 -> 1.9 (D346), `env` 3.2 -> 1.9 (D367, D370), `readFile.4k` 2.3
   - [ ] Above 3 times their floors (D392): `time.format` 12.1 (5.6 since D398 and D403: one pass, each field written into the text; left the loop over the pattern and the text grown at each part), `sys.envAll` 7.0 (1.6 since D400, against a floor that sorts as it does), `sys.readText.4k` 3.6, `sys.ioError.message` 3.4
   - [x] `http.header` and `headerOf` 14.7 and 14.6 times their floors: the names compared byte by byte, 1.7 and 1.6 (D395)
-  - [ ] Above 3 times their floors (D394): `json.quote.escaped` 14.1 (one pass since D397: 96.3 ns), `http.httpDate` 11.1 (6.6 since D401 and D402: its tables of names data of the program, its fields of two digits written by their digits), `http.message` 10.3, `json.quote.plain` 9.4 (13.9 ns, D397), `http.text.1k` 9.3 (5.6 after D396: its count of bytes by masks), `http.textResponse` 8.4, `sha256.hex.32` 7.9 (its bytes taken by `stringOf` since D399: -22.6 %), `http.parseUrl` 5.7, `json.message` 4.0
+  - [ ] Above 3 times their floors (D394; after D404): `json.quote.escaped` 14.1 (5.1: one pass, D397), `http.httpDate` 11.1 (6.2: its tables data of the program, its fields of two digits written by their digits, D401, D402), `http.message` 10.3 (5.6: its text on the stack, D404), `json.quote.plain` 9.4 (5.8: D397, D404), `http.text.1k` 9.3 (4.1: its count of bytes by masks, D396), `http.textResponse` 8.4 (10.5: three blocks, a record, its headers, its body, against one), `sha256.hex.32` 7.9 (5.4: its bytes taken by `stringOf`, D399), `http.parseUrl` 5.7 (5.9), `json.message` 4.0 (3.0: D404)
 - [x] `time`: dates and times (D334)
   - [x] `time` above its floor: `now` 8.5 -> 1.2, the clock of the vDSO (D360); `formatIso` 8.3 -> 2.8 (D348, D359)
 - [x] `json`: read and written, decoded into a type of the program, its fields checked at compile time (D335, D336; its speed below)
