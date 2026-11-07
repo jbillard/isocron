@@ -431,3 +431,28 @@ fn thread_caches_at_a_fixed_place_of_their_page() {
         assert_eq!((r.code, r.stdout.as_str()), (0, "488890\n"), "{}", r.stderr);
     }
 }
+
+/// D460: on one thread a parallel loop runs at once, without the choice of
+/// its site (no clock read, nothing written to its words): loops of 0, 1, 2
+/// and 1000 elements, nested, with an inner loop chosen by a site, on 1 and
+/// 4 threads; the interpreter's output.
+#[test]
+fn loops_on_one_thread_run_at_once() {
+    let src = "function inner(i: i64): i64 {
+    return sum(map(iota(i % 7), (j) => (i * j) % 11));
+}
+
+action main(args: string[k]): i32 {
+    print(map([0, 1, 2, 1000], (n) => sum(map(iota(n), (i) => inner(i) + sum(map(iota(i % 3), (j) => j * i))))));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    let bin = compile(src, "one_thread_loops");
+    for t in [1, 4] {
+        for _ in 0..3 {
+            let r = run_bin_threads(&bin, &[], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "T={}: {}", t, r.stderr);
+        }
+    }
+}

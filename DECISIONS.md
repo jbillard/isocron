@@ -10210,3 +10210,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   parts of 0 to 130 bytes, one to three at once, the block grown; the
   interpreter's output, Valgrind; with the longer parts cut by a byte it
   fails).
+- **D460 — A parallel loop on one thread run at once (2026-11-07).**
+  `json.parse` 4.8 times its floor, on one thread (`ISC_THREADS=1`, as
+  every form of the library). Profile (one CPU at fixed frequency): the
+  functions of the module (`buildAny` 13.9 %, `anyAt` 8.8 %,
+  `stringEnd` 6.6 %, ...), and `isc_parallel_for_site` 3.6 %: at each
+  parallel loop the choice of its site (the pool or the calling thread
+  alone, D357) read the clock twice (`rdtsc`) and added to a word of the
+  site atomically, where on one thread there is nothing to choose. Now a
+  loop of at most one element, or on one thread (`ISC_THREADS=1`, WASI
+  without threads, a machine of one core), runs at once: no clock read,
+  nothing written to the words of its site; on more threads the same
+  choice as before. Measured (the old and new binaries of `parse` and
+  `decode`, 7 alternated runs): one thread `parse` 828.7 -> 785.6 ns
+  (-5.2 %), `decode` 448.1 -> 445.4; four threads 614.1 -> 612.1 and
+  246.2 -> 245.7 (the same). `run.py` (5 runs of 200 rounds): `time.formatIso`
+  -10.2 %, `sys.isAbsolute` -4.9 %, `sys.normalize` -3.7 %,
+  `json.stringify` -3.5 %, the other forms of `json`, `http`, `sys` and
+  `time` within their scatter (`sys.env` 20.1 -> 21.3 ns, its floor the
+  same: the old and new binaries of `sys`, 9 alternated runs, 15.73 ->
+  15.67 ns, every form within 2.7 %; the time of `env` in `run.py` goes
+  from 19.6 to 28.1 ns from one run to the other, D450, D452). Test
+  `loops_on_one_thread_run_at_once` (`parallel.rs`: loops of 0, 1, 2 and
+  1000 elements, nested, on 1 and 4 threads, the interpreter's output).

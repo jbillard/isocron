@@ -4208,8 +4208,17 @@ pub extern "C" fn isc_parallel_for_site(n: i64, task: Task, ctx: *mut c_void, ct
     if BUSY.load(Ordering::Relaxed) {
         return parallel_for(n, task, ctx, ctx_bytes, dynamic, contiguous);
     }
+    // one element, or one thread: nothing to choose, no clock read, nothing
+    // written to the words of the site (D460: two `rdtsc` and an atomic add
+    // at each loop, 3.6 % of `json.parse` on one thread)
+    if n <= 1 || thread_count() == 1 {
+        for i in 0..n {
+            task(ctx, i);
+        }
+        return;
+    }
     let t0 = stamp();
-    if t0 == 0 || n <= 1 {
+    if t0 == 0 {
         return parallel_for(n, task, ctx, ctx_bytes, dynamic, contiguous);
     }
     let (tp, ts) = (par.load(Ordering::Relaxed), seq.load(Ordering::Relaxed));
