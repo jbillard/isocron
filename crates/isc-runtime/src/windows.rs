@@ -73,6 +73,8 @@ extern "system" {
     fn GetFileType(h: HANDLE) -> u32;
     fn GetConsoleMode(h: HANDLE, mode: *mut u32) -> BOOL;
     fn WriteConsoleW(h: HANDLE, buf: *const u16, n: u32, done: *mut u32, reserved: *mut c_void) -> BOOL;
+    fn ReadConsoleW(h: HANDLE, buf: *mut u16, n: u32, done: *mut u32, control: *mut c_void) -> BOOL;
+    fn WideCharToMultiByte(cp: u32, flags: u32, w: *const u16, wn: i32, s: *mut u8, n: i32, default: *const u8, used: *mut i32) -> i32;
     fn GetLastError() -> u32;
     fn SetLastError(code: u32);
     fn MultiByteToWideChar(cp: u32, flags: u32, s: *const u8, n: i32, w: *mut u16, wn: i32) -> i32;
@@ -180,8 +182,83 @@ pub unsafe fn open(path: *const c_char, flags: c_int, _mode: c_int) -> c_int {
     h as usize as c_int
 }
 
+/// The bytes of UTF-8 read from a console that did not fit in the place of
+/// the caller, for the next read: up to 3, their count in the top byte
+/// (D409). The reads of the standard input come one at a time.
+static IN_HELD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The first half of a surrogate pair read last from a console, 0 none
+/// (D409).
+static IN_HIGH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// At most `n` bytes of the console of the standard input, in UTF-8 (D409),
+/// by `ReadConsoleW`: read by `ReadFile`, a console gives its characters in
+/// its code page (`é` as the byte 0x82 under the code page 437). Ctrl+Z
+/// first: the end, as `ReadFile` gives it; the first half of a surrogate
+/// pair at the end of a read held for the next; bytes beyond `n` held.
+unsafe fn read_console(p: *mut u8, n: usize) -> isize {
+    use core::sync::atomic::Ordering::Relaxed;
+    let held = IN_HELD.load(Relaxed);
+    let hn = (held >> 24) as usize;
+    if hn > 0 {
+        let k = hn.min(n);
+        for i in 0..k {
+            *p.add(i) = (held >> (8 * i)) as u8;
+        }
+        let mut rest = ((hn - k) as u32) << 24;
+        for i in k..hn {
+            rest |= ((held >> (8 * i)) & 0xff) << (8 * (i - k));
+        }
+        IN_HELD.store(rest, Relaxed);
+        return k as isize;
+    }
+    // at most 3 bytes a unit (4 a pair of 2): what is read fits in `n`
+    let units = (n / 3).clamp(1, 4096);
+    let mut w: alloc::vec::Vec<u16> = alloc::vec![0; units + 1];
+    loop {
+        let hi = IN_HIGH.swap(0, Relaxed);
+        let start = (hi != 0) as usize;
+        w[0] = hi as u16;
+        let want = if start == 1 { (units - 1).max(1) } else { units };
+        let mut done = 0u32;
+        if ReadConsoleW(handle(0), w.as_mut_ptr().add(start), want as u32, &mut done, core::ptr::null_mut()) == 0 {
+            return -1;
+        }
+        let mut len = start + done as usize;
+        if done == 0 && start == 0 {
+            return 0;
+        }
+        if start == 0 && w[0] == 0x1a {
+            return 0;
+        }
+        if done > 0 && (0xd800..0xdc00).contains(&w[len - 1]) {
+            IN_HIGH.store(w[len - 1] as u32, Relaxed);
+            len -= 1;
+        }
+        if len == 0 {
+            continue;
+        }
+        let bn = WideCharToMultiByte(CP_UTF8, 0, w.as_ptr(), len as i32, core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null_mut());
+        if bn <= 0 {
+            return -1;
+        }
+        let mut b: alloc::vec::Vec<u8> = alloc::vec![0; bn as usize];
+        WideCharToMultiByte(CP_UTF8, 0, w.as_ptr(), len as i32, b.as_mut_ptr(), bn, core::ptr::null(), core::ptr::null_mut());
+        let k = b.len().min(n);
+        core::ptr::copy_nonoverlapping(b.as_ptr(), p, k);
+        let mut rest = ((b.len() - k) as u32) << 24;
+        for (i, &c) in b[k..].iter().enumerate().take(3) {
+            rest |= (c as u32) << (8 * i);
+        }
+        IN_HELD.store(rest, Relaxed);
+        return k as isize;
+    }
+}
+
 /// At most `n` bytes (`u32` at a time); 0 at the end, -1 on an error.
 pub unsafe fn read(fd: c_int, buf: *mut c_void, n: usize) -> isize {
+    if fd == 0 && n > 0 && is_console(0) {
+        return read_console(buf as *mut u8, n);
+    }
     let mut done = 0u32;
     let m = n.min(1 << 30) as u32;
     if ReadFile(handle(fd), buf, m, &mut done, core::ptr::null_mut()) == 0 {
@@ -203,8 +280,8 @@ pub unsafe fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize {
     done as isize
 }
 
-/// Whether the standard output (1) and error (2) are consoles (D408): 0
-/// not known yet, 1 a console, 2 not.
+/// Whether the standard input (0), output (1) and error (2) are consoles
+/// (D408, D409): 0 not known yet, 1 a console, 2 not.
 static CONSOLE: [core::sync::atomic::AtomicU8; 3] = [const { core::sync::atomic::AtomicU8::new(0) }; 3];
 /// The bytes of a character of UTF-8 cut at the end of a write to such a
 /// console, for the next write: up to 3 bytes, their count in the top byte
@@ -214,7 +291,7 @@ static HELD: [core::sync::atomic::AtomicU32; 3] = [const { core::sync::atomic::A
 
 fn is_console(fd: c_int) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
-    if !(1..=2).contains(&fd) {
+    if !(0..=2).contains(&fd) {
         return false;
     }
     let c = &CONSOLE[fd as usize];

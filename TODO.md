@@ -244,7 +244,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Windows: `--target x86_64-windows` (MinGW-w64), the runtime over the Win32 API, tested on a real Windows 11 (D246)
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
   - [x] Windows: the runtimes for x86-64-v3 and v4 linked by an iscc on Windows by its processor, timed: regex-redux 158.0 -> 113.4 ms in the machine of Windows (D382)
-  - [ ] Windows: the console in UTF-8, the MSVC ABI; the output to a console done (D408: `WriteConsoleW`); left: the input from a console (`ReadConsoleW`, Ctrl+Z, the halves of a surrogate pair between two reads), the MSVC ABI
+  - [x] Windows: the console in UTF-8: the output by `WriteConsoleW` (D408), the input by `ReadConsoleW` (D409)
+  - [ ] Windows: the MSVC ABI
   - [x] An iscc that needs nothing else, on Linux (glibc from 2.28 on) and on Windows: LLVM and LLD inside (D248)
   - [x] A first release, 0.1.0: the compilers for Linux and Windows, LICENSE, the notices of third parties, the archives, the measurements published again (D249)
   - [x] A smaller iscc: the embedded runtimes compressed, closed by measure: 43348588 -> 10721556 bytes with gzip, but 31 to 34 ms to inflate one at each build of 38 to 49 ms, and the archives compressed already: not done (D380)

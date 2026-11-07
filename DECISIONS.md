@@ -9218,3 +9218,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   failed by the master connection of ssh, passed again). Test
   `the_last_whole_character` (`isc-runtime-core`). Left: the input from a
   console (`ReadConsoleW`), the MSVC ABI.
+- **D409 — The input from a Windows console in UTF-8 (2026-11-07).** After
+  D408: read by `ReadFile`, a console gives its characters in its code
+  page; in the VM (code page 437), `été 日本` typed for `readStdinText()`
+  stopped the program: `readStdinText: the standard input is not UTF-8
+  text (invalid from byte 0)` (`é` the byte 0x82). Now `read` of the
+  standard input, when it is a console (read once), reads UTF-16 by
+  `ReadConsoleW`, at most `n / 3` units (3 bytes of UTF-8 at most a unit, 4
+  a pair of 2: what is read fits in the place of the caller), turned into
+  UTF-8 by `WideCharToMultiByte`; Ctrl+Z first is the end, as `ReadFile`
+  gives it; the first half of a surrogate pair at the end of a read is
+  held for the next, and the bytes beyond `n` (a place of fewer than 3
+  bytes) too. Checked in the VM, typed in a console of an interactive `ssh
+  -tt`: `été 日本` then Ctrl+Z gives `[été 日本] 14 bytes` (12 bytes and the
+  `\r\n` of the console), `a😀b` gives `[a😀b] 8 bytes`, Ctrl+Z alone `[] 0
+  bytes`; the runtime before stopped on the first. A pipe or a file: read
+  as before. The Windows tests in the VM: 11 passed.
