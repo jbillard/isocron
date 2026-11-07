@@ -10498,3 +10498,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   building; the test stays. Taking a value out of the elements of an
   array that dies without copying it would be the change of the compiler
   that makes one pass pay (TODO).
+- **D475 — The waiting of reverse-complement and the 17 cycles of n-body
+  measured again on the code of 0.4.5 (2026-11-07).** The two gaps of
+  D432 and D433, measured again with the binaries of the compiler of
+  374dc5f, fixed frequency:
+  - n-body (one thread, 50 million steps, `perf stat` of 3 runs): 121.20
+    cycles and 243.10 instructions a step; the ports 0, 1, 5 and 6 78.62,
+    79.62, 48.83 and 1.03 uops a step, the loads 28.03, the stores 14.02
+    and 14.02: the work of D433 (121.65, 243.00, 78.58, 79.69, 48.76,
+    1.00, 28.00, 14.00, 14.00) and of the model of D312 to a tenth of a
+    uop: the same loop on the ports 0 and 1 and the divider.
+  - reverse-complement (4 threads, `perf record` of user cycles at 20 kHz,
+    20 runs, 18043 samples): `isc_task_9` 60.31 %, `isc_task_4` 30.94 %;
+    the waiting of the pool 7.07 % (`worker` 5.25 % on the three other
+    threads, `parallel_job` 1.82 % on the thread of the body), the body
+    alone 0.65 %: the picture of D432 (5.11, 1.08, 0.87 %), the ends of
+    its four parallel phases (the last thread finishing its contiguous
+    range) and its sequential parts; no clearing of pages.
