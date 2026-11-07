@@ -345,7 +345,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `sys` under WASI (wasi-libc, in the folders the host opens; D332)
   - [x] The module of paths; the example of `docs/language.md`; the microbenchmark and its floor (D333)
   - [ ] `sys` and `path` above their floors (`results/primitives.md`): `normalize` 6.7 -> 3.3 (D351, D368), `basename` 5.3 -> 1.9 (D346), `env` 3.2 -> 1.9 (D367, D370), `readFile.4k` 2.3
-  - [ ] Above 3 times their floors (D392): `time.format` 12.1 (eight `replaceAll` in a row), `sys.envAll` 7.0, `sys.readText.4k` 3.6, `sys.ioError.message` 3.4
+  - [ ] Above 3 times their floors (D392): `time.format` 12.1 (one pass since D398: 8.1, its fields made as texts then freed), `sys.envAll` 7.0, `sys.readText.4k` 3.6, `sys.ioError.message` 3.4
   - [x] `http.header` and `headerOf` 14.7 and 14.6 times their floors: the names compared byte by byte, 1.7 and 1.6 (D395)
   - [ ] Above 3 times their floors (D394): `json.quote.escaped` 14.1 (one pass since D397: 96.3 ns), `http.httpDate` 11.1, `http.message` 10.3, `json.quote.plain` 9.4 (13.9 ns, D397), `http.text.1k` 9.3 (5.6 after D396: its count of bytes by masks), `http.textResponse` 8.4, `sha256.hex.32` 7.9, `http.parseUrl` 5.7, `json.message` 4.0
 - [x] `time`: dates and times (D334)

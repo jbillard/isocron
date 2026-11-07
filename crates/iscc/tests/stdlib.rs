@@ -1386,3 +1386,24 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
 }
+
+/// D398: `time.format` in one pass from left to right: the texts of the
+/// eight `replaceAll` of before it (fields repeated or overlapping their
+/// own letters, `ZZ`, lower case not fields, an empty pattern, text that is
+/// not ASCII); the interpreter and compiled.
+#[test]
+fn time_formats_in_one_pass() {
+    let src = "import * as time from \"time\";
+
+action main(args: string[k]): i32 {
+    const d = time.toDateTime(1767225600000000000 + 3 * 997123456789 + 3 * 7919, 90);
+    print(join(map([\"YYYY-MM-DD HH:mm:ss.SSS Z\", \"YYYYY\", \"MMM\", \"ZZ\", \"SSSS\", \"sss\", \"\", \"plain text\", \"D DD DDD\", \"mmMMmm\", \"S SS SSS\", \"yyyy-mm-dd\", \"[YYYY]\", \"été YYYY 日本\"], (p) => time.format(d, p)), \"|\"));
+    return 0;
+}
+";
+    let want = "2026-01-01 02:19:51.370 +01:30|2026Y|01M|+01:30+01:30|370S|51s||plain text|D 01 01D|190119|S SS 370|yyyy-19-dd|[2026]|été 2026 日本\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "time_formats");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}

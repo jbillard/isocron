@@ -8947,3 +8947,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   96.29 ns (-64.8 %), `quote.plain` 15.38 -> 13.93 ns (-9.5 %), the other
   forms of `json` within 1.7 %; the code of the ten programs the same.
   Test `json_quotes_in_one_pass` (`stdlib.rs`).
+- **D398 — `time.format` in one pass (2026-11-07).** D392: 12.1 times its
+  floor, eight `replaceAll` of the whole pattern in a row. Now
+  `formatFrom`, one pass from left to right appending to its owned
+  accumulator (rule A) each run of the pattern and the text of the field
+  after it (`fieldAt`: YYYY, MM, DD, HH, mm, ss, SSS, Z, tried in that
+  order). The same texts as before: the texts put in are digits and the
+  zone comes last, so that no replacement made a field, and no two fields
+  overlap (`MMM` 01M, `ZZ` two zones): 500 times of 19 patterns the same
+  bytes, interpreted and compiled. A test of the first byte before the
+  fields tried: 294.40 against 294.76 ns, not kept. Measured (one CPU,
+  fixed frequency, 7 alternated runs): `format` 455.16 -> 294.76 ns (-35.2
+  %), the other forms of `time` within 1.2 %; the code of the ten programs
+  the same. Left (8.1 times its floor of 36.5 ns, profile of `format`
+  alone): the loop of the pattern 38.55 % of the cycles, the 8 texts of the
+  padded fields made (`isc_pad_int` 13.62 %) and freed (`isc_free` 12.68
+  %), the appends (`append_parts` 13.36 %, `memcpy` 8.51 %), where the floor
+  writes its digits into one buffer. Test `time_formats_in_one_pass`
+  (`stdlib.rs`).

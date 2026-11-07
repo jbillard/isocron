@@ -142,15 +142,58 @@ export function formatIso(i: i64): string {
 // `d` by the fields of `pattern`: YYYY, MM, DD, HH, mm, ss, SSS (the
 // milliseconds) and Z (the offset)
 export function format(d: DateTime, pattern: string): string {
-    return pattern
-        .replaceAll("YYYY", pad(d.date.year, 4))
-        .replaceAll("MM", pad(d.date.month, 2))
-        .replaceAll("DD", pad(d.date.day, 2))
-        .replaceAll("HH", pad(d.time.hour, 2))
-        .replaceAll("mm", pad(d.time.minute, 2))
-        .replaceAll("ss", pad(d.time.second, 2))
-        .replaceAll("SSS", pad(d.time.nano / 1000000, 3))
-        .replaceAll("Z", zone(d.offset));
+    // one pass from left to right (D398: eight `replaceAll` of the whole
+    // pattern, 12.1 times its floor); the same text, since the texts put
+    // in are digits, the zone last, and no two fields overlap
+    return formatFrom(d, pattern, bytes(pattern), 0, 0, "");
+}
+
+// the bytes of `w` at the place `i` of `b`
+function wordAt(b: u8[n], i: i64, w: string): boolean {
+    const v = bytes(w);
+    return i + v.length <= b.length && count(iota(v.length), (j) => b[i + j] != v[j]) == 0;
+}
+
+// the field of a pattern at `i` of `b`: its length and its text, or 0
+function fieldAt(d: DateTime, b: u8[n], i: i64): [i64, string] {
+    if (wordAt(b, i, "YYYY")) {
+        return [4, pad(d.date.year, 4)] as const;
+    }
+    if (wordAt(b, i, "MM")) {
+        return [2, pad(d.date.month, 2)] as const;
+    }
+    if (wordAt(b, i, "DD")) {
+        return [2, pad(d.date.day, 2)] as const;
+    }
+    if (wordAt(b, i, "HH")) {
+        return [2, pad(d.time.hour, 2)] as const;
+    }
+    if (wordAt(b, i, "mm")) {
+        return [2, pad(d.time.minute, 2)] as const;
+    }
+    if (wordAt(b, i, "ss")) {
+        return [2, pad(d.time.second, 2)] as const;
+    }
+    if (wordAt(b, i, "SSS")) {
+        return [3, pad(d.time.nano / 1000000, 3)] as const;
+    }
+    if (wordAt(b, i, "Z")) {
+        return [1, zone(d.offset)] as const;
+    }
+    return [0, ""] as const;
+}
+
+// the text of `pattern` from its byte `i`, those from `from` to `i` not yet
+// written, after `acc` (owned: each part written after it, rule A)
+function formatFrom(d: DateTime, p: string, b: u8[n], from: i64, i: i64, acc: string): string {
+    if (i >= b.length) {
+        return acc + p.slice(from, b.length);
+    }
+    const [k, t] = fieldAt(d, b, i);
+    if (k == 0) {
+        return formatFrom(d, p, b, from, i + 1, acc);
+    }
+    return formatFrom(d, p, b, i + k, i + k, acc + p.slice(from, i) + t);
 }
 
 // the number of the `n` digits of `b` from `at`, or -1
