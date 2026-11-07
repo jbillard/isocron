@@ -1119,3 +1119,27 @@ fn texts_padded_by_moves() {
     agree(src, "texts_padded", &["0"], &interp_ok(src, &["0"]));
     agree(src, "texts_padded", &["3"], &interp_ok(src, &["3"]));
 }
+
+/// D441: the integers of a template of one or two digits, not negative,
+/// written by their bytes (a pair of a table of `00` to `99`), the others
+/// by the runtime: every value from -120 to 120, around 999 and 1000, the
+/// extremes of `i64`, integers of 8 and 32 bits, several in one template,
+/// one padded (`padStart`, the runtime); the interpreter's text.
+#[test]
+fn small_integers_in_templates() {
+    let src = "action main(args: string[k]): i32 {
+    print(map(iota(241), (i) => `${i - 120}|${(i - 120) * 7}`).join(\",\"));
+    print([`${999}${1000}`, `${-9223372036854775807 - 1}`, `${9223372036854775807}`, `${u8(255)}:${i32(-5)}:${u8(7)}`]);
+    print(map(iota(30), (i) => `${i / 10}${i % 10}-${toString(i).padStart(3, \"0\")}`).join(\" \"));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    assert!(want.contains("-120|-840,") && want.contains("120|840"), "{}", want);
+    for (name, isa) in [("small_ints", isc_codegen::Isa::Native), ("small_ints_avx2", isc_codegen::Isa::Avx2)] {
+        let bin = compile_with(src, name, isc_codegen::Options { isa, ..isc_codegen::Options::default() });
+        let r = run_bin_threads(&bin, &[], Some(1));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "{}", name);
+    }
+}

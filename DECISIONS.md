@@ -9854,3 +9854,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   floor), `serve.action.pipelined` 1374.3 -> 1352.7 ns, the other forms
   of `http` and `json` within their scatter. Test
   `utf8_check_is_from_utf8` (every length around the blocks).
+- **D441 — The integers of one or two digits of a template written by
+  their bytes (2026-11-07).** TODO, the forms above 3 times their floor:
+  `http.httpDate` 82.4 ns against 13.1 (6.3). Profile (alone, one CPU):
+  258 cycles and 947 instructions a date, `isc_put_int` 20.7 % of them:
+  its fields written digit by digit (D402), nine calls a date. Now an
+  integer of a template without padding that is not negative and below
+  100 is written in the generated code: one digit as its byte, two by a
+  pair of a table of `00` to `99` (a global of 200 bytes); the others
+  call the runtime as before. Measured (`run.py`, 5 runs of 200 rounds):
+  `httpDate` 82.4 -> 57.1 ns (4.4 times its floor), the form `template`
+  (`${i}-${length}`) 14.8 -> 13.1 ns, `serve.pipelined` 1299.9 -> 1286.3
+  ns (its lengths); one digit only first: `template` 14.8 -> 15.6 ns (the
+  test before each call), so two. The LLVM IR of six programs changed
+  (their outputs): binary-trees 669.0 -> 660.6, fannkuch-redux 1660.0 ->
+  1659.3, k-nucleotide 615.7 -> 614.4, mandelbrot 637.6 -> 637.2,
+  pidigits 298.3 -> 298.5, regex-redux 80.7 -> 80.3 ms (9 alternated
+  runs, the same outputs). Test `small_integers_in_templates`
+  (`strings.rs`: -120 to 120 and their multiples, 999 and 1000, the
+  extremes of `i64`, `u8` and `i32`, a padded one, for the machine and
+  for AVX2, the interpreter's text; with a table shifted by one it fails).

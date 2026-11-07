@@ -576,6 +576,8 @@ pub struct Gen<'p> {
     /// The table of the powers of 10 emitted (the lengths of the integers
     /// of a template, D363).
     pow10: bool,
+    /// The table of the pairs of digits `00` to `99` is a global (D441).
+    digits2: bool,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -1010,6 +1012,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         padded: None,
         lit_vars: HashMap::new(),
         pow10: false,
+        digits2: false,
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -11624,6 +11627,40 @@ impl<'p> Gen<'p> {
                 P::Text(p, n) => {
                     self.emit(format!("call void @isc_put_text(ptr {}, ptr {}, i64 {})", dst, p, n));
                     n.clone()
+                }
+                P::Int { mag, neg, n, width, fs } if *fs == 0 => {
+                    // one or two digits, not negative: their bytes, without
+                    // a call (D441: the fields of a date written digit by
+                    // digit, nine calls a date; a length, an hour)
+                    if !self.digits2 {
+                        self.digits2 = true;
+                        let pairs: String = (0..100).map(|i| format!("{:02}", i)).collect();
+                        self.globals.push(format!("@.digits2 = private unnamed_addr constant [200 x i8] c\"{}\"", pairs));
+                    }
+                    let small = self.ins(format!("icmp ult i64 {}, 100", mag));
+                    let pos = self.ins(format!("icmp eq i64 {}, 0", neg));
+                    let few = self.ins(format!("and i1 {}, {}", small, pos));
+                    let (lfew, lone, ltwo, lcall, lj) = (self.label(), self.label(), self.label(), self.label(), self.label());
+                    self.cbr(&few, &lfew, &lcall);
+                    self.block(&lfew);
+                    let single = self.ins(format!("icmp ult i64 {}, 10", mag));
+                    self.cbr(&single, &lone, &ltwo);
+                    self.block(&lone);
+                    let d = self.ins(format!("trunc i64 {} to i8", mag));
+                    let c = self.ins(format!("add i8 {}, 48", d));
+                    self.emit(format!("store i8 {}, ptr {}", c, dst));
+                    self.br(&lj);
+                    self.block(&ltwo);
+                    let at2 = self.ins(format!("shl i64 {}, 1", mag));
+                    let src2 = self.ins(format!("getelementptr inbounds [200 x i8], ptr @.digits2, i64 0, i64 {}", at2));
+                    let pair = self.ins(format!("load i16, ptr {}, align 1", src2));
+                    self.emit(format!("store i16 {}, ptr {}, align 1", pair, dst));
+                    self.br(&lj);
+                    self.block(&lcall);
+                    self.emit(format!("call void @isc_put_int(ptr {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 0)", dst, mag, neg, n, width));
+                    self.br(&lj);
+                    self.block(&lj);
+                    width.clone()
                 }
                 P::Int { mag, neg, n, width, fs } => {
                     self.emit(format!("call void @isc_put_int(ptr {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {})", dst, mag, neg, n, width, fs));
