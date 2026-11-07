@@ -60,10 +60,14 @@ export function parseUrl(url: string): Result<[string, string, i64, string], Htt
     if (i <= 0) {
         return Err(BadUrl(url));
     }
-    const scheme = url.slice(0, i).toLowerCase();
-    if (scheme != "http" && scheme != "https") {
+    // `http` or `https` in any case, compared byte by byte, the literal
+    // kept (D472: a text made in lower case before, then compared)
+    const u = bytes(url);
+    const http = (i == 4 || i == 5) && (u[0] | 32u8) == 104u8 && (u[1] | 32u8) == 116u8 && (u[2] | 32u8) == 116u8 && (u[3] | 32u8) == 112u8;
+    if (!http || (i == 5 && (u[4] | 32u8) != 115u8)) {
         return Err(BadUrl(url));
     }
+    const scheme = i == 4 ? "http" : "https";
     const rest = url.slice(i + 3, url.length);
     const b = bytes(rest);
     const end = firstOf(b, 0, 47u8, 63u8);

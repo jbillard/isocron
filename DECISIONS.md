@@ -10444,3 +10444,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   representation is a factor of 2.2 of its 4.7; 3.8 times for `decode`,
   whose gap is its code (a check of the members, then their building, by
   the codec of the type): open (TODO).
+- **D472 — `parseUrl` tells its scheme by its bytes (2026-11-07).**
+  `http.parseUrl` 3.05 times its floor; `isc_to_case` 6.8 % of its cycles
+  (D466): the scheme copied into a new text in lower case, then compared
+  with `http` and `https`, the two only texts it can be. Now its 4 or 5
+  bytes are compared in any case (`| 32`, which only `h`/`H`, `t`/`T`,
+  `p`/`P`, `s`/`S` give for those letters) and the literal `http` or
+  `https` is kept. The same results: test `url_schemes_in_any_case`
+  (`std_http.rs`: schemes in mixed cases, `httpx`, `htt`, `httpss`, `h`,
+  an empty one, a colon without its slashes, against the texts of the
+  version before it; with the fifth byte not tested it fails). Measured
+  (the old and new binaries of `http`, 9 alternated runs): `parseUrl`
+  59.87 -> 57.38 ns (-4.2 %), the others within 2.4 %; `run.py` (5 runs
+  of 200 rounds) 58.7 -> 57.2 ns, 2.98 times its floor.

@@ -599,3 +599,17 @@ action main(args: string[k]): i32 {
     let got = interp_ok(src, &[]);
     assert!(got == want, "interpreter: {:?}", got.lines().zip(want.lines()).find(|(a, b)| a != b));
 }
+
+/// D472: `parseUrl` tells its scheme by its bytes in any case and keeps the
+/// literal `http` or `https`: schemes in mixed cases, near ones that are
+/// not (`httpx`, `htt`, `httpss`, `h`, empty, a colon without its slashes);
+/// the texts of the version before it (written here), the interpreter and
+/// compiled.
+#[test]
+fn url_schemes_in_any_case() {
+    let src = "import * as http from \"http\";\n\naction main(args: string[k]): i32 {\n    const us = [\"HTTP://H\", \"HtTpS://h:8443/p\", \"httpx://h\", \"htt://h\", \"httpss://h\", \"h://h\", \"://h\", \"Https://h?q\", \"hTTp://[::1]/\", \"HTTPs://H:1/x\", \"http://a.b:8080/x?y\", \"https://h\", \"ftp://x\", \"HTTP:/h\", \"http//h\"];\n    print(join(map(us, (u) => match (http.parseUrl(u)) {\n        Ok(x) => {\n            const [scheme, host, port, target] = x;\n            return `${u} -> ${scheme} ${host} ${port} ${target}`;\n        },\n        Err(e) => `${u} -> ${http.message(e)}`,\n    }), \"\\n\"));\n    return 0;\n}\n";
+    let want = "HTTP://H -> http H 80 /\nHtTpS://h:8443/p -> https h 8443 /p\nhttpx://h -> bad url: httpx://h\nhtt://h -> bad url: htt://h\nhttpss://h -> bad url: httpss://h\nh://h -> bad url: h://h\n://h -> bad url: ://h\nHttps://h?q -> https h 443 /?q\nhTTp://[::1]/ -> http ::1 80 /\nHTTPs://H:1/x -> https H 1 /x\nhttp://a.b:8080/x?y -> http a.b 8080 /x?y\nhttps://h -> https h 443 /\nftp://x -> bad url: ftp://x\nHTTP:/h -> bad url: HTTP:/h\nhttp//h -> bad url: http//h\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let r = run_bin(&compile(src, "url_schemes"), &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}
