@@ -9266,3 +9266,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   as a thread is free: the server 0.2068 a request (-5.9 %), but
   k-nucleotide +1.33 % (minimum, +0.81 % medians, 15 runs: a freed thread
   waits for the end of the task in progress, long there).
+- **D411 — The third read of reverse-complement measured (2026-11-07).**
+  TODO: its input read three times where the floor reads it twice. Profile
+  (4 threads, user cycles): the count of the heads (`isc_task_4`, a
+  comparison with `>` and a count of its mask, by blocks of 4096) 5.01 %,
+  the count of the bases of each record (`isc_task_1`, the count pass of
+  the `filter` of `b != 10`) 5.07 %, the bases and the lines (`isc_task_3`)
+  8.62 %; the rest is the waiting of the threads while the output is
+  written (D286). In time (4 threads, the lowest of 15 alternated runs, the
+  input of 254 MB): the heads alone 10.69 ms (the reading of the input
+  included), the heads and the counts of the bases 17.16 ms, the whole
+  program 31.76 ms: the count pass 6.47 ms, 20 % of it. Its count is needed
+  before the bases are written (the base `i` of the output is the base
+  `m - 1 - i` of the record, `m` the count); the floor counts the newlines
+  in the same read as its search of the heads. In the program they are two
+  expressions: the heads over all the input, then a `filter` over each
+  range the heads give. Removing the read needs the first pass to gather,
+  by blocks, the counts of a predicate that only a later expression over
+  its ranges uses (a fusion across expressions, the counts of the ranges
+  from the counts of their blocks and their two ends): left open in TODO
+  with this measure, the program at 2.2 times its floor.
