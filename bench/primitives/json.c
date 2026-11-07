@@ -5,12 +5,13 @@
 // the grammar and UTF-8 as it goes; `decode` reads the records into
 // structures by the names of their members, a name by a bump in an arena
 // (given back at each round), any other member checked and skipped;
-// `stringify` and `encode` write them back (numbers by `%.17g`, which is
-// the shortest form for these, strings escaped where they must be). Each
+// `stringify` and `encode` write them back (numbers by Schubfach, the
+// shortest form, D415, strings escaped where they must be). Each
 // line: a name, the nanoseconds of one record (the mean over `rounds`), a
 // checksum.
 //   json <rounds>
 #define _GNU_SOURCE
+#include "f64_text.h"
 #include <immintrin.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -312,9 +313,12 @@ static void quote(Out *o, const char *p, long n) {
     out(o, "\"", 1);
 }
 
+// a number as Isocron writes it, by the cheapest way known: the shortest
+// decimal that reads back to it (Schubfach, `f64_text.h`, D415; `%.17g` of
+// `snprintf` before, slower than Isocron itself)
 static void num(Out *o, double v) {
-    char t[32];
-    int k = snprintf(t, 32, "%.17g", v == 0 ? 0.0 : v);
+    char t[400];
+    int k = f64_text(v == 0 ? 0.0 : v, t);
     out(o, t, k);
 }
 

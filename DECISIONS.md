@@ -9336,3 +9336,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   200 rounds): 29883.68 against 23607.51 ns, 1.3 times (the runtime makes a
   socket for each query: two sockets made, given time limits and closed
   where the floor makes one); the other forms of `net` the same.
+- **D415 — The floor of the numbers of `json`: the shortest decimal by
+  Schubfach (2026-11-07).** TODO: the floor of `json.encode` beaten by
+  Isocron (0.6): it wrote each number by `snprintf("%.17g")`, slower than
+  the shortest form that Isocron writes (the `Display` of `core`). A floor
+  is the cheapest way known for the same work: the shortest decimal that
+  reads back to the double, written as Isocron writes it (no exponent,
+  `-0`). Now `bench/primitives/f64_text.h`: Schubfach (R. Giulietti, the
+  algorithm of Java's `Double.toString`), its table of 10^-k on 126 bits
+  for k from -324 to 292 computed exactly with integers by `gen_pow10.py`
+  (the formula of the floor of log2 10^e checked against the exact value
+  for each); the two smallest subnormals written directly (Schubfach, as
+  Java, gives them two digits, 4.9e-324; their shortest forms are 5e-324
+  and 1e-323). Checked: 3999358 doubles (random bits, the powers of 10 and
+  of 2 from -30 to 30, the limits, the 1000 halves of the benchmark) the
+  same texts as the shortest digits of Python's `repr` laid out as Rust
+  does; 17 limit values the same texts as `print` in Isocron. Measured
+  (`run.py`, 5 runs of 200 rounds): the floor of `encode` 216.42 -> 81.41
+  ns, Isocron 117.03 ns, 1.4 times; the floor of `stringify` 391.80 ->
+  114.35 ns, Isocron 398.74 ns, 3.5 times (a gap the floor hid: added to
+  TODO).
