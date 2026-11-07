@@ -1,0 +1,2499 @@
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: an array expected
+line 1, column 43: $: a bracket closed by the other kind
+line 1, column 3: $[0]: a key expected
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 10: $[0]: a colon expected
+line 1, column 7: $[0]: a colon expected
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 9: $[0]: a comma or a closing brace expected
+line 1, column 10: $[0]: a key expected
+line 1, column 2: $[0].x: missing
+line 1, column 18: $[0]: a colon expected
+line 1, column 13: $[0]: a colon expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 17: $[0]: a comma or a closing brace expected
+line 1, column 18: $[0]: a key expected
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 25: $[0]: a colon expected
+line 1, column 24: $[0]: a colon expected
+line 1, column 25: $[0].name: a string expected
+ok [{"id":1,"name":"é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"nu00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 35: $[0]: a comma or a closing brace expected
+line 1, column 34: $[0]: a comma or a closing brace expected
+line 1, column 35: $[0]: a key expected
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 47: $[0]: a colon expected
+line 1, column 39: $[0]: a colon expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 45: $[0]: a comma or a closing bracket expected
+line 1, column 86: $: a bracket closed by the other kind
+line 1, column 47: $[1]: a key expected
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 54: $[1]: a colon expected
+line 1, column 51: $[1]: a colon expected
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 53: $[1]: a comma or a closing brace expected
+line 1, column 54: $[1]: a key expected
+line 1, column 46: $[1].x: missing
+line 1, column 63: $[1]: a colon expected
+line 1, column 57: $[1]: a colon expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":1000}]
+line 1, column 58: $[1].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-13}]
+line 1, column 58: $[1].x: a number expected
+line 1, column 62: $[1]: a comma or a closing brace expected
+line 1, column 63: $[1]: a key expected
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 70: $[1]: a colon expected
+line 1, column 69: $[1]: a colon expected
+line 1, column 70: $[1].name: a string expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"\"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\u0008","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+line 1, column 76: $[1]: a comma or a closing brace expected
+line 1, column 1: $: a bracket without its end
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 1: $: a bracket without its end
+line 1, column 81: $[1]: a colon expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 2: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 2: $: a bracket closed by the other kind
+line 1, column 3: $: text after the value
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 2: $[0]: an object expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 3: $[0]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 3: $[0]: a key expected
+line 1, column 3: $[0]: a key expected
+line 1, column 3: $[0]: a key expected
+line 1, column 4: $[0]: a key expected
+line 1, column 3: $[0]: a key expected
+line 1, column 3: $[0]: a key expected
+line 1, column 5: $[0]: a colon expected
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 6: $[0]: a colon expected
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 2: $[0].id: missing
+line 1, column 11: $[0]: a colon expected
+line 1, column 2: $[0].id: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 11: $[0]: a colon expected
+line 1, column 7: $[0]: a colon expected
+line 1, column 7: $[0]: a colon expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 7: $[0]: a colon expected
+line 1, column 7: $[0]: a colon expected
+line 1, column 8: $[0]: a colon expected
+line 1, column 7: $[0]: a colon expected
+line 1, column 7: $[0]: a colon expected
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 8: $[0].id: an integer expected (i64)
+ok [{"id":7,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 9: $[0].id: an integer expected (i64)
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 9: $[0]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 9: $[0]: a comma or a closing brace expected
+line 1, column 8: $[0].id: an integer expected (i64)
+line 1, column 10: $[0]: a comma or a closing brace expected
+line 1, column 10: $[0]: a comma or a closing brace expected
+line 1, column 9: $[0]: a comma or a closing brace expected
+line 1, column 8: $[0].id: an integer expected (i64)
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 10: $[0]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 10: $[0]: a key expected
+line 1, column 10: $[0]: a key expected
+line 1, column 10: $[0]: a key expected
+line 1, column 11: $[0]: a key expected
+line 1, column 10: $[0]: a key expected
+line 1, column 10: $[0]: a key expected
+line 1, column 12: $[0]: a colon expected
+line 1, column 2: $[0].x: missing
+line 1, column 2: $[0].x: missing
+line 1, column 2: $[0].x: missing
+line 1, column 2: $[0].x: missing
+line 1, column 2: $[0].x: missing
+line 1, column 2: $[0].x: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 2: $[0].x: missing
+line 1, column 2: $[0].x: missing
+line 1, column 19: $[0]: a colon expected
+line 1, column 2: $[0].x: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 19: $[0]: a colon expected
+line 1, column 13: $[0]: a colon expected
+line 1, column 13: $[0]: a colon expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 13: $[0]: a colon expected
+line 1, column 13: $[0]: a colon expected
+line 1, column 14: $[0]: a colon expected
+line 1, column 13: $[0]: a colon expected
+line 1, column 13: $[0]: a colon expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":7.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 15: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 15: $[0]: a comma or a closing brace expected
+line 1, column 16: $[0]: a key expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 15: $[0]: a comma or a closing brace expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 16: $[0]: a comma or a closing brace expected
+line 1, column 15: $[0]: a comma or a closing brace expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.7},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 17: $[0]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 17: $[0]: a comma or a closing brace expected
+line 1, column 14: $[0].x: a number expected
+line 1, column 18: $[0]: a comma or a closing brace expected
+line 1, column 18: $[0]: a comma or a closing brace expected
+line 1, column 17: $[0]: a comma or a closing brace expected
+line 1, column 14: $[0].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 18: $[0]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 18: $[0]: a key expected
+line 1, column 18: $[0]: a key expected
+line 1, column 18: $[0]: a key expected
+line 1, column 19: $[0]: a key expected
+line 1, column 18: $[0]: a key expected
+line 1, column 18: $[0]: a key expected
+line 1, column 20: $[0]: a colon expected
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 21: $[0]: a colon expected
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 22: $[0]: a colon expected
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 23: $[0]: a colon expected
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 2: $[0].name: missing
+line 1, column 26: $[0]: a colon expected
+line 1, column 2: $[0].name: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 26: $[0]: a colon expected
+line 1, column 24: $[0]: a colon expected
+line 1, column 24: $[0]: a colon expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 24: $[0]: a colon expected
+line 1, column 24: $[0]: a colon expected
+line 1, column 25: $[0]: a colon expected
+line 1, column 24: $[0]: a colon expected
+line 1, column 24: $[0]: a colon expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 25: $[0].name: a string expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 25: $[0].name: a string expected
+line 1, column 25: $[0].name: a string expected
+line 1, column 25: $[0].name: a string expected
+line 1, column 26: $[0].name: a string expected
+line 1, column 25: $[0].name: a string expected
+line 1, column 25: $[0].name: a string expected
+line 1, column 27: $[0]: a comma or a closing brace expected
+ok [{"id":1,"name":",é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"}é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"]é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"{é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"[é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":":é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"xé","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"7é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":" é","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"\\u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 28: $[0]: a comma or a closing brace expected
+ok [{"id":1,"name":"n,u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n}u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n]u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n{u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n[u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n:u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"nxu00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n7u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n u00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"nnu00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n\"00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+line 1, column 27: $[0].name: an unknown escape
+ok [{"id":1,"name":"n\\00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"n\n00e9","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+ok [{"id":1,"name":"n烩","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+ok [{"id":1,"name":"nߩ","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+ok [{"id":1,"name":"ny","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+ok [{"id":1,"name":"nç","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+line 1, column 27: $[0].name: an escape \u without four hexadecimal digits
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 33: $[0].name: an unknown escape
+line 1, column 36: $[0]: a comma or a closing brace expected
+line 1, column 34: $[0]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 34: $[0]: a comma or a closing brace expected
+line 1, column 34: $[0]: a comma or a closing brace expected
+line 1, column 34: $[0]: a comma or a closing brace expected
+line 1, column 35: $[0]: a comma or a closing brace expected
+line 1, column 34: $[0]: a comma or a closing brace expected
+line 1, column 34: $[0]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 35: $[0]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 35: $[0]: a key expected
+line 1, column 35: $[0]: a key expected
+line 1, column 35: $[0]: a key expected
+line 1, column 36: $[0]: a key expected
+line 1, column 35: $[0]: a key expected
+line 1, column 35: $[0]: a key expected
+line 1, column 37: $[0]: a colon expected
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 38: $[0]: a colon expected
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 2: $[0].ok: missing
+line 1, column 48: $[0]: a colon expected
+line 1, column 2: $[0].ok: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 48: $[0]: a colon expected
+line 1, column 39: $[0]: a colon expected
+line 1, column 39: $[0]: a colon expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 39: $[0]: a colon expected
+line 1, column 39: $[0]: a colon expected
+line 1, column 40: $[0]: a colon expected
+line 1, column 39: $[0]: a colon expected
+line 1, column 39: $[0]: a colon expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 41: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 44: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 40: $[0].ok: true or false expected
+line 1, column 44: $[0]: a comma or a closing brace expected
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 44: $[0]: a comma or a closing brace expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 87: $: a bracket closed by the other kind
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 45: $: a bracket closed by the other kind
+line 1, column 46: $: text after the value
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 45: $[0]: a comma or a closing bracket expected
+line 1, column 45: $[0]: a comma or a closing bracket expected
+line 1, column 45: $[0]: a comma or a closing bracket expected
+line 1, column 46: $[0]: a comma or a closing bracket expected
+line 1, column 45: $[0]: a comma or a closing bracket expected
+line 1, column 45: $[0]: a comma or a closing bracket expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 46: $: a bracket closed by the other kind
+line 1, column 46: $[1]: an object expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 46: $[1]: an object expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 47: $[1]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 47: $[1]: a key expected
+line 1, column 47: $[1]: a key expected
+line 1, column 47: $[1]: a key expected
+line 1, column 48: $[1]: a key expected
+line 1, column 47: $[1]: a key expected
+line 1, column 47: $[1]: a key expected
+line 1, column 49: $[1]: a colon expected
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 50: $[1]: a colon expected
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 46: $[1].id: missing
+line 1, column 55: $[1]: a colon expected
+line 1, column 46: $[1].id: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 55: $[1]: a colon expected
+line 1, column 51: $[1]: a colon expected
+line 1, column 51: $[1]: a colon expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 51: $[1]: a colon expected
+line 1, column 51: $[1]: a colon expected
+line 1, column 52: $[1]: a colon expected
+line 1, column 51: $[1]: a colon expected
+line 1, column 51: $[1]: a colon expected
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 52: $[1].id: an integer expected (i64)
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":7,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 53: $[1].id: an integer expected (i64)
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 53: $[1]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 53: $[1]: a comma or a closing brace expected
+line 1, column 52: $[1].id: an integer expected (i64)
+line 1, column 54: $[1]: a comma or a closing brace expected
+line 1, column 54: $[1]: a comma or a closing brace expected
+line 1, column 53: $[1]: a comma or a closing brace expected
+line 1, column 52: $[1].id: an integer expected (i64)
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 54: $[1]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 54: $[1]: a key expected
+line 1, column 54: $[1]: a key expected
+line 1, column 54: $[1]: a key expected
+line 1, column 55: $[1]: a key expected
+line 1, column 54: $[1]: a key expected
+line 1, column 54: $[1]: a key expected
+line 1, column 56: $[1]: a colon expected
+line 1, column 46: $[1].x: missing
+line 1, column 46: $[1].x: missing
+line 1, column 46: $[1].x: missing
+line 1, column 46: $[1].x: missing
+line 1, column 46: $[1].x: missing
+line 1, column 46: $[1].x: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 46: $[1].x: missing
+line 1, column 46: $[1].x: missing
+line 1, column 64: $[1]: a colon expected
+line 1, column 46: $[1].x: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 64: $[1]: a colon expected
+line 1, column 57: $[1]: a colon expected
+line 1, column 57: $[1]: a colon expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 57: $[1]: a colon expected
+line 1, column 57: $[1]: a colon expected
+line 1, column 58: $[1]: a colon expected
+line 1, column 57: $[1]: a colon expected
+line 1, column 57: $[1]: a colon expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":71000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":1000}]
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-7000}]
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 60: $[1]: a comma or a closing brace expected
+line 1, column 61: $[1]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 60: $[1]: a comma or a closing brace expected
+line 1, column 58: $[1].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-173}]
+line 1, column 61: $[1]: a comma or a closing brace expected
+line 1, column 60: $[1]: a comma or a closing brace expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-10000000}]
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 62: $[1]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 62: $[1]: a comma or a closing brace expected
+line 1, column 58: $[1].x: a number expected
+line 1, column 63: $[1]: a comma or a closing brace expected
+line 1, column 63: $[1]: a comma or a closing brace expected
+line 1, column 62: $[1]: a comma or a closing brace expected
+line 1, column 58: $[1].x: a number expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 63: $[1]: a key expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 63: $[1]: a key expected
+line 1, column 63: $[1]: a key expected
+line 1, column 63: $[1]: a key expected
+line 1, column 64: $[1]: a key expected
+line 1, column 63: $[1]: a key expected
+line 1, column 63: $[1]: a key expected
+line 1, column 65: $[1]: a colon expected
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 66: $[1]: a colon expected
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 67: $[1]: a colon expected
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 68: $[1]: a colon expected
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 46: $[1].name: missing
+line 1, column 71: $[1]: a colon expected
+line 1, column 46: $[1].name: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 71: $[1]: a colon expected
+line 1, column 69: $[1]: a colon expected
+line 1, column 69: $[1]: a colon expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 69: $[1]: a colon expected
+line 1, column 69: $[1]: a colon expected
+line 1, column 70: $[1]: a colon expected
+line 1, column 69: $[1]: a colon expected
+line 1, column 69: $[1]: a colon expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 70: $[1].name: a string expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 70: $[1].name: a string expected
+line 1, column 70: $[1].name: a string expected
+line 1, column 70: $[1].name: a string expected
+line 1, column 71: $[1].name: a string expected
+line 1, column 70: $[1].name: a string expected
+line 1, column 70: $[1].name: a string expected
+line 1, column 72: $[1]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":",\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"}\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"]\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"{\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"[\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":":\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"x\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"7\"b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":" \"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"n\"b","ok":false,"x":-1000}]
+line 1, column 73: $[1]: a comma or a closing brace expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+line 1, column 72: $[1].name: an unknown escape
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\\b","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\nb","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\",","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"}","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"]","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"{","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"[","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\":","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"x","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"7","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\" ","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"n","ok":false,"x":-1000}]
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 76: $[1]: a comma or a closing brace expected
+line 1, column 76: $[1]: a comma or a closing brace expected
+line 1, column 76: $[1]: a comma or a closing brace expected
+line 1, column 77: $[1]: a comma or a closing brace expected
+line 1, column 76: $[1]: a comma or a closing brace expected
+line 1, column 76: $[1]: a comma or a closing brace expected
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 1: $: a bracket without its end
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 46: $[1].ok: missing
+line 1, column 1: $: a bracket without its end
+line 1, column 46: $[1].ok: missing
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 81: $[1]: a colon expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 81: $[1]: a colon expected
+line 1, column 81: $[1]: a colon expected
+line 1, column 82: $[1]: a colon expected
+line 1, column 81: $[1]: a colon expected
+line 1, column 81: $[1]: a colon expected
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 83: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 87: $: a bracket closed by the other kind
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 82: $[1].ok: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 87: $[1]: a comma or a closing brace expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 88: $: a bracket closed by the other kind
+ok [{"id":1,"name":"né","ok":true,"x":0.5},{"id":2,"name":"a\"b","ok":false,"x":-1000}]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 1: $: an object expected
+line 1, column 2: $: a key expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+line 1, column 8: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 8: $.tag: a string expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":""}
+line 1, column 12: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 12: $: a key expected
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 22: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 19: $.pair: an array expected
+line 1, column 20: $.pair[0]: an integer expected (i64)
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 19: $.pair: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,""],"tag":"t"}
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 90: $.pair: a bracket closed by the other kind
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 27: $: a key expected
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 37: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 35: $.items: an array expected
+line 1, column 53: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 41: $.items[0]: a colon expected
+line 1, column 42: $.items[0].id: an integer expected (i64)
+line 1, column 43: $.items[0]: a comma or a closing brace expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 48: $.items[0]: a colon expected
+line 1, column 53: $.items: a bracket closed by the other kind
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 55: $.items[1]: an array of another length than in the first element (an array of arrays has rows of one length)
+line 1, column 52: $.items[0].xs[1]: a number expected
+line 1, column 90: $.items: a bracket closed by the other kind
+line 1, column 90: $.items: a bracket closed by the other kind
+line 1, column 55: $.items[0]: a comma or a closing bracket expected
+line 1, column 73: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 61: $.items[1]: a colon expected
+line 1, column 62: $.items[1].id: an integer expected (i64)
+line 1, column 63: $.items[1]: a comma or a closing brace expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 68: $.items[1]: a colon expected
+line 1, column 73: $.items: a bracket closed by the other kind
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 56: $.items[1]: an array of another length than in the first element (an array of arrays has rows of one length)
+line 1, column 72: $.items[1].xs[1]: a number expected
+line 1, column 90: $.items: a bracket closed by the other kind
+line 1, column 90: $.items: a bracket closed by the other kind
+line 1, column 90: $.items: a bracket closed by the other kind
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 77: $: a key expected
+line 1, column 1: $.n: missing
+line 1, column 77: $: a string without its end
+line 1, column 80: $: a colon expected
+line 1, column 81: $.n: an array expected
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 89: $.n[2]: an integer expected (i64)
+line 1, column 90: $.n: a bracket closed by the other kind
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+line 1, column 2: $: an object expected
+line 1, column 1: $: an object expected
+line 1, column 1: $: an object expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 2: $: a key expected
+line 1, column 1: $.items: missing
+line 1, column 2: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 3: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 2: $: a key expected
+line 1, column 4: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+line 1, column 5: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+line 1, column 6: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+line 1, column 9: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":null}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 9: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 8: $: a colon expected
+line 1, column 7: $: a colon expected
+line 1, column 7: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 9: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 8: $.tag: a string expected
+line 1, column 10: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":","}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"}"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"]"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"{"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"["}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":":"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"x"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"7"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":" "}
+line 1, column 13: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"n"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 10: $.tag: an unknown escape
+line 1, column 13: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 1: $.items: missing
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 12: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+line 1, column 11: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 13: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 12: $: a key expected
+line 1, column 14: $: a colon expected
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 15: $: a colon expected
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 16: $: a colon expected
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 17: $: a colon expected
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 1: $.pair: missing
+line 1, column 23: $: a colon expected
+line 1, column 1: $.pair: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 23: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 19: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 18: $: a colon expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 20: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: an array expected
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 20: $.pair: a bracket closed by the other kind
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 20: $.pair[0]: an integer expected (i64)
+line 1, column 20: $.pair[0]: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 21: $.pair[0]: an integer expected (i64)
+line 1, column 20: $.pair[0]: an integer expected (i64)
+line 1, column 20: $.pair[0]: an integer expected (i64)
+line 1, column 19: $.pair: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 21: $.pair: a bracket closed by the other kind
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 19: $.pair: an array of 2 elements expected
+line 1, column 19: $.pair: an array of 2 elements expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 22: $.pair: a bracket closed by the other kind
+line 1, column 22: $.pair[1]: a string expected
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,","],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"}"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"]"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"{"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"["],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,":"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"x"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"7"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7," "],"tag":"t"}
+line 1, column 19: $.pair: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"n"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 25: $.pair: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 19: $.pair: a bracket without its end
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 91: $.pair: a bracket closed by the other kind
+line 1, column 26: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 1: $.items: missing
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 27: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+line 1, column 26: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 28: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 27: $: a key expected
+line 1, column 29: $: a colon expected
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 30: $: a colon expected
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 31: $: a colon expected
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 32: $: a colon expected
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 33: $: a colon expected
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 1: $.items: missing
+line 1, column 38: $: a colon expected
+line 1, column 1: $.items: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 38: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 35: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 34: $: a colon expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 36: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: an array expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 36: $.items: a bracket closed by the other kind
+line 1, column 37: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 36: $.items[0]: an object expected
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 36: $.items[0].id: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].id: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 41: $.items[0]: a colon expected
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 41: $.items[0]: a colon expected
+line 1, column 41: $.items[0]: a colon expected
+line 1, column 42: $.items[0]: a colon expected
+line 1, column 41: $.items[0]: a colon expected
+line 1, column 41: $.items[0]: a colon expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 42: $.items[0].id: an integer expected (i64)
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 42: $.items[0].id: an integer expected (i64)
+line 1, column 42: $.items[0].id: an integer expected (i64)
+ok {"items":[{"id":7,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 43: $.items[0].id: an integer expected (i64)
+line 1, column 42: $.items[0].id: an integer expected (i64)
+line 1, column 42: $.items[0].id: an integer expected (i64)
+line 1, column 35: $.items: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 43: $.items[0]: a comma or a closing brace expected
+line 1, column 42: $.items[0].id: an integer expected (i64)
+line 1, column 44: $.items[0]: a comma or a closing brace expected
+line 1, column 44: $.items[0]: a comma or a closing brace expected
+line 1, column 43: $.items[0]: a comma or a closing brace expected
+line 1, column 42: $.items[0].id: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 36: $.items[0].xs: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 36: $.items[0].xs: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 48: $.items[0]: a colon expected
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 48: $.items[0]: a colon expected
+line 1, column 48: $.items[0]: a colon expected
+line 1, column 49: $.items[0]: a colon expected
+line 1, column 48: $.items[0]: a colon expected
+line 1, column 48: $.items[0]: a colon expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 49: $.items[0].xs: an array expected
+line 1, column 49: $.items[0].xs: an array expected
+line 1, column 49: $.items[0].xs: an array expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 50: $.items[0].xs[0]: a number expected
+ok {"items":[{"id":1,"xs":[7,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 51: $.items[0].xs[0]: a number expected
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 35: $.items: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 51: $.items[0].xs[0]: a comma or a closing bracket expected
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 56: $.items[1]: an array of another length than in the first element (an array of arrays has rows of one length)
+line 1, column 52: $.items[0].xs[0]: a comma or a closing bracket expected
+line 1, column 51: $.items[0].xs[0]: a comma or a closing bracket expected
+line 1, column 50: $.items[0].xs[0]: a number expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 52: $.items[0].xs[1]: a number expected
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 54: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 52: $.items[0].xs[1]: a number expected
+line 1, column 52: $.items[0].xs[1]: a number expected
+ok {"items":[{"id":1,"xs":[1,7]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 53: $.items[0].xs[1]: a number expected
+line 1, column 52: $.items[0].xs[1]: a number expected
+line 1, column 52: $.items[0].xs[1]: a number expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 53: $.items[0].xs: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 54: $.items[0]: a comma or a closing brace expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 55: $.items: a bracket closed by the other kind
+line 1, column 56: $: a comma or a closing brace expected
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 55: $.items[0]: a comma or a closing bracket expected
+line 1, column 55: $.items[0]: a comma or a closing bracket expected
+line 1, column 55: $.items[0]: a comma or a closing bracket expected
+line 1, column 56: $.items[0]: a comma or a closing bracket expected
+line 1, column 55: $.items[0]: a comma or a closing bracket expected
+line 1, column 55: $.items[0]: a comma or a closing bracket expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 56: $.items: a bracket closed by the other kind
+line 1, column 56: $.items[1]: an object expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 56: $.items[1]: an object expected
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 56: $.items[1].id: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].id: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 61: $.items[1]: a colon expected
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 61: $.items[1]: a colon expected
+line 1, column 61: $.items[1]: a colon expected
+line 1, column 62: $.items[1]: a colon expected
+line 1, column 61: $.items[1]: a colon expected
+line 1, column 61: $.items[1]: a colon expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 62: $.items[1].id: an integer expected (i64)
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 62: $.items[1].id: an integer expected (i64)
+line 1, column 62: $.items[1].id: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":7,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 63: $.items[1].id: an integer expected (i64)
+line 1, column 62: $.items[1].id: an integer expected (i64)
+line 1, column 62: $.items[1].id: an integer expected (i64)
+line 1, column 35: $.items: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 63: $.items[1]: a comma or a closing brace expected
+line 1, column 62: $.items[1].id: an integer expected (i64)
+line 1, column 64: $.items[1]: a comma or a closing brace expected
+line 1, column 64: $.items[1]: a comma or a closing brace expected
+line 1, column 63: $.items[1]: a comma or a closing brace expected
+line 1, column 62: $.items[1].id: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 56: $.items[1].xs: missing
+line 1, column 35: $.items: a bracket without its end
+line 1, column 56: $.items[1].xs: missing
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 68: $.items[1]: a colon expected
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 68: $.items[1]: a colon expected
+line 1, column 68: $.items[1]: a colon expected
+line 1, column 69: $.items[1]: a colon expected
+line 1, column 68: $.items[1]: a colon expected
+line 1, column 68: $.items[1]: a colon expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 69: $.items[1].xs: an array expected
+line 1, column 69: $.items[1].xs: an array expected
+line 1, column 69: $.items[1].xs: an array expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 70: $.items[1].xs[0]: a number expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[7,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 71: $.items[1].xs[0]: a number expected
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 35: $.items: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 71: $.items[1].xs[0]: a comma or a closing bracket expected
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 56: $.items[1]: an array of another length than in the first element (an array of arrays has rows of one length)
+line 1, column 72: $.items[1].xs[0]: a comma or a closing bracket expected
+line 1, column 71: $.items[1].xs[0]: a comma or a closing bracket expected
+line 1, column 70: $.items[1].xs[0]: a number expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 72: $.items[1].xs[1]: a number expected
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 74: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 72: $.items[1].xs[1]: a number expected
+line 1, column 72: $.items[1].xs[1]: a number expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,7]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 73: $.items[1].xs[1]: a number expected
+line 1, column 72: $.items[1].xs[1]: a number expected
+line 1, column 72: $.items[1].xs[1]: a number expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 73: $.items[1].xs: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 74: $.items[1]: a comma or a closing brace expected
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 75: $.items: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 35: $.items: a bracket without its end
+line 1, column 35: $.items: a bracket without its end
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 91: $.items: a bracket closed by the other kind
+line 1, column 76: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 1: $.n: missing
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 77: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+line 1, column 76: $: a comma or a closing brace expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 78: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 77: $: a key expected
+line 1, column 79: $: a colon expected
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 1: $.n: missing
+line 1, column 77: $: a string without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 77: $: a string without its end
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 81: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 80: $: a colon expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 82: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: an array expected
+line 1, column 81: $.n: a bracket without its end
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 82: $.n: a bracket closed by the other kind
+line 1, column 84: $: a key expected
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 82: $.n[0]: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[7,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 83: $.n[0]: an integer expected (i64)
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 83: $.n: a bracket closed by the other kind
+line 1, column 84: $: a comma or a closing brace expected
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 83: $.n[0]: a comma or a closing bracket expected
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 84: $.n[0]: a comma or a closing bracket expected
+line 1, column 83: $.n[0]: a comma or a closing bracket expected
+line 1, column 82: $.n[0]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 85: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 81: $.n: a bracket without its end
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 85: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 86: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 87: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 88: $.n: a bracket closed by the other kind
+line 1, column 89: $: a comma or a closing brace expected
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 88: $.n[1]: a comma or a closing bracket expected
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 89: $.n[1]: a comma or a closing bracket expected
+line 1, column 88: $.n[1]: a comma or a closing bracket expected
+line 1, column 84: $.n[1]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+line 1, column 89: $.n[2]: an integer expected (i64)
+line 1, column 89: $.n: a bracket closed by the other kind
+line 1, column 89: $.n[2]: an integer expected (i64)
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 89: $.n[2]: an integer expected (i64)
+line 1, column 89: $.n[2]: an integer expected (i64)
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,7],"pair":[7,"p"],"tag":"t"}
+line 1, column 90: $.n[2]: an integer expected (i64)
+line 1, column 89: $.n[2]: an integer expected (i64)
+line 1, column 89: $.n[2]: an integer expected (i64)
+line 1, column 81: $.n: a bracket without its end
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 90: $.n: a bracket closed by the other kind
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 81: $.n: a bracket without its end
+line 1, column 81: $.n: a bracket without its end
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $.n: a bracket closed by the other kind
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 92: $: a key expected
+ok {"items":[{"id":1,"xs":[1,2]},{"id":2,"xs":[3,4]}],"n":[1,null,3],"pair":[7,"p"],"tag":"t"}
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 92: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+line 1, column 91: $: a comma or a closing brace expected
+ok ["s",42,true]
+line 1, column 1: $: an array expected
+line 1, column 1: $: a bracket without its end
+ok ["",42,true]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+ok ["s",2,true]
+ok ["s",4,true]
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+ok ["s",42,true]
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 2: $: an array expected
+line 1, column 1: $: an array expected
+line 1, column 1: $: an array expected
+ok ["s",42,true]
+line 1, column 1: $: a bracket without its end
+line 1, column 2: $: a bracket closed by the other kind
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok [",",42,true]
+ok ["}",42,true]
+ok ["]",42,true]
+ok ["{",42,true]
+ok ["[",42,true]
+ok [":",42,true]
+ok ["x",42,true]
+ok ["7",42,true]
+ok [" ",42,true]
+line 1, column 1: $: a bracket without its end
+ok ["n",42,true]
+ok ["s",42,true]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+ok ["s",42,true]
+line 1, column 5: $: a bracket closed by the other kind
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 6: $: a bracket closed by the other kind
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 6: $[1]: an integer expected (i64)
+line 1, column 6: $[1]: an integer expected (i64)
+ok ["s",72,true]
+ok ["s",2,true]
+line 1, column 6: $[1]: an integer expected (i64)
+line 1, column 6: $[1]: an integer expected (i64)
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 7: $: a bracket closed by the other kind
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 7: $[1]: a comma or a closing bracket expected
+line 1, column 6: $[1]: an integer expected (i64)
+ok ["s",47,true]
+ok ["s",4,true]
+line 1, column 7: $[1]: a comma or a closing bracket expected
+line 1, column 6: $[1]: an integer expected (i64)
+line 1, column 1: $: a bracket without its end
+ok ["s",42,true]
+line 1, column 8: $: a bracket closed by the other kind
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 9: $: a bracket closed by the other kind
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 10: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 10: $: a bracket closed by the other kind
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 11: $: a bracket closed by the other kind
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: an array of 3 elements expected
+line 1, column 12: $: a bracket closed by the other kind
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 9: $[2]: true or false expected
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 13: $: a bracket closed by the other kind
+ok ["s",42,true]
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end
+line 1, column 1: $: a bracket without its end

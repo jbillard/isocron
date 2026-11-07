@@ -1932,3 +1932,22 @@ fn time_format_patterns_as_before() {
     let r = run_bin(&compile(src, "time_format_patterns"), &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
 }
+
+/// D474: the decoder of `json` against every document one byte away from
+/// three valid ones (an array of records, a record of an option, a tuple,
+/// an array of records of arrays and an array of options, a tuple at the
+/// top): each byte removed, then replaced by each of 12 bytes; 2499
+/// results, the same as those of the decoder of 0.4.5 (a check, then the
+/// building), written in `std_json_decode_faults.out`; compiled and
+/// interpreted.
+#[test]
+fn json_decode_faults_as_before() {
+    let src = include_str!("data/std_json_decode_faults.isc");
+    let want = include_str!("data/std_json_decode_faults.out");
+    let first = |got: &str| got.lines().zip(want.lines()).enumerate().find(|(_, (a, b))| a != b).map(|(i, (a, b))| format!("line {}: {:?} against {:?}", i + 1, a, b));
+    let got = interp_ok(src, &[]);
+    assert!(got == want, "interpreter: {:?}", first(&got));
+    let r = run_bin(&compile(src, "json_decode_faults"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "compiled: {:?}", first(&r.stdout));
+}

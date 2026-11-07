@@ -10476,3 +10476,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   are are already views (D303, `str_slice_view`); the call of
   `isc_str_slice` in their code is the path of their panic only, and the
   strings made by `parseUrl` and `parse` are those they return.
+- **D474 — The decoder of `json` in one pass: rejected after measure
+  (2026-11-07).** The choice of D473. First a guard: the test
+  `json_decode_faults_as_before` (`stdlib.rs`,
+  `std_json_decode_faults.isc` and `.out`): every document one byte away
+  from three valid ones (an array of records; a record of an option, a
+  tuple, an array of records of arrays and an array of options; a tuple at
+  the top), each byte removed then replaced by each of 12 bytes, 2499
+  results written by the decoder of 0.4.5 (265 values, the rest errors
+  with their places and paths), compiled and interpreted. Then each form
+  given a reader of its value, its end and its fault (`codecRead`): the
+  members of a record by one loop (each key found once, its value read
+  by its field's reader), the elements of an array and of a tuple read
+  once after the checks of their structure in their order; the 2499
+  results the same. Measured (`decode` of 1000 records, 7 alternated
+  runs, one CPU at fixed frequency): 447.65 -> 458.85 ns (+2.5 %). The
+  check saved, the elements of an array are tuples of their value, end
+  and fault, whose values are copied out of them (a string each record):
+  a prototype, 1000 records of a name made directly or taken out of such
+  tuples, 10.1 against 19.0 ns each. The decoder stays a check then a
+  building; the test stays. Taking a value out of the elements of an
+  array that dies without copying it would be the change of the compiler
+  that makes one pass pay (TODO).

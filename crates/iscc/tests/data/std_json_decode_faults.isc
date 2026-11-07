@@ -1,0 +1,54 @@
+// The decoder of `json` against every document one byte away from three
+// valid ones (D474): each byte removed, then each byte replaced by each of
+// 12 bytes of the grammar and others; each result as its text of JSON or
+// its error, the same as the decoder before it (`std_json_decode_faults.out`,
+// written by the decoder of 0.4.5: a check, then the building).
+import * as json from "json";
+
+type Rec = { id: i64, x: f64, name: string, ok: boolean };
+type Item = { id: i64, xs: f64[k] };
+type Nested = { tag: Option<string>, pair: [i64, string], items: Item[k], n: Option<i64>[m] };
+
+function recs(t: string): string {
+    return match (json.decode<Rec[k]>(t)) {
+        Ok(v) => `ok ${json.encode(v)}`,
+        Err(e) => json.message(e),
+    };
+}
+
+function nested(t: string): string {
+    return match (json.decode<Nested>(t)) {
+        Ok(v) => `ok ${json.encode(v)}`,
+        Err(e) => json.message(e),
+    };
+}
+
+function tuple(t: string): string {
+    return match (json.decode<[string, i64, boolean]>(t)) {
+        Ok(v) => `ok ${json.encode(v)}`,
+        Err(e) => json.message(e),
+    };
+}
+
+// `doc`, then each byte of it removed, then each byte replaced by each byte
+// of `cs`
+function variants(doc: string): string[k] {
+    const b = bytes(doc);
+    const cs = bytes("\",}]{[:x7 \\n");
+    const dels = map(iota(b.length), (i) => stringOf(concat(b.slice(0, i), b.slice(i + 1, b.length))));
+    const reps = map(iota(b.length * cs.length), (k) => {
+        const i = k / cs.length;
+        return stringOf(map(iota(b.length), (j) => j == i ? cs[k % cs.length] : b[j]));
+    });
+    return concat([doc], concat(dels, reps));
+}
+
+action main(args: string[k]): i32 {
+    const d1 = "[{\"id\":1,\"x\":0.5,\"name\":\"n\\u00e9\",\"ok\":true},{\"id\":2,\"x\":-1e3,\"name\":\"a\\\"b\",\"ok\":false}]";
+    const d2 = "{\"tag\":\"t\",\"pair\":[7,\"p\"],\"items\":[{\"id\":1,\"xs\":[1,2]},{\"id\":2,\"xs\":[3,4]}],\"n\":[1,null,3]}";
+    const d3 = "[\"s\",42,true]";
+    print(join(map(variants(d1), recs), "\n"));
+    print(join(map(variants(d2), nested), "\n"));
+    print(join(map(variants(d3), tuple), "\n"));
+    return 0;
+}
