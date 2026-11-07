@@ -10457,3 +10457,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (the old and new binaries of `http`, 9 alternated runs): `parseUrl`
   59.87 -> 57.38 ns (-4.2 %), the others within 2.4 %; `run.py` (5 runs
   of 200 rounds) 58.7 -> 57.2 ns, 2.98 times its floor.
+- **D473 — The next redesign, and a lead that was not one (2026-11-07).**
+  After D472 the forms of the library above 3 times their floors need a
+  redesign or the author: `json.decode` and `json.parse` (D471),
+  `json.quote.escaped` (its bytes one at a time: no search by a predicate
+  in the language), `sys.isAbsolute` (explained, D465), `time.format`
+  3.14 and `json.quote.plain` 3.11. Chosen next, without a question to the
+  author (the rules of the project): the decoder of `json` in one pass, the general one of
+  them (no licence, no change of the model of ownership). Its profile
+  (`decode` alone, one CPU at fixed frequency): `codecBuildMembers1` 20.9
+  %, `codecMembers1` (the check) 14.7 %, `codecField1` 7.7 % (the key of a
+  member found in both passes), `stringEnd` 8.3 %, the blocks of its
+  strings 10.5 %; the code of the call (the index of the text, the array
+  of the records) 26.1 %. One pass would save at most the check and one
+  finding of each key, about 20 %: `decode` about 3.9 times its floor, not
+  below 3; the index by `scan` and the building of the elements by `map`
+  (for the threads) stay. Not a lead: the slices of a text read where they
+  are are already views (D303, `str_slice_view`); the call of
+  `isc_str_slice` in their code is the path of their panic only, and the
+  strings made by `parseUrl` and `parse` are those they return.
