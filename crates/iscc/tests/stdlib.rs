@@ -1918,3 +1918,17 @@ action main(args: string[k]): i32 {
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
     valgrind_clean(src, "added_by_moves", &["200"]);
 }
+
+/// D462: `time.format` with its literal text and each field in one
+/// template, its fields of three and four bytes compared byte by byte:
+/// fields cut short, fields side by side, `Z` at every place, an empty
+/// pattern, offsets of 0, -754 and +330 minutes; the texts of the version
+/// before it (written here), the interpreter and compiled.
+#[test]
+fn time_format_patterns_as_before() {
+    let src = "import * as time from \"time\";\n\naction main(args: string[k]): i32 {\n    const ds = [time.toDateTime(1762351380123000000, 0), time.toDateTime(-1, -754), time.toDateTime(951786123004000000, 330)];\n    const ps = [\"\", \"YYYY\", \"YYY\", \"YYYYY\", \"YYYYMMDD\", \"MDHms S SS SSS SSSS\", \"ZZ Z\", \"aYbMcDdHemfsgSh\", \"YYYY-MM-DDTHH:mm:ss.SSSZ\", \"MMM DDD HHH mmm sss\", \"Y\", \"S\", \"M\", \"Zz\", \"x YYYY y\"];\n    print(join(map(ds, (d) => join(map(ps, (p) => `[${time.format(d, p)}]`), \" \")), \"\\n\"));\n    return 0;\n}\n";
+    let want = "[] [2025] [YYY] [2025Y] [20251105] [MDHms S SS 123 123S] [ZZ Z] [aYbMcDdHemfsgSh] [2025-11-05T14:03:00.123Z] [11M 05D 14H 03m 00s] [Y] [S] [M] [Zz] [x 2025 y]\n[] [1969] [YYY] [1969Y] [19691231] [MDHms S SS 999 999S] [-12:34-12:34 -12:34] [aYbMcDdHemfsgSh] [1969-12-31T11:25:59.999-12:34] [12M 31D 11H 25m 59s] [Y] [S] [M] [-12:34z] [x 1969 y]\n[] [2000] [YYY] [2000Y] [20000229] [MDHms S SS 004 004S] [+05:30+05:30 +05:30] [aYbMcDdHemfsgSh] [2000-02-29T06:32:03.004+05:30] [02M 29D 06H 32m 03s] [Y] [S] [M] [+05:30z] [x 2000 y]\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let r = run_bin(&compile(src, "time_format_patterns"), &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}

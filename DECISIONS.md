@@ -10257,3 +10257,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the others within 2.7 % (`headerOf` +2.7 %, its code the same but the
     lines of `http.isc`); `run.py` (5 runs of 200 rounds) 56.9 -> 37.7 ns,
     2.93 times its floor.
+- **D462 — `time.format`: one addition a field, its fields compared byte
+  by byte; its floor reads its pattern (2026-11-07).** `time.format` 4.2
+  times its floor. One call, one CPU at fixed frequency (`perf stat`, 4.1
+  M calls): 512 cycles, 2419 instructions; the loop 45.3 %,
+  `append_parts` 28.9 %, `isc_str_reserve` 10.4 %, `isc_str_append`
+  6.5 %. Each field added two texts to the text made so far: the literal
+  text before it (`acc + p.slice(from, i)`), then the field (a template
+  of its own); `YYYY` and `SSS` were found by a `count` over an `iota` of
+  4 and 3 bytes.
+  - Now the literal text and the field are added by one template
+    (`withField(acc, lit, d, c)`), and the bytes after the first of a field
+    are compared one by one. The same texts: test
+    `time_format_patterns_as_before` (`stdlib.rs`: fields cut short, side by
+    side, `Z` at every place, an empty pattern, offsets of 0, -754 and +330
+    minutes, against the texts of the version before it; with `SSS` found
+    by two bytes it fails), and the tests of `time` before.
+  - The floor (`bench/primitives/time.c`) wrote the fields in the order of
+    the pattern of the measure, known at compilation, without reading it,
+    and computed the date again in its loop, where the program gives
+    `format` a `DateTime` made before and reads its pattern: now the fields
+    are made before the loop and the pattern, read at run time
+    (`volatile`), is read byte by byte by the cheapest test of each field;
+    the same checksum (122880). Floor 25.6 -> 28.3 ns on one run outside
+    the fixed frequency; `run.py` 36.8 -> 41.0 ns.
+  - Measured: `format` alone, 7 alternated runs: 167.15 -> 134.40 ns (a
+    noisy run, from 128.0 to 172.8); `run.py` (5 runs of 200 rounds)
+    `time.format` 155.5 -> 126.0 ns, 3.07 times its floor (4.22 before: the
+    program -19 %, its floor +11 %); the other forms of `time` within their
+    scatter.

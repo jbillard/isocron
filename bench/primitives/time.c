@@ -14,6 +14,9 @@
 // measured its length alone)
 #define KEEP(p) __asm__ volatile("" : : "r"(p) : "memory")
 
+// the pattern of `format`, read at run time (D462)
+static const char *volatile pattern = "YYYY/MM/DD HH:mm:ss.SSS Z";
+
 #define N 4096
 
 static double now(void) {
@@ -223,15 +226,42 @@ int main(int argc, char **argv) {
         }
     double t14 = now();
     printf("formatDateTime %.3f %ld\n", (t14 - t13) / ((double)r * N), acc / r);
+    // `format` (D462): the fields of each date made before, as the program
+    // gives `format` a `DateTime`, and its pattern read at run time and
+    // read byte by byte, as the program does (before: the fields written in
+    // the order of this pattern, known at compilation, and the date
+    // computed again in the loop)
+    static long fv[N][8];
+    for (long i = 0; i < N; i++) {
+        long y, m, d, s = tsec[i];
+        date_of(tday[i], &y, &m, &d);
+        long f[8] = {y, m, d, s / 3600, s / 60 % 60, s % 60, tnano[i] / 1000000, 60};
+        memcpy(fv[i], f, sizeof f);
+    }
+    const char *pat = pattern;
+    long pn = (long)strlen(pat);
     acc = 0;
     for (long k = 0; k < r; k++)
         for (long i = 0; i < N; i++) {
-            long y, m, d, s = tsec[i];
-            date_of(tday[i], &y, &m, &d);
+            const long *f = fv[i];
             char *p = out;
-            p = put(p, y, 4); *p++ = '/'; p = put(p, m, 2); *p++ = '/'; p = put(p, d, 2); *p++ = ' ';
-            p = put(p, s / 3600, 2); *p++ = ':'; p = put(p, s / 60 % 60, 2); *p++ = ':'; p = put(p, s % 60, 2); *p++ = '.';
-            p = put(p, tnano[i] / 1000000, 3); *p++ = ' '; memcpy(p, "+01:00", 6); p += 6;
+            for (long j = 0; j < pn;) {
+                char c = pat[j];
+                if (c == 'Y' && j + 4 <= pn && !memcmp(pat + j, "YYYY", 4)) { p = put(p, f[0], 4); j += 4; }
+                else if (c == 'M' && j + 1 < pn && pat[j + 1] == c) { p = put(p, f[1], 2); j += 2; }
+                else if (c == 'D' && j + 1 < pn && pat[j + 1] == c) { p = put(p, f[2], 2); j += 2; }
+                else if (c == 'H' && j + 1 < pn && pat[j + 1] == c) { p = put(p, f[3], 2); j += 2; }
+                else if (c == 'm' && j + 1 < pn && pat[j + 1] == c) { p = put(p, f[4], 2); j += 2; }
+                else if (c == 's' && j + 1 < pn && pat[j + 1] == c) { p = put(p, f[5], 2); j += 2; }
+                else if (c == 'S' && j + 3 <= pn && !memcmp(pat + j, "SSS", 3)) { p = put(p, f[6], 3); j += 3; }
+                else if (c == 'Z') {
+                    long o = f[7], a = o < 0 ? -o : o;
+                    if (o == 0) *p++ = 'Z';
+                    else { *p++ = o < 0 ? '-' : '+'; p = put(p, a / 60, 2); *p++ = ':'; p = put(p, a % 60, 2); }
+                    j++;
+                }
+                else { *p++ = c; j++; }
+            }
             KEEP(out);
             acc += p - out;
         }

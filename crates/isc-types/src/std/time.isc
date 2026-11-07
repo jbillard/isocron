@@ -148,58 +148,56 @@ export function format(d: DateTime, pattern: string): string {
     return formatFrom(d, pattern, bytes(pattern), 0, 0, "");
 }
 
-// the bytes of `w` at the place `i` of `b`
-function wordAt(b: u8[n], i: i64, w: string): boolean {
-    const v = bytes(w);
-    return i + v.length <= b.length && count(iota(v.length), (j) => b[i + j] != v[j]) == 0;
-}
-
 // the length of the field of a pattern at `i` of `b` (YYYY, MM, DD, HH,
 // mm, ss, SSS, Z: each starts by a byte of its own), or 0
 function fieldAt(b: u8[n], i: i64): i64 {
     const c = b[i];
+    // the bytes after `c` compared one by one (D462: a count over an `iota`
+    // of 3 or 4 bytes before)
     if (c == 89u8) {
-        return wordAt(b, i, "YYYY") ? 4 : 0;
+        return i + 3 < b.length && b[i + 1] == c && b[i + 2] == c && b[i + 3] == c ? 4 : 0;
     }
     if (c == 77u8 || c == 68u8 || c == 72u8 || c == 109u8 || c == 115u8) {
         return i + 1 < b.length && b[i + 1] == c ? 2 : 0;
     }
     if (c == 83u8) {
-        return wordAt(b, i, "SSS") ? 3 : 0;
+        return i + 2 < b.length && b[i + 1] == c && b[i + 2] == c ? 3 : 0;
     }
     return c == 90u8 ? 1 : 0;
 }
 
-// `acc` (owned) followed by the text of the field that starts by the byte
-// `c`: the digits written into the text itself (`pad` a part of the
-// template, D359; D403: a text made, put in a tuple, then freed before)
-function withField(acc: string, d: DateTime, c: u8): string {
+// `acc` (owned) followed by `lit` and the text of the field that starts by
+// the byte `c`: the digits written into the text itself (`pad` a part of
+// the template, D359; D403: a text made, put in a tuple, then freed
+// before), the text before the field in the same template (D462: added to
+// `acc` by a template of its own before, two additions a field)
+function withField(acc: string, lit: string, d: DateTime, c: u8): string {
     if (c == 89u8) {
-        return `${acc}${pad(d.date.year, 4)}`;
+        return `${acc}${lit}${pad(d.date.year, 4)}`;
     }
     if (c == 77u8) {
-        return `${acc}${pad(d.date.month, 2)}`;
+        return `${acc}${lit}${pad(d.date.month, 2)}`;
     }
     if (c == 68u8) {
-        return `${acc}${pad(d.date.day, 2)}`;
+        return `${acc}${lit}${pad(d.date.day, 2)}`;
     }
     if (c == 72u8) {
-        return `${acc}${pad(d.time.hour, 2)}`;
+        return `${acc}${lit}${pad(d.time.hour, 2)}`;
     }
     if (c == 109u8) {
-        return `${acc}${pad(d.time.minute, 2)}`;
+        return `${acc}${lit}${pad(d.time.minute, 2)}`;
     }
     if (c == 115u8) {
-        return `${acc}${pad(d.time.second, 2)}`;
+        return `${acc}${lit}${pad(d.time.second, 2)}`;
     }
     if (c == 83u8) {
-        return `${acc}${pad(d.time.nano / 1000000, 3)}`;
+        return `${acc}${lit}${pad(d.time.nano / 1000000, 3)}`;
     }
     const a = Math.abs(d.offset);
     if (d.offset == 0) {
-        return `${acc}Z`;
+        return `${acc}${lit}Z`;
     }
-    return d.offset < 0 ? `${acc}-${pad(a / 60, 2)}:${pad(a % 60, 2)}` : `${acc}+${pad(a / 60, 2)}:${pad(a % 60, 2)}`;
+    return d.offset < 0 ? `${acc}${lit}-${pad(a / 60, 2)}:${pad(a % 60, 2)}` : `${acc}${lit}+${pad(a / 60, 2)}:${pad(a % 60, 2)}`;
 }
 
 // the text of `pattern` from its byte `i`, those from `from` to `i` not yet
@@ -212,7 +210,7 @@ function formatFrom(d: DateTime, p: string, b: u8[n], from: i64, i: i64, acc: st
     if (k == 0) {
         return formatFrom(d, p, b, from, i + 1, acc);
     }
-    return formatFrom(d, p, b, i + k, i + k, withField(acc + p.slice(from, i), d, b[i]));
+    return formatFrom(d, p, b, i + k, i + k, withField(acc, p.slice(from, i), d, b[i]));
 }
 
 // the number of the `n` digits of `b` from `at`, or -1
