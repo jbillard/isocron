@@ -9450,3 +9450,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   -> 389.0 and 391.2 ms, the 12-mers 361.6 -> 392.3 ms (+8.5 %): the vector
   code of Isocron computes 8 k-mers at once as fast as the chain, which pays
   the checks of bounds of its two reads at each key. Not kept.
+- **D421 — A tested example in the guide for each function of the library
+  (2026-11-07).** The goal of the library: « chacune a un exemple testé dans
+  docs/language.md ». Counted function by function (the 91 exported by the
+  8 modules, each looked for as `module.name` or imported by name in the
+  guide): 43 had an example, each module had at least one. Now one more
+  example for each module that left some out: `sys` and `path` (a folder
+  made, bytes written and appended, a file renamed and removed, its kind,
+  size and time, the folder of the program, the environment sorted,
+  `ioError`), `time` (leap years, the days of months, days to dates and
+  back, `addDays`, `toDateTime`, `formatDateTime`), `json.quote`, `net` (a
+  `Server`: `serverOf`, `wait`, `sendTo`, `closeConn`, `closeServer`, with
+  `write`, `setTimeout`, `closeWrite`, `resolve`), `http` (`httpDate`,
+  `headerOf`, `request`, `exchange` with `header` and `text`,
+  `serveServer`), `https` (`request`, `getWith`, `requestWith`): run by the
+  test of the guide, interpreted and compiled with the same output, and as
+  WebAssembly or refused for it; `lookup`, `startTls`, `serverOfTls`,
+  `serveTlsOn` and `serveTls`, which need a server of DNS or a certificate
+  with its key, in examples checked by the compiler (`isc-check`). 91 of
+  91 now.

@@ -2557,6 +2557,70 @@ ok
 false
 ```
 
+The other functions: a folder made alone, bytes written and appended, a
+file renamed and removed, its kind, size and time, the folder of the
+program, the environment (sorted by name), and an error made from a code
+of the system (`ioError(code, what)`, the codes of `IoError` from 1 on).
+
+```isc
+import * as sys from "sys";
+import * as path from "path";
+
+action main(args: string[k]): i32 {
+    const dir = path.join(sys.env("TMPDIR") ?? "/tmp", "isocron-guide-files");
+    const before = sys.removeAll(dir);
+    print(sys.makeDir(dir));
+    const f = path.join(dir, "log.txt");
+    print(sys.writeFile(f, bytes("one\n")));
+    print(sys.appendText(f, "two\n"));
+    print(sys.appendFile(f, bytes("three\n")));
+    print([sys.isFile(f), sys.isDir(dir), sys.isFile(dir)]);
+    print(sys.fileSize(f));
+    match (sys.modified(f)) {
+        Ok(t) => print(t > 0),
+        Err(e) => print(sys.message(e)),
+    };
+    match (sys.readFile(f)) {
+        Ok(x) => print(x.length),
+        Err(e) => print(sys.message(e)),
+    };
+    const g = path.join(dir, "old.txt");
+    print(sys.rename(f, g));
+    print([sys.exists(f), sys.exists(g), path.dirname(g) == dir, path.isAbsolute(dir)]);
+    print(sys.remove(g));
+    print(sys.message(sys.ioError(1, "old.txt")));
+    match (sys.cwd()) {
+        Ok(c) => print(path.isAbsolute(c)),
+        Err(e) => print(sys.message(e)),
+    };
+    const names = map(sys.envAll(), (e) => {
+        const [name, value] = e;
+        return name;
+    });
+    print(count(iota(names.length), (i) => i > 0 && names[i - 1] > names[i]) == 0);
+    print(sys.removeAll(dir));
+    return 0;
+}
+```
+
+```output
+Ok(())
+Ok(())
+Ok(())
+Ok(())
+[true, true, false]
+Ok(14)
+true
+14
+Ok(())
+[false, true, true, true]
+Ok(())
+not found: old.txt
+true
+true
+Ok(())
+```
+
 ### Dates and times: `time`
 
 An instant is an `i64`: the nanoseconds since 1970-01-01T00:00:00Z, leap
@@ -2605,6 +2669,35 @@ action main(args: string[k]): i32 {
 2026-11-05T13:03:00.25Z
 05/11/2026 14:03 +01:00
 true
+```
+
+The calendar by days, and an instant at an offset:
+
+```isc
+import * as time from "time";
+
+action main(args: string[k]): i32 {
+    print([time.isLeapYear(2024), time.isLeapYear(2100), time.isLeapYear(2000)]);
+    print([time.daysInMonth(2024, 2), time.daysInMonth(2026, 2), time.daysInMonth(2026, 4)]);
+    const z = time.daysOf({ year: 2026, month: 3, day: 1 });
+    print(z);
+    print(time.dateOf(z - 1));
+    print(time.addDays({ year: 2026, month: 12, day: 30 }, 3));
+    const t = time.toDateTime(1767258307123000000, 330);
+    print(time.formatDateTime(t));
+    print(t.time);
+    return 0;
+}
+```
+
+```output
+[true, false, true]
+[29, 28, 30]
+20513
+{day: 28, month: 2, year: 2026}
+{day: 2, month: 1, year: 2027}
+2026-01-01T14:35:07.123+05:30
+{hour: 14, minute: 35, nano: 123000000, second: 7}
 ```
 
 ### JSON: `json`
@@ -2696,6 +2789,24 @@ line 1, column 41: $.points[0].y: a number expected
 [1e+21,0.5,0]
 ```
 
+`quote(s)` writes a text as a string of JSON, its quotes, backslashes and
+controls escaped:
+
+```isc
+import * as json from "json";
+
+action main(args: string[k]): i32 {
+    print(json.quote("say \"hi\"\tthen\nleave \\ é"));
+    print(json.quote(""));
+    return 0;
+}
+```
+
+```output
+"say \"hi\"\tthen\nleave \\ é"
+""
+```
+
 ### SHA-256: `sha256`
 
 `digest(x)` is the hash of the bytes `x` (FIPS 180-4), a `u8[32]`;
@@ -2782,6 +2893,103 @@ action main(args: string[k]): i32 {
 ```output
 Ok(())
 ping
+```
+
+A server of several connections: the listener taken by `serverOf`, the
+bytes waited for, the answer sent to the connection that sent them, a time
+limit on the client, its sending side closed:
+
+```isc
+import * as net from "net";
+import * as sys from "sys";
+
+// the arrivals waited for until one brings bytes: its connection, its text
+action firstBytes(s: net.Server, tries: i64): [i64, string] {
+    if (tries == 0) {
+        return [-1, "nothing"] as const;
+    }
+    return match (net.wait(s, 1024, 1000)) {
+        Ok(xs) => {
+            const got = filter(xs, (a) => a.bytes.length > 0);
+            return got.length > 0 ? [got[0].id, stringOf(got[0].bytes)] as const : firstBytes(s, tries - 1);
+        },
+        Err(e) => [-1, sys.message(e)] as const,
+    };
+}
+
+action main(args: string[k]): i32 {
+    print(net.resolve("localhost"));
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            match (net.serverOf(l)) {
+                Ok(s) => {
+                    match (net.connect("127.0.0.1", port)) {
+                        Ok(c) => {
+                            print(net.setTimeout(c, 2000));
+                            print(net.write(c, bytes("hello")));
+                            const [id, text] = firstBytes(s, 10);
+                            print(text);
+                            print(net.sendTo(s, id, bytes("world")));
+                            match (net.read(c, 100)) {
+                                Ok(b) => print(stringOf(b)),
+                                Err(e) => print(sys.message(e)),
+                            };
+                            print(net.closeWrite(c));
+                            net.closeConn(s, id);
+                            net.close(c);
+                        },
+                        Err(e) => print("connect failed"),
+                    };
+                    net.closeServer(s);
+                },
+                Err(e) => print("no server"),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}
+```
+
+```output
+Ok([127.0.0.1, ::1])
+Ok(())
+Ok(())
+hello
+Ok(())
+world
+Ok(())
+```
+
+A server of DNS asked by `lookup`, TLS over a connection and a server of
+TLS (checked by the compiler here: they need a server of DNS, and a
+certificate with its key):
+
+```isc-check
+import * as net from "net";
+import * as sys from "sys";
+
+// a name asked to one server of DNS, a connection made a client of TLS,
+// a server of TLS from the texts of a certificate and its key
+action main(args: string[k]): i32 {
+    print(net.lookup("example.org", "127.0.0.1", 53));
+    match (net.connect("example.org", 443)) {
+        Ok(c) => {
+            print(net.startTls(c, "example.org", ""));
+            net.close(c);
+        },
+        Err(e) => print(sys.message(e)),
+    };
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => match (net.serverOfTls(l, readText("cert.pem"), readText("key.pem"))) {
+            Ok(s) => net.closeServer(s),
+            Err(e) => print(sys.message(e)),
+        },
+        Err(e) => print(sys.message(e)),
+    };
+    return 0;
+}
 ```
 
 ### HTTP: `http`
@@ -2879,6 +3087,82 @@ Ok(())
 [HTTP/1.1 200 OK, Content-Type: text/plain; charset=utf-8, Content-Length: 9, Connection: close, , hello you]
 ```
 
+The other functions: the date that a response carries (`httpDate(i)`, RFC
+9110), a header among pairs (`headerOf(hs, name)`), a request with its
+headers and body, one on a connection kept (`exchange(c, method, host,
+port, fallback, target, headers, body)`: the port of the scheme
+`fallback` left out of `Host`), and a `Server` of `net` given to
+`serveServer(s, handler, limit)`:
+
+```isc
+import * as http from "http";
+import * as net from "net";
+
+action main(args: string[k]): i32 {
+    print(http.httpDate(784111777000000000));
+    print(http.headerOf([["Content-Type", "text/plain"] as const, ["X-Id", "42"] as const], "x-id"));
+    match (http.request("POST", "http://127.0.0.1:1/form", [["Content-Type", "text/plain"] as const], bytes("a=1"))) {
+        Ok(r) => print(r.status),
+        Err(e) => print(http.message(e)),
+    };
+    // a request on a connection kept: the response written first by the
+    // side of the server
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            match (net.connect("127.0.0.1", net.port(l))) {
+                Ok(c) => match (net.accept(l)) {
+                    Ok([s, peer]) => {
+                        const w = net.writeText(s, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello");
+                        match (http.exchange(c, "GET", "127.0.0.1", 80, 80, "/", [], [])) {
+                            Ok(r) => print([`${r.status}`, http.header(r, "content-type") ?? "none", http.text(r)]),
+                            Err(e) => print(http.message(e)),
+                        };
+                        net.close(s);
+                        net.close(c);
+                    },
+                    Err(e) => net.close(c),
+                },
+                Err(e) => print("connect failed"),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    // a server of `net` given to `serveServer`
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            match (net.connect("127.0.0.1", port)) {
+                Ok(c) => {
+                    const w = net.writeText(c, "GET /x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+                    match (net.serverOf(l)) {
+                        Ok(s) => print(http.serveServer(s, (r) => http.textResponse(200, r.path), 1)),
+                        Err(e) => print("no server"),
+                    };
+                    match (net.read(c, 1000)) {
+                        Ok(b) => print(stringOf(b).endsWith("\r\n\r\n/x")),
+                        Err(e) => print("read failed"),
+                    };
+                    net.close(c);
+                },
+                Err(e) => net.closeListener(l),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}
+```
+
+```output
+Sun, 06 Nov 1994 08:49:37 GMT
+Some(42)
+refused: 127.0.0.1:1
+[200, text/plain, hello]
+Ok(())
+true
+```
+
 ### HTTPS: `https`
 
 HTTP over TLS, by the library of TLS of the system: OpenSSL loaded when
@@ -2910,6 +3194,62 @@ action main(args: string[k]): i32 {
 
 ```output
 refused: 127.0.0.1:1
+```
+
+The other clients, a request with its headers and body and the two that
+check against an authority given (here refused before any TLS: no server
+listens on the port 1):
+
+```isc
+import * as https from "https";
+import * as http from "http";
+
+action say(r: Result<http.Response, http.HttpError>): void {
+    match (r) {
+        Ok(x) => print(x.status),
+        Err(e) => print(http.message(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    say(https.request("POST", "https://127.0.0.1:1/form", [["Content-Type", "text/plain"] as const], bytes("a=1")));
+    say(https.getWith("https://127.0.0.1:1/", "-----BEGIN CERTIFICATE-----"));
+    say(https.requestWith("-----BEGIN CERTIFICATE-----", "GET", "https://127.0.0.1:1/", [], []));
+    return 0;
+}
+```
+
+```output
+refused: 127.0.0.1:1
+refused: 127.0.0.1:1
+refused: 127.0.0.1:1
+```
+
+The servers, from the texts of a certificate and its key (checked by the
+compiler here: they need those files):
+
+```isc-check
+import * as https from "https";
+import * as http from "http";
+import * as net from "net";
+import * as sys from "sys";
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, "hello over TLS");
+}
+
+action main(args: string[k]): i32 {
+    const cert = readText("cert.pem");
+    const key = readText("key.pem");
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => print(https.serveTlsOn(l, cert, key, hello, 1)),
+        Err(e) => print(sys.message(e)),
+    };
+    return match (https.serveTls(8443, cert, key, hello)) {
+        Ok(_) => 0,
+        Err(e) => 1,
+    };
+}
 ```
 
 ## Performance model
