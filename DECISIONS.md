@@ -9647,3 +9647,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   values of Rust and of the interpreter, valgrind, a read past the table
   with the panic of the interpreter; without the separator before the
   second string, it fails.
+- **D429 — The Benchmarks Game measured again at 5f615bb (2026-11-07).**
+  After D426 to D428 (reverse-complement 31.9 -> 27.7 ms, k-nucleotide
+  632.1 -> 615.0 ms on the host): the image built with the `iscc` of
+  5f615bb, the programs built and checked against the references (102
+  checks, the same outputs; the known difference of C++ #4 of mandelbrot
+  at N = 200 only, the same at 16000), then measured in Docker (4 threads,
+  12 runs, the lowest, `bench/machine.sh apply parallel`). The fastest on
+  10 of 10: reverse-complement 32 -> 27 ms (C and Rust 62 ms, 0.44 of
+  them, 1.9 times its floor), k-nucleotide 677 -> 622 ms (C++ 1165 ms,
+  0.53, 2.3 times its floor); the others within their scatter (n-body
+  1878 -> 1904 ms with the same LLVM IR since D407, the scatter of its
+  series, D261; the others the same to 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.
