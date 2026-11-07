@@ -678,8 +678,11 @@ pub extern "C" fn isc_alloc_zeroed(bytes: i64) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn isc_free(p: *mut u8) {
-    // an empty string made by `new_str`: nothing owned
-    if p == empty_ptr() {
+    // an empty string made by `new_str`: nothing owned; null, the field of
+    // a variant of a sum type that the value is not (its drop frees every
+    // field), without the cold path (D445: `parseUrl` 14 % of its cycles
+    // in `free_cold` and `heap::free` for them)
+    if p == empty_ptr() || p.is_null() {
         return;
     }
     #[cfg(not(target_os = "wasi"))]

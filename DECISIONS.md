@@ -9919,3 +9919,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D445 — A null pointer freed without the cold path (2026-11-07).**
+  TODO, `http.parseUrl` 5.8 times its floor. Profile (alone, one CPU): 352
+  cycles and 1472 instructions a call, a third of them in frees: `isc_free`
+  20.0 %, `free_cold` 7.9 %, `heap::free` 6.4 %. Under gdb, the pointers
+  that reached `free_cold` were null: a value of a sum type (`Result`, the
+  types of the program) holds the fields of every variant, and its drop
+  frees each, those of the variants it is not being null; `isc_free` tested
+  the empty string and the cache of the thread, then went to the cold path
+  and to `heap::free`, which returned. Now `isc_free` returns at once on a
+  null pointer. Measured (`run.py`, 5 runs of 200 rounds): `parseUrl`
+  108.2 -> 86.9 ns (4.6 times its floor), `sys.ioError.message` 45.6 ->
+  31.0 ns (2.2, below 3 now), `json.parse` 864.3 -> 819.2 ns,
+  `http.exchange.small` 7182 -> 6870 ns, `time.parseIso` 36.4 -> 34.0 ns;
+  binary-trees, k-nucleotide and regex-redux within their scatter (9
+  alternated runs, the same outputs). Test
+  `sum_values_with_fields_of_the_heap_dropped` (`stdlib.rs`: `Result`,
+  `Option` and a type of the program whose variants hold strings and
+  arrays, by thousands, kept in arrays and dropped in parallel `map`s, the
+  interpreter's output on 1 and 4 threads, valgrind).

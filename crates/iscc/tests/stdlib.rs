@@ -1689,3 +1689,51 @@ fn counts_of_keys_with_the_table_held() {
         }
     }
 }
+
+/// D445: the values of sum types whose variants hold strings and arrays,
+/// made and dropped by thousands: each drop frees the fields of the
+/// variants the value is not (null), which `isc_free` returns from at once;
+/// `Result`, `Option`, a type of the program, kept in arrays and dropped in
+/// a parallel `map`; the interpreter's output, nothing lost and nothing
+/// freed wrongly (valgrind).
+#[test]
+fn sum_values_with_fields_of_the_heap_dropped() {
+    let src = "type Shape = Circle(f64) | Named(string, i64[]) | Empty;
+
+function make(i: i64): Result<[string, i64], string> {
+    return i % 3 == 0 ? Err(`bad ${i}`) : Ok([`good ${i}`, i] as const);
+}
+
+function shape(i: i64): Shape {
+    return i % 3 == 0 ? Circle(f64(i)) : (i % 3 == 1 ? Named(`n${i}`, [i, i * 2]) : Empty);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(sum(map(iota(n), (i) => match (make(i)) {
+        Ok(x) => {
+            const [s, k] = x;
+            return s.length + k;
+        },
+        Err(e) => e.length,
+    })));
+    const kept = map(iota(n), (i) => shape(i));
+    print(sum(map(kept, (s) => match (s) {
+        Circle(r) => i64(r),
+        Named(t, xs) => t.length + sum(xs),
+        Empty => 1,
+    })));
+    const opts = map(iota(n), (i) => i % 2 == 0 ? Some(`o${i}`) : None);
+    print(sum(map(opts, (o) => (o ?? \"none\").length)));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &["3000"]) else { panic!("the interpreter failed") };
+    let bin = compile(src, "sum_values_dropped");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["3000"], Some(t));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "T={}", t);
+    }
+    valgrind_clean(src, "sum_values_dropped", &["500"]);
+}
