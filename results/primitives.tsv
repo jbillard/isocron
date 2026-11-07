@@ -59,6 +59,7 @@ sys	listDir.66	11339.525	9034.050
 time	isLeapYear	0.728	0.587
 strings	join.line	5.297	4.448
 time	daysBetween	13.168	11.222
+https_serve	serve.keepalive	39432.085	34059.700
 time	now	19.706	17.548
 sys	fileSize	691.365	620.420
 http	get.small	41581.855	37439.705
@@ -83,6 +84,7 @@ sys	writeText.4k	3202.185	3101.285
 https	get.64k	1249623.550	1222409.540
 sys	appendFile.64	1818.185	1787.805
 time	addMonths	3.888	3.839
+https_serve	serve.handshake	1168175.680	1159198.660
 time	dateOf.daysOf	19.133	19.005
 strings	concat	3.044	3.071
 sys	exists	677.860	697.885

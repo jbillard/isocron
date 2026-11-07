@@ -1,0 +1,30 @@
+// The audit of every form against the machine (D301): the server of the
+// module `https` (`serveTlsOn`, D343), one thread, against requests of a
+// client of OpenSSL on the local machine (`https_client.c`, started by
+// `run.py`: `// bench-client: tls`): a request on a connection of its own
+// (the handshake of TLS 1.3, the request, the response, the end), then
+// requests on one connection kept. The client prints the lines: a name, the
+// nanoseconds of one request, a checksum; against `https_serve.c` (the
+// floor: a server of OpenSSL called directly, the same responses).
+// usage: https_serve <rounds> <port> <cert.pem> <key.pem>
+// bench-client: tls
+import * as http from "http";
+import * as https from "https";
+import * as net from "net";
+
+function hello(r: http.Request): http.Response {
+    return http.textResponse(200, "hello, world!");
+}
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    // the requests the client makes: one by connection, then on one kept
+    const limit = Math.max(r / 2, 1) + 64 * Math.max(r / 8, 1);
+    return match (net.listen("127.0.0.1", parseI64(args[1]))) {
+        Ok(l) => match (https.serveTlsOn(l, readText(args[2]), readText(args[3]), hello, limit)) {
+            Ok(_) => 0,
+            Err(e) => 1,
+        },
+        Err(e) => 1,
+    };
+}

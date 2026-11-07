@@ -9356,3 +9356,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   ns, Isocron 117.03 ns, 1.4 times; the floor of `stringify` 391.80 ->
   114.35 ns, Isocron 398.74 ns, 3.5 times (a gap the floor hid: added to
   TODO).
+- **D416 — The server of `https` against its floor (2026-11-07).** The last
+  form of the library without a microbenchmark (the audit, D301): the
+  servers of TLS. A new group, `https_serve`: the program serves
+  (`https.serveTlsOn`, `hello, world!`, one thread) a client of OpenSSL
+  started by `run.py` once it listens (`// bench-client: tls`, the
+  certificates of the group `https`), and stops after the requests the
+  client makes; its floor `https_serve.c`, a server of OpenSSL called
+  directly, one connection at a time, the response of Isocron made once
+  (its date, its headers; `Connection: close` when the request asks for
+  it). The client `https_client.c`, the same for both: `serve.handshake`, a
+  request on a connection of its own (the handshake of TLS 1.3, the
+  request, the response, the end), `serve.keepalive`, 64 requests on a
+  connection kept; the checksums the status and the length of the body.
+  Both set `TCP_NODELAY` as the runtime does on the connections it accepts
+  (without it the floor waited for the delayed acknowledgements: 802542
+  ns a request kept, 28.1 times Isocron). Measured (`run.py`, the server on
+  one CPU at fixed frequency, 5 runs of 200 rounds): `serve.handshake`
+  1168175.68 against 1159198.66 ns (1.0: the cryptography of OpenSSL, the
+  same library), `serve.keepalive` 39432.08 against 34059.70 ns (1.2).

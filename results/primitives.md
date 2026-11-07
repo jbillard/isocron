@@ -68,6 +68,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | time | `isLeapYear` | 0.73 | 0.59 | 1.2 |
 | strings | `join.line` | 5.30 | 4.45 | 1.2 |
 | time | `daysBetween` | 13.17 | 11.22 | 1.2 |
+| https_serve | `serve.keepalive` | 39432.08 | 34059.70 | 1.2 |
 | time | `now` | 19.71 | 17.55 | 1.1 |
 | sys | `fileSize` | 691.37 | 620.42 | 1.1 |
 | http | `get.small` | 41581.86 | 37439.71 | 1.1 |
@@ -92,6 +93,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | https | `get.64k` | 1249623.55 | 1222409.54 | 1.0 |
 | sys | `appendFile.64` | 1818.18 | 1787.81 | 1.0 |
 | time | `addMonths` | 3.89 | 3.84 | 1.0 |
+| https_serve | `serve.handshake` | 1168175.68 | 1159198.66 | 1.0 |
 | time | `dateOf.daysOf` | 19.13 | 19.00 | 1.0 |
 | strings | `concat` | 3.04 | 3.07 | 1.0 |
 | sys | `exists` | 677.86 | 697.88 | 1.0 |
