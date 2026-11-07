@@ -280,6 +280,9 @@ static void pure_forms(long r) {
             }
             char *t = malloc(1024);
             memcpy(t, body, 1024);
+            // the block kept (D455: GCC removed the `malloc`, the copy and
+            // the `free` of a block never read, the floor without them)
+            __asm__ volatile("" : : "r"(t) : "memory");
             acc += (bad ? -1 : 1024) + i % 2;
             free(t);
         }
@@ -296,6 +299,8 @@ static void pure_forms(long r) {
             long n = strlen(bodies[i]);
             char *b = malloc(n);
             memcpy(b, bodies[i], n);
+            // the block kept (D455, as for `text.1k`)
+            __asm__ volatile("" : : "r"(b) : "memory");
             acc += n;
             free(b);
         }

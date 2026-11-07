@@ -10114,3 +10114,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   1 ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D455 — Two floors of `http` without the work they describe
+  (2026-11-07).** The floors of `http.text.1k` and `http.textResponse`
+  (`bench/primitives/http.c`) copy a body into a block of its own
+  (`malloc`, `memcpy`, `free`), as Isocron makes its text; the block is
+  never read, and GCC (`-O3`) removed the three calls: the assembly of
+  `http.c` had no call of `malloc` (`json.c`, `strings.c`: all theirs
+  kept). The floors measured the check of the bytes alone (`text.1k`) and
+  `strlen` alone (`textResponse`), and the ratios 3.4 and 6.3 compared
+  Isocron with less work than its own. Now an empty `asm` takes the
+  pointer of the block before its `free` (the block kept, nothing else
+  added): `text.1k` floor 15.6 -> 38.3 ns, Isocron 53.3 ns, 1.39 times;
+  `textResponse` floor 2.2 -> 11.3 ns, Isocron 13.8 ns, 1.22 times
+  (`run.py`, 5 runs of 200 rounds); the other forms of `http` within
+  their scatter. Not a gain of Isocron: a fault of the measure, closed.
+  The other floors with blocks of the heap keep their calls.
