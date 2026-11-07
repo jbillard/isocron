@@ -10515,3 +10515,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     alone 0.65 %: the picture of D432 (5.11, 1.08, 0.87 %), the ends of
     its four parallel phases (the last thread finishing its contiguous
     range) and its sequential parts; no clearing of pages.
+- **D476 — The Benchmarks Game measured again at 7667fbd (2026-11-07).**
+  After D471 to D475 (`http.isc` alone changed in `crates/` since f6a0533,
+  D472; the ten programs import no module): the image built with the
+  `iscc` of 7667fbd, 102 checks against the references (the same outputs;
+  the known difference of C++ #4 of mandelbrot at N = 200 only), measured
+  in Docker (4 threads, 12 runs, the lowest). The fastest on 10 of 10,
+  every time within its scatter (n-body 1885 -> 1896 ms, its code the
+  same: from 1880 to 1896 ms since D447; the others within 1 ms).
+  `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
