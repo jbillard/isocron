@@ -352,9 +352,11 @@ fn https_client_on_windows() {
     // the two servers, on free ports of that address
     let port = || std::net::TcpListener::bind((addr.as_str(), 0)).unwrap().local_addr().unwrap().port();
     let (pa, pb) = (port(), port());
-    let mut servers = Vec::new();
+    // stopped when the test ends, a failure included (two were found running
+    // hours after a run whose connection to the machine failed)
+    let mut servers = Servers(Vec::new());
     for (p, n) in [(pa, "ip"), (pb, "named")] {
-        servers.push(
+        servers.0.push(
             std::process::Command::new("openssl")
                 .args(["s_server", "-quiet", "-accept", &format!("{}:{}", addr, p), "-cert", &format!("../{}.pem", n), "-key", &format!("../{}.key", n), "-WWW"])
                 .current_dir(certs.join("www"))
@@ -373,11 +375,20 @@ fn https_client_on_windows() {
     let (sa, sb) = (pa.to_string(), pb.to_string());
     let args = [addr.as_str(), &sa, &sb, "ca.pem", "other.pem"];
     let out = same_on_windows(&runner, include_str!("data/std_https_remote_client.isc"), "https_client", &d, &args, None);
-    for mut s in servers {
-        let _ = s.kill();
-        let _ = s.wait();
-    }
+    drop(servers);
     assert_eq!(String::from_utf8_lossy(&out), want);
+}
+
+/// Servers of a test, killed when it ends, by a panic too.
+struct Servers(Vec<std::process::Child>);
+
+impl Drop for Servers {
+    fn drop(&mut self) {
+        for s in &mut self.0 {
+            let _ = s.kill();
+            let _ = s.wait();
+        }
+    }
 }
 
 /// D343: the server of HTTPS on Windows (SChannel), its client too, in
