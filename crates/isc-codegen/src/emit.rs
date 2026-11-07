@@ -536,6 +536,27 @@ pub struct Gen<'p> {
     /// copy of the `filter`; the variable holds the places of the blocks and
     /// the length.
     windowed: HashMap<VarId, Expr>,
+    /// The arrays of `windowed_let` whose blocks start at an origin: the
+    /// counts of a caller's blocks over the array they are a range of
+    /// (D426), the origin after the slots of their places.
+    windowed_origin: HashSet<VarId>,
+    /// The functions whose windowed `filter` (D293) reads a range of one of
+    /// their parameters with a predicate of its elements alone (D426): the
+    /// index of the parameter and the lambda.
+    count_users: HashMap<u32, (usize, &'p Lambda)>,
+    /// The functions whose variant with the counts of a caller is called
+    /// (`isc_fn_{f}_sm`, its first parameter).
+    count_needed: BTreeSet<u32>,
+    /// In such a variant: the lambda whose counts its parameter `%sm` gives.
+    count_param: Option<(String, &'p Lambda)>,
+    /// The arrays whose counts by blocks are made, while they are in scope:
+    /// the block of the counts (`[base, length, count of block 0, ...]`,
+    /// `base` null when they were not made).
+    counts: HashMap<VarId, String>,
+    /// While the `init` of a `let` that makes counts is emitted: the
+    /// `filter` that makes them (its expression), the array, the lambda, the
+    /// block of the counts and the pointer of the array.
+    count_req: Option<(*const Expr, VarId, &'p Lambda, String, String)>,
     /// The indices of vector code checked before the loop of their `fold`
     /// (`fold_vec`, D296): read without a check of their bounds.
     prechecked: HashSet<*const Expr>,
@@ -976,6 +997,12 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         stream: None,
         scalar_loops: 0,
         windowed: HashMap::new(),
+        windowed_origin: HashSet::new(),
+        count_users: count_users(p),
+        count_needed: BTreeSet::new(),
+        count_param: None,
+        counts: HashMap::new(),
+        count_req: None,
         prechecked: HashSet::new(),
         str_lits: HashMap::new(),
         int_texts: HashMap::new(),
@@ -1018,7 +1045,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     };
     // the recursive functions (D102)
     for i in 0..p.fns.len() {
-        g.emit_fn(i, false)?;
+        g.emit_fn(i, false, false)?;
     }
     let slot = g.alloca("{ ptr, i64 }");
     g.emit(format!("call void @isc_args(ptr {}, i32 %argc, ptr %argv)", slot));
@@ -1044,10 +1071,19 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     let mut main = g.finish(&format!("define i32 @{}(i32 %argc, ptr %argv){}", body_name, attrs));
     // the variants of the builders whose trees are made in a region (D200),
     // each of which may ask for others
+    // and those that take the counts of a caller (D426)
     let mut done: HashSet<u32> = HashSet::new();
-    while let Some(f) = g.rg_needed.iter().copied().find(|f| !done.contains(f)) {
-        done.insert(f);
-        g.emit_fn(f as usize, true)?;
+    let mut done_counted: HashSet<u32> = HashSet::new();
+    loop {
+        if let Some(f) = g.rg_needed.iter().copied().find(|f| !done.contains(f)) {
+            done.insert(f);
+            g.emit_fn(f as usize, true, false)?;
+        } else if let Some(f) = g.count_needed.iter().copied().find(|f| !done_counted.contains(f)) {
+            done_counted.insert(f);
+            g.emit_fn(f as usize, false, true)?;
+        } else {
+            break;
+        }
     }
     g.emit_rec_helpers()?;
     if big_stack {
@@ -1766,6 +1802,55 @@ const WINDOW_MARGIN: i64 = 64;
 /// The widest window of the first task that keeps the windows.
 const WINDOW_WIDE: i64 = 4 * BLOCK;
 
+/// D426: the functions whose windowed `filter` (D293) reads a range of one
+/// of their parameters (`slice` of it, or itself) with a predicate of its
+/// elements alone: the counts of that predicate by blocks may come from the
+/// pass of a caller over the whole array. For each, the index of the
+/// parameter and the lambda (the first such `filter`).
+fn count_users(p: &Program) -> HashMap<u32, (usize, &Lambda)> {
+    fn walk<'a>(e: &'a Expr, params: &[VarId], out: &mut Option<(usize, &'a Lambda)>) {
+        if out.is_some() {
+            return;
+        }
+        if let ExprKind::Let { var, init, body, .. } = &e.kind {
+            if let Some((lets, f)) = windowed_filter(*var, init, body) {
+                if let ExprKind::Filter(src, l) = &f.kind {
+                    let mut s: &Expr = src;
+                    if let ExprKind::Var(t, _) = &s.kind {
+                        if let Some((_, i)) = lets.iter().find(|(v, _)| v == t) {
+                            s = i;
+                        }
+                    }
+                    if let ExprKind::Slice(a, _, _) = &s.kind {
+                        s = a;
+                    }
+                    if let ExprKind::Var(q, _) = &s.kind {
+                        let mut bound = HashSet::from([l.params[0]]);
+                        let mut free = Vec::new();
+                        free_vars(&l.body, &mut bound, &mut free);
+                        if let (Some(k), true) = (params.iter().position(|x| x == q), free.is_empty()) {
+                            *out = Some((k, l));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        for c in e.children() {
+            walk(c, params, out);
+        }
+    }
+    let mut users = HashMap::new();
+    for (i, f) in p.fns.iter().enumerate() {
+        let mut found = None;
+        walk(&f.body, &f.params, &mut found);
+        if let Some(u) = found {
+            users.insert(i as u32, u);
+        }
+    }
+    users
+}
+
 /// At most this many elements in a table copied by `period_tables`: the
 /// copy made before each vector loop, on the stack.
 const PERIOD_MAX: i64 = 4096;
@@ -2297,7 +2382,7 @@ impl<'p> Gen<'p> {
 
     /// A recursive function: `define internal <result> @isc_fn_<i>(<params>)`
     /// (D102). Its parameters are borrowed, its result is new.
-    fn emit_fn(&mut self, i: usize, in_region: bool) -> R<()> {
+    fn emit_fn(&mut self, i: usize, in_region: bool, counted: bool) -> R<()> {
         let f = &self.p.fns[i];
         // the variant of a builder (D200): its nodes cut from the region of
         // its first parameter
@@ -2307,9 +2392,19 @@ impl<'p> Gen<'p> {
         let saved_divmod = std::mem::take(&mut self.divmod);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
+        let saved_counts = std::mem::take(&mut self.counts);
+        let saved_count_param = self.count_param.take();
         let mut ps = Vec::new();
         if in_region {
             ps.push("ptr %rg".to_string());
+        }
+        // the variant given the counts of a caller (D426): the block of
+        // the counts of its parameter, or null
+        if counted {
+            let (k, l) = self.count_users[&(i as u32)];
+            ps.push("ptr %sm".to_string());
+            self.counts.insert(f.params[k], "%sm".into());
+            self.count_param = Some(("%sm".into(), l));
         }
         for (k, var) in f.params.iter().enumerate() {
             let t = lt(&self.p.vars[*var as usize].ty);
@@ -2396,7 +2491,13 @@ impl<'p> Gen<'p> {
         // `tailcc`: a call marked `tail` and followed by `ret` reuses the frame
         // (mutual tail recursion, D113)
         let cc = self.fn_cc();
-        let name = if in_region { format!("{}_rg", i) } else { i.to_string() };
+        let name = if in_region {
+            format!("{}_rg", i)
+        } else if counted {
+            format!("{}_sm", i)
+        } else {
+            i.to_string()
+        };
         // on 64 bytes (D213): a small function called at each node of a
         // tree stays whole in the cache of decoded instructions
         let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){} align 64", cc, ret, name, ps.join(", "), attrs));
@@ -2407,6 +2508,8 @@ impl<'p> Gen<'p> {
         self.divmod = saved_divmod;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
+        self.counts = saved_counts;
+        self.count_param = saved_count_param;
         r?;
         self.funcs.push(text);
         Ok(())
@@ -3710,7 +3813,14 @@ impl<'p> Gen<'p> {
                     }
                     Some(b)
                 };
+                // the counts of the predicate of a later windowed `filter`
+                // over the ranges of an array, made by blocks in the pass of
+                // this `filter` over it (D426)
+                let made = if w == 1 && !self.in_task && !self.count_users.is_empty() { self.count_block(init, body) } else { None };
                 let iv = self.ex(init, w);
+                if made.is_some() {
+                    self.count_req = None;
+                }
                 for l in &leaves {
                     self.stack_concats.remove(l);
                 }
@@ -3731,7 +3841,14 @@ impl<'p> Gen<'p> {
                     let t = self.var_ty(*var).clone();
                     self.drop_value(&iv, &t);
                 }
+                if let Some((a, block)) = &made {
+                    self.counts.insert(*a, block.clone());
+                }
                 let r = self.ex(body, w);
+                if let Some((a, block)) = &made {
+                    self.counts.remove(a);
+                    self.emit(format!("call void @isc_free(ptr {})", block));
+                }
                 if *drop && !early {
                     if let Ok(_) = &r {
                         let t = self.var_ty(*var).clone();
@@ -4366,6 +4483,10 @@ impl<'p> Gen<'p> {
                 let r = if let (Some(rg), true) = (self.region.clone(), self.builders.contains(f)) {
                     self.rg_needed.insert(*f);
                     self.ins(format!("call {}{} @isc_fn_{}_rg(ptr {}, {})", cc, ret, f, rg, vals.join(", ")))
+                } else if let Some(sm) = self.count_arg(*f, args) {
+                    // the counts made of the array it is given (D426)
+                    self.count_needed.insert(*f);
+                    self.ins(format!("call {}{} @isc_fn_{}_sm(ptr {}, {})", cc, ret, f, sm, vals.join(", ")))
                 } else {
                     self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")))
                 };
@@ -5740,10 +5861,11 @@ impl<'p> Gen<'p> {
         for (x, _) in reads {
             let xw = self.env[x].clone();
             let f = self.windowed[x].clone();
+            let origin = self.windowed_origin.contains(x);
             let (lwhole, lskip, ljoin) = (self.label(), self.label(), self.label());
             self.cbr(&ok, &lskip, &lwhole);
             self.block(&lwhole);
-            let whole = self.windowed_whole(&f, &xw)?;
+            let whole = self.windowed_whole(&f, &xw, origin)?;
             let lfrom = self.current_label(&lwhole);
             self.br(&ljoin);
             self.block(&lskip);
@@ -5787,10 +5909,11 @@ impl<'p> Gen<'p> {
         let bad = self.alloca("i1");
         self.emit(format!("store i1 false, ptr {}", bad));
         let mut filled = Vec::new();
-        for (((_, rs), xw), f) in reads.iter().zip(xws).zip(filters) {
+        for (((x, rs), xw), f) in reads.iter().zip(xws).zip(filters) {
             let (lo, hi) = self.windowed_bounds(e, rs, &qa, &qb, &bad)?;
             let buf = self.alloca(&format!("[{} x i8], align 64", WINDOW_STACK));
-            let (xv, hp) = self.windowed_fill(f, xw, &lo, &hi, &buf)?;
+            let origin = self.windowed_origin.contains(x);
+            let (xv, hp) = self.windowed_fill(f, xw, &lo, &hi, &buf, origin)?;
             filled.push((xv, hp));
         }
         let lwin_end = self.current_label(&lwin);
@@ -5819,7 +5942,16 @@ impl<'p> Gen<'p> {
             self.bind(*t, iv);
         }
         let ExprKind::Filter(input, l) = &filter.kind else { unreachable!() };
-        let (_, n) = self.prepare_src(input)?;
+        let (src0, n) = self.prepare_src(input)?;
+        // the counts of `l` by blocks made by a caller over an array that
+        // `input` is a range of (D426)
+        let given = match (&self.count_param, &src0) {
+            (Some((sm, pl)), Src::Mat { ptr, .. }) if std::ptr::eq(l, *pl) => Some((sm.clone(), ptr.clone())),
+            _ => None,
+        };
+        if let Some((sm, sptr)) = given {
+            return self.windowed_given(x, filter, body, drop, &sm, &sptr, &n);
+        }
         let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
         let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
         let c1 = self.ins(format!("add i64 {}, 1", c));
@@ -5872,6 +6004,272 @@ impl<'p> Gen<'p> {
             self.emit(format!("call void @isc_free(ptr {})", places));
         }
         Ok(r)
+    }
+
+    /// `windowed_let` given the block `sm` of the counts of its predicate
+    /// made by a caller (D426: `[base, length, count of block 0, ...]`, by
+    /// blocks of WINDOW_BLOCK of the array from `base`): when the source
+    /// (`sptr`, `n` elements) lies in that array, its blocks are those of
+    /// the array, from an origin (its offset in the first one, kept in the
+    /// slot after those of the most blocks); the count of each whole block read from
+    /// `sm`, those of the two ends counted here. Otherwise the origin is 0
+    /// and the counts are made as by `windowed_let`.
+    #[allow(clippy::too_many_arguments)]
+    fn windowed_given(&mut self, x: VarId, filter: &Expr, body: &Expr, drop: bool, sm: &str, sptr: &str, n: &str) -> R<V> {
+        const WINDOW_GROUP: i64 = 16;
+        let ExprKind::Filter(input, l) = &filter.kind else { unreachable!() };
+        let es = esize(input.ty.elem());
+        self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".into());
+        // the source within the array of the counts, which were made
+        let (lentry, lload, lj) = (self.current_label("entry"), self.label(), self.label());
+        let none = self.ins(format!("icmp eq ptr {}, null", sm));
+        self.cbr(&none, &lj, &lload);
+        self.block(&lload);
+        let base = self.ins(format!("load ptr, ptr {}", sm));
+        let ls = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 1", sm));
+        let alen = self.ins(format!("load i64, ptr {}", ls));
+        let bi = self.ins(format!("ptrtoint ptr {} to i64", base));
+        let si = self.ins(format!("ptrtoint ptr {} to i64", sptr));
+        let offb = self.ins(format!("sub i64 {}, {}", si, bi));
+        let made = self.ins(format!("icmp ne ptr {}, null", base));
+        let after = self.ins(format!("icmp sge i64 {}, 0", offb));
+        let nb = self.ins(format!("mul i64 {}, {}", n, es));
+        let endb = self.ins(format!("add i64 {}, {}", offb, nb));
+        let lim = self.ins(format!("mul i64 {}, {}", alen, es));
+        let within = self.ins(format!("icmp sle i64 {}, {}", endb, lim));
+        let ok0 = self.ins(format!("and i1 {}, {}", made, after));
+        let ok1 = self.ins(format!("and i1 {}, {}", ok0, within));
+        let off1 = self.ins(format!("sdiv i64 {}, {}", offb, es));
+        let lload_end = self.current_label(&lload);
+        self.br(&lj);
+        self.block(&lj);
+        let ok = self.ins(format!("phi i1 [ false, %{} ], [ {}, %{} ]", lentry, ok1, lload_end));
+        let off = self.ins(format!("phi i64 [ 0, %{} ], [ {}, %{} ]", lentry, off1, lload_end));
+        let off = self.ins(format!("select i1 {}, i64 {}, i64 0", ok, off));
+        let o = self.ins(format!("and i64 {}, {}", off, WINDOW_BLOCK - 1));
+        let a0 = self.ins(format!("sdiv i64 {}, {}", off, WINDOW_BLOCK));
+        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+        let c0 = self.ins(format!("add i64 {}, {}", c0, o));
+        let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
+        // the places, then the origin in the slot after the most blocks a
+        // source of `n` elements can have (the places freed as those of
+        // `windowed_let`, with the array)
+        let m0 = self.ins(format!("add i64 {}, {}", n, 2 * WINDOW_BLOCK - 2));
+        let most = self.ins(format!("sdiv i64 {}, {}", m0, WINDOW_BLOCK));
+        let m2 = self.ins(format!("add i64 {}, 2", most));
+        let bytes = self.ins(format!("mul i64 {}, 8", m2));
+        let places = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+        let m1 = self.ins(format!("add i64 {}, 1", most));
+        let os = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, m1));
+        self.emit(format!("store i64 {}, ptr {}", o, os));
+        let (lseq, lpar, ldone) = (self.label(), self.label(), self.label());
+        self.cbr(&ok, &lseq, &lpar);
+        // 1a. the counts of the whole blocks from `sm`, the ends counted
+        self.block(&lseq);
+        let (src, _) = self.prepare_src(input)?;
+        let w = self.filter_width(input, l, input.ty.elem());
+        self.for_range_scalar("0", &c, 1, &mut |g, j| {
+            let at = g.ins(format!("mul i64 {}, {}", j, WINDOW_BLOCK));
+            let s0 = g.ins(format!("sub i64 {}, {}", at, o));
+            let start = g.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", s0));
+            let e0 = g.ins(format!("add i64 {}, {}", s0, WINDOW_BLOCK));
+            let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", e0, n));
+            let span = g.ins(format!("sub i64 {}, {}", end, start));
+            let whole = g.ins(format!("icmp eq i64 {}, {}", span, WINDOW_BLOCK));
+            let (lw, lp, lk) = (g.label(), g.label(), g.label());
+            g.cbr(&whole, &lw, &lp);
+            g.block(&lw);
+            let ab = g.ins(format!("add i64 {}, {}", a0, j));
+            let ab2 = g.ins(format!("add i64 {}, 2", ab));
+            let from = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", sm, ab2));
+            let kw = g.ins(format!("load i64, ptr {}", from));
+            g.br(&lk);
+            g.block(&lp);
+            let kp = g.count_kept(&src, l, &start, &end, w)?;
+            let lp_end = g.current_label(&lp);
+            g.br(&lk);
+            g.block(&lk);
+            let k = g.ins(format!("phi i64 [ {}, %{} ], [ {}, %{} ]", kw, lw, kp, lp_end));
+            let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j));
+            g.emit(format!("store i64 {}, ptr {}", k, slot));
+            Ok(())
+        })?;
+        self.br(&ldone);
+        // 1b. otherwise (origin 0) the elements each block keeps, in parallel
+        self.block(&lpar);
+        let g0 = self.ins(format!("add i64 {}, {}", c, WINDOW_GROUP - 1));
+        let groups = self.ins(format!("sdiv i64 {}, {}", g0, WINDOW_GROUP));
+        let extra = [v(places.clone(), "ptr"), v(c.clone(), "i64")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[filter], &extra, &mut |g, xs, j| {
+            let (src, n) = g.prepare_src(input)?;
+            let w = g.filter_width(input, l, input.ty.elem());
+            let b0 = g.ins(format!("mul i64 {}, {}", j, WINDOW_GROUP));
+            let b1 = g.ins(format!("add i64 {}, {}", b0, WINDOW_GROUP));
+            let b1 = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", b1, xs[1].r));
+            g.for_range_scalar(&b0, &b1, 1, &mut |g, b| {
+                let start = g.ins(format!("mul i64 {}, {}", b, WINDOW_BLOCK));
+                let end = g.ins(format!("add i64 {}, {}", start, WINDOW_BLOCK));
+                let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+                let k = g.count_kept(&src, l, &start, &end, w)?;
+                let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", xs[0].r, b));
+                g.emit(format!("store i64 {}, ptr {}", k, slot));
+                Ok(())
+            })
+        })?;
+        self.par_for(0, &groups, &task, &ctx, &ctx_bytes);
+        self.br(&ldone);
+        self.block(&ldone);
+        // 2. the place of each block: the sum of the counts before it
+        let run = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", run));
+        self.for_range_scalar("0", &c, 1, &mut |g, b| {
+            let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, b));
+            let cb = g.ins(format!("load i64, ptr {}", slot));
+            let before = g.ins(format!("load i64, ptr {}", run));
+            g.emit(format!("store i64 {}, ptr {}", before, slot));
+            let after = g.ins(format!("add i64 {}, {}", before, cb));
+            g.emit(format!("store i64 {}, ptr {}", after, run));
+            Ok(())
+        })?;
+        let k = self.ins(format!("load i64, ptr {}", run));
+        let last = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, c));
+        self.emit(format!("store i64 {}, ptr {}", k, last));
+        let xv = self.arr(&places, &k);
+        self.bind(x, xv.clone());
+        self.windowed.insert(x, filter.clone());
+        self.windowed_origin.insert(x);
+        let r = self.ex(body, 1);
+        self.windowed.remove(&x);
+        self.windowed_origin.remove(&x);
+        let r = r?;
+        if drop {
+            self.emit(format!("call void @isc_free(ptr {})", places));
+        }
+        Ok(r)
+    }
+
+    /// D426: when `init` makes a `filter` over `iota(a.length)` whose
+    /// predicate reads `a[i]` and `body` gives `a` to a function of
+    /// `count_users`, the block of the counts of that function's predicate
+    /// over `a` (by blocks of WINDOW_BLOCK, made by the pass of that
+    /// `filter` while each block is in the caches), asked for in
+    /// `count_req`: `a` and the block, its `base` null until they are made.
+    fn count_block(&mut self, init: &Expr, body: &Expr) -> Option<(VarId, String)> {
+        fn reads_at(e: &Expr, a: VarId, i: VarId) -> bool {
+            let read = match &e.kind {
+                ExprKind::Index(x, j) => matches!(x.kind, ExprKind::Var(v, _) if v == a) && matches!(j.kind, ExprKind::Var(k, _) if k == i),
+                _ => false,
+            };
+            read || e.children().into_iter().any(|c| reads_at(c, a, i))
+        }
+        fn scan<'e>(e: &'e Expr, lens: &mut Vec<(VarId, VarId)>) -> Option<(&'e Expr, VarId)> {
+            match &e.kind {
+                ExprKind::Let { var, init, body, .. } => {
+                    if let ExprKind::Len(x) = &init.kind {
+                        if let ExprKind::Var(a, _) = x.kind {
+                            lens.push((*var, a));
+                        }
+                    }
+                    scan(body, lens)
+                }
+                ExprKind::CheckNonNegative(_, b) => scan(b, lens),
+                ExprKind::Filter(src, l) => {
+                    let ExprKind::Iota(n) = &src.kind else { return None };
+                    let a = match &n.kind {
+                        ExprKind::Len(x) => match x.kind {
+                            ExprKind::Var(a, _) => a,
+                            _ => return None,
+                        },
+                        ExprKind::Var(v, _) => lens.iter().find(|(w, _)| w == v)?.1,
+                        _ => return None,
+                    };
+                    reads_at(&l.body, a, l.params[0]).then_some((e, a))
+                }
+                _ => None,
+            }
+        }
+        fn call<'l>(e: &Expr, a: VarId, users: &HashMap<u32, (usize, &'l Lambda)>) -> Option<&'l Lambda> {
+            if let ExprKind::Call(g, args) = &e.kind {
+                if let Some((k, l)) = users.get(g) {
+                    if matches!(args.get(*k).map(|x| &x.kind), Some(ExprKind::Var(v, _)) if *v == a) {
+                        return Some(*l);
+                    }
+                }
+            }
+            e.children().into_iter().find_map(|c| call(c, a, users))
+        }
+        let (f, a) = scan(init, &mut Vec::new())?;
+        let pl = call(body, a, &self.count_users)?;
+        let at = self.var_ty(a).clone();
+        if !at.is_array() || self.var_ty(pl.params[0]) != at.elem() {
+            return None;
+        }
+        let av = self.env.get(&a)?.clone();
+        if av.t != "{ ptr, i64 }" {
+            return None;
+        }
+        let base = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", av.r));
+        let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", av.r));
+        let b0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+        let b = self.ins(format!("sdiv i64 {}, {}", b0, WINDOW_BLOCK));
+        let b2 = self.ins(format!("add i64 {}, 2", b));
+        let bytes = self.ins(format!("mul i64 {}, 8", b2));
+        let block = self.ins(format!("call ptr @isc_alloc(i64 {})", bytes));
+        self.emit(format!("store ptr null, ptr {}", block));
+        let ls = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 1", block));
+        self.emit(format!("store i64 {}, ptr {}", n, ls));
+        self.count_req = Some((f as *const Expr, a, pl, block.clone(), base));
+        Some((a, block))
+    }
+
+    /// The block of the counts to give to the function `f` called with
+    /// `args` (D426): the array of its parameter of `count_users` is one of
+    /// `counts`.
+    fn count_arg(&self, f: u32, args: &[Expr]) -> Option<String> {
+        if self.in_task {
+            return None;
+        }
+        let (k, _) = self.count_users.get(&f)?;
+        match &args.get(*k)?.kind {
+            ExprKind::Var(a, _) => self.counts.get(a).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The origin and the count of the blocks of the source of `n`
+    /// elements of an array of `windowed_let` whose places are `places`:
+    /// with an origin (D426), the one after the slots of the most blocks
+    /// (`windowed_given`).
+    fn window_blocks(&mut self, places: &str, n: &str, origin: bool) -> (String, String) {
+        if !origin {
+            let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+            return ("0".into(), self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK)));
+        }
+        let m0 = self.ins(format!("add i64 {}, {}", n, 2 * WINDOW_BLOCK - 2));
+        let most = self.ins(format!("sdiv i64 {}, {}", m0, WINDOW_BLOCK));
+        let m1 = self.ins(format!("add i64 {}, 1", most));
+        let os = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, m1));
+        let o = self.ins(format!("load i64, ptr {}", os));
+        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
+        let c0 = self.ins(format!("add i64 {}, {}", c0, o));
+        (o, self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK)))
+    }
+
+    /// The elements `start .. end` of the source of `n` elements in its
+    /// block `j`, from the origin `o` (D426).
+    fn window_range(&mut self, j: &str, o: &str, n: &str) -> (String, String) {
+        let at = self.ins(format!("mul i64 {}, {}", j, WINDOW_BLOCK));
+        if o == "0" {
+            let end = self.ins(format!("add i64 {}, {}", at, WINDOW_BLOCK));
+            let end = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+            return (at, end);
+        }
+        let s0 = self.ins(format!("sub i64 {}, {}", at, o));
+        let start = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", s0));
+        let e0 = self.ins(format!("add i64 {}, {}", s0, WINDOW_BLOCK));
+        let end = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", e0, n));
+        (start, end)
     }
 
     /// The reads of the arrays of `windowed_let` in the function of the
@@ -6058,7 +6456,7 @@ impl<'p> Gen<'p> {
     /// stack) or into a block of the heap when they need more; the array
     /// read through the result at the same indices, of the same length.
     /// Returns it and the block of the heap to free (or null).
-    fn windowed_fill(&mut self, f: &Expr, xw: &V, lo: &str, hi: &str, buf: &str) -> R<(V, String)> {
+    fn windowed_fill(&mut self, f: &Expr, xw: &V, lo: &str, hi: &str, buf: &str, origin: bool) -> R<(V, String)> {
         let ExprKind::Filter(input, l) = &f.kind else { unreachable!() };
         let et = input.ty.elem().clone();
         let size = esize(&et);
@@ -6066,8 +6464,7 @@ impl<'p> Gen<'p> {
         let w = self.filter_width(input, l, &et);
         let places = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xw.r));
         let k = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xw.r));
-        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
-        let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
+        let (o, c) = self.window_blocks(&places, &n, origin);
         let a = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 0)", lo));
         let km1 = self.ins(format!("sub i64 {}, 1", k));
         let b = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", hi, km1));
@@ -6102,9 +6499,7 @@ impl<'p> Gen<'p> {
         let dst = self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", hp, lheap, buf, lstack));
         let pos = self.alloca("i64");
         self.for_range_scalar(&j0, &j1, 1, &mut |g, j| {
-            let start = g.ins(format!("mul i64 {}, {}", j, WINDOW_BLOCK));
-            let end = g.ins(format!("add i64 {}, {}", start, WINDOW_BLOCK));
-            let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+            let (start, end) = g.window_range(j, &o, &n);
             let sj = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j));
             let pj = g.ins(format!("load i64, ptr {}", sj));
             let at = g.ins(format!("sub i64 {}, {}", pj, base));
@@ -6128,21 +6523,19 @@ impl<'p> Gen<'p> {
     /// block of its source written from its place, in parallel (here in a
     /// task); for the arrays written by blocks whose reads are not in
     /// windows (`print_stream`).
-    fn windowed_whole(&mut self, f: &Expr, xw: &V) -> R<String> {
+    fn windowed_whole(&mut self, f: &Expr, xw: &V, origin: bool) -> R<String> {
         let ExprKind::Filter(input, l) = &f.kind else { unreachable!() };
         let et = input.ty.elem().clone();
         let places = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xw.r));
         let k = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xw.r));
         let out = self.alloc_elems(&k, &et);
         let (_, n) = self.prepare_src(input)?;
-        let c0 = self.ins(format!("add i64 {}, {}", n, WINDOW_BLOCK - 1));
-        let c = self.ins(format!("sdiv i64 {}, {}", c0, WINDOW_BLOCK));
+        let (_, c) = self.window_blocks(&places, &n, origin);
         let block = |g: &mut Self, j: &str, places: &str, out: &str, k: &str| -> R<()> {
             let (src, n) = g.prepare_src(input)?;
             let w = g.filter_width(input, l, &et);
-            let start = g.ins(format!("mul i64 {}, {}", j, WINDOW_BLOCK));
-            let end = g.ins(format!("add i64 {}, {}", start, WINDOW_BLOCK));
-            let end = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", end, n));
+            let (o, _) = g.window_blocks(places, &n, origin);
+            let (start, end) = g.window_range(j, &o, &n);
             let sj = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j));
             let pj = g.ins(format!("load i64, ptr {}", sj));
             let pos = g.alloca("i64");
@@ -8101,9 +8494,15 @@ impl<'p> Gen<'p> {
             return self.filter_range(&src, &n, l, &elem_ty, w);
         }
         let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
-        let threads = self.ins("call i64 @isc_thread_count()".to_string());
-        let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
-        let big = self.ins(format!("and i1 {}, {}", several, multi));
+        // the pass by blocks also when it makes counts (D426): on one thread
+        let counting = self.count_req.as_ref().is_some_and(|r| std::ptr::eq(r.0, e));
+        let big = if counting {
+            several
+        } else {
+            let threads = self.ins("call i64 @isc_thread_count()".to_string());
+            let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
+            self.ins(format!("and i1 {}, {}", several, multi))
+        };
         let res = self.alloca("{ ptr, i64 }");
         let lpar = self.label();
         let lseq = self.label();
@@ -8209,7 +8608,7 @@ impl<'p> Gen<'p> {
                 let keep = g.kept_mask(src, l, i, w, &el)?;
                 let bits = g.ins(format!("bitcast <{} x i1> {} to i{}", w, keep.r, w));
                 let k = g.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
-                let k64 = g.ins(format!("zext i{} {} to i64", w, k));
+                let k64 = if w == 64 { k } else { g.ins(format!("zext i{} {} to i64", w, k)) };
                 let c = g.ins(format!("load i64, ptr {}", cnt));
                 let c2 = g.ins(format!("add i64 {}, {}", c, k64));
                 g.emit(format!("store i64 {}, ptr {}", c2, cnt));
@@ -8338,17 +8737,55 @@ impl<'p> Gen<'p> {
             let end = g.ins(format!("add i64 {}, {}", start, m));
             (start, end)
         };
-        // 1. the elements each block keeps
-        let extra = [v(counts.clone(), "ptr")];
+        // 1. the elements each block keeps; and the counts of a later
+        // `filter` over the array this one reads (D426): by blocks of
+        // WINDOW_BLOCK, while the block is in the caches
+        let req = match &self.count_req {
+            Some((f, a, pl, block, base)) if std::ptr::eq(*f, e) && !self.in_task => Some((*a, *pl, block.clone(), base.clone())),
+            _ => None,
+        };
+        let mut extra = vec![v(counts.clone(), "ptr")];
+        if let Some((_, _, block, _)) = &req {
+            extra.push(v(block.clone(), "ptr"));
+        }
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
             let (src, n) = g.prepare_src(x)?;
             let (start, end) = range(g, &n, j);
             let c = g.count_kept(&src, l, &start, &end, w)?;
             let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", extra[0].r, j));
             g.emit(format!("store i64 {}, ptr {}", c, slot));
+            if let Some((a, pl, _, _)) = &req {
+                let ae = Expr { kind: ExprKind::Var(*a, Use::Borrow), ty: g.var_ty(*a).clone(), span: e.span, reassoc: false };
+                let (asrc, _) = g.prepare_src(&ae)?;
+                let et = ae.ty.elem().clone();
+                // bytes counted 64 at a time: one vector of AVX-512
+                let wp = match g.filter_width(&ae, pl, &et) {
+                    32 => 64,
+                    w => w,
+                };
+                let b0 = g.ins(format!("sdiv i64 {}, {}", start, WINDOW_BLOCK));
+                let e0 = g.ins(format!("add i64 {}, {}", end, WINDOW_BLOCK - 1));
+                let b1 = g.ins(format!("sdiv i64 {}, {}", e0, WINDOW_BLOCK));
+                let to = extra[1].r.clone();
+                g.for_range_scalar(&b0, &b1, 1, &mut |g, b| {
+                    let lo = g.ins(format!("mul i64 {}, {}", b, WINDOW_BLOCK));
+                    let hi = g.ins(format!("add i64 {}, {}", lo, WINDOW_BLOCK));
+                    let hi = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", hi, end));
+                    let k = g.count_kept(&asrc, pl, &lo, &hi, wp)?;
+                    let at = g.ins(format!("add i64 {}, 2", b));
+                    let slot = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", to, at));
+                    g.emit(format!("store i64 {}, ptr {}", k, slot));
+                    Ok(())
+                })?;
+            }
             Ok(())
         })?;
         self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
+        // the counts made: the array they are of
+        if let Some((_, _, block, base)) = &req {
+            self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".into());
+            self.emit(format!("store ptr {}, ptr {}", base, block));
+        }
         // 2. the place of each block: the sum of the counts before it
         let run = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", run));

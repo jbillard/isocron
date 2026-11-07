@@ -310,6 +310,99 @@ action main(args: string[k]): i32 {
     assert!(text.contains("i64 1048576"), "no buffer of 1 MiB: the bytes are not written by blocks");
 }
 
+/// D426: the counts of the predicate of a windowed `filter` (D293) over the
+/// ranges of an array, made by blocks in the pass of the caller's `filter`
+/// over that array (reverse-complement: the heads and the bases in one
+/// read). Records from each head (`>`, every `step` bytes: within one block,
+/// across many, one record for all), bytes and `i32`; a record that starts
+/// and ends inside a block, at its edges, across; the same function given
+/// another array (its own counts); arrays of at most 4096 elements (no
+/// counts made: the function counts); 1 to 8 threads; the same bytes as
+/// computed here and as the interpreter; nothing lost (valgrind).
+#[test]
+fn counts_made_by_a_caller() {
+    let src = "action records(data: u8[n], heads: i64[h], r: i64): void {
+    if (r == h) return;
+    const start = heads[r];
+    const end = r + 1 < h ? heads[r + 1] : n;
+    const bases = data.slice(start + 1, end).filter((b) => b != 10u8);
+    const m = bases.length;
+    print(m);
+    printBytes(map(iota(m + (m + 59) / 60), (q) => q % 61 == 60 || q == m + (m + 59) / 60 - 1 ? 10u8 : bases[m - 1 - (q / 61 * 60 + q % 61)]));
+    return records(data, heads, r + 1);
+}
+
+action sums(v: i32[n], heads: i64[h], r: i64): void {
+    if (r == h) return;
+    const start = heads[r];
+    const end = r + 1 < h ? heads[r + 1] : n;
+    const kept = v.slice(start, end).filter((x) => x % 3 != 0);
+    const m = kept.length;
+    printBytes(map(iota(m), (q) => u8(65 + kept[m - 1 - q] % 26)));
+    return sums(v, heads, r + 1);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const step = parseI64(args[1]);
+    const data = map(iota(n), (i) => i % step == 0 ? 62u8 : (i % 61 == 60 ? 10u8 : u8(65 + (i * 7 + i / 13) % 26)));
+    const heads = filter(iota(data.length), (i) => data[i] == 62u8);
+    records(data, heads, 0);
+    const other = map(iota(n / 2 + 1), (i) => i % 997 == 0 ? 62u8 : (i % 37 == 0 ? 10u8 : 66u8));
+    records(other, heads.filter((x) => x < 0), 0);
+    records(other, [0], 0);
+    const v = map(iota(n), (i) => i32((i * 7919) % 1000));
+    const marks = filter(iota(v.length), (i) => v[i] % i32(step) == 1i32);
+    sums(v, marks, 0);
+    print(\"end\");
+    return 0;
+}
+";
+    let want = |n: usize, step: usize| -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut records = |data: &[u8], heads: &[usize]| {
+            for (r, &start) in heads.iter().enumerate() {
+                let end = if r + 1 < heads.len() { heads[r + 1] } else { data.len() };
+                let bases: Vec<u8> = data[(start + 1).min(end)..end].iter().copied().filter(|&b| b != 10).collect();
+                let m = bases.len();
+                out.extend(format!("{}\n", m).into_bytes());
+                let len = m + m.div_ceil(60);
+                out.extend((0..len).map(|q| if q % 61 == 60 || q + 1 == len { 10 } else { bases[m - 1 - (q / 61 * 60 + q % 61)] }));
+            }
+        };
+        let data: Vec<u8> = (0..n).map(|i| if i % step == 0 { 62 } else if i % 61 == 60 { 10 } else { 65 + ((i * 7 + i / 13) % 26) as u8 }).collect();
+        let heads: Vec<usize> = (0..n).filter(|&i| data[i] == 62).collect();
+        records(&data, &heads);
+        let other: Vec<u8> = (0..n / 2 + 1).map(|i| if i % 997 == 0 { 62 } else if i % 37 == 0 { 10 } else { 66 }).collect();
+        records(&other, &[0]);
+        let v: Vec<i64> = (0..n).map(|i| ((i * 7919) % 1000) as i64).collect();
+        let marks: Vec<usize> = (0..n).filter(|&i| v[i] % step as i64 == 1).collect();
+        for (r, &start) in marks.iter().enumerate() {
+            let end = if r + 1 < marks.len() { marks[r + 1] } else { n };
+            let kept: Vec<i64> = v[start..end].iter().copied().filter(|x| x % 3 != 0).collect();
+            let m = kept.len();
+            out.extend((0..m).map(|q| 65 + (kept[m - 1 - q] % 26) as u8));
+        }
+        out.extend_from_slice(b"end\n");
+        out
+    };
+    let bin = compile(src, "counts_by_a_caller");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("_sm(ptr %sm"), "no function given the counts of its caller");
+    for (n, step) in [(1000usize, 300usize), (5000, 1500), (70001, 5000), (70001, 1024), (70001, 1_000_003), ((1 << 20) + 9, 4096), ((1 << 20) + 9, 777), ((3 << 20) + 12345, 1_000_003), ((3 << 20) + 12345, 65_537)] {
+        for t in ["1", "2", "3", "4", "8"] {
+            let o = std::process::Command::new(&bin).args([n.to_string(), step.to_string()]).env("ISC_THREADS", t).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "n {} step {}: {}", n, step, String::from_utf8_lossy(&o.stderr));
+            assert!(o.stdout == want(n, step), "n {}, step {}, {} threads: {} bytes, {} expected", n, step, t, o.stdout.len(), want(n, step).len());
+        }
+    }
+    let p = iscc::frontend("counts_by_a_caller.isc", src).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(isc_interp::run(&p, &["70001".to_string(), "5000".to_string()], &mut out).unwrap(), 0);
+    assert!(out == want(70001, 5000), "interpreter");
+    valgrind_clean(src, "counts_by_a_caller", &["70001", "5000"]);
+}
+
 /// D293: a `filter` read only by arrays written by blocks (D225), each
 /// block making the part of it that it reads: the elements of the source
 /// counted by blocks, then filtered again for each block of the output from

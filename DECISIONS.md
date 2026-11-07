@@ -9544,3 +9544,52 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   of Windows: 13 passed (`https_client_on_windows` once refused to start,
   its program quarantined by Windows Defender, threat 2147735505, as in
   D422; passed again).
+- **D426 — The counts of a later `filter` made in the pass of an earlier
+  one over the same array (2026-11-07).** TODO, the third read of
+  reverse-complement (D411: the count of the bases, 6.47 ms of 31.76).
+  Cost model first (`fused.c` of the session, 4 threads over the mapped
+  input of 254 MB, AVX-512, the lowest of 31 rounds): the search of the
+  heads alone 5.464 ms, the count of the bases alone 5.546 ms, both in one
+  pass 6.183 ms: a pass over the memory, the second count nearly free
+  while each block is in the caches. In the program they are two
+  expressions in two functions: `filter(iota(data.length), (i) => data[i]
+  == 62u8)` in `main`, then in `records` (recursive) a windowed `filter`
+  (D293) of `b != 10u8` over `data.slice(...)`. Now, in the code
+  generator:
+  - `count_users`: the functions whose windowed `filter` reads a range of
+    one of their parameters (a `slice` of it, or itself) with a predicate
+    of its elements alone (no free variable);
+  - a `let` whose `init` makes a `filter` over `iota(a.length)` that reads
+    `a[i]`, and whose body gives `a` to such a function at that
+    parameter, makes a block `[base, length, count of block 0, ...]`: the
+    pass of that `filter` (the parallel one, also on one thread) counts
+    the predicate of the callee by blocks of 1024 of `a`, after each of its
+    blocks of 4096 (in the caches), in vectors of 64 bytes; `base` is set
+    once they are made (null otherwise: an array of at most 4096
+    elements);
+  - the call gives the block to a variant of the callee
+    (`isc_fn_{f}_sm`, its first parameter; its own calls with the same
+    parameter give it on; the tail calls are its loop);
+  - there, when the source of the windowed `filter` lies within `base ..
+    base + length` (checked at run time), its blocks are those of the
+    array from an origin (its offset in the first one, kept after the
+    places): the count of each whole block read from the block, the two
+    ends counted; otherwise the origin is 0 and it counts in parallel as
+    before. Its windows (`windowed_fill`, `windowed_whole`) read the
+    blocks from that origin.
+  Measured (fixed frequency, 4 threads, the input of 254 MB):
+  reverse-complement 31.9 -> 27.7 ms (lowest of 31 alternated runs,
+  -13.13 %, medians -13.04 %), the same output; 1.65 times its floor of
+  16.8 ms. Profile of 20 runs: user cycles 7191.3 -> 6202.1 million,
+  instructions 11668 -> 11353 million; the count of the bases (20.31 % of
+  the samples, 1460 million cycles) gone, the pass of the heads 1709 ->
+  1958 million (+14.6 %, against +13 % for the fused pass of C). The
+  counts first in vectors of 32 bytes (the width of the byte filters)
+  cost +25 % of that pass (29.2 ms); in vectors of 64, -4.50 % more. The
+  LLVM IR of the nine other programs is unchanged. Test
+  `counts_made_by_a_caller` (`bitwise.rs`): records of bytes and of
+  `i32` from heads every `step` elements (within a block, across many, a
+  single record), the same function given another array and arrays of
+  at most 4096 elements (their own counts), 1 to 8 threads, the bytes
+  computed by the test and by the interpreter, valgrind; with the counts
+  read from the block falsified by one, it fails.
