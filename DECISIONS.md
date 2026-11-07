@@ -9420,3 +9420,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   others within 0.65 % (minimums, 7 runs), n-body +1.23 % in that run, its
   code the same, +0.05 % in 11 runs. Test `counts_of_keys_with_the_table_held`
   (D417) and the 39 of `stdlib.rs`.
+- **D419 — The probes of 8 keys at once in vectors closed by measure
+  (2026-11-07).** TODO: k-nucleotide, its keys to probe 8 at once. After
+  D418, the count of the 18-mers alone (one thread, 3.2 GHz, `perf stat`
+  and `perf record`): `add_block` 44.80 % of 6.563 G instructions and 44.38
+  % of 2.283 G cycles, 23.5 instructions and 8.1 cycles (2.53 ns) a key.
+  The floor of these counts is the random increment of a table of 2 MiB by
+  4 independent streams, 2.220 ns an update a core (`floor.c`), which
+  compares no key and adds to a counter of 4 bytes. A count must at least
+  load the line of each key and compare its key: each key has a line of
+  its own, and its 8 slots are already compared by one vector (`holds`,
+  D418). Probing 8 keys at once could take at most the 0.31 ns a key left
+  (1.14 times the floor), about 78 ms of CPU for the 250 million keys of
+  the 12-mers and 18-mers, of the order of 20 ms of the 638.8 ms of
+  k-nucleotide on 4 threads: not done. Left in TODO: the base, and the
+  k-mers computed whole at each place (`isc_task_9`, 20.66 % of the cycles
+  of the count of the 18-mers).
