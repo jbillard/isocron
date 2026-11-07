@@ -107,7 +107,165 @@ action main(args: string[k]): i32 {
     const q = lookups("bench.test", dns, r, 0);
     const t11 = clock();
     print(`lookup ${f64(t11 - t10) / f64(r)} ${q / r}`);
+    // the functions of a `Server` and of a connection kept (D424)
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            match (net.connect("127.0.0.1", port)) {
+                Ok(c) => match (net.accept(l)) {
+                    Ok([s, peer]) => {
+                        const t12 = clock();
+                        const tm = timeouts(c, r, 0);
+                        const t13 = clock();
+                        print(`setTimeout ${f64(t13 - t12) / f64(r)} ${tm / r}`);
+                        net.close(s);
+                        net.close(c);
+                    },
+                    Err(e) => net.close(c),
+                },
+                Err(e) => print("connect failed"),
+            };
+            const t14 = clock();
+            const cw = closeWrites(l, port, r, 0);
+            const t15 = clock();
+            print(`connect.closeWrite ${f64(t15 - t14) / f64(r)} ${cw / r}`);
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    const t16 = clock();
+    const so = serverOpens(r, 0);
+    const t17 = clock();
+    print(`server.open.close ${f64(t17 - t16) / f64(r)} ${so / r}`);
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            const port = net.port(l);
+            match (net.serverOf(l)) {
+                Ok(s) => {
+                    match (net.connect("127.0.0.1", port)) {
+                        Ok(c) => {
+                            const x = map(iota(64), (i) => u8(i));
+                            const t18 = clock();
+                            const sr = serverRounds(s, c, x, r, 0);
+                            const t19 = clock();
+                            print(`server.roundtrip.64 ${f64(t19 - t18) / f64(r)} ${sr / r}`);
+                            net.close(c);
+                        },
+                        Err(e) => print("connect failed"),
+                    };
+                    const t20 = clock();
+                    const sc = serverConns(s, port, r, 0);
+                    const t21 = clock();
+                    print(`server.conn ${f64(t21 - t20) / f64(r)} ${sc / r}`);
+                    net.closeServer(s);
+                },
+                Err(e) => print("no server"),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
     return 0;
+}
+
+// `r` time limits set on `c`: how many set
+action timeouts(c: net.Conn, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (net.setTimeout(c, 1000)) {
+        Ok(_) => 1,
+        Err(e) => 0,
+    };
+    return timeouts(c, r - 1, acc + k);
+}
+
+// `r` connections made, the sending side of each closed, both ends closed
+action closeWrites(l: net.Listener, port: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return match (net.connect("127.0.0.1", port)) {
+        Ok(c) => match (net.accept(l)) {
+            Ok([s, peer]) => {
+                const k = match (net.closeWrite(c)) {
+                    Ok(_) => 1,
+                    Err(e) => 0,
+                };
+                net.close(s);
+                net.close(c);
+                return closeWrites(l, port, r - 1, acc + k);
+            },
+            Err(e) => {
+                net.close(c);
+                return -1;
+            },
+        },
+        Err(e) => -1,
+    };
+}
+
+// `r` servers of a listener of a port of the system, each closed
+action serverOpens(r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => match (net.serverOf(l)) {
+            Ok(s) => {
+                net.closeServer(s);
+                return 1;
+            },
+            Err(e) => 0,
+        },
+        Err(e) => 0,
+    };
+    return serverOpens(r - 1, acc + k);
+}
+
+// the bytes of one connection waited for: its number and their count
+action arrival(s: net.Server, tries: i64): [i64, i64] {
+    if (tries == 0) {
+        return [-1, 0] as const;
+    }
+    return match (net.wait(s, 65536, 1000)) {
+        Ok(xs) => {
+            const got = filter(xs, (a) => a.bytes.length > 0);
+            return got.length > 0 ? [got[0].id, got[0].bytes.length] as const : arrival(s, tries - 1);
+        },
+        Err(e) => [-1, 0] as const,
+    };
+}
+
+// `r` exchanges of `x` through the server: written by the client, waited
+// for, sent back by `sendTo`, read
+action serverRounds(s: net.Server, c: net.Conn, x: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const w = net.write(c, x);
+    const [id, k] = arrival(s, 10);
+    const sent = net.sendTo(s, id, x);
+    const back = readN(c, x.length, 0);
+    return serverRounds(s, c, x, r - 1, acc + k + back);
+}
+
+// `r` connections to the server, a byte from each waited for, each closed
+// by `closeConn`
+action serverConns(s: net.Server, port: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (net.connect("127.0.0.1", port)) {
+        Ok(c) => {
+            const w = net.writeText(c, "x");
+            const [id, n] = arrival(s, 10);
+            net.closeConn(s, id);
+            net.close(c);
+            return n;
+        },
+        Err(e) => 0,
+    };
+    return serverConns(s, port, r - 1, acc + k);
 }
 
 // `r` lookups of `host` asked to the server of DNS on `port`: its

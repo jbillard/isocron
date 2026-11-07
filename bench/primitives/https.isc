@@ -9,6 +9,7 @@
 // usage: https <rounds> <port> <authority.pem>
 // bench-server: tls
 import * as https from "https";
+import * as net from "net";
 
 // `n` requests of `url`: the sum of their statuses and lengths
 action gets(url: string, ca: string, n: i64, acc: i64): i64 {
@@ -33,5 +34,45 @@ action main(args: string[k]): i32 {
     const b = gets(base + "/64k.bin", ca, r, 0);
     const t3 = clock();
     print(`get.64k ${f64(t3 - t2) / f64(r)} ${b / r}`);
+    // the request with its method, headers and body, and the handshake
+    // alone on a connection of `net` (D424)
+    const t4 = clock();
+    const c4 = requests(base + "/hello.txt", ca, r, 0);
+    const t5 = clock();
+    print(`requestWith.small ${f64(t5 - t4) / f64(r)} ${c4 / r}`);
+    const t6 = clock();
+    const h = handshakes(parseI64(args[1]), ca, r, 0);
+    const t7 = clock();
+    print(`startTls ${f64(t7 - t6) / f64(r)} ${h / r}`);
     return 0;
+}
+
+// `n` requests `GET url` by `requestWith`: the sum of their statuses and lengths
+action requests(url: string, ca: string, n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    return match (https.requestWith(ca, "GET", url, [["Accept", "text/plain"] as const], [])) {
+        Ok(r) => requests(url, ca, n - 1, acc + r.status + r.body.length),
+        Err(e) => -1,
+    };
+}
+
+// `n` connections made clients of TLS (the handshake, the name checked), closed
+action handshakes(port: i64, ca: string, n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    const k = match (net.connect("localhost", port)) {
+        Ok(c) => {
+            const ok = match (net.startTls(c, "localhost", ca)) {
+                Ok(_) => 1,
+                Err(e) => 0,
+            };
+            net.close(c);
+            return ok;
+        },
+        Err(e) => 0,
+    };
+    return handshakes(port, ca, n - 1, acc + k);
 }

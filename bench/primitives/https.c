@@ -44,8 +44,16 @@ static double now(void) {
 
 static char buf[1 << 20];
 
+// one request of `path` with the header lines `extra`: its status plus the
+// length of its body, or -1
+static long get_with(SSL_CTX *ctx, int port, const char *path, const char *extra);
+
 // one request of `path`: its status plus the length of its body, or -1
 static long get(SSL_CTX *ctx, int port, const char *path) {
+    return get_with(ctx, port, path, "");
+}
+
+static long get_with(SSL_CTX *ctx, int port, const char *path, const char *extra) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port)};
     inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
@@ -57,7 +65,7 @@ static long get(SSL_CTX *ctx, int port, const char *path) {
     long r = -1;
     if (SSL_connect(s) == 1) {
         char req[256];
-        int k = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: localhost:%d\r\nUser-Agent: isocron\r\nConnection: close\r\n\r\n", path, port);
+        int k = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: localhost:%d\r\nUser-Agent: isocron\r\nConnection: close\r\n%s\r\n", path, port, extra);
         SSL_write(s, req, k);
         long have = 0, n;
         while ((n = SSL_read(s, buf + have, sizeof buf - 1 - have)) > 0) have += n;
@@ -87,6 +95,29 @@ int main(int argc, char **argv) {
     t0 = now();
     for (long k = 0; k < r; k++) acc += get(ctx, port, "/64k.bin");
     printf("get.64k %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    // the request with a header (D424), and the handshake alone
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) acc += get_with(ctx, port, "/hello.txt", "Accept: text/plain\r\n");
+    printf("requestWith.small %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    acc = 0;
+    t0 = now();
+    for (long k = 0; k < r; k++) {
+        int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port)};
+        inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+        if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0) {
+            SSL *s = SSL_new(ctx);
+            SSL_ctrl(s, 55, 0, (void *)"localhost");
+            SSL_set1_host(s, "localhost");
+            SSL_set_fd(s, fd);
+            acc += SSL_connect(s) == 1;
+            SSL_shutdown(s);
+            SSL_free(s);
+        }
+        close(fd);
+    }
+    printf("startTls %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
     SSL_CTX_free(ctx);
     return 0;
 }

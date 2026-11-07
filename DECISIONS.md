@@ -9496,3 +9496,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Linux, Windows and WASI); `readDir` sorts its names as before. Test
   `all_the_environment_by_vectors` with these four names (compiled and
   interpreted; the compiler before them gave `ISC_SORT` last).
+- **D424 — A microbenchmark for each function of the library, by its name
+  or through the one that is it (2026-11-07).** Counted function by
+  function (D421), 76 of the 91 were named by a form of
+  `bench/primitives`. New forms and floors (the same calls of the system,
+  `run.py`, 5 runs of 200 rounds): `net.setTimeout` 1.2 (two `setsockopt`),
+  `connect.closeWrite` 1.0 (`shutdown`), `server.open.close` 1.0
+  (`serverOf`, `closeServer`: `epoll_create1`, `fcntl`, `epoll_ctl`),
+  `server.roundtrip.64` 1.1 (`wait`, `sendTo`: `epoll_wait`, `recv`,
+  `send`), `server.conn` 1.1 (a connection waited for and closed by
+  `closeConn`); `https.requestWith.small` 1.0 and `startTls` 1.0 (the
+  handshake alone, `SSL_connect`); `serve.action.pipelined` now written
+  `serverOf` then `http.serveServer`, what `serveOn` does (1.4, as before).
+  86 of 91 named. The five others are made of measured ones, word for word:
+  `https.get` and `https.request` are `requestWith("", ...)`, the
+  authorities of the system, which no server of the local machine has
+  (one would have to be installed in the system: not done), measured as
+  `requestWith` and `getWith`; `https.serveTls` is `listen` then
+  `serveTlsOn`, and `net.serverOfTls` the first step of `serveTlsOn`
+  (`serve.handshake` 1.0, `serve.keepalive` 1.2, D416); `http.serve`, a
+  loop of events on each core with no end, measured against nginx and the
+  ceiling of the machine by `bench/http_servers` (`results/http_servers.md`).

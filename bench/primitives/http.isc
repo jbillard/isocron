@@ -44,7 +44,12 @@ action readSome(c: net.Conn, got: i64, want: i64): i64 {
 action conns(l: net.Listener, port: i64, n: i64, requests: string, act: boolean): [u64, i64] {
     if (n == 0) {
         const t0 = clock();
-        const r = act ? http.serveOn(l, helloAction, CONNS * PER_CONN) : http.serveOn(l, hello, CONNS * PER_CONN);
+        // the action by `serverOf` and `serveServer`, what `serveOn` does
+        // (D424: each function named by a form)
+        const r = act ? match (net.serverOf(l)) {
+            Ok(s) => http.serveServer(s, helloAction, CONNS * PER_CONN),
+            Err(e) => Err(e),
+        } : http.serveOn(l, hello, CONNS * PER_CONN);
         return [clock() - t0, 0] as const;
     }
     return match (net.connect("127.0.0.1", port)) {
