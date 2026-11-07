@@ -272,12 +272,17 @@ int main(int argc, char **argv) {
     char p2[256], p3[256];
     acc = 0;
     for (long i = 0; i < r; i++) {
-        // each variable a name and a value made
+        // the entries sorted by their bytes, as `sysEnviron` sorts them (the
+        // floor without the sort did less than `envAll`, D400), then each a
+        // name and a value made
+        static const char *es[1024];
+        long m = 0;
+        for (char **e = environ; *e && m < 1024; e++) es[m++] = *e;
+        qsort(es, m, sizeof *es, cmp);
         long k = 0;
-        for (char **e = environ; *e; e++) {
-            const char *eq = strchr(*e, '=');
-            if (!eq) continue;
-            char *name = strndup(*e, eq - *e), *value = strdup(eq + 1);
+        for (long j = 0; j < m; j++) {
+            const char *eq = strchr(es[j], '=');
+            char *name = eq ? strndup(es[j], eq - es[j]) : strdup(es[j]), *value = strdup(eq ? eq + 1 : "");
             free(name);
             free(value);
             k++;

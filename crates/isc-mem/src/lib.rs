@@ -1217,17 +1217,56 @@ fn compare_long(a: &[u8], b: &[u8]) -> i32 {
     compare_last4(a, b)
 }
 
-/// `strlen`: the bytes before the first zero byte of `s`.
+/// The `VEC` bytes of the block aligned on `VEC` bytes at `p`, by one load
+/// written in assembly (the way of glibc and of `compiler-builtins` for
+/// `strlen`): the block may hold bytes before and after the string, which
+/// Rust may not read, but which the processor reads as any other.
+///
+/// # Safety
+/// `p` is aligned on `VEC` bytes and one byte of its block is readable: a
+/// block aligned on its size lies within one page, readable as a whole.
+#[inline(always)]
+unsafe fn aligned_block(p: *const u8) -> vec::V {
+    let v;
+    // SAFETY: the contract above; a load alone, no flag changed
+    #[cfg(target_feature = "avx2")]
+    unsafe {
+        asm!("vmovdqa {v}, ymmword ptr [{p}]", p = in(reg) p, v = lateout(ymm_reg) v, options(pure, readonly, nostack, preserves_flags))
+    };
+    // SAFETY: the same
+    #[cfg(not(target_feature = "avx2"))]
+    unsafe {
+        asm!("movdqa {v}, xmmword ptr [{p}]", p = in(reg) p, v = lateout(xmm_reg) v, options(pure, readonly, nostack, preserves_flags))
+    };
+    v
+}
+
+/// `strlen`: the bytes before the first zero byte of `s`, one aligned
+/// vector at a time (D400: one byte at a time before, 1.4 us of the 2.8 of
+/// `sys.envAll` for its 2490 bytes).
 ///
 /// # Safety
 /// `s` is a string ending with a zero byte.
 pub unsafe fn length(s: *const u8) -> usize {
-    let mut n = 0;
-    // SAFETY: every byte up to the zero is part of the string (see above)
-    while unsafe { *s.add(n) } != 0 {
-        n = opaque(n + 1);
+    let off = s as usize % vec::VEC;
+    let zero = vec::splat(0);
+    // SAFETY: the block of `s` aligned on VEC holds the byte at `s`, which
+    // is readable (the contract)
+    let m = vec::mask(vec::eq(unsafe { aligned_block(s.wrapping_sub(off)) }, zero)) >> off;
+    if m != 0 {
+        return m.trailing_zeros() as usize;
     }
-    n
+    let mut n = vec::VEC - off;
+    loop {
+        // SAFETY: no zero byte in the `n` bytes from `s`: the byte at
+        // `s + n` belongs to the string, readable, and `s + n` is aligned on
+        // VEC
+        let m = vec::mask(vec::eq(unsafe { aligned_block(s.add(n)) }, zero));
+        if m != 0 {
+            return n + m.trailing_zeros() as usize;
+        }
+        n += vec::VEC;
+    }
 }
 
 /// The long paths in the C convention, for the symbols, which jump to them

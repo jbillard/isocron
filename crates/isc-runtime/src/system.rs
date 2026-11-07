@@ -62,11 +62,21 @@ unsafe fn byte_array(b: &[u8]) -> IscArray {
 }
 
 /// A new array of the strings `names`, in the order of their bytes, the
-/// bytes that are not UTF-8 replaced.
-unsafe fn sorted_strings(mut names: alloc::vec::Vec<alloc::vec::Vec<u8>>) -> IscArray {
-    names.sort();
-    let texts: alloc::vec::Vec<alloc::string::String> = names.iter().map(|b| alloc::string::String::from_utf8_lossy(b).into_owned()).collect();
-    str_array(&mut texts.iter().map(|t| t.as_str()), texts.len())
+/// bytes that are not UTF-8 replaced: each checked by `from_utf8` (its ASCII
+/// by words) and copied once, `from_utf8_lossy` (byte by byte) only for one
+/// that is not UTF-8 (D400).
+unsafe fn sorted_strings<B: AsRef<[u8]> + Ord>(mut names: alloc::vec::Vec<B>) -> IscArray {
+    // equal names are the same bytes: the order of the stable sort
+    names.sort_unstable();
+    let q = new_str_array(names.len());
+    for (slot, b) in q.iter_mut().zip(names.iter()) {
+        let b = b.as_ref();
+        *slot = match core::str::from_utf8(b) {
+            Ok(_) => new_str(b),
+            Err(_) => new_str(alloc::string::String::from_utf8_lossy(b).as_bytes()),
+        };
+    }
+    IscArray { ptr: q.as_mut_ptr() as *mut u8, len: names.len() as i64 }
 }
 
 #[cfg(target_os = "linux")]
@@ -88,11 +98,10 @@ mod imp {
         if !e.is_null() {
             while !(*e).is_null() {
                 let v = *e;
-                let mut n = 0;
-                while *v.add(n) != 0 {
-                    n += 1;
-                }
-                all.push(core::slice::from_raw_parts(v, n).to_vec());
+                // its length by aligned vectors (`strlen`, D400)
+                let n = strlen(v as *const c_char);
+                // the bytes of the entry, copied once into its string
+                all.push(core::slice::from_raw_parts(v, n));
                 e = e.add(1);
             }
         }
@@ -123,12 +132,12 @@ mod imp {
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
         let Some(z) = zpath(p, n) else {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: -1 };
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
             return;
         };
         let fd = linux::open(z.as_ptr() as *const c_char, O_DIRECTORY | O_CLOEXEC, 0);
         if fd < 0 {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: code_of_call(fd as isize) };
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: code_of_call(fd as isize) };
             return;
         }
         let mut names = alloc::vec::Vec::new();
@@ -430,7 +439,7 @@ mod imp {
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
         let Some(mut w) = wide(p, n) else {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: -1 };
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
             return;
         };
         w.pop();
@@ -438,7 +447,7 @@ mod imp {
         let mut d: FindData = core::mem::zeroed();
         let h = FindFirstFileW(w.as_ptr(), &mut d);
         if h == INVALID {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: last_code() };
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: last_code() };
             return;
         }
         let mut names = alloc::vec::Vec::new();
@@ -623,7 +632,8 @@ mod imp {
                 while *v.add(n) != 0 {
                     n += 1;
                 }
-                all.push(core::slice::from_raw_parts(v, n).to_vec());
+                // the bytes of the entry, copied once into its string
+                all.push(core::slice::from_raw_parts(v, n));
                 e = e.add(1);
             }
         }
@@ -669,12 +679,12 @@ mod imp {
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
         let Some(z) = zpath(p, n) else {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: -1 };
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
             return;
         };
         let d = opendir(z.as_ptr() as *const c_char);
         if d.is_null() {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::new()), code: last_code() };
+            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: last_code() };
             return;
         }
         let mut names = alloc::vec::Vec::new();

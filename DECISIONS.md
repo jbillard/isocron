@@ -8985,3 +8985,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`stdlib.rs`: new bytes in a recursion, an empty array, bytes read after
   it copied, bytes that are not UTF-8; 5 texts take their bytes, 1 copies
   them).
+- **D400 — `envAll`: its entries measured by vectors, checked by
+  `from_utf8`, copied once (2026-11-07).** D392: `sys.envAll` 7.0 times its
+  floor. The floor did less than `envAll`: it did not sort the entries,
+  which `sysEnviron` gives in the order of the bytes of their names; now it
+  sorts them (`qsort`, `strcmp`), 586 -> 969 ns, against which `envAll` was
+  4.1 times. Profile of `envAll` alone (one CPU, fixed frequency, 18
+  entries of 2490 bytes, `LS_COLORS` 1916 of them): `from_utf8_lossy` 52.5 %
+  of the cycles (its chunks byte by byte, for every entry), the length of
+  each entry byte by byte 19.0 %, then each entry copied twice (a `Vec`,
+  then the string). Now `sorted_strings` checks each entry by `from_utf8`
+  (its ASCII by words; `from_utf8_lossy` only for an entry that is not
+  UTF-8, the same replaced text) and copies it once into its string, the
+  entries sorted as slices of the environment (`sort_unstable`: equal
+  entries are the same bytes); the same for the names of `readDir`, under
+  Linux, Windows and WASI. Then 51 % in the length of the entries: the
+  `strlen` of `isc-mem`, byte by byte, now one aligned vector at a time (32
+  bytes with AVX2, 16 otherwise), its load written in assembly as glibc and
+  `compiler-builtins` do (the block may hold bytes outside the string,
+  which Rust may not read; an aligned block lies within one page): every
+  `strlen` of the runtime under Linux (the environment, the arguments).
+  Measured: `envAll` alone 4569 -> 2787 (the check and one copy) -> 1354 ns
+  (the length by vectors); the 81 forms of six groups alternated (7 runs):
+  `envAll` 4634.34 -> 1881.88 ns (-59.4 %), `env` 22.24 -> 18.79 ns (-15.5
+  %); against the floor (`run.py`, 5 runs): 1602.70 against 973.12 ns, 1.6
+  times. One form slower, `http.parseUrl` 113.60 -> 122.18 ns (+7.6 %, 15
+  alternated runs), by the place of the code, not by its work: the same
+  program cut after `parseUrl` 82.07 and 82.12 ns, and the program of
+  `parseUrl` alone 81.5 and 82.1; in the whole program, the task of
+  `parseUrl` at the same address (0x5f510) and the functions of the
+  runtime it calls moved by 0xC0 bytes (their size changed before them):
+  the misses of the cache of decoded instructions doubled
+  (`frontend_retired.dsb_miss` 7.31 -> 15.94 million over the whole
+  program, `dsb2mite_switches.penalty_cycles` 23.2 -> 35.5 million), their
+  samples in that task 18 -> 166, in `isc_free` 78 -> 163, in `isc_str_new`
+  25 -> 99, in `memchr` 9 -> 80. Tests `the_length_of_strings_at_every_place`
+  (`isc-mem`, SSE2, AVX2 and AVX-512 builds: every start in 64 bytes,
+  every length to 300, the end of a page) and
+  `all_the_environment_by_vectors` (`std_sys.rs`: 132 entries of every
+  length to 130, a value that is not UTF-8, compiled and interpreted).

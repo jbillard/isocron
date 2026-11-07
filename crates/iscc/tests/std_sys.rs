@@ -192,3 +192,46 @@ fn environment_names_compared_where_they_are() {
     let o = c.output().unwrap();
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.to_string()), "interpreted: {}", String::from_utf8_lossy(&o.stderr));
 }
+
+/// D400: `envAll` with its entries measured by aligned vectors and checked
+/// by `from_utf8`: names and values of every length from 0 to 130 (their
+/// ends at every place of a vector), a value that is not UTF-8 (its bytes
+/// replaced), in the order of the bytes of the names; the environment
+/// cleared before, so that the expected text is known; compiled and
+/// interpreted, the same text.
+#[test]
+fn all_the_environment_by_vectors() {
+    use std::os::unix::ffi::OsStrExt;
+    let src = "import * as sys from \"sys\";
+
+action main(args: string[k]): i32 {
+    print(join(map(sys.envAll(), (e) => {
+        const [k, v] = e;
+        return `${k}=${v.length}:${v}`;
+    }), \"\\n\"));
+    return 0;
+}
+";
+    let mut vars: Vec<(String, Vec<u8>)> = (0..131usize).map(|n| (format!("V{:03}{}", n, "n".repeat(n % 37)), (0..n).map(|i| b'a' + (i % 26) as u8).collect())).collect();
+    vars.push(("V_BAD".to_string(), b"\xffab\xfe".to_vec()));
+    let mut want: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.clone(), String::from_utf8_lossy(v).into_owned())).collect();
+    want.sort();
+    let want: String = want.iter().map(|(k, v)| format!("{}={}:{}\n", k, v.len(), v)).collect();
+    let bin = compile(src, "std_env_all");
+    let mut c = std::process::Command::new(&bin);
+    c.env_clear();
+    for (k, v) in &vars {
+        c.env(k, std::ffi::OsStr::from_bytes(v));
+    }
+    let o = c.output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "compiled: {}", String::from_utf8_lossy(&o.stderr));
+    let file = tmp("std_env_all.isc");
+    std::fs::write(&file, src).unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"));
+    c.arg("run").arg(&file).env_clear();
+    for (k, v) in &vars {
+        c.env(k, std::ffi::OsStr::from_bytes(v));
+    }
+    let o = c.output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "interpreted: {}", String::from_utf8_lossy(&o.stderr));
+}

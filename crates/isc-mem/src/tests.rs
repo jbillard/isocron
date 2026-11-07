@@ -122,6 +122,40 @@ fn the_length_of_strings() {
     }
 }
 
+/// D400: by aligned vectors: every place of its start in a block of 64
+/// bytes, every length up to 300, zero bytes before the string and after
+/// it in the same blocks, bytes of every value but zero, a string ending at
+/// the last byte of a page.
+#[test]
+fn the_length_of_strings_at_every_place() {
+    let mut buf = std::vec![0u8; 512 + 64];
+    let base = (64 - buf.as_ptr() as usize % 64) % 64;
+    for off in 0..64 {
+        for n in 0..300 {
+            buf.fill(0);
+            for (i, b) in buf[base + off..base + off + n].iter_mut().enumerate() {
+                *b = (i % 255 + 1) as u8;
+            }
+            // SAFETY: a zero byte ends the `n` bytes from `base + off`
+            assert_eq!(unsafe { length(buf.as_ptr().add(base + off)) }, n, "start {} length {}", off, n);
+        }
+    }
+    let layout = std::alloc::Layout::from_size_align(4096, 4096).unwrap();
+    // SAFETY: a layout of a nonzero size
+    let page = unsafe { std::alloc::alloc(layout) };
+    assert!(!page.is_null());
+    for n in [0usize, 1, 31, 32, 33, 4095] {
+        // SAFETY: the 4096 bytes of the page, written before the read
+        unsafe {
+            core::ptr::write_bytes(page, b'y', 4096);
+            *page.add(4095) = 0;
+            assert_eq!(length(page.add(4095 - n)), n);
+        }
+    }
+    // SAFETY: allocated above with this layout
+    unsafe { std::alloc::dealloc(page, layout) };
+}
+
 #[test]
 fn the_threshold_past_the_caches_is_half_the_last_cache() {
     let t = non_temporal_min();
