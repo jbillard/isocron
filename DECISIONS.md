@@ -9994,3 +9994,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   in the VM with the `iscc.exe` of the release's sources, the archives
   built from those sources in the images of the releases, tried before
   they are published.
+- **D450 — Bytes known below 0x80 given to a text without checking them
+  (2026-11-07).** `sha256.hex.32` 5.4 times its floor. One call, one CPU
+  at fixed frequency (`perf stat`, 20 M calls): 37.9 cycles and 163
+  instructions, against about 7 cycles for the floor (2.05 ns). Profile:
+  `utf8_check` 31.4 % (the 64 digits reduced to their largest byte, a
+  chain of about 10 cycles), the digits 30.3 %, `isc_alloc` 12.0 %,
+  `isc_str_adopt_bytes` 10.1 %, `isc_free` 9.4 %. The digits come from the
+  table `0123456789abcdef`: ASCII, so UTF-8, known at compilation.
+  - Now `passes::byte_bounds` gives the largest byte each `let` can hold
+    when it is known from its value (a literal, the bytes of a string, an
+    element, a slice, a copy, the branches of an `if`, a map, `&`, `>>` by
+    a constant, `min`; a variable bound twice takes the larger, a parameter
+    none), and `stringOf` of bytes at their last use below 0x80 is their
+    block, without a call (`isc_str_adopt_bytes`, its check and its
+    panic, which cannot happen).
+  - Rejected before it: the ASCII test of `utf8_check` by words of 8 bytes
+    or'ed together. LLVM read the block of 64 bytes by one load of 64
+    bytes over the two stores of 32 that wrote it just before, which the
+    processor cannot forward: 11.60 -> 15.92 ns, 50 % of the samples on
+    that load.
+  - Measured: `hex` alone, 7 alternated runs of 2 M calls: 11.60 -> 6.58
+    ns; `run.py` (5 runs of 200 rounds) `sha256.hex.32` 14.3 -> 7.2 ns, 2.7
+    times its floor. The code of the forms of `strings`, `sys`, `json`,
+    `http` and `time` the same (their LLVM IR compared with the compiler of
+    9df47bb); `sys.env` 19.9 -> 28.1 ns with its floor 11.7 -> 16.1 (the
+    environment of the processes, the ratio 1.70 -> 1.75), the forms of
+    `strings` of 1.5 to 2 ns within their scatter (two runs of the same
+    binaries in a row: `bytes` 1.475 and 1.631, about a cycle). Of the
+    ten programs only k-nucleotide changes: its `name` of a k-mer, from the
+    table `ACGT`, no longer checked (a few dozen names).
+  - Test `ascii_bytes_given_to_texts_unchecked` (`stdlib.rs`: a table of
+    ASCII, `sha256.hex`, `& 0x7f`, `>> 1`, an `if` of literals not
+    checked; a table with `é` checked, the same panic as the interpreter
+    for a text cut in a character; with the bound taken up to 0xff the
+    test fails).

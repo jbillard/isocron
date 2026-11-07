@@ -279,6 +279,97 @@ fn int_range(e: &Expr) -> Option<(i64, i64)> {
     }
 }
 
+// ---------------------------------------------------------------------
+// the largest byte of a value (D450)
+
+/// The largest byte each variable bound by a `let` can hold, when it is
+/// known from its value: a string (its bytes), an array of `u8` (its
+/// elements) or a `u8`. Only the variables with a bound are kept. A
+/// variable bound by a `let` more than once (code copied) takes the largest
+/// of its values, none when one is unknown; a parameter has none. The code
+/// generator gives `stringOf` of bytes below `0x80` their block without
+/// checking them as UTF-8 (the hexadecimal digits of `sha256.hex`).
+pub fn byte_bounds(p: &Program) -> HashMap<VarId, u8> {
+    fn params(e: &Expr) -> &[VarId] {
+        match &e.kind {
+            ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) | ExprKind::Scan(_, l, _) => &l.params,
+            _ => &[],
+        }
+    }
+    fn walk(e: &Expr, env: &mut HashMap<VarId, Option<u8>>) {
+        for x in params(e) {
+            env.insert(*x, None);
+        }
+        match &e.kind {
+            ExprKind::Let { var, init, body, .. } => {
+                walk(init, env);
+                let b = byte_bound(init, env);
+                let b = match env.get(var) {
+                    Some(old) => match (*old, b) {
+                        (Some(x), Some(y)) => Some(x.max(y)),
+                        _ => None,
+                    },
+                    None => b,
+                };
+                env.insert(*var, b);
+                walk(body, env);
+            }
+            _ => {
+                for c in e.children() {
+                    walk(c, env);
+                }
+            }
+        }
+    }
+    let mut env = HashMap::new();
+    for f in &p.fns {
+        for x in &f.params {
+            env.insert(*x, None);
+        }
+    }
+    env.insert(p.args, None);
+    for f in &p.fns {
+        walk(&f.body, &mut env);
+    }
+    walk(&p.body, &mut env);
+    env.into_iter().filter_map(|(v, b)| Some((v, b?))).collect()
+}
+
+/// The largest byte of the value of `e` (a string, an array of `u8` or a
+/// `u8`) for the forms whose bytes are known: a literal, the bytes of a
+/// string, an element, a slice or a copy, the branches of an `if`, the
+/// values of a map, `&`, `>>` by a constant, `min`; `None` otherwise.
+fn byte_bound(e: &Expr, env: &HashMap<VarId, Option<u8>>) -> Option<u8> {
+    let u8t = Type::Int(IntKind::U8);
+    let both = |a: &Expr, b: &Expr| -> (Option<u8>, Option<u8>) { (byte_bound(a, env), byte_bound(b, env)) };
+    match &e.kind {
+        ExprKind::StrLit(s) => Some(s.bytes().max().unwrap_or(0)),
+        ExprKind::Lit(Lit::Int(c)) if e.ty == u8t => Some(*c as u8),
+        ExprKind::Var(x, _) => env.get(x).copied().flatten(),
+        ExprKind::StrOp(StrOp::Bytes, a) => byte_bound(&a[0], env),
+        ExprKind::Index(a, _) if e.ty == u8t => byte_bound(a, env),
+        ExprKind::Slice(a, _, _) | ExprKind::Copy(a) => byte_bound(a, env),
+        ExprKind::Let { body, .. } => byte_bound(body, env),
+        ExprKind::If(_, a, b) => Some(byte_bound(a, env)?.max(byte_bound(b, env)?)),
+        ExprKind::Map(_, l) if matches!(&e.ty, Type::Array(t, _) if **t == u8t) => byte_bound(&l.body, env),
+        ExprKind::ArrayLit(es) => es.iter().try_fold(0u8, |m, x| Some(m.max(byte_bound(x, env)?))),
+        ExprKind::ConstArray(ls) if matches!(&e.ty, Type::Array(t, _) if **t == u8t) => ls.iter().try_fold(0u8, |m, l| match l {
+            Lit::Int(c) => Some(m.max(*c as u8)),
+            _ => None,
+        }),
+        ExprKind::Binary(BinOp::BitAnd | BinOp::Min, a, b) if e.ty == u8t => match both(a, b) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (Some(x), None) | (None, Some(x)) => Some(x),
+            _ => None,
+        },
+        ExprKind::Binary(BinOp::Shr, a, k) if e.ty == u8t => match k.kind {
+            ExprKind::Lit(Lit::Int(c)) => Some(byte_bound(a, env).unwrap_or(255) >> (c & 7)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `narrow_arrays`: each `v[i]` read as the narrow type and converted back
 /// to `wide`; `v` of type `nt` where it is named.
 fn widen_reads(e: &mut Expr, v: VarId, nt: &Type, wide: &Type) {

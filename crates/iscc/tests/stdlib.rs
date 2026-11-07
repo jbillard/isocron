@@ -1795,3 +1795,54 @@ action main(args: string[k]): i32 {
     }
     valgrind_clean(src, "sums_by_variant", &["400"]);
 }
+
+/// D450: `stringOf` of bytes at their last use whose largest byte is known
+/// below 0x80 gives them their block without checking them as UTF-8: the
+/// digits of a table of ASCII (as `sha256.hex`), bytes `& 0x7f`, `>> 1`, an
+/// `if` of literals; bytes of a table with a byte from 0x80 still checked
+/// (a text cut in a character: the same panic at the same place as the
+/// interpreter); the interpreter's output on every input.
+#[test]
+fn ascii_bytes_given_to_texts_unchecked() {
+    let src = "import * as sha256 from \"sha256\";
+
+function digits(x: u8[n]): string {
+    const t = bytes(\"0123456789abcdef\");
+    return stringOf(map(iota(2 * x.length), (i) => t[i % 2 == 0 ? i64(x[i / 2] >> 4u8) : i64(x[i / 2] & 15u8)]));
+}
+
+function sumOf(s: string): i64 {
+    return sum(map(bytes(s), (b) => i64(b)));
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const x = map(iota(n), (i) => u8(i * 37 + 11));
+    print(digits(x));
+    print(sha256.hex(sha256.digestText(\"abc\")));
+    const low = stringOf(map(x, (b) => b & 0x7fu8));
+    const half = stringOf(map(x, (b) => b >> 1u8));
+    const marks = stringOf(map(x, (b) => b > 100u8 ? 33u8 : 46u8));
+    print(`${low.length} ${sumOf(low)} ${half.length} ${sumOf(half)} ${marks}`);
+    const t = bytes(\"aé\");
+    const mixed = stringOf(map(iota(n), (i) => t[i % 3]));
+    print(mixed);
+    return 0;
+}
+";
+    let bin = compile(src, "ascii_unchecked");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert_eq!(ll.matches("call void @isc_str_adopt_bytes").count(), 1, "only the bytes of the table with a byte from 0x80 checked");
+    for args in [["40"], ["2"], ["0"]] {
+        let want = interp(src, &args);
+        let r = run_bin(&bin, &args);
+        match &want {
+            Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?}: {}", args, r.stderr),
+            Outcome::Panic(m, out) => {
+                assert_eq!((r.code, r.stdout.as_str()), (101, out.as_str()), "{:?}: {}", args, r.stderr);
+                assert!(r.stderr.contains(m.as_str()), "{:?}: {} / {}", args, r.stderr, m);
+            }
+        }
+    }
+    assert!(matches!(interp(src, &["2"]), Outcome::Panic(..)), "a text cut in a character");
+}

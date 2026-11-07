@@ -543,6 +543,8 @@ pub struct Gen<'p> {
     /// The tuples of sum types told apart by their type, with the slots of
     /// each variant: a value frees the fields of its variant only (D448).
     sum_slots: HashMap<Type, Vec<Vec<u32>>>,
+    /// The largest byte of each variable whose bytes are known (D450).
+    byte_bounds: HashMap<VarId, u8>,
     /// The functions whose windowed `filter` (D293) reads a range of one of
     /// their parameters with a predicate of its elements alone (D426): the
     /// index of the parameter and the lambda.
@@ -1004,6 +1006,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         windowed: HashMap::new(),
         windowed_origin: HashSet::new(),
         sum_slots: p.sum_slots.iter().cloned().collect(),
+        byte_bounds: isc_ir::passes::byte_bounds(p),
         count_users: count_users(p),
         count_needed: BTreeSet::new(),
         count_param: None,
@@ -11927,6 +11930,9 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 new_str(self, format!("call void @isc_str_new(ptr OUT, ptr {}, i64 {})", p, n))
             }
+            // bytes at their last use all below 0x80 (D450): their block is
+            // the text, ASCII and so UTF-8, nothing to check
+            S::FromBytes if matches!(es[0].kind, ExprKind::Var(x, Use::Move) if self.byte_bounds.get(&x).is_some_and(|&b| b < 0x80)) => v(vals[0].r.clone(), "{ ptr, i64 }"),
             S::FromBytes => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let pos = Self::pos(e.span);
