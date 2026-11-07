@@ -9952,3 +9952,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   with integers from -20 to 129 padded to 2 by zeros at the start, by
   another fill, at the end, for the machine and for AVX2. TODO: the forms
   above 3 times their floors given again with today's numbers.
+- **D447 — The Benchmarks Game measured again at 4ca9fb0 (2026-11-07).**
+  After D445 (the runtime) and D446 (no change of the code of the ten
+  programs): the image built with the `iscc` of 4ca9fb0, 102 checks against
+  the references (the same outputs; the known difference of C++ #4 of
+  mandelbrot at N = 200 only), measured in Docker (4 threads, 12 runs, the
+  lowest). The fastest on 10 of 10, every time within its scatter of D444
+  (k-nucleotide 614 -> 618 ms, n-body 1885 -> 1881 ms, binary-trees 663 ->
+  662 ms, the others the same to 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.
