@@ -494,3 +494,24 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
 }
+
+/// D402: `httpDate`, its fields of two digits written by their digits:
+/// the example of RFC 9110, the epoch, an instant before it, a leap day,
+/// fields of one digit, the first and the last instants (the dates of
+/// Python's `datetime`); the interpreter and compiled.
+#[test]
+fn http_dates_by_their_digits() {
+    let src = "import * as http from \"http\";
+
+action main(args: string[k]): i32 {
+    const ins = [784111777000000000, 0, -1, 951786123000000000, -9223372036854775807 - 1, 9223372036854775807, 1767258307000000000];
+    print(join(map(ins, http.httpDate), \"\\n\"));
+    return 0;
+}
+";
+    let want = "Sun, 06 Nov 1994 08:49:37 GMT\nThu, 01 Jan 1970 00:00:00 GMT\nWed, 31 Dec 1969 23:59:59 GMT\nTue, 29 Feb 2000 01:02:03 GMT\nTue, 21 Sep 1677 00:12:43 GMT\nFri, 11 Apr 2262 23:47:16 GMT\nThu, 01 Jan 2026 09:05:07 GMT\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "http_dates");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}

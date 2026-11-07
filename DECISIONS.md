@@ -9054,3 +9054,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`stdlib.rs`: indexed, joined, concatenated, copied by `with`, `sort`, a
   `fold`, returned, a constant of the top level given to a function; 1 and
   4 threads, the interpreter, Valgrind).
+- **D402 — `httpDate`: its fields of two digits written by their digits
+  (2026-11-07).** After D401, `httpDate` still made a text for each of its
+  four fields of two digits (`two`: `0${x}` or `${x}`), then freed them. Now
+  `${x / 10}${x % 10}`: two integers of one digit, which the compiled code
+  writes into the text itself (D359); the same text for the values of the
+  fields (0 to 99). 4000 instants from 1678 to 2261 the same bytes,
+  interpreted and compiled, old against new. Code: 12 -> 4 allocations.
+  Measured: alone, 68.0 -> 59.6 ns; in the benchmark (one CPU, fixed
+  frequency, 15 alternated runs) 99.08 -> 86.15 ns (-13.1 %); against its
+  floor (`run.py`, 5 runs) 86.03 against 13.10 ns, 6.6 times (11.1 at
+  D394). `text.1k` 90.06 -> 74.77 ns in the same runs, its code the same:
+  the place of the code (D400, D401), which moves it from 74.8 to 90.1 ns
+  between binaries (87.0 alone). Test `http_dates_by_their_digits`
+  (`std_http.rs`: the dates of Python's `datetime` for the example of RFC
+  9110, the epoch, an instant before it, a leap day, the first and last
+  instants).

@@ -545,10 +545,13 @@ export function textResponse(status: i64, s: string): Response {
 // the instant `i` as HTTP writes a date (`Sun, 06 Nov 1994 08:49:37 GMT`)
 export function httpDate(i: i64): string {
     const d = time.toDateTime(i, 0);
+    // data of the program (D401)
     const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const two = (x: i64) => x < 10 ? `0${x}` : `${x}`;
-    return `${days[time.weekday(d.date) - 1]}, ${two(d.date.day)} ${months[d.date.month - 1]} ${d.date.year} ${two(d.time.hour)}:${two(d.time.minute)}:${two(d.time.second)} GMT`;
+    // the fields of two digits by their digits, written into the text
+    // itself (D402: a text made then freed for each before)
+    const [day, h, m, sec] = [d.date.day, d.time.hour, d.time.minute, d.time.second] as const;
+    return `${days[time.weekday(d.date) - 1]}, ${day / 10}${day % 10} ${months[d.date.month - 1]} ${d.date.year} ${h / 10}${h % 10}:${m / 10}${m % 10}:${sec / 10}${sec % 10} GMT`;
 }
 
 // the bytes of the response `r` (its body left out for HEAD), the
