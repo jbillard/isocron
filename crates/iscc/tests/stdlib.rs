@@ -1507,3 +1507,28 @@ action main(args: string[k]): i32 {
         }
     }
 }
+
+/// D403: `time.format` writes each field as a part of a template after its
+/// text: fields out of their ranges (a year of five digits, a negative
+/// month, hour and milliseconds, a day and seconds too large), a negative
+/// and a positive offset, the epoch in UTC (`Z`); the texts of the version
+/// before it; the interpreter and compiled.
+#[test]
+fn time_format_fields_as_parts() {
+    let src = "import * as time from \"time\";
+
+action main(args: string[k]): i32 {
+    const odd: time.DateTime = { date: { year: 12345, month: -2, day: 140 }, time: { hour: -1, minute: 7, second: 99, nano: -5000000 }, offset: -754 };
+    const plain = time.toDateTime(1767258307123000000, 330);
+    print(time.format(odd, \"YYYY-MM-DD HH:mm:ss.SSS Z|ZZ|MMM\"));
+    print(time.format(plain, \"YYYY-MM-DD HH:mm:ss.SSS Z|ZZ|MMM\"));
+    print(time.format(time.toDateTime(0, 0), \"Z [YYYY]\"));
+    return 0;
+}
+";
+    let want = "12345--2-140 -1:07:99.0-5 -12:34|-12:34-12:34|-2M\n2026-01-01 14:35:07.123 +05:30|+05:30+05:30|01M\nZ [1970]\n";
+    assert_eq!(interp_ok(src, &[]), want);
+    let bin = compile(src, "time_format_parts");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}

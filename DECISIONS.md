@@ -9070,3 +9070,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`std_http.rs`: the dates of Python's `datetime` for the example of RFC
   9110, the epoch, an instant before it, a leap day, the first and last
   instants).
+- **D403 — `time.format`: each field a part of a template after its
+  text (2026-11-07).** After D398, the profile of `format` alone gave
+  `isc_pad_int` 13.62 % and `isc_free` 12.68 % of the cycles: `fieldAt`
+  returned the text of each field in a tuple, so each was made, appended,
+  then freed. Now `fieldAt` gives the length of the field only (each field
+  starts by a byte of its own, tried in the same order), and `withField`
+  appends it to the owned text as `${acc}${pad(x, n)}`: `pad` is inlined,
+  and `toString(x).padStart(n, "0")` as a part of a template is written by
+  the compiled code into the text itself (D359), its sign as before. The
+  same texts: 1000 times of 22 patterns, a fifth of them with fields out of
+  their ranges and negative, old against new, interpreted and compiled.
+  Measured (one CPU, fixed frequency, 7 alternated runs): `format` 299.72
+  -> 203.34 ns (-32.2 %), the other forms of `time` within 1.2 %; against
+  its floor (`run.py`, 5 runs) 202.39 against 36.44 ns, 5.6 times (12.1 at
+  D392). Left (profile of `format` alone): the loop over the bytes of the
+  pattern 45.96 %, the appends of the parts of the pattern between the
+  fields (`append_parts` 19.60 %), the digits (`isc_put_int` 11.88 %), the
+  text grown at each field (`isc_str_reserve` 8.79 %, `heap::usable` 4.99
+  %), where the floor writes into one buffer of its size. Test
+  `time_format_fields_as_parts` (`stdlib.rs`).
