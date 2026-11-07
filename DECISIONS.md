@@ -9186,3 +9186,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   ones, every sign, `z` the product and one from it; more than 10000 of
   them in one pass) and `big_multiply_adds_in_one_pass` (`stdlib.rs`: the
   three forms, the interpreter's results).
+- **D407 — The Benchmarks Game measured again at 6fae7ee (2026-11-07).**
+  After D406 (pidigits 337.2 -> 298.3 ms alone): the image built with the
+  `iscc` of 6fae7ee, the programs built and checked against the
+  references (102 checks, the same outputs), then measured in Docker (4
+  threads, 12 runs, the lowest, `bench/machine.sh apply parallel`). The
+  fastest on 10 of 10: pidigits 338 -> 298 ms (C 681 ms, 0.44 of it, 1.5
+  times its floor of 195.5 ms); the nine others within their scatter
+  (binary-trees 664 -> 667 ms, reverse-complement 31 -> 32 ms, n-body 1882
+  -> 1878 ms, the others the same to 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.
