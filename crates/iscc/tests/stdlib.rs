@@ -1606,3 +1606,51 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
 }
+
+/// D406: `z + x * y`, `x * y + z` and `z - x * y` of bigints in one pass
+/// when a factor is of one word: numbers of 1 to 41 words and partial last
+/// words, words of all ones (every carry), every sign, `z` the product
+/// itself and one from it (a difference of zero, of one, below zero, the
+/// larger one taken first or not), a factor of one word on either side,
+/// of 0, 1 and 2^64 - 1, both factors of many words (the product made);
+/// the interpreter's results.
+#[test]
+fn big_multiply_adds_in_one_pass() {
+    let src = "function plus(z: bigint, x: bigint, y: bigint): bigint {
+    return z + x * y;
+}
+
+function plusLeft(z: bigint, x: bigint, y: bigint): bigint {
+    return x * y + z;
+}
+
+function minus(z: bigint, x: bigint, y: bigint): bigint {
+    return z - x * y;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const ones = 2n ** BigInt(64 * n) - 1n;
+    const big = 3n ** BigInt(40 * n + 7);
+    const ws = [0n, 1n, 2n, 7n, 18446744073709551615n, -3n, -18446744073709551615n, 18446744073709551616n];
+    const xs = [ones, big, -big, big + 12345n];
+    print(join(map(iota(32), (k) => {
+        const w = ws[k / 4];
+        const x = xs[k % 4];
+        const p = x * w;
+        const zs = [0n, ones, -ones, big * 5n, -big * 5n, p, p + 1n, p - 1n, -p, 12345n];
+        return join(map(zs, (z) => `${plus(z, x, w)} ${plusLeft(z, w, x)} ${minus(z, x, w)} ${minus(z, w, x)}`), \"\\n\");
+    }), \"\\n\"));
+    print(minus(big, big, big));
+    return 0;
+}
+";
+    let bin = compile(src, "big_muladd");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.matches("call void @isc_big_muladd(").count() >= 3, "the calls of the fused operation");
+    for n in ["1", "3", "4", "5", "8", "9", "16", "41"] {
+        let want = interp_ok(src, &[n]);
+        let r = run_bin(&bin, &[n]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}: {}", n, r.stderr);
+    }
+}

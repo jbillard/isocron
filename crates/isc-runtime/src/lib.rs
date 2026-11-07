@@ -2850,6 +2850,17 @@ pub unsafe extern "C" fn isc_big_muladd_div(out: *mut IscStr, a: *const u8, an: 
     }
 }
 
+/// `z + x * y`, or `z - x * y` (`sub`), D406: in one pass when one of `x`
+/// and `y` is of one word and the processor has ADX, the product not made.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn isc_big_muladd(out: *mut IscStr, z: *const u8, zn: i64, x: *const u8, xn: i64, y: *const u8, yn: i64, sub: i32, line: i32, col: i32) {
+    match sem::big256::muladd(bytes_of(z, zn), bytes_of(x, xn), bytes_of(y, yn), sub != 0) {
+        Ok(v) => *out = adopt(alloc::string::String::from_utf8_unchecked(v)),
+        Err(e) => die(line, col, &e),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn isc_big_cmp(p: *const u8, n: i64, q: *const u8, m: i64) -> i32 {
     sem::big256::cmp(bytes_of(p, n), bytes_of(q, m)) as i32

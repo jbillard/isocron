@@ -9155,3 +9155,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`selftest_linux.sh`, `selftest_windows.py`, the example of the README by
   the `iscc` of the archive). `CHANGELOG.md`, the links of the README and of
   `tools/vscode/README.md` at 0.4.1.
+- **D406 — `z + x * y` and `z - x * y` of bigints in one pass with ADX
+  (2026-11-07).** TODO: pidigits 337.8 ms against its floor of 194,
+  `(acc + num * 2) * k2` and `(acc - den * d) * 10` three passes each
+  (the product by a word, the sum, the product) where the floor counts
+  two; one pass in Rust (a carry of 128 bits) was slower than the two
+  passes in assembly (+11.97 %, D389). Now the compiled code recognizes a
+  product bound to a temporary that only a sum or a difference reads
+  (`muladd_parts`: `z + x * y`, `x * y + z`, `z - x * y`) and calls
+  `isc_big_muladd`; when a factor is of one word and the processor has ADX
+  (read once by `cpuid`: not part of the levels x86-64-v3 and v4), one pass
+  in assembly, 4 words a turn: the product of each word by `mulx`, its high
+  word added to the next low one by the chain of `adcx` (CF), the word of
+  `z` added by the chain of `adox` (OF), the loop counted by `jrcxz` (no
+  flag read or written); a difference adds the complement of one side and
+  1 (OF set first), the larger magnitude chosen first from the lengths and
+  the top words (`p` is between `x[top] * w` and that plus `w` in the words
+  from the top of `x`), a difference below zero negated after only when
+  those leave it undecided. Otherwise the product then the sum, as before
+  (the same bytes: the values are canonical). The first version took `z -
+  p` always: pidigits 337.2 -> 348.5 ms (+3.35 %, 11 alternated runs), its
+  profile 474 of 3300 samples in the negation (with `acc` below zero, `acc
+  + num * 2` is a difference of magnitudes, often below zero). Alone (one
+  CPU, fixed frequency, a test of the runtime): 520 words 1.02 ns a word
+  against 1.21 for the two passes, 64 words 1.46 against 1.50. pidigits
+  (11 alternated runs, the same output): 337.2 -> 298.3 ms (-11.53 %,
+  medians -11.00 %), 1.54 times its floor of 194; the code of the nine
+  others the same. Tests `muladd_as_the_two_passes` (`isc-runtime-core`,
+  built for x86-64-v3 and v4: 30000 cases of 0 to 330 bytes, words of all
+  ones, every sign, `z` the product and one from it; more than 10000 of
+  them in one pass) and `big_multiply_adds_in_one_pass` (`stdlib.rs`: the
+  three forms, the interpreter's results).

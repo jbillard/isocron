@@ -905,6 +905,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_print_big(ptr, i64)",
     "declare void @isc_big_op(ptr, ptr, i64, ptr, i64, i32, i32, i32)",
     "declare void @isc_big_muladd_div(ptr, ptr, i64, ptr, i64, ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_big_muladd(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32)",
     "declare i32 @isc_big_cmp(ptr, i64, ptr, i64)",
     "declare void @isc_big_from_i64(ptr, i64)",
     "declare void @isc_big_from_u64(ptr, i64)",
@@ -1207,6 +1208,38 @@ fn muladd_div<'a>(t: VarId, init: &'a Expr, body: &'a Expr) -> Option<(&'a Expr,
         return None;
     }
     Some((&xy[0], &xy[1], z, &d[1], body.span))
+}
+
+/// `z + x * y`, `x * y + z` or `z - x * y` of bigints, the product bound to
+/// a temporary that only the sum reads (D406): the `let`s around the
+/// product (a literal bound for it), `x`, `y`, `z`, and whether it is a
+/// difference.
+#[allow(clippy::type_complexity)]
+fn muladd_parts<'a>(t: VarId, init: &'a Expr, body: &'a Expr) -> Option<(Vec<(VarId, &'a Expr, bool)>, &'a Expr, &'a Expr, &'a Expr, bool, Span)> {
+    use isc_ir::BigOp as B;
+    let is = |e: &Expr| matches!(e.kind, ExprKind::Var(w, _) if w == t);
+    let moved = |e: &Expr| matches!(e.kind, ExprKind::Var(_, Use::Move));
+    let (z, sub) = match &body.kind {
+        ExprKind::StrOp(isc_ir::StrOp::Big(B::Add), s) if s.len() == 2 && is(&s[1]) => (&s[0], false),
+        ExprKind::StrOp(isc_ir::StrOp::Big(B::Add), s) if s.len() == 2 && is(&s[0]) => (&s[1], false),
+        ExprKind::StrOp(isc_ir::StrOp::Big(B::Sub), s) if s.len() == 2 && is(&s[1]) => (&s[0], true),
+        _ => return None,
+    };
+    let mut lets = Vec::new();
+    let mut m = init;
+    while let ExprKind::Let { var, init: i, body: b, drop, stmt: false } = &m.kind {
+        lets.push((*var, &**i, *drop));
+        m = b;
+    }
+    let ExprKind::StrOp(isc_ir::StrOp::Big(B::Mul), xy) = &m.kind else { return None };
+    if xy.len() != 2 || moved(z) || mentions(z, &HashSet::from([t])) {
+        return None;
+    }
+    let bound: HashSet<VarId> = lets.iter().map(|l| l.0).collect();
+    if mentions(z, &bound) || xy.iter().any(|o| moved(o) || mentions(o, &HashSet::from([t]))) || lets.iter().any(|l| mentions(l.1, &HashSet::from([t]))) {
+        return None;
+    }
+    Some((lets, &xy[0], &xy[1], z, sub, body.span))
 }
 
 /// A count (D396): the sum, from 0, of a `map` of one input whose value is
@@ -3559,6 +3592,33 @@ impl<'p> Gen<'p> {
                 let args = parts.iter().map(|(p, n)| format!("ptr {}, i64 {}", p, n)).collect::<Vec<_>>().join(", ");
                 self.emit(format!("call void @isc_big_muladd_div(ptr {}, {}, {})", out, args, Self::pos(span)));
                 Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
+            }
+            // `z + x * y` or `z - x * y` of bigints: one call, one pass when
+            // one factor is of one word, the product not made (D406)
+            Let { var, init, body, drop: true, stmt: false } if w == 1 && !self.opts.isa.is_wasm() && muladd_parts(*var, init, body).is_some() => {
+                let (lets, x, y, z, sub, span) = muladd_parts(*var, init, body).unwrap();
+                let mut bound = Vec::new();
+                for (q, i, drop) in &lets {
+                    let iv = self.ex(i, 1)?;
+                    self.bind(*q, iv.clone());
+                    bound.push((*q, iv, *drop));
+                }
+                let mut parts = Vec::new();
+                for o in [z, x, y] {
+                    let val = self.ex(o, 1)?;
+                    parts.push(self.str_parts(&val));
+                }
+                let out = self.alloca("{ ptr, i64 }");
+                let args = parts.iter().map(|(p, n)| format!("ptr {}, i64 {}", p, n)).collect::<Vec<_>>().join(", ");
+                self.emit(format!("call void @isc_big_muladd(ptr {}, {}, i32 {}, {})", out, args, sub as i32, Self::pos(span)));
+                let r = v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }");
+                for (q, iv, drop) in bound.iter().rev() {
+                    if *drop {
+                        let t = self.var_ty(*q).clone();
+                        self.drop_value(iv, &t);
+                    }
+                }
+                Ok(r)
             }
             // keys made only to be grouped: grouped as they are made (D244)
             Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body).is_some() => self.group_stream(init, group_let_ok(*var, init, body) == Some(true)),

@@ -1218,6 +1218,19 @@ macro_rules! big_module {
         op(3, &s, d)
     }
 
+    /// `z + x * y`, or `z - x * y` (`sub`), D406: in one pass when one of
+    /// `x` and `y` is of one word (`limbs::muladd`), else the product then
+    /// the sum; the same value either way.
+    pub fn muladd(z: &[u8], x: &[u8], y: &[u8], sub: bool) -> Result<Vec<u8>, Panic<'static>> {
+        if $radix == 256 {
+            if let Some(r) = super::limbs::muladd(z, x, y, sub) {
+                return Ok(r);
+            }
+        }
+        let p = op(2, x, y)?;
+        op(if sub { 1 } else { 0 }, z, &p)
+    }
+
     pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
         if $radix == 256 {
             return super::limbs::cmp(a, b);
@@ -1937,6 +1950,256 @@ mod limbs {
         }
     }
 
+    /// Whether the processor has ADX (`adcx`, `adox`: two chains of carries,
+    /// one through CF, one through OF), read once by `cpuid` (leaf 7, bit
+    /// 19 of EBX): not part of the levels x86-64-v3 and v4 of the runtimes.
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    fn adx() -> bool {
+        use core::sync::atomic::{AtomicU8, Ordering as O};
+        static ADX: AtomicU8 = AtomicU8::new(0);
+        match ADX.load(O::Relaxed) {
+            1 => true,
+            2 => false,
+            _ => {
+                #[allow(unused_unsafe)]
+                // SAFETY: `cpuid` exists on every processor of x86-64
+                let r = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
+                let yes = r.ebx & (1 << 19) != 0;
+                ADX.store(if yes { 1 } else { 2 }, O::Relaxed);
+                yes
+            }
+        }
+    }
+
+    /// `z + x * y`, or `z - x * y` (`sub`), of values of `big256`, when
+    /// one of `x` and `y` is of one word and the processor has ADX (D406):
+    /// one pass over the words, where the product then the sum took two
+    /// (pidigits: `(acc + num * 2) * k2`, `(acc - den * d) * 10`). None
+    /// otherwise (the two passes). The words by 4 in assembly: the product
+    /// of each word by `mulx`, its high word added to the next low one by
+    /// the chain of `adcx` (CF), the word of `z` added by the chain of
+    /// `adox` (OF; for `-`, the complement of the product plus 1); the rest
+    /// in 128 bits. A difference below zero is negated (its sign turned).
+    pub fn muladd(z: &[u8], x: &[u8], y: &[u8], sub: bool) -> Option<Vec<u8>> {
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+        {
+            let _ = (z, x, y, sub);
+            None
+        }
+        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+        {
+            let (nz, mz) = split(z);
+            let (nx, mx) = split(x);
+            let (ny, my) = split(y);
+            let (mx, w) = if my.len() <= 8 {
+                (mx, word(my, 0))
+            } else if mx.len() <= 8 {
+                (my, word(mx, 0))
+            } else {
+                return None;
+            };
+            if mx.is_empty() || w == 0 || mz.is_empty() || !adx() {
+                return None;
+            }
+            // the sign of the product added: `z + p` or `z - p`
+            let pneg = (nx != ny) != sub;
+            // the magnitudes taken one from the other when the signs differ
+            let minus = pneg != nz;
+            let (zw, xw) = (mz.len().div_ceil(8), mx.len().div_ceil(8));
+            let len = zw.max(xw + 1);
+            // which magnitude is the larger, from the lengths and the top
+            // words (`p` is `x * w`: from `x[xw - 1] * w` to that plus `w`,
+            // in words from `xw - 1` on), so that the larger is taken from
+            // and no pass negates; undecided (rare): `z - p`, negated after
+            let p_larger = minus && {
+                if zw > xw + 1 {
+                    false
+                } else if zw + 1 < xw + 1 && zw < xw {
+                    true
+                } else {
+                    let q0 = (word(mx, xw - 1) as u128) * (w as u128);
+                    let zq = (word(mz, xw - 1) as u128) | ((word(mz, xw) as u128) << 64);
+                    zq < q0
+                }
+            };
+            // every byte written below: not zeroed first (D196)
+            let mut v: Vec<u8> = unwritten(1 + 8 * (len + 1));
+            let quads = (mz.len() / 8).min(mx.len() / 8) / 4;
+            let (mut c1, mut c2) = (0u64, minus as u64);
+            if quads > 0 {
+                let (mut xs, mut zs, mut d, mut n) = (mx.as_ptr(), mz.as_ptr(), v[1..].as_mut_ptr(), quads);
+                let (h, o): (u64, u8);
+                // SAFETY (each block): `quads * 32` bytes read from `mx` and
+                // `mz` (both hold as many whole words) and written to `v`
+                // from its byte 1 (it holds `len + 1` words); only `lea`,
+                // `mov`, `mulx` and `not` between the `adcx` and the `adox`
+                // of a chain, which leave CF and OF; the loop counted by
+                // `jrcxz`, which reads no flag
+                if !minus {
+                    unsafe {
+                        core::arch::asm!(
+                            "xor {h1:e}, {h1:e}",
+                            "mov {zr}, 0",
+                            "2:",
+                            "mulx {h0}, {l}, [{x}]",
+                            "adcx {l}, {h1}",
+                            "adox {l}, [{z}]",
+                            "mov [{d}], {l}",
+                            "mulx {h1}, {l}, [{x} + 8]",
+                            "adcx {l}, {h0}",
+                            "adox {l}, [{z} + 8]",
+                            "mov [{d} + 8], {l}",
+                            "mulx {h0}, {l}, [{x} + 16]",
+                            "adcx {l}, {h1}",
+                            "adox {l}, [{z} + 16]",
+                            "mov [{d} + 16], {l}",
+                            "mulx {h1}, {l}, [{x} + 24]",
+                            "adcx {l}, {h0}",
+                            "adox {l}, [{z} + 24]",
+                            "mov [{d} + 24], {l}",
+                            "lea {x}, [{x} + 32]",
+                            "lea {z}, [{z} + 32]",
+                            "lea {d}, [{d} + 32]",
+                            "lea rcx, [rcx - 1]",
+                            "jrcxz 3f",
+                            "jmp 2b",
+                            "3:",
+                            "adcx {h1}, {zr}",
+                            "seto {o}",
+                            x = inout(reg) xs, z = inout(reg) zs, d = inout(reg) d, inout("rcx") n, in("rdx") w,
+                            h1 = out(reg) h, h0 = out(reg) _, l = out(reg) _, zr = out(reg) _, o = lateout(reg_byte) o,
+                            options(nostack),
+                        )
+                    }
+                } else if !p_larger {
+                    // z + not(p) + 1: OF set first (the 1)
+                    unsafe {
+                        core::arch::asm!(
+                            "xor {h1:e}, {h1:e}",
+                            "mov {zr}, 0",
+                            "mov {l}, -1",
+                            "adox {l}, {l}",
+                            "2:",
+                            "mulx {h0}, {l}, [{x}]",
+                            "adcx {l}, {h1}",
+                            "not {l}",
+                            "adox {l}, [{z}]",
+                            "mov [{d}], {l}",
+                            "mulx {h1}, {l}, [{x} + 8]",
+                            "adcx {l}, {h0}",
+                            "not {l}",
+                            "adox {l}, [{z} + 8]",
+                            "mov [{d} + 8], {l}",
+                            "mulx {h0}, {l}, [{x} + 16]",
+                            "adcx {l}, {h1}",
+                            "not {l}",
+                            "adox {l}, [{z} + 16]",
+                            "mov [{d} + 16], {l}",
+                            "mulx {h1}, {l}, [{x} + 24]",
+                            "adcx {l}, {h0}",
+                            "not {l}",
+                            "adox {l}, [{z} + 24]",
+                            "mov [{d} + 24], {l}",
+                            "lea {x}, [{x} + 32]",
+                            "lea {z}, [{z} + 32]",
+                            "lea {d}, [{d} + 32]",
+                            "lea rcx, [rcx - 1]",
+                            "jrcxz 3f",
+                            "jmp 2b",
+                            "3:",
+                            "adcx {h1}, {zr}",
+                            "seto {o}",
+                            x = inout(reg) xs, z = inout(reg) zs, d = inout(reg) d, inout("rcx") n, in("rdx") w,
+                            h1 = out(reg) h, h0 = out(reg) _, l = out(reg) _, zr = out(reg) _, o = lateout(reg_byte) o,
+                            options(nostack),
+                        )
+                    }
+                } else {
+                    // p + not(z) + 1: OF set first (the 1)
+                    unsafe {
+                        core::arch::asm!(
+                            "xor {h1:e}, {h1:e}",
+                            "mov {zr}, 0",
+                            "mov {l}, -1",
+                            "adox {l}, {l}",
+                            "2:",
+                            "mulx {h0}, {l}, [{x}]",
+                            "mov {t}, [{z}]",
+                            "adcx {l}, {h1}",
+                            "not {t}",
+                            "adox {l}, {t}",
+                            "mov [{d}], {l}",
+                            "mulx {h1}, {l}, [{x} + 8]",
+                            "mov {t}, [{z} + 8]",
+                            "adcx {l}, {h0}",
+                            "not {t}",
+                            "adox {l}, {t}",
+                            "mov [{d} + 8], {l}",
+                            "mulx {h0}, {l}, [{x} + 16]",
+                            "mov {t}, [{z} + 16]",
+                            "adcx {l}, {h1}",
+                            "not {t}",
+                            "adox {l}, {t}",
+                            "mov [{d} + 16], {l}",
+                            "mulx {h1}, {l}, [{x} + 24]",
+                            "mov {t}, [{z} + 24]",
+                            "adcx {l}, {h0}",
+                            "not {t}",
+                            "adox {l}, {t}",
+                            "mov [{d} + 24], {l}",
+                            "lea {x}, [{x} + 32]",
+                            "lea {z}, [{z} + 32]",
+                            "lea {d}, [{d} + 32]",
+                            "lea rcx, [rcx - 1]",
+                            "jrcxz 3f",
+                            "jmp 2b",
+                            "3:",
+                            "adcx {h1}, {zr}",
+                            "seto {o}",
+                            x = inout(reg) xs, z = inout(reg) zs, d = inout(reg) d, inout("rcx") n, in("rdx") w,
+                            h1 = out(reg) h, h0 = out(reg) _, l = out(reg) _, t = out(reg) _, zr = out(reg) _, o = lateout(reg_byte) o,
+                            options(nostack),
+                        )
+                    }
+                }
+                let _ = (xs, zs, d, n);
+                c1 = h;
+                c2 = o as u64;
+            }
+            for i in quads * 4..len {
+                let p = (word(mx, i) as u128) * (w as u128) + c1 as u128;
+                c1 = (p >> 64) as u64;
+                let (a, b) = match (minus, p_larger) {
+                    (false, _) => (word(mz, i), p as u64),
+                    (true, false) => (word(mz, i), !(p as u64)),
+                    (true, true) => (!word(mz, i), p as u64),
+                };
+                let t = a as u128 + b as u128 + c2 as u128;
+                c2 = (t >> 64) as u64;
+                v[1 + 8 * i..9 + 8 * i].copy_from_slice(&(t as u64).to_le_bytes());
+            }
+            let mut neg = if p_larger { pneg } else { nz };
+            if minus && c2 == 0 {
+                // below zero (undecided by the top words): the difference is
+                // 2^(64 len) less what was written, negated (two's
+                // complement), its sign turned
+                let mut c = 1u64;
+                for i in 0..len {
+                    let x = u64::from_le_bytes(v[1 + 8 * i..9 + 8 * i].try_into().unwrap());
+                    let (r, o) = (!x).overflowing_add(c);
+                    c = o as u64;
+                    v[1 + 8 * i..9 + 8 * i].copy_from_slice(&r.to_le_bytes());
+                }
+                neg = !neg;
+            }
+            // the last carry of a sum (none for a difference)
+            let top = if minus { 0 } else { c2 };
+            v[1 + 8 * len..9 + 8 * len].copy_from_slice(&top.to_le_bytes());
+            v[0] = if neg { b'-' } else { b'+' };
+            Some(Out(v).done())
+        }
+    }
+
     /// The order of two values of `big256`.
     pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
         let (na, ma) = split(a);
@@ -1957,6 +2220,99 @@ mod limbs {
     #[cfg(test)]
     pub fn divrem_for_test(a: &[u64], b: &[u64]) -> (Vec<u64>, Vec<u64>) {
         divrem(a, b)
+    }
+
+    /// D406: `muladd` gives the bytes of the product then the sum (`op`):
+    /// magnitudes of 0 to 330 bytes (partial last words, the 4 words of
+    /// the assembly and the rest), words of all ones (every carry), every
+    /// sign, `z` the product itself, one more and one less (a difference
+    /// of zero, of one, below zero), a multiplier of one word in `x` or
+    /// `y`.
+    /// D406: the time of each way (not a check: run by hand).
+    #[test]
+    #[ignore]
+    fn muladd_timed() {
+        extern crate std;
+        let make = |n: usize, b: u8| -> Vec<u8> {
+            let mut v = alloc::vec![b'+'];
+            for i in 0..n {
+                v.push((i as u8).wrapping_mul(37).wrapping_add(b) | 1);
+            }
+            v
+        };
+        for n in [520 * 8, 64 * 8] {
+            let (z, x, y) = (make(n, 3), make(n - 3, 7), alloc::vec![b'+', 0x35, 0x12, 0x07]);
+            let rounds = 4_000_000 / n;
+            for sub in [false, true] {
+                let t0 = std::time::Instant::now();
+                let mut acc = 0usize;
+                for _ in 0..rounds {
+                    acc += muladd(&z, &x, &y, sub).unwrap().len();
+                }
+                let t1 = std::time::Instant::now();
+                for _ in 0..rounds {
+                    let p = op(2, &x, &y).unwrap();
+                    acc += op(if sub { 1 } else { 0 }, &z, &p).unwrap().len();
+                }
+                let t2 = std::time::Instant::now();
+                let words = (rounds * n / 8) as f64;
+                std::println!("{} words sub {}: one pass {:.3} ns a word, two passes {:.3} ns a word ({})", n / 8, sub, (t1 - t0).as_nanos() as f64 / words, (t2 - t1).as_nanos() as f64 / words, acc);
+            }
+        }
+    }
+
+    #[test]
+    fn muladd_as_the_two_passes() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut make = |bytes: usize, neg: bool, ones: bool| -> Vec<u8> {
+            let mut v = alloc::vec![if neg { b'-' } else { b'+' }];
+            for _ in 0..bytes {
+                v.push(if ones { 0xff } else { next() as u8 });
+            }
+            while v.last() == Some(&0) {
+                v.pop();
+            }
+            if v.len() == 1 {
+                v.clear();
+            }
+            v
+        };
+        let mut fused = 0;
+        let mut k = 0u64;
+        for case in 0..30000u64 {
+            k = k.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407 + case);
+            let zb = (k >> 8) as usize % 331;
+            let xb = (k >> 20) as usize % 331;
+            let yb = (k >> 32) as usize % 9;
+            let ones = k >> 60 == 0;
+            let x = make(xb, k & 1 != 0, ones);
+            let y = make(yb, k & 2 != 0, ones && k & 16 != 0);
+            let sub = k & 4 != 0;
+            let p = op(2, &x, &y).unwrap();
+            let z = match (k >> 40) % 5 {
+                0 => p.clone(),
+                1 => op(0, &p, b"+\x01").unwrap(),
+                2 => op(1, &p, b"+\x01").unwrap(),
+                _ => make(zb, k & 8 != 0, ones),
+            };
+            let want = op(if sub { 1 } else { 0 }, &z, &p).unwrap();
+            let (x, y) = if k & 32 != 0 { (y, x) } else { (x, y) };
+            if let Some(r) = muladd(&z, &x, &y, sub) {
+                assert_eq!(r, want, "case {}: z {:?} x {:?} y {:?} sub {}", case, z, x, y, sub);
+                fused += 1;
+            }
+        }
+        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+        if adx() {
+            assert!(fused > 10000, "{} cases in one pass", fused);
+        }
+        let _ = fused;
     }
 }
 
