@@ -33,6 +33,14 @@ action main(args: string[k]): i32 {
         Ok(r) => print(`${r.status} ${http.text(r)}`),
         Err(e) => print(http.message(e)),
     };
+    match (http.get(base + "/surrogate")) {
+        Ok(r) => print(r.status),
+        Err(e) => print(http.message(e)),
+    };
+    match (http.get(base + "/surrogate-body")) {
+        Ok(r) => print(`${r.status} ${http.text(r)}`),
+        Err(e) => print(http.message(e)),
+    };
     match (http.get("http://127.0.0.1:1/")) {
         Ok(r) => print(r.status),
         Err(e) => print(http.message(e)),

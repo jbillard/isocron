@@ -108,6 +108,9 @@ fn http_server() -> u16 {
                     r
                 }
                 "/redirect" => b"HTTP/1.1 302 Found\r\nLocation: /hello\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                // D451: a surrogate (ED A0 80) in a header, then in a body
+                "/surrogate" => b"HTTP/1.1 200 OK\r\nX-Bad: a\xed\xa0\x80\r\nContent-Length: 2\r\n\r\nhi".to_vec(),
+                "/surrogate-body" => b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na\xed\xa0\x80".to_vec(),
                 // chunks of every size (one of 300000 bytes), a head of 40
                 // headers, all sent below in pieces cut anywhere
                 "/split" => {
@@ -163,7 +166,8 @@ fn http_server() -> u16 {
 /// header, 3 MiB read by their length, 1000 chunks, chunks of every size
 /// received in pieces cut anywhere (a chunk of 300000 bytes read by
 /// pieces), a redirection not
-/// followed, a POST with a header of UTF-8 and a body, a connection
+/// followed, a POST with a header of UTF-8 and a body, a head with a
+/// surrogate (not text, D451) and a body with one (`?` by `text`), a connection
 /// refused, a header that is not a token refused before sending; compiled
 /// and interpreted, the same outputs; Valgrind.
 #[test]
@@ -173,7 +177,7 @@ fn client_against_a_server_of_the_test() {
     let chunks: (u64, u64) = (0..1000u64).fold((0, 0), |(n, s), i| (n + i % 37 + 1, s + (0..(i % 37 + 1)).map(|j| (i + j) % 256).sum::<u64>()));
     let split: (usize, usize) = split_sizes().iter().fold((0, 0), |(n, s), &len| (n + len, s + (0..len).map(|j| (j * 7 + len) % 256).sum::<usize>()));
     let want = format!(
-        "[/hello, /big, /chunks, /redirect, /missing]\n200 2 209 hi test\n200 3145728 {}\n200 {} {}\n200 {} {} {}\n302 /hello\n201 POST été a body\nrefused: 127.0.0.1:1\nmalformed: the header Bad Name\n",
+        "[/hello, /big, /chunks, /redirect, /missing]\n200 2 209 hi test\n200 3145728 {}\n200 {} {}\n200 {} {} {}\n302 /hello\n201 POST été a body\nmalformed: the head is not text\n200 a???\nrefused: 127.0.0.1:1\nmalformed: the header Bad Name\n",
         big, chunks.0, chunks.1, split.0, split.1, "v".repeat(39 * 7)
     );
     let src = include_str!("data/std_http_get.isc");
@@ -187,7 +191,8 @@ fn client_against_a_server_of_the_test() {
 /// first (the kernel keeps their requests until it accepts them): two
 /// requests one after the other on a connection, a body by its length,
 /// HEAD (no body), HTTP/1.0 (closed after), a request that is not one
-/// (400), `chunked` (501), a path not known (404), no `Host` (400); the
+/// (400), `chunked` (501), a path not known (404), no `Host` (400), a
+/// header of UTF-8, a header with a surrogate (400, D451); the
 /// date hidden; compiled (1 and 4 threads) and interpreted, the same
 /// outputs; Valgrind.
 #[test]
@@ -514,4 +519,43 @@ action main(args: string[k]): i32 {
     let bin = compile(src, "http_dates");
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+}
+
+/// D451: `text` of every body of a byte `a`, a lead byte from 0x80 to 0xFF
+/// and three bytes at the edges of the ranges of continuations (0x7F,
+/// 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0): the text when Rust's
+/// `from_utf8` takes the bytes, else each byte from 0x80 a `?` (the check
+/// of the module refused overlong forms, surrogates and characters above
+/// U+10FFFF that it took before, and `stringOf` panicked on them);
+/// compiled and interpreted.
+#[test]
+fn text_of_bodies_at_the_edges_of_utf8() {
+    let src = "import * as http from \"http\";
+
+action main(args: string[k]): i32 {
+    const edges = [0x7Fu8, 0x80u8, 0x8Fu8, 0x90u8, 0x9Fu8, 0xA0u8, 0xBFu8, 0xC0u8];
+    const hs = [[\"Server\", \"isc\"] as const];
+    print(join(map(iota(128 * 512), (i) => {
+        const b = [0x61u8, u8(0x80 + i / 512), edges[(i / 64) % 8], edges[(i / 8) % 8], edges[i % 8]];
+        const r: http.Response = { status: 200, headers: hs, body: b };
+        return http.text(r);
+    }), \"\\n\"));
+    return 0;
+}
+";
+    let edges = [0x7Fu8, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0];
+    let mut want = String::new();
+    for i in 0..128 * 512 {
+        let b = [0x61u8, (0x80 + i / 512) as u8, edges[(i / 64) % 8], edges[(i / 8) % 8], edges[i % 8]];
+        match std::str::from_utf8(&b) {
+            Ok(t) => want.push_str(t),
+            Err(_) => want.extend(b.iter().map(|&x| if x >= 0x80 { '?' } else { x as char })),
+        }
+        want.push('\n');
+    }
+    let r = run_bin(&compile(src, "text_edges"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "compiled: the first line that differs: {:?}", r.stdout.lines().zip(want.lines()).find(|(a, b)| a != b));
+    let got = interp_ok(src, &[]);
+    assert!(got == want, "interpreter: the first line that differs: {:?}", got.lines().zip(want.lines()).find(|(a, b)| a != b));
 }

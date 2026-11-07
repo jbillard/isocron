@@ -240,3 +240,48 @@ action main(args: string[k]): i32 {
     let o = c.output().unwrap();
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "interpreted: {}", String::from_utf8_lossy(&o.stderr));
 }
+
+/// D451: `readText` refuses the bytes that the runtime would not take as
+/// UTF-8 (an error, not a panic of `stringOf`): an encoded surrogate, an
+/// overlong form of three and of four bytes, a character above U+10FFFF,
+/// a character cut at the end; it takes the largest characters of each
+/// length before them; the interpreter and compiled, the same outputs.
+#[test]
+fn read_text_refuses_bytes_not_utf8() {
+    let src = "import * as sys from \"sys\";
+
+action main(args: string[k]): i32 {
+    print(join(map(iota(parseI64(args[1])), (i) => match (sys.readText(`${args[0]}/f${i}`)) {
+        Ok(t) => `ok ${t.length}`,
+        Err(e) => sys.message(e).endsWith(\"not UTF-8\") ? \"not UTF-8\" : \"other\",
+    }), \" | \"));
+    return 0;
+}
+";
+    let files: [&[u8]; 9] = [
+        b"a\xed\xa0\x80",
+        b"a\xe0\x80\x80",
+        b"a\xf0\x80\x80\x80",
+        b"a\xf4\x90\x80\x80",
+        b"a\xe2\x82",
+        b"\xed\x9f\xbf\xee\x80\x80",
+        b"\xf4\x8f\xbf\xbf\xf0\x90\x80\x80",
+        b"\xdf\xbf\xc2\x80",
+        b"\xef\xbf\xbf",
+    ];
+    let dir = std::env::temp_dir().join(format!("isc_read_text_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (i, f) in files.iter().enumerate() {
+        std::fs::write(dir.join(format!("f{}", i)), f).unwrap();
+    }
+    let want = files.iter().map(|f| match std::str::from_utf8(f) {
+        Ok(t) => format!("ok {}", t.len()),
+        Err(_) => "not UTF-8".to_string(),
+    }).collect::<Vec<_>>().join(" | ") + "\n";
+    let d = dir.to_str().unwrap().to_string();
+    let n = files.len().to_string();
+    assert_eq!(interp_ok(src, &[&d, &n]), want, "interpreter");
+    let r = run_bin(&compile(src, "read_text_not_utf8"), &[&d, &n]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "compiled: {}", r.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}

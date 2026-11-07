@@ -313,29 +313,37 @@ action readChunked(c: net.Conn, status: i64, hs: [string, string][h], buf: u8[n]
     };
 }
 
-// the bytes of `b` are UTF-8
+// the bytes of `b` are UTF-8 as the runtime takes them (D451): each
+// character a lead byte then the continuations it wants, the first in the
+// range its lead allows (no overlong form, no surrogate, nothing above
+// U+10FFFF). The state of the fold: -1 (not UTF-8), 0 (between
+// characters), or the continuations still wanted times 65536 plus the
+// range of the next one (its lowest byte times 256 plus its highest).
 function utf8(b: u8[n]): boolean {
     if (count(b, (x) => x >= 0x80u8) == 0) {
         return true;
     }
-    return fold(b, 0, (want, x) => {
-        if (want < 0) {
+    return fold(b, 0, (s, x) => {
+        if (s < 0) {
             return -1;
         }
-        if (want > 0) {
-            return (x & 0xC0u8) == 0x80u8 ? want - 1 : -1;
+        const c = i64(x);
+        if (s > 0) {
+            const want = s / 65536;
+            const fits = c >= (s / 256) % 256 && c <= s % 256;
+            return fits ? (want == 1 ? 0 : (want - 1) * 65536 + 0x80BF) : -1;
         }
-        if (x < 0x80u8) {
+        if (c < 0x80) {
             return 0;
         }
-        if ((x & 0xE0u8) == 0xC0u8 && x >= 0xC2u8) {
-            return 1;
+        if (c >= 0xC2 && c <= 0xDF) {
+            return 65536 + 0x80BF;
         }
-        if ((x & 0xF0u8) == 0xE0u8) {
-            return 2;
+        if (c >= 0xE0 && c <= 0xEF) {
+            return 2 * 65536 + (c == 0xE0 ? 0xA0BF : (c == 0xED ? 0x809F : 0x80BF));
         }
-        if ((x & 0xF8u8) == 0xF0u8 && x <= 0xF4u8) {
-            return 3;
+        if (c >= 0xF0 && c <= 0xF4) {
+            return 3 * 65536 + (c == 0xF0 ? 0x90BF : (c == 0xF4 ? 0x808F : 0x80BF));
         }
         return -1;
     }) == 0;

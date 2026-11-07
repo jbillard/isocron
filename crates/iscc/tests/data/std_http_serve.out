@@ -1,4 +1,6 @@
 served
+c9: HTTP/1.1 400 Bad Request | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 11 | Connection: close |  | Bad Request
+c8: HTTP/1.1 200 OK | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 7 | Connection: close |  | 3 été
 c7: HTTP/1.1 400 Bad Request | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 11 | Connection: close |  | Bad Request
 c6: HTTP/1.1 404 Not Found | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 11 | Connection: close |  | no /missing
 c5: HTTP/1.1 501 Not Implemented | Date: - | Content-Type: text/plain; charset=utf-8 | Content-Length: 15 | Connection: close |  | Not Implemented

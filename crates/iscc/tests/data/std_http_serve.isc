@@ -32,11 +32,12 @@ action show(name: string, text: string): void {
     print(`${name}: ${join(lines, " | ")}`);
 }
 
-// clients connected and their requests written, the server run until it
-// has answered them all, then each client's responses read
-action clients(l: net.Listener, port: i64, rs: string[n], i: i64, cs: string): void {
-    if (i >= rs.length) {
-        match (http.serveOn(l, handle, 9)) {
+// clients connected and their requests written (the texts `rs`, then the
+// bytes `bad`), the server run until it has answered them all, then each
+// client's responses read
+action clients(l: net.Listener, port: i64, rs: string[n], i: i64, bad: u8[]): void {
+    if (i > rs.length) {
+        match (http.serveOn(l, handle, 11)) {
             Ok(_) => print("served"),
             Err(e) => print("serve failed"),
         };
@@ -44,8 +45,8 @@ action clients(l: net.Listener, port: i64, rs: string[n], i: i64, cs: string): v
     }
     match (net.connect("127.0.0.1", port)) {
         Ok(c) => {
-            const w = net.writeText(c, rs[i]);
-            clients(l, port, rs, i + 1, cs);
+            const w = i < rs.length ? net.writeText(c, rs[i]) : net.write(c, bad);
+            clients(l, port, rs, i + 1, bad);
             show(`c${i + 1}`, readAll(c, ""));
             net.close(c);
         },
@@ -65,11 +66,14 @@ action main(args: string[k]): i32 {
         "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n",
         "GET /missing HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
         "GET / HTTP/1.1\r\n\r\n",
+        "GET /headers HTTP/1.1\r\nHost: a\r\nX-Test: été\r\nConnection: close\r\n\r\n",
     ];
+    // D451: a header with a surrogate (ED A0 80): 400, the server going on
+    const bad: u8[] = concat(concat(bytes("GET /headers HTTP/1.1\r\nHost: a\r\nX-Test: a"), [0xEDu8, 0xA0u8, 0x80u8]), bytes("\r\nConnection: close\r\n\r\n"));
     match (net.listen("127.0.0.1", 0)) {
         Ok(l) => {
             const port = net.port(l);
-            clients(l, port, rs, 0, "");
+            clients(l, port, rs, 0, bad);
         },
         Err(e) => print("listen failed"),
     };

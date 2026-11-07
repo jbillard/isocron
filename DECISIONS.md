@@ -10029,3 +10029,31 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     checked; a table with `é` checked, the same panic as the interpreter
     for a text cut in a character; with the bound taken up to 0xff the
     test fails).
+- **D451 — The checks of UTF-8 of the library as exact as the runtime's
+  (2026-11-07).** The modules `http`, `sys` and `json` each checked bytes
+  as UTF-8 by a fold that only looked at the classes of the bytes: it took
+  an encoded surrogate (`ED A0 80`), the overlong forms of three and four
+  bytes (`E0 80 80`, `F0 80 80 80`) and the characters above U+10FFFF
+  (`F4 90 80 80`), which the runtime (`from_utf8`) refuses; `stringOf`
+  then panicked on them. Found while measuring `http.text`. Its effects:
+  - the server (`serve`, `serveOn`, `serveAction`): a request with such
+    bytes in its head passed the check of its frame, then `stringOf` of a
+    header panicked (`http.isc`, line 711): one request ended the program
+    (a refusal of service from any client);
+  - the client: a head of response with such bytes panicked instead of
+    `Malformed("the head is not text")`, and `text` of such a body
+    panicked instead of giving `?` for its bytes;
+  - `sys.readText` of such a file panicked instead of `not UTF-8`;
+  - `json`: its check reads the bytes of a text, already UTF-8 (no
+    effect).
+  Now the fold keeps the range of the next continuation by the lead byte
+  (`E0`: A0 to BF, `ED`: 80 to 9F, `F0`: 90 to BF, `F4`: 80 to 8F, the
+  others 80 to BF), as RFC 3629 and the runtime. Tests: `text` of 65536
+  bodies of a lead byte from 0x80 and three bytes at the edges of the
+  ranges, against Rust's `from_utf8` (`text_of_bodies_at_the_edges_of_utf8`,
+  compiled and interpreted; the old module panics); `readText` of 9 files
+  (`read_text_refuses_bytes_not_utf8`); the client against a head and a
+  body with a surrogate (`client_against_a_server_of_the_test`); the
+  server against a header with a surrogate (400, the server going on) and
+  a header of UTF-8 (`server_on_requests_of_every_form`; with the old
+  module the server panics).
