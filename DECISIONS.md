@@ -9788,3 +9788,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `from_utf8`). Left: the body still checked twice (`utf8` of the module,
   then `stringOf`): a text of bytes already checked needs a primitive that
   checks once and says so, pure, which the primitives (actions) have not.
+- **D437 — The rest of a count in one masked vector (2026-11-07).** The
+  count of `json.quote` (D396) over a text of 16 bytes, shorter than its
+  vector of 32, went to the loop of single elements. Now `count_kept`
+  counts the rest (after its whole vectors) in one vector whose lanes
+  past the end are masked, when the elements are read from memory (a
+  masked load reads nothing past the end) and the predicate cannot fail
+  in a lane (`masked_safe`: variables, literals, comparisons, logic,
+  arithmetic but division and remainder, conversions, choices, `let`s),
+  on a target with masked loads of bytes (AVX-512 BW and VL; AVX2 has
+  none for bytes and keeps the loop). The model was wrong: LLVM had made
+  the loop of the rest vector code already. Measured (one CPU, fixed
+  frequency, 11 alternated runs): `quote.escaped` alone in its program
+  95.15 -> 93.27 ns (-2.0 %), `quote.plain` 9.67 -> 9.61 ns (-0.6 %);
+  reverse-complement 28.1 -> 27.7 ms (-1.45 %), k-nucleotide 614.4 ->
+  612.6 ms (-0.30 %, 15 alternated runs, the same outputs). In the binary
+  of the group of `json`, `quote.escaped` 98.06 -> 106.29 ns, and in
+  `http`'s `text.1k` 74.19 -> 63.17 ns, both by the place of the code: the
+  program of `text.1k` alone, 68.57 -> 61.40 ns, runs the same
+  `utf8_check` (the same instructions, at a multiple of 64 in both) with
+  0.79 then 0.03 mispredicted branches an iteration (218 -> 199 cycles,
+  818 -> 809 instructions). Test `counts_with_a_masked_rest` (`bitwise.rs`:
+  arrays of bytes and of `i32` of 0 to 100 elements, slices at every
+  offset, counts and `filter`s, the code for the machine and for AVX2,
+  the interpreter's values; without the mask of the lanes it fails at 33
+  elements).

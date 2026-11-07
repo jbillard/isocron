@@ -483,3 +483,41 @@ fn filters_read_by_windows() {
         }
     }
 }
+
+/// D437: the rest of a count (the elements after its whole vectors) in one
+/// vector whose lanes past the end are masked, on a target with masked
+/// loads of bytes; one element at a time on the others. Arrays of bytes and
+/// of `i32` of 0 to 100 elements (every rest of the vectors), slices at
+/// every offset, predicates of comparisons, logic and arithmetic (the
+/// masked lanes zero), counts and `filter`s; the interpreter's values, with
+/// the code for the machine and for AVX2.
+#[test]
+fn counts_with_a_masked_rest() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const b = map(iota(n), (i) => u8((i * 37 + 11) % 256));
+    const w = map(iota(n), (i) => i32((i * 7919) % 2000 - 1000));
+    const offs = iota(Math.min(n, 9));
+    print(map(offs, (o) => count(b.slice(o, n), (c) => c < 32u8 || c == 34u8 || c >= 200u8)));
+    print(map(offs, (o) => count(b.slice(o, n), (c) => (c & 7u8) == 3u8)));
+    print(map(offs, (o) => count(w.slice(o, n), (x) => x * 3 + 1 > 0)));
+    print(map(offs, (o) => b.slice(o, n).filter((c) => c != 10u8 && c > 100u8).length));
+    print(count(b, (c) => c == 0u8));
+    return 0;
+}
+";
+    let native = compile(src, "masked_rest");
+    let avx2 = compile_with(src, "masked_rest_avx2", isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() });
+    let ll = std::fs::read_to_string(native.with_extension("ll")).unwrap();
+    let wide = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default().contains("avx512bw");
+    assert_eq!(ll.contains("llvm.masked.load.v32i8"), wide, "a masked rest on the machine");
+    for n in 0..=100 {
+        let a = n.to_string();
+        let Outcome::Exit(0, want) = interp(src, &[&a]) else { panic!("the interpreter failed for {}", n) };
+        for bin in [&native, &avx2] {
+            let r = run_bin_threads(bin, &[&a], Some(1));
+            assert_eq!(r.code, 0, "n {}: {}", n, r.stderr);
+            assert_eq!(r.stdout, want, "n {}", n);
+        }
+    }
+}

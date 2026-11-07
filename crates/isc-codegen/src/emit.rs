@@ -1891,6 +1891,19 @@ fn count_users(p: &Program) -> HashMap<u32, (usize, &Lambda)> {
     users
 }
 
+/// A predicate that no lane can make fail (D437): only its parameter and
+/// other variables, literals, comparisons, logic, arithmetic but division
+/// and remainder, conversions, choices and `let`s; no read of an array, no
+/// call. Evaluated on the masked lanes of a vector too.
+fn masked_safe(e: &Expr) -> bool {
+    let here = match &e.kind {
+        ExprKind::Var(..) | ExprKind::Lit(_) | ExprKind::Unary(..) | ExprKind::Convert(_) | ExprKind::If(..) | ExprKind::Let { .. } => true,
+        ExprKind::Binary(op, _, _) => !matches!(op, BinOp::Div | BinOp::Rem),
+        _ => false,
+    };
+    here && e.children().into_iter().all(masked_safe)
+}
+
 /// At most this many elements in a table copied by `period_tables`: the
 /// copy made before each vector loop, on the stack.
 const PERIOD_MAX: i64 = 4096;
@@ -8744,6 +8757,41 @@ impl<'p> Gen<'p> {
                 Ok(())
             })?;
             from = vend;
+            // the rest in one vector, its lanes past `hi` masked, when the
+            // elements are read from memory (a masked load reads nothing
+            // there) and the predicate cannot fail in a lane (D437: a text
+            // shorter than a vector was counted one byte at a time)
+            // (AVX-512 BW and VL: a masked load of bytes is one instruction,
+            // AVX2 has none for bytes)
+            if let Src::Mat { ptr, elem, .. } = src {
+                if matches!(elem, Type::Int(_)) && masked_safe(&l.body) && BYTE_MASKS.with(|b| b.get()) {
+                    let m = mt(elem);
+                    let vm = format!("<{} x {}>", w, m);
+                    let rest = self.ins(format!("sub i64 {}, {}", hi, from));
+                    let some = self.ins(format!("icmp sgt i64 {}, 0", rest));
+                    let (lrest, ldone) = (self.label(), self.label());
+                    self.cbr(&some, &lrest, &ldone);
+                    self.block(&lrest);
+                    let rw = self.widen(&v(rest.clone(), "i64"), w);
+                    let steps: Vec<String> = (0..w).map(|j| format!("i64 {}", j)).collect();
+                    let lanes = self.ins(format!("icmp ult <{} x i64> <{}>, {}", w, steps.join(", "), rw.r));
+                    let at = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, from));
+                    let name = format!("llvm.masked.load.v{}{}.p0", w, m);
+                    self.decls.insert(format!("declare {} @{}(ptr, i32, <{} x i1>, {})", vm, name, w, vm));
+                    let x = self.ins(format!("call {} @{}(ptr {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, at, esize(elem), w, lanes, vm));
+                    let keep = self.kept_mask(src, l, &from, w, &V { r: x, t: vm, uni: false })?;
+                    let kept = self.ins(format!("and <{} x i1> {}, {}", w, keep.r, lanes));
+                    let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, kept, w));
+                    let k = self.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
+                    let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
+                    let c = self.ins(format!("load i64, ptr {}", cnt));
+                    let c2 = self.ins(format!("add i64 {}, {}", c, k64));
+                    self.emit(format!("store i64 {}, ptr {}", c2, cnt));
+                    self.br(&ldone);
+                    self.block(&ldone);
+                    return Ok(self.ins(format!("load i64, ptr {}", cnt)));
+                }
+            }
         }
         self.for_range(&from, hi, 1, &mut |g, i| {
             let el = g.elem(src, i, 1)?;
