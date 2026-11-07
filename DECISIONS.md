@@ -9907,3 +9907,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   11.4 -> 16.1 ns (its ratio 1.9 -> 1.7: the measure of that series, its
   code unchanged). Test `counts_with_a_masked_rest` (counts of 0 to 100
   elements, so these short ones too, for the machine and for AVX2).
+- **D444 — The Benchmarks Game measured again at efded9d (2026-11-07).**
+  After D439 to D443 (the outputs of six programs written by D441, the
+  runtime by D440): the image built with the `iscc` of efded9d, the
+  programs built and checked against the references (102 checks, the same
+  outputs; the known difference of C++ #4 of mandelbrot at N = 200 only),
+  then measured in Docker (4 threads, 12 runs, the lowest). The fastest on
+  10 of 10, the times within their scatter of D438 (binary-trees 666 ->
+  663 ms, n-body 1879 -> 1885 ms, regex-redux 81 -> 82 ms,
+  reverse-complement 28 -> 27 ms, the others the same to 1 ms).
+  `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
