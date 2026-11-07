@@ -124,6 +124,11 @@ pub struct Lower<'p> {
     /// its layout is computed (it refers to itself).
     rec_ids: RefCell<HashMap<(u32, Vec<Ty>), u32>>,
     recs: RefCell<Vec<Option<RecType>>>,
+    /// The tuples of the sum types laid out, with the slots of each variant;
+    /// the tuples of records, tuples and pairs of `zip`, which a sum of the
+    /// same tuple could not be told from (D448).
+    sum_types: RefCell<Vec<(Type, Vec<Vec<u32>>)>>,
+    plain_tuples: RefCell<HashSet<Type>>,
     /// The functions with `requireFused` or `requireNoAlloc` met, with
     /// their type arguments (D106).
     required: Vec<(FnId, Vec<Ty>)>,
@@ -193,6 +198,8 @@ impl<'p> Lower<'p> {
             rets: Vec::new(),
             rec_ids: RefCell::new(HashMap::new()),
             recs: RefCell::new(Vec::new()),
+            sum_types: RefCell::new(Vec::new()),
+            plain_tuples: RefCell::new(HashSet::new()),
             required: Vec::new(),
             choices: Vec::new(),
             reassoc_fns: Vec::new(),
@@ -313,7 +320,8 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let fns: Vec<Function> = l.fns.into_iter().map(|f| f.expect("a recursive function lowered")).collect();
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new() })
+    let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -372,6 +380,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         reassoc_fns: std::mem::take(&mut l.reassoc_fns),
         externs: extern_fns(p),
         sys_paths: isc_types::check::system_paths(p),
+        sum_slots: sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow()),
     })
 }
 
@@ -576,6 +585,30 @@ fn pat_locals(p: &TPat, out: &mut HashSet<LocalId>) {
 }
 
 
+/// The tuples of sum types whose values are told apart by their type alone
+/// (D448): the tag (`u32`) first, at least two variants, one layout of slots
+/// for the tuple, and no record, tuple or pair of `zip` of the same tuple.
+fn sum_slots(sums: &[(Type, Vec<Vec<u32>>)], plain: &HashSet<Type>) -> Vec<(Type, Vec<Vec<u32>>)> {
+    let mut out: Vec<(Type, Vec<Vec<u32>>)> = Vec::new();
+    let mut bad: HashSet<Type> = HashSet::new();
+    for (t, slots) in sums {
+        let tagged = matches!(t, Type::Tuple(cs) if matches!(cs.first(), Some(Type::Int(IntKind::U32))));
+        if !tagged || slots.len() < 2 || plain.contains(t) {
+            bad.insert(t.clone());
+            continue;
+        }
+        match out.iter().find(|(u, _)| u == t) {
+            Some((_, s)) if s != slots => {
+                bad.insert(t.clone());
+            }
+            Some(_) => {}
+            None => out.push((t.clone(), slots.clone())),
+        }
+    }
+    out.retain(|(t, _)| !bad.contains(t));
+    out
+}
+
 impl<'p> Lower<'p> {
     /// The IR tuple of a sum type: the tag (`u32`), then the slots of every
     /// variant one after the other; and the slots of each variant.
@@ -596,6 +629,7 @@ impl<'p> Lower<'p> {
             }
             slots.push(mine);
         }
+        self.sum_types.borrow_mut().push((Type::Tuple(comps.clone()), slots.clone()));
         Ok((comps, slots))
     }
 
@@ -784,6 +818,7 @@ impl<'p> Lower<'p> {
                     }
                     out.push(self.ty(env, t, span)?);
                 }
+                self.plain_tuples.borrow_mut().insert(Type::Tuple(out.clone()));
                 Type::Tuple(out)
             }
             Ty::Tuple(ts) => {
@@ -794,6 +829,7 @@ impl<'p> Lower<'p> {
                     }
                     out.push(self.ty(env, t, span)?);
                 }
+                self.plain_tuples.borrow_mut().insert(Type::Tuple(out.clone()));
                 Type::Tuple(out)
             }
             Ty::Array(sz, e) => {
@@ -2629,6 +2665,7 @@ impl<'p> Lower<'p> {
                 let b = self.expr(env, &args[1])?;
                 let (ta, tb) = (a.ty.elem().clone(), b.ty.elem().clone());
                 let pt = Type::Tuple(vec![ta.clone(), tb.clone()]);
+                self.plain_tuples.borrow_mut().insert(pt.clone());
                 let x = self.new_var("x", ta.clone());
                 let y = self.new_var("y", tb.clone());
                 let body = Expr::new(ExprKind::Tuple(vec![Expr::var(x, ta, span), Expr::var(y, tb, span)]), pt, span);

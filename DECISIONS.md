@@ -9962,3 +9962,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   662 ms, the others the same to 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D448 — A value of a sum type frees the fields of its variant only
+  (2026-11-07).** D445 left about 5 cycles to each null field of the
+  variants a value is not (a call of `isc_free` each). A sum type is a
+  tuple in the IR (its tag, then the slots of every variant) whose slots
+  only `print` knew. Now the lowering keeps the tuple of each sum type laid
+  out with the slots of its variants, and the tuples of records, tuples
+  and pairs of `zip` (`plain_tuples`): `Program::sum_slots` holds those
+  told apart by their type alone (the tag first, two variants at least,
+  one layout of slots, no record, tuple or pair of the same tuple). The
+  drop of such a value reads its tag and frees the fields of that variant
+  only (`switch`); every other tuple is freed whole as before. Measured
+  (`run.py`, 5 runs of 200 rounds): `http.parseUrl` 86.8 -> 63.2 ns (3.3
+  times its floor), `sys.ioError.message` 31.0 -> 12.6 ns (0.88),
+  `sys.cwd` 415.0 -> 397.3 ns; the other forms of `http`, `json`, `sys`
+  and `time` within their scatter; the LLVM IR of the ten programs
+  unchanged. Test `sums_freed_by_their_variant` (`stdlib.rs`: sums of
+  strings, arrays and nested sums, a variant without fields, and a record,
+  a tuple and the pairs of `zip` of the same tuple as a sum, on 1 and 4
+  threads, the interpreter's output, valgrind; with the records not left
+  out, valgrind finds their texts lost).

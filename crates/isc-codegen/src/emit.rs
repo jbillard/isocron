@@ -540,6 +540,9 @@ pub struct Gen<'p> {
     /// counts of a caller's blocks over the array they are a range of
     /// (D426), the origin after the slots of their places.
     windowed_origin: HashSet<VarId>,
+    /// The tuples of sum types told apart by their type, with the slots of
+    /// each variant: a value frees the fields of its variant only (D448).
+    sum_slots: HashMap<Type, Vec<Vec<u32>>>,
     /// The functions whose windowed `filter` (D293) reads a range of one of
     /// their parameters with a predicate of its elements alone (D426): the
     /// index of the parameter and the lambda.
@@ -1000,6 +1003,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         scalar_loops: 0,
         windowed: HashMap::new(),
         windowed_origin: HashSet::new(),
+        sum_slots: p.sum_slots.iter().cloned().collect(),
         count_users: count_users(p),
         count_needed: BTreeSet::new(),
         count_param: None,
@@ -3078,6 +3082,36 @@ impl<'p> Gen<'p> {
                     .expect("the drop of the elements");
                 }
                 self.emit(format!("call void @isc_free(ptr {})", p));
+            }
+            // a value of a sum type: the fields of its variant only, by its
+            // tag; those of the others are zeros (D448: their frees, of null,
+            // a call each)
+            Type::Tuple(ts) if self.sum_slots.contains_key(t) => {
+                let slots = self.sum_slots[t].clone();
+                let tag = self.ins(format!("extractvalue {} {}, 0", x.t, x.r));
+                let lj = self.label();
+                let mut cases = Vec::new();
+                let mut bodies = Vec::new();
+                for (k, mine) in slots.iter().enumerate() {
+                    if mine.iter().any(|&j| ts[j as usize].has_heap()) {
+                        let l = self.label();
+                        cases.push(format!("i32 {}, label %{}", k, l));
+                        bodies.push((l, mine.clone()));
+                    }
+                }
+                self.emit(format!("switch i32 {}, label %{} [ {} ]", tag, lj, cases.join(" ")));
+                for (l, mine) in bodies {
+                    self.block(&l);
+                    for j in mine {
+                        let c = &ts[j as usize];
+                        if c.has_heap() {
+                            let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, j));
+                            self.drop_value(&v(f, lt(c)), c);
+                        }
+                    }
+                    self.br(&lj);
+                }
+                self.block(&lj);
             }
             Type::Tuple(ts) => {
                 for (i, c) in ts.iter().enumerate() {

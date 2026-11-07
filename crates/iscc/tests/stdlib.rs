@@ -1737,3 +1737,61 @@ action main(args: string[k]): i32 {
     }
     valgrind_clean(src, "sum_values_dropped", &["500"]);
 }
+
+/// D448: a value of a sum type frees the fields of its variant only, by
+/// its tag, when its tuple is told apart by its type: sums of strings,
+/// arrays and nested sums, one variant without fields; and the tuples that
+/// cannot be told apart, freed whole as before: a record, a tuple and the
+/// pairs of `zip` of the same tuple as a sum (`[u32, string]`); the
+/// interpreter's output, nothing lost and nothing freed twice (valgrind).
+#[test]
+fn sums_freed_by_their_variant() {
+    let src = "type E = A(string) | B;
+type F = X(string, i64[]) | Y(E) | Z;
+type R = { n: u32, s: string };
+
+function f(i: i64): F {
+    return i % 3 == 0 ? X(`x${i}`, [i, i + 1]) : (i % 3 == 1 ? Y(i % 2 == 0 ? A(`a${i}`) : B) : Z);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(sum(map(iota(n), (i) => match (f(i)) {
+        X(s, xs) => s.length + sum(xs),
+        Y(e) => match (e) {
+            A(t) => t.length,
+            B => 7,
+        },
+        Z => 1,
+    })));
+    const es = map(iota(n), (i) => i % 2 == 0 ? A(`e${i}`) : B);
+    print(sum(map(es, (e) => match (e) {
+        A(t) => t.length,
+        B => 0,
+    })));
+    const rs = map(iota(n), (i) => { const r: R = { n: u32(i % 2), s: `r${i}` }; return r; });
+    print(sum(map(rs, (r) => r.s.length + i64(r.n))));
+    const ts = map(iota(n), (i) => [u32(i % 2), `t${i}`] as const);
+    print(sum(map(ts, (t) => {
+        const [k, s] = t;
+        return s.length + i64(k);
+    })));
+    const zs = zip(map(iota(n), (i) => u32(i % 2)), map(iota(n), (i) => `z${i}`));
+    print(sum(map(zs, (p) => {
+        const [k, s] = p;
+        return s.length + i64(k);
+    })));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &["2000"]) else { panic!("the interpreter failed") };
+    let bin = compile(src, "sums_by_variant");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("switch i32"), "no drop by the tag");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["2000"], Some(t));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "T={}", t);
+    }
+    valgrind_clean(src, "sums_by_variant", &["400"]);
+}

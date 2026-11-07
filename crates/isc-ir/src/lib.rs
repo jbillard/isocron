@@ -457,6 +457,10 @@ pub struct Program {
     /// calls to it and the place of the call in the program (D324): a target
     /// that lacks one refuses the program.
     pub sys_paths: Vec<(SysOp, Vec<String>, isc_syntax::Span)>,
+    /// The tuples of sum types told apart by their type alone, with the
+    /// slots of each variant (D448): a value of one frees the fields of its
+    /// variant only.
+    pub sum_slots: Vec<(Type, Vec<Vec<u32>>)>,
 }
 
 /// What `print` shows beyond the IR type of a value: the names of the
