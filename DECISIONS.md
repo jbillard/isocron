@@ -10233,3 +10233,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   from 19.6 to 28.1 ns from one run to the other, D450, D452). Test
   `loops_on_one_thread_run_at_once` (`parallel.rs`: loops of 0, 1, 2 and
   1000 elements, nested, on 1 and 4 threads, the interpreter's output).
+- **D461 — `httpDate`: its fields from the table of pairs, its day of the
+  week from the days (2026-11-07).** `http.httpDate` 4.4 times its floor.
+  One call, one CPU at fixed frequency (`perf stat`, 8.2 M calls): 183
+  cycles, 651 instructions, 89.8 % in the loop (the date, the template):
+  the samples on divisions by constants (`imul`, `shr`) and the writes of
+  the parts. Each field of two digits was two parts, `x / 10` and
+  `x % 10` (D402), and `time.weekday` found the days since 1970 again
+  from the year, month and day that `toDateTime` had just made from them;
+  the floor takes the day of the week from its days.
+  - Now each field is `toString(x).padStart(2, "0")`, which a template
+    writes as a pair of the table of digits (D446), and the day of the
+    week is `(days + 3) mod 7` of the days of the instant (floored), the
+    division of `toDateTime`. The same texts: test
+    `http_dates_against_a_reference` (`std_http.rs`: 20000 instants over
+    the range of `i64`, none computed past it, against a reference in
+    Rust, compiled and
+    interpreted; with the days not floored below 1970 it fails), and
+    `http_dates_by_their_digits`.
+  - Measured: `httpDate` alone, 7 alternated runs: 57.20 -> 48.01 ns (the
+    pairs), 37.48 ns (and the day of the week); the old and new binaries
+    of `http`, 9 alternated runs: `httpDate` 56.90 -> 37.76 ns (-33.6 %),
+    the others within 2.7 % (`headerOf` +2.7 %, its code the same but the
+    lines of `http.isc`); `run.py` (5 runs of 200 rounds) 56.9 -> 37.7 ns,
+    2.93 times its floor.

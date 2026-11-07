@@ -559,3 +559,43 @@ action main(args: string[k]): i32 {
     let got = interp_ok(src, &[]);
     assert!(got == want, "interpreter: the first line that differs: {:?}", got.lines().zip(want.lines()).find(|(a, b)| a != b));
 }
+
+/// D461: `httpDate`, its fields of two digits from the table of pairs and
+/// its day of the week from the days since 1970 (not from the date), on
+/// 20000 instants over the whole range of `i64`, none past it (before 1970
+/// too: every day of the week, every month, leap days), against a
+/// reference written here (the days to a date of Howard Hinnant's
+/// `civil_from_days`); compiled and interpreted.
+#[test]
+fn http_dates_against_a_reference() {
+    let src = "import * as http from \"http\";
+
+action main(args: string[k]): i32 {
+    print(join(map(iota(20000), (k) => http.httpDate((k - 10000) * 922337203685477 + k * k * 12345)), \"\\n\"));
+    return 0;
+}
+";
+    let days = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut want = String::new();
+    for k in 0..20000i64 {
+        let i = (k - 10000) * 922337203685477 + k * k * 12345;
+        let n = i.div_euclid(86_400_000_000_000);
+        let s = i.rem_euclid(86_400_000_000_000) / 1_000_000_000;
+        let z = n + 719468;
+        let era = z.div_euclid(146097);
+        let doe = z - era * 146097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + (m <= 2) as i64;
+        want.push_str(&format!("{}, {:02} {} {} {:02}:{:02}:{:02} GMT\n", days[n.rem_euclid(7) as usize], d, months[(m - 1) as usize], y, s / 3600, s / 60 % 60, s % 60));
+    }
+    let r = run_bin(&compile(src, "http_dates_reference"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "compiled: {:?}", r.stdout.lines().zip(want.lines()).find(|(a, b)| a != b));
+    let got = interp_ok(src, &[]);
+    assert!(got == want, "interpreter: {:?}", got.lines().zip(want.lines()).find(|(a, b)| a != b));
+}

@@ -556,10 +556,20 @@ export function httpDate(i: i64): string {
     // data of the program (D401)
     const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    // the fields of two digits by their digits, written into the text
-    // itself (D402: a text made then freed for each before)
-    const [day, h, m, sec] = [d.date.day, d.time.hour, d.time.minute, d.time.second] as const;
-    return `${days[time.weekday(d.date) - 1]}, ${day / 10}${day % 10} ${months[d.date.month - 1]} ${d.date.year} ${h / 10}${h % 10}:${m / 10}${m % 10}:${sec / 10}${sec % 10} GMT`;
+    // the fields of two digits written into the text itself, each as a pair
+    // of the table of the digits (D446; D402: a text made then freed for
+    // each before; D461: by its two digits before, two divisions a field)
+    // the day of the week from the days since 1970-01-01 (a Thursday), the
+    // division of `toDateTime` (D461: `time.weekday` found the days again
+    // from the date, by more divisions)
+    const q = i / 86400000000000;
+    const w = ((i % 86400000000000 < 0 ? q - 1 : q) + 3) % 7;
+    return `${days[w < 0 ? w + 7 : w]}, ${two(d.date.day)} ${months[d.date.month - 1]} ${d.date.year} ${two(d.time.hour)}:${two(d.time.minute)}:${two(d.time.second)} GMT`;
+}
+
+// `x` (0 to 99) in two digits
+function two(x: i64): string {
+    return toString(x).padStart(2, "0");
 }
 
 // the bytes of the response `r` (its body left out for HEAD), the
