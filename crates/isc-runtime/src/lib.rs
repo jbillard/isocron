@@ -3861,16 +3861,18 @@ const NESTED_SLOTS: usize = 64;
 #[export_name = "isc_pool_nested"]
 static NESTED: [NestedSlot; NESTED_SLOTS] = [const { NestedSlot { job: AtomicUsize::new(0), users: AtomicUsize::new(0) } }; NESTED_SLOTS];
 
-/// The number of slots in use, and one more than the highest one ever used,
-/// in a line of their own.
+/// One more than the highest slot ever used, in a line of its own: written
+/// only when it grows (D410: the count of the slots in use, written twice
+/// by each loop opened inside a task, was a line taken from one core to the
+/// other at each loop of a server; the threads with nothing left to do read
+/// the slots below it instead).
 #[repr(C, align(128))]
 pub struct NestedCount {
-    open: AtomicUsize,
     high: AtomicUsize,
 }
 
 #[export_name = "isc_pool_nested_count"]
-static NESTED_COUNT: NestedCount = NestedCount { open: AtomicUsize::new(0), high: AtomicUsize::new(0) };
+static NESTED_COUNT: NestedCount = NestedCount { high: AtomicUsize::new(0) };
 
 /// Runs the tasks of `j` not taken yet; true if it ran one.
 unsafe fn run_nested(j: &Nested) -> bool {
@@ -3887,10 +3889,10 @@ unsafe fn run_nested(j: &Nested) -> bool {
 
 /// Runs tasks of the loops open in the slots; true if it ran one.
 fn help_nested() -> bool {
-    if NESTED_COUNT.open.load(Ordering::Acquire) == 0 {
+    let high = NESTED_COUNT.high.load(Ordering::Acquire).min(NESTED_SLOTS);
+    if high == 0 {
         return false;
     }
-    let high = NESTED_COUNT.high.load(Ordering::Acquire).min(NESTED_SLOTS);
     let mut ran = false;
     for s in &NESTED[..high] {
         if s.job.load(Ordering::Acquire) <= 1 {
@@ -3958,7 +3960,9 @@ fn nested_for(n: i64, task: Task, ctx: *mut c_void) {
         let k = (first + d) % NESTED_SLOTS;
         let s = &NESTED[k];
         if s.job.load(Ordering::Relaxed) == 0 && s.job.compare_exchange(0, addr, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-            NESTED_COUNT.high.fetch_max(k + 1, Ordering::AcqRel);
+            if NESTED_COUNT.high.load(Ordering::Relaxed) < k + 1 {
+                NESTED_COUNT.high.fetch_max(k + 1, Ordering::AcqRel);
+            }
             slot = Some(s);
             break;
         }
@@ -3969,13 +3973,11 @@ fn nested_for(n: i64, task: Task, ctx: *mut c_void) {
         }
         return;
     };
-    NESTED_COUNT.open.fetch_add(1, Ordering::SeqCst);
     unsafe { run_nested(&j) };
     s.job.store(1, Ordering::SeqCst);
     while s.users.load(Ordering::SeqCst) != 0 {
         core::hint::spin_loop();
     }
-    NESTED_COUNT.open.fetch_sub(1, Ordering::Release);
     s.job.store(0, Ordering::Release);
 }
 
@@ -4029,6 +4031,13 @@ pub extern "C" fn isc_parallel_for_site(n: i64, task: Task, ctx: *mut c_void, ct
     // SAFETY: four words of the program, for this loop
     let [par, seq, runs, last] = unsafe { &*site };
     let (dynamic, contiguous) = (mode == 1, mode == 2);
+    // a loop inside a task (the pool busy): neither the pool nor the
+    // calling thread to choose, no clock read, nothing written to the words
+    // of the site (D410: written at each loop by each thread of a server,
+    // their line taken from one core to the other, 12.01 % of its cycles)
+    if BUSY.load(Ordering::Relaxed) {
+        return parallel_for(n, task, ctx, ctx_bytes, dynamic, contiguous);
+    }
     let t0 = stamp();
     if t0 == 0 || n <= 1 {
         return parallel_for(n, task, ctx, ctx_bytes, dynamic, contiguous);
@@ -4110,8 +4119,10 @@ fn parallel_job(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dynamic: b
     }
     // a parallel loop inside a task: the job line is taken, its tasks are
     // shared with the threads that have finished their share (D201); the
-    // results do not depend on the number of threads (D102)
-    if BUSY.swap(true, Ordering::Acquire) {
+    // results do not depend on the number of threads (D102). `BUSY` read
+    // before it is written (D410: a swap writes its line even when it finds
+    // it set, taken from the other cores at each loop of a server)
+    if BUSY.load(Ordering::Relaxed) || BUSY.swap(true, Ordering::Acquire) {
         nested_for(n, task, ctx);
         return;
     }

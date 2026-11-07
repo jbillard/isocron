@@ -9234,3 +9234,35 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `\r\n` of the console), `a😀b` gives `[a😀b] 8 bytes`, Ctrl+Z alone `[] 0
   bytes`; the runtime before stopped on the first. A pipe or a file: read
   as before. The Windows tests in the VM: 11 passed.
+- **D410 — A loop inside a task writes no line the other threads read
+  (2026-11-07).** The server measured against 0.4.0 (2 cores, 3 alternated
+  runs of 10 s, medians): the same within 0.6 % (`serve` 386409 -> 388526
+  requests a second with 16 connections, 443949 -> 445724 with 256, 414410
+  -> 426379 with 1024, the runs overlapping; an action -0.6 to +0.4 %):
+  D394 to D409 are not on its path. Its profile (`perf record -p` of its
+  user cycles for 5 s, 16 connections): `isc_parallel_for_site` 12.01 %,
+  `parallel_job` 1.65 %. Each loop of events is a task of the pool and the
+  `map` of its arrivals a loop inside it, whose site read the clock twice
+  and wrote its four words (`runs`, `seq`, `last`) at each call, from both
+  threads: the line went from one core to the other (3078 samples on the
+  load of its words, 3514 after its `lock xadd`, 1571 on `rdtsc`). Now:
+  inside a task (`BUSY`) a loop goes to the pool's loop of tasks
+  (`nested_for`) without the site (there is no pool to choose); `BUSY` is
+  read before it is swapped (a swap writes its line even when it finds it
+  set); the count of the open loops is gone (written twice by each loop
+  inside a task; the threads with nothing left read the slots below
+  `high`), and `high` is written only when it grows. Profile after it:
+  `parallel_job` 7.40 %, `isc_parallel_for_site` 1.22 %; 82026 samples for
+  388125 requests a second against 84303 for 383575 (0.2113 against 0.2198
+  a request, -3.9 % of its user cycles, about a third of its cycles: the
+  kernel has the rest); the requests a second within the scatter of the
+  measure (6 points of 3 runs: -1.4 to +1.3 %). The ten programs (15
+  alternated runs for those with loops inside tasks): binary-trees -0.10 %,
+  k-nucleotide -0.22 %, reverse-complement -0.28 %, regex-redux -0.09 %
+  (medians), the others within 0.35 % (7 runs), the same outputs. Not
+  kept: (1) a loop inside a task run in place when no thread has finished
+  its share: binary-trees +28.9 %, k-nucleotide +46.4 % (a thread freed
+  later cannot take its tasks); (2) the same, its rest published as soon
+  as a thread is free: the server 0.2068 a request (-5.9 %), but
+  k-nucleotide +1.33 % (minimum, +0.81 % medians, 15 runs: a freed thread
+  waits for the end of the task in progress, long there).
