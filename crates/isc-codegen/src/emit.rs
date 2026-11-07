@@ -11748,8 +11748,81 @@ impl<'p> Gen<'p> {
                     }
                     n.to_string()
                 }
+                // a text of at most 64 bytes copied here by moves that overlap,
+                // as `copy_short` of the runtime (D478: the call of the copy,
+                // and the `vzeroupper` before it, a third of `json.quote` of a
+                // name; a masked store of AVX-512 instead could not forward
+                // its bytes to the loads that read them back, `parseUrl`
+                // +5.7 %); longer, the runtime
                 P::Text(p, n) => {
+                    let small = self.ins(format!("icmp ule i64 {}, 64", n));
+                    let (lsmall, l32, lrest16, l16, l8, l4, l1, lrest8, lrest4, lrest1, lcall, lj) = (
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                        self.label(),
+                    );
+                    self.cbr(&small, &lsmall, &lcall);
+                    // two moves of `w` bytes, at the start and at the end
+                    let pair = |g: &mut Self, ty: &str, w: i64| {
+                        let a = g.ins(format!("load {}, ptr {}, align 1", ty, p));
+                        let off = g.ins(format!("sub i64 {}, {}", n, w));
+                        let src2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, off));
+                        let b = g.ins(format!("load {}, ptr {}, align 1", ty, src2));
+                        g.emit(format!("store {} {}, ptr {}, align 1", ty, a, dst));
+                        let dst2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+                        g.emit(format!("store {} {}, ptr {}, align 1", ty, b, dst2));
+                    };
+                    self.block(&lsmall);
+                    let ge32 = self.ins(format!("icmp uge i64 {}, 32", n));
+                    self.cbr(&ge32, &l32, &lrest16);
+                    self.block(&l32);
+                    pair(self, "<32 x i8>", 32);
+                    self.br(&lj);
+                    self.block(&lrest16);
+                    let ge16 = self.ins(format!("icmp uge i64 {}, 16", n));
+                    self.cbr(&ge16, &l16, &lrest8);
+                    self.block(&l16);
+                    pair(self, "i128", 16);
+                    self.br(&lj);
+                    self.block(&lrest8);
+                    let ge8 = self.ins(format!("icmp uge i64 {}, 8", n));
+                    self.cbr(&ge8, &l8, &lrest4);
+                    self.block(&l8);
+                    pair(self, "i64", 8);
+                    self.br(&lj);
+                    self.block(&lrest4);
+                    let ge4 = self.ins(format!("icmp uge i64 {}, 4", n));
+                    self.cbr(&ge4, &l4, &lrest1);
+                    self.block(&l4);
+                    pair(self, "i32", 4);
+                    self.br(&lj);
+                    self.block(&lrest1);
+                    let ge1 = self.ins(format!("icmp ne i64 {}, 0", n));
+                    self.cbr(&ge1, &l1, &lj);
+                    self.block(&l1);
+                    // 1 to 3 bytes: the first, the middle and the last
+                    let half = self.ins(format!("lshr i64 {}, 1", n));
+                    let last = self.ins(format!("sub i64 {}, 1", n));
+                    for k in ["0".to_string(), half.clone(), last.clone()] {
+                        let sp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, k));
+                        let c = self.ins(format!("load i8, ptr {}, align 1", sp));
+                        let dp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, k));
+                        self.emit(format!("store i8 {}, ptr {}, align 1", c, dp));
+                    }
+                    self.br(&lj);
+                    self.block(&lcall);
                     self.emit(format!("call void @isc_put_text(ptr {}, ptr {}, i64 {})", dst, p, n));
+                    self.br(&lj);
+                    self.block(&lj);
                     n.clone()
                 }
                 P::Int { mag, neg, n, width, fs, zp } if *zp > 0 => {

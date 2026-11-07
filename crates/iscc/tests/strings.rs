@@ -1149,3 +1149,32 @@ fn small_integers_in_templates() {
         assert_eq!(r.stdout, want, "{}", name);
     }
 }
+
+/// D478: the texts of a template of at most 64 bytes copied in the code by
+/// moves that overlap (32, 16, 8, 4 bytes, or three bytes), the runtime
+/// beyond: parts of 0 to 70 bytes and of 100, both sides of 4, 8, 16, 32
+/// and 64, two
+/// in a template with literals and integers between them, on the stack
+/// and in a block (a result kept); the interpreter's text, for the machine
+/// and for AVX2.
+#[test]
+fn short_texts_of_templates_by_masks() {
+    let src = "action main(args: string[k]): i32 {
+    const t = stringOf(map(iota(200), (j) => u8(65 + j % 26)));
+    const lens = concat(iota(71), [100]);
+    print(map(lens, (n) => `[${t.slice(0, n)}]${n}<${t.slice(200 - n, 200)}>`));
+    const kept = map(lens, (n) => `\"${t.slice(n % 7, n % 7 + n)}\"`);
+    print(kept.join(\" \"));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    for (name, isa) in [("short_parts", isc_codegen::Isa::Native), ("short_parts_avx2", isc_codegen::Isa::Avx2)] {
+        let bin = compile_with(src, name, isc_codegen::Options { isa, ..isc_codegen::Options::default() });
+        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        assert!(ll.contains("load i128, ptr") && ll.contains("call void @isc_put_text"), "{}: moves here, the runtime beyond", name);
+        let r = run_bin_threads(&bin, &[], Some(1));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "{}", name);
+    }
+}

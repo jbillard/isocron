@@ -10549,3 +10549,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   about 64000 padded to 3 and 4 by zeros, both sides of 1000 and 10000,
   for the machine and for AVX2 (with the second pair of the 4 written a
   byte early it fails).
+- **D478 — The short texts of a template copied in its code
+  (2026-11-07).** `json.quote.plain` 3.11 times its floor; one call, one
+  CPU at fixed frequency (`perf stat`, 82 M calls): 15.6 cycles, 70
+  instructions; the hot samples on the call of `isc_put_text` that copies
+  the text between the quotes and the `vzeroupper` the call needs before
+  it (code of AVX calling code without it), as many as the count of its
+  bytes to escape.
+  - Now a text of a template (a concatenation, a template, a padded text
+    of D458 aside) of at most 64 bytes is copied in the generated code by
+    moves that overlap, as `copy_short` of the runtime: two of 32, 16, 8 or
+    4 bytes, or its first, middle and last bytes; longer, the call as
+    before.
+  - Rejected first: a masked load and store of 32 bytes on AVX-512 BW.
+    `json.quote.plain` 4.863 -> 4.372 ns, but `http.parseUrl` +5.7 % and
+    `strings.concat` +10.2 % (the old and new binaries, 7 alternated runs):
+    a masked store does not forward its bytes to the loads that read them
+    back soon after, as `parseUrl` reads the texts it made; with plain
+    moves `parseUrl` the same. With the moves up to 32 bytes `concat` was
+    still +4.0 % (its parts of 60 bytes paid a test more before the call);
+    up to 64, -17.6 %.
+  - Measured (the old and new binaries of `strings` and `http`, 7
+    alternated runs): `strings.concat` 2.66 -> 2.19 ns (-17.6 %), `split.6`
+    80.86 -> 75.95 ns (-6.1 %), `http.message` -6.4 %, `http.httpDate`
+    -4.6 %, the others within 2.7 %; `quote` of a name alone 4.863 -> 4.515
+    ns (9 runs). `run.py` (5 runs of 200 rounds): `time.format` 125.6 ->
+    112.1 ns (2.78 times its floor), `json.quote.plain` 5.1 -> 4.5 ns
+    (2.75), `json.message` -13.2 %, `time.parseIso` -9.2 %, `json.encode`
+    -5.1 %, `time.formatIso` -5.5 %; the forms of `strings` of 1.5 to 2 ns
+    from -10 % to +12 %, their scatter (within 2 % alternated). k-nucleotide
+    and regex-redux, whose outputs are templates (their other code the
+    same): 619.4 -> 620.3 ms and 82.0 -> 82.2 ms (15 alternated runs,
+    medians +0.50 % and +0.42 %), the same outputs. Test
+    `short_texts_of_templates_by_masks` (`strings.rs`: parts of 0 to 70
+    bytes and of 100, both sides of every size of move, on the stack and in
+    a block, for the machine and AVX2; with the moves of 32 a byte early it
+    fails).
