@@ -486,18 +486,21 @@ fn filters_read_by_windows() {
 
 /// D437: the rest of a count (the elements after its whole vectors) in one
 /// vector whose lanes past the end are masked, on a target with masked
-/// loads of bytes; one element at a time on the others. Arrays of bytes and
-/// of `i32` of 0 to 100 elements (every rest of the vectors), slices at
-/// every offset, predicates of comparisons, logic and arithmetic (the
-/// masked lanes zero), counts and `filter`s; the interpreter's values, with
-/// the code for the machine and for AVX2.
+/// loads of bytes; one element at a time on the others. There, 64 bytes a
+/// vector, read from a boundary of 64 bytes over 1024 bytes or more, the
+/// bytes before it in one masked vector too (D452). Arrays of bytes and of
+/// `i32` of 0 to 140, 200, 1000, 1100 and 1200 elements (every rest of the
+/// vectors), slices at the offsets 0 to 69 (every start before a
+/// boundary), predicates of comparisons, logic and arithmetic (the masked
+/// lanes zero), counts and `filter`s; the interpreter's values, with the
+/// code for the machine and for AVX2.
 #[test]
 fn counts_with_a_masked_rest() {
     let src = "action main(args: string[k]): i32 {
     const n = parseI64(args[0]);
     const b = map(iota(n), (i) => u8((i * 37 + 11) % 256));
     const w = map(iota(n), (i) => i32((i * 7919) % 2000 - 1000));
-    const offs = iota(Math.min(n, 9));
+    const offs = iota(Math.min(n, 70));
     print(map(offs, (o) => count(b.slice(o, n), (c) => c < 32u8 || c == 34u8 || c >= 200u8)));
     print(map(offs, (o) => count(b.slice(o, n), (c) => (c & 7u8) == 3u8)));
     print(map(offs, (o) => count(w.slice(o, n), (x) => x * 3 + 1 > 0)));
@@ -510,8 +513,9 @@ fn counts_with_a_masked_rest() {
     let avx2 = compile_with(src, "masked_rest_avx2", isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() });
     let ll = std::fs::read_to_string(native.with_extension("ll")).unwrap();
     let wide = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default().contains("avx512bw");
-    assert_eq!(ll.contains("llvm.masked.load.v32i8"), wide, "a masked rest on the machine");
-    for n in 0..=100 {
+    // 64 bytes a vector with the masks of AVX-512 BW (D452)
+    assert_eq!(ll.contains("llvm.masked.load.v64i8"), wide, "a masked rest on the machine");
+    for n in (0..=140).chain([200, 1000, 1100, 1200]) {
         let a = n.to_string();
         let Outcome::Exit(0, want) = interp(src, &[&a]) else { panic!("the interpreter failed for {}", n) };
         for bin in [&native, &avx2] {

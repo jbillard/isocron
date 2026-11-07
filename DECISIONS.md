@@ -10057,3 +10057,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   server against a header with a surrogate (400, the server going on) and
   a header of UTF-8 (`server_on_requests_of_every_form`; with the old
   module the server panics).
+- **D452 — Counts of bytes 64 at a time on AVX-512 BW (2026-11-07).**
+  `http.text.1k` 3.4 times its floor. One call, one CPU at fixed
+  frequency (`perf stat`, 8.2 M calls): 193.6 cycles; the code of the
+  call 49.9 % (the count of the bytes from 0x80 of `utf8`: a load, a
+  compare, `vpmovmskb`, `popcnt` and an add for each 32 bytes),
+  `utf8_check` 27.2 %, `memcpy` 13.1 %, `isc_str_from_bytes` 5.2 %,
+  `isc_free` 2.9 %.
+  - Now a count of bytes (`count_parts`) takes 64 lanes where the target
+    has masks of 64 bytes (`vpcmpb` into a mask of 64 bits, `kmovq`,
+    `popcnt`): half the turns. A count of fewer than 32 elements keeps one
+    masked vector of 32 lanes. The lanes of a masked vector are the low
+    bits of a word (`shl`, `sub`), not a compare of `w` indices.
+  - Over 1024 bytes or more, the vectors are read from a boundary of 64
+    bytes, the bytes before it in one masked vector: without it the count
+    of the bases of revcomp (from any offset of its input) took 1.3 % more
+    user cycles (`perf stat`, 9 runs: 283.6 -> 287.3 M cycles, 562.0 ->
+    561.5 M instructions; an unaligned load of 64 bytes crosses two lines
+    of cache) and revcomp 27.5 -> 28.0 ms (21 runs). From 128 bytes the
+    test cost `json.quote.escaped` 2.4 %; at 1024 revcomp 27.4 -> 27.3 ms
+    (21 alternated runs, medians -0.89 %), k-nucleotide 616.9 -> 617.4 ms
+    (7 runs, medians +0.74 %, its counts the same).
+  - Rejected first: the check of 64 bytes of `utf8_check` written with a
+    block of a fixed size and a test of each byte (LLVM writes it with
+    `vpmovmskb` alone, but as a reduction to the largest byte inside the
+    loop), then with words or'ed together (a frame of 424 bytes, gathers):
+    not without `unsafe` and the intrinsics.
+  - Measured: `text` alone, 7 alternated runs: 60.63 -> 51.97 ns;
+    `run.py` (5 runs of 200 rounds) `http.text.1k` 63.2 -> 53.3 ns (its
+    floor, a `malloc` of 1 KiB, a copy and a `free` in C, measured at 14.1,
+    19.8 and 15.6 ns: 2.7 to 3.4 times), `json.quote.plain` 6.8 -> 5.0 ns.
+    `json` by 9 alternated runs of the old and new binaries: `decode`
+    +1.2 %, `quote.escaped` +2.0 %, `message` +2.9 %, whose code is the
+    same but for the lines of its panics (`json.isc` changed by D451; the
+    LLVM IR of the 12 functions with counts alone differs): the layout of
+    the binary.
+  - Test `counts_with_a_masked_rest` (`bitwise.rs`): lengths 0 to 140,
+    200, 1000, 1100 and 1200, slices at the offsets 0 to 69 (every start
+    before a boundary), the machine and AVX2; it fails when the start is
+    not moved past the bytes before the boundary.

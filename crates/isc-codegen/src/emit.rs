@@ -1313,7 +1313,10 @@ fn count_parts<'a, 'e>(src: &'a Src<'e>, l: &Lambda, z: &V, t: &Type) -> Option<
     if src_elem_size(&ins[0]) != 1 {
         return None;
     }
-    Some((&ins[0], Lambda { params: ml.params.clone(), body: c.clone(), drop_params: ml.drop_params.clone() }, 32))
+    // 64 bytes a vector where the target has masks of 64 bytes (AVX-512 BW,
+    // D452: half the turns of 32, each a load, a compare, a count of bits)
+    let w = if BYTE_MASKS.with(|b| b.get()) { 64 } else { 32 };
+    Some((&ins[0], Lambda { params: ml.params.clone(), body: c.clone(), drop_params: ml.drop_params.clone() }, w))
 }
 
 /// The bytes of an element of `src` (8 for an index or a value made).
@@ -8179,7 +8182,9 @@ impl<'p> Gen<'p> {
             // when the target has them (D437), not one element at a time
             // (D443: the count of `json.quote` over a name of 16 bytes)
             let counted = match count_parts(&src, l, &zv, &t) {
-                Some((ins, pred, cw)) if w > 1 && cw > 1 && BYTE_MASKS.with(|b| b.get()) => Some(self.count_kept(ins, &pred, "0", &n, cw)?),
+                // fewer than 32 elements: a vector of 32 lanes (D452: one of
+                // 64 cost `json.message` 5 %)
+                Some((ins, pred, cw)) if w > 1 && cw > 1 && BYTE_MASKS.with(|b| b.get()) => Some(self.count_kept(ins, &pred, "0", &n, cw.min(32))?),
                 _ => None,
             };
             let r = match counted {
@@ -8799,6 +8804,39 @@ impl<'p> Gen<'p> {
     fn count_kept(&mut self, src: &Src, l: &Lambda, lo: &str, hi: &str, w: u32) -> R<String> {
         let cnt = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", cnt));
+        let mut lo = lo.to_string();
+        // vectors of 64 bytes read from a boundary of 64 bytes, the bytes
+        // before it in one masked vector, over 1024 bytes or more (D452: an
+        // unaligned load of 64 bytes crosses two lines of cache, the count
+        // of the bases of revcomp +1.3 % of its cycles; on shorter texts in
+        // the cache the test costs more than it saves, `json.quote` +2.4 %
+        // from 128 bytes)
+        if let Src::Mat { ptr, elem, .. } = src {
+            if w == 64 && matches!(elem, Type::Int(_)) && esize(elem) == 1 && masked_safe(&l.body) && BYTE_MASKS.with(|b| b.get()) {
+                let (ptr, elem) = (ptr.clone(), elem.clone());
+                let span = self.ins(format!("sub i64 {}, {}", hi, lo));
+                let long = self.ins(format!("icmp sge i64 {}, 1024", span));
+                let start = self.alloca("i64");
+                self.emit(format!("store i64 {}, ptr {}", lo, start));
+                let (llong, lhead, ldone) = (self.label(), self.label(), self.label());
+                self.cbr(&long, &llong, &ldone);
+                self.block(&llong);
+                let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", ptr, lo));
+                let addr = self.ins(format!("ptrtoint ptr {} to i64", at));
+                let neg = self.ins(format!("sub i64 0, {}", addr));
+                let head = self.ins(format!("and i64 {}, 63", neg));
+                let some = self.ins(format!("icmp sgt i64 {}, 0", head));
+                self.cbr(&some, &lhead, &ldone);
+                self.block(&lhead);
+                self.count_masked(src, l, &ptr, &elem, &lo, &head, w, &cnt)?;
+                let moved = self.ins(format!("add i64 {}, {}", lo, head));
+                self.emit(format!("store i64 {}, ptr {}", moved, start));
+                self.br(&ldone);
+                self.block(&ldone);
+                lo = self.ins(format!("load i64, ptr {}", start));
+            }
+        }
+        let lo = lo.as_str();
         let mut from = lo.to_string();
         if w > 1 {
             let span = self.ins(format!("sub i64 {}, {}", hi, lo));
@@ -8825,28 +8863,13 @@ impl<'p> Gen<'p> {
             // AVX2 has none for bytes)
             if let Src::Mat { ptr, elem, .. } = src {
                 if matches!(elem, Type::Int(_)) && masked_safe(&l.body) && BYTE_MASKS.with(|b| b.get()) {
-                    let m = mt(elem);
-                    let vm = format!("<{} x {}>", w, m);
+                    let (ptr, elem) = (ptr.clone(), elem.clone());
                     let rest = self.ins(format!("sub i64 {}, {}", hi, from));
                     let some = self.ins(format!("icmp sgt i64 {}, 0", rest));
                     let (lrest, ldone) = (self.label(), self.label());
                     self.cbr(&some, &lrest, &ldone);
                     self.block(&lrest);
-                    let rw = self.widen(&v(rest.clone(), "i64"), w);
-                    let steps: Vec<String> = (0..w).map(|j| format!("i64 {}", j)).collect();
-                    let lanes = self.ins(format!("icmp ult <{} x i64> <{}>, {}", w, steps.join(", "), rw.r));
-                    let at = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, from));
-                    let name = format!("llvm.masked.load.v{}{}.p0", w, m);
-                    self.decls.insert(format!("declare {} @{}(ptr, i32, <{} x i1>, {})", vm, name, w, vm));
-                    let x = self.ins(format!("call {} @{}(ptr {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, at, esize(elem), w, lanes, vm));
-                    let keep = self.kept_mask(src, l, &from, w, &V { r: x, t: vm, uni: false })?;
-                    let kept = self.ins(format!("and <{} x i1> {}, {}", w, keep.r, lanes));
-                    let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, kept, w));
-                    let k = self.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
-                    let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
-                    let c = self.ins(format!("load i64, ptr {}", cnt));
-                    let c2 = self.ins(format!("add i64 {}, {}", c, k64));
-                    self.emit(format!("store i64 {}, ptr {}", c2, cnt));
+                    self.count_masked(src, l, &ptr, &elem, &from, &rest, w, &cnt)?;
                     self.br(&ldone);
                     self.block(&ldone);
                     return Ok(self.ins(format!("load i64, ptr {}", cnt)));
@@ -8864,6 +8887,36 @@ impl<'p> Gen<'p> {
             Ok(())
         })?;
         Ok(self.ins(format!("load i64, ptr {}", cnt)))
+    }
+
+    /// The elements `from .. from + len` (fewer than `w`) of `src`, in
+    /// memory at `ptr`, that `l` keeps, counted in one vector whose lanes
+    /// from `len` are masked (a masked load reads nothing there, D437) and
+    /// added to the count in `cnt`.
+    #[allow(clippy::too_many_arguments)]
+    fn count_masked(&mut self, src: &Src, l: &Lambda, ptr: &str, elem: &Type, from: &str, len: &str, w: u32, cnt: &str) -> R<()> {
+        let m = mt(elem);
+        let vm = format!("<{} x {}>", w, m);
+        // the lanes below `len`: the low bits of a word, not a compare of
+        // `w` indices (D452)
+        let one = self.ins(format!("shl i64 1, {}", len));
+        let low = self.ins(format!("sub i64 {}, 1", one));
+        let low = if w < 64 { self.ins(format!("trunc i64 {} to i{}", low, w)) } else { low };
+        let lanes = self.ins(format!("bitcast i{} {} to <{} x i1>", w, low, w));
+        let at = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, from));
+        let name = format!("llvm.masked.load.v{}{}.p0", w, m);
+        self.decls.insert(format!("declare {} @{}(ptr, i32, <{} x i1>, {})", vm, name, w, vm));
+        let x = self.ins(format!("call {} @{}(ptr {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, at, esize(elem), w, lanes, vm));
+        let keep = self.kept_mask(src, l, from, w, &V { r: x, t: vm, uni: false })?;
+        let kept = self.ins(format!("and <{} x i1> {}, {}", w, keep.r, lanes));
+        let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, kept, w));
+        self.decls.insert(format!("declare i{w} @llvm.ctpop.i{w}(i{w})", w = w));
+        let k = self.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
+        let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
+        let c = self.ins(format!("load i64, ptr {}", cnt));
+        let c2 = self.ins(format!("add i64 {}, {}", c, k64));
+        self.emit(format!("store i64 {}, ptr {}", c2, cnt));
+        Ok(())
     }
 
     /// The elements of `lo .. hi` of `src` that `l` keeps, written into
