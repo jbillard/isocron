@@ -1888,3 +1888,33 @@ action main(args: string[k]): i32 {
     }
     valgrind_clean(src, "padded_stack", &["50", "~"]);
 }
+
+/// D459: texts added to a text at its last use (D351) copied by moves
+/// (`copy_short`), the room of its block read inline: parts of 0 to 130
+/// bytes (every branch of the moves), one, two and three parts at once,
+/// the block grown and kept; the interpreter's output; Valgrind.
+#[test]
+fn texts_added_by_moves() {
+    let src = "function grow(s: string, i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    const k = (i * 37) % 131;
+    const a = s.slice(0, k);
+    const next = i % 3 == 0 ? acc + a : (i % 3 == 1 ? acc + a + \"|\" : acc + \"<\" + a + s.slice(k, Math.min(k + 2, s.length)));
+    return grow(s, i + 1, n, next);
+}
+
+action main(args: string[k]): i32 {
+    const s = stringOf(map(iota(200), (j) => u8(97 + j % 26)));
+    const n = parseI64(args[0]);
+    const t = grow(s, 0, n, \"\\\"\");
+    print(`${t.length} ${sum(map(bytes(t), (b) => i64(b)))} ${t.slice(0, 40)} ${t.slice(t.length - 40, t.length)}`);
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &["400"]) else { panic!("the interpreter failed") };
+    let r = run_bin(&compile(src, "added_by_moves"), &["400"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    valgrind_clean(src, "added_by_moves", &["200"]);
+}

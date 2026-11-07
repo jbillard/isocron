@@ -10186,3 +10186,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     empty, texts longer than their widths, an empty text, texts kept in an
     array and returned; the interpreter's output, 1 and 4 threads,
     Valgrind; with the sides of `isc_pad1_into` swapped it fails).
+- **D459 — Texts added to a text by moves, its room read inline
+  (2026-11-07).** `json.quote.escaped` 5.2 times its floor. One call, one
+  CPU at fixed frequency (`perf stat`, 2 M calls): 282 cycles for a text
+  of 15 bytes and 3 escapes; its loop 37.2 %, `append_parts` 28.7 %,
+  `memcpy` 9.5 %, `isc_free` 5.7 %, `isc_str_append_n` 5.2 %,
+  `heap::usable` 3.7 %. Each escape adds a part of a few bytes and an
+  escape of one or two to the text at its last use (D351): `append_parts`
+  copied each part by `copy_nonoverlapping` (a call of `memcpy`), and read
+  the room of its block by `heap::usable`, marked cold and never inlined.
+  Now the parts and the text moved to a larger block are copied by
+  `copy_short` (moves that overlap, `memcpy` past 64 bytes, as the
+  concatenations of D368), and `usable` is inlined. Measured: `quote`
+  alone, 7 alternated runs: 88.22 -> 77.41 ns (250 cycles left:
+  `append_parts` 40.2 %, the loop over the bytes 36.0 %, one byte at a
+  time; no search by a predicate in the language to skip to the next
+  escape); `run.py` (5 runs of 200 rounds) `json.quote.escaped` 100.3 ->
+  81.7 ns (4.15 times), `time.format` 184.5 -> 155.1 ns (4.21), the
+  other forms of `json`, `strings` and `time` within their scatter or
+  faster. regex-redux 81.6 -> 81.6 ms, pidigits 299.0 -> 298.6 ms (7
+  alternated runs), k-nucleotide 613.1 -> 616.1 ms (15 runs, medians
+  -0.34 %), the same outputs. Test `texts_added_by_moves` (`stdlib.rs`:
+  parts of 0 to 130 bytes, one to three at once, the block grown; the
+  interpreter's output, Valgrind; with the longer parts cut by a byte it
+  fails).

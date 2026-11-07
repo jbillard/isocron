@@ -1398,17 +1398,15 @@ unsafe fn append_parts(p: *mut u8, n: usize, parts: &[IscStr]) -> IscStr {
         (p, true)
     } else {
         let q = isc_alloc(total.max(2 * n) as i64);
-        if n > 0 {
-            core::ptr::copy_nonoverlapping(p, q, n);
-        }
+        copy_short(p, q, n);
         (q, false)
     };
+    // short parts by moves, not by calls of `memcpy` (D459: 9.5 % of
+    // `json.quote` of escaped texts, parts of one or two bytes)
     let mut at = n;
     for s in parts {
-        if s.len > 0 {
-            core::ptr::copy_nonoverlapping(s.ptr, q.add(at), s.len as usize);
-            at += s.len as usize;
-        }
+        copy_short(s.ptr, q.add(at), s.len as usize);
+        at += s.len as usize;
     }
     if !keep {
         isc_free(p);

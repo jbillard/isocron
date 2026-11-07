@@ -1576,10 +1576,11 @@ pub unsafe fn free_cached(p: *mut u8) -> bool {
     false
 }
 
-#[cold]
-#[inline(never)]
 /// The bytes the block `p` of `alloc` can hold (D351): the size of its
-/// class, or the length of a medium block without its header.
+/// class, or the length of a medium block without its header. On the path
+/// of every text added to (D459: cold and never inlined, 3.7 % of
+/// `json.quote` of escaped texts in its call).
+#[inline]
 pub unsafe fn usable(p: *mut u8) -> usize {
     let h = p.sub(HEADER) as *const Header;
     if (*h).state != IN_USE {
