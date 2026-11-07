@@ -176,6 +176,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "split" => Prim::Split,
         "trim" => Prim::Trim,
         "indexOf" => Prim::IndexOf,
+        "lastIndexOf" => Prim::LastIndexOf,
         "includes" => Prim::Includes,
         "startsWith" => Prim::StartsWith,
         "endsWith" => Prim::EndsWith,
@@ -2695,7 +2696,7 @@ impl<'g> FnCx<'g> {
                     2
                 }
             }
-            Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
+            Prim::IndexOf | Prim::LastIndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
             Prim::ReplaceAll | Prim::StrSlice | Prim::Replace => 3,
             Prim::RxTest | Prim::RxSearch | Prim::RxCount | Prim::RxMatches => 2,
             Prim::MapOf => 3,
@@ -3233,7 +3234,7 @@ impl<'g> FnCx<'g> {
                 self.unify(&Ty::Str, &to.ty, to.span)?;
                 Ok(mk(vec![x, pat, to], Ty::Str, self))
             }
-            Prim::IndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith => {
+            Prim::IndexOf | Prim::LastIndexOf | Prim::Includes | Prim::StartsWith | Prim::EndsWith => {
                 let mut xs = Vec::new();
                 for a in args {
                     let x = self.check(a, Some(&Ty::Str))?;
@@ -3241,7 +3242,7 @@ impl<'g> FnCx<'g> {
                     xs.push(x);
                 }
                 let t = match p {
-                    Prim::IndexOf => Ty::Int(IntKind::I64),
+                    Prim::IndexOf | Prim::LastIndexOf => Ty::Int(IntKind::I64),
                     Prim::ReplaceAll => Ty::Str,
                     _ => Ty::Bool,
                 };

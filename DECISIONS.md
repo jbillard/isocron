@@ -10625,3 +10625,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   escapes, the old and new binaries, 9 alternated runs): 77.44 -> 83.19 ns
   (+7.4 %): the array of the places (a block, its compression) costs more
   than 15 bytes read one at a time. The module stays; the test stays.
+- **D482 — `s.lastIndexOf(t)`, and the parts of a path by it
+  (2026-11-08).** `sys.dirname` about 3.0 times its floor: 27.5 cycles and
+  118 instructions a call, nothing made on the heap; its last `/` and the
+  last byte of its path that is not `/` found by folds of the index of the
+  last match (D479), indices of 64 bits for bytes, then a reduction across
+  the vector, where the floor calls `strrchr`. The language had no search
+  from the end. Now a text has `lastIndexOf` (as TypeScript: the byte index
+  of the last `t`, -1 if none, the length of the text for an empty `t`),
+  decided without a question to the author: one byte by windows of 16
+  bytes from the end up to 64 bytes (`find_last_byte_short`, as
+  `find_bytes` of D466; `memrchr` set up its vectors for a few bytes:
+  `extension` +16.6 % with it), `memrchr` beyond, `memmem::rfind` for more
+  bytes; the interpreter and compiled code by `isc-runtime-core`. In the
+  guide (`docs/language.md`, its example run: `(7, -1, 8)`), in SPEC
+  section 10's list, in the grammar of VS Code. `path` finds the last `/`
+  of `basename`, `dirname` and `normalize` by it; `extension` keeps its
+  fold for the dot of a name of a few bytes (the call +12.7 % there).
+  Measured (the old and new binaries of `sys`, 7 alternated runs):
+  `basename` 9.18 -> 7.32 ns (-20.2 %), `extension` 12.39 -> 10.62 ns
+  (-14.3 %), `dirname` within 2 %, `envAll` -8.4 %; `run.py` (5 runs of
+  200 rounds) `basename` -20.1 %, `extension` -14.4 %, `dirname` 8.7 ->
+  8.6 ns (2.96 times its floor), `isAbsolute` 1.8 -> 2.0 ns (its code the
+  same: from 1.8 to 2.0 ns from one run to the other, D465). The LLVM IR of
+  the ten programs the same but a declaration. Tests
+  `last_index_of_texts` (`strings.rs`: a byte in texts of 0 to 70 bytes at
+  every place, needles of two bytes and empty, overlapping, characters of
+  two bytes; the interpreter's values), `last_index_of_is_a_search_from_the_end`
+  (`isc-runtime-core`: against a search byte by byte; with the window a
+  byte off it fails), `path_parts_as_before` (D479) and
+  `normalize_by_the_places_of_its_parts` (D464).

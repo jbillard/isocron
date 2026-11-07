@@ -1178,3 +1178,24 @@ fn short_texts_of_templates_by_masks() {
         assert_eq!(r.stdout, want, "{}", name);
     }
 }
+
+/// D482: `s.lastIndexOf(t)`, the byte index of the last `t` (-1 if none,
+/// the length of `s` for an empty `t`): a byte in texts of 0 to 70 bytes at
+/// every place (the windows of 16 from the end, then `memrchr`), needles
+/// of several bytes, overlapping ones, characters of two bytes; the
+/// interpreter's values.
+#[test]
+fn last_index_of_texts() {
+    let src = "action main(args: string[k]): i32 {
+    const t = stringOf(map(iota(70), (j) => u8(97 + j % 5)));
+    print(map(iota(71), (n) => t.slice(0, n).lastIndexOf(\"c\")));
+    print(map(iota(71), (n) => t.slice(0, n).lastIndexOf(\"cd\") * 100 + t.slice(n % 7, n).lastIndexOf(\"\")));
+    print([\"aaa\".lastIndexOf(\"aa\"), \"abcabc\".lastIndexOf(\"abc\"), \"\u{e9}\u{e9}\".lastIndexOf(\"\u{e9}\"), \"a\u{e9}b\".lastIndexOf(\"b\"), \"\".lastIndexOf(\"a\"), \"\".lastIndexOf(\"\")] as const);
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    assert!(want.ends_with("(1, 3, 2, 3, -1, 0)\n"), "{}", want);
+    let r = run_bin(&compile(src, "last_index_of"), &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+}

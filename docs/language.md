@@ -584,6 +584,7 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 | `parseI64(s)`, `parseF64(s)` | `(string) => i64`, `(string) => f64` | a decimal integer (`+5`, `-12`), a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic (`tryParseI64`, `tryParseF64`: a `Result`) |
 | `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` | `(string) => f64` | as ECMAScript: `Number` of the whole text (`""` is 0, `"0x1F"` is 31), `parseFloat` and `parseInt` of its longest prefix; NaN when there is no number |
 | `s.indexOf(t)` | `(string, string) => i64` | the byte index of the first `t`, -1 if none |
+| `s.lastIndexOf(t)` | `(string, string) => i64` | the byte index of the last `t`, -1 if none (the length of `s` for an empty `t`) |
 | `s.includes(t)`, `s.startsWith(t)`, `s.endsWith(t)` | `(string, string) => boolean` | |
 | `s.replace(a, b)`, `s.replaceAll(a, b)` | `(string, string, string) => string` | the first `a`, every `a`, replaced by `b` (`a` empty: `b` around each character; `b` has the `$` patterns of [Regular expressions](#regular-expressions)) |
 | `s.toUpperCase()`, `s.toLowerCase()` | `(string) => string` | the case mappings of Unicode, without a locale (`"straße".toUpperCase()` is `"STRASSE"`) |
@@ -602,7 +603,7 @@ UTF-8, not the units of UTF-16. `toFixed` from 1e21 on writes the number as
 ```isc
 action main(args: string[k]): i32 {
     const s = "Hello, World";
-    print([s.indexOf("World"), s.indexOf("x")] as const);
+    print([s.indexOf("World"), s.indexOf("x"), s.lastIndexOf("o")] as const);
     print(s.replaceAll("l", "L").toUpperCase());
     print("7".padStart(3, "0") + "|" + "ab".padEnd(4) + "|");
     print(s.slice(7, 12));
@@ -612,7 +613,7 @@ action main(args: string[k]): i32 {
 ```
 
 ```output
-(7, -1)
+(7, -1, 8)
 HELLO, WORLD
 007|ab  |
 World

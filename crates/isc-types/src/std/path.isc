@@ -3,12 +3,6 @@
 // `/` on every target (Windows takes it too), so that a result depends on
 // the text alone; `C:/` and `C:\` are roots everywhere.
 
-// the place of the last byte `c` of `s`, or -1
-function lastByte(s: string, c: u8): i64 {
-    const b = bytes(s);
-    return fold(iota(b.length), -1, (a, i) => b[i] == c ? i : a);
-}
-
 // `s` without the `/` at its end (a root `/` kept)
 function trimEnd(s: string): string {
     const b = bytes(s);
@@ -37,13 +31,13 @@ export function basename(p: string): string {
     if (t == "/") {
         return "/";
     }
-    return t.slice(lastByte(t, 47u8) + 1, t.length);
+    return t.slice(t.lastIndexOf("/") + 1, t.length);
 }
 
 // `p` without its last part: `.` when it has one part, `/` at the root
 export function dirname(p: string): string {
     const t = trimEnd(p);
-    const k = lastByte(t, 47u8);
+    const k = t.lastIndexOf("/");
     if (k < 0) {
         return ".";
     }
@@ -55,7 +49,10 @@ export function dirname(p: string): string {
 // name that starts with its only dot has none, as `.profile`)
 export function extension(p: string): string {
     const b = basename(p);
-    const k = lastByte(b, 46u8);
+    // its dot by a fold in the code: a name of a few bytes, which the call of
+    // `lastIndexOf` reads more slowly (D482: +12.7 %)
+    const bs = bytes(b);
+    const k = fold(iota(bs.length), -1, (a, i) => bs[i] == 46u8 ? i : a);
     return k <= 0 || b == ".." ? "" : b.slice(k, b.length);
 }
 
@@ -81,7 +78,7 @@ function normAt(p: string, b: u8[n], i: i64, out: string, names: i64, abs: boole
     }
     if (len == 2 && b[i] == 46u8 && b[i + 1] == 46u8) {
         if (names > 0) {
-            const k = lastByte(out, 47u8);
+            const k = out.lastIndexOf("/");
             return normAt(p, b, e + 1, k < 0 ? "" : (k == 0 ? "/" : out.slice(0, k)), names - 1, abs);
         }
         if (abs) {

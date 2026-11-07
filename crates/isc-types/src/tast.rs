@@ -123,6 +123,7 @@ pub enum Prim {
     OrError(Fallible),
     /// The functions of strings of TypeScript (D155), on bytes of UTF-8.
     IndexOf,
+    LastIndexOf,
     Includes,
     StartsWith,
     EndsWith,

@@ -2477,6 +2477,7 @@ impl<'p> Lower<'p> {
             // strings (D134)
             // the functions of strings of TypeScript (D155)
             Prim::IndexOf
+            | Prim::LastIndexOf
             | Prim::Includes
             | Prim::StartsWith
             | Prim::EndsWith
@@ -2503,6 +2504,7 @@ impl<'p> Lower<'p> {
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),
                     Prim::IndexOf => StrOp::IndexOf,
+                    Prim::LastIndexOf => StrOp::LastIndexOf,
                     Prim::Includes => StrOp::Includes,
                     Prim::StartsWith => StrOp::StartsWith,
                     Prim::EndsWith => StrOp::EndsWith,

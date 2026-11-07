@@ -2080,6 +2080,11 @@ pub unsafe extern "C" fn isc_index_of(p: *const u8, n: i64, q: *const u8, m: i64
     sem::index_of(text(p, n), text(q, m))
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn isc_last_index_of(p: *const u8, n: i64, q: *const u8, m: i64) -> i64 {
+    sem::last_index_of(text(p, n), text(q, m))
+}
+
 /// 0 `includes`, 1 `startsWith`, 2 `endsWith`.
 #[no_mangle]
 pub unsafe extern "C" fn isc_str_test(p: *const u8, n: i64, q: *const u8, m: i64, which: i32) -> i32 {

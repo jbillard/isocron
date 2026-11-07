@@ -895,6 +895,20 @@ pub fn index_of(s: &str, t: &str) -> i64 {
     find_bytes(s.as_bytes(), t.as_bytes()).map(|i| i as i64).unwrap_or(-1)
 }
 
+/// The byte index of the last `t` in `s`, -1 if none; the length of `s` for
+/// an empty `t` (as TypeScript; D482): a byte by `memrchr`, more by
+/// `memmem::rfind`.
+pub fn last_index_of(s: &str, t: &str) -> i64 {
+    let (s, t) = (s.as_bytes(), t.as_bytes());
+    let found = match t.len() {
+        0 => Some(s.len()),
+        1 if s.len() <= 64 => find_last_byte_short(s, t[0]),
+        1 => memchr::memrchr(t[0], s),
+        _ => memchr::memmem::rfind(s, t),
+    };
+    found.map(|i| i as i64).unwrap_or(-1)
+}
+
 /// The index of the first `t` in `s` (D301): a byte by `memchr`; up to 16
 /// bytes, their first byte by `memchr`, then the others compared; longer,
 /// `memmem`. In UTF-8 the bytes of a text match only at the start of its
@@ -936,6 +950,34 @@ fn find_byte_short(s: &[u8], c: u8) -> Option<usize> {
         let m = mask16(s[n - 16..].try_into().unwrap(), c);
         if m != 0 {
             return Some(n - 16 + m.trailing_zeros() as usize);
+        }
+    }
+    None
+}
+
+/// The last byte `c` of `s`, of at most 64 bytes (D482): `find_byte_short`
+/// from the end, windows of 16 bytes compared at once, the last one first,
+/// the first over the start of the one after it (its bytes seen without
+/// `c`); fewer than 16 one by one. `memrchr` set up its vectors for a few
+/// bytes, as `memchr` (D466).
+#[inline(never)]
+fn find_last_byte_short(s: &[u8], c: u8) -> Option<usize> {
+    let n = s.len();
+    if n < 16 {
+        return s.iter().rposition(|&x| x == c);
+    }
+    let mut end = n;
+    while end >= 16 {
+        let m = mask16(s[end - 16..end].try_into().unwrap(), c);
+        if m != 0 {
+            return Some(end - 16 + 31 - m.leading_zeros() as usize);
+        }
+        end -= 16;
+    }
+    if end > 0 {
+        let m = mask16(s[..16].try_into().unwrap(), c);
+        if m != 0 {
+            return Some(31 - m.leading_zeros() as usize);
         }
     }
     None
@@ -2411,6 +2453,33 @@ mod find_bytes_tests {
     use super::find_bytes;
     extern crate alloc;
     use alloc::vec::Vec;
+
+    /// D482: `last_index_of` the same place as a search from the end byte
+    /// by byte, for texts of 0 to 70 bytes (both sides of 16, 32, 48 and
+    /// 64), the byte at every place, twice, or not at all; needles of 0 to
+    /// 3 bytes.
+    #[test]
+    fn last_index_of_is_a_search_from_the_end() {
+        use super::last_index_of;
+        for n in 0..=70usize {
+            for at in 0..=n {
+                for twice in [false, true] {
+                    let mut s: Vec<u8> = (0..n).map(|i| b'a' + (i % 7) as u8).collect();
+                    if at < n {
+                        s[at] = b'/';
+                    }
+                    if twice && at > 3 {
+                        s[at / 2] = b'/';
+                    }
+                    let t = core::str::from_utf8(&s).unwrap();
+                    let naive = |u: &str| if u.is_empty() { n as i64 } else { (0..=n.saturating_sub(u.len())).rev().find(|&i| i + u.len() <= n && &s[i..i + u.len()] == u.as_bytes()).map(|i| i as i64).unwrap_or(-1) };
+                    for u in ["", "/", "a/", "/b", "abc"] {
+                        assert_eq!(last_index_of(t, u), naive(u), "n {} at {} {:?}", n, at, u);
+                    }
+                }
+            }
+        }
+    }
 
     /// D466: the same place as a search byte by byte, for texts of 0 to 70
     /// bytes (both sides of 16, 32, 48 and 64), needles of 1 to 17 bytes, found at

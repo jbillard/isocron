@@ -923,6 +923,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_trim_side(ptr, ptr, i64, i32)",
     "declare void @isc_str_slice(ptr, ptr, i64, i64, i64, i32, i32)",
+    "declare i64 @isc_last_index_of(ptr, i64, ptr, i64)",
     "declare void @isc_to_fixed(ptr, double, i64, i32, i32)",
     "declare void @isc_read_stdin(ptr, i32, i32)",
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
@@ -12143,6 +12144,11 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 v(self.ins(format!("call i64 @isc_index_of(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m)), "i64")
+            }
+            S::LastIndexOf => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                v(self.ins(format!("call i64 @isc_last_index_of(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m)), "i64")
             }
             // against a literal of at most 16 bytes: its length, then its
             // bytes compared as one or two integers, without a call (D301)

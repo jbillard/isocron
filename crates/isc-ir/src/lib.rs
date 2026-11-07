@@ -203,6 +203,8 @@ pub enum StrOp {
     Join,
     /// The functions of TypeScript (D155).
     IndexOf,
+    /// The byte index of the last `t` in `s`, -1 if none (D482).
+    LastIndexOf,
     Includes,
     StartsWith,
     EndsWith,
