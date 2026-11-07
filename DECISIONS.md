@@ -9703,3 +9703,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     1.2 (as `serveTlsOn`, D416).
   91 of 91 functions named by a form of `bench/primitives`
   (`results/primitives.md`).
+- **D432 — The waiting of the threads of reverse-complement measured again
+  after D426 (2026-11-07).** D286 explained the waiting at the end of its
+  writing passes when the program took 59 ms: the pages at the end of the
+  grown block of each `filter`, cleared by the thread of the last range.
+  Since D293 and D426 the bases are never made whole, so that cause is
+  gone; measured again (4 threads, fixed frequency, 20 runs, `perf record`
+  of user cycles at 20 kHz, the samples of each thread): the threads are
+  busy for the whole run (111 ms of CPU a run for 27.7 ms on 4 threads),
+  and the waiting of the pool (`worker`, `parallel_job`) is 6.2 % of the
+  samples: 5.11 % on the three workers, 1.08 % on the thread of the body.
+  The body alone (its sequential parts: the sums of the places, the
+  counts taken from the pass of the heads, the writes) is 0.87 % of the
+  samples, while the three workers wait: about 2.6 %; the rest, about
+  3.6 %, is the end of each of the four parallel phases (the heads, then
+  the output of each of the three records), the last thread finishing its
+  range (contiguous ranges, D254). About 1.7 ms of each thread's 27.7 ms;
+  no clearing of pages left in it. n-body's 17 cycles (D312) stand: its
+  LLVM IR is the same since D407.
