@@ -9721,3 +9721,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   range (contiguous ranges, D254). About 1.7 ms of each thread's 27.7 ms;
   no clearing of pages left in it. n-body's 17 cycles (D312) stand: its
   LLVM IR is the same since D407.
+- **D433 — The 17 cycles of n-body measured again; the publication of
+  D429 holds for the code since (2026-11-07).** D312 explained them by
+  measure (the ports 0 and 1, the divider, `llvm-mca` 116.04 cycles a step
+  against 119.62). Measured again on the binary of today (one thread, CPU
+  0, its sibling 8 not taken offline, 50 million steps, `perf stat` of 3
+  runs, fixed frequency): 121.65 cycles and 243.00 instructions a step;
+  the ports 0, 1, 5 and 6 78.58, 79.69, 48.76 and 1.00 uops a step, the
+  loads 28.00, the stores 14.00 and 14.00: the same work as in D312 to a
+  tenth of a uop (78.75, 79.47, 48.84, 1.00, 28, 14, 14), so the same loop
+  and the same model, 95.4 % of the step (the 2 cycles more than D312, its
+  sibling online: D261). And the LLVM IR of the ten programs built by
+  the compiler of today is the one of 5f615bb (only the versions of the
+  crates changed in `crates/` since, D430), so the publication of D429
+  measures the code of today.
