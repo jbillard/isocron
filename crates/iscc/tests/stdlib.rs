@@ -1951,3 +1951,55 @@ fn json_decode_faults_as_before() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout == want, "compiled: {:?}", first(&r.stdout));
 }
+
+/// D481: `json.quote` of every text of 0 to 4 characters of an alphabet of
+/// a letter, `"`, `\`, a newline, a carriage return, a tab, the controls 1
+/// and 31, `é` and a space (the escapes found at once by `filter`), against
+/// the rules of JSON written here; compiled and interpreted.
+#[test]
+fn json_quote_against_its_rules() {
+    let src = "import * as json from \"json\";
+
+action main(args: string[k]): i32 {
+    const alpha = [\"a\", \"\\\"\", \"\\\\\", \"\\n\", \"\\r\", \"\\t\", stringOf([1u8]), stringOf([31u8]), \"\u{e9}\", \" \"];
+    const texts = map(iota(11111), (k) => {
+        const n = k < 1 ? 0 : (k < 11 ? 1 : (k < 111 ? 2 : (k < 1111 ? 3 : 4)));
+        const base = [0, 1, 11, 111, 1111][n];
+        return join(map(iota(n), (j) => alpha[((k - base) / [1, 10, 100, 1000][j]) % 10]), \"\");
+    });
+    print(join(map(texts, (t) => json.quote(t)), \"\\n\"));
+    return 0;
+}
+";
+    let alpha = ["a", "\"", "\\", "\n", "\r", "\t", "\u{1}", "\u{1f}", "\u{e9}", " "];
+    let quote = |t: &str| {
+        let mut o = String::from("\"");
+        for c in t.chars() {
+            match c {
+                '"' => o.push_str("\\\""),
+                '\\' => o.push_str("\\\\"),
+                '\n' => o.push_str("\\n"),
+                '\r' => o.push_str("\\r"),
+                '\t' => o.push_str("\\t"),
+                c if (c as u32) < 32 => o.push_str(&format!("\\u{:04x}", c as u32)),
+                c => o.push(c),
+            }
+        }
+        o.push('"');
+        o
+    };
+    let mut want = Vec::new();
+    for k in 0..11111usize {
+        let n = if k < 1 { 0 } else if k < 11 { 1 } else if k < 111 { 2 } else if k < 1111 { 3 } else { 4 };
+        let base = [0, 1, 11, 111, 1111][n];
+        let t: String = (0..n).map(|j| alpha[((k - base) / [1, 10, 100, 1000][j]) % 10]).collect();
+        want.push(quote(&t));
+    }
+    let want = want.join("\n") + "\n";
+    let first = |got: &str| got.lines().zip(want.lines()).enumerate().find(|(_, (a, b))| a != b).map(|(i, (a, b))| format!("line {}: {:?} against {:?}", i + 1, a, b));
+    let r = run_bin(&compile(src, "json_quote_rules"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "compiled: {:?}", first(&r.stdout));
+    let got = interp_ok(src, &[]);
+    assert!(got == want, "interpreter: {:?}", first(&got));
+}

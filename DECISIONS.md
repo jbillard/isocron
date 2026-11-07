@@ -10611,3 +10611,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   1885 ms, the others within 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D481 — The escapes of `json.quote` found by `filter`: rejected after
+  measure (2026-11-08).** `json.quote.escaped` 4.15 times its floor; its
+  escapes found by a recursion over every byte (D473: no search by a
+  predicate in the language). First a guard: the test
+  `json_quote_against_its_rules` (`stdlib.rs`: every text of 0 to 4
+  characters of an alphabet of a letter, `"`, `\`, a newline, a carriage
+  return, a tab, the controls 1 and 31, `é` and a space, 11111 texts,
+  against the rules of JSON written in the test, compiled and
+  interpreted). Then the places to escape found at once by `filter` (its
+  predicate in vectors) and the text between them added from one to the
+  next (the same texts). Measured (`quote` of 4096 texts of 15 bytes and 3
+  escapes, the old and new binaries, 9 alternated runs): 77.44 -> 83.19 ns
+  (+7.4 %): the array of the places (a block, its compression) costs more
+  than 15 bytes read one at a time. The module stays; the test stays.
