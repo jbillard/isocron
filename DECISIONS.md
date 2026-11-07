@@ -10300,3 +10300,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   1.68 times its floor. Tested by `read_text_refuses_bytes_not_utf8` (D451:
   texts with bytes from 0x80, through the fold) and the tests of `sys`
   (texts of ASCII).
+- **D464 — `path.normalize` reads its parts by their places
+  (2026-11-07).** `sys.normalize` 3.3 times its floor: `normalize` split
+  the path into strings (`split("/")`: an array and a string for each of
+  the 8 parts of the measured path), then kept or dropped each, where the
+  floor reads each part where it is, by its place. Now `normAt` finds the
+  next `/` from a place, tells `.` and `..` by their bytes, and writes a
+  part (`p.slice(i, e)`, a part of the text added to the result) only when
+  it is kept. The same texts: test `normalize_by_the_places_of_its_parts`
+  (`std_sys.rs`: the 2801 paths of 0 to 4 parts among "", ".", "..", "a",
+  "bc", ".x" and "...", with and without a root, against a reference in
+  Rust of the rules before, which the old module gives line for line; with
+  `..` told by its first byte alone it fails). Measured (the old and new
+  binaries of `sys`, 7 alternated runs): `normalize` 168.03 -> 91.30 ns
+  (-45.7 %), the other forms within 3.3 %; `run.py` (5 runs of 200 rounds)
+  164.9 -> 90.2 ns, 1.82 times its floor (`isAbsolute` +6.1 %, 1.9 ->
+  2.0 ns, its code the same).

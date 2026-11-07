@@ -285,3 +285,65 @@ action main(args: string[k]): i32 {
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "compiled: {}", r.stderr);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D464: `path.normalize` reads each part where it is, by its place, not
+/// as a string of a `split`: every path of 0 to 4 parts among "", ".",
+/// "..", "a", "bc", ".x" and "...", with and without a root `/`, against a reference
+/// written here (the rules of the version before it: no `.`, no empty
+/// part, `x/..` removed, `..` kept at the start of a relative path and
+/// dropped at the root, `.` for nothing); compiled and interpreted.
+#[test]
+fn normalize_by_the_places_of_its_parts() {
+    let src = "import * as path from \"path\";
+
+function pathOf(k: i64, n: i64): string {
+    const segs = [\"\", \".\", \"..\", \"a\", \"bc\", \".x\", \"...\"];
+    return join(map(iota(n), (j) => segs[(k / [1, 7, 49, 343][j]) % 7]), \"/\");
+}
+
+action main(args: string[k]): i32 {
+    const all = concat(concat(map(iota(1), (k) => pathOf(k, 0)), map(iota(7), (k) => pathOf(k, 1))), concat(map(iota(49), (k) => pathOf(k, 2)), concat(map(iota(343), (k) => pathOf(k, 3)), map(iota(2401), (k) => pathOf(k, 4)))));
+    print(join(map(all, (p) => `${p}|${path.normalize(p)}|${path.normalize(\"/\" + p)}`), \"\\n\"));
+    return 0;
+}
+";
+    fn normalize(p: &str) -> String {
+        let abs = p.starts_with('/');
+        let mut out = if abs { "/".to_string() } else { String::new() };
+        let mut names = 0;
+        for s in p.split('/') {
+            if s.is_empty() || s == "." {
+                continue;
+            }
+            if s == ".." {
+                if names > 0 {
+                    out = match out.rfind('/') {
+                        None => String::new(),
+                        Some(0) => "/".to_string(),
+                        Some(k) => out[..k].to_string(),
+                    };
+                    names -= 1;
+                } else if !abs {
+                    out = if out.is_empty() { "..".to_string() } else { out + "/.." };
+                }
+                continue;
+            }
+            out = if out.is_empty() || out == "/" { out + s } else { out + "/" + s };
+            names += 1;
+        }
+        if out.is_empty() { ".".to_string() } else { out }
+    }
+    let segs = ["", ".", "..", "a", "bc", ".x", "..."];
+    let mut want = String::new();
+    for n in 0..=4usize {
+        for k in 0..7usize.pow(n as u32) {
+            let p = (0..n).map(|j| segs[(k / 7usize.pow(j as u32)) % 7]).collect::<Vec<_>>().join("/");
+            want.push_str(&format!("{}|{}|{}\n", p, normalize(&p), normalize(&format!("/{}", p))));
+        }
+    }
+    let r = run_bin(&compile(src, "normalize_places"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "compiled: {:?}", r.stdout.lines().zip(want.lines()).find(|(a, b)| a != b));
+    let got = interp_ok(src, &[]);
+    assert!(got == want, "interpreter: {:?}", got.lines().zip(want.lines()).find(|(a, b)| a != b));
+}

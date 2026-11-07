@@ -59,35 +59,43 @@ export function extension(p: string): string {
     return k <= 0 || b == ".." ? "" : b.slice(k, b.length);
 }
 
-// the parts of `segs` from `i` on added to `out`, the text kept so far: its
-// root `/`, or the parts `..` that nothing removed, then `names` parts; `out`
-// itself the result, so that each part is written after it in its block
-// (D351)
-function normFrom(segs: string[n], i: i64, out: string, names: i64, abs: boolean): string {
-    if (i == segs.length) {
+// the place of the first `/` of `b` from `i`, or its length
+function slashFrom(b: u8[n], i: i64): i64 {
+    return i >= b.length || b[i] == 47u8 ? i : slashFrom(b, i + 1);
+}
+
+// the parts of `p` (its bytes `b`) from the byte `i` on added to `out`, the
+// text kept so far: its root `/`, or the parts `..` that nothing removed,
+// then `names` parts; `out` itself the result, so that each part is written
+// after it in its block (D351). Each part read where it is, by its place,
+// and written only when it is kept (D464: the strings of a `split` and their
+// array before, made for each part)
+function normAt(p: string, b: u8[n], i: i64, out: string, names: i64, abs: boolean): string {
+    if (i > b.length) {
         return out;
     }
-    const s = segs[i];
-    if (s == "" || s == ".") {
-        return normFrom(segs, i + 1, out, names, abs);
+    const e = slashFrom(b, i);
+    const len = e - i;
+    if (len == 0 || (len == 1 && b[i] == 46u8)) {
+        return normAt(p, b, e + 1, out, names, abs);
     }
-    if (s == "..") {
+    if (len == 2 && b[i] == 46u8 && b[i + 1] == 46u8) {
         if (names > 0) {
             const k = lastByte(out, 47u8);
-            return normFrom(segs, i + 1, k < 0 ? "" : (k == 0 ? "/" : out.slice(0, k)), names - 1, abs);
+            return normAt(p, b, e + 1, k < 0 ? "" : (k == 0 ? "/" : out.slice(0, k)), names - 1, abs);
         }
         if (abs) {
-            return normFrom(segs, i + 1, out, 0, abs);
+            return normAt(p, b, e + 1, out, 0, abs);
         }
-        return normFrom(segs, i + 1, out == "" ? ".." : out + "/..", 0, abs);
+        return normAt(p, b, e + 1, out == "" ? ".." : out + "/..", 0, abs);
     }
-    return normFrom(segs, i + 1, out == "" || out == "/" ? out + s : out + "/" + s, names + 1, abs);
+    return normAt(p, b, e + 1, out == "" || out == "/" ? out + p.slice(i, e) : out + "/" + p.slice(i, e), names + 1, abs);
 }
 
 // `p` without `.`, `x/..` and repeated `/`, read as text alone (no link
 // followed); `.` for an empty path
 export function normalize(p: string): string {
     const abs = p.startsWith("/");
-    const r = normFrom(p.split("/"), 0, abs ? "/" : "", 0, abs);
+    const r = normAt(p, bytes(p), 0, abs ? "/" : "", 0, abs);
     return r == "" ? "." : r;
 }
