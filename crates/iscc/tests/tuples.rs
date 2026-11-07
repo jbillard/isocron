@@ -73,3 +73,80 @@ fn arrays_of_tuples_match_interpreter() {
         assert_eq!(r.stdout, want, "WebAssembly");
     }
 }
+
+/// D434: the value of a `let` that is a component owning memory of a new
+/// tuple that dies with it (a field read out of a record a function made:
+/// `textResponse(200, s).body`): the component moved out without a copy,
+/// the others freed on their own. Components of bytes, of an array of
+/// tuples of strings, of an array of integers, of a string; scalars beside; the
+/// component read in a parallel `map`, in a recursive action and kept in an
+/// array; the interpreter's output on 1, 3 and 8 threads; nothing lost or
+/// freed twice (valgrind).
+#[test]
+fn a_component_read_out_of_a_new_tuple_is_moved() {
+    let src = "type Resp = { status: i64, headers: [string, string][], body: u8[], rows: i64[], note: string };
+
+function make(i: i64, s: string): Resp {
+    return { status: 200 + i % 3, headers: [[\"Content-Type\", \"text/plain\"] as const, [\"X-Id\", `${i}`] as const], body: bytes(s), rows: [i, i + 1, i * 2], note: `note ${i}` };
+}
+
+function bodyOf(i: i64, s: string): u8[] {
+    return make(i, s).body;
+}
+
+function noteOf(i: i64): string {
+    return make(i, \"x\").note;
+}
+
+function rowsOf(i: i64): i64[] {
+    return make(i, \"y\").rows;
+}
+
+action walk(i: i64, n: i64, acc: i64): i64 {
+    if (i == n) {
+        return acc;
+    }
+    const b = bodyOf(i, `walk ${i}`);
+    return walk(i + 1, n, acc + b.length + i64(b[0]));
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const texts = map(iota(n), (i) => `hello number ${1000000 + i}`);
+    print(sum(map(iota(n), (i) => make(i, texts[i]).body.length)));
+    print(sum(map(iota(n), (i) => bodyOf(i, texts[i]).length * (i % 7 + 1))));
+    const kept = map(iota(n), (i) => bodyOf(i, texts[i]));
+    print(sum(map(kept, (b) => i64(b[b.length - 1]))));
+    print(join(map(iota(5), (i) => noteOf(i)), \",\"));
+    print(sum(map(iota(n), (i) => sum(rowsOf(i)))));
+    print(walk(0, n, 0));
+    return 0;
+}
+";
+    let ir = iscc::frontend("take.isc", src).unwrap();
+    let text = format!("{:?}", ir);
+    assert!(text.contains("Take("), "no component taken out of a tuple");
+    for n in ["0", "1", "5", "5000"] {
+        let Outcome::Exit(0, want) = interp(src, &[n]) else { panic!("the interpreter failed for {}", n) };
+        let bin = compile(src, "take_component");
+        for t in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!(r.code, 0, "n {} T={}: {}", n, t, r.stderr);
+            assert_eq!(r.stdout, want, "n {} T={}", n, t);
+        }
+    }
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    if vg.is_file() {
+        let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+        let bin = compile_glibc(src, "take_component_vg", opts);
+        let out = std::process::Command::new(vg)
+            .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
+            .arg(&bin)
+            .arg("300")
+            .env("ISC_ALLOC", "glibc")
+            .env("ISC_THREADS", "2")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "under valgrind:\n{}", String::from_utf8_lossy(&out.stderr));
+    }
+}

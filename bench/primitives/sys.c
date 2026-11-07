@@ -26,6 +26,22 @@ static int cmp(const void *a, const void *b) {
     return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
+// an entry `name=value` and the length of its name (D435)
+struct entry {
+    const char *e;
+    size_t n;
+};
+
+// by the bytes of the names, then by the whole entries, as `envAll` (D423)
+static int by_name(const void *a, const void *b) {
+    const struct entry *x = a, *y = b;
+    size_t n = x->n < y->n ? x->n : y->n;
+    int c = memcmp(x->e, y->e, n);
+    if (c) return c;
+    if (x->n != y->n) return x->n < y->n ? -1 : 1;
+    return strcmp(x->e, y->e);
+}
+
 // the names of the folder `dir`, sorted, without . and ..: their number
 static long list(const char *dir) {
     static char buf[32768];
@@ -272,17 +288,22 @@ int main(int argc, char **argv) {
     char p2[256], p3[256];
     acc = 0;
     for (long i = 0; i < r; i++) {
-        // the entries sorted by their bytes, as `sysEnviron` sorts them (the
-        // floor without the sort did less than `envAll`, D400), then each a
-        // name and a value made
-        static const char *es[1024];
+        // the entries sorted by their names, as `sysEnviron` sorts them (the
+        // floor without the sort did less than `envAll`, D400; by name since
+        // D423, each name measured once, D435), then each a name and a value
+        // made
+        static struct entry es[1024];
         long m = 0;
-        for (char **e = environ; *e && m < 1024; e++) es[m++] = *e;
-        qsort(es, m, sizeof *es, cmp);
+        for (char **e = environ; *e && m < 1024; e++) {
+            const char *eq = strchr(*e, '=');
+            es[m].e = *e;
+            es[m++].n = eq ? (size_t)(eq - *e) : strlen(*e);
+        }
+        qsort(es, m, sizeof *es, by_name);
         long k = 0;
         for (long j = 0; j < m; j++) {
-            const char *eq = strchr(es[j], '=');
-            char *name = eq ? strndup(es[j], eq - es[j]) : strdup(es[j]), *value = strdup(eq ? eq + 1 : "");
+            const char *eq = es[j].e + es[j].n;
+            char *name = strndup(es[j].e, es[j].n), *value = strdup(*eq ? eq + 1 : "");
             free(name);
             free(value);
             k++;

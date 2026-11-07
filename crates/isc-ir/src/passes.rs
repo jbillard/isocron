@@ -341,8 +341,68 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     // a value read by several `reduce`s now grouped (F3) is read once: it
     // can be fused into the group
     fuse_fixpoint(body);
+    // the components of a new tuple read only by projections bound, so
+    // that the ownership pass takes it apart (D434)
+    bind_projections(body, vars);
     let pending = place_streams(body, vars, Mode::Evaluated);
     debug_assert!(pending.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// the components of a new tuple read only by projections (D434)
+
+/// Each `proj k r` of `e` replaced by the variable of its component.
+fn read_components(e: &mut Expr, r: VarId, comps: &[(u32, VarId)]) {
+    if let ExprKind::Proj(x, k) = &e.kind {
+        if matches!(x.kind, ExprKind::Var(w, _) if w == r) {
+            if let Some((_, v)) = comps.iter().find(|(j, _)| j == k) {
+                e.kind = ExprKind::Var(*v, Use::Borrow);
+                return;
+            }
+        }
+    }
+    for c in e.children_mut() {
+        read_components(c, r, comps);
+    }
+}
+
+/// `let r = <new tuple> in proj k r` (`new_tuple`), the component `k`
+/// owning memory: the value of the `let` is a component of a tuple that
+/// dies with it (the body of a response read out of `textResponse(...)`),
+/// which the ownership pass copied. Each component that owns memory bound
+/// (`let c = proj j r`), the value read through its variable: `split_tuples`
+/// then takes the tuple apart (D138), the component moved out without a
+/// copy, the others freed on their own as values never read. A tuple that
+/// lives on, read by projections, is left as it is: its projections borrow
+/// (D434).
+fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
+    for c in e.children_mut() {
+        bind_projections(c, vars);
+    }
+    let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
+    let r = *var;
+    let Type::Tuple(ts) = &init.ty else { return };
+    let ExprKind::Proj(x, k) = &body.kind else { return };
+    if !matches!(x.kind, ExprKind::Var(w, _) if w == r) || !ts[*k as usize].has_heap() || !new_tuple(init) {
+        return;
+    }
+    let heap: Vec<(u32, Type)> = ts.iter().enumerate().filter(|(_, t)| t.has_heap()).map(|(k, t)| (k as u32, t.clone())).collect();
+    let mut comps = Vec::new();
+    for (k, t) in &heap {
+        let v = vars.len() as VarId;
+        vars.push(VarInfo { name: format!("{}.{}", vars[r as usize].name, k), ty: t.clone() });
+        comps.push((*k, v, t.clone()));
+    }
+    let pairs: Vec<(u32, VarId)> = comps.iter().map(|(k, v, _)| (*k, *v)).collect();
+    read_components(body, r, &pairs);
+    let span = body.span;
+    let rty = init.ty.clone();
+    for (k, v, t) in comps.into_iter().rev() {
+        let inner = std::mem::replace(&mut **body, Expr::new(ExprKind::Lit(Lit::Unit), Type::Unit, span));
+        let ty = inner.ty.clone();
+        let proj = Expr::new(ExprKind::Proj(Box::new(Expr::var(r, rty.clone(), span)), k), t, span);
+        **body = Expr::new(ExprKind::Let { var: v, init: Box::new(proj), body: Box::new(inner), stmt: false, drop: false }, ty, span);
+    }
 }
 
 // ---------------------------------------------------------------------

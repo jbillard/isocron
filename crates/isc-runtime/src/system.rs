@@ -74,12 +74,18 @@ unsafe fn sorted_strings<B: AsRef<[u8]> + Ord>(mut names: alloc::vec::Vec<B>) ->
 /// The entries `name=value` of the environment in the order of the bytes of
 /// their names (D423: by the whole entries before, `VAR1=` came before
 /// `VAR=`, a byte below `=` after the name), as `strings_of`.
-unsafe fn sorted_entries<B: AsRef<[u8]> + Ord>(mut all: alloc::vec::Vec<B>) -> IscArray {
-    fn name(e: &[u8]) -> &[u8] {
-        e.split(|&c| c == b'=').next().unwrap_or(e)
-    }
-    all.sort_unstable_by(|a, b| name(a.as_ref()).cmp(name(b.as_ref())).then_with(|| a.as_ref().cmp(b.as_ref())));
-    strings_of(all)
+unsafe fn sorted_entries<B: AsRef<[u8]> + Ord>(all: alloc::vec::Vec<B>) -> IscArray {
+    // the length of each name measured once, not at each comparison (D435:
+    // a scan of both names a comparison made `envAll` 1684 -> 2376 ns)
+    let mut keyed: alloc::vec::Vec<(usize, B)> = all
+        .into_iter()
+        .map(|e| {
+            let n = e.as_ref().iter().position(|&c| c == b'=').unwrap_or(e.as_ref().len());
+            (n, e)
+        })
+        .collect();
+    keyed.sort_unstable_by(|(na, a), (nb, b)| a.as_ref()[..*na].cmp(&b.as_ref()[..*nb]).then_with(|| a.as_ref().cmp(b.as_ref())));
+    strings_of(keyed.into_iter().map(|(_, e)| e).collect())
 }
 
 /// A new array of the strings `names` in their order, the bytes that are

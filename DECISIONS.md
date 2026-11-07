@@ -9735,3 +9735,35 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the compiler of today is the one of 5f615bb (only the versions of the
   crates changed in `crates/` since, D430), so the publication of D429
   measures the code of today.
+- **D434 — A component of a new tuple that dies with it moved out, not
+  copied (2026-11-07).** TODO, the forms above 3 times their floor:
+  `http.textResponse` 22.5 ns against 2.2 (10.3). Its IR made three blocks
+  a response: the array of headers, the body copied into the record, and
+  the body copied again out of it (`copy (proj 0 tmp)`), because the value
+  of `let tmp = <record> in proj 0 tmp` (the body read out of the
+  response a function made) is a component of a tuple that dies with the
+  `let`, which the ownership pass copies. Now `bind_projections`
+  (`passes.rs`) binds each component that owns memory of such a tuple
+  (`let c = proj j r`), the value read through its variable, so that
+  `split_tuples` (D138) takes the tuple apart: the component moved out
+  (`take`), the others freed on their own. Measured (`run.py`, 5 runs of
+  200 rounds, fixed frequency): `textResponse` 22.5 -> 13.9 ns (6.3 times
+  its floor). A first version took apart every new tuple read only by
+  projections: `http.header` 19.4 -> 29.3 ns (the headers read through a
+  captured variable instead of `proj 1 resp`) and the IR of n-body and
+  k-nucleotide changed with the same times (1877.5 -> 1879.1 ms, 615.4 ->
+  613.9 ms); not kept, the rule only for the value of the `let` being the
+  component (where the copy was): the LLVM IR of the ten programs is
+  unchanged, of the groups of `bench/primitives` only `http`'s. Test
+  `a_component_read_out_of_a_new_tuple_is_moved` (`tuples.rs`: components
+  of bytes, of an array of tuples of strings, of integers, of a string,
+  read in a parallel `map`, in a recursive action, kept in an array; the
+  interpreter's output on 1, 3 and 8 threads; valgrind; without the pass
+  no `Take` is made and it fails).
+- **D435 — The names of `envAll` measured once for its sort (2026-11-07).**
+  The sort by names of D423 split both entries at their `=` at each
+  comparison: `sys.envAll` 1684 -> 2376 ns (measured with D434's run; the
+  floor still sorted whole entries, 953 ns). Now the length of each name is
+  found once (`sorted_entries`; the interpreter by a cached key), and the
+  floor sorts as `envAll` does since D423 (by names measured once, then
+  the entries): `envAll` 1958 ns against 1237 (1.6).
