@@ -1846,3 +1846,45 @@ action main(args: string[k]): i32 {
     }
     assert!(matches!(interp(src, &["2"]), Outcome::Panic(..)), "a text cut in a character");
 }
+
+/// D458: a padded text only read in its scope written into a buffer on the
+/// stack (as the concatenations of D404): `padStart` and `padEnd` to 0, 20,
+/// 127, 128 and 129 bytes and past them (the heap), a fill of one byte
+/// (literal: `isc_pad1_into`; a variable), of two bytes and empty, a text
+/// longer than its width (the text itself), an empty text; a padded text
+/// given away (kept in an array, returned) on the heap; the interpreter's
+/// output, on 1 and 4 threads; Valgrind (no block of the stack freed,
+/// nothing lost).
+#[test]
+fn padded_texts_on_the_stack() {
+    let src = "function widths(s: string, f: string): i64 {
+    return sum(map([0, 20, 127, 128, 129, 300], (w) => s.padStart(w, \"0\").length * 3 + s.padEnd(w, f).length + (s.padStart(w, f) == s.padEnd(w, f) ? 1 : 0)));
+}
+
+function kept(s: string): string {
+    return s.padStart(24, \"*\");
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const words = map(iota(n), (i) => `w${i * 37}`);
+    print(sum(map(words, (s) => widths(s, \"-\") + widths(s, \"ab\") + widths(s, \"\") + widths(s, args[1]))));
+    print(sum(map(words, (s) => s.padStart(2, \"0\").length + (s.padEnd(140, \".\").endsWith(\".\") ? 1 : 0))));
+    const t = map(words, (s) => s.padEnd(12, \"_\"));
+    print(t[n - 1]);
+    print(kept(words[0]));
+    print(`[${\"\".padStart(5, \"x\")}] [${\"\".padStart(0, \"x\")}] [${words[1].padStart(10, args[1])}]`);
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &["300", "~"]) else { panic!("the interpreter failed") };
+    let bin = compile(src, "padded_stack");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call void @isc_pad1_into") && ll.contains("call void @isc_pad_into"), "padded texts on the stack");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["300", "~"], Some(t));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "T={}", t);
+    }
+    valgrind_clean(src, "padded_stack", &["50", "~"]);
+}

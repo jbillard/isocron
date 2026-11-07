@@ -911,6 +911,8 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32, i32)",
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
     "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
+    "declare void @isc_pad_into(ptr, ptr, i64, ptr, i64, i64, ptr, i64, i32)",
+    "declare void @isc_pad1_into(ptr, ptr, ptr, i64, i64, i32)",
     "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
     "declare ptr @isc_str_reserve(ptr, i64, i64)",
     "declare void @isc_put_text(ptr, ptr, i64)",
@@ -1556,13 +1558,16 @@ fn moves_var(e: &Expr, v: VarId) -> bool {
     matches!(e.kind, ExprKind::Var(w, Use::Move) if w == v) || e.children().into_iter().any(|c| moves_var(c, v))
 }
 
-/// The concatenations whose text is the value of `e` (D404): `e` itself,
-/// the branches of an `if`, the body of a `let` or of a `Free`; not one
-/// given its left text (D351), which writes after it in its block.
+/// The concatenations and padded texts whose text is the value of `e`
+/// (D404, D458): `e` itself, the branches of an `if`, the body of a `let`
+/// or of a `Free`; not a concatenation given its left text (D351), which
+/// writes after it in its block.
 fn result_concats(e: &Expr, out: &mut Vec<*const Expr>) {
     use ExprKind::*;
     match &e.kind {
         StrOp(isc_ir::StrOp::Concat, es) if e.ty == Type::Str && !es.is_empty() && !matches!(es[0].kind, Var(_, Use::Move)) => out.push(e as *const Expr),
+        // a padded text (D458)
+        StrOp(isc_ir::StrOp::PadStart | isc_ir::StrOp::PadEnd, _) if e.ty == Type::Str => out.push(e as *const Expr),
         If(_, t, f) => {
             result_concats(t, out);
             result_concats(f, out);
@@ -12109,7 +12114,14 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[2]);
                 let start = (op == S::PadStart) as i32;
-                new_str(self, format!("call void @isc_pad(ptr OUT, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, vals[1].r, q, m, start))
+                // a text only read in its scope: into its buffer on the stack
+                // when it fits (D458, as the concatenations of D404)
+                let one = self.literal_of(&es[2]).filter(|f| f.len() == 1).map(|f| f.as_bytes()[0]);
+                match self.stack_concats.get(&(e as *const Expr)).cloned() {
+                    Some(b) if STACK_STR == 128 && one.is_some() => new_str(self, format!("call void @isc_pad1_into(ptr OUT, ptr {}, ptr {}, i64 {}, i64 {}, i32 {})", b, p, n, vals[1].r, one.unwrap() as i32 + 256 * start)),
+                    Some(b) => new_str(self, format!("call void @isc_pad_into(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", b, STACK_STR, p, n, vals[1].r, q, m, start)),
+                    None => new_str(self, format!("call void @isc_pad(ptr OUT, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, vals[1].r, q, m, start)),
+                }
             }
             S::Repeat => {
                 let (p, n) = self.str_parts(&vals[0]);

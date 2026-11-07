@@ -2796,6 +2796,51 @@ pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i6
     *out = written(&|w| sem::pad(w, s, len, fill, start != 0));
 }
 
+/// `isc_pad` into the buffer `buf` of `cap` bytes on the stack of the
+/// caller when the text fits there and its fill is of one byte (or it is
+/// the text itself): no block of the heap, the text never freed (D458, as
+/// the concatenations of D404); otherwise `isc_pad`.
+#[no_mangle]
+pub unsafe extern "C" fn isc_pad_into(out: *mut IscStr, buf: *mut u8, cap: i64, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
+    let whole = len <= n || m == 0;
+    let total = if whole { n } else { len };
+    if total <= cap && (whole || m == 1) {
+        if whole {
+            copy_short(p, buf, n as usize);
+        } else {
+            let gap = (len - n) as usize;
+            let (t, f) = if start != 0 { (gap, 0) } else { (0, n as usize) };
+            copy_short(p, buf.add(t), n as usize);
+            fill_short(buf.add(f), *q, gap);
+        }
+        *out = IscStr { ptr: if total == 0 { empty_ptr() } else { buf }, len: total };
+        return;
+    }
+    isc_pad(out, p, n, len, q, m, start)
+}
+
+/// `isc_pad_into` with a fill of one byte known to the compiler, `cs` its
+/// byte, plus 256 when the fill goes before the text, into a buffer of
+/// 128 bytes (`STACK_STR` of the code generator): six arguments, all in
+/// registers (D458).
+#[no_mangle]
+pub unsafe extern "C" fn isc_pad1_into(out: *mut IscStr, buf: *mut u8, p: *const u8, n: i64, len: i64, cs: i32) {
+    let c = cs as u8;
+    if len <= n {
+        isc_pad_into(out, buf, 128, p, n, len, &c, 1, cs >> 8);
+        return;
+    }
+    if len <= 128 {
+        let gap = (len - n) as usize;
+        let (t, f) = if cs >> 8 != 0 { (gap, 0) } else { (0, n as usize) };
+        copy_short(p, buf.add(t), n as usize);
+        fill_short(buf.add(f), c, gap);
+        *out = IscStr { ptr: buf, len };
+        return;
+    }
+    isc_pad(out, p, n, len, &c, 1, cs >> 8)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn isc_repeat(out: *mut IscStr, p: *const u8, n: i64, count: i64, line: i32, col: i32) {
     let s = text(p, n);

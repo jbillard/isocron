@@ -10159,3 +10159,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   same checksum (91474). `run.py` (5 runs of 200 rounds): floor 1.1 ->
   4.9 ns, Isocron 7.0 ns, 1.42 times. A fault of the measure, closed;
   not a gain of Isocron.
+- **D458 — Padded texts only read written on the stack (2026-11-07).**
+  `strings.padStart` 5.3 times its floor. One call, one CPU at fixed
+  frequency (`perf stat`, 20.5 M calls): 31.9 cycles, 150 instructions;
+  `isc_pad` 52.1 % (its block of the heap), `isc_free` 28.3 %, the loop
+  15.6 %; the floor takes its 20 bytes from a buffer made before, and
+  writes them.
+  - Now `padStart` and `padEnd` whose text its scope only reads (a `let`
+    that frees it, never moved, as the concatenations of D404) write it
+    into the buffer of 128 bytes on the stack of that `let` when it fits:
+    `isc_pad_into` (the fill of one byte, or the text itself when it is not
+    shorter than the width), the heap otherwise; the drop frees the text
+    only when it is not that buffer. A fill of one byte known to the
+    compiler calls `isc_pad1_into`, six arguments in registers (its byte
+    and its side in one; the nine of `isc_pad_into` put three on the
+    stack): 9.91 -> 6.98 ns with `isc_pad_into`, 5.53 ns with it (7
+    alternated runs of 2000 rounds).
+  - Measured: `run.py` (5 runs of 200 rounds) `strings.padStart` 10.2 ->
+    5.7 ns, 2.88 times its floor; the old and new binaries of `strings`, 9
+    alternated runs: `padStart` -43.2 %, every other form within 2.7 %
+    (their LLVM IR the same but the two functions of `padStart`; the
+    +5.9 % of `split.6` in that run of `run.py` its scatter). The ten
+    programs: their LLVM IR the same but the two declarations.
+  - Test `padded_texts_on_the_stack` (`stdlib.rs`: widths of 0 to 300
+    bytes around 128, fills of one byte (literal and variable), of two and
+    empty, texts longer than their widths, an empty text, texts kept in an
+    array and returned; the interpreter's output, 1 and 4 threads,
+    Valgrind; with the sides of `isc_pad1_into` swapped it fails).
