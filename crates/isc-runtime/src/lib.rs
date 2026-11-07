@@ -48,6 +48,12 @@ pub struct IscStr {
 // on one thread and used on another (the tasks that fill an array of them)
 unsafe impl Send for IscStr {}
 
+// SAFETY: a string is a pointer and a length, no interior mutability: a
+// reference to it shared by threads only reads those two (its bytes are
+// read through `bytes_of`, the caller's promise that they are alive), as
+// the tasks of `join` read the strings of an array (D427)
+unsafe impl Sync for IscStr {}
+
 #[repr(C)]
 struct Timespec {
     tv_sec: i64,
@@ -1752,19 +1758,18 @@ fn lines(b: &[u8]) -> IscArray {
         let (a, e) = range(k);
         let mut idx = 0;
         let mut at = 0;
-        let mut start = if k == 0 { Some(0usize) } else { None };
-        let mut from = a;
+        // the first line of the part: after its first `\n` (part 0: the
+        // start of the text); then each line after the `\n` that ends the
+        // one before, while that `\n` is in the part: one search a line
+        let mut s = if k == 0 {
+            0
+        } else {
+            match memchr::memchr(b'\n', &body[a..e]) {
+                Some(o) => a + o + 1,
+                None => return,
+            }
+        };
         loop {
-            let s = match start.take() {
-                Some(s) => s,
-                None => match memchr::memchr(b'\n', &body[from..e]) {
-                    Some(o) => {
-                        from = from + o + 1;
-                        from
-                    }
-                    None => break,
-                },
-            };
             let end = memchr::memchr(b'\n', &body[s..]).map(|o| s + o).unwrap_or(body.len());
             let line = &body[s..end];
             let line = if line.last() == Some(&b'\r') { &line[..line.len() - 1] } else { line };
@@ -1775,6 +1780,10 @@ fn lines(b: &[u8]) -> IscArray {
             out[idx] = IscStr { ptr: p, len: line.len() as i64 };
             at += arena_step(line.len());
             idx += 1;
+            if end >= e {
+                break;
+            }
+            s = end + 1;
         }
     });
     // every line alive: the block freed with the last of them; its size
@@ -3250,25 +3259,74 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
 #[no_mangle]
 pub unsafe extern "C" fn isc_join(out: *mut IscStr, xs: *const IscStr, n: i64, q: *const u8, m: i64) {
     let n = n.max(0) as usize;
-    let m = m.max(0) as usize;
-    let mut total = 0usize;
-    for i in 0..n {
-        total += (*xs.add(i)).len.max(0) as usize;
-    }
-    total += m * n.saturating_sub(1);
+    // SAFETY: the `n` strings of an array of the generated code and the
+    // `m` bytes of its separator, alive during the call
+    let (parts, sep) = unsafe { (core::slice::from_raw_parts(xs, n), bytes_of(q, m)) };
+    let r = join(parts, sep);
+    // SAFETY: the place of the result, the generated code's
+    unsafe { out.write(r) };
+}
+
+/// From this many bytes on, a join is made by parts in parallel (D427).
+const JOIN_PARALLEL_MIN: usize = 1 << 20;
+
+/// The strings `parts` joined by `sep`, in safe code (D290): a large result
+/// by ranges of the strings in parallel (D427: the 125 MB of the 2 million
+/// lines of k-nucleotide copied by one thread took 30 ms), each range
+/// about as many bytes, cut where a string starts; each thread writes its
+/// own pages. The same bytes for any number of threads.
+fn join(parts: &[IscStr], sep: &[u8]) -> IscStr {
+    let len = |x: &IscStr| x.len.max(0) as usize;
+    let total = parts.iter().map(len).sum::<usize>() + sep.len() * parts.len().saturating_sub(1);
     let r = isc_alloc(total as i64);
-    let mut at = 0usize;
-    for i in 0..n {
-        if i > 0 {
-            core::ptr::copy_nonoverlapping(q, r.add(at), m);
-            at += m;
+    // SAFETY: a block of `total` bytes of this call alone, not read before
+    // it is written (as bytes that may not be initialized)
+    let dst = unsafe { core::slice::from_raw_parts_mut(r as *mut core::mem::MaybeUninit<u8>, total) };
+    // the strings `from .. to` into `out`, each after its separator (but
+    // the first of all)
+    let write = |out: &mut [core::mem::MaybeUninit<u8>], from: usize, to: usize| {
+        let mut at = 0usize;
+        for (i, x) in parts[from..to].iter().enumerate() {
+            if from + i > 0 {
+                out[at..at + sep.len()].write_copy_of_slice(sep);
+                at += sep.len();
+            }
+            // SAFETY: the bytes of a string of the array, alive
+            let b = unsafe { bytes_of(x.ptr, x.len.max(0)) };
+            out[at..at + b.len()].write_copy_of_slice(b);
+            at += b.len();
         }
-        let x = *xs.add(i);
-        let l = x.len.max(0) as usize;
-        core::ptr::copy_nonoverlapping(x.ptr, r.add(at), l);
-        at += l;
+    };
+    let threads = thread_count();
+    if total < JOIN_PARALLEL_MIN || threads <= 1 || parts.len() < 2 {
+        write(dst, 0, parts.len());
+        return IscStr { ptr: r, len: total as i64 };
     }
-    *out = IscStr { ptr: r, len: total as i64 };
+    // the ranges: the first string of each and the place of the
+    // separator before it (`at`: where the bytes of string `i` start), a
+    // range each `total / k` bytes about
+    let k = (threads * 4).min(256);
+    let mut first = [parts.len(); 257];
+    let mut place = [total; 257];
+    first[0] = 0;
+    place[0] = 0;
+    let mut cut = 1;
+    let mut at = 0usize;
+    for (i, x) in parts.iter().enumerate() {
+        if i > 0 && cut < k && at >= total / k * cut {
+            first[cut] = i;
+            place[cut] = at - sep.len();
+            cut += 1;
+        }
+        at += len(x) + if i + 1 < parts.len() { sep.len() } else { 0 };
+    }
+    let ranges = cut;
+    first[ranges] = parts.len();
+    place[ranges] = total;
+    // the separator before the first string of a range (but the first)
+    // is the range's: its place starts at it
+    par::parts_mut(&par::Parts::new(dst, &place[..=ranges]), par::Order::Contiguous, |c, out| write(out, first[c], first[c + 1]));
+    IscStr { ptr: r, len: total as i64 }
 }
 
 /// An array of arrays of `f64`: its block, rows, columns and stride (the

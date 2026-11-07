@@ -451,3 +451,48 @@ action main(args: string[k]): i32 {
         assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads: {}", t, String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// D427: a large join made by ranges of its strings in parallel: strings
+/// of 0 to 299 bytes, empty ones, one of 3 MB (a range of its own),
+/// separators of 0, 1 and 3 bytes; 1 to 8 threads (other ranges); the same
+/// bytes as Rust's `join` and as the interpreter.
+#[test]
+fn a_large_join_made_in_parallel() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const big = parseI64(args[1]);
+    const parts = map(iota(n), (i) => stringOf(map(iota(i == big ? 3000000 : (i * 7919) % 300 * (i % 5 == 0 ? 0 : 1)), (j) => u8(97 + (i + j) % 26))));
+    const seps = [\"\", \",\", \"--|\"];
+    print(map(seps, (sep) => {
+        const t = parts.join(sep);
+        const b = bytes(t);
+        return [t.length, sum(map(iota(b.length), (i) => i64(b[i]) * (i % 7 + 1)))];
+    }));
+    return 0;
+}
+";
+    let want = |n: usize, big: usize| -> String {
+        let parts: Vec<String> = (0..n).map(|i| {
+            let len = if i == big { 3_000_000 } else { (i * 7919) % 300 * if i % 5 == 0 { 0 } else { 1 } };
+            (0..len).map(|j| (97 + ((i + j) % 26) as u8) as char).collect()
+        }).collect();
+        let r: Vec<String> = ["", ",", "--|"].iter().map(|sep| {
+            let t = parts.join(sep);
+            let sum: i64 = t.bytes().enumerate().map(|(i, b)| b as i64 * (i as i64 % 7 + 1)).sum();
+            format!("[{}, {}]", t.len(), sum)
+        }).collect();
+        format!("[{}]\n", r.join(", "))
+    };
+    let bin = compile(src, "join_parallel");
+    for (n, big) in [(1usize, 0usize), (2, 1), (30000, 100000), (30000, 0), (30000, 17), (30000, 29999), (90000, 45000)] {
+        let w = want(n, big);
+        for t in ["1", "2", "3", "4", "8"] {
+            let o = std::process::Command::new(&bin).args([n.to_string(), big.to_string()]).env("ISC_THREADS", t).output().unwrap();
+            assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), w.clone()), "{} strings, the large one {}, {} threads", n, big, t);
+        }
+    }
+    let p = iscc::frontend("join_parallel.isc", src).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(isc_interp::run(&p, &["30000".to_string(), "17".to_string()], &mut out).unwrap(), 0);
+    assert_eq!(String::from_utf8_lossy(&out), want(30000, 17), "interpreter");
+}

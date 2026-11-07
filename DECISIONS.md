@@ -9593,3 +9593,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   at most 4096 elements (their own counts), 1 to 8 threads, the bytes
   computed by the test and by the interpreter, valgrind; with the counts
   read from the block falsified by one, it fails.
+- **D427 — A large join by ranges in parallel; one search a line
+  (2026-11-07).** TODO, k-nucleotide, « the base »: its text said the codes
+  were an array of `i64` of 1 GB; they are bytes since D218 (the IR:
+  `codes%17: u8[]`). Measured instead, the base alone (`kn_base` of the
+  session: the lines, the heads, the join, the codes; 4 threads, fixed
+  frequency, lowest of 15 runs): the lines 77.4 ms, with the heads 85.8,
+  with the join 115.4, with the codes 129.5 ms; per run 653 million user
+  cycles and 439 million of the kernel (clearing new pages: 336 MB of
+  lines, 67 MB of their strings, 125 MB of the join, 125 MB of codes).
+  The join added 29.6 ms for about 100 million cycles: `isc_join` copied
+  the 2.08 million lines on one thread. Now `join` (runtime, safe code
+  but the reads of the strings) makes a result of 1 MiB or more by ranges
+  of its strings in parallel (each about `total / 4 x threads` bytes, cut
+  where a string starts, the separator before it the range's; each
+  thread writes its own pages); `IscStr` is `Sync` (a pointer and a
+  length, read only). Measured (21 alternated runs): the join stage 115.5
+  -> 107.6 ms, the base 129.9 -> 122.0 ms, k-nucleotide 635.6 -> 630.1 ms
+  (-0.86 %, medians -1.09 %), the same output; what the join costs still
+  (+22 ms over the heads, 60 ms of CPU) is its copies, 2.08 million of 60
+  bytes (133 million user cycles), and the clearing of its 125 MB (64
+  million in the kernel). Also, the lines of a part of the text (D252)
+  searched once each (the end of a line is the `\n` before the next one;
+  each was searched twice): the instructions of the base 11651 -> 9205
+  million for 10 runs, its user cycles -2.4 %, its time the same (130.3
+  -> 130.0 ms): the searches were not the bound, the reads of the 250 MB
+  of the input are (twice: the count of the lines, then the lines). Tests
+  `a_large_join_made_in_parallel` (`stdin.rs`: strings of 0 to 299 bytes,
+  empty ones, one of 3 MB, separators of 0, 1 and 3 bytes, 1 to 8
+  threads, the bytes of Rust's `join` and of the interpreter; without the
+  separator at the start of a range, it fails on 2 threads) and
+  `lines_of_a_large_text_made_in_parallel`.
