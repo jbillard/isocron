@@ -1654,3 +1654,38 @@ action main(args: string[k]): i32 {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}: {}", n, r.stderr);
     }
 }
+
+/// D417: `countBy` of integer keys counted with the table of lines held in
+/// the loop: small keys (counted by their value) among large ones in the
+/// same chunks of 1024, new keys that grow the table in the middle of a
+/// chunk, keys repeated, the groups in the order of their first occurrence;
+/// 1 and 4 threads, the interpreter's results.
+#[test]
+fn counts_of_keys_with_the_table_held() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const keys = map(iota(n), (i) => i % 7 == 0 ? i % 300 : ((i * 2654435761) % 50021) * 1000003 + 17);
+    const counts = countBy(keys, (k) => k);
+    const es = counts.entries();
+    print(es.length);
+    print(sum(map(es, (e) => {
+        const [k, c] = e;
+        return c * (k % 1000 + 1);
+    })));
+    print(join(map(iota(12), (i) => {
+        const [k, c] = es[i * es.length / 12];
+        return `${k}:${c}`;
+    }), \" \"));
+    print(counts.get(17) ?? -1);
+    return 0;
+}
+";
+    let bin = compile(src, "counts_held");
+    for n in ["1000", "5000", "300000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} threads {}: {}", n, t, r.stderr);
+        }
+    }
+}

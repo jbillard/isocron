@@ -9375,3 +9375,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   one CPU at fixed frequency, 5 runs of 200 rounds): `serve.handshake`
   1168175.68 against 1159198.66 ns (1.0: the cryptography of OpenSSL, the
   same library), `serve.keepalive` 39432.08 against 34059.70 ns (1.2).
+- **D417 — The keys of a count hashed once, the found ones counted in a
+  loop that holds the table (2026-11-07).** TODO: k-nucleotide, its 12-mers
+  and 18-mers. The counting alone (`countBy` of the 125 million keys of the
+  sequence THREE, one thread, fixed frequency, `perf stat`): the 18-mers
+  660.9 ms, 72.1 instructions and 20.7 cycles a key in the whole program,
+  `add_block` 56.38 % of its instructions and 55.7 % of its cycles (about
+  40.6 instructions and 11.7 cycles a key: 1.7 times the 2.221 ns of a
+  random increment of the floor). Its code: each key hashed twice (once for
+  the prefetch of the key AHEAD places later, once for itself), and the
+  table, its length and `bits` read again from `self` at each key. Now the
+  hashes of a chunk of 1024 keys in a loop of their own (vector code: a
+  multiplication of 64 bits for 8 keys with AVX-512), then a loop over the
+  keys that counts those found in their line with the table, its mask and
+  `bits` held in it (a slice borrowed, nothing else of `self` written); a
+  new key or a small one goes to `add_count`, after which the table is read
+  again (it may have grown). The same keys in the same order: the order of
+  the first occurrences kept. Measured: the 18-mers 660.9 -> 618.5 ms
+  (-6.4 %), 72.1 -> 61.9 instructions a key; the 12-mers 622.4 -> 575.1 ms
+  (-7.6 %), 68.6 -> 58.5; k-nucleotide (4 threads, 11 alternated runs, the
+  same output) 682.7 -> 667.2 ms (-2.27 %, medians -1.69 %); the nine
+  others within 0.65 % (minimums, 7 runs). Test
+  `counts_of_keys_with_the_table_held` (`stdlib.rs`: small keys among
+  large ones in the same chunks, the table grown inside a chunk, 1 and 4
+  threads, the interpreter's results).

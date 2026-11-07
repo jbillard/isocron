@@ -5247,6 +5247,7 @@ impl CountTable {
     pub fn add_block(&mut self, keys: &[u64], start: usize) {
         const CHUNK: usize = 1024;
         const AHEAD: usize = 16;
+        let mut hs = [0u64; CHUNK];
         for (c, chunk) in keys.chunks(CHUNK).enumerate() {
             let base = (start + c * CHUNK) as u32;
             let top = chunk.iter().copied().max().unwrap_or(0);
@@ -5266,22 +5267,59 @@ impl CountTable {
                 continue;
             }
             if self.packs(top) {
-                for (j, &k) in chunk.iter().enumerate() {
-                    if self.direct && k < WordGroups::DIRECT_MAX {
-                        self.add_count(k, base + j as u32, 1);
-                        continue;
-                    }
-                    if let Some(&a) = chunk.get(j + AHEAD) {
-                        let l = (hash_word(a) as usize) & (self.lines.len() - 1);
-                        #[cfg(target_arch = "x86_64")]
-                        // SAFETY: a prefetch reads nothing; `l` is a line of the table
-                        unsafe {
-                            core::arch::x86_64::_mm_prefetch(self.lines.as_ptr().add(l) as *const i8, core::arch::x86_64::_MM_HINT_T0)
+                // the hashes of the chunk first, in a loop of their own that
+                // the compiler makes vector code (D417: each key hashed once,
+                // where the key AHEAD places later was hashed again for its
+                // prefetch)
+                for (h, &k) in hs.iter_mut().zip(chunk) {
+                    *h = hash_word(k);
+                }
+                let (n, bits, direct) = (chunk.len(), self.bits, self.direct);
+                let mut j = 0;
+                while j < n {
+                    // the keys found in their lines, counted with the table,
+                    // its mask and `bits` held here (nothing else of `self`
+                    // written); a new key or a small one by `bump` or
+                    // `add_count` below, the table read again after it (it
+                    // may have grown) (D417)
+                    let lines = &mut self.lines[..];
+                    let mask = lines.len() - 1;
+                    while j < n {
+                        let k = chunk[j];
+                        if direct && k < WordGroups::DIRECT_MAX {
+                            break;
+                        }
+                        if j + AHEAD < n {
+                            let l = (hs[j + AHEAD] as usize) & mask;
+                            #[cfg(target_arch = "x86_64")]
+                            // SAFETY: a prefetch reads nothing; `l` is a line of the table
+                            unsafe {
+                                core::arch::x86_64::_mm_prefetch(lines.as_ptr().add(l) as *const i8, core::arch::x86_64::_MM_HINT_T0)
+                            };
+                            #[cfg(not(target_arch = "x86_64"))]
+                            let _ = l;
+                        }
+                        let mut l = (hs[j] as usize) & mask;
+                        let hit = loop {
+                            let (found, empty) = Self::masks(&lines[l], k, bits);
+                            if found != 0 {
+                                lines[l].0[found.trailing_zeros() as usize] += 1;
+                                break true;
+                            }
+                            if empty != 0 {
+                                break false;
+                            }
+                            l = (l + 1) & mask;
                         };
-                        #[cfg(not(target_arch = "x86_64"))]
-                        let _ = l;
+                        if !hit {
+                            break;
+                        }
+                        j += 1;
                     }
-                    self.bump(k, hash_word(k), base + j as u32, 1);
+                    if j < n {
+                        self.add_count(chunk[j], base + j as u32, 1);
+                        j += 1;
+                    }
                 }
                 continue;
             }
