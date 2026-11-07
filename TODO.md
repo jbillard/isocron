@@ -246,7 +246,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] `iscc` on Windows: `iscc.exe`, MinGW-w64 embedded, LLVM 21 for Windows, the interpreter's C calls in Win64 (D247)
   - [x] Windows: the runtimes for x86-64-v3 and v4 linked by an iscc on Windows by its processor, timed: regex-redux 158.0 -> 113.4 ms in the machine of Windows (D382)
   - [x] Windows: the console in UTF-8: the output by `WriteConsoleW` (D408), the input by `ReadConsoleW` (D409)
-  - [ ] Windows: the MSVC ABI
+  - [x] Windows: the MSVC ABI at the boundary of a DLL: the functions of DLLs built by Microsoft called, an import library in the format of `lib.exe` given by `--link` (D425)
+  - [ ] Windows: static libraries built by Visual Studio and the target `x86_64-pc-windows-msvc` (their objects refer to the helpers of Microsoft's C runtime, `__security_check_cookie`, `__chkstk`, `_fltused`, none in MinGW-w64): Microsoft's Build Tools needed in the machine, under its licence, the author's decision (D425)
   - [x] An iscc that needs nothing else, on Linux (glibc from 2.28 on) and on Windows: LLVM and LLD inside (D248)
   - [x] A first release, 0.1.0: the compilers for Linux and Windows, LICENSE, the notices of third parties, the archives, the measurements published again (D249)
   - [x] A smaller iscc: the embedded runtimes compressed, closed by measure: 43348588 -> 10721556 bytes with gzip, but 31 to 34 ms to inflate one at each build of 38 to 49 ms, and the archives compressed already: not done (D380)

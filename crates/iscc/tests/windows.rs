@@ -582,3 +582,60 @@ fn the_guide_on_windows() {
     assert!(ran >= 40, "only {} programs of the guide run", ran);
     eprintln!("{} programs of the guide run on Windows", ran);
 }
+
+/// D425: the MSVC ABI at the boundary of a DLL. C functions compiled by
+/// Microsoft called by a program of the target of MinGW (GNU) through
+/// `declare function`: `GetTickCount64`, `lstrlenA` and `MulDiv` of
+/// kernel32, `strlen` of msvcrt (the convention of Win64 is the same for
+/// both ABIs, D246); and those of `shlwapi.dll`, which iscc does not link,
+/// through an import library in the format of Microsoft's `lib.exe` (short
+/// import members, made here from a `.def` by `lld-link /lib`) given by
+/// `--link`, as one given with a DLL built by Visual Studio.
+#[test]
+fn msvc_compiled_c_functions_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let d = dir("msvc_c");
+    let def = d.join("shlwapi.def");
+    std::fs::write(&def, "LIBRARY shlwapi.dll\nEXPORTS\n    StrToIntA\n    PathIsRelativeA\n    ChrCmpIA\n").unwrap();
+    let lib = tmp("shlwapi_msvc.lib");
+    let sysroot = std::process::Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into())).args(["--print", "sysroot"]).output().expect("cannot run rustc");
+    let rustlib = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim()).join("lib/rustlib");
+    let lld = std::fs::read_dir(&rustlib).unwrap().filter_map(|e| e.ok()).map(|e| e.path().join("bin/rust-lld")).find(|p| p.is_file()).expect("no rust-lld in the Rust toolchain");
+    let st = std::process::Command::new(&lld).args(["-flavor", "link", "/lib", "/machine:x64"]).arg(format!("/def:{}", def.display())).arg(format!("/out:{}", lib.display())).status().unwrap();
+    assert!(st.success(), "lld-link /lib failed");
+    let bytes = std::fs::read(&lib).unwrap();
+    assert!(bytes.windows(4).any(|w| w == [0, 0, 0xff, 0xff]), "no short import member in the library");
+    let src = "declare function GetTickCount64(): u64;
+declare function lstrlenA(s: string): i32;
+declare function MulDiv(a: i32, b: i32, c: i32): i32;
+declare function strlen(s: string): u64;
+declare function StrToIntA(s: string): i32;
+declare function PathIsRelativeA(s: string): i32;
+declare function ChrCmpIA(a: u16, b: u16): i32;
+
+action main(args: string[k]): i32 {
+    print(GetTickCount64() > 0u64);
+    print(lstrlenA(\"hello, MSVC\"));
+    print(MulDiv(1000, 3, 7));
+    print(strlen(\"été\"));
+    print(StrToIntA(\"1234\"));
+    print([PathIsRelativeA(\"dir\\\\file.txt\"), PathIsRelativeA(\"C:\\\\file.txt\")]);
+    print([ChrCmpIA(97u16, 65u16) == 0, ChrCmpIA(97u16, 66u16) == 0]);
+    return 0;
+}
+";
+    let o = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
+    let p = iscc::frontend("win_msvc_c.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let exe = tmp("win_msvc_c.exe");
+    let opts = iscc::BuildOptions { output: exe.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o.clone(), link: vec![lib.to_string_lossy().to_string()], glibc: false };
+    iscc::build(&p, &opts).unwrap_or_else(|e| panic!("win_msvc_c: {}", e));
+    // without the library, the functions of shlwapi are not found
+    let without = iscc::BuildOptions { output: tmp("win_msvc_c_without.exe"), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+    assert!(iscc::build(&p, &without).is_err(), "shlwapi linked without its library");
+    let w = run_windows(&runner, &exe, &d, &[], None, 1);
+    assert_eq!(w.0, 0, "stderr: {}", String::from_utf8_lossy(&w.2));
+    assert_eq!(String::from_utf8_lossy(&w.1), "true\n11\n429\n5\n1234\n[1, 0]\n[true, false]\n");
+}

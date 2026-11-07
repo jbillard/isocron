@@ -9517,3 +9517,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`serve.handshake` 1.0, `serve.keepalive` 1.2, D416); `http.serve`, a
   loop of events on each core with no end, measured against nginx and the
   ceiling of the machine by `bench/http_servers` (`results/http_servers.md`).
+- **D425 — The MSVC ABI at the boundary of a DLL (2026-11-07).** TODO:
+  « Windows: the MSVC ABI » (D246: MinGW-w64 first, MSVC later). What that
+  ABI brings to a program of Isocron is the use of code built by Visual
+  Studio. The convention of calls of Win64 is the same for both ABIs, so
+  that a program of the target of MinGW calls the functions of a DLL
+  compiled by Microsoft: test `msvc_compiled_c_functions_on_windows`
+  (`windows.rs`, in the machine of Windows), `GetTickCount64`, `lstrlenA`
+  and `MulDiv` of kernel32 and `strlen` of msvcrt through `declare
+  function`; and those of `shlwapi.dll` (`StrToIntA`, `PathIsRelativeA`,
+  `ChrCmpIA`), which iscc does not link, through an import library in the
+  format of Microsoft's `lib.exe` (short import members, made by the test
+  from a `.def` by `lld-link /lib`, the LLD of Rust) given by `--link`, as
+  one given with a DLL built by Visual Studio; without it the build fails
+  (the functions not found). Not done: static libraries built by Visual
+  Studio and a target `x86_64-pc-windows-msvc`. Their objects refer to the
+  helpers of Microsoft's C runtime (`__security_cookie` and
+  `__security_check_cookie` for a buffer on the stack under the default
+  `/GS`, `__chkstk` for a frame of more than a page, `_fltused` for
+  floats), none of which the files of MinGW-w64 that iscc links define
+  (`nm`: only `___chkstk_ms` in `libgcc.a`); that runtime and the
+  libraries of the SDK are Microsoft's, under its licence, neither in iscc
+  nor in the machine (no `vswhere.exe`, no `Windows Kits`). Installing
+  Visual Studio Build Tools in the machine to build and test them is the
+  author's decision: the item left open in TODO with that need. The tests
+  of Windows: 13 passed (`https_client_on_windows` once refused to start,
+  its program quarantined by Windows Defender, threat 2147735505, as in
+  D422; passed again).
