@@ -72,6 +72,7 @@ extern "system" {
     fn SetFilePointerEx(h: HANDLE, distance: i64, new: *mut i64, method: u32) -> BOOL;
     fn GetFileType(h: HANDLE) -> u32;
     fn GetConsoleMode(h: HANDLE, mode: *mut u32) -> BOOL;
+    fn WriteConsoleW(h: HANDLE, buf: *const u16, n: u32, done: *mut u32, reserved: *mut c_void) -> BOOL;
     fn GetLastError() -> u32;
     fn SetLastError(code: u32);
     fn MultiByteToWideChar(cp: u32, flags: u32, s: *const u8, n: i32, w: *mut u16, wn: i32) -> i32;
@@ -202,7 +203,84 @@ pub unsafe fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize {
     done as isize
 }
 
+/// Whether the standard output (1) and error (2) are consoles (D408): 0
+/// not known yet, 1 a console, 2 not.
+static CONSOLE: [core::sync::atomic::AtomicU8; 3] = [const { core::sync::atomic::AtomicU8::new(0) }; 3];
+/// The bytes of a character of UTF-8 cut at the end of a write to such a
+/// console, for the next write: up to 3 bytes, their count in the top byte
+/// (D408). The writes of one stream come one at a time (the buffer of
+/// `print` has one holder).
+static HELD: [core::sync::atomic::AtomicU32; 3] = [const { core::sync::atomic::AtomicU32::new(0) }; 3];
+
+fn is_console(fd: c_int) -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    if !(1..=2).contains(&fd) {
+        return false;
+    }
+    let c = &CONSOLE[fd as usize];
+    match c.load(Relaxed) {
+        1 => true,
+        2 => false,
+        _ => {
+            const FILE_TYPE_CHAR: u32 = 2;
+            let h = handle(fd);
+            let mut mode = 0u32;
+            // SAFETY: a handle of the process and a place for its mode
+            let yes = unsafe { GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &mut mode) != 0 };
+            c.store(if yes { 1 } else { 2 }, Relaxed);
+            yes
+        }
+    }
+}
+
+/// `n` bytes of UTF-8 written to a console as UTF-16 (D408), by
+/// `WriteConsoleW`: written by `WriteFile`, a console takes each byte as a
+/// character of its code page (`é` shown as `Ã©` under the code page 850 or
+/// 437). The bytes held from the last write first; those of a character
+/// cut at the end held for the next; all `n` counted as written. Bytes that
+/// are not UTF-8 shown as U+FFFD.
+unsafe fn write_console(fd: c_int, p: *const u8, n: usize) -> isize {
+    use core::sync::atomic::Ordering::Relaxed;
+    let held = HELD[fd as usize].load(Relaxed);
+    let hn = (held >> 24) as usize;
+    let mut b: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(hn + n);
+    for k in 0..hn {
+        b.push((held >> (8 * k)) as u8);
+    }
+    b.extend_from_slice(core::slice::from_raw_parts(p, n));
+    let cut = isc_runtime_core::utf8_whole(&b);
+    let mut h = ((b.len() - cut) as u32) << 24;
+    for (k, &c) in b[cut..].iter().enumerate() {
+        h |= (c as u32) << (8 * k);
+    }
+    HELD[fd as usize].store(h, Relaxed);
+    let body = &b[..cut];
+    if body.is_empty() {
+        return n as isize;
+    }
+    let wn = MultiByteToWideChar(CP_UTF8, 0, body.as_ptr(), body.len() as i32, core::ptr::null_mut(), 0);
+    if wn <= 0 {
+        return -1;
+    }
+    let mut w: alloc::vec::Vec<u16> = alloc::vec![0; wn as usize];
+    MultiByteToWideChar(CP_UTF8, 0, body.as_ptr(), body.len() as i32, w.as_mut_ptr(), wn);
+    let hd = handle(fd);
+    let mut at = 0usize;
+    while at < w.len() {
+        let mut done = 0u32;
+        let k = (w.len() - at).min(1 << 14) as u32;
+        if WriteConsoleW(hd, w.as_ptr().add(at), k, &mut done, core::ptr::null_mut()) == 0 || done == 0 {
+            return -1;
+        }
+        at += done as usize;
+    }
+    n as isize
+}
+
 pub unsafe fn write(fd: c_int, buf: *const c_void, n: usize) -> isize {
+    if n > 0 && is_console(fd) {
+        return write_console(fd, buf as *const u8, n);
+    }
     let mut done = 0u32;
     let m = n.min(1 << 30) as u32;
     if WriteFile(handle(fd), buf, m, &mut done, core::ptr::null_mut()) == 0 {

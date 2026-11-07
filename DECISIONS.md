@@ -9197,3 +9197,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   -> 1878 ms, the others the same to 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D408 — The output to a Windows console in UTF-8 (2026-11-07).** TODO:
+  « the console in UTF-8 ». A program for Windows wrote its UTF-8 by
+  `WriteFile`; a console reads each byte as a character of its code page:
+  in the VM (code page 437), `print("été 日本 ✓ ñ")` showed `├⌐t├⌐ µùÑµ£¼
+  Γ£ô ├▒`. Now `write` of the standard output or error, when it is a
+  console (`GetFileType` and `GetConsoleMode`, read once a stream), turns
+  the UTF-8 into UTF-16 (`MultiByteToWideChar`) and writes it by
+  `WriteConsoleW`; the bytes of a character cut at the end of a write (the
+  buffer of `print` flushed when full, in the middle of a line) are held
+  for the next one (`utf8_whole` in `isc-runtime-core`; the writes of a
+  stream come one at a time); bytes that are not UTF-8 show as U+FFFD. A
+  pipe or a file: the bytes as before. Checked in the VM, in a console of
+  an interactive `ssh -tt` (a one-command session of OpenSSH loses the
+  output of ConPTY: `cmd /c echo bonjour` showed nothing): the same program
+  showed `├⌐t├⌐ µùÑµ£¼ Γ£ô ├▒` with the runtime before, `été 日本 ✓ ñ` with
+  this one; a line of `x` and 40000 `é` (80001 bytes, the buffer of 64 KiB
+  cut in a character) then `fin`: no U+FFFD, `fin` after it. In a pipe both
+  wrote the same bytes. The Windows tests in the VM (11 passed; one first
+  failed by the master connection of ssh, passed again). Test
+  `the_last_whole_character` (`isc-runtime-core`). Left: the input from a
+  console (`ReadConsoleW`), the MSVC ABI.

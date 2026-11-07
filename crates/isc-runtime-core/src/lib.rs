@@ -2319,6 +2319,48 @@ mod limbs {
 big_module!(big, 128);
 big_module!(big256, 256);
 
+/// The end of the last whole character of the UTF-8 bytes `b` (D408): before
+/// the first byte of a character cut at the end (a lead byte followed by
+/// fewer bytes than it announces), else the length (bytes that are not
+/// UTF-8 left as they are).
+pub fn utf8_whole(b: &[u8]) -> usize {
+    for back in 1..=b.len().min(3) {
+        let c = b[b.len() - back];
+        if c & 0xc0 == 0x80 {
+            continue;
+        }
+        let want = match c {
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => return b.len(),
+        };
+        return if back < want { b.len() - back } else { b.len() };
+    }
+    b.len()
+}
+
+#[cfg(test)]
+mod utf8_cuts {
+    /// D408: every prefix of texts of 1 to 4 bytes a character, cut at each
+    /// byte: the end of its last whole character; ASCII, bytes that are not
+    /// UTF-8 (a lone continuation, 0xff) left whole.
+    #[test]
+    fn the_last_whole_character() {
+        extern crate std;
+        let s = "aé日😀b€";
+        let b = s.as_bytes();
+        let ends: std::vec::Vec<usize> = s.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
+        for n in 0..=b.len() {
+            let want = ends.iter().copied().filter(|&e| e <= n).max().unwrap_or(0);
+            assert_eq!(super::utf8_whole(&b[..n]), want, "{} bytes", n);
+        }
+        assert_eq!(super::utf8_whole(b"ab\x80"), 3);
+        assert_eq!(super::utf8_whole(b"ab\xff"), 3);
+        assert_eq!(super::utf8_whole(b""), 0);
+    }
+}
+
 /// A value of `big` in the form of `big256` (the literals of the compiled
 /// code, D168).
 pub fn big_to_256(e: &[u8]) -> alloc::vec::Vec<u8> {
