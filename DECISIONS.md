@@ -9436,3 +9436,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   k-nucleotide on 4 threads: not done. Left in TODO: the base, and the
   k-mers computed whole at each place (`isc_task_9`, 20.66 % of the cycles
   of the count of the 18-mers).
+- **D420 — The k-mers rolled from the one before: tried, not kept
+  (2026-11-07).** TODO (D419): the k-mers computed whole at each place
+  (`isc_task_9`, 20.66 % of the cycles of the count of the 18-mers, 9.7
+  instructions and 3.8 cycles a key). In C (one thread, 3.2 GHz, 125
+  million places of 18 bases): computed whole 2.18 ns a key (vector code of
+  gcc), rolled `v * 4 - x[i - 1] * 4^18 + x[i + 17]` 0.94 ns (one chain of
+  shifts and additions), four chains 0.785 ns; Isocron about 1.18 ns. Tried
+  in the compiler: a `map` over `iota` whose value is `fold(iota(K), 0, (c,
+  j) => c * A + g(i + j))` (64 bits: exact modulo 2^64; the same reads of
+  `g`) filled by blocks from the element before, its first by its `fold`.
+  Measured (the count alone, one thread, 2 runs each): the 18-mers 390.0
+  -> 389.0 and 391.2 ms, the 12-mers 361.6 -> 392.3 ms (+8.5 %): the vector
+  code of Isocron computes 8 k-mers at once as fast as the chain, which pays
+  the checks of bounds of its two reads at each key. Not kept.
