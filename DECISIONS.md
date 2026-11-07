@@ -9839,3 +9839,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   4 threads: `Ok([10.1.2.3, 2001:db8::7])`, the fault of a name without
   records, the delay; the same outputs on both. The tests of Windows: 14
   passed.
+- **D440 — A short text checked as ASCII without `from_utf8` (2026-11-07).**
+  TODO, the server: its profile (`serve.pipelined` alone, one CPU, 60
+  rounds of 1600 requests) gave `isc_str_from_bytes` 5.19 %, `from_utf8`
+  3.32 % and `utf8_check` 0.63 % of the user cycles (1830 cycles a
+  request): the lines and names of a request, shorter than a block of 64
+  bytes, went whole to `from_utf8` (D436 tested whole blocks only). Now
+  the bytes after the whole blocks are tested the same way, by the `|` of
+  their bytes, when the blocks were ASCII: `from_utf8` only for a text
+  with a byte of 128 or more. Measured: `serve.pipelined` alone 1323.9 ->
+  1299.9 ns a request (medians of 11 alternated runs, -1.82 %), its UTF-8
+  9.14 -> 6.27 % of the cycles (`from_utf8` 0.16 %); in `run.py` (5 runs
+  of 200 rounds) `serve.pipelined` 1318.0 -> 1299.9 ns (1.36 times its
+  floor), `serve.action.pipelined` 1374.3 -> 1352.7 ns, the other forms
+  of `http` and `json` within their scatter. Test
+  `utf8_check_is_from_utf8` (every length around the blocks).

@@ -2327,11 +2327,19 @@ big_module!(big256, 256);
 /// step; `stringOf` of 1 KiB spent 43.7 % of its cycles there).
 pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
     let mut at = 0;
-    for c in b.chunks_exact(64) {
+    let blocks = b.chunks_exact(64);
+    let rest = blocks.remainder();
+    for c in blocks {
         if c.iter().fold(0u8, |a, &x| a | x) >= 0x80 {
             break;
         }
         at += 64;
+    }
+    // the bytes after the whole blocks (a short text: all of it) tested
+    // the same way, when the blocks were ASCII (D440: the lines of a
+    // request, shorter than a block, went to `from_utf8` whole)
+    if at == b.len() - rest.len() && rest.iter().fold(0u8, |a, &x| a | x) < 0x80 {
+        return Ok(());
     }
     match core::str::from_utf8(&b[at..]) {
         Ok(_) => Ok(()),
