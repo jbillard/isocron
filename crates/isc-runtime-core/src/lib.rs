@@ -99,7 +99,10 @@ pub fn write_f64(w: &mut dyn Write, v: f64) -> fmt::Result {
     } else if v.is_infinite() {
         w.write_str(if v > 0.0 { "inf" } else { "-inf" })
     } else {
-        write!(w, "{}", v)
+        // Schubfach, the text of `Display` (D467)
+        let mut b = [0u8; f64text::F64_TEXT_MAX];
+        let n = f64text::write_shortest(v, &mut b);
+        w.write_str(core::str::from_utf8(&b[..n]).map_err(|_| fmt::Error)?)
     }
 }
 
@@ -695,6 +698,8 @@ mod tests {
 /// TLS by the library of the system (D343): OpenSSL loaded at run time.
 #[cfg(not(target_family = "wasm"))]
 pub mod tls;
+pub mod f64text;
+mod pow10_g;
 
 pub mod oserr {
     /// The POSIX code of a Win32 error (0 if none; EIO for the others).

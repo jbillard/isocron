@@ -53,8 +53,10 @@ action main(args: string[k]): i32 {
                 Err(e) => print(message(e)),
             };
             net.closeListener(l);
-            // nothing listens there any more
-            match (net.connect("127.0.0.1", port)) {
+            // a port where nothing listens: 1 (D467: the port just freed by
+            // the listener, taken by a test run at the same time, was once
+            // connected)
+            match (net.connect("127.0.0.1", 1)) {
                 Ok(c) => {
                     print("connected");
                     net.close(c);

@@ -10357,3 +10357,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (`isc-runtime-core`: texts of 0 to 70 bytes, needles of 1 to 17 bytes
     at every place, false starts, against a search byte by byte; with the
     last window a byte off, or the place of a window, it fails).
+- **D467 — Doubles written by Schubfach (2026-11-07).** `json.stringify`
+  3.2 times its floor. Profile (one CPU at fixed frequency): the writing
+  of its numbers by `core::fmt` a third of its cycles (Grisu,
+  `format_shortest_opt` 21.9 %, its fallback and formatter
+  `float_to_decimal_common_shortest` 7.6 %, `isc_to_string_f64` 2.9 %,
+  `fmt::write` and the parts of `Formatter` 3 %), where its floor writes
+  them by Schubfach (D415).
+  - Now `write_f64` of the runtime (`print`, templates, `toString`,
+    `json`; the interpreter and compiled code alike) writes a finite double
+    by Schubfach (`f64text.rs`, ported from the floor, its table of 617
+    pairs of words from `tools/gen_pow10_rs.py`, no `unsafe`), laid out as
+    Rust's `Display`. Two differences from Schubfach found by the test and
+    kept to `Display`: a value halfway between two texts of its length
+    takes the larger (2^-25: `...313`, where Schubfach takes the even
+    `...312`), and a subnormal of a few bits takes as few digits as read
+    back to it (20 times the least double: `1e-322`, Schubfach `99e-324`:
+    it tries a digit less only from a scaled value of 100), by reading
+    the shorter candidates back (`parse` of `core`).
+  - Test `shortest_as_display` (`isc-runtime-core`): the text of Rust's
+    `Display` for zeros, the 100000 least subnormals, the powers of 2 from
+    -1074 to 1023 and of 10, the integers around 2^53, the largest and
+    smallest values, and two million doubles of random bits.
+  - Measured (the old and new binaries of `json` and `strings`, 7
+    alternated runs): `json.stringify` 366.17 -> 283.56 ns (-22.6 %),
+    `json.encode` 114.44 -> 88.52 ns (-22.6 %), the other forms within
+    their scatter; `run.py` (5 runs of 200 rounds) `json.stringify` 368.0
+    -> 284.1 ns (2.48 times its floor), `json.encode` 115.7 -> 88.4 ns
+    (1.08). The ten programs write their doubles by `toFixed` (another
+    path): their code the same.
+  - The suite of this change failed once in `tcp_and_dns_on_the_local_machine`
+    (`std_net.rs`, the interpreter): its connection to the port of a
+    listener just closed, to be refused, was accepted: the port freed and
+    taken by a test run at the same time (4 at once in the suite); alone
+    it passed 5 times of 5. Now the refusal is tested at the port 1, where
+    nothing listens.
