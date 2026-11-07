@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.1 — 2026-11-07
+
+Faster texts, in the library and in the compiled code: a text that its
+scope only reads written on the stack, tables of names kept as data of
+the program, and each pure function of `json`, `sha256` and `http`
+measured against its floor.
+
+### The compiler
+
+* A text that its scope only reads, made by a concatenation or a
+  template, is written into a buffer of 128 bytes on the stack when it
+  fits: `http.message` 13.1 -> 6.5 ns, a concatenation 6.2 -> 3.1 ns
+  (D404).
+* An array literal of string literals is data of the program, read
+  without an allocation: `http.httpDate` 138.2 -> 98.8 ns (D401).
+* `stringOf` takes the block of its bytes at their last use:
+  `sha256.hex` 27.1 -> 20.9 ns (D399).
+* A count of bytes by the masks of its condition, 32 bytes at a time:
+  `http.text` 151.1 -> 89.9 ns (D396).
+
+### The library
+
+* `http.headerOf` and `http.header` compare the names of headers byte by
+  byte, the case of ASCII ignored (RFC 9110): 378.8 -> 19.1 ns (D395).
+* `json.quote` in one pass: a text to escape 273.4 -> 96.3 ns (D397).
+* `time.format` in one pass, each field written into the text: 455.2 ->
+  203.3 ns (D398, D403); `http.httpDate` writes its fields by their
+  digits (D402).
+* `sys.envAll` 4634 -> 1882 ns: its entries measured by vectors, checked
+  as UTF-8 by words, copied once (D400).
+
+### The runtime
+
+* `strlen` one aligned vector at a time (D400).
+
+### The measurements
+
+* A microbenchmark and a floor for each pure function of `json`, `sha256`
+  and `http` (`results/primitives.md`, D394); the floor of `envAll` sorts
+  its entries as `envAll` does (D400).
+
 ## 0.4.0 — 2026-11-06
 
 One `serve` and one `map` for a pure function or an action, a loop of

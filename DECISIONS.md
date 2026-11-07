@@ -9136,3 +9136,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   tail recursion, a recursion that keeps its text over the call below, the
   tasks of a `map`, a text read by lambdas in its scope, one returned; the
   interpreter, 1 and 4 threads, Valgrind with the allocator of glibc).
+- **D405 — Release 0.4.1 (2026-11-07).** The author: « quand tu
+  l'estimeras nécessaire il faudra penser à faire puis pousser une release
+  ». After 0.4.0: the pure functions of `json`, `sha256` and `http`
+  measured against their floors (D394), then their largest gaps reduced by
+  general changes: names of headers compared by bytes (D395), counts of
+  bytes by masks (D396), `json.quote` and `time.format` in one pass (D397,
+  D398, D403), `stringOf` taking its bytes (D399), `envAll` and `strlen`
+  by vectors (D400), arrays of string literals as data of the program
+  (D401), `httpDate` by its digits (D402), a text that its scope only reads
+  written on the stack (D404). No name removed, the language the same but
+  `@requireNoAlloc`, which accepts an array of string literals (SPEC
+  section 8): 0.4.1. The Windows tests in the VM before it (11 passed, the
+  `iscc.exe` of the commit of D404). The archives as for 0.4.0
+  (`build_iscc.sh` for Linux and Windows in the images of the releases,
+  from the sources of the commit of the release; `package.sh`; the
+  extension of VS Code at 0.4.1), tried before they are published
+  (`selftest_linux.sh`, `selftest_windows.py`, the example of the README by
+  the `iscc` of the archive). `CHANGELOG.md`, the links of the README and of
+  `tools/vscode/README.md` at 0.4.1.
