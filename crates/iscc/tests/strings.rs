@@ -1126,7 +1126,9 @@ fn texts_padded_by_moves() {
 /// extremes of `i64`, integers of 8 and 32 bits, several in one template,
 /// one padded (`padStart`, the runtime); padded to 2 by zeros at the
 /// start from -20 to 129 (D446: two digits of the table below 100), by
-/// another fill, at the end; the interpreter's text.
+/// another fill, at the end; padded to 3 and 4 by zeros, from -70 to about
+/// 64000, both sides of 1000 and 10000 (D477: a digit and a pair, two
+/// pairs); the interpreter's text.
 #[test]
 fn small_integers_in_templates() {
     let src = "action main(args: string[k]): i32 {
@@ -1134,6 +1136,7 @@ fn small_integers_in_templates() {
     print([`${999}${1000}`, `${-9223372036854775807 - 1}`, `${9223372036854775807}`, `${u8(255)}:${i32(-5)}:${u8(7)}`]);
     print(map(iota(30), (i) => `${i / 10}${i % 10}-${toString(i).padStart(3, \"0\")}`).join(\" \"));
     print(map(iota(130), (i) => `${toString(i - 20).padStart(2, \"0\")}:${toString(i).padStart(2, \"0\")}|${toString(i).padStart(2, \"*\")}|${toString(i).padEnd(2, \"0\")}`).join(\" \"));
+    print(map(concat(iota(130), map(iota(40), (k) => 980 + k * 233)), (i) => `${toString(i - 20).padStart(3, \"0\")}:${toString(i * 11 - 50).padStart(4, \"0\")}|${toString(i).padStart(3, \"0\")}${toString(i * 7).padStart(4, \"0\")}`).join(\" \"));
     return 0;
 }
 ";

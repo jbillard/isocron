@@ -11637,7 +11637,7 @@ impl<'p> Gen<'p> {
         enum P {
             Lit(String, usize),
             Text(String, String),
-            Int { mag: String, neg: String, n: String, width: String, fs: i64, two: bool },
+            Int { mag: String, neg: String, n: String, width: String, fs: i64, zp: u32 },
         }
         let mut parts = Vec::new();
         let mut given: Option<(String, String)> = None;
@@ -11680,10 +11680,16 @@ impl<'p> Gen<'p> {
                         None => (n.clone(), 0),
                     };
                     total = self.ins(format!("add i64 {}, {}", total, width));
-                    // padded to 2 by zeros at its start (`pad(x, 2)` of a
-                    // date): two digits of the table when below 100 (D446)
-                    let two = matches!(&it.pad, Some((len, b'0', true)) if len == "2");
-                    parts.push(P::Int { mag, neg, n, width, fs, two });
+                    // padded to 2, 3 or 4 by zeros at its start (`pad(x, 2)`
+                    // of a date, D446; its year and milliseconds, D477): its
+                    // digits from the table of pairs when it fits
+                    let zp = match &it.pad {
+                        Some((len, b'0', true)) if len == "2" => 2,
+                        Some((len, b'0', true)) if len == "3" => 3,
+                        Some((len, b'0', true)) if len == "4" => 4,
+                        _ => 0,
+                    };
+                    parts.push(P::Int { mag, neg, n, width, fs, zp });
                 }
                 // a left text given (its last use, D351): continued in its
                 // block when it has room
@@ -11746,22 +11752,45 @@ impl<'p> Gen<'p> {
                     self.emit(format!("call void @isc_put_text(ptr {}, ptr {}, i64 {})", dst, p, n));
                     n.clone()
                 }
-                P::Int { mag, neg, n, width, fs, two: true } => {
+                P::Int { mag, neg, n, width, fs, zp } if *zp > 0 => {
                     if !self.digits2 {
                         self.digits2 = true;
                         let pairs: String = (0..100).map(|i| format!("{:02}", i)).collect();
                         self.globals.push(format!("@.digits2 = private unnamed_addr constant [200 x i8] c\"{}\"", pairs));
                     }
-                    let small = self.ins(format!("icmp ult i64 {}, 100", mag));
+                    let limit = 10u64.pow(*zp);
+                    let small = self.ins(format!("icmp ult i64 {}, {}", mag, limit));
                     let pos = self.ins(format!("icmp eq i64 {}, 0", neg));
                     let few = self.ins(format!("and i1 {}, {}", small, pos));
                     let (ltwo, lcall, lj) = (self.label(), self.label(), self.label());
                     self.cbr(&few, &ltwo, &lcall);
                     self.block(&ltwo);
-                    let at2 = self.ins(format!("shl i64 {}, 1", mag));
-                    let src2 = self.ins(format!("getelementptr inbounds [200 x i8], ptr @.digits2, i64 0, i64 {}", at2));
-                    let pair = self.ins(format!("load i16, ptr {}, align 1", src2));
-                    self.emit(format!("store i16 {}, ptr {}, align 1", pair, dst));
+                    // the pair of the table of `x` (below 100) at `at`
+                    let put_pair = |g: &mut Self, x: &str, at: &str| {
+                        let at2 = g.ins(format!("shl i64 {}, 1", x));
+                        let src2 = g.ins(format!("getelementptr inbounds [200 x i8], ptr @.digits2, i64 0, i64 {}", at2));
+                        let pair = g.ins(format!("load i16, ptr {}, align 1", src2));
+                        g.emit(format!("store i16 {}, ptr {}, align 1", pair, at));
+                    };
+                    match zp {
+                        2 => put_pair(self, mag, &dst),
+                        3 => {
+                            let hi = self.ins(format!("udiv i64 {}, 100", mag));
+                            let lo = self.ins(format!("urem i64 {}, 100", mag));
+                            let d = self.ins(format!("trunc i64 {} to i8", hi));
+                            let c = self.ins(format!("add i8 {}, 48", d));
+                            self.emit(format!("store i8 {}, ptr {}", c, dst));
+                            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 1", dst));
+                            put_pair(self, &lo, &at);
+                        }
+                        _ => {
+                            let hi = self.ins(format!("udiv i64 {}, 100", mag));
+                            let lo = self.ins(format!("urem i64 {}, 100", mag));
+                            put_pair(self, &hi, &dst);
+                            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 2", dst));
+                            put_pair(self, &lo, &at);
+                        }
+                    }
                     self.br(&lj);
                     self.block(&lcall);
                     self.emit(format!("call void @isc_put_int(ptr {}, i64 {}, i64 {}, i64 {}, i64 {}, i64 {})", dst, mag, neg, n, width, fs));

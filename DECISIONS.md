@@ -10526,3 +10526,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D477 — Integers padded to 3 and 4 digits by zeros written from the
+  table of pairs (2026-11-07).** `time.format` 3.14 times its floor;
+  profile (one CPU at fixed frequency): 407 cycles a call, `isc_put_int`
+  6.9 % (its year padded to 4, its milliseconds to 3, by zeros, through a
+  call; D446 writes those padded to 2 from the table of pairs). Now a
+  template writes an integer padded to 3 by zeros, not negative and below
+  1000, as a digit then a pair, and one padded to 4, below 10000, as two
+  pairs; the others call the runtime as before. `isc_put_int` left the
+  profile of `format`. Measured (the old and new binaries of `time`, 15
+  alternated runs): `formatDateTime` 51.68 -> 49.06 ns (-5.1 %),
+  `formatIso` 59.46 -> 57.85 ns (-2.7 %), `format` 126.00 -> 125.35 ns
+  (-0.5 %); `parseIso` 33.69 -> 36.48 ns (+8.3 %) in that binary, whose
+  code is the same (four functions of formatting alone differ, by their
+  division by 100): alone in a binary of its own, built by the old and the
+  new compiler, 9 alternated runs, 35.08 -> 34.16 ns: the place of its
+  code among the others. `run.py` (5 runs of 200 rounds): `format` 127.4
+  -> 125.6 ns (3.12 times its floor), `formatDateTime` -5.2 %, `formatIso`
+  -3.1 %, `parseIso` 34.0 -> 38.1 ns (1.62 times its floor, the same
+  place). The LLVM IR of the ten programs unchanged. Test
+  `small_integers_in_templates` (`strings.rs`) with integers from -70 to
+  about 64000 padded to 3 and 4 by zeros, both sides of 1000 and 10000,
+  for the machine and for AVX2 (with the second pair of the 4 written a
+  byte early it fails).
