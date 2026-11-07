@@ -10422,3 +10422,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   -> 298 ms, the others the same to 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D471 — `json.parse` and `json.decode` against C with the
+  representation of Isocron (2026-11-07).** `json.parse` 4.7 and
+  `json.decode` 4.8 times their floors. Profile of `parse` alone (one CPU
+  at fixed frequency): `buildAny` 23.8 %, `anyAt` (the check) 13.0 %, the
+  blocks of its strings and containers made and freed about 27 %
+  (`isc_str_new` 8.2 %, `isc_free` 6.3 %, `isc_free_strs` 5.1 %,
+  `isc_alloc` 4.0 %, `isc_rec_drop_0` 3.4 %), the index and the check of
+  the text about 13 %. The floor (`json.c`) keeps its strings unescaped in
+  one buffer and its nodes in one tape, both used again from one parse to
+  the next: no block made or freed; a value of Isocron owns each of its
+  strings and the arrays of each container. Measured: the floor with that
+  representation (`ISC_JSON_OWNED=1 json <rounds>`: after each parse each
+  string copied into a block of its own, each array its values, each
+  object its keys and values, 7001 blocks a document, all freed; after
+  each decode the records in an array of their own and each name in a
+  block of its own), one CPU at fixed frequency, 3 runs of 200 rounds:
+  `parse` 170.1, 170.2, 171.6 ns, owned 378.3, 374.1, 374.5 ns; `decode`
+  91.8, 92.0, 91.8 ns, owned 118.1, 117.7, 118.2 ns. Isocron (781 ns,
+  447 ns) is 2.1 times C with its representation for `parse`, whose
+  representation is a factor of 2.2 of its 4.7; 3.8 times for `decode`,
+  whose gap is its code (a check of the members, then their building, by
+  the codec of the type): open (TODO).

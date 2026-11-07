@@ -494,6 +494,35 @@ static long encode(Out *o, Rec *rs, long n) {
     return o->n;
 }
 
+// the tape of `s` from the node `i` as Isocron holds it (D471): a string in
+// a block of its own, an array its array of values, an object its arrays of
+// keys and values; the blocks listed in `blocks`; the node after it
+static long own(P *s, long i, void **blocks, long *nb) {
+    Node *d = &s->nodes[i];
+    if (d->kind == STR) {
+        char *b = malloc(d->len ? d->len : 1);
+        memcpy(b, s->chars + d->at, d->len);
+        blocks[(*nb)++] = b;
+        return i + 1;
+    }
+    if (d->kind == ARR || d->kind == OBJ) {
+        long n = d->count;
+        void *vals = malloc(32 * (n ? n : 1));
+        blocks[(*nb)++] = vals;
+        if (d->kind == OBJ) {
+            void *keys = malloc(16 * (n ? n : 1));
+            blocks[(*nb)++] = keys;
+        }
+        long j = i + 1;
+        for (long k = 0; k < n; k++) {
+            if (d->kind == OBJ) j = own(s, j, blocks, nb);
+            j = own(s, j, blocks, nb);
+        }
+        return j;
+    }
+    return i + 1;
+}
+
 int main(int argc, char **argv) {
     long r = argc > 1 ? atol(argv[1]) : 10;
     // the arena touched once: its pages made before any measure
@@ -513,6 +542,20 @@ int main(int argc, char **argv) {
     double t0 = now();
     for (long k = 0; k < r; k++) a1 = parse(&s, doc.b, doc.n) ? s.nodes[0].count : -1;
     printf("parse %.3f %ld\n", (now() - t0) * 1e9 / each, a1);
+    // the same with the representation of Isocron (D471), by
+    // `ISC_JSON_OWNED=1`: not a floor of `run.py`
+    if (getenv("ISC_JSON_OWNED")) {
+        static void *blocks[1 << 16];
+        long nb = 0;
+        t0 = now();
+        for (long k = 0; k < r; k++) {
+            a1 = parse(&s, doc.b, doc.n) ? s.nodes[0].count : -1;
+            nb = 0;
+            own(&s, 0, blocks, &nb);
+            for (long b = 0; b < nb; b++) free(blocks[b]);
+        }
+        printf("parse.owned %.3f %ld %ld\n", (now() - t0) * 1e9 / each, a1, nb);
+    }
     static Rec rs[N];
     long a2 = 0;
     t0 = now();
@@ -523,6 +566,29 @@ int main(int argc, char **argv) {
         a2 = c < 0 ? -1 : sum;
     }
     printf("decode %.3f %ld\n", (now() - t0) * 1e9 / each, a2);
+    // the same with the representation of Isocron (D471), by
+    // `ISC_JSON_OWNED=1`: not a floor of `run.py`
+    if (getenv("ISC_JSON_OWNED")) {
+        t0 = now();
+        for (long k = 0; k < r; k++) {
+            bump = arena;
+            long c = decode(doc.b, doc.n, rs, &skip), sum = 0;
+            // the records in an array of their own, each name in a block of
+            // its own, all freed (D471)
+            Rec *arr = malloc(sizeof(Rec) * (c > 0 ? c : 1));
+            for (long i = 0; i < c; i++) {
+                arr[i] = rs[i];
+                char *nm = malloc(rs[i].nlen ? rs[i].nlen : 1);
+                memcpy(nm, rs[i].name, rs[i].nlen);
+                arr[i].name = nm;
+                sum += arr[i].id;
+            }
+            for (long i = 0; i < c; i++) free((void *)arr[i].name);
+            free(arr);
+            a2 = c < 0 ? -1 : sum;
+        }
+        printf("decode.owned %.3f %ld\n", (now() - t0) * 1e9 / each, a2);
+    }
     parse(&s, doc.b, doc.n);
     Out o = {0};
     long a3 = 0;
