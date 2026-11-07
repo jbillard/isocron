@@ -9825,3 +9825,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   series, D261), the others the same to 1 ms. `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D439 — `net.lookup` tested on Windows (2026-11-07).** The goal of the
+  library: each function tested in the machine of Windows. Counted again:
+  `net.startTls` runs there through `https.requestWith`
+  (`https_client_on_windows`), `serverOfTls`, `serveTlsOn` and `serveTls`
+  in `https_server_on_windows`, but `net.lookup` nowhere: `net_on_windows`
+  runs `std_net.isc` without the port of a server of DNS, so it skips its
+  queries. Now `lookup_on_windows` (`windows.rs`): a server of DNS of the
+  test at the address of this machine that the virtual machine reaches
+  (`ISC_WINDOWS_HOST_ADDR`, 172.17.0.1), `example.test` with A 10.1.2.3
+  and AAAA 2001:db8::7, every other name NXDOMAIN, and a port where no
+  server answers; the program compiled for Windows and for Linux, on 1 and
+  4 threads: `Ok([10.1.2.3, 2001:db8::7])`, the fault of a name without
+  records, the delay; the same outputs on both. The tests of Windows: 14
+  passed.

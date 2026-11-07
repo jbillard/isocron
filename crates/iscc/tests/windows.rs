@@ -639,3 +639,87 @@ action main(args: string[k]): i32 {
     assert_eq!(w.0, 0, "stderr: {}", String::from_utf8_lossy(&w.2));
     assert_eq!(String::from_utf8_lossy(&w.1), "true\n11\n429\n5\n1234\n[1, 0]\n[true, false]\n");
 }
+
+/// A server of DNS of this machine at `addr` (that the virtual machine
+/// reaches), for the time of the test: `example.test` has the records A
+/// 10.1.2.3 and AAAA 2001:db8::7, every other name none (NXDOMAIN), as the
+/// one of `std_net.rs`. Its port.
+fn dns_server_at(addr: &str) -> u16 {
+    let s = std::net::UdpSocket::bind((addr, 0)).unwrap();
+    let port = s.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        while let Ok((n, from)) = s.recv_from(&mut buf) {
+            let q = &buf[..n];
+            let mut at = 12;
+            let mut labels = Vec::new();
+            while at < n && q[at] != 0 {
+                let len = q[at] as usize;
+                labels.push(String::from_utf8_lossy(&q[at + 1..at + 1 + len]).to_string());
+                at += 1 + len;
+            }
+            let end = at + 5;
+            let kind = u16::from_be_bytes([q[at + 1], q[at + 2]]);
+            let name = labels.join(".");
+            let data: Option<Vec<u8>> = match (name.as_str(), kind) {
+                ("example.test", 1) => Some(vec![10, 1, 2, 3]),
+                ("example.test", 28) => Some("2001:db8::7".parse::<std::net::Ipv6Addr>().unwrap().octets().to_vec()),
+                _ => None,
+            };
+            let mut r = q[..2].to_vec();
+            let known = name == "example.test";
+            r.extend_from_slice(&[0x81, if known { 0x80 } else { 0x83 }, 0, 1, 0, data.is_some() as u8, 0, 0, 0, 0]);
+            r.extend_from_slice(&q[12..end]);
+            if let Some(d) = data {
+                r.extend_from_slice(&[0xC0, 0x0C]);
+                r.extend_from_slice(&kind.to_be_bytes());
+                r.extend_from_slice(&[0, 1, 0, 0, 0, 60]);
+                r.extend_from_slice(&(d.len() as u16).to_be_bytes());
+                r.extend_from_slice(&d);
+            }
+            let _ = s.send_to(&r, from);
+        }
+    });
+    port
+}
+
+/// `net.lookup` on Windows (D439): the queries of DNS by UDP of the runtime
+/// of Windows (`sysUdpQuery`, Winsock) to a server of this machine at its
+/// address that the virtual machine reaches (`ISC_WINDOWS_HOST_ADDR`, by
+/// default 172.17.0.1): the records A and AAAA of a name, a name without
+/// any, a port where no server answers (the delay); the same outputs as on
+/// Linux.
+#[test]
+fn lookup_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let addr = std::env::var("ISC_WINDOWS_HOST_ADDR").unwrap_or_else(|_| "172.17.0.1".into());
+    let port = dns_server_at(&addr);
+    let silent = std::net::UdpSocket::bind((addr.as_str(), 0)).unwrap();
+    let quiet = silent.local_addr().unwrap().port();
+    let src = "import * as net from \"net\";
+import { message } from \"sys\";
+
+action main(args: string[k]): i32 {
+    print(net.lookup(\"example.test\", args[0], parseI64(args[1])));
+    match (net.lookup(\"missing.test\", args[0], parseI64(args[1]))) {
+        Ok(xs) => print(xs),
+        Err(e) => print(message(e)),
+    };
+    match (net.lookup(\"example.test\", args[0], parseI64(args[2]))) {
+        Ok(xs) => print(xs),
+        Err(e) => print(message(e).startsWith(\"timed out\")),
+    };
+    return 0;
+}
+";
+    let d = dir("lookup");
+    let (sp, sq) = (port.to_string(), quiet.to_string());
+    let out = same_on_windows(&runner, src, "lookup", &d, &[addr.as_str(), &sp, &sq], None);
+    let text = String::from_utf8_lossy(&out).to_string();
+    assert!(text.starts_with("Ok([10.1.2.3, 2001:db8::7])\n"), "{}", text);
+    assert!(text.ends_with("true\n"), "{}", text);
+    drop(silent);
+}
