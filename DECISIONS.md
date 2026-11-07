@@ -9399,3 +9399,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `counts_of_keys_with_the_table_held` (`stdlib.rs`: small keys among
   large ones in the same chunks, the table grown inside a chunk, 1 and 4
   threads, the interpreter's results).
+- **D418 — The fast loop of a count: the first line of a key only, no
+  test of an empty slot (2026-11-07).** After D417, `add_block` 32.3
+  instructions and 10.3 cycles a key for the 18-mers (52.10 % and 51.78 %
+  of the 7.74 G instructions and 2.49 G cycles of the count alone). Its
+  code: the probe of the next lines in a loop that LLVM aligned with
+  padding the fast path ran through (297 samples on one `nop`), the test of
+  an empty slot at each key (`vptestmq`, `kandb`), and the bound of the
+  prefetch AHEAD places later tested at each key. Now the fast loop looks
+  for a key in the first line of its hash only, by `holds` (`e >> bits ==
+  k` for the 8 slots: an empty slot, 0, holds no key but 0, which goes to
+  the general path); a key not in that line, new, small, or 0 goes to
+  `add_count` (the probe of the next lines, the insertion); the hashes
+  after the last key of a chunk are its own, so that the prefetch has no
+  bound to test. The same counts and order. Measured (one thread, fixed
+  frequency): the 18-mers 615.4 -> 565.0 ms (-8.2 %), 61.9 -> 52.5
+  instructions a key in the whole program; the 12-mers 578.2 -> 524.4 ms
+  (-9.3 %), 58.5 -> 49.2; k-nucleotide (4 threads, 11 alternated runs, the
+  same output) 666.5 -> 638.8 ms (-4.15 %, medians -3.94 %); the nine
+  others within 0.65 % (minimums, 7 runs), n-body +1.23 % in that run, its
+  code the same, +0.05 % in 11 runs. Test `counts_of_keys_with_the_table_held`
+  (D417) and the 39 of `stdlib.rs`.

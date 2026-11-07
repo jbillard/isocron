@@ -5171,6 +5171,17 @@ impl CountTable {
         (found, empty)
     }
 
+    /// The slots of the line `l` whose key is `k`, as a mask of 8 bits, for
+    /// a key that is not 0 (an empty slot, 0, holds no other key) (D418).
+    #[inline(always)]
+    fn holds(line: &Line, k: u64, bits: u32) -> u32 {
+        let mut found = 0u32;
+        for (j, &e) in line.0.iter().enumerate() {
+            found |= ((e >> bits == k) as u32) << j;
+        }
+        found
+    }
+
     /// `count` more for the key `k` of the slot table (`packs`), first at
     /// `first` if new.
     #[inline(always)]
@@ -5247,7 +5258,7 @@ impl CountTable {
     pub fn add_block(&mut self, keys: &[u64], start: usize) {
         const CHUNK: usize = 1024;
         const AHEAD: usize = 16;
-        let mut hs = [0u64; CHUNK];
+        let mut hs = [0u64; CHUNK + AHEAD];
         for (c, chunk) in keys.chunks(CHUNK).enumerate() {
             let base = (start + c * CHUNK) as u32;
             let top = chunk.iter().copied().max().unwrap_or(0);
@@ -5275,45 +5286,42 @@ impl CountTable {
                     *h = hash_word(k);
                 }
                 let (n, bits, direct) = (chunk.len(), self.bits, self.direct);
+                // the hashes after the last key: its own, so that the
+                // prefetch AHEAD places later needs no test (D418)
+                let last = hs[n - 1];
+                for h in &mut hs[n..n + AHEAD] {
+                    *h = last;
+                }
                 let mut j = 0;
                 while j < n {
-                    // the keys found in their lines, counted with the table,
-                    // its mask and `bits` held here (nothing else of `self`
-                    // written); a new key or a small one by `bump` or
-                    // `add_count` below, the table read again after it (it
-                    // may have grown) (D417)
+                    // the keys found in the first line of their hash,
+                    // counted with the table, its mask and `bits` held here
+                    // (nothing else of `self` written); the others (a small
+                    // key, the key 0, one further on or new) by `add_count`
+                    // below, the table read again after it (it may have
+                    // grown) (D417, D418)
                     let lines = &mut self.lines[..];
                     let mask = lines.len() - 1;
                     while j < n {
                         let k = chunk[j];
-                        if direct && k < WordGroups::DIRECT_MAX {
+                        if (direct && k < WordGroups::DIRECT_MAX) || k == 0 {
                             break;
                         }
-                        if j + AHEAD < n {
-                            let l = (hs[j + AHEAD] as usize) & mask;
-                            #[cfg(target_arch = "x86_64")]
-                            // SAFETY: a prefetch reads nothing; `l` is a line of the table
-                            unsafe {
-                                core::arch::x86_64::_mm_prefetch(lines.as_ptr().add(l) as *const i8, core::arch::x86_64::_MM_HINT_T0)
-                            };
-                            #[cfg(not(target_arch = "x86_64"))]
-                            let _ = l;
-                        }
-                        let mut l = (hs[j] as usize) & mask;
-                        let hit = loop {
-                            let (found, empty) = Self::masks(&lines[l], k, bits);
-                            if found != 0 {
-                                lines[l].0[found.trailing_zeros() as usize] += 1;
-                                break true;
-                            }
-                            if empty != 0 {
-                                break false;
-                            }
-                            l = (l + 1) & mask;
+                        let a = (hs[j + AHEAD] as usize) & mask;
+                        #[cfg(target_arch = "x86_64")]
+                        // SAFETY: a prefetch reads nothing; `a` is a line of the table
+                        unsafe {
+                            core::arch::x86_64::_mm_prefetch(lines.as_ptr().add(a) as *const i8, core::arch::x86_64::_MM_HINT_T0)
                         };
-                        if !hit {
+                        #[cfg(not(target_arch = "x86_64"))]
+                        let _ = a;
+                        let line = &mut lines[(hs[j] as usize) & mask];
+                        // an empty slot is 0, which holds no key but 0
+                        let found = Self::holds(line, k, bits);
+                        if found == 0 {
                             break;
                         }
+                        line.0[found.trailing_zeros() as usize] += 1;
                         j += 1;
                     }
                     if j < n {
