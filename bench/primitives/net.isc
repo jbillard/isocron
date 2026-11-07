@@ -4,8 +4,11 @@
 // made (`connect`, `accept`, both closed), 64 KiB sent and received. Each
 // line: a name, the nanoseconds of one (the mean over `rounds`), a
 // checksum; against `net.c` (the floor: the same calls of the system). A
-// listener opened and closed, a name of `/etc/hosts` resolved (D412).
-// usage: net <rounds>
+// listener opened and closed, a name of `/etc/hosts` resolved (D412); a
+// name asked to `dns_server.c` (started by `run.py`), its records A then
+// AAAA (D414).
+// usage: net <rounds> <port of DNS>
+// bench-server: dns
 import * as net from "net";
 
 // the bytes of `c` until `n` of them are read: their sum
@@ -99,7 +102,25 @@ action main(args: string[k]): i32 {
     const h = resolves("ip6-localhost", r, 0);
     const t9 = clock();
     print(`resolve.hosts ${f64(t9 - t8) / f64(r)} ${h / r}`);
+    const dns = parseI64(args[1]);
+    const t10 = clock();
+    const q = lookups("bench.test", dns, r, 0);
+    const t11 = clock();
+    print(`lookup ${f64(t11 - t10) / f64(r)} ${q / r}`);
     return 0;
+}
+
+// `r` lookups of `host` asked to the server of DNS on `port`: its
+// addresses, 100 each and their lengths
+action lookups(host: string, port: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const k = match (net.lookup(host, "127.0.0.1", port)) {
+        Ok(xs) => 100 * xs.length + sum(map(xs, (x) => x.length)),
+        Err(e) => -1,
+    };
+    return lookups(host, port, r - 1, acc + k);
 }
 
 // `r` listeners on a port of the system, each closed: how many opened

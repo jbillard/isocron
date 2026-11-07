@@ -9324,3 +9324,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `std_net.rs` (4 passed). Measured (`run.py`, 5 runs of 200 rounds):
   `resolve.hosts` 5609.73 -> 4431.34 ns (-21.0 %), 2.3 times its floor; the
   other forms of `net` the same.
+- **D414 — `net.lookup` against its floor (2026-11-07).** The last function
+  of `net` without a microbenchmark (D412). `bench/primitives/dns_server.c`,
+  a server of DNS on a free port of UDP of the local machine, started by
+  `run.py` for a group that declares `// bench-server: dns`: each query
+  answered with one record, 127.0.0.1 for A, ::1 for AAAA. The form
+  `lookup` (`bench.test` asked to it, A then AAAA: two addresses, the
+  checksum 212); its floor (`net.c`) one socket of UDP with a time limit,
+  the same two queries (the bytes of `net.lookup`), each answer read and
+  its records written as texts (`inet_ntop`). Measured (`run.py`, 5 runs of
+  200 rounds): 29883.68 against 23607.51 ns, 1.3 times (the runtime makes a
+  socket for each query: two sockets made, given time limits and closed
+  where the floor makes one); the other forms of `net` the same.

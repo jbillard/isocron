@@ -79,6 +79,22 @@ def tls_server():
     return server, [str(port), os.path.join(d, "ca.pem")]
 
 
+def dns_server():
+    """For a group that declares `// bench-server: dns` (D414): the server of
+    `dns_server.c` on a free port of UDP (127.0.0.1 for A, ::1 for AAAA);
+    the server and the argument that the benchmark takes after its rounds
+    (the port)."""
+    exe = os.path.join(build, "dns_server")
+    subprocess.run(["gcc", "-O2", os.path.join(here, "dns_server.c"), "-o", exe], check=True)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    server = subprocess.Popen([exe, str(port)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.2)
+    return server, [str(port)]
+
+
 def http_server():
     """For a group that declares `// bench-server: http` (D412): the server
     of `hello_server.c` on a free port, which answers each request
@@ -124,6 +140,8 @@ def main():
             server, extra = tls_server()
         elif "// bench-server: http" in open(os.path.join(here, g + ".isc")).read():
             server, extra = http_server()
+        elif "// bench-server: dns" in open(os.path.join(here, g + ".isc")).read():
+            server, extra = dns_server()
         try:
             for _ in range(a.runs):
                 for kind, b in (("isc", isc_bin), ("c", c_bin)):

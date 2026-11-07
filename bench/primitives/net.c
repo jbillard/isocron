@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -139,5 +140,50 @@ int main(int argc, char **argv) {
         acc += 100 * found + lens;
     }
     printf("resolve.hosts %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    // a name asked to the server of DNS (D414): one socket, the queries A
+    // then AAAA (the bytes of `net.lookup`), each answer read, its records
+    // as texts
+    if (argc > 2) {
+        int dport = atoi(argv[2]);
+        unsigned char qa[64], ans[512];
+        static const char name[] = "\005bench\004test";
+        size_t ql = 0;
+        unsigned char head[12] = {0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0};
+        memcpy(qa, head, 12);
+        memcpy(qa + 12, name, 11);
+        ql = 23;
+        unsigned char tail[5] = {0, 0, 1, 0, 1};
+        memcpy(qa + ql, tail, 5);
+        ql += 5;
+        acc = 0;
+        t0 = now();
+        for (long k = 0; k < r; k++) {
+            int u = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+            struct timeval tv = {2, 0};
+            setsockopt(u, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+            struct sockaddr_in d = {.sin_family = AF_INET, .sin_port = htons(dport), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+            long found = 0;
+            for (int t = 0; t < 2; t++) {
+                qa[ql - 3] = t == 0 ? 1 : 28;
+                sendto(u, qa, ql, 0, (struct sockaddr *)&d, sizeof d);
+                ssize_t n = recv(u, ans, sizeof ans, 0);
+                if (n < 12) continue;
+                int count = ans[6] * 256 + ans[7];
+                size_t at = 12;
+                while (at < (size_t)n && ans[at] != 0) at += ans[at] + 1;
+                at += 5;
+                for (int i = 0; i < count && at + 12 <= (size_t)n; i++) {
+                    int type = ans[at + 3], len = ans[at + 10] * 256 + ans[at + 11];
+                    char text[64];
+                    if (type == 1 && len == 4 && inet_ntop(AF_INET, ans + at + 12, text, sizeof text)) found += 100 + strlen(text);
+                    if (type == 28 && len == 16 && inet_ntop(AF_INET6, ans + at + 12, text, sizeof text)) found += 100 + strlen(text);
+                    at += 12 + len;
+                }
+            }
+            close(u);
+            acc += found;
+        }
+        printf("lookup %.3f %ld\n", (now() - t0) * 1e9 / r, acc / r);
+    }
     return 0;
 }
