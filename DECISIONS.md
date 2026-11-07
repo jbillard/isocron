@@ -10096,3 +10096,9 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     200, 1000, 1100 and 1200, slices at the offsets 0 to 69 (every start
     before a boundary), the machine and AVX2; it fails when the start is
     not moved past the bytes before the boundary.
+- **D453 — Release 0.4.4 (2026-11-07).** The fix of D451 (one request
+  with an encoded surrogate in its head ended a server of `http`, in 0.4.3
+  and before) released at once, with D450 and D452. No name removed, the
+  language the same. The steps of 0.4.3 (D449). The ten programs of the
+  Benchmarks Game: revcomp and k-nucleotide changed by D450 and D452,
+  measured against the code of D447 (D452: within their scatter).

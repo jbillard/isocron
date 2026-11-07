@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.4 — 2026-11-07
+
+A fix of the checks of UTF-8 of the library: one request could end a
+server of `http`. Upgrading is advised for every program that serves
+HTTP or HTTPS, or reads texts from the network or from files.
+
+### Fixed
+
+* The modules `http`, `sys` and `json` checked bytes as UTF-8 by the
+  classes of their bytes only: they took an encoded surrogate (`ED A0 80`),
+  the overlong forms of three and four bytes and the characters above
+  U+10FFFF, which `stringOf` refuses, and it panicked (D451):
+  * the server (`serve`, `serveOn`, `serveAction`, and over TLS): one
+    request with such bytes in its head ended the program; it is now
+    answered 400;
+  * the client: such bytes in the head of a response panicked; now
+    `Malformed("the head is not text")`; `text` of such a body panicked;
+    now `?` for each byte from 0x80;
+  * `sys.readText` of such a file panicked; now the error `not UTF-8`.
+
+### The compiler
+
+* Bytes whose largest value is known below 0x80 (a table of ASCII, `&`,
+  `>>`, the branches of an `if`) are given to a text without checking
+  them: `sha256.hex` 14.3 -> 7.2 ns (D450).
+* A count of bytes takes 64 of them at a time on AVX-512 BW, from a
+  boundary of 64 bytes over 1 KiB: `http.text` of 1 KiB 63.2 -> 53.3 ns,
+  `json.quote` of a name 6.8 -> 5.0 ns (D452).
+
 ## 0.4.3 — 2026-11-07
 
 A fix of the memory of the texts on the stack, and faster texts, dates,
