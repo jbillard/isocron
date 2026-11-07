@@ -191,6 +191,11 @@ export action readFile(path: string): Result<u8[k], IoError> {
 // characters), or the continuations still wanted times 65536 plus the
 // range of the next one (its lowest byte times 256 plus its highest).
 function utf8(b: u8[n]): boolean {
+    // ASCII (the common text): its bytes counted by vectors, not each one
+    // through the fold (D463: `readText` of 4 KiB, 3.3 times its floor)
+    if (count(b, (x) => x >= 0x80u8) == 0) {
+        return true;
+    }
     const left = fold(b, 0, (s, x) => {
         if (s < 0) {
             return -1;

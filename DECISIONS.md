@@ -10286,3 +10286,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `time.format` 155.5 -> 126.0 ns, 3.07 times its floor (4.22 before: the
     program -19 %, its floor +11 %); the other forms of `time` within their
     scatter.
+- **D463 — `readText` checks ASCII by vectors first (2026-11-07).**
+  `sys.readText.4k` 3.3 times its floor. The same system calls as the
+  floor (`strace -c`: per file one `openat`, two `read`, one `close`); the
+  check of `utf8` of `sys.isc` folded each of the 4096 bytes through its
+  state (D451), where the one of `http.isc` counts the bytes from 0x80 by
+  vectors first (D396) and folds only a text that has some. Now the check
+  of `sys` does the same: an ASCII text is taken without the fold.
+  Measured (the old and new binaries of `sys`, 7 alternated runs):
+  `readText.4k` 6420.90 -> 3273.28 ns (-49.0 %), the other forms within
+  their scatter (from -6.5 % to +3.3 %, their code the same but the lines
+  of `sys.isc`); `run.py` (5 runs of 200 rounds) 6409.3 -> 3227.3 ns,
+  1.68 times its floor. Tested by `read_text_refuses_bytes_not_utf8` (D451:
+  texts with bytes from 0x80, through the fold) and the tests of `sys`
+  (texts of ASCII).
