@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="408" viewBox="0 0 720 408" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
 <text x="0" y="22" font-size="17" font-weight="600" fill="#8b949e">Time of Isocron / time of the fastest other program</text>
-<text x="0" y="44" font-size="13" fill="#8b949e">Lower is faster: 0.5 is twice as fast. Commit 5f615bb, 4 threads, Intel Xeon E-2388G.</text>
+<text x="0" y="44" font-size="13" fill="#8b949e">Lower is faster: 0.5 is twice as fast. Commit 67cd983, 4 threads, Intel Xeon E-2388G.</text>
 <line x1="190.0" y1="68" x2="190.0" y2="378" stroke="#8b949e55"/>
 <text x="190.0" y="394" font-size="11" fill="#8b949e" text-anchor="middle">0</text>
 <line x1="287.9" y1="68" x2="287.9" y2="378" stroke="#8b949e55"/>
@@ -12,32 +12,32 @@
 <line x1="581.7" y1="68" x2="581.7" y2="378" stroke="#8b949e55"/>
 <text x="581.7" y="394" font-size="11" fill="#8b949e" text-anchor="middle">1</text>
 <text x="180" y="88" font-size="13" fill="#8b949e" text-anchor="end">binary-trees</text>
-<rect x="190" y="74" width="308.0" height="18" rx="3" fill="#3fb950"/>
-<text x="492.0" y="87" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.79</text>
+<rect x="190" y="74" width="306.2" height="18" rx="3" fill="#3fb950"/>
+<text x="490.2" y="87" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.78</text>
 <text x="180" y="118" font-size="13" fill="#8b949e" text-anchor="end">fannkuch-redux</text>
-<rect x="190" y="104" width="263.7" height="18" rx="3" fill="#3fb950"/>
-<text x="447.7" y="117" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.67</text>
+<rect x="190" y="104" width="264.1" height="18" rx="3" fill="#3fb950"/>
+<text x="448.1" y="117" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.67</text>
 <text x="180" y="148" font-size="13" fill="#8b949e" text-anchor="end">fasta</text>
 <rect x="190" y="134" width="2.6" height="18" rx="3" fill="#3fb950"/>
 <text x="198.6" y="147" font-size="12" fill="#8b949e">0.01</text>
 <text x="180" y="178" font-size="13" fill="#8b949e" text-anchor="end">k-nucleotide</text>
-<rect x="190" y="164" width="209.1" height="18" rx="3" fill="#3fb950"/>
-<text x="393.1" y="177" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.53</text>
+<rect x="190" y="164" width="206.2" height="18" rx="3" fill="#3fb950"/>
+<text x="390.2" y="177" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.53</text>
 <text x="180" y="208" font-size="13" fill="#8b949e" text-anchor="end">mandelbrot</text>
 <rect x="190" y="194" width="319.0" height="18" rx="3" fill="#3fb950"/>
 <text x="503.0" y="207" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.81</text>
 <text x="180" y="238" font-size="13" fill="#8b949e" text-anchor="end">n-body</text>
-<rect x="190" y="224" width="383.4" height="18" rx="3" fill="#d29922"/>
-<text x="567.4" y="237" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.98</text>
+<rect x="190" y="224" width="378.4" height="18" rx="3" fill="#d29922"/>
+<text x="562.4" y="237" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.97</text>
 <text x="180" y="268" font-size="13" fill="#8b949e" text-anchor="end">pidigits</text>
-<rect x="190" y="254" width="172.0" height="18" rx="3" fill="#3fb950"/>
-<text x="356.0" y="267" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.44</text>
+<rect x="190" y="254" width="171.7" height="18" rx="3" fill="#3fb950"/>
+<text x="355.7" y="267" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.44</text>
 <text x="180" y="298" font-size="13" fill="#8b949e" text-anchor="end">regex-redux</text>
-<rect x="190" y="284" width="42.2" height="18" rx="3" fill="#3fb950"/>
-<text x="238.2" y="297" font-size="12" fill="#8b949e">0.11</text>
+<rect x="190" y="284" width="42.1" height="18" rx="3" fill="#3fb950"/>
+<text x="238.1" y="297" font-size="12" fill="#8b949e">0.11</text>
 <text x="180" y="328" font-size="13" fill="#8b949e" text-anchor="end">reverse-complement</text>
-<rect x="190" y="314" width="170.6" height="18" rx="3" fill="#3fb950"/>
-<text x="354.6" y="327" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.44</text>
+<rect x="190" y="314" width="171.4" height="18" rx="3" fill="#3fb950"/>
+<text x="355.4" y="327" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.44</text>
 <text x="180" y="358" font-size="13" fill="#8b949e" text-anchor="end">spectral-norm</text>
 <rect x="190" y="344" width="372.6" height="18" rx="3" fill="#d29922"/>
 <text x="556.6" y="357" font-size="12" font-weight="600" fill="#ffffff" text-anchor="end">0.95</text>

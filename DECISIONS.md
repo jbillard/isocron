@@ -9813,3 +9813,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   offset, counts and `filter`s, the code for the machine and for AVX2,
   the interpreter's values; without the mask of the lanes it fails at 33
   elements).
+- **D438 — The Benchmarks Game measured again at 67cd983 (2026-11-07).**
+  After D434 to D437 (the code of k-nucleotide and reverse-complement
+  changed by D437, the runtime by D435 and D436): the image built with the
+  `iscc` of 67cd983, the programs built and checked against the
+  references (102 checks, the same outputs; the known difference of C++ #4
+  of mandelbrot at N = 200 only), then measured in Docker (4 threads, 12
+  runs, the lowest, `bench/machine.sh apply parallel`). The fastest on 10
+  of 10: k-nucleotide 622 -> 614 ms, reverse-complement 27 -> 28 ms and
+  n-body 1904 -> 1879 ms within their scatter (D429: 1 ms of 27; n-body's
+  series, D261), the others the same to 1 ms. `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.
