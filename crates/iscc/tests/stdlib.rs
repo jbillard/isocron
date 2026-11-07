@@ -1407,3 +1407,47 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
 }
+
+/// D399: `stringOf(b)` of bytes at their last use takes their block once
+/// they are checked as UTF-8: texts made of new bytes, of an empty array,
+/// in a recursion that makes one each turn; bytes still read after it
+/// copied (not taken); bytes that are not UTF-8 the same panic at the same
+/// place; the interpreter and compiled.
+#[test]
+fn string_of_takes_the_bytes_at_their_last_use() {
+    let src = "function word(i: i64): string {
+    const b = map(iota(i % 7 + 1), (j) => u8(97 + (i + j) % 26));
+    return stringOf(b);
+}
+
+function words(i: i64, n: i64, acc: i64): i64 {
+    return i == n ? acc : words(i + 1, n, acc + word(i).length);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(words(0, n, 0));
+    const kept = map(iota(5), (j) => u8(65 + j));
+    const t = stringOf(kept);
+    print(`${t} ${kept[4]}`);
+    const e: u8[] = [];
+    print(`[${stringOf(e)}]`);
+    print(join(map(iota(3), (i) => word(i * 5)), \",\"));
+    const bad = map(iota(3), (j) => u8(n > 0 ? 255 : 65));
+    print(stringOf(bad));
+    return 0;
+}
+";
+    let bin = compile(src, "string_of_takes");
+    for args in [["0"], ["1000"]] {
+        let want = interp(src, &args);
+        let r = run_bin(&bin, &args);
+        match &want {
+            Outcome::Exit(code, out) => assert_eq!((r.code, r.stdout.as_str()), (*code, out.as_str()), "{:?}: {}", args, r.stderr),
+            Outcome::Panic(m, out) => {
+                assert_eq!((r.code, r.stdout.as_str()), (101, out.as_str()), "{:?}: {}", args, r.stderr);
+                assert!(r.stderr.contains(m.as_str()), "{:?}: {} / {}", args, r.stderr, m);
+            }
+        }
+    }
+}

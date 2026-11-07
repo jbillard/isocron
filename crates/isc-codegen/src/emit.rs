@@ -856,6 +856,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_str_concat_n(ptr, ptr, i64)",
     "declare i32 @isc_str_cmp(ptr, i64, ptr, i64)",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
+    "declare void @isc_str_adopt_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_to_string_i64(ptr, i64)",
     "declare void @isc_to_string_u64(ptr, i64)",
     "declare void @isc_to_string_f64(ptr, double)",
@@ -11033,7 +11034,9 @@ impl<'p> Gen<'p> {
             S::FromBytes => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let pos = Self::pos(e.span);
-                new_str(self, format!("call void @isc_str_from_bytes(ptr OUT, ptr {}, i64 {}, {})", p, n, pos))
+                // bytes at their last use: their block taken (D399)
+                let f = if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) { "isc_str_adopt_bytes" } else { "isc_str_from_bytes" };
+                new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, {})", f, p, n, pos))
             }
             S::ToString => {
                 let x = &vals[0];

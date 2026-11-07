@@ -8965,3 +8965,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   %), the appends (`append_parts` 13.36 %, `memcpy` 8.51 %), where the floor
   writes its digits into one buffer. Test `time_formats_in_one_pass`
   (`stdlib.rs`).
+- **D399 — `stringOf` takes the block of bytes at their last use
+  (2026-11-07).** D394: `sha256.hex.32` 7.9 times its floor. Profile (one
+  CPU, fixed frequency): `stringOf` of the new array of 64 digits checks it
+  as UTF-8 (`from_utf8` 9.66 %), copies it into a new block
+  (`isc_str_from_bytes` 12.50 %, `memcpy` 3.41 %, `isc_alloc` 10.80 %), then
+  the array is freed (`isc_free` 15.34 %). Now the ownership pass moves the
+  bytes of `stringOf(b)` into it when `b` is owned, without an alias, at its
+  last use (as the left text of a concatenation, D351), the verifier knows
+  that `stringOf` takes them, and the compiled code calls
+  `isc_str_adopt_bytes`: checked as UTF-8 (the same panic at the same
+  place), then the text is their block, no copy. Bytes still read after it
+  are copied as before. Measured (one CPU, fixed frequency, 7 alternated
+  runs of the old and new binaries of `strings`, `sys`, `http`, `json`,
+  `time`, `sha256`, 81 forms): `sha256.hex.32` 27.05 -> 20.93 ns (-22.6 %),
+  no form slower by 3 % or more; k-nucleotide (its `name` takes its bytes)
+  678.8 -> 680.8 ms (+0.29 %, medians +0.16 %, the same output), the code of
+  the nine others the same. Test `string_of_takes_the_bytes_at_their_last_use`
+  (`stdlib.rs`: new bytes in a recursion, an empty array, bytes read after
+  it copied, bytes that are not UTF-8; 5 texts take their bytes, 1 copies
+  them).

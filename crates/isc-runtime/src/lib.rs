@@ -1564,6 +1564,17 @@ pub unsafe extern "C" fn isc_str_from_bytes(out: *mut IscStr, p: *const u8, n: i
     *out = new_str(b);
 }
 
+/// `stringOf(b)` of bytes at their last use (D399): checked as UTF-8 (a
+/// panic otherwise, as `isc_str_from_bytes`), then the text takes their
+/// block (a block of the heap, or the empty block): no copy.
+#[no_mangle]
+pub unsafe extern "C" fn isc_str_adopt_bytes(out: *mut IscStr, p: *const u8, n: i64, line: i32, col: i32) {
+    if let Err(e) = core::str::from_utf8(bytes_of(p, n)) {
+        die(line, col, &Panic::NotUtf8(e.valid_up_to() as i64))
+    }
+    *out = IscStr { ptr: p as *mut u8, len: n };
+}
+
 /// A writer into a buffer of `N` bytes (the text of a scalar). A float is
 /// written without exponent (D108): 5e-324 takes 326 bytes, so the buffer
 /// of an `f64` holds 352 (D336: a buffer of 64 cut such texts).

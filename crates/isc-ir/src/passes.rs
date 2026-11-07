@@ -2125,6 +2125,20 @@ impl<'a> Rewriter<'a> {
                 }
                 return Ok(Own::Fresh);
             }
+            // the bytes of `stringOf(b)` at their last use, owned and without
+            // alias: given to it, the text taking their block once they are
+            // checked as UTF-8, without a copy (D399)
+            ExprKind::StrOp(crate::StrOp::FromBytes, es) if heap && matches!(es[0].kind, ExprKind::Var(..)) => {
+                let o = self.walk(&mut es[0])?;
+                if let (Own::Borrowed(_, Some(i)), ExprKind::Var(v, u)) = (&o, &mut es[0].kind) {
+                    let w = *v as usize;
+                    if self.info.candidates.contains(i) && self.info.owned[w] && self.info.alias[w].is_none() {
+                        *u = Use::Move;
+                        self.info.moved[w] = true;
+                    }
+                }
+                return Ok(Own::Fresh);
+            }
             // the left text of `a + b` (a chain, a template) at its last use,
             // owned and without alias: given to it (D351), which writes the
             // rest after it in its block when the block has room
