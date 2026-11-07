@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.5 — 2026-11-07
+
+Faster texts, dates, paths and numbers of the library, by general changes
+of the compiler, the runtime and the modules; the same results.
+
+### The runtime
+
+* A double is written by Schubfach, the text of Rust's `Display` kept
+  (`print`, templates, `toString`, `json`): `json.stringify` 368 -> 284
+  ns, `json.encode` 115.7 -> 88.4 ns (D467).
+* A byte is searched in a text of at most 64 bytes by windows of 16:
+  `includes` -19 %, `indexOf` -11 % (D466).
+* Texts added to a text are copied by moves, the room of its block read
+  inline: `json.quote` of escaped texts -19 %, `time.format` -16 % (D459).
+* A parallel loop on one thread runs at once (D460).
+
+### The compiler
+
+* `padStart` and `padEnd` of a text only read write it on the stack:
+  10.2 -> 5.7 ns (D458).
+
+### The library
+
+* `http.httpDate` 56.9 -> 37.7 ns: its fields from the table of digit
+  pairs, its day of the week from the days (D461).
+* `time.format` adds each field with its text in one template (D462).
+* `sys.readText` checks ASCII by vectors before its decoder: 6.4 -> 3.2
+  µs for 4 KiB (D463).
+* `path.normalize` reads its parts by their places: 165 -> 90 ns (D464).
+
+### The measurements
+
+* Floors that did less than their programs, corrected: two that GCC had
+  emptied of their blocks (D455), `http.message` and `time.format` that
+  wrote constants the programs read at run time (D457, D462); the writes
+  of the others kept from the compiler (D456). `sys.isAbsolute` explained:
+  Isocron equals C on the layout of an array of strings (D465).
+
 ## 0.4.4 — 2026-11-07
 
 A fix of the checks of UTF-8 of the library: one request could end a

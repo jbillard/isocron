@@ -10392,3 +10392,11 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     taken by a test run at the same time (4 at once in the suite); alone
     it passed 5 times of 5. Now the refusal is tested at the port 1, where
     nothing listens.
+- **D468 — Release 0.4.5 (2026-11-07).** After 0.4.4: D455 to D467, the
+  texts, dates, paths and numbers of the library faster by general
+  changes, the same results; the floors of four forms corrected. No name
+  removed, the language the same. The steps of 0.4.3 (D449): the Windows
+  tests in the VM with the `iscc.exe` of the release's sources, the
+  archives built from those sources in the images of the releases, tried
+  before they are published. The ten programs of the Benchmarks Game:
+  their LLVM IR the same as at D454 but two declarations (D458).

@@ -411,3 +411,4 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.4.3: the fix of the texts on the stack (D442), components moved out of tuples, small integers of templates, counts in masked vectors, the variants of sums freed alone, a microbenchmark for each function of the library (D431 to D448, D449)
 - [x] The checks of UTF-8 of `http`, `sys` and `json` took surrogates, overlong forms and characters above U+10FFFF that `stringOf` refuses: one request ended the server, `readText` and `text` panicked (D451); a release with the fix
 - [x] Release 0.4.4: the fix of the checks of UTF-8 (D451), bytes known ASCII given to texts unchecked (D450), counts of bytes 64 at a time (D452) (D453)
+- [x] Release 0.4.5: texts, dates, paths and numbers of the library faster (D455 to D467, D468)
