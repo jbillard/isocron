@@ -3297,36 +3297,102 @@ fn join(parts: &[IscStr], sep: &[u8]) -> IscStr {
             at += b.len();
         }
     };
-    let threads = thread_count();
-    if total < JOIN_PARALLEL_MIN || threads <= 1 || parts.len() < 2 {
+    if total < JOIN_PARALLEL_MIN || thread_count() <= 1 || parts.len() < 2 {
         write(dst, 0, parts.len());
         return IscStr { ptr: r, len: total as i64 };
     }
-    // the ranges: the first string of each and the place of the
-    // separator before it (`at`: where the bytes of string `i` start), a
-    // range each `total / k` bytes about
-    let k = (threads * 4).min(256);
+    let (first, place, ranges) = join_ranges(parts, sep.len(), total);
+    // the separator before the first string of a range (but the first)
+    // is the range's: its place starts at it
+    par::parts_mut(&par::Parts::new(dst, &place[..=ranges]), par::Order::Contiguous, |c, out| write(out, first[c], first[c + 1]));
+    IscStr { ptr: r, len: total as i64 }
+}
+
+/// The ranges of the join of `parts` by a separator of `m` bytes (`total`
+/// bytes) made in parallel: the first string of each and the place of the
+/// separator before it, a range each `total / k` bytes about (`k` four a
+/// thread, at most 256), and their count (D427).
+fn join_ranges(parts: &[IscStr], m: usize, total: usize) -> ([usize; 257], [usize; 257], usize) {
+    let k = (thread_count() * 4).clamp(1, 256);
     let mut first = [parts.len(); 257];
     let mut place = [total; 257];
     first[0] = 0;
     place[0] = 0;
     let mut cut = 1;
+    // where the bytes of string `i` start
     let mut at = 0usize;
     for (i, x) in parts.iter().enumerate() {
         if i > 0 && cut < k && at >= total / k * cut {
             first[cut] = i;
-            place[cut] = at - sep.len();
+            place[cut] = at - m;
             cut += 1;
         }
-        at += len(x) + if i + 1 < parts.len() { sep.len() } else { 0 };
+        at += x.len.max(0) as usize + if i + 1 < parts.len() { m } else { 0 };
     }
-    let ranges = cut;
-    first[ranges] = parts.len();
-    place[ranges] = total;
-    // the separator before the first string of a range (but the first)
-    // is the range's: its place starts at it
-    par::parts_mut(&par::Parts::new(dst, &place[..=ranges]), par::Order::Contiguous, |c, out| write(out, first[c], first[c + 1]));
-    IscStr { ptr: r, len: total as i64 }
+    first[cut] = parts.len();
+    place[cut] = total;
+    (first, place, cut)
+}
+
+/// `isc_join_ranges(xs, n, m, first, place)`: the ranges of the join of
+/// the `n` strings `xs` by a separator of `m` bytes (`join_ranges`), into
+/// `first` and `place` (257 each): their count; `place[count]` is the
+/// length of the join. For a join read once in order by a `map` (D428),
+/// never made whole.
+#[no_mangle]
+pub unsafe extern "C" fn isc_join_ranges(xs: *const IscStr, n: i64, m: i64, first: *mut i64, place: *mut i64) -> i64 {
+    // SAFETY: the `n` strings of an array of the generated code, alive
+    let parts = unsafe { core::slice::from_raw_parts(xs, n.max(0) as usize) };
+    let m = m.max(0) as usize;
+    let total = parts.iter().map(|x| x.len.max(0) as usize).sum::<usize>() + m * parts.len().saturating_sub(1);
+    let (f, p, count) = join_ranges(parts, m, total);
+    // SAFETY: the generated code's two arrays of 257 slots
+    let (first, place) = unsafe { (core::slice::from_raw_parts_mut(first, 257), core::slice::from_raw_parts_mut(place, 257)) };
+    for c in 0..=count {
+        first[c] = f[c] as i64;
+        place[c] = p[c] as i64;
+    }
+    count as i64
+}
+
+/// Where the reading of a join by `isc_join_next` is: the string `i`, the
+/// byte `off` of it with the separator before it (but the first string),
+/// the string `end` where its range ends.
+#[repr(C)]
+pub struct JoinCursor {
+    pub i: i64,
+    pub off: i64,
+    pub end: i64,
+}
+
+/// `isc_join_next(cur, xs, q, m, buf, cap)`: the next bytes of the join of
+/// the strings `xs` by the `m` bytes `q`, from the cursor to the end of its
+/// range, at most `cap` of them, written into `buf`: their count (0 at the
+/// end); the cursor moved past them (D428).
+#[no_mangle]
+pub unsafe extern "C" fn isc_join_next(cur: *mut JoinCursor, xs: *const IscStr, q: *const u8, m: i64, buf: *mut u8, cap: i64) -> i64 {
+    // SAFETY: the cursor, the strings of the range (alive), the separator
+    // and a buffer of `cap` bytes, the generated code's
+    let (c, sep, out) = unsafe { (&mut *cur, bytes_of(q, m), core::slice::from_raw_parts_mut(buf, cap.max(0) as usize)) };
+    let mut got = 0usize;
+    while got < out.len() && c.i < c.end {
+        // SAFETY: a string of the range
+        let x = unsafe { *xs.add(c.i as usize) };
+        let s = if c.i > 0 { sep } else { &[][..] };
+        // SAFETY: the bytes of a string of the array, alive
+        let b = unsafe { bytes_of(x.ptr, x.len.max(0)) };
+        let off = c.off as usize;
+        let (from, at) = if off < s.len() { (s, off) } else { (b, off - s.len()) };
+        let k = (from.len() - at).min(out.len() - got);
+        out[got..got + k].copy_from_slice(&from[at..at + k]);
+        got += k;
+        c.off += k as i64;
+        if c.off as usize == s.len() + b.len() {
+            c.i += 1;
+            c.off = 0;
+        }
+    }
+    got as i64
 }
 
 /// An array of arrays of `f64`: its block, rows, columns and stride (the

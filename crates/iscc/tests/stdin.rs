@@ -4,6 +4,28 @@
 
 mod common;
 use common::*;
+
+/// The program `src` run by valgrind (glibc's allocator, 2 threads): no
+/// error, nothing lost.
+fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    if !vg.is_file() {
+        eprintln!("valgrind not installed: {} skipped", name);
+        return;
+    }
+    let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+    let bin = compile_glibc(src, &format!("{}_vg", name), opts);
+    let out = std::process::Command::new(vg)
+        .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
+        .arg(&bin)
+        .args(args)
+        .env("ISC_ALLOC", "glibc")
+        .env("ISC_THREADS", "2")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{} under valgrind:\n{}", name, err);
+}
 use std::io::Write as _;
 
 fn run_with_stdin(bin: &std::path::Path, input: &[u8]) -> (i32, String, String) {
@@ -495,4 +517,68 @@ fn a_large_join_made_in_parallel() {
     let mut out = Vec::new();
     assert_eq!(isc_interp::run(&p, &["30000".to_string(), "17".to_string()], &mut out).unwrap(), 0);
     assert_eq!(String::from_utf8_lossy(&out), want(30000, 17), "interpreter");
+}
+
+/// D428: a join read once in order by a `map` of its bytes, never made:
+/// its ranges gathered 16 KiB at a time and mapped from there. Separators
+/// of 0, 1 and 3 bytes, empty strings, strings longer than the buffer, no
+/// string; results of 8 bits (narrowed, D218), of 64 bits and through a
+/// table; 1 to 8 threads; the values of Rust and of the interpreter; a
+/// failed read of the table, the panic of the interpreter.
+#[test]
+fn a_join_read_by_a_map_is_never_made() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const big = parseI64(args[1]);
+    const parts = map(iota(n), (i) => stringOf(map(iota(i == big ? 40000 : (i * 7919) % 300 * (i % 5 == 0 ? 0 : 1)), (j) => u8(97 + (i + j) % 26))));
+    const table = map(iota(128), (c) => c * 3 + 1);
+    const a = parts.join(\"\");
+    const codes = map(bytes(a), (b) => u8((b | 32u8) == 97u8 ? 0 : 3));
+    const c = parts.join(\",\");
+    const wide = map(bytes(c), (b) => i64(b) * 1000 + 7);
+    const d = parts.join(\"--|\");
+    const looked = map(bytes(d), (b) => table[i64(b)]);
+    print([codes.length, sum(map(iota(codes.length), (i) => i64(codes[i]) * (i % 7 + 1)))]);
+    print([wide.length, sum(map(iota(wide.length), (i) => wide[i] % 1000003 * (i % 5 + 1)))]);
+    print([looked.length, sum(map(iota(looked.length), (i) => looked[i] * (i % 3 + 1)))]);
+    return 0;
+}
+";
+    let want = |n: usize, big: usize| -> String {
+        let parts: Vec<String> = (0..n).map(|i| {
+            let len = if i == big { 40000 } else { (i * 7919) % 300 * if i % 5 == 0 { 0 } else { 1 } };
+            (0..len).map(|j| (97 + ((i + j) % 26) as u8) as char).collect()
+        }).collect();
+        let a = parts.join("");
+        let codes: i64 = a.bytes().enumerate().map(|(i, b)| (if b | 32 == 97 { 0 } else { 3 }) * (i as i64 % 7 + 1)).sum();
+        let c = parts.join(",");
+        let wide: i64 = c.bytes().enumerate().map(|(i, b)| (b as i64 * 1000 + 7) % 1000003 * (i as i64 % 5 + 1)).sum();
+        let d = parts.join("--|");
+        let looked: i64 = d.bytes().enumerate().map(|(i, b)| (b as i64 * 3 + 1) * (i as i64 % 3 + 1)).sum();
+        format!("[{}, {}]\n[{}, {}]\n[{}, {}]\n", a.len(), codes, c.len(), wide, d.len(), looked)
+    };
+    let bin = compile(src, "join_map");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert_eq!(ll.matches("call i64 @isc_join_ranges").count(), 3, "a join made");
+    for (n, big) in [(0usize, 0usize), (1, 0), (1, 5), (2, 1), (3000, 1234), (30000, 100000), (30000, 29999), (90000, 0)] {
+        let w = want(n, big);
+        for t in ["1", "2", "3", "4", "8"] {
+            let o = std::process::Command::new(&bin).args([n.to_string(), big.to_string()]).env("ISC_THREADS", t).output().unwrap();
+            assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), w.clone()), "{} strings, the long one {}, {} threads", n, big, t);
+        }
+    }
+    let p = iscc::frontend("join_map.isc", src).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(isc_interp::run(&p, &["3000".to_string(), "1234".to_string()], &mut out).unwrap(), 0);
+    assert_eq!(String::from_utf8_lossy(&out), want(3000, 1234), "interpreter");
+    valgrind_clean(src, "join_map", &["3000", "1234"]);
+    // a byte past the table: the panic of the program
+    let bad = src.replace("map(iota(128), (c) => c * 3 + 1)", "map(iota(100), (c) => c * 3 + 1)");
+    let bin = compile(&bad, "join_map_panic");
+    let Outcome::Panic(msg, _) = interp(&bad, &["3000", "1234"]) else { panic!("no panic in the interpreter") };
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["3000", "1234"], Some(t));
+        assert_eq!(r.code, 101, "T={}: {}", t, r.stderr);
+        assert_eq!(r.stderr.trim_end(), msg, "T={}", t);
+    }
 }

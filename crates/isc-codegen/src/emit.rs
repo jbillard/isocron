@@ -1802,6 +1802,46 @@ const WINDOW_MARGIN: i64 = 64;
 /// The widest window of the first task that keeps the windows.
 const WINDOW_WIDE: i64 = 4 * BLOCK;
 
+/// A join of strings read once in order by a `map` of its bytes (D428):
+/// `let s = join(parts, sep) in let t = bytes(s) in let c = map(t, l) in
+/// rest` (the `let`s of views and scalars of `join` first), `s` and `t`
+/// read nowhere else, `c` an array of scalars. Returns those `let`s, the
+/// parts, the separator, `c`, the `map`, its lambda, `rest` and the
+/// flags of the `let` of `c` (`drop`, `stmt`).
+#[allow(clippy::type_complexity)]
+fn join_map<'a>(s: VarId, init: &'a Expr, body: &'a Expr) -> Option<(Vec<(VarId, &'a Expr)>, &'a Expr, &'a Expr, VarId, &'a Expr, &'a Lambda, &'a Expr, bool, bool)> {
+    let mut lets = Vec::new();
+    let mut e = init;
+    while let ExprKind::Let { var, init: i, body: b, drop: false, stmt: false } = &e.kind {
+        if !(i.ty.is_scalar() || i.ty == Type::Str || (i.ty.is_array() && i.ty.slice_is_view() && matches!(i.kind, ExprKind::Slice(..)))) {
+            return None;
+        }
+        lets.push((*var, &**i));
+        e = b;
+    }
+    let ExprKind::StrOp(StrOp::Join, js) = &e.kind else { return None };
+    let [parts, sep] = js.as_slice() else { return None };
+    // borrowed: neither made here nor to free
+    if !matches!(parts.kind, ExprKind::Var(..)) || !matches!(sep.kind, ExprKind::Var(..) | ExprKind::StrLit(_)) {
+        return None;
+    }
+    let ExprKind::Let { var: t, init: bi, body: b2, drop: false, .. } = &body.kind else { return None };
+    let ExprKind::StrOp(StrOp::Bytes, bs) = &bi.kind else { return None };
+    if !matches!(bs.as_slice(), [x] if matches!(x.kind, ExprKind::Var(v, _) if v == s)) {
+        return None;
+    }
+    let ExprKind::Let { var: c, init: m, body: rest, drop, stmt } = &b2.kind else { return None };
+    let ExprKind::Map(ins, l) = &m.kind else { return None };
+    if !matches!(ins.as_slice(), [x] if matches!(x.kind, ExprKind::Var(v, _) if v == *t)) || l.params.len() != 1 || !m.ty.elem().is_scalar() {
+        return None;
+    }
+    let both = HashSet::from([s, *t]);
+    if mentions(rest, &both) || mentions(&l.body, &both) {
+        return None;
+    }
+    Some((lets, parts, sep, *c, m, l, rest, *drop, *stmt))
+}
+
 /// D426: the functions whose windowed `filter` (D293) reads a range of one
 /// of their parameters (`slice` of it, or itself) with a predicate of its
 /// elements alone: the counts of that predicate by blocks may come from the
@@ -3725,6 +3765,12 @@ impl<'p> Gen<'p> {
             }
             // keys made only to be grouped: grouped as they are made (D244)
             Let { var, init, body, .. } if w == 1 && group_let_ok(*var, init, body).is_some() => self.group_stream(init, group_let_ok(*var, init, body) == Some(true)),
+            // a join read once in order by a `map` of its bytes: never made,
+            // its bytes mapped as they are gathered (D428)
+            Let { var, init, body, .. } if w == 1 && !self.in_task && join_map(*var, init, body).is_some() => {
+                let (lets, parts, sep, c, m, l, rest, drop, stmt) = join_map(*var, init, body).unwrap();
+                self.join_map_let(&lets, parts, sep, c, m, l, rest, drop, stmt)
+            }
             // a `filter` read only by the blocks of an array written by
             // blocks: each block makes the part it reads (D293)
             Let { var, init, body, drop, .. } if w == 1 && !self.in_task && windowed_filter(*var, init, body).is_some() => {
@@ -6145,6 +6191,89 @@ impl<'p> Gen<'p> {
         let r = r?;
         if drop {
             self.emit(format!("call void @isc_free(ptr {})", places));
+        }
+        Ok(r)
+    }
+
+    /// `join_map` (D428): the join's ranges made in parallel (`isc_join_ranges`,
+    /// as `join`, D427), each by a task that gathers its bytes 16 KiB at a
+    /// time into a buffer on its stack (`isc_join_next`) and maps them from
+    /// there into `c`, in vector code (`fill_range`): the join never made,
+    /// its bytes read in the caches.
+    #[allow(clippy::too_many_arguments)]
+    fn join_map_let(&mut self, lets: &[(VarId, &Expr)], parts: &Expr, sep: &Expr, c: VarId, m: &Expr, l: &Lambda, rest: &Expr, drop: bool, stmt: bool) -> R<V> {
+        const GATHER: i64 = 16 << 10;
+        for (t, i) in lets {
+            let iv = self.ex(i, 1)?;
+            self.bind(*t, iv);
+        }
+        let pv = self.ex(parts, 1)?;
+        let sv = self.ex(sep, 1)?;
+        let (pp, pn) = self.str_parts(&pv);
+        let (sp, sn) = self.str_parts(&sv);
+        let et = m.ty.elem().clone();
+        let es = esize(&et);
+        let w = match (src_vec_ok_lookup(m), spmd_state(self.p, &l.body)) {
+            (false, _) => 1,
+            (true, Some(state)) => self.spmd_width(state),
+            (true, None) if es == 1 && et.is_scalar() => 2 * MAP_WIDTH,
+            (true, None) => MAP_WIDTH,
+        };
+        self.decls.insert("declare i64 @isc_join_ranges(ptr, i64, i64, ptr, ptr)".into());
+        self.decls.insert("declare i64 @isc_join_next(ptr, ptr, ptr, i64, ptr, i64)".into());
+        let first = self.alloca("[257 x i64]");
+        let place = self.alloca("[257 x i64]");
+        let ranges = self.ins(format!("call i64 @isc_join_ranges(ptr {}, i64 {}, i64 {}, ptr {}, ptr {})", pp, pn, sn, first, place));
+        let tslot = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", place, ranges));
+        let total = self.ins(format!("load i64, ptr {}", tslot));
+        let out = self.alloc_elems(&total, &et);
+        // the lambda's captures: a `map` of it over nothing
+        let scope = Expr { kind: ExprKind::Map(vec![Expr { kind: ExprKind::Lit(Lit::Unit), ty: Type::Bool, span: m.span, reassoc: false }], l.clone()), ty: m.ty.clone(), span: m.span, reassoc: false };
+        let extra = [v(pp.clone(), "ptr"), v(sp.clone(), "ptr"), v(sn.clone(), "i64"), v(first.clone(), "ptr"), v(place.clone(), "ptr"), v(out.clone(), "ptr")];
+        let (task, ctx, ctx_bytes) = self.outline_task(&[&scope], &extra, &mut |g, xs, k| {
+            let buf = g.alloca(&format!("[{} x i8], align 64", GATHER));
+            let cur = g.alloca("{ i64, i64, i64 }");
+            let f0 = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", xs[3].r, k));
+            let from = g.ins(format!("load i64, ptr {}", f0));
+            let k1 = g.ins(format!("add i64 {}, 1", k));
+            let f1 = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", xs[3].r, k1));
+            let to = g.ins(format!("load i64, ptr {}", f1));
+            let p0 = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", xs[4].r, k));
+            let start = g.ins(format!("load i64, ptr {}", p0));
+            for (field, x) in [from.as_str(), "0", to.as_str()].into_iter().enumerate() {
+                let slot = g.ins(format!("getelementptr inbounds {{ i64, i64, i64 }}, ptr {}, i32 0, i32 {}", cur, field));
+                g.emit(format!("store i64 {}, ptr {}", x, slot));
+            }
+            let at = g.alloca("i64");
+            g.emit(format!("store i64 {}, ptr {}", start, at));
+            let (head, lbody, done) = (g.label(), g.label(), g.label());
+            g.br(&head);
+            g.block(&head);
+            let got = g.ins(format!("call i64 @isc_join_next(ptr {}, ptr {}, ptr {}, i64 {}, ptr {}, i64 {})", cur, xs[0].r, xs[1].r, xs[2].r, buf, GATHER));
+            let none = g.ins(format!("icmp eq i64 {}, 0", got));
+            g.cbr(&none, &done, &lbody);
+            g.block(&lbody);
+            let a = g.ins(format!("load i64, ptr {}", at));
+            let off = g.ins(format!("mul i64 {}, {}", a, es));
+            let dst = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", xs[5].r, off));
+            let src = Src::Map(vec![Src::Mat { ptr: buf.clone(), len: got.clone(), elem: Type::Int(IntKind::U8) }], l);
+            g.fill_range(&src, &dst, &got, &et, "0", &got, w)?;
+            let a2 = g.ins(format!("add i64 {}, {}", a, got));
+            g.emit(format!("store i64 {}, ptr {}", a2, at));
+            g.br(&head);
+            g.block(&done);
+            Ok(())
+        })?;
+        self.par_for(2, &ranges, &task, &ctx, &ctx_bytes);
+        let cv = self.arr(&out, &total);
+        self.bind(c, cv.clone());
+        if stmt {
+            self.black_box(&cv);
+        }
+        let r = self.ex(rest, 1)?;
+        if drop {
+            let t = self.var_ty(c).clone();
+            self.drop_value(&cv, &t);
         }
         Ok(r)
     }

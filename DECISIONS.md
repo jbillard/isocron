@@ -9624,3 +9624,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   threads, the bytes of Rust's `join` and of the interpreter; without the
   separator at the start of a range, it fails on 2 threads) and
   `lines_of_a_large_text_made_in_parallel`.
+- **D428 — A join read once in order by a `map` of its bytes is never
+  made (2026-11-07).** TODO, the arrays made by blocks for other consumers
+  (k-nucleotide's join, D427: 125 MB written, cleared by the kernel, then
+  read once in order by the `map` of the codes). Now `let s = join(parts,
+  sep) in let t = bytes(s) in let c = map(t, l) in rest`, `s` and `t`
+  read nowhere else (the parts and the separator borrowed), makes `c`
+  without `s`: the ranges of the join as `join` makes them in parallel
+  (`isc_join_ranges`, D427), each by a task that gathers its bytes 16 KiB
+  at a time into a buffer on its stack (`isc_join_next`: the strings and
+  the separators of the range from a cursor) and maps them from there
+  into `c` in vector code (`fill_range`, the lambda as any `map`'s: its
+  narrowed result, D218, its tables). Measured (fixed frequency, 4
+  threads, 21 alternated runs): the base of k-nucleotide 122.5 -> 108.4
+  ms (-11.51 %), per run 740 -> 668 million user cycles, 477 -> 384
+  million in the kernel, 1890 -> 1339 page faults; k-nucleotide 632.1 ->
+  615.0 ms (-2.70 %, medians -3.52 %), the same output; the LLVM IR of the
+  nine other programs is unchanged. Test
+  `a_join_read_by_a_map_is_never_made` (`stdin.rs`): separators of 0, 1
+  and 3 bytes, empty strings, one longer than the buffer, no string,
+  results of 8 bits, of 64 bits and through a table, 1 to 8 threads, the
+  values of Rust and of the interpreter, valgrind, a read past the table
+  with the panic of the interpreter; without the separator before the
+  second string, it fails.
