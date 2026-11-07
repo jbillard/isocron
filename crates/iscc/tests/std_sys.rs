@@ -214,6 +214,11 @@ action main(args: string[k]): i32 {
 ";
     let mut vars: Vec<(String, Vec<u8>)> = (0..131usize).map(|n| (format!("V{:03}{}", n, "n".repeat(n % 37)), (0..n).map(|i| b'a' + (i % 26) as u8).collect())).collect();
     vars.push(("V_BAD".to_string(), b"\xffab\xfe".to_vec()));
+    // names whose order differs from that of their entries `name=value`
+    // (a byte below `=` after a name, D423)
+    for (k, v) in [("ISC_SORT", "a"), ("ISC_SORT1", "b"), ("ISC_SORT(x86)", "c"), ("ISC_SORT-", "d")] {
+        vars.push((k.to_string(), v.as_bytes().to_vec()));
+    }
     let mut want: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.clone(), String::from_utf8_lossy(v).into_owned())).collect();
     want.sort();
     let want: String = want.iter().map(|(k, v)| format!("{}={}:{}\n", k, v.len(), v)).collect();

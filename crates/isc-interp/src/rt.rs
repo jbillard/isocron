@@ -421,7 +421,9 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
         },
         S::Environ => {
             let mut all: Vec<Vec<u8>> = std::env::vars_os().map(|(k, v)| [k.as_encoded_bytes(), b"=", v.as_encoded_bytes()].concat()).collect();
-            all.sort();
+            // by the bytes of their names (D423), as the runtime
+            let name = |e: &[u8]| e.split(|&c| c == b'=').next().unwrap_or(e).to_vec();
+            all.sort_by(|a, b| name(a).cmp(&name(b)).then_with(|| a.cmp(b)));
             strs(all.iter().map(|b| lossy(b)).collect())
         }
         S::Stat => match std::fs::metadata(text(&vs[0])) {

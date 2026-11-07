@@ -529,3 +529,56 @@ fn actions_in_parallel_on_windows() {
         assert_eq!((w.0, String::from_utf8_lossy(&w.1).into_owned()), (0, "[hello from the other task, sent]\n".to_string()), "{} threads; stderr: {}", t, String::from_utf8_lossy(&w.2));
     }
 }
+
+/// D422: every program of the guide that runs alone (no standard input, no
+/// module of its own) built for Windows and run in the machine, on one
+/// thread: the output that the guide gives (the test of the guide checks it
+/// interpreted, compiled for Linux and as WebAssembly), so that each
+/// function of the library its example calls runs on Windows too.
+#[test]
+fn the_guide_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the guide not run on Windows");
+        return;
+    };
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/language.md")).unwrap();
+    let lines: Vec<&str> = doc.lines().collect();
+    // the fenced blocks: (language, line of the fence, text, line of its end)
+    let mut blocks: Vec<(String, usize, String, usize)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(lang) = lines[i].strip_prefix("```") {
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].starts_with("```") {
+                j += 1;
+            }
+            let text: String = lines[i + 1..j].iter().map(|l| format!("{}\n", l)).collect();
+            blocks.push((lang.trim().to_string(), i + 1, text, j));
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    let d = tmp("win_guide");
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let mut ran = 0;
+    for k in 0..blocks.len() {
+        let (lang, line, src, end) = &blocks[k];
+        let module_before = k > 0 && blocks[k - 1].0.starts_with("isc-file");
+        if lang != "isc" || module_before {
+            continue;
+        }
+        let Some((next, nline, want, _)) = blocks.get(k + 1) else { continue };
+        if next != "output" || lines[end + 1..nline - 1].iter().any(|l| !l.trim().is_empty()) {
+            continue;
+        }
+        let exe = compile_windows(src, &format!("win_guide_{}", k));
+        let w = run_windows(&runner, &exe, &d, &[], None, 1);
+        assert_eq!(w.0, 0, "docs/language.md:{}: exit code on Windows; stderr: {}", line, String::from_utf8_lossy(&w.2));
+        assert_eq!(String::from_utf8_lossy(&w.1), want.as_str(), "docs/language.md:{}: the output on Windows", line);
+        ran += 1;
+    }
+    assert!(ran >= 40, "only {} programs of the guide run", ran);
+    eprintln!("{} programs of the guide run on Windows", ran);
+}

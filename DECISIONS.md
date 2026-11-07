@@ -9469,3 +9469,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `serveTlsOn` and `serveTls`, which need a server of DNS or a certificate
   with its key, in examples checked by the compiler (`isc-check`). 91 of
   91 now.
+- **D422 — The programs of the guide run on Windows (2026-11-07).** The
+  goal of the library: each function tested « dans la vraie VM Windows ».
+  Counted function by function (D421), 65 of the 91 were called by the
+  programs of the tests of Windows (each module by some). Now the test
+  `the_guide_on_windows` (`windows.rs`) builds for Windows each program of
+  the guide that runs alone (no standard input, no module of its own) and
+  runs it in the machine on one thread: the output the guide gives, which
+  the test of the guide checks interpreted, compiled for Linux and as
+  WebAssembly. 73 programs, whose examples call each function of the
+  library but the five checked only by the compiler (D421: `lookup`,
+  `startTls`, `serverOfTls`, `serveTlsOn`, `serveTls`, the last three run by
+  `https_server_on_windows`). Its first run found a defect: `envAll` not in
+  the order of the names under Windows (D423). The tests of Windows: 12
+  passed (`https_client_on_windows` once refused to start, its program
+  quarantined by Windows Defender, threat 2147735505, as before; passed
+  again).
+- **D423 — `envAll` in the order of the bytes of the names (2026-11-07).**
+  `sys.envAll` promises the variables « in the order of the bytes of their
+  names »; the runtime and the interpreter sorted the entries `name=value`
+  whole, so that a name followed by a byte below `=` came before its own
+  prefix: `ISC_SORT(x86)`, `ISC_SORT-`, `ISC_SORT1` before `ISC_SORT`
+  (under Windows, `ProgramFiles(x86)` before `ProgramFiles`: the example of
+  D421 printed `false` there). Now both sort by the bytes before the first
+  `=`, then by the whole entry (`sorted_entries` in the runtime, under
+  Linux, Windows and WASI); `readDir` sorts its names as before. Test
+  `all_the_environment_by_vectors` with these four names (compiled and
+  interpreted; the compiler before them gave `ISC_SORT` last).

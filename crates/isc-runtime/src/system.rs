@@ -68,6 +68,23 @@ unsafe fn byte_array(b: &[u8]) -> IscArray {
 unsafe fn sorted_strings<B: AsRef<[u8]> + Ord>(mut names: alloc::vec::Vec<B>) -> IscArray {
     // equal names are the same bytes: the order of the stable sort
     names.sort_unstable();
+    strings_of(names)
+}
+
+/// The entries `name=value` of the environment in the order of the bytes of
+/// their names (D423: by the whole entries before, `VAR1=` came before
+/// `VAR=`, a byte below `=` after the name), as `strings_of`.
+unsafe fn sorted_entries<B: AsRef<[u8]> + Ord>(mut all: alloc::vec::Vec<B>) -> IscArray {
+    fn name(e: &[u8]) -> &[u8] {
+        e.split(|&c| c == b'=').next().unwrap_or(e)
+    }
+    all.sort_unstable_by(|a, b| name(a.as_ref()).cmp(name(b.as_ref())).then_with(|| a.as_ref().cmp(b.as_ref())));
+    strings_of(all)
+}
+
+/// A new array of the strings `names` in their order, the bytes that are
+/// not UTF-8 replaced (D400).
+unsafe fn strings_of<B: AsRef<[u8]>>(names: alloc::vec::Vec<B>) -> IscArray {
     let q = new_str_array(names.len());
     for (slot, b) in q.iter_mut().zip(names.iter()) {
         let b = b.as_ref();
@@ -105,7 +122,7 @@ mod imp {
                 e = e.add(1);
             }
         }
-        *out = sorted_strings(all);
+        *out = sorted_entries(all);
     }
 
     /// `sysNow()`: CLOCK_REALTIME in nanoseconds since 1970.
@@ -401,7 +418,7 @@ mod imp {
             }
             FreeEnvironmentStringsW(base);
         }
-        *out = sorted_strings(all);
+        *out = sorted_entries(all);
     }
 
     #[link(name = "kernel32")]
@@ -637,7 +654,7 @@ mod imp {
                 e = e.add(1);
             }
         }
-        *out = sorted_strings(all);
+        *out = sorted_entries(all);
     }
 
     extern "C" {
