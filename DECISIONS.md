@@ -10330,3 +10330,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   rest is that layout (a line of the cache a string where the rows share
   them), which no change of the code makes contiguous: the representation
   of strings, as the lines of k-nucleotide (TODO). Closed by this measure.
+- **D466 — A byte searched in a short text by windows of 16 bytes
+  (2026-11-07).** `http.parseUrl` 3.2 times its floor. One call, one CPU
+  at fixed frequency (`perf stat`, 4.1 M calls): 198 cycles; the loop
+  42.3 %, `find_bytes` 10.9 % and `memchr` (`find_avx2`) 10.4 % (the
+  searches of `://` and `:` in texts of 17 to 40 bytes), `isc_str_new`
+  8.0 %, `isc_free` 6.8 %, `isc_to_case` 6.8 %, `memcmp` 6.0 %. `memchr`
+  set up its vectors for a few bytes, and the rest of a needle of a few
+  bytes was compared as slices, a call of `memcmp`.
+  - Now `find_bytes` (`indexOf`, `includes`, `split`, `replaceAll` of a
+    text) finds a byte in at most 64 bytes by windows of 16 compared at
+    once (`vpcmpeqb`, `vpmovmskb`, read where they are, the last over the
+    end of the one before), fewer than 16 one by one, and `memchr` beyond;
+    the rest of a needle is compared byte by byte. `find_byte_short` is a
+    call of its own: inlined, `indexOf` of a byte in a line of 60 lost its
+    gain (6.72 -> 6.62 ns, against 5.93 called).
+  - Measured (the old and new binaries of `strings` and `http`, 7
+    alternated runs): `includes.3` 24.95 -> 20.18 ns (-19.1 %),
+    `indexOf.1` 6.75 -> 5.93 ns (-12.1 %), `parseUrl` 61.17 -> 58.57 ns
+    (-4.3 %), `replaceAll.1` -3.7 %, every other form within 2.5 %;
+    `run.py` (5 runs of 200 rounds) `parseUrl` 61.1 -> 58.7 ns (3.05 times
+    its floor), `includes.3` -19.3 %, `indexOf.1` -11.0 %, `replaceAll.1`
+    -4.4 % (`json.message` +4.9 %, no search in it; `sys.env` +11.6 %, its
+    scatter of D450). The ten programs do not call it (regex-redux replaces
+    by patterns). Test `find_bytes_is_a_search_byte_by_byte`
+    (`isc-runtime-core`: texts of 0 to 70 bytes, needles of 1 to 17 bytes
+    at every place, false starts, against a search byte by byte; with the
+    last window a byte off, or the place of a window, it fails).

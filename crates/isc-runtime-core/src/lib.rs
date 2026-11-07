@@ -895,15 +895,69 @@ pub fn index_of(s: &str, t: &str) -> i64 {
 /// `memmem`. In UTF-8 the bytes of a text match only at the start of its
 /// characters: the index of `str::find`, whose general search prepares
 /// itself at each call (57 ns for a byte in 60, 3.8 in C).
+/// The bits of the bytes `c` of `a`.
+#[inline(always)]
+fn mask16(a: &[u8; 16], c: u8) -> u32 {
+    let mut m = 0u32;
+    for (i, &x) in a.iter().enumerate() {
+        m |= ((x == c) as u32) << i;
+    }
+    m
+}
+
+/// The first byte `c` of `s`, of at most 64 bytes (D466): by windows of 16
+/// bytes compared at once (`vpcmpeqb`, `vpmovmskb`, read where they are),
+/// the last one over the end of the one before (its bytes seen without
+/// `c`, so that its first `c` is the first of `s`); fewer than 16 one by
+/// one. `memchr` set up its vectors for a few bytes (`http.parseUrl` 21 %
+/// of its cycles in it). A call of its own: inlined into `find_bytes`,
+/// `indexOf` of a byte in a line of 60 lost most of its gain (6.72 -> 6.62
+/// ns, against 5.86 called).
+#[inline(never)]
+fn find_byte_short(s: &[u8], c: u8) -> Option<usize> {
+    let n = s.len();
+    if n < 16 {
+        return s.iter().position(|&x| x == c);
+    }
+    let mut at = 0;
+    while at + 16 <= n {
+        let m = mask16(s[at..at + 16].try_into().unwrap(), c);
+        if m != 0 {
+            return Some(at + m.trailing_zeros() as usize);
+        }
+        at += 16;
+    }
+    if at < n {
+        let m = mask16(s[n - 16..].try_into().unwrap(), c);
+        if m != 0 {
+            return Some(n - 16 + m.trailing_zeros() as usize);
+        }
+    }
+    None
+}
+
+/// The first byte `c` of `s`: `find_byte_short` up to 64 bytes, `memchr`
+/// beyond.
+#[inline(always)]
+fn find_byte(s: &[u8], c: u8) -> Option<usize> {
+    if s.len() <= 64 {
+        find_byte_short(s, c)
+    } else {
+        memchr::memchr(c, s)
+    }
+}
+
 pub fn find_bytes(s: &[u8], t: &[u8]) -> Option<usize> {
     match t.len() {
         0 => Some(0),
-        1 => memchr::memchr(t[0], s),
+        1 => find_byte(s, t[0]),
         m if m <= 16 => {
             let mut at = 0;
             while at + m <= s.len() {
-                let i = at + memchr::memchr(t[0], &s[at..=s.len() - m])?;
-                if s[i + 1..i + m] == t[1..] {
+                let i = at + find_byte(&s[at..=s.len() - m], t[0])?;
+                // the rest compared byte by byte: a needle of a few bytes,
+                // whose comparison of slices called `memcmp` (D466)
+                if s[i + 1..i + m].iter().zip(&t[1..]).all(|(a, b)| a == b) {
                     return Some(i);
                 }
                 at = i + 1;
@@ -2344,6 +2398,40 @@ pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
     match core::str::from_utf8(&b[at..]) {
         Ok(_) => Ok(()),
         Err(e) => Err(at + e.valid_up_to()),
+    }
+}
+
+#[cfg(test)]
+mod find_bytes_tests {
+    use super::find_bytes;
+    extern crate alloc;
+    use alloc::vec::Vec;
+
+    /// D466: the same place as a search byte by byte, for texts of 0 to 70
+    /// bytes (both sides of 16, 32, 48 and 64), needles of 1 to 17 bytes, found at
+    /// every place, twice, or not at all, and their first byte alone.
+    #[test]
+    fn find_bytes_is_a_search_byte_by_byte() {
+        let naive = |s: &[u8], t: &[u8]| (0..=s.len().saturating_sub(t.len())).find(|&i| i + t.len() <= s.len() && &s[i..i + t.len()] == t);
+        for n in 0..=70usize {
+            for m in 1..=17usize {
+                for at in 0..=n {
+                    let mut s: Vec<u8> = (0..n).map(|i| b'a' + (i % 7) as u8).collect();
+                    let t: Vec<u8> = (0..m).map(|i| b'P' + (i % 5) as u8).collect();
+                    for (k, &b) in t.iter().enumerate() {
+                        if at + k < n {
+                            s[at + k] = b;
+                        }
+                    }
+                    // the first byte again after it: a false start
+                    if at + m + 2 < n {
+                        s[at + m + 1] = t[0];
+                    }
+                    assert_eq!(find_bytes(&s, &t), naive(&s, &t), "n {} m {} at {}", n, m, at);
+                    assert_eq!(find_bytes(&s, &t[..1]), naive(&s, &t[..1]), "n {} at {} one byte", n, at);
+                }
+            }
+        }
     }
 }
 
