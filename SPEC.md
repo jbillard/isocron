@@ -388,7 +388,7 @@ Aucun ramasse-miettes : chaque allocation est libérée à un point connu à la 
 - Tableaux : un bloc contigu, aligné sur 64 octets (une ligne de cache sur les CPU x86-64 courants), sur le tas.
 - Le compilateur peut placer sur la pile un tableau de taille constante ; le seuil est de 32 Kio (D86, D329). Ce choix n'affecte que la vitesse, jamais le verdict d'une exigence (section 9).
 - Types récursifs : sur le tas, avec comptage de références ; un constructeur sans charge n'est pas alloué (D169).
-- Un littéral de tableau dont tous les éléments sont des constantes scalaires est une donnée du programme : le lire n'alloue rien (`@requireNoAlloc` l'accepte), et une valeur qui en est faite (`with`, valeur initiale d'un `fold`) en est une copie (D173).
+- Un littéral de tableau dont tous les éléments sont des constantes scalaires (D173), ou tous des littéraux de texte (D401), est une donnée du programme : le lire n'alloue rien (`@requireNoAlloc` l'accepte), et une valeur qui en est faite (`with`, valeur initiale d'un `fold`, valeur rendue) en est une copie, chacun de ses textes copié.
 
 ### Unicité
 

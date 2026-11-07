@@ -268,7 +268,7 @@ impl<'p> Checker<'p> {
             Lit(_) => Ok(Val::Scalar),
             // data of the program (D173): borrowed from no variable, never
             // given away nor freed
-            ConstArray(_) => Ok(Val::View(Vec::new())),
+            ConstArray(_) | ConstStrs(_) => Ok(Val::View(Vec::new())),
             // a string literal: borrowed data of the program (D301); a
             // `bigint` literal is made
             StrLit(_) if e.ty == Type::Str => Ok(Val::View(Vec::new())),

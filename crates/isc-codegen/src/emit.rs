@@ -3876,6 +3876,20 @@ impl<'p> Gen<'p> {
                 self.globals.push(format!("{} = private unnamed_addr constant [{} x {}] [{}], align 64", name, ls.len(), m, vals.join(", ")));
                 Ok(self.arr(&name, &ls.len().to_string()))
             }
+            // the strings of the program and the array of their places,
+            // aligned as an array (D401)
+            ConstStrs(ss) => {
+                let vals: Vec<String> = ss
+                    .iter()
+                    .map(|s| {
+                        let (g, n) = self.str_const(s);
+                        format!("{{ ptr, i64 }} {{ ptr {}, i64 {} }}", g, n)
+                    })
+                    .collect();
+                let name = format!("@.arr.{}", self.globals.len());
+                self.globals.push(format!("{} = private unnamed_addr constant [{} x {{ ptr, i64 }}] [{}], align 64", name, ss.len(), vals.join(", ")));
+                Ok(self.arr(&name, &ss.len().to_string()))
+            }
             ArrayLit(es) => {
                 let et = e.ty.elem().clone();
                 let n = es.len().to_string();
@@ -6408,7 +6422,7 @@ impl<'p> Gen<'p> {
             }
             // (an array of constants, data of the program, borrowed: copied,
             // never freed, D173, D193)
-            Var(..) | Index(..) | Slice(..) | ConstArray(_) => {
+            Var(..) | Index(..) | Slice(..) | ConstArray(_) | ConstStrs(_) => {
                 let moved = matches!(&body.kind, Var(_, Use::Move));
                 let xv = self.ex(body, 1)?;
                 let (p, n) = self.str_parts(&xv);
@@ -10563,6 +10577,7 @@ impl<'p> Gen<'p> {
             },
             ExprKind::ArrayLit(es) => Some(es.len() as i64),
             ExprKind::ConstArray(ls) => Some(ls.len() as i64),
+            ExprKind::ConstStrs(ss) => Some(ss.len() as i64),
             _ => None,
         };
         // 4 rounds of the K copies per iteration: 32 elements, so that the

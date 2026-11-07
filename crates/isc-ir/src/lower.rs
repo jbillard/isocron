@@ -972,6 +972,11 @@ impl<'p> Lower<'p> {
                     let lits = out.into_iter().map(|x| if let ExprKind::Lit(l) = x.kind { l } else { unreachable!() }).collect();
                     return Ok(Expr::new(ExprKind::ConstArray(lits), ty, span));
                 }
+                // string literals: data of the program too (D401)
+                if !out.is_empty() && *ty.elem() == Type::Str && out.iter().all(|x| x.ty == Type::Str && matches!(x.kind, ExprKind::StrLit(_))) {
+                    let strs = out.into_iter().map(|x| if let ExprKind::StrLit(s) = x.kind { s } else { unreachable!() }).collect();
+                    return Ok(Expr::new(ExprKind::ConstStrs(strs), ty, span));
+                }
                 Ok(Expr::new(ExprKind::ArrayLit(out), ty, span))
             }
             TExprKind::Call { callee, args, size_checks } => self.call(env, callee, args, size_checks, e),

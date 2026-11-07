@@ -1172,6 +1172,7 @@ fn static_len(e: &Expr, strs: &HashMap<VarId, i64>) -> Option<i64> {
         },
         ExprKind::ArrayLit(es) => Some(es.len() as i64),
         ExprKind::ConstArray(ls) => Some(ls.len() as i64),
+        ExprKind::ConstStrs(ss) => Some(ss.len() as i64),
         ExprKind::Iota(n) | ExprKind::Zeros(n) | ExprKind::Fill(n, _) => match n.kind {
             ExprKind::Lit(crate::Lit::Int(c)) if c >= 0 => Some(c),
             _ => None,
@@ -1900,7 +1901,7 @@ impl Info {
             ExprKind::Var(v, _) => Some(self.base(*v)),
             // data of the program (D173): borrowed from no variable; a
             // string literal too (D301)
-            ExprKind::ConstArray(_) => Some(Vec::new()),
+            ExprKind::ConstArray(_) | ExprKind::ConstStrs(_) => Some(Vec::new()),
             ExprKind::StrLit(_) if e.ty == Type::Str => Some(Vec::new()),
             ExprKind::Proj(x, _) | ExprKind::Unbox(x) => self.borrows(x),
             // views of an array of arrays: its windows, its rows (D95);
@@ -2072,7 +2073,7 @@ impl<'a> Rewriter<'a> {
             // data of the program (D173): a consumer gets a copy; a string
             // literal too, read where it is (D301: made and freed at each
             // evaluation before, a test against a literal in a loop)
-            ExprKind::ConstArray(_) => return Ok(Own::Borrowed(Vec::new(), None)),
+            ExprKind::ConstArray(_) | ExprKind::ConstStrs(_) => return Ok(Own::Borrowed(Vec::new(), None)),
             ExprKind::StrLit(_) if e.ty == Type::Str => return Ok(Own::Borrowed(Vec::new(), None)),
             ExprKind::Let { var, init, body, .. } => {
                 let v = *var;

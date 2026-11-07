@@ -330,6 +330,10 @@ pub enum ExprKind {
     /// An array literal of scalar constants (D173): data of the program,
     /// borrowed and never freed (a consumer gets a copy).
     ConstArray(Vec<Lit>),
+    /// An array literal of string literals (D401): data of the program, the
+    /// array and the bytes of its strings, borrowed and never freed (a
+    /// consumer gets a copy, each string copied).
+    ConstStrs(Vec<String>),
     Index(Box<Expr>, Box<Expr>),
     /// `x[a..b]`, the bounds as `i64`: a new array of `b - a` elements, a
     /// panic unless `0 <= a <= b <= len(x)` (SPEC section 6; a view that is
@@ -499,7 +503,7 @@ impl Expr {
     pub fn children(&self) -> Vec<&Expr> {
         use ExprKind::*;
         match &self.kind {
-            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) => vec![],
+            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
             Let { init, body, .. } => vec![init, body],
             Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter().collect(),
             Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
@@ -520,7 +524,7 @@ impl Expr {
     pub fn children_mut(&mut self) -> Vec<&mut Expr> {
         use ExprKind::*;
         match &mut self.kind {
-            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) => vec![],
+            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
             Let { init, body, .. } => vec![init, body],
             Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter_mut().collect(),
             Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | Box(e) | Unbox(e) | Free(_, e) => vec![e],

@@ -9024,3 +9024,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   every length to 300, the end of a page) and
   `all_the_environment_by_vectors` (`std_sys.rs`: 132 entries of every
   length to 130, a value that is not UTF-8, compiled and interpreted).
+- **D401 — An array literal of string literals is data of the program
+  (2026-11-07).** D394: `http.httpDate` 11.1 times its floor. Its code made,
+  at each call, the arrays of the 7 days and the 12 months: two arrays and
+  19 strings allocated, copied, then freed (`isc_free_strs`), as D173 found
+  for the tables of scalars of n-body; a table of names in a function is a
+  common form (days, months, units, the texts of a status). Now a literal
+  whose elements are all string literals is `ConstStrs` in the IR: the
+  bytes of its strings and the array of their places, global constants of
+  the compiled program aligned as an array; borrowed from no variable (the
+  ownership pass and the verifier give a copy to any consumer, each string
+  copied, D154), never freed; read without an allocation
+  (`@requireNoAlloc` accepts it, SPEC section 8). The interpreter makes the
+  same array. Code of `httpDate`: 16 -> 12 allocations, 5 -> 1 frees of
+  arrays of strings. Measured (one CPU, fixed frequency, 7 alternated runs
+  of the old and new binaries of six groups, 81 forms): `http.httpDate`
+  138.20 -> 98.81 ns (-28.5 %); k-nucleotide (its `QUERIES`) 676.9 -> 678.9
+  ms (+0.30 %, medians -0.30 %) and regex-redux (its `VARIANTS`) 81.6 ->
+  81.4 ms, the same outputs, the code of the eight others the same. Four
+  forms moved by the place of the code, not by their work: in `strings`
+  and `sys`, whose binaries are the same but for their build note (the
+  same code, the same size), `startsWith.8` +6.8 %, `startsWith.1` +5.8 %,
+  `envAll` +4.4 % (the scatter of the measure); in `http`, whose code
+  changed (its tables), `textResponse` 20.13 -> 22.54 ns and `text.1k`
+  85.76 -> 90.08 ns (11 alternated runs), while the programs of each alone,
+  the same binaries with both compilers, give 22.59 and 22.59 ns, 87.03 and
+  87.18 ns: the old place was the faster one, as `parseUrl` the other way
+  (118.55 -> 109.54 ns, D400). Test `arrays_of_string_literals`
+  (`stdlib.rs`: indexed, joined, concatenated, copied by `with`, `sort`, a
+  `fold`, returned, a constant of the top level given to a function; 1 and
+  4 threads, the interpreter, Valgrind).

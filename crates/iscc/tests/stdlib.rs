@@ -680,6 +680,62 @@ fn arrays_of_constants() {
     agree(CONSTANT_ARRAYS, "std_const_arrays", &[], "[3, 5, 2]\n[3, 1, 2]\n[9, 1, 2]\n[3, 1, 2]\n[2, 1]\n[3, 4, 5]\ntrue\n[3, 5]\n19999\n2\n255\n[1, -0]\n");
 }
 
+const CONSTANT_STRINGS: &str = r##"const NAMES = ["zero", "one", "two", ""];
+
+function first(a: string[n]): string {
+    return a[0];
+}
+
+function bumped(a: string[n]): string[n] {
+    return a.with(0, "nine");
+}
+
+function named(i: i64): string {
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    return days[i % 7];
+}
+
+function longer(i: i64): string {
+    const ws = ["a", "bb", "ccc"];
+    return ws[i % 3] + "!";
+}
+
+function fresh(): string[] {
+    return ["made", "here"];
+}
+
+action main(args: string[k]): i32 {
+    print(NAMES.with(1, "uno"));
+    print(NAMES);
+    print(bumped(NAMES));
+    print(NAMES);
+    print(first(NAMES));
+    print(join(map(iota(10), named), ","));
+    print(join(map(iota(5), longer), " "));
+    print(sum(map(iota(10000), (i) => ["x", "yy", "zzz"][i % 3].length)));
+    print(sort(["pear", "apple", "fig"]));
+    print(["a", "b"] == ["a", "b"]);
+    print(fold(iota(3), ["", ""], (acc, i) => acc.with(i % 2, acc[i % 2] + "i")));
+    print(map(["é", "日本", ""], (s) => s.length));
+    print(join(["a", "b", "c"], "-"));
+    print(["solo"][0].toUpperCase());
+    const f = fresh();
+    print(f.with(1, "there"));
+    print(`${named(3)}${longer(2)}${NAMES[2]}`);
+    return 0;
+}
+"##;
+
+/// An array literal of string literals is data of the program (D401):
+/// read without an allocation (an index, a length, `join`, a concatenation
+/// with a part of it), copied when a value is made of it (`with`, `sort`,
+/// the accumulator of a `fold`, returned, a constant of the top level given
+/// to a function), never freed nor changed; Valgrind clean.
+#[test]
+fn arrays_of_string_literals() {
+    agree(CONSTANT_STRINGS, "std_const_strings", &[], "[zero, uno, two, ]\n[zero, one, two, ]\n[nine, one, two, ]\n[zero, one, two, ]\nzero\nMon,Tue,Wed,Thu,Fri,Sat,Sun,Mon,Tue,Wed\na! bb! ccc! a! bb!\n19999\n[apple, fig, pear]\ntrue\n[ii, i]\n[2, 6, 0]\na-b-c\nSOLO\n[made, there]\nThuccc!two\n");
+}
+
 /// D239: the product of a big integer by a word, by 4 words in assembly
 /// (`mulx` and one chain of `adc`) then the rest: numbers of 1 to 41 words
 /// and a partial last word, words of all ones (every carry), signs, the

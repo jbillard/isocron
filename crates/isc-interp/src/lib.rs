@@ -737,6 +737,13 @@ impl<'a> Interp<'a> {
                 }
                 Value::Array(Rc::new(a))
             }
+            ConstStrs(ss) => {
+                let mut a = Array::with_capacity(e.ty.elem(), ss.len());
+                for s in ss {
+                    a.push(Value::Str(Rc::from(s.as_str())));
+                }
+                Value::Array(Rc::new(a))
+            }
             Lit(l) => match l {
                 isc_ir::Lit::Int(v) => Value::Int(*v),
                 isc_ir::Lit::F64(f) => Value::F64(*f),
