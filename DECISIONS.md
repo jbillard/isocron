@@ -10952,3 +10952,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `delete`, `entries`, `countBy`, compiled against interpreted; with the
     hash of the probe in the code shifted by 30 for 29 it fails at its first
     line), and the example of the guide (the same output).
+- **D493 — The Benchmarks Game measured again at 3d3b036 (2026-11-08).**
+  After D492 (maps by an index of hashes: the LLVM IR of k-nucleotide, its
+  counts and its lookups; the nine others the same), on a quiet machine (no
+  `Plex Transcoder` from three minutes before to the end): the image built
+  with the `iscc` of 3d3b036, 102 checks against the references (the same
+  outputs; the known difference of C++ #4 of mandelbrot at N = 200 only),
+  measured in Docker (4 threads, 12 runs, the lowest). The fastest on 10
+  of 10, every time within its scatter of D491 (k-nucleotide 607 ms, n-body
+  1876 -> 1880 ms, the others within 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.
