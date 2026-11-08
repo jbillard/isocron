@@ -497,6 +497,9 @@ pub struct Gen<'p> {
     /// The texts freed now are parts of tuples (D518): tested as literals
     /// of the program before the call of `isc_free`.
     literal_test: bool,
+    /// The texts taken out of tuples (their registers): tested as literals
+    /// wherever they are freed (D518).
+    part_values: HashSet<String>,
     /// The `let`s of a split `fold` (D260): the values of each element
     /// computed before its loop, in a slot on the stack, its type, and the
     /// variable of the element (the index into the slot).
@@ -1046,6 +1049,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         divmod: Vec::new(),
         vec_fail: None,
         literal_test: false,
+        part_values: HashSet::new(),
         split_vars: HashMap::new(),
         split_fail: None,
         split_fresh: VarId::MAX,
@@ -2525,6 +2529,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        // the names of registers of this function alone (D518)
+        let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let saved_counts = std::mem::take(&mut self.counts);
@@ -2644,6 +2650,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.counts = saved_counts;
@@ -3140,7 +3147,7 @@ impl<'p> Gen<'p> {
             // only find it out (D518; tested for every text, the code around
             // other drops laid out otherwise by LLVM: `time.formatDateTime`
             // +8.2 %, `strings.template` +3.8 %)
-            Type::Str if !self.literal_test => {
+            Type::Str if !self.literal_test && !self.part_values.contains(&x.r) => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
@@ -3199,6 +3206,8 @@ impl<'p> Gen<'p> {
                     }
                 }
                 self.emit(format!("switch i32 {}, label %{} [ {} ]", tag, lj, cases.join(" ")));
+                // (a field of a variant: a part of a tuple, D518)
+                let saved = std::mem::replace(&mut self.literal_test, true);
                 for (l, mine) in bodies {
                     self.block(&l);
                     for j in mine {
@@ -3210,6 +3219,7 @@ impl<'p> Gen<'p> {
                     }
                     self.br(&lj);
                 }
+                self.literal_test = saved;
                 self.block(&lj);
             }
             Type::Tuple(ts) => {
@@ -3569,6 +3579,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        // the names of registers of this function alone (D518)
+        let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, atomic);
         // inside an atomic drop, every count is atomic (D175)
@@ -3625,6 +3637,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
@@ -3641,6 +3654,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        // the names of registers of this function alone (D518)
+        let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let nt = self.rec_node_ty(i);
@@ -3698,6 +3713,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         res?;
@@ -3760,6 +3776,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        // the names of registers of this function alone (D518)
+        let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
         let nt = self.rec_node_ty(i);
@@ -3773,6 +3791,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         res?;
@@ -4079,6 +4098,13 @@ impl<'p> Gen<'p> {
                 let iv = iv?;
                 if let Some(b) = &buf {
                     self.stack_strs.insert(iv.r.clone(), b.clone());
+                }
+                // a text taken out of a tuple: tested as a literal wherever it
+                // is freed (at the end of its scope, by a `free`, before the
+                // jump of a tail call; D518). (A name of a register: one met
+                // again in a task only adds the test, always right.)
+                if matches!(init.kind, ExprKind::Take(..)) && init.ty == Type::Str {
+                    self.part_values.insert(iv.r.clone());
                 }
                 self.bind(*var, iv.clone());
                 if *stmt && w == 1 {
@@ -4623,7 +4649,11 @@ impl<'p> Gen<'p> {
                 let r = self.ex(body, w)?;
                 let x = self.env[var].clone();
                 let ty = self.p.vars[*var as usize].ty.clone();
+                // (a text freed on the paths that do not move it: often a
+                // message of a fault, D518)
+                let saved = std::mem::replace(&mut self.literal_test, true);
                 self.drop_value(&x, &ty);
+                self.literal_test = saved;
                 Ok(r)
             }
             // a new node: one owner, its tuple (D103)
@@ -8006,6 +8036,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        // the names of registers of this function alone (D518)
+        let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, true);
         // the texts on the stack of the caller, known by the names of its
@@ -8050,6 +8082,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.stack_strs = saved_stack_strs;
@@ -13142,6 +13175,8 @@ impl<'p> Gen<'p> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);
+        // the names of registers of this function alone (D518)
+        let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         for (i, c) in caps.iter().enumerate() {
             let t = cap_vals[i].t.clone();
@@ -13157,6 +13192,7 @@ impl<'p> Gen<'p> {
         self.f = saved_f;
         self.env = saved_env;
         self.divmod = saved_divmod;
+        self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         // the loop
         let t0 = self.ins("call i64 @isc_clock_ns()".into());

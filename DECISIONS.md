@@ -11633,3 +11633,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     branches, the interpreter's output on 1 and 4 threads, valgrind clean,
     the test of the pointer before the call in the LLVM; it fails without
     the test (mutation checked).
+- **D519 — A text taken out of a tuple tested as a literal wherever it is
+  freed (2026-11-08).** After D518, counted with gdb (`isc_free` broken on
+  a pointer 4 past a multiple of 16, one round of `decode` of 1000
+  records): 16002 literals given to `isc_free` against 4020 blocks; 13000
+  with the frees of `free` nodes (D105) tested too; the rest from two calls
+  in a row in the check of the members (`codecMembers1`) before the jump of
+  its tail call: the parts taken out of tuples (`kwhy`, `why`) freed there
+  by another path than the end of their `let`.
+  - Now the texts bound by a `let` of a part taken out of a tuple (`Take`)
+    are known by their registers (`part_values`, emptied at each function
+    and task) and tested wherever they are freed; the fields of the
+    variants of sum types and the `free` nodes tested too. Counted again:
+    no literal given to `isc_free` in `decode`. (A register met again in a
+    task only adds the test, which is right for any text: the runtime
+    never frees a literal.)
+  - Measured (A/B against 5597c76, 7 runs, one CPU at fixed frequency;
+    pidigits, the only program of the ten whose LLVM changed, and `json`,
+    `time`, `sys`, `http`, `net`, `https`, `http_serve`, `https_serve`,
+    `https_serve_tls`): `json.decode` 278.1 -> 264.0 ns (-5.1 %),
+    `sys.normalize` -3.6 %, `json.encode` -1.5 %, `net.setTimeout` -3.8 %
+    (its function the same, the place of the code, D518); `sys.exists`
+    +2.1 %; `sys.ioError.message` +4.6 and +4.7 % and `json.message`
+    +5.7 and +4.2 % in two runs (the second overlapping), the texts of the
+    fields of the records they make and free tested now (0.95 and 1.73
+    times their floors); pidigits 298.7 -> 299.4 ms (+0.21 %, 11 runs, the
+    same outputs). `run.py` of `json` and `sys` (5 runs of 200 rounds):
+    `json.decode` 262.64 ns, 2.87 times its floor: below 3 (3.06 before);
+    `json.parse` 602.12 ns, 3.52 (3.61).
+  - Test `texts_taken_out_of_tuples_tested_where_they_are_freed`
+    (`strings.rs`): a loop of a tail call that takes a text out of a tuple
+    at each turn, every `isc_free` of it preceded by the test, the
+    interpreter's output, valgrind clean; it fails without the texts
+    known by their registers (mutation checked).

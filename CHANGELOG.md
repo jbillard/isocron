@@ -4,9 +4,10 @@
 
 ### The compiler
 
-* A text freed as a part of a tuple that is a literal of the program is not
-  given to the runtime: `json.decode` -2.3 %, `sys.normalize` -3.9 %
-  (D518).
+* A text taken out of a tuple, or freed as a part of one, that is a
+  literal of the program is not given to the runtime, wherever it is
+  freed: `json.decode` 285 -> 263 ns a record (2.87 times its floor),
+  `sys.normalize` -3.6 % (D518, D519).
 
 * The functions too large to be inlined are decided one at a time, the
   smallest first: a function no longer counts those it calls that are

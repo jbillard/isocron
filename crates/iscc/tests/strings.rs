@@ -1347,3 +1347,48 @@ action main(args: string[k]): i32 {
     }
     valgrind_clean(src, "literals_not_freed", &["300"]);
 }
+
+/// D519: a text taken out of a tuple is tested as a literal wherever it is
+/// freed, before the jump of a tail call too (the loop of the check of the
+/// members of a decoder of `json`: no literal given to `isc_free` there):
+/// every `isc_free` of the loop that takes such texts apart preceded by the
+/// test; the interpreter's output, valgrind clean.
+#[test]
+fn texts_taken_out_of_tuples_tested_where_they_are_freed() {
+    let src = "function check(i: i64): [i64, string] {
+    return i % 5 == 0 ? [-1, `bad ${i}`] as const : [i, \"\"] as const;
+}
+
+function walk(i: i64, n: i64, acc: i64): i64 {
+    if (i == n) {
+        return acc;
+    }
+    const [k, why] = check(i);
+    const t = acc + k + why.length;
+    return walk(i + 1, n, t);
+}
+
+action main(args: string[k]): i32 {
+    print(walk(0, parseI64(args[0]), 0));
+    return 0;
+}
+";
+    let ir = iscc::frontend("taken_texts.isc", src).unwrap();
+    let wi = ir.fns.iter().position(|f| f.name == "walk").expect("no function walk");
+    let bin = compile(src, "taken_texts");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let start = ll.find(&format!("@isc_fn_{}(", wi)).expect("no function walk in the LLVM");
+    let body = &ll[start..start + ll[start..].find("\n}\n").unwrap()];
+    let lines: Vec<&str> = body.lines().collect();
+    let frees: Vec<usize> = (0..lines.len()).filter(|&k| lines[k].contains("call void @isc_free(ptr")).collect();
+    assert!(!frees.is_empty(), "no text freed in walk");
+    for k in frees {
+        assert!(lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4")), "a text of walk freed without the test of a literal: {}", lines[k]);
+    }
+    for n in ["0", "1", "10", "1000"] {
+        let want = interp_ok(src, &[n]);
+        let r = run_bin(&bin, &[n]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}", n);
+    }
+    valgrind_clean(src, "taken_texts", &["300"]);
+}
