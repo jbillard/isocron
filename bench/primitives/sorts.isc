@@ -1,0 +1,31 @@
+// The audit of every form against the machine (TODO, D299): the sorts
+// (D488), of 4096 values in the caches. Each line of the output: a name,
+// the nanoseconds of one element (the mean over `rounds` rounds, `bench`)
+// and a checksum of the order; run on one thread (ISC_THREADS=1), against
+// `sorts.c` (the same work in C, the floor).
+// usage: sorts <rounds>
+
+// a checksum of an order: the values weighted by their places modulo 8
+function placed(ys: i64[n]): i64 {
+    return sum(map(iota(ys.length), (i) => ys[i] * (i % 8)));
+}
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    const xs = map(iota(n), (i) => (i * 7919 * 104729) % 1000000007 - 500000000);
+    const fs = map(xs, (x) => f64(x) / 7.0);
+    const ws = map(xs, (x) => toString(x % 1000003));
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => placed(sort(xs)));
+    print(`sort.i64 ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => placed(map(sort(fs), (f) => i64(f))));
+    print(`sort.f64 ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => placed(map(sort(ws), (w) => i64(bytes(w)[w.length - 1]))));
+    print(`sort.string ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => placed(map(sortBy(ws, (w) => w.length), (w) => i64(bytes(w)[0]))));
+    print(`sortBy.length ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    const [a5, t5] = bench(r, () => placed(xs.toReversed()));
+    print(`toReversed ${(f64(t5) / each).toFixed(3)} ${a5}`);
+    return 0;
+}

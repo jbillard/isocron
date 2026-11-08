@@ -10780,3 +10780,62 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     decimals), `to_fixed_of_many_doubles` (`strings.rs`: 2000 doubles from
     1e-9 to 1e20 with 0 to 20 decimals, compiled against interpreted), and
     the cases of JavaScript of D155.
+- **D488 — Numbers sorted by their bytes, and the group of sorts measured
+  (2026-11-08).** The audit of the forms had no microbenchmark of the
+  sorts. Now `bench/primitives/sorts.isc` and its floor `sorts.c` (4096
+  values in the caches, one thread, the nanoseconds of one element and a
+  checksum of the order): `sort` of integers of both signs, of doubles, of
+  texts of 1 to 7 bytes, `sortBy` of those texts by their length (a key of
+  few values: the order of equal keys checked), `toReversed`. The floors:
+  numbers by a sort of their keys alone by their bytes (radix, as many
+  bytes as their range needs; a first floor that sorted pairs of a key
+  and a value was beaten by Isocron, 13.93 against 14.78 ns: wrong,
+  replaced), texts by a quicksort of their bytes one place at a time
+  (Bentley and Sedgewick), the key of few values by counting, a reversed
+  copy.
+  - `sort` and `sortBy` order by `argsort`: indices sorted by
+    comparisons, each reading two elements by their indices and choosing
+    their type by a `match`, the index as the last key. Measured first (not
+    at a fixed frequency): `sort` of integers 3.1 times its floor, `sortBy`
+    by a length 17 times. Now from 64 elements the numbers and booleans
+    are sorted by their keys as unsigned integers (`radix_order` in
+    `isc-runtime-core`: integers with the bit of the sign flipped, floats by
+    `order_key_f64`, every NaN last and -0 before +0 as `order_f64`), a
+    sort by the bytes of `key - min` from the lowest, the bytes of the range
+    only, a byte that every key shares skipped: stable, so the order of a
+    comparison sort with the index as the last key; a key of a few values
+    is one pass of counting. Below 64 elements, and for texts, by
+    comparisons as before.
+  - Measured (the old and new binaries of `sorts`, 7 alternated runs,
+    fixed frequency; the maintenance of Plex, a `Plex Transcoder` on
+    another core, ran then): `sort.i64` 45.70 -> 13.60 ns (-70.2 %),
+    `sort.f64` 50.29 -> 26.06 ns (-48.2 %), `sortBy.length` 61.09 ->
+    22.40 ns (-63.3 %), `sort.string` and `toReversed` within 0.5 %.
+  - `sortBy` of texts: profile (one CPU at fixed frequency): the array of
+    the result filled by `isc_str_new` (a block and a copy of each text)
+    and those freed by `isc_free_strs`, about 63 % of the cycles; the sort
+    20 %, the keys 10 %. A text of an array owns its bytes, where the floor
+    moves shared pointers. The floor with that representation
+    (`ISC_SORTS_OWNED=1 sorts <rounds>`: each text of the sorted array
+    copied into a block of its own, the blocks freed after), alternated
+    with Isocron (5 runs, fixed frequency, Plex running): `sortBy.length`
+    Isocron 37.09 ns, the floor 5.18, the floor that owns 40.95 (Isocron
+    0.91 times it); `sort.string` 260.13, 85.05 and 122.40 (2.13 times it).
+    The gap of `sortBy` of texts is their representation (the change of
+    the representation of texts, TODO); the measures of the ratios of
+    `results/primitives.md` wait for the end of the maintenance of Plex.
+  - The Benchmarks Game measured at 36c84c7 (after D487) while that
+    maintenance ran (a `Plex Transcoder` from 03:22:59 to 03:39:25, the
+    measure from 03:22 to 03:41): the fastest on 10 of 10, but every
+    language slower (fasta 5 -> 11 ms, reverse-complement 27 -> 35 ms,
+    binary-trees 660 -> 707 ms; Rust #7 of regex-redux 752 -> 781 ms, C #2
+    of pidigits 681 -> 704 ms): not published, measured again on a quiet
+    machine.
+  - Tests: `radix_order_is_a_stable_sort` (`isc-runtime-core`: keys of
+    every range, 0 to 300 keys and 5000, against a stable sort by the key;
+    with the passes counted by `/ 8` it fails), `order_key_f64_is_order_f64`
+    (every pair of NaNs, zeros, infinities, subnormals), and
+    `sorts_of_every_type_of_number` (`stdlib.rs`: 2000 elements of each
+    type of number and booleans, unsigned above 2^63, NaN, -0 and the
+    infinities, keys of few values, compiled against interpreted; with the
+    key of doubles by `b ^ 2^63` alone it fails at the sort of `f32`).

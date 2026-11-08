@@ -890,6 +890,78 @@ pub fn order_f64(a: f64, b: f64) -> core::cmp::Ordering {
     }
 }
 
+/// The key of a double in the order of `order_f64`, as an unsigned
+/// integer (D488): every NaN the largest, a negative number its bits
+/// reversed, a positive one its bits with the bit of the sign set (`-0`
+/// before `+0`).
+pub fn order_key_f64(x: f64) -> u64 {
+    if x.is_nan() {
+        return u64::MAX;
+    }
+    let b = x.to_bits();
+    if b >> 63 == 1 {
+        !b
+    } else {
+        b | (1 << 63)
+    }
+}
+
+/// The indices `idx` put in the stable order of their `keys` (unsigned
+/// integers, `keys[j]` the key of `idx[j]`; both changed) (D488): a sort by
+/// the bytes of `key - min`, the lowest first (radix), as many bytes as the
+/// range of the keys needs, a byte that every key shares skipped; the
+/// order of a comparison sort with the index as the last key, without a
+/// comparison (`sortBy` by a length: one pass of counting).
+pub fn radix_order(keys: &mut [u64], idx: &mut [i64]) {
+    let n = keys.len();
+    if n < 2 {
+        return;
+    }
+    let (mut lo, mut hi) = (keys[0], keys[0]);
+    for &k in keys.iter() {
+        lo = lo.min(k);
+        hi = hi.max(k);
+    }
+    let range = hi - lo;
+    if range == 0 {
+        return;
+    }
+    let passes = (64 - range.leading_zeros() as usize).div_ceil(8);
+    let mut counts = alloc::vec![[0usize; 256]; passes];
+    for &k in keys.iter() {
+        let d = k - lo;
+        for (b, c) in counts.iter_mut().enumerate() {
+            c[((d >> (8 * b)) & 255) as usize] += 1;
+        }
+    }
+    let mut k2 = alloc::vec![0u64; n];
+    let mut i2 = alloc::vec![0i64; n];
+    let mut in_second = false;
+    for (b, c) in counts.iter_mut().enumerate() {
+        if c.iter().any(|&x| x == n) {
+            continue;
+        }
+        let mut s = 0;
+        for x in c.iter_mut() {
+            let t = *x;
+            *x = s;
+            s += t;
+        }
+        let (ka, ia, kb, ib): (&[u64], &[i64], &mut [u64], &mut [i64]) = if in_second { (&k2, &i2, &mut *keys, &mut *idx) } else { (&*keys, &*idx, &mut k2, &mut i2) };
+        for j in 0..n {
+            let d = (((ka[j] - lo) >> (8 * b)) & 255) as usize;
+            let at = c[d];
+            c[d] += 1;
+            kb[at] = ka[j];
+            ib[at] = ia[j];
+        }
+        in_second = !in_second;
+    }
+    if in_second {
+        idx.copy_from_slice(&i2);
+    }
+}
+
 /// `s.indexOf(t)`: the byte index of the first `t` in `s`, -1 if none.
 pub fn index_of(s: &str, t: &str) -> i64 {
     find_bytes(s.as_bytes(), t.as_bytes()).map(|i| i as i64).unwrap_or(-1)
@@ -2531,6 +2603,50 @@ mod find_bytes_tests {
     use super::find_bytes;
     extern crate alloc;
     use alloc::vec::Vec;
+
+    /// D488: `radix_order` gives the order of a stable sort by the key,
+    /// for keys of every range (one value, a few, bytes in the middle, the
+    /// whole of 64 bits), 0 to 300 keys and 5000.
+    #[test]
+    fn radix_order_is_a_stable_sort() {
+        use super::radix_order;
+        let mut z = 0x2545f4914f6cdd1du64;
+        let mut next = || {
+            z ^= z << 13;
+            z ^= z >> 7;
+            z ^= z << 17;
+            z
+        };
+        let masks = [0u64, 3, 0xff, 0xff00, 0xffff_0000_0000, u64::MAX];
+        let mut sizes: alloc::vec::Vec<usize> = (0..=300).collect();
+        sizes.push(5000);
+        for &n in &sizes {
+            for &m in &masks {
+                let base = next();
+                let keys: alloc::vec::Vec<u64> = (0..n).map(|_| base.wrapping_add(next() & m)).collect();
+                let mut want: alloc::vec::Vec<i64> = (0..n as i64).collect();
+                want.sort_by_key(|&i| keys[i as usize]);
+                let mut k = keys.clone();
+                let mut got: alloc::vec::Vec<i64> = (0..n as i64).collect();
+                radix_order(&mut k, &mut got);
+                assert_eq!(got, want, "{} keys of the mask {:x}", n, m);
+            }
+        }
+    }
+
+    /// D488: `order_key_f64` orders as `order_f64`, for every pair of NaNs
+    /// of both signs, the zeros, the infinities, the subnormals and other
+    /// numbers.
+    #[test]
+    fn order_key_f64_is_order_f64() {
+        use super::{order_f64, order_key_f64};
+        let xs = [f64::NAN, -f64::NAN, f64::from_bits(0x7ff0_0000_0000_0001), 0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, 5e-324, -5e-324, 1.0, -1.0, 1.5, -1.5, f64::MAX, f64::MIN, 1e-300, -1e-300, 2.2250738585072014e-308];
+        for &a in &xs {
+            for &b in &xs {
+                assert_eq!(order_key_f64(a).cmp(&order_key_f64(b)), order_f64(a, b), "{:?} {:?}", a, b);
+            }
+        }
+    }
 
     /// D487: `fixed_short` writes the text of `fixed_exact` (the exact
     /// decimal value), for 200000 doubles of every size from 1e-30 to

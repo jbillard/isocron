@@ -3010,9 +3010,34 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
             }
         }
     };
-    idx.sort_unstable_by(|&i, &j| cmp(i, j).then(i.cmp(&j)));
+    // numbers and booleans from 64 elements: their keys as unsigned
+    // integers in their order, sorted by their bytes (D488: a sort of 4096
+    // integers 3.1 times its floor, by a length 17 times)
+    if n >= ARGSORT_RADIX_MIN && kind <= 10 {
+        let mut keys: alloc::vec::Vec<u64> = (0..n as i64)
+            .map(|i| match kind {
+                0 => (at::<i8>(p, i) as i64 as u64) ^ (1 << 63),
+                1 => (at::<i16>(p, i) as i64 as u64) ^ (1 << 63),
+                2 => (at::<i32>(p, i) as i64 as u64) ^ (1 << 63),
+                3 => (at::<i64>(p, i) as u64) ^ (1 << 63),
+                4 | 10 => at::<u8>(p, i) as u64,
+                5 => at::<u16>(p, i) as u64,
+                6 => at::<u32>(p, i) as u64,
+                7 => at::<u64>(p, i),
+                8 => sem::order_key_f64(at::<f32>(p, i) as f64),
+                _ => sem::order_key_f64(at::<f64>(p, i)),
+            })
+            .collect();
+        sem::radix_order(&mut keys, idx);
+    } else {
+        idx.sort_unstable_by(|&i, &j| cmp(i, j).then(i.cmp(&j)));
+    }
     *out = IscArray { ptr: q as *mut u8, len: n as i64 };
 }
+
+/// From this many numbers on, `argsort` sorts their keys by their bytes
+/// (D488); below, by comparisons.
+const ARGSORT_RADIX_MIN: usize = 64;
 
 /// From this many keys on, the groups of integer keys are made in parallel.
 const GROUP_PARALLEL_MIN: usize = 1 << 20;

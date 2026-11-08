@@ -2003,3 +2003,39 @@ action main(args: string[k]): i32 {
     let got = interp_ok(src, &[]);
     assert!(got == want, "interpreter: {:?}", first(&got));
 }
+
+/// D488: `sort` and `sortBy` of 2000 elements of every type of number
+/// and of booleans (sorted by their bytes from 64 elements): integers of 8
+/// to 64 bits of both signs, unsigned ones above 2^63, floats with NaN,
+/// -0, 0 and the infinities, keys of a few values (the order of equal keys
+/// kept); the compiled program writes what the interpreter writes.
+#[test]
+fn sorts_of_every_type_of_number() {
+    let src = "action main(args: string[k]): i32 {
+    const n = 2000;
+    print(sort(map(iota(n), (i) => i8(i % 256 - 128))));
+    print(sort(map(iota(n), (i) => i16((i * 7919) % 65536 - 32768))));
+    print(sort(map(iota(n), (i) => i32((i * 7919 * 104729) % 4294967296 - 2147483648))));
+    print(sort(map(iota(n), (i) => i * 7919 * 104729 * 1000003 - 800000000000000000)));
+    print(sort(map(iota(n), (i) => u8(i % 256))));
+    print(sort(map(iota(n), (i) => u16((i * 7919) % 65536))));
+    print(sort(map(iota(n), (i) => u32((i * 7919 * 104729) % 4294967296))));
+    print(sort(map(iota(n), (i) => u64((i * 7919) % n) * 9000000000000000u64)));
+    print(sort(map(iota(n), (i) => i % 97 == 0 ? f32(0.0 / 0.0) : (i % 89 == 0 ? f32(-0.0) : f32(f64(i * 7919 % 1009) / 3.0 - 150.0)))));
+    print(sort(map(iota(n), (i) => i % 97 == 0 ? 0.0 / 0.0 : (i % 89 == 0 ? -0.0 : (i % 83 == 0 ? 1.0 / 0.0 : (i % 79 == 0 ? -1.0 / 0.0 : (i % 2 == 0 ? 0.0 : f64(i * 7919 % 1009) / 3.0 - 150.0)))))));
+    print(sort(map(iota(n), (i) => i % 3 == 0)));
+    print(sortBy(iota(n), (i) => (i * 7919) % 13));
+    print(sortBy(map(iota(n), (i) => toString(i * 7919 % 100003)), (w) => w.length));
+    print(sortBy(iota(n), (i) => f64((i * 7919) % 17) - 8.0));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    assert_eq!(want.lines().count(), 14);
+    let r = run_bin(&compile(src, "sorts_of_numbers"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    for (k, (a, b)) in r.stdout.lines().zip(want.lines()).enumerate() {
+        assert!(a == b, "line {}: {} against {}", k + 1, &a[..a.len().min(200)], &b[..b.len().min(200)]);
+    }
+    assert_eq!(r.stdout, want);
+}
