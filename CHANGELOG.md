@@ -18,6 +18,10 @@
 
 ### The compiler
 
+* A `scan` whose source reads several arrays by the index (several places
+  that can fail) is read by vectors, a vector whose check fails computed
+  again one element at a time (the same panics): 1.29 -> 0.24 ns an
+  element (D507).
 * A tuple made by an `if` whose branches make new tuples is taken apart
   where it is destructured: its parts moved, not copied. `json.decode`
   442 -> 395 ns a record (D504).

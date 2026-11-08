@@ -11298,3 +11298,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     from three valid ones, two of them without a backslash, their quotes
     and brackets removed or replaced) fails with a closing bracket counted
     -3 (mutation checked); the other tests of `json` pass.
+- **D507 — A `scan` reads by vectors a source with several places that
+  can fail, its failed vectors computed again one at a time (2026-11-08).**
+  Found in D506: `scan(map(iota(n), (i) => ... b[i] ... q[i] ...), (+), 0)`
+  was a scalar loop, 1.0 to 1.3 ns a byte, where the same `map` of `zip(b,
+  q)` took 0.17. A lambda that reads arrays is vector code only with one
+  place that can fail (`index_vec_ok`, D185: the order of the panics),
+  unless its failed checks are replayed one element at a time
+  (`elem_replayed`), which the fills and the filters do (D185, D362) and
+  the `scan` did not.
+  - Now the source of a `scan` that is not vector code as it is but is with
+    a replay (`scan_vec`: `src_vec_ok_replay`) is read by vectors through
+    `elem_replayed`: a vector whose check fails is computed again one
+    element at a time, in order, so the panic is the scalar loop's (its
+    element, its site). The sources read by vectors before are read as
+    they were: the code of the ten programs and of every group of forms is
+    the same (their LLVM compared, byte for byte).
+  - Measured (`scan` of a text of 40 KB, one thread, one CPU at fixed
+    frequency, 7 alternated runs): the packed state of D506 written by
+    `b[i]` and `q[i]` 1.285 -> 0.243 ns a byte (-81 %), the same without
+    branches 1.797 -> 0.269 (-85 %); through `zip` 0.244 -> 0.245; the
+    machine of states -17.4 %: its code the same, placed 4.7 KB further
+    (the other scans grew), the place of the code (D504).
+  - Test `scans_of_sources_with_two_reads_by_vectors` (`vector_index.rs`):
+    sums and elements of `scan`s of sources reading two arrays (`i32` and
+    bytes, `i64` and bytes and a read from the end) for lengths 0 to 70001,
+    on 1 and 4 threads, the interpreter's; two reads failing in one vector
+    (`b[40]` before `a[82]`) and a read past the end, the interpreter's
+    panic; the prefix sums of `i32` in vectors of 16 lanes. It fails
+    without the replay (no vectors) and with the vectors not replayed (the
+    panic of `a[82]`) (mutations checked).

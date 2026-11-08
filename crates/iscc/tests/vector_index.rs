@@ -871,3 +871,52 @@ fn counts_by_the_masks_of_their_condition() {
         }
     }
 }
+
+/// D507: a `scan` whose source reads two arrays by the index of an `iota`
+/// (two places that can fail, not vector code before, D185) is read by
+/// vectors whose failed checks are computed again one at a time: the
+/// interpreter's sums and elements for lengths around the widths of the
+/// vectors, `i32` and `i64`, on 1 and 4 threads; the panics of the scalar
+/// loop (two reads that fail in the same vector, the first in the order of
+/// the elements decides); the prefix sums in vectors of 16 lanes.
+#[test]
+fn scans_of_sources_with_two_reads_by_vectors() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const a = map(iota(n), (i) => i32(i % 7) - 3i32);
+    const b = map(iota(n), (i) => u8(i % 5));
+    const s = scan(map(iota(n), (i) => a[i] + i32(b[i])), (+), 0i32);
+    print(n > 0 ? s[n - 1] : -1i32);
+    print(sum(map(s, (x) => i64(x))));
+    const c = map(iota(n), (i) => i * 3 - 1000);
+    const t = scan(map(iota(n), (i) => c[i] * i64(b[i]) + c[n - 1 - i]), (+), 0);
+    print(n > 0 ? t[n / 2] : -1);
+    print(sum(t));
+    return 0;
+}
+";
+    let bin = compile(src, "scan_two_reads");
+    for n in ["0", "1", "15", "16", "17", "63", "64", "65", "1000", "70001"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("shufflevector <16 x i32> <i32 0"), "the prefix sums of `i32` are not made in vectors");
+    // element 40 reads `b[40]` (out of bounds) before element 41 would read
+    // `a[82]`; then a read past the end of `a` alone
+    for (name, src) in [
+        ("first_of_two", "action main(args: string[k]): i32 {\n    const a = map(iota(82), (i) => i32(i));\n    const b = map(iota(40), (i) => i32(i));\n    const s = scan(map(iota(100), (j) => a[j * 2] + b[j]), (+), 0i32);\n    print(s[99]);\n    return 0;\n}\n"),
+        ("past_the_end", "action main(args: string[k]): i32 {\n    const a = map(iota(1000), (i) => i32(i));\n    const b = map(iota(5000), (i) => i32(i));\n    const s = scan(map(iota(1003), (j) => a[j] + b[j]), (+), 0i32);\n    print(s[1002]);\n    return 0;\n}\n"),
+    ] {
+        let want = match interp(src, &[]) {
+            Outcome::Panic(m, _) => m,
+            Outcome::Exit(c, out) => panic!("{}: no panic ({} {})", name, c, out),
+        };
+        let bin = compile(src, &format!("scan_two_reads_{}", name));
+        let run = run_bin_threads(&bin, &[], Some(1));
+        assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", name);
+    }
+}

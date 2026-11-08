@@ -1962,6 +1962,19 @@ fn period_tables(l: &Lambda, w: u32) -> Vec<(VarId, i64, Type)> {
     out
 }
 
+/// Whether the elements of the source `x` of a `scan` are read by vectors,
+/// and whether by `elem_replayed` (D507): a source with more than one
+/// place that can fail (`b[i]` and `q[i]`), not vector code otherwise
+/// (D185), read by vectors whose failed checks are computed again one at a
+/// time; the sources read by vectors before as they were.
+fn scan_vec(x: &Expr) -> (bool, bool) {
+    if src_vec_ok(x) {
+        return (true, false);
+    }
+    let replay = src_vec_ok_replay(x);
+    (replay, replay)
+}
+
 /// `src_vec_ok` for vector code read by `elem_replayed` (D185).
 fn src_vec_ok_replay(e: &Expr) -> bool {
     let before = REPLAY.with(|r| r.replace(true));
@@ -8689,7 +8702,7 @@ impl<'p> Gen<'p> {
             self.br(&ljoin);
             self.block(&ljoin);
         } else if !self.in_task && assoc_scan_op(l, &elem_ty) {
-            let vec = src_vec_ok(x);
+            let (vec, replay) = scan_vec(x);
             // more than one block and more than one thread: with one thread
             // the two passes of the parallel form cost twice the sequential one
             let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
@@ -8704,11 +8717,12 @@ impl<'p> Gen<'p> {
             self.scan_parallel(e, x, l, &zv, &out, &n)?;
             self.br(&ljoin);
             self.block(&lseq);
-            self.scan_range_fast(&src, vec, l, &zv, &out, &n, "0", &n)?;
+            self.scan_range_fast(&src, vec, replay, l, &zv, &out, &n, "0", &n)?;
             self.br(&ljoin);
             self.block(&ljoin);
         } else {
-            self.scan_range_fast(&src, src_vec_ok(x), l, &zv, &out, &n, "0", &n)?;
+            let (vec, replay) = scan_vec(x);
+            self.scan_range_fast(&src, vec, replay, l, &zv, &out, &n, "0", &n)?;
         }
         let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", out));
         let r = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, n));
@@ -9264,7 +9278,8 @@ impl<'p> Gen<'p> {
             let m = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, rem, bl));
             let end = g.ins(format!("add i64 {}, {}", start, m));
             let before = g.load_elem(&extra[0].r, &extra[1].r, j, &elem_ty, 1);
-            g.scan_range_fast(&src, src_vec_ok(x), l, &before, &extra[2].r, &extra[3].r, &start, &end)?;
+            let (vec, replay) = scan_vec(x);
+            g.scan_range_fast(&src, vec, replay, l, &before, &extra[2].r, &extra[3].r, &start, &end)?;
             Ok(())
         })?;
         self.par_for(0, &c0, &task, &ctx, &ctx_bytes);
@@ -9280,7 +9295,8 @@ impl<'p> Gen<'p> {
     /// (integers: the order of an associative, commutative operator does
     /// not change the result). Any other scan: `scan_range`.
     #[allow(clippy::too_many_arguments)]
-    fn scan_range_fast(&mut self, src: &Src, vec: bool, l: &Lambda, z: &V, out: &str, len: &str, lo: &str, hi: &str) -> R<V> {
+    #[allow(clippy::too_many_arguments)]
+    fn scan_range_fast(&mut self, src: &Src, vec: bool, replay: bool, l: &Lambda, z: &V, out: &str, len: &str, lo: &str, hi: &str) -> R<V> {
         let et = l.body.ty.clone();
         let Some((_, neutral)) = int_scan_op(l, &et).filter(|_| vec) else {
             return self.scan_range(src, l, z, out, len, lo, hi, hi);
@@ -9313,7 +9329,7 @@ impl<'p> Gen<'p> {
         for &streaming in modes {
         self.block(if streaming { &lnt } else { &lplain });
         self.for_range_scalar(lo, &vend, w as i64, &mut |g, i| {
-            let mut x = g.elem(src, i, w)?;
+            let mut x = if replay { g.elem_replayed(src, i, w)? } else { g.elem(src, i, w)? };
             let mut s = 1;
             while s < w {
                 // lane j gets lane j - s of x, the neutral value below s

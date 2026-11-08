@@ -253,8 +253,8 @@ function indexed(b: u8[n]): Index {
         // the quotes counted modulo 256 (bytes wrap, D329): their parity
         // is all that is read, a byte a byte of the text
         const q = scan(map(b, (c) => c == 34u8 ? 1u8 : 0u8), (+), 0u8);
-        // (a `zip`, read by vectors: the same reads by `b[i]` and `q[i]` in
-        // the `map` of an `iota` were not, 1.2 against 0.17 ns a byte)
+        // (read through a `zip`; by `b[i]` and `q[i]` in the `map` of an
+        // `iota` the same since D507)
         return Ix(scan(map(zip(b, q), (x) => {
             const [c, qc] = x;
             const o = i32(qc & 1u8);
