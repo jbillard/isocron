@@ -296,7 +296,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Lines and parts of a text in one block, found by masks of 32 bytes, freed by blocks: `lines` 47.21 -> 15.34 ns, `split` 170.23 -> 75.87 ns, k-nucleotide -2.78 % (D305)
 - [ ] The strings still above their floor: templates (3.6 -> 1.4, D359, D363), `concat` (2.9 -> 2.0, D368)
   - [x] `padStart` 4.9 times its floor, shown by measure: 8.7 of its 31.3 cycles a call to free the block of its result, 15.9 to take it, fill and copy; the floor makes no block (D378)
-  - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378); done for the concatenations that give a text its scope only reads (D404: a buffer of 128 bytes); left: the other operations that make a text (`padStart`, `toString`, `toUpperCase`, the copies), arrays
+  - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378); done for the concatenations that give a text its scope only reads (D404: a buffer of 128 bytes), `padStart` (D458), `toUpperCase` and `toLowerCase` (D501: 1.69 -> 1.33 times its floor); left: `toString`, the copies, arrays
 - [x] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output (D487, D488, D492, D495, D497, D498)
   - [x] Numbers: `toFixed`, the text of a double, `parseI64`, `parseF64` (D487: each at most 2.58 times its floor)
   - [x] Arrays: `map`, `filter`, `concat`, `zip`, `fold`, `scan`, `fill`, slices (D495: a `map` of a zip made one `map`, every form at most 1.79 times its floor)

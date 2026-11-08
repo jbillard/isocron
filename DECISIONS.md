@@ -11127,3 +11127,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   images of the releases, tried before they are published. The ten
   programs of the Benchmarks Game measured at 5adf9f3 (D499); nothing in
   `crates/` changed since but the version.
+- **D501 — A text in another case only read in its scope on the stack
+  (2026-11-08).** TODO: "the strings that live inside one expression placed
+  on the stack ... left: the other operations that make a text (`padStart`,
+  `toString`, `toUpperCase`, the copies)"; `padStart` done by D458. Now
+  `toUpperCase` and `toLowerCase` whose text is only read in its scope (the
+  analysis of D404: `result_concats`) write it into the buffer of 128 bytes
+  on the stack of D404 when it is ASCII (each byte mapped, the same length)
+  and fits (`isc_to_case_into`); a text that is not ASCII (its length may
+  change: `ß`) or longer, or given away, in a block as before.
+  - Measured (the old and new binaries of `strings`, 7 alternated runs,
+    fixed frequency): `toUpperCase` 17.69 -> 13.93 ns (-21.3 %), the others
+    of the group within 3.6 %; `run.py` (5 runs of 200 rounds):
+    `toUpperCase` 1.69 -> 1.33 times its floor; the highest of the group
+    `padStart` 2.71, `trim` 2.38, `split.6` 2.37. The LLVM IR of the ten
+    programs the same.
+  - Test `texts_of_another_case_on_the_stack` (`stdlib.rs`: ASCII texts of
+    0, 1, 127, 128, 129 and 300 bytes, texts that are not ASCII, compared,
+    searched, measured, a text given away and returned; the interpreter's
+    output on 1 and 4 threads; Valgrind; with the case of `toLowerCase`
+    made upper there it fails).

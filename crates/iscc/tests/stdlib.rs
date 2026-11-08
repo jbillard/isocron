@@ -2201,3 +2201,45 @@ action main(args: string[k]): i32 {
     let Outcome::Panic(m, _) = interp(src, &["1000", "1"]) else { panic!("no panic in the interpreter") };
     assert!(r.stderr.contains(&m), "{} against {}", r.stderr, m);
 }
+
+/// D501: a text in upper or lower case only read in its scope written into
+/// a buffer on the stack (as the padded texts of D458): ASCII texts of 0,
+/// 1, 127, 128 bytes and past them (the heap), texts that are not ASCII
+/// (the heap: their length may change, `ß`), compared, searched, measured;
+/// a text in another case given away (kept in an array, returned) on the
+/// heap; the interpreter's output, on 1 and 4 threads; Valgrind (no block
+/// of the stack freed, nothing lost).
+#[test]
+fn texts_of_another_case_on_the_stack() {
+    let src = "function cases(s: string): i64 {
+    return s.toUpperCase().length * 7 + (s.toLowerCase() == s ? 1 : 0) + (s.toUpperCase().includes(\"AB\") ? 2 : 0) + (s.toLowerCase().startsWith(\"w\") ? 4 : 0);
+}
+
+function kept(s: string): string {
+    return s.toUpperCase();
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const words = map(iota(n), (i) => `w${i * 37}ab${args[1]}`);
+    const sizes = map([0, 1, 127, 128, 129, 300], (w) => \"aB\".repeat(w / 2) + (w % 2 == 1 ? \"z\" : \"\"));
+    print(sum(map(words, cases)) + sum(map(sizes, cases)));
+    print(sum(map([\"stra\u{df}e\", \"\u{c9}t\u{e9}\", \"\u{e9}\".repeat(100), \"\"], (s) => s.toUpperCase().length * 1000 + s.toLowerCase().length)));
+    const t = map(words, (s) => s.toUpperCase());
+    print(t[n - 1]);
+    print(kept(words[0]));
+    print(`[${\"\".toUpperCase()}] [${\"Stra\u{df}e\".toUpperCase()}] [${sizes[3].toLowerCase().length}]`);
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &["300", "Q"]) else { panic!("the interpreter failed") };
+    let bin = compile(src, "case_stack");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call void @isc_to_case_into"), "texts of another case on the stack");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["300", "Q"], Some(t));
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        assert_eq!(r.stdout, want, "T={}", t);
+    }
+    valgrind_clean(src, "case_stack", &["50", "Q"]);
+}

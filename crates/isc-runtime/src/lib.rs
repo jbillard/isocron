@@ -2810,6 +2810,24 @@ pub unsafe extern "C" fn isc_to_case(out: *mut IscStr, p: *const u8, n: i64, upp
     *out = written(&|w| sem::to_case(w, s, upper != 0));
 }
 
+/// `isc_to_case` into the buffer `buf` of `cap` bytes (on the stack of the
+/// caller: the text only read in its scope, D501) when the text is ASCII
+/// (each byte mapped, the same length) and fits; else a block, as
+/// `isc_to_case`.
+#[no_mangle]
+pub unsafe extern "C" fn isc_to_case_into(out: *mut IscStr, buf: *mut u8, cap: i64, p: *const u8, n: i64, upper: i32) {
+    let b = bytes_of(p, n);
+    if n <= cap && b.is_ascii() {
+        let d = core::slice::from_raw_parts_mut(buf, n as usize);
+        for (o, &c) in d.iter_mut().zip(b) {
+            *o = if upper != 0 { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() };
+        }
+        *out = IscStr { ptr: if n == 0 { empty_ptr() } else { buf }, len: n };
+        return;
+    }
+    isc_to_case(out, p, n, upper)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
     let (s, fill) = (text(p, n), text(q, m));
