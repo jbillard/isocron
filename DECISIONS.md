@@ -11029,3 +11029,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     against interpreted alone cannot see a fault of a pass of the IR); with
     the components of pairs of one type swapped by the pass it fails
     (1484466 against -4490822).
+- **D496 — The Benchmarks Game measured again at 62d70aa (2026-11-08).**
+  After D494 (counts by value below the number of keys: k-nucleotide's
+  counts the same, 609.1 -> 608.4 ms alternated) and D495 (a `map` of a zip:
+  the LLVM IR of the ten programs the same), on a quiet machine (no `Plex
+  Transcoder` from three minutes before to the end): the image built with
+  the `iscc` of 62d70aa, 102 checks against the references (the same
+  outputs; the known difference of C++ #4 of mandelbrot at N = 200 only),
+  measured in Docker (4 threads, 12 runs, the lowest). The fastest on 10
+  of 10, every time within its scatter (k-nucleotide 607 -> 611 ms, within
+  605 to 622 ms since D429; n-body 1880 -> 1884 ms; the others within 1
+  ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
