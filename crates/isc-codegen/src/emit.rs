@@ -180,6 +180,10 @@ const UNROLL_IDS: u64 = 1 << 20;
 /// Width of the element-wise loops (speed only, never results).
 pub const MAP_WIDTH: u32 = 16;
 
+/// At most this many elements of a `map` whose elements are loops of their
+/// own are made where the `map` is, without a task (D520).
+const HEAVY_FEW: i64 = 4;
+
 /// The indices a search of rule F tests one at a time before its vectors
 /// (D512).
 const FIRST_SCALAR: i64 = 8;
@@ -5815,7 +5819,24 @@ impl<'p> Gen<'p> {
         // cut (D121)
         // at most one block: filled here, without a task (D172)
         let ldone = if heavy {
-            None
+            // a few elements, each a loop of its own, where the loops run one
+            // task after the other: filled here, without the task and its
+            // dispatch (D520: the members of each object of `json.parse`,
+            // two maps of 4 elements, a context and an indirect call each)
+            let few = self.ins(format!("icmp sle i64 {}, {}", n, HEAVY_FEW));
+            let (lask, lfew, lpar, ldone) = (self.label(), self.label(), self.label(), self.label());
+            self.cbr(&few, &lask, &lpar);
+            self.block(&lask);
+            // (only when the loops would run one task after the other: one
+            // thread, or inside a parallel loop; else their parallelism kept)
+            self.decls.insert("declare zeroext i1 @isc_loops_alone()".to_string());
+            let alone = self.ins("call zeroext i1 @isc_loops_alone()".to_string());
+            self.cbr(&alone, &lfew, &lpar);
+            self.block(&lfew);
+            self.fill_range(&src, &p, &n, &et, "0", &n, w)?;
+            self.br(&ldone);
+            self.block(&lpar);
+            Some(ldone)
         } else {
             let small = self.ins(format!("icmp sle i64 {}, {}", n, fill_block(esize(&et))));
             let lsmall = self.label();

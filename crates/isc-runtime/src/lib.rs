@@ -4638,6 +4638,15 @@ pub extern "C" fn isc_thread_count() -> i64 {
     thread_count() as i64
 }
 
+/// The parallel loops of the program would run here one task after the
+/// other: one thread, or a parallel loop already running (`BUSY`, as
+/// `isc_parallel_for_site` finds it). A `map` of a few elements that are
+/// loops of their own is then made where it is, without a task (D520).
+#[no_mangle]
+pub extern "C" fn isc_loops_alone() -> bool {
+    BUSY.load(Ordering::Relaxed) || thread_count() <= 1
+}
+
 // ---------------------------------------------------------------------
 // panics of the generated code
 

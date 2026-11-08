@@ -4,6 +4,12 @@
 
 ### The compiler
 
+* A `map` of at most 4 elements that are loops of their own is made where
+  it is when the loops run one task after the other (one thread, or inside
+  a parallel loop), without a task: `json.parse` 599 -> 510 ns a record
+  (below 3 times its floor), `json.stringify` -13.7 %, `json.encode`
+  -7.2 % (D520).
+
 * A text taken out of a tuple, or freed as a part of one, that is a
   literal of the program is not given to the runtime, wherever it is
   freed: `json.decode` 285 -> 263 ns a record (2.87 times its floor),

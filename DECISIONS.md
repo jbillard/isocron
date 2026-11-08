@@ -11666,3 +11666,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     at each turn, every `isc_free` of it preceded by the test, the
     interpreter's output, valgrind clean; it fails without the texts
     known by their registers (mutation checked).
+- **D520 — A `map` of at most 4 elements that are loops of their own made
+  where it is when the loops run one task after the other (2026-11-08).**
+  Profile of `json.parse` after D519 (one CPU at fixed frequency): the
+  building (`buildAny`) 22.2 %, the check (`anyAt`) 20.1 %, the two `map`s
+  of the members of an object (tasks 30 and 31) 20.4 %, `thread_count`
+  and `isc_parallel_for_site` 1.7 %. A `map` whose elements are loops of
+  their own (`inner_loop`: calls) went by `isc_parallel_for_site` whatever
+  its length: for each object of 4 members, two maps, each a context
+  written for the task, the dispatch, a call of the task by a pointer per
+  element; on one thread, or inside a parallel loop, `isc_parallel_for_site`
+  then runs the tasks one after the other anyway.
+  - Now such a `map` of at most 4 elements (`HEAVY_FEW`) asks the runtime
+    whether the loops would run one task after the other
+    (`isc_loops_alone`: one thread, or `BUSY`, a parallel loop running)
+    and then fills its elements where it is (`fill_range`), the order and
+    the panics those of the loop; otherwise the pool as before (a `map` of
+    4 heavy elements keeps its parallelism on several threads).
+  - Measured (A/B against 92f697b, one CPU at fixed frequency, 7 runs; the
+    programs and groups whose LLVM changed): `json.parse` 598.8 -> 510.0
+    ns (-14.8 %), `stringify` -13.7 %, `encode` -7.2 %, `decode` -3.4 %,
+    `http.serve.action.pipelined` -3.8 %; every other form of `json`,
+    `time`, `http`, `net`, `https`, `http_serve`, `https_serve`,
+    `https_serve_tls` within the spread of its runs; seven of the ten
+    programs whose LLVM changed (11 runs, 4 threads, the same outputs):
+    binary-trees +0.25 %, fannkuch-redux -0.21 %, fasta -0.09 %,
+    k-nucleotide +0.19 %, mandelbrot +0.19 %, regex-redux +0.68 %,
+    spectral-norm -0.01 %. On 4 threads (not fixed): `parse` 327 -> 261
+    ns, `stringify` 92.5 -> 68.0. `run.py` of `json` and `time` (5 runs of
+    200 rounds): `json.parse` 510.36 ns, 2.998 times its floor (3.52
+    before), `json.decode` 2.80, `stringify` 2.07: every form of the
+    standard library at most 3 times its floor but `sys.isAbsolute` and
+    `sorts.sortBy.length`, the representation of texts (D465, D488).
+  - Test `small_maps_of_loops_made_where_they_are` (`parallel.rs`): maps
+    of 0 to 6 heavy elements, alone and nested in a map of many, the
+    interpreter's results on 1, 2, 3, 4 and 8 threads, a panic in one of
+    their elements the interpreter's, the question in the LLVM; it fails
+    with the maps of few elements made where they are without the question
+    (their parallelism lost) (mutation checked; made never where they are,
+    only the time differs).

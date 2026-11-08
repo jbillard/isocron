@@ -456,3 +456,56 @@ action main(args: string[k]): i32 {
         }
     }
 }
+
+/// D520: a `map` of at most 4 elements that are loops of their own (calls
+/// of a recursive function) is made where it is, without a task, when the
+/// loops of the program run one task after the other (one thread, or
+/// inside a parallel loop: `isc_loops_alone`), and by the pool otherwise:
+/// maps of 0 to 6 such elements, alone and nested in a `map` of many
+/// elements, the interpreter's results on 1 to 8 threads; a panic in one
+/// of their elements the interpreter's; the question asked in the LLVM.
+#[test]
+fn small_maps_of_loops_made_where_they_are() {
+    let src = "function walk(i: i64, n: i64, acc: i64): i64 {
+    return i == n ? acc : walk(i + 1, n, (acc * 31 + i) % 1000003);
+}
+
+function cell(k: i64, i: i64): i64 {
+    return walk(0, 50 + (k * 7 + i) % 30, k);
+}
+
+action main(args: string[k]): i32 {
+    const m = parseI64(args[0]);
+    print(map(iota(7), (k) => sum(map(iota(k), (i) => cell(k, i)))));
+    print(sum(map(iota(m), (j) => sum(map(iota(j % 5), (i) => cell(j, i))))));
+    print(map(iota(4), (i) => cell(i, i)));
+    return 0;
+}
+";
+    let bin = compile(src, "small_maps_loops");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call zeroext i1 @isc_loops_alone()"), "the small maps of loops not made where they are");
+    for m in ["0", "3", "1000"] {
+        let want = interp_ok(src, &[m]);
+        for t in THREADS {
+            let r = run_bin_threads(&bin, &[m], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "m {} T={}: {}", m, t, r.stderr);
+        }
+    }
+    let bad = "function walk(i: i64, n: i64, acc: i64): i64 {
+    return i == n ? acc : walk(i + 1, n, (acc * 31 + i) % 1000003);
+}
+
+action main(args: string[k]): i32 {
+    const xs = [5, 6, 7];
+    print(sum(map(iota(200), (j) => sum(map(iota(j % 5), (i) => walk(0, 40, xs[i] + j))))));
+    return 0;
+}
+";
+    let want = interp_panic(bad, &[]);
+    let bin = compile(bad, "small_maps_loops_panic");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stderr.trim_end()), (101, want.as_str()), "T={}", t);
+    }
+}
