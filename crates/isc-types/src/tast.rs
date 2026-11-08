@@ -148,6 +148,12 @@ pub enum Prim {
     /// `$groupCounts(keys)` (D317): `$group` without the last indices
     /// (zeros), for `countBy`
     GroupCounts,
+    /// `$hashIndex(keys)` (D492): the index of hashes of the distinct keys of
+    /// a map
+    HashIndex,
+    /// `$hashFind(keys, index, k)` (D492): the position of `k` among the
+    /// keys, -1 if absent
+    HashFind,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// `argsort(x)`: the indices of the elements in their order, stable

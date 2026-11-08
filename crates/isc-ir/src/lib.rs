@@ -227,6 +227,11 @@ pub enum StrOp {
     /// `$groupCounts(keys)` (D317): the columns of `Group`, the last
     /// indices zeros (`countBy` reads the first indices and the counts).
     GroupCounts,
+    /// `$hashIndex(keys)` (D492): the index of hashes of the distinct keys
+    /// of a map, a new `[s]i64` (a power of two at least twice the keys).
+    HashIndex,
+    /// `$hashFind(keys, index, k)` (D492): the position of `k`, -1 if absent.
+    HashFind,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.

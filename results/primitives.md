@@ -2,7 +2,7 @@
 
 Each form of the language measured in Isocron and as the same work in C
 written the cheapest way known (its floor), on one CPU at fixed frequency,
-the median of 5 runs of 100 rounds (`bench/primitives/run.py`); the
+the median of 5 runs of 50 rounds (`bench/primitives/run.py`); the
 nanoseconds of one call, ranked by Isocron over its floor.
 
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
@@ -12,6 +12,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | json | `parse` | 788.61 | 171.37 | 4.6 |
 | json | `quote.escaped` | 81.97 | 19.76 | 4.1 |
 | sys | `isAbsolute` | 2.00 | 0.57 | 3.5 |
+| maps | `countBy.i64` | 7.33 | 2.36 | 3.1 |
 | sys | `dirname` | 8.55 | 2.89 | 3.0 |
 | http | `parseUrl` | 56.66 | 19.93 | 2.8 |
 | strings | `padStart` | 5.64 | 2.01 | 2.8 |
@@ -26,10 +27,14 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | http | `exchange.chunked64` | 48096.53 | 20317.21 | 2.4 |
 | net | `resolve.hosts` | 4434.18 | 1951.84 | 2.3 |
 | sys | `readFile.4k` | 4219.19 | 1918.45 | 2.2 |
+| maps | `get.i64` | 4.09 | 1.89 | 2.2 |
+| maps | `Map.build.i64` | 5.00 | 2.35 | 2.1 |
 | strings | `indexOf.1` | 6.11 | 3.08 | 2.0 |
+| maps | `has.miss.i64` | 2.99 | 1.57 | 1.9 |
 | strings | `bytes` | 1.52 | 0.83 | 1.8 |
 | strings | `endsWith.2` | 1.67 | 0.91 | 1.8 |
 | sorts | `sort.string` | 121.66 | 67.09 | 1.8 |
+| maps | `get.string` | 20.73 | 11.47 | 1.8 |
 | sys | `normalize` | 89.90 | 49.94 | 1.8 |
 | strings | `parseI64.7` | 8.83 | 4.96 | 1.8 |
 | strings | `lines.line` | 15.09 | 8.53 | 1.8 |

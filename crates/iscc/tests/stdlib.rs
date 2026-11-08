@@ -2039,3 +2039,51 @@ fn sorts_of_every_type_of_number() {
     }
     assert_eq!(r.stdout, want);
 }
+
+/// D492: maps by an index of hashes, for keys of every class (integers of
+/// 8 to 64 bits of both signs, unsigned ones above 2^63, booleans, texts,
+/// `bigint`), 3000 entries with keys repeated: `get` and `has` of keys
+/// present and absent, `set` of a key present and of a new one, `delete`,
+/// `entries` in the order of first insertion, `countBy`; the compiled
+/// program writes what the interpreter writes.
+#[test]
+fn maps_of_every_class_of_key() {
+    let src = "action main(args: string[k]): i32 {
+    const n = 3000;
+    const a = new Map(map(iota(n), (i) => [i8(i % 251 - 125), i] as const));
+    print([a.size, a.get(i8(-125)) ?? -1, a.get(i8(125)) ?? -1, a.get(i8(126)) ?? -1, a.has(i8(0)) ? 1 : 0] as const);
+    const b = new Map(map(iota(n), (i) => [i16((i * 7919) % 2003 - 1000), i] as const));
+    print(sum(map(iota(2100), (k) => b.get(i16(k - 1050)) ?? 7)));
+    const c = new Map(map(iota(n), (i) => [i32((i * 104729) % 4001) * 1000003, i] as const));
+    print(count(iota(5000), (k) => c.has(i32(k) * 1000003)));
+    const d = new Map(map(iota(n), (i) => [(i * 7919) % 1777 * 1000000007 - 900000000000, i] as const));
+    print(sum(map(iota(2000), (k) => d.get(k * 1000000007 - 900000000000) ?? 0)));
+    const e = new Map(map(iota(n), (i) => [u8(i % 200), i] as const));
+    print([e.size, e.get(u8(199)) ?? -1, e.get(u8(255)) ?? -1] as const);
+    const f = new Map(map(iota(n), (i) => [u64((i * 7919) % n) * 6000000000000000u64, i] as const));
+    print(sum(map(iota(n), (k) => f.get(u64(k) * 6000000000000000u64) ?? 0)));
+    const g = new Map(map(iota(n), (i) => [i % 3 == 0, i] as const));
+    print([g.size, g.get(true) ?? -1, g.get(false) ?? -1] as const);
+    const h = new Map(map(iota(n), (i) => [`w${(i * 7919) % 1500}`, i] as const));
+    print(sum(map(iota(1600), (k) => h.get(`w${k}`) ?? 0)));
+    print(h.has(\"w\") ? 1 : 0);
+    const j = new Map(map(iota(n), (i) => [BigInt((i * 7919) % 1300) * 1000000000000000000000n, i] as const));
+    print(sum(map(iota(1400), (k) => j.get(BigInt(k) * 1000000000000000000000n) ?? 0)));
+    const s = h.set(\"w7\", -5).set(\"new\", 42).delete(\"w8\");
+    print([s.size, s.get(\"w7\") ?? 0, s.get(\"new\") ?? 0, s.get(\"w8\") ?? 0, s.get(\"w9\") ?? 0] as const);
+    print(s.entries().slice(0, 4));
+    const t = countBy(map(iota(n), (i) => (i * 7919) % 97), (x) => x % 13);
+    print(t.entries());
+    print(t.get(12) ?? 0);
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    assert_eq!(want.lines().count(), 14, "{}", want);
+    let r = run_bin(&compile(src, "maps_of_every_key"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    for (k, (a, b)) in r.stdout.lines().zip(want.lines()).enumerate() {
+        assert!(a == b, "line {}: {} against {}", k + 1, a, b);
+    }
+    assert_eq!(r.stdout, want);
+}

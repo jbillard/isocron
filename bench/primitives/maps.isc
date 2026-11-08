@@ -1,0 +1,33 @@
+// The audit of every form against the machine (TODO, D299): the maps
+// (D492), 4096 elements and 1000 distinct keys, in the caches. Each line of
+// the output: a name, the nanoseconds of one element (the mean over
+// `rounds` rounds, `bench`) and a checksum; run on one thread
+// (ISC_THREADS=1), against `maps.c` (the same work in C, the floor).
+// usage: maps <rounds>
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    const xs = map(iota(n), (i) => (i * 7919 * 104729) % 1000000007);
+    const names = map(iota(1000), (k) => `key${(k * 7919) % 100003}`);
+    const m = new Map(map(iota(n), (i) => [xs[i] % 1000, i] as const));
+    const ms = new Map(map(iota(1000), (k) => [names[k], k] as const));
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => {
+        const c = countBy(xs, (x) => x % 1000);
+        return c.size * 100000 + (c.get(7) ?? 0) * 100 + (c.get(999) ?? 0);
+    });
+    print(`countBy.i64 ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => {
+        const b = new Map(map(iota(n), (i) => [xs[i] % 1000, i] as const));
+        return b.size * 100000 + (b.get(7) ?? 0);
+    });
+    print(`Map.build.i64 ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => sum(map(xs, (x) => m.get(x % 1000) ?? 0)));
+    print(`get.i64 ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => sum(map(xs, (x) => ms.get(names[x % 1000]) ?? 0)));
+    print(`get.string ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    const [a5, t5] = bench(r, () => count(xs, (x) => m.has(x % 1000 + 1000)));
+    print(`has.miss.i64 ${(f64(t5) / each).toFixed(3)} ${a5}`);
+    return 0;
+}

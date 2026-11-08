@@ -3035,6 +3035,58 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
     *out = IscArray { ptr: q as *mut u8, len: n as i64 };
 }
 
+/// The key at position `i` of the keys `p` of a map, of the kind of
+/// `group_kind` (integers widened to 64 bits as the interpreter holds them,
+/// sign extended when signed; booleans 0 and 1), as an integer (D492).
+unsafe fn map_key_word(p: *const u8, i: usize, kind: i32) -> u64 {
+    match kind {
+        0 => *(p as *const i8).add(i) as u64,
+        1 => *(p as *const i16).add(i) as u64,
+        2 => *(p as *const i32).add(i) as u64,
+        3 | 7 => *(p as *const u64).add(i),
+        4 | 10 => *p.add(i) as u64,
+        5 => *(p as *const u16).add(i) as u64,
+        _ => *(p as *const u32).add(i) as u64,
+    }
+}
+
+/// `$hashIndex(keys)` (D492): the index of hashes of the `n` distinct keys
+/// `p` of a map (`sem::hash_index`), a new array.
+#[no_mangle]
+pub unsafe extern "C" fn isc_hash_index(out: *mut IscArray, p: *const u8, n: i64, kind: i32) {
+    let n = n.max(0) as usize;
+    let slots = if kind == 11 {
+        sem::hash_index(n, |i| {
+            let s = *(p as *const IscStr).add(i);
+            sem::hash_bytes(bytes_of(s.ptr, s.len))
+        })
+    } else {
+        sem::hash_index(n, |i| sem::hash_word(map_key_word(p, i, kind)))
+    };
+    let q = isc_alloc((slots.len() * 8) as i64) as *mut i64;
+    core::ptr::copy_nonoverlapping(slots.as_ptr(), q, slots.len());
+    *out = IscArray { ptr: q as *mut u8, len: slots.len() as i64 };
+}
+
+/// `$hashFind(keys, index, k)` (D492): the position of the key `k` (`kw`,
+/// an integer widened as `map_key_word`, or the bytes `kp`, `kn`) among
+/// the `n` keys `p` of a map of index `q` (`m` slots), -1 if absent.
+#[no_mangle]
+pub unsafe extern "C" fn isc_hash_find(p: *const u8, n: i64, q: *const i64, m: i64, kind: i32, kw: i64, kp: *const u8, kn: i64) -> i64 {
+    let _ = n;
+    let slots = core::slice::from_raw_parts(q, m.max(0) as usize);
+    if kind == 11 {
+        let key = bytes_of(kp, kn);
+        sem::hash_find(slots, sem::hash_bytes(key), |j| {
+            let s = *(p as *const IscStr).add(j);
+            bytes_of(s.ptr, s.len) == key
+        })
+    } else {
+        let kw = kw as u64;
+        sem::hash_find(slots, sem::hash_word(kw), |j| map_key_word(p, j, kind) == kw)
+    }
+}
+
 /// From this many numbers on, `argsort` sorts their keys by their bytes
 /// (D488); below, by comparisons.
 const ARGSORT_RADIX_MIN: usize = 64;

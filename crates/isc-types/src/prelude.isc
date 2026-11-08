@@ -123,27 +123,24 @@ type Option<T> = None | Some(T);
 
 // `Map<K, V>` (D158): a dictionary, never changed in place. Its three
 // arrays: the keys in the order of their first insertion, their values,
-// and `order`, the positions of the keys sorted (`keys[order[j]]` is the
-// key of rank j), searched by bisection. Built at once from its entries,
-// in O(n log n); `set` and `delete` give a new map, in O(n log n).
+// and `index`, a table of hashes of the keys (D492: each slot 0 or the
+// position of a key plus one, a power of two of slots at most half full; a
+// fixed hash, the same bits everywhere; the ranks of the keys sorted and a
+// bisection before: `get` 51 times its floor). Built at once from its
+// entries, in O(n); `set` and `delete` give a new map, in O(n).
 
-// the position of `k` among the keys, -1 if absent: ranks [lo, hi). The
-// functions of maps read sizes from their parameters, never with `len`,
-// which a program may replace.
-function $find<K extends Key>(keys: K[n], order: i64[n], k: K, lo: i64, hi: i64): i64 {
-    const mid = (lo + hi) / 2;
-    return lo >= hi ? -1 : (keys[order[mid]] < k ? $find(keys, order, k, mid + 1, hi) : (k < keys[order[mid]] ? $find(keys, order, k, lo, mid) : order[mid]));
-}
-
-function $findIn<K extends Key>(keys: K[n], order: i64[n], k: K): i64 {
-    return $find(keys, order, k, 0, n);
+// the position of `k` among the keys, -1 if absent. The functions of maps
+// read sizes from their parameters, never with `len`, which a program may
+// replace.
+function $findIn<K extends Key>(keys: K[n], index: i64[s], k: K): i64 {
+    return $hashFind(keys, index, k);
 }
 
 // the map of `ks` and `vs`: each distinct key at its first position, with
 // its last value (as `set` of TypeScript, entry after entry). `$group`
 // gives, for the m distinct keys in the order of their first occurrence,
 // their first indices, their last ones and their counts (a table of
-// hashes, D167); only the m keys are sorted, for `order`.
+// hashes, D167); then the index of the m keys (D492).
 // the number of keys of a result of `$group` (no `len`: a program may
 // replace it)
 function $third(g: i64[t]): i64 {
@@ -157,7 +154,7 @@ function $mapFrom<K extends Key, V>(ks: K[n], vs: V[n]): Map<K, V> {
 
 function $mapPick<K extends Key, V>(ks: K[n], vs: V[n], g: i64[t], r: i64[m]): Map<K, V> {
     const keys = map(r, (i) => ks[g[i]]);
-    return $mapOf(keys, map(r, (i) => vs[g[m + i]]), argsort(keys));
+    return $mapOf(keys, map(r, (i) => vs[g[m + i]]), $hashIndex(keys));
 }
 
 // `Map(entries)`: TypeScript's `new Map(entries)`
@@ -184,12 +181,12 @@ function countBy<T, K extends Key>(xs: T[n], f: (x: T) => K): Map<K, i64> {
 
 function $countPick<T, K extends Key>(xs: T[n], f: (x: T) => K, g: i64[t], r: i64[m]): Map<K, i64> {
     const keys = map(r, (i) => f(xs[g[i]]));
-    return $mapOf(keys, map(r, (i) => g[2 * m + i]), argsort(keys));
+    return $mapOf(keys, map(r, (i) => g[2 * m + i]), $hashIndex(keys));
 }
 
 function get<K extends Key, V>(m: Map<K, V>, k: K): Option<V> {
-    const [keys, values, order] = $mapParts(m);
-    const i = $findIn(keys, order, k);
+    const [keys, values, index] = $mapParts(m);
+    const i = $findIn(keys, index, k);
     if (i < 0) {
         return None;
     } else {
@@ -198,17 +195,17 @@ function get<K extends Key, V>(m: Map<K, V>, k: K): Option<V> {
 }
 
 function has<K extends Key, V>(m: Map<K, V>, k: K): boolean {
-    const [keys, values, order] = $mapParts(m);
-    return $findIn(keys, order, k) >= 0;
+    const [keys, values, index] = $mapParts(m);
+    return $findIn(keys, index, k) >= 0;
 }
 
 function keys<K extends Key, V>(m: Map<K, V>): K[k] {
-    const [ks, vs, order] = $mapParts(m);
+    const [ks, vs, index] = $mapParts(m);
     return ks;
 }
 
 function values<K extends Key, V>(m: Map<K, V>): V[k] {
-    const [ks, vs, order] = $mapParts(m);
+    const [ks, vs, index] = $mapParts(m);
     return vs;
 }
 
@@ -217,14 +214,14 @@ function $pairs<K, V>(ks: K[n], vs: V[n]): [K, V][n] {
 }
 
 function entries<K extends Key, V>(m: Map<K, V>): [K, V][k] {
-    const [ks, vs, order] = $mapParts(m);
+    const [ks, vs, index] = $mapParts(m);
     return $pairs(ks, vs);
 }
 
-function $set<K extends Key, V>(ks: K[n], vs: V[n], order: i64[n], k: K, v: V): Map<K, V> {
-    const i = $findIn(ks, order, k);
+function $set<K extends Key, V>(ks: K[n], vs: V[n], index: i64[s], k: K, v: V): Map<K, V> {
+    const i = $findIn(ks, index, k);
     if (i >= 0) {
-        return $mapOf(ks, vs.with(i, v), order);
+        return $mapOf(ks, vs.with(i, v), index);
     } else {
         return $mapFrom(map(iota(n + 1), (j) => j < n ? ks[j] : k), map(iota(n + 1), (j) => j < n ? vs[j] : v));
     }
@@ -232,20 +229,20 @@ function $set<K extends Key, V>(ks: K[n], vs: V[n], order: i64[n], k: K, v: V): 
 
 // a new map: `k` with the value `v`, at its place if `m` has it, else last
 function set<K extends Key, V>(m: Map<K, V>, k: K, v: V): Map<K, V> {
-    const [ks, vs, order] = $mapParts(m);
-    return $set(ks, vs, order, k, v);
+    const [ks, vs, index] = $mapParts(m);
+    return $set(ks, vs, index, k, v);
 }
 
-function $delete<K extends Key, V>(ks: K[n], vs: V[n], order: i64[n], k: K): Map<K, V> {
-    const i = $findIn(ks, order, k);
+function $delete<K extends Key, V>(ks: K[n], vs: V[n], index: i64[s], k: K): Map<K, V> {
+    const i = $findIn(ks, index, k);
     const kept = filter(iota(n), (j) => j != i);
     return $mapFrom(map(kept, (j) => ks[j]), map(kept, (j) => vs[j]));
 }
 
 // a new map without `k`
 function delete<K extends Key, V>(m: Map<K, V>, k: K): Map<K, V> {
-    const [ks, vs, order] = $mapParts(m);
-    return $delete(ks, vs, order, k);
+    const [ks, vs, index] = $mapParts(m);
+    return $delete(ks, vs, index, k);
 }
 
 // `f` applied to each element of `x` from the `i`-th on, in order (D352)

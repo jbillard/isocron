@@ -391,6 +391,40 @@ impl Interp<'_> {
                 }
                 Value::Array(Rc::new(Array::Int(g)))
             }
+            // the index of hashes of the keys of a map, the position of a key
+            // in it (D492): the code of the runtime
+            S::HashIndex => {
+                use isc_runtime_core::{hash_bytes, hash_index, hash_word};
+                let a = match &vs[0] {
+                    Value::Array(a) => a.clone(),
+                    v => panic!("array expected, got {:?}", v),
+                };
+                let slots = match &*a {
+                    Array::Int(v) => hash_index(v.len(), |i| hash_word(v[i] as u64)),
+                    Array::Bool(v) => hash_index(v.len(), |i| hash_word(v[i] as u64)),
+                    Array::Str(v) => hash_index(v.len(), |i| hash_bytes(v[i].as_bytes())),
+                    a => panic!("$hashIndex of {:?}", a),
+                };
+                Value::Array(Rc::new(Array::Int(slots)))
+            }
+            S::HashFind => {
+                use isc_runtime_core::{hash_bytes, hash_find, hash_word};
+                let (a, ix) = match (&vs[0], &vs[1]) {
+                    (Value::Array(a), Value::Array(ix)) => (a.clone(), ix.clone()),
+                    v => panic!("arrays expected, got {:?}", v),
+                };
+                let slots: &[i64] = match &*ix {
+                    Array::Int(v) => v,
+                    a => panic!("an index of i64 expected, got {:?}", a),
+                };
+                let i = match (&*a, &vs[2]) {
+                    (Array::Int(v), Value::Int(k)) => hash_find(slots, hash_word(*k as u64), |j| v[j] == *k),
+                    (Array::Bool(v), Value::Bool(k)) => hash_find(slots, hash_word(*k as u64), |j| v[j] == *k),
+                    (Array::Str(v), Value::Str(k)) => hash_find(slots, hash_bytes(k.as_bytes()), |j| v[j].as_bytes() == k.as_bytes()),
+                    (a, k) => panic!("$hashFind of {:?} and {:?}", a, k),
+                };
+                Value::Int(i)
+            }
             // stable: the ties by index (D155)
             S::ArgSort => {
                 let a = match &vs[0] {

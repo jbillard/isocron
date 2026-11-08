@@ -924,6 +924,8 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_trim_side(ptr, ptr, i64, i32)",
     "declare void @isc_str_slice(ptr, ptr, i64, i64, i64, i32, i32)",
     "declare i64 @isc_last_index_of(ptr, i64, ptr, i64)",
+    "declare void @isc_hash_index(ptr, ptr, i64, i32)",
+    "declare i64 @isc_hash_find(ptr, i64, ptr, i64, i32, i64, ptr, i64)",
     "declare void @isc_to_fixed(ptr, double, i64, i32, i32)",
     "declare void @isc_read_stdin(ptr, i32, i32)",
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
@@ -12323,6 +12325,75 @@ impl<'p> Gen<'p> {
                 // the last indices not made for `$groupCounts` (D317)
                 let kind = group_kind(es[0].ty.elem()) | if op == S::GroupCounts { GROUP_COUNTS } else { 0 };
                 new_str(self, format!("call void @isc_group(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
+            }
+            // the index of hashes of the keys of a map, the position of a key
+            // in it (D492)
+            S::HashIndex => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let kind = group_kind(es[0].ty.elem());
+                new_str(self, format!("call void @isc_hash_index(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
+            }
+            // integer keys probed in the generated code: `hash_word` of the key
+            // widened to 64 bits, then the slots from its own up to an empty
+            // one, each key read with its type (no call, no choice of its
+            // kind at each probe: `get` of an integer 7.5 ns, 4 times its
+            // floor, with the call)
+            S::HashFind if matches!(es[0].ty.elem(), Type::Int(_)) => {
+                let (p, _) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let t = vals[2].t.clone();
+                let signed = matches!(&es[2].ty, Type::Int(k) if k.signed());
+                let kw = if t == "i64" { vals[2].r.clone() } else { self.ins(format!("{} {} {} to i64", if signed { "sext" } else { "zext" }, t, vals[2].r)) };
+                let h0 = self.ins(format!("mul i64 {}, -7046029254386353131", kw));
+                let h1 = self.ins(format!("lshr i64 {}, 29", h0));
+                let h = self.ins(format!("xor i64 {}, {}", h0, h1));
+                let mask = self.ins(format!("sub i64 {}, 1", m));
+                let at0 = self.ins(format!("and i64 {}, {}", h, mask));
+                let res = self.alloca("i64");
+                let at = self.alloca("i64");
+                self.emit(format!("store i64 -1, ptr {}", res));
+                self.emit(format!("store i64 {}, ptr {}", at0, at));
+                let (lloop, lcheck, lnext, lfound, ldone) = (self.label(), self.label(), self.label(), self.label(), self.label());
+                // an index has at least 2 slots (`hash_index`); none: absent
+                let none = self.ins(format!("icmp eq i64 {}, 0", m));
+                self.cbr(&none, &ldone, &lloop);
+                self.block(&lloop);
+                let a = self.ins(format!("load i64, ptr {}", at));
+                let sp = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", q, a));
+                let slot = self.ins(format!("load i64, ptr {}", sp));
+                let empty = self.ins(format!("icmp eq i64 {}, 0", slot));
+                self.cbr(&empty, &ldone, &lcheck);
+                self.block(&lcheck);
+                let j = self.ins(format!("sub i64 {}, 1", slot));
+                let kp = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", t, p, j));
+                let kj = self.ins(format!("load {}, ptr {}", t, kp));
+                let eq = self.ins(format!("icmp eq {} {}, {}", t, kj, vals[2].r));
+                self.cbr(&eq, &lfound, &lnext);
+                self.block(&lfound);
+                self.emit(format!("store i64 {}, ptr {}", j, res));
+                self.br(&ldone);
+                self.block(&lnext);
+                let a1 = self.ins(format!("add i64 {}, 1", a));
+                let a2 = self.ins(format!("and i64 {}, {}", a1, mask));
+                self.emit(format!("store i64 {}, ptr {}", a2, at));
+                self.br(&lloop);
+                self.block(&ldone);
+                v(self.ins(format!("load i64, ptr {}", res)), "i64")
+            }
+            S::HashFind => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let kind = group_kind(es[0].ty.elem());
+                let (kw, kp, kn) = if kind == 11 {
+                    let (kp, kn) = self.str_parts(&vals[2]);
+                    ("0".to_string(), kp, kn)
+                } else {
+                    let t = vals[2].t.clone();
+                    let signed = matches!(&es[2].ty, Type::Int(k) if k.signed());
+                    let kw = if t == "i64" { vals[2].r.clone() } else { self.ins(format!("{} {} {} to i64", if signed { "sext" } else { "zext" }, t, vals[2].r)) };
+                    (kw, "null".to_string(), "0".to_string())
+                };
+                v(self.ins(format!("call i64 @isc_hash_find(ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, i64 {}, ptr {}, i64 {})", p, n, q, m, kind, kw, kp, kn)), "i64")
             }
             S::ArgSort => {
                 let (p, n) = self.str_parts(&vals[0]);

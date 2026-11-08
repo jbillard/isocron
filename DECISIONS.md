@@ -10900,3 +10900,55 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D492 — Maps by an index of hashes, and the group of maps measured
+  (2026-11-08).** The audit of the representations chosen without a
+  measure (TODO): D158 laid a map out as its keys by first insertion, its
+  values, and the ranks of its keys sorted, searched by bisection ("the
+  same order and bits everywhere"). Now `bench/primitives/maps.isc` and its
+  floor `maps.c` (4096 elements, 1000 distinct keys, in the caches, one
+  thread): `countBy`, `Map(entries)`, `get` of integers and of texts that
+  find, `has` of integers that do not; the floor a table of hashes by
+  linear probing (a power of two, at most half full) with the keys in the
+  order of their first insertion. Measured first (not at a fixed
+  frequency): `get` of an integer 67.5 ns, 51 times its floor; the profile
+  (one CPU at fixed frequency): the bisection, a mispredicted branch and two
+  dependent loads (the rank, then the key) at each of its 10 steps.
+  - The order of a map that a program sees is that of first insertion
+    (`keys`, `values`, `entries`); the index is not seen. Now its third
+    array is an index of hashes: a power of two of slots at least twice its
+    keys, each 0 or the position of a key plus one, linear probing, the hash
+    of D167 (`hash_word` of an integer widened to 64 bits as the interpreter
+    holds it, `hash_bytes` of a text or a `bigint`): fixed, so the same
+    bits everywhere. Two primitives, `$hashIndex(keys)` and `$hashFind(keys,
+    index, k)`, over `hash_index` and `hash_find` of `isc-runtime-core`
+    (the interpreter and the runtime); `$mapOf` and `$mapParts` type the
+    index by a size of its own. Integer keys are probed in the generated
+    code (the hash, then the slots, each key read with its type): through
+    the call, `get` 7.42 ns; in the code 4.13 ns. The table of counts of
+    `$groupCounts` (D317) now starts with room for min(n, 8192) keys at
+    most 3/4 full: a count of 4096 keys grew once from 1024 slots, 18 % of
+    its time.
+  - Measured (the old and new binaries of `maps`, 7 alternated runs, fixed
+    frequency, no transcoder of Plex): `get.i64` 56.08 -> 7.48 ns with the
+    call, then 7.42 -> 4.13 inline; `get.string` 167.69 -> 20.13 ns;
+    `has.miss.i64` 12.31 -> 8.88 -> 2.97 ns; `Map.build.i64` 5.70 -> 4.96
+    ns; `countBy.i64` 9.72 -> 9.00 ns, then 9.03 -> 7.34 ns with the room.
+    `run.py` (5 runs of 50 rounds): `get.string` 1.81 times its floor,
+    `has.miss.i64` 1.90, `Map.build.i64` 2.13, `get.i64` 2.17,
+    `countBy.i64` 3.11 (its profile: the insertion into the lines of 8 slots
+    compared in vectors of D317, made for tables larger than the caches,
+    57 %; the columns of the result 11.6 %; the index of the map 7.0 %; open:
+    a probe of one slot for a table in the caches). k-nucleotide, which
+    counts by `countBy` and reads by `get` (its LLVM IR the only one of the
+    ten that changes): the same outputs, 608.0 -> 607.2 ms, then 607.9 ->
+    607.6 ms with the room (15 alternated runs).
+  - In the guide and SPEC section 4: a map built in O(n), `get` and `has`
+    in O(1) on average.
+  - Tests: `hash_index_finds_each_key` (`isc-runtime-core`: 0 to 300 keys
+    and 5000, integers of every range with equal hashes modulo the table,
+    texts, keys absent), `maps_of_every_class_of_key` (`stdlib.rs`: maps
+    of integers of 8 to 64 bits of both signs, unsigned above 2^63,
+    booleans, texts and `bigint`, 3000 entries, `get`, `has`, `set`,
+    `delete`, `entries`, `countBy`, compiled against interpreted; with the
+    hash of the probe in the code shifted by 30 for 29 it fails at its first
+    line), and the example of the guide (the same output).

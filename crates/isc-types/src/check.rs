@@ -201,6 +201,8 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$mapOf" => Prim::MapOf,
         "$group" => Prim::Group,
         "$groupCounts" => Prim::GroupCounts,
+        "$hashIndex" => Prim::HashIndex,
+        "$hashFind" => Prim::HashFind,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2688,7 +2690,8 @@ impl<'g> FnCx<'g> {
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
-            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts => 1,
+            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
+            Prim::HashFind => 3,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -3079,6 +3082,26 @@ impl<'g> FnCx<'g> {
                 self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
                 Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
             }
+            // the index of hashes of the keys of a map, of its own size (D492)
+            Prim::HashIndex => {
+                let x = self.check(&args[0], None)?;
+                let elem = self.expect_array(&x.ty, x.span, "the keys of `$hashIndex`")?;
+                self.require(&elem, class::KEY, x.span)?;
+                let s = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("s@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
+            }
+            Prim::HashFind => {
+                let ks = self.check(&args[0], None)?;
+                let k = self.expect_array(&ks.ty, ks.span, "the keys of `$hashFind`")?;
+                self.require(&k, class::KEY, ks.span)?;
+                let ix = self.check(&args[1], None)?;
+                let e = self.expect_array(&ix.ty, ix.span, "the index of `$hashFind`")?;
+                self.unify(&Ty::Int(IntKind::I64), &e, ix.span)?;
+                let x = self.check(&args[2], Some(&k))?;
+                self.unify(&k, &x.ty, x.span)?;
+                Ok(mk(vec![ks, ix, x], Ty::Int(IntKind::I64), self))
+            }
             Prim::ArgSort => {
                 let x = self.check(&args[0], None)?;
                 let elem = self.expect_array(&x.ty, x.span, "the argument of `argsort`")?;
@@ -3164,13 +3187,15 @@ impl<'g> FnCx<'g> {
                 self.require(&k, class::KEY, ks.span)?;
                 let vs = self.check(&args[1], None)?;
                 let v = self.expect_array(&vs.ty, vs.span, "the values of a Map")?;
+                // the index of hashes of the keys (D492), of its own size
                 let ord = self.check(&args[2], None)?;
                 let n = match self.shallow(&ks.ty) {
                     Ty::Array(s, _) => s,
                     _ => unreachable!(),
                 };
-                self.unify(&Ty::Array(n.clone(), Box::new(v.clone())), &vs.ty, vs.span)?;
-                self.unify(&Ty::Array(n, Box::new(Ty::Int(IntKind::I64))), &ord.ty, ord.span)?;
+                self.unify(&Ty::Array(n, Box::new(v.clone())), &vs.ty, vs.span)?;
+                let oe = self.expect_array(&ord.ty, ord.span, "the index of a Map")?;
+                self.unify(&Ty::Int(IntKind::I64), &oe, ord.span)?;
                 let t = self.map_ty(k, v, span)?;
                 Ok(mk(vec![ks, vs, ord], t, self))
             }
@@ -3186,7 +3211,10 @@ impl<'g> FnCx<'g> {
                 let s = self.syms.len() as SymId;
                 self.syms.push(SymInfo { name: format!("k@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
                 let n = Size::Poly(Poly::sym(s));
-                let t = Ty::Tuple(vec![Ty::Array(n.clone(), Box::new(k)), Ty::Array(n.clone(), Box::new(v)), Ty::Array(n, Box::new(Ty::Int(IntKind::I64)))]);
+                // the index of hashes of its own size (D492)
+                let s2 = self.syms.len() as SymId;
+                self.syms.push(SymInfo { name: format!("s@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
+                let t = Ty::Tuple(vec![Ty::Array(n.clone(), Box::new(k)), Ty::Array(n, Box::new(v)), Ty::Array(Size::Poly(Poly::sym(s2)), Box::new(Ty::Int(IntKind::I64)))]);
                 Ok(mk(vec![m], t, self))
             }
             Prim::RxTest => {

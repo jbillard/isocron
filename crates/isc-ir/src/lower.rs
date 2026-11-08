@@ -2493,6 +2493,8 @@ impl<'p> Lower<'p> {
             | Prim::ArgSort
             | Prim::Group
             | Prim::GroupCounts
+            | Prim::HashIndex
+            | Prim::HashFind
             | Prim::ParseFloat
             | Prim::ParseInt
             | Prim::StrSlice => {
@@ -2500,6 +2502,8 @@ impl<'p> Lower<'p> {
                     Prim::ArgSort => StrOp::ArgSort,
                     Prim::Group => StrOp::Group,
                     Prim::GroupCounts => StrOp::GroupCounts,
+                    Prim::HashIndex => StrOp::HashIndex,
+                    Prim::HashFind => StrOp::HashFind,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),

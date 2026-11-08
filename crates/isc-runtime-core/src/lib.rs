@@ -2604,6 +2604,38 @@ mod find_bytes_tests {
     extern crate alloc;
     use alloc::vec::Vec;
 
+    /// D492: `hash_find` finds each key of `hash_index` at its position and
+    /// no other one, for 0 to 300 keys and 5000, integers of every range
+    /// (equal hashes modulo the table included: multiples of its size) and
+    /// texts.
+    #[test]
+    fn hash_index_finds_each_key() {
+        use super::{hash_bytes, hash_find, hash_index, hash_word};
+        let mut sizes: alloc::vec::Vec<usize> = (0..=300).collect();
+        sizes.push(5000);
+        for &n in &sizes {
+            for step in [1i64, 7, 1024, 1 << 40] {
+                let keys: alloc::vec::Vec<i64> = (0..n as i64).map(|i| i * step - 3).collect();
+                let slots = hash_index(n, |i| hash_word(keys[i] as u64));
+                assert!(slots.len().is_power_of_two() && slots.len() >= 2 * n);
+                for (i, &k) in keys.iter().enumerate() {
+                    assert_eq!(hash_find(&slots, hash_word(k as u64), |j| keys[j] == k), i as i64, "{} keys, step {}", n, step);
+                }
+                for k in [-4i64, n as i64 * step + 1, i64::MIN, i64::MAX] {
+                    if !keys.contains(&k) {
+                        assert_eq!(hash_find(&slots, hash_word(k as u64), |j| keys[j] == k), -1);
+                    }
+                }
+            }
+            let texts: alloc::vec::Vec<alloc::string::String> = (0..n).map(|i| alloc::format!("w{}", i * 31)).collect();
+            let slots = hash_index(n, |i| hash_bytes(texts[i].as_bytes()));
+            for (i, t) in texts.iter().enumerate() {
+                assert_eq!(hash_find(&slots, hash_bytes(t.as_bytes()), |j| texts[j] == *t), i as i64);
+            }
+            assert_eq!(hash_find(&slots, hash_bytes(b"absent"), |j| texts[j] == "absent"), -1);
+        }
+    }
+
     /// D488: `radix_order` gives the order of a stable sort by the key,
     /// for keys of every range (one value, a few, bytes in the middle, the
     /// whole of 64 bits), 0 to 300 keys and 5000.
@@ -5605,7 +5637,12 @@ impl CountTable {
     /// will be merged with): its counts below 2^bits.
     pub fn new(direct: bool, n: usize) -> CountTable {
         let bits = (usize::BITS - n.max(1).leading_zeros()).max(1);
-        CountTable { lines: alloc::vec![Line::default(); 128], used: 0, bits, small: alloc::vec::Vec::new(), direct, first: alloc::vec::Vec::new(), keys: alloc::vec::Vec::new(), wide: None }
+        // room for min(n, 8192) keys at most 3/4 full (D492: a count of 4096
+        // keys grew once from 1024 slots, 18 % of its time), at least 128
+        // lines
+        let want = n.min(1 << 13);
+        let lines = (want * 4 / 3 / 8 + 1).next_power_of_two().max(128);
+        CountTable { lines: alloc::vec![Line::default(); lines], used: 0, bits, small: alloc::vec::Vec::new(), direct, first: alloc::vec::Vec::new(), keys: alloc::vec::Vec::new(), wide: None }
     }
 
     /// The key `k` fits in a slot with its count.
@@ -5841,6 +5878,46 @@ impl CountTable {
         out.extend(core::iter::repeat(0i64).take(m));
         out.extend(groups.iter().map(|g| g.1 as i64));
         out
+    }
+}
+
+/// The index of a map (D492): for its `n` distinct keys (`hash(i)` the hash
+/// of the key at position i), a table of a power of two of slots, at most
+/// half full, each 0 (empty) or the position of a key plus one, at the slot
+/// of its hash or the next free one after it (linear probing). It depends on
+/// the keys alone (a fixed hash): the same bits everywhere.
+pub fn hash_index(n: usize, hash: impl Fn(usize) -> u64) -> alloc::vec::Vec<i64> {
+    let s = (2 * n).next_power_of_two().max(2);
+    let mut slots = alloc::vec![0i64; s];
+    for i in 0..n {
+        let mut at = (hash(i) as usize) & (s - 1);
+        while slots[at] != 0 {
+            at = (at + 1) & (s - 1);
+        }
+        slots[at] = i as i64 + 1;
+    }
+    slots
+}
+
+/// The position of the key of hash `h` in a map of index `slots`
+/// (`hash_index`), -1 if absent: the slots from that of `h` up to an empty
+/// one, `eq(i)` whether the key at position i is the one searched.
+#[inline]
+pub fn hash_find(slots: &[i64], h: u64, eq: impl Fn(usize) -> bool) -> i64 {
+    let s = slots.len();
+    if s == 0 {
+        return -1;
+    }
+    let mut at = (h as usize) & (s - 1);
+    loop {
+        let v = slots[at];
+        if v == 0 {
+            return -1;
+        }
+        if eq((v - 1) as usize) {
+            return v - 1;
+        }
+        at = (at + 1) & (s - 1);
     }
 }
 
