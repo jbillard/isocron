@@ -11159,3 +11159,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   fixed frequency): every form of `strings` from 1.01 (`toString.i64`) to
   2.71 (`padStart`); `template` 1.18. The item of TODO "the strings still
   above their floor: templates, `concat`" closed by these measures.
+- **D503 — Where the time of `json.quote` of escaped texts goes
+  (2026-11-08).** `json.quote.escaped` 4.15 times its floor (D473, D481: no
+  search by a predicate in the language; the escapes found by `filter`
+  rejected, +7.4 %). Before a search by a predicate (`findIndex`, a new form
+  of the IR), its profile (`quote` of 4096 texts of 15 bytes and 3 escapes,
+  one CPU at fixed frequency, 77.4 ns a text): the text built by appends of
+  its parts to the accumulator (rule A) about 58 % (`append_parts` 39.3 %,
+  `isc_free` 7.9 %, `isc_str_append_n` 4.5 %, `isc_str_append` 2.5 %,
+  `isc_str_new` 2.5 %, `isc_str_reserve` 1.4 %), the loop over the bytes
+  and its recursion (`isc_task_2`) 36.0 %. The hot places of `append_parts`:
+  the copy of parts of 1 to 3 bytes (its first, middle and last bytes), the
+  sum of the lengths of the parts, its entry: the fixed cost of an append
+  of a few bytes (a call, the room of the block read from the heap, a
+  copy), about 6 ns, five a text; the floor writes into a buffer of its
+  size. A search by a predicate could save at most the loop's share (36 %):
+  not below 3 times the floor. The general lever is an append of a short
+  part written in the generated code when its block has room, which needs
+  the code generator to read the blocks of the heap (open, TODO).
