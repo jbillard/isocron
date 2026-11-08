@@ -24,6 +24,10 @@
 
 ### The compiler
 
+* The room of the block of an accumulator of text read by the compiled
+  code, no call when it holds the parts: `json.quote` of an escaped text
+  66.5 -> 56.6 ns (2.86 times its floor), `time.format` 115.7 -> 102.0
+  (D511).
 * A chain of texts after an accumulator (`acc + a + b`) is written by the
   compiled code, a long part by one call of `memcpy`: `json.quote` of an
   escaped text 73.6 -> 66.6 ns, of a text of 300 bytes 89.6 -> 77.6

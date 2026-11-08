@@ -160,6 +160,23 @@ const ZERO: u8 = 1;
 /// Its pages were given back (not all zero: its first page was kept).
 const RELEASED: u8 = 2;
 
+// The layout of the header that the compiled code reads to know whether
+// the block of a text given to a concatenation has room
+// (`reserve_inline` of `emit.rs`, D511): its class a `u32` at 0, its state
+// a byte at 4, the blocks of the classes below 16 of (class + 1) * 64
+// bytes; checked when the runtime is compiled.
+const _: () = {
+    assert!(core::mem::offset_of!(Header, class) == 0);
+    assert!(core::mem::offset_of!(Header, state) == 4);
+    assert!(HEADER == 64);
+    assert!(IN_USE == 0xA5);
+    let mut i = 0;
+    while i < 16 {
+        assert!(alloc_class_size(i) == (i + 1) * 64);
+        i += 1;
+    }
+};
+
 #[repr(C, align(64))]
 struct Header {
     /// A small class, MEDIUM, or a large class.

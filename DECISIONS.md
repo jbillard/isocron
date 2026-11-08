@@ -11405,3 +11405,52 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     with moves of 8 bytes for the parts of 16, without the new rule (the
     call of `isc_str_reserve` absent) and with `memcpy` a byte short
     (mutations checked).
+- **D510 — The indices left of a search of rule F in one masked vector from
+  8 of them: rejected after measure (2026-11-08).** D505 rejected a masked
+  vector for the indices left of `findIndex` (the searches of keys of a
+  few bytes of `json.parse` dearer). Tried again from 8 indices left only,
+  with `json.quote` finding its first byte to escape by `findIndex`
+  instead of counting them by masks then searching again: `quote.plain`
+  3.5 -> 5.0 ns (a text of 16 bytes: the checks of the bounds and the
+  branches of the search, where the count is one masked vector); then with
+  the count kept and the masked indices left alone, `quote.escaped` 46.5
+  -> 48.9 ns, `parse` 484 -> 498, `decode` 222 -> 234 (two alternated
+  runs each, without a fixed frequency: every form slower). Not kept. (A
+  boolean read by a masked load, its bytes not made `i1`, was refused by
+  LLVM in the masked vector; the code of before has no such load: tested,
+  `map(iota(n), (i) => i % 2 == 0 ? flags[i] : false)` the interpreter's.)
+- **D511 — The room of the block of a text given read by the compiled code
+  (2026-11-08).** Profile of `json.quote` of escaped texts after D509 (one
+  CPU at fixed frequency): the loop 69.4 %, `isc_str_reserve` 13.6 %,
+  `isc_free` 9.7 %, `isc_str_new` 3.9 %: a call of the runtime a chain of
+  appends, to read the room of the block of the accumulator (`room`: the
+  pointer on 64 bytes, the allocator of Isocron, the header of the block
+  in use, its class and size).
+  - Now the compiled code reads it as `room` does (`reserve_inline`): a
+    text not empty, on 64 bytes, `isc_heap_mode` 2, the header 64 bytes
+    before it in use (0xA5 at 4) and of a class below 16 (a `u32` at 0,
+    `(class + 1) * 64` bytes) holding the total: the text's own block, no
+    call; `isc_str_reserve` otherwise (another block, a larger class, the
+    allocator of glibc, WebAssembly). The layout is asserted in `heap.rs`
+    when the runtime is compiled (`offset_of!` of the class and the state,
+    `HEADER`, `IN_USE`, the sizes of the classes below 16): a change there
+    stops its build (checked: the state asserted at 5 fails to compile). A
+    text whose header is not one of a small block in use (the standard
+    input mapped, class `u32::MAX`) goes to the runtime as before (tested:
+    an append to a mapped input of 8 MiB, the same text as before).
+  - Measured (A/B of the binaries of the compilers of e35e3f5 and of this
+    change, 9 alternated runs, one CPU at fixed frequency): `quote.escaped`
+    66.52 -> 56.61 ns (-14.9 %), `stringify` -1.7 %, `time.format` 115.7
+    -> 102.0 ns (-11.8 %), `http.textResponse` -2.0 %; k-nucleotide 615.4
+    -> 608.7 ms (-1.08 %), pidigits 298.7 -> 298.8 ms (11 runs, the same
+    outputs); `encode` +1.5 % and `sys` `isAbsolute`, `exists`, `join`,
+    `isFile` +1.5 to +5.8 % (overlapping): their code the same (only
+    `escapeFrom` and a task of `stringify` changed in `json`, `path.normAt`
+    in `sys`), the place of the code (D504). `run.py` of `json` and `time`
+    (5 runs of 200 rounds): `quote.escaped` 56.64 ns, 2.86 times its floor
+    (3.35 before): below 3; `time.format` 2.49.
+  - Test: `appends_of_parts_of_every_length` (D509) grows texts from 64
+    bytes to beyond 1 KiB (the room read here, then the larger classes by
+    the runtime), under the allocator of Isocron and of glibc (the suite
+    runs `strings.rs` with both); with the size of a class read twice too
+    large the program faults (mutation checked).

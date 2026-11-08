@@ -3268,6 +3268,57 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// The block of the text given `p` (`n` bytes) for `total` bytes: `p`
+    /// itself when its block has room, read here as the runtime's `room`
+    /// reads it (D511: the call of `isc_str_reserve` 13.6 % of `json.quote`
+    /// of escaped texts): a text not empty (the empty one points to no
+    /// block), on 64 bytes (a block of the heap: not a literal, not a line
+    /// of `lines`), the allocator of Isocron (`isc_heap_mode` 2), the
+    /// header of the block 64 bytes before it in use (`IN_USE`) and of a
+    /// small class (below 16: `(class + 1) * 64` bytes, `alloc_class_size`)
+    /// holding `total`; `isc_str_reserve` otherwise (another block, a
+    /// larger class, glibc's allocator). The layout read is that of
+    /// `Header` in `heap.rs` (its class a `u32` at 0, its state a byte at 4),
+    /// asserted there when the runtime is compiled.
+    fn reserve_inline(&mut self, p: &str, n: &str, total: &str) -> String {
+        if self.opts.isa.is_wasm() {
+            return self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total));
+        }
+        self.node_decls();
+        let (lhead, lfast, lslow, lj) = (self.label(), self.label(), self.label(), self.label());
+        let pi = self.ins(format!("ptrtoint ptr {} to i64", p));
+        let low = self.ins(format!("and i64 {}, 63", pi));
+        let aligned = self.ins(format!("icmp eq i64 {}, 0", low));
+        let some = self.ins(format!("icmp sgt i64 {}, 0", n));
+        let mode = self.ins("load i8, ptr @isc_heap_mode".to_string());
+        let ours = self.ins(format!("icmp eq i8 {}, 2", mode));
+        let a1 = self.ins(format!("and i1 {}, {}", aligned, some));
+        let a2 = self.ins(format!("and i1 {}, {}", a1, ours));
+        self.cbr(&a2, &lhead, &lslow);
+        self.block(&lhead);
+        let hdr = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 -64", p));
+        let class = self.ins(format!("load i32, ptr {}", hdr));
+        let sp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 4", hdr));
+        let state = self.ins(format!("load i8, ptr {}", sp));
+        let small = self.ins(format!("icmp ult i32 {}, 16", class));
+        let inuse = self.ins(format!("icmp eq i8 {}, -91", state));
+        let c64 = self.ins(format!("zext i32 {} to i64", class));
+        let c1 = self.ins(format!("add i64 {}, 1", c64));
+        let size = self.ins(format!("shl i64 {}, 6", c1));
+        let fits = self.ins(format!("icmp ule i64 {}, {}", total, size));
+        let b1 = self.ins(format!("and i1 {}, {}", small, inuse));
+        let b2 = self.ins(format!("and i1 {}, {}", b1, fits));
+        self.cbr(&b2, &lfast, &lslow);
+        self.block(&lfast);
+        self.br(&lj);
+        self.block(&lslow);
+        let r = self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total));
+        let lslow_end = self.current_label(&lslow);
+        self.br(&lj);
+        self.block(&lj);
+        self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", p, lfast, r, lslow_end))
+    }
+
     /// The type of a node in memory: its count, then its tuple.
     fn rec_node_ty(&self, i: u32) -> String {
         format!("{{ i64, {} }}", lt(&self.p.recs[i as usize].layout))
@@ -11898,7 +11949,7 @@ impl<'p> Gen<'p> {
         // constant length, inlined), the texts and the integers by the
         // runtime (D363)
         let (base, mut at) = match (&given, slot) {
-            (Some((p, n)), _) => (self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total)), n.clone()),
+            (Some((p, n)), _) => (self.reserve_inline(p, n, &total), n.clone()),
             // a text that its scope only reads: in its buffer on the stack
             // when it fits, a block of the heap otherwise (D404)
             (None, Some(buf)) => {
