@@ -3169,7 +3169,8 @@ pub extern "C" fn isc_groups_new(n: i64, parts: i64, counts: i32) -> *mut c_void
     let direct = n >= GROUP_DIRECT_MIN;
     let k = parts.max(1) as usize;
     let st = if counts != 0 {
-        GroupsState { tables: alloc::vec::Vec::new(), counts: (0..k).map(|_| sem::CountTable::new(direct, n.max(0) as usize)).collect() }
+        // counts by value for the keys below the number of keys (D492)
+        GroupsState { tables: alloc::vec::Vec::new(), counts: (0..k).map(|_| sem::CountTable::new(true, n.max(0) as usize)).collect() }
     } else {
         // several tables at once: their large ones scattered (D253)
         GroupsState { tables: (0..k).map(|_| sem::WordGroups::new_for(direct, n.max(0) as usize, parts > 1, k)).collect(), counts: alloc::vec::Vec::new() }

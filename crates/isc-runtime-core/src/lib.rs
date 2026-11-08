@@ -5621,6 +5621,11 @@ pub struct CountTable {
     used: usize,
     bits: u32,
     small: alloc::vec::Vec<u32>,
+    /// the keys below it counted by their value in `small` (0: none)
+    direct_max: u64,
+    /// some keys counted by their value (`direct_max` not 0): the test of
+    /// the loop of `add_block`, a constant there (D492: a bound read in that
+    /// loop, k-nucleotide +2.3 %, 476 million instructions more)
     direct: bool,
     first: alloc::vec::Vec<u32>,
     keys: alloc::vec::Vec<u64>,
@@ -5635,6 +5640,10 @@ struct Line([u64; 8]);
 impl CountTable {
     /// The keys of a range of at most `n` keys in all (with the ranges it
     /// will be merged with): its counts below 2^bits.
+    /// With `direct`, the keys below DIRECT_MAX and below the number of
+    /// keys `n` (at least 256) counted by their value (D492: a table of
+    /// counts by value at most as long as the keys counted; before, from
+    /// 65536 keys only, a count of 4096 keys below 1000 hashed them).
     pub fn new(direct: bool, n: usize) -> CountTable {
         let bits = (usize::BITS - n.max(1).leading_zeros()).max(1);
         // room for min(n, 8192) keys at most 3/4 full (D492: a count of 4096
@@ -5642,7 +5651,8 @@ impl CountTable {
         // lines
         let want = n.min(1 << 13);
         let lines = (want * 4 / 3 / 8 + 1).next_power_of_two().max(128);
-        CountTable { lines: alloc::vec![Line::default(); lines], used: 0, bits, small: alloc::vec::Vec::new(), direct, first: alloc::vec::Vec::new(), keys: alloc::vec::Vec::new(), wide: None }
+        let direct_max = if direct { WordGroups::DIRECT_MAX.min((n as u64).next_power_of_two().max(256)) } else { 0 };
+        CountTable { lines: alloc::vec![Line::default(); lines], used: 0, bits, small: alloc::vec::Vec::new(), direct_max, direct, first: alloc::vec::Vec::new(), keys: alloc::vec::Vec::new(), wide: None }
     }
 
     /// The key `k` fits in a slot with its count.
@@ -5726,7 +5736,7 @@ impl CountTable {
 
     /// `count` more for the key `k`, first at `first` if new.
     fn add_count(&mut self, k: u64, first: u32, count: u32) {
-        if self.direct && k < WordGroups::DIRECT_MAX {
+        if k < self.direct_max {
             if k as usize >= self.small.len() {
                 self.small.resize((k as usize + 1).next_power_of_two().max(256), 0);
             }
@@ -5757,7 +5767,7 @@ impl CountTable {
         for (c, chunk) in keys.chunks(CHUNK).enumerate() {
             let base = (start + c * CHUNK) as u32;
             let top = chunk.iter().copied().max().unwrap_or(0);
-            if self.direct && top < WordGroups::DIRECT_MAX {
+            if top < self.direct_max {
                 if top as usize >= self.small.len() {
                     self.small.resize((top as usize + 1).next_power_of_two().max(256), 0);
                 }
@@ -5799,6 +5809,8 @@ impl CountTable {
                     let mask = lines.len() - 1;
                     while j < n {
                         let k = chunk[j];
+                        // a key that may be counted by its value, to
+                        // `add_count`, which knows (`direct_max`)
                         if (direct && k < WordGroups::DIRECT_MAX) || k == 0 {
                             break;
                         }
@@ -5834,7 +5846,7 @@ impl CountTable {
 
     /// The count of the key `k` of a group.
     fn count(&self, k: u64) -> u32 {
-        if self.direct && k < WordGroups::DIRECT_MAX {
+        if k < self.direct_max {
             return self.small[k as usize];
         }
         let mask = self.lines.len() - 1;

@@ -2087,3 +2087,32 @@ fn maps_of_every_class_of_key() {
     }
     assert_eq!(r.stdout, want);
 }
+
+/// D492: `countBy` counts by their value the keys below the number of keys
+/// (at least 256), the others by hashes: keys on both sides of that bound,
+/// 0 and negative ones, 10 to 70000 elements, 1 to 4 threads; the keys in
+/// the order of their first element and their counts, as the interpreter.
+#[test]
+fn counts_by_value_and_by_hashes() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => (i * 7919) % (3 * n + 7) - (i % 5 == 0 ? 2 * n : 0));
+    const c = countBy(xs, (x) => x);
+    print(c.size);
+    print(c.entries().slice(0, min(40, c.size)));
+    print(sum(map(iota(4 * n), (k) => (c.get(k - 2 * n) ?? 0) * (k % 7 + 1))));
+    const d = countBy(xs, (x) => x % 300);
+    print(d.entries());
+    return 0;
+}
+";
+    let bin = compile(src, "counts_by_value");
+    for n in ["10", "300", "1000", "5000", "70000"] {
+        let Outcome::Exit(0, want) = interp(src, &[n]) else { panic!("the interpreter failed at {}", n) };
+        for t in ["1", "2", "4"] {
+            let o = std::process::Command::new(&bin).arg(n).env("ISC_THREADS", t).output().unwrap();
+            assert_eq!(o.status.code(), Some(0), "n {}: {}", n, String::from_utf8_lossy(&o.stderr));
+            assert!(String::from_utf8_lossy(&o.stdout) == want, "n {}, {} threads: {:?}", n, t, String::from_utf8_lossy(&o.stdout).lines().zip(want.lines()).find(|(a, b)| a != b));
+        }
+    }
+}

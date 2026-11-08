@@ -10963,3 +10963,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   1876 -> 1880 ms, the others within 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D494 — Counts by value of the keys below the number of keys
+  (2026-11-08).** `countBy` 3.11 times its floor after D492: its keys
+  inserted into the lines of 8 slots compared in vectors (D317, for tables
+  larger than the caches), 57 % of its time. The table of counts already
+  counts the keys below 65536 by their value (`small`, grown to the largest
+  key seen), but only from 65536 keys on (`GROUP_DIRECT_MIN`, the room of
+  that array). Now every table of counts counts by value the keys below
+  `direct_max`, 65536 bounded by the number of keys (a power of two, at
+  least 256): that array is at most as long as the keys counted; the keys
+  above it by hashes as before; from 65536 keys on the same as before.
+  - A first form tested that bound in the loop of `add_block` (the keys of
+    a chunk that packs, sent to `add_count`): k-nucleotide +2.33 % [605.3
+    -> 619.4 ms] (21 alternated runs, a quiet machine), 21.50 -> 21.98
+    billion instructions, its bound being the same (65536). That test only
+    sends a key to `add_count`, which decides: the loop keeps its test of
+    before (`direct && k < 65536`, a constant there), and k-nucleotide
+    609.1 -> 608.4 ms (-0.11 %, its outputs the same).
+  - Measured (the binaries of `maps` before and after, 7 alternated runs,
+    fixed frequency): `countBy.i64` 7.39 -> 3.51 ns (-52.5 %), the others
+    within 2.2 %; `run.py` (5 runs of 50 rounds): `countBy.i64` 1.48 times
+    its floor, `get.i64` 2.22, `Map.build.i64` 2.09, `has.miss.i64` 1.93,
+    `get.string` 1.75.
+  - Test `counts_by_value_and_by_hashes` (`stdlib.rs`: keys on both sides
+    of the bound, 0 and negative ones, 10 to 70000 elements, 1 to 4
+    threads, the keys in the order of their first element and their counts,
+    against the interpreter; with the bound taken as `<=` in `add_count`
+    the compiled program does not end, the test does not pass).
