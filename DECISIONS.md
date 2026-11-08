@@ -11755,3 +11755,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the representations (TODO, (6)), not of this program. k-nucleotide 606
   to 609 ms, 2.2 times its floor (D513, D521), the fastest of all
   languages by 1.9 times. Closed by these measures, as D265.
+- **D525 — Two items of TODO answered by measures already made
+  (2026-11-08).**
+  - `http.text.1k` at 89 to 90 ns against 74 before D424, its cause not
+    shown: D437 showed it, the place of the code (the program of
+    `text.1k` alone, the same `utf8_check` at a multiple of 64 in both,
+    0.79 then 0.03 mispredicted branches an iteration); then D436 (the
+    ASCII prefix 64 bytes at a time, 90.4 -> 74.8 ns), D452 (the counts of
+    bytes 64 at a time, 63.2 -> 53.3 ns) and D455 (its floor measured with
+    the copy it describes): 53.6 ns, 1.30 times its floor
+    (`results/primitives.tsv`). The body is still checked twice (the
+    count of the module, then `utf8_check` of `stringOf`, which stops at
+    the first block of ASCII): both checks inside the 1.30.
+  - The server above its floor, `serve.pipelined` 1.6 (D342): D440 (the
+    short texts checked without `from_utf8`), D441 (the small integers of
+    templates) and those before them: `serve.pipelined` 1196.0 ns, 1.25
+    times its floor, `serve.action.pipelined` 1.29. The blocks of a
+    request are the items of the server left open (the headers of the
+    blocks taken cold, the work of the program a request).
