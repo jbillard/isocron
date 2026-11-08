@@ -587,15 +587,26 @@ function responseBytes(r: Response, keep: boolean, head: boolean, date: string):
         return !tokenOk(k) || !valueOk(v);
     }) == 0;
     const x = ok ? r : textResponse(500, "the response of the handler cannot be sent (its status or a header)");
-    const extra = join(map(x.headers, (h) => {
-        const [k, v] = h;
-        const b = bytes(k);
-        const own = isName(b, 0, b.length, "content-length") || isName(b, 0, b.length, "connection") || isName(b, 0, b.length, "date") || isName(b, 0, b.length, "transfer-encoding");
-        return own ? "" : `${k}: ${v}\r\n`;
-    }), "");
     const none = x.status == 204 || x.status == 304 || x.status < 200;
-    const top = none ? `HTTP/1.1 ${x.status} ${reason(x.status)}\r\nDate: ${date}\r\n${extra}${keep ? "" : "Connection: close\r\n"}\r\n` : `HTTP/1.1 ${x.status} ${reason(x.status)}\r\nDate: ${date}\r\n${extra}Content-Length: ${x.body.length}\r\n${keep ? "" : "Connection: close\r\n"}\r\n`;
+    // the head one text continued in its block (rule A, D351): its first
+    // lines, the headers of `x`, then those of the server (D534: a text for
+    // each header, their array and their `join` before)
+    const lines = withHeaders(`HTTP/1.1 ${x.status} ${reason(x.status)}\r\nDate: ${date}\r\n`, x.headers, 0);
+    const top = none ? `${lines}${keep ? "" : "Connection: close\r\n"}\r\n` : `${lines}Content-Length: ${x.body.length}\r\n${keep ? "" : "Connection: close\r\n"}\r\n`;
     return head || none ? bytes(top) : concat(bytes(top), x.body);
+}
+
+// `acc` (owned: continued in its block) followed by the headers of `hs` from
+// `i` that the server does not write itself (their names compared by
+// bytes, no text made)
+function withHeaders(acc: string, hs: [string, string][n], i: i64): string {
+    if (i == hs.length) {
+        return acc;
+    }
+    const [k, v] = hs[i];
+    const b = bytes(k);
+    const own = isName(b, 0, b.length, "content-length") || isName(b, 0, b.length, "connection") || isName(b, 0, b.length, "date") || isName(b, 0, b.length, "transfer-encoding");
+    return withHeaders(own ? acc : `${acc}${k}: ${v}\r\n`, hs, i + 1);
 }
 
 // a byte in lower case (ASCII)

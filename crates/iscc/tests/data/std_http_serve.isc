@@ -12,6 +12,11 @@ function handle(r: http.Request): http.Response {
     if (r.path == "/query") {
         return http.textResponse(200, `query ${r.query}`);
     }
+    // D534: the headers the server writes itself (any case) left out, the
+    // others kept in their order
+    if (r.path == "/many") {
+        return { status: 200, headers: [["X-A", "1"] as const, ["content-length", "99"] as const, ["Date", "x"] as const, ["X-B", "2"] as const, ["CONNECTION", "keep"] as const, ["Transfer-Encoding", "chunked"] as const, ["X-C", "a longer value than the others"] as const], body: bytes("many") };
+    }
     if (r.path == "/headers") {
         return http.textResponse(200, `${r.headers.length} ${http.headerOf(r.headers, "x-test") ?? "-"}`);
     }
@@ -37,7 +42,7 @@ action show(name: string, text: string): void {
 // client's responses read
 action clients(l: net.Listener, port: i64, rs: string[n], i: i64, bad: u8[]): void {
     if (i > rs.length) {
-        match (http.serveOn(l, handle, 11)) {
+        match (http.serveOn(l, handle, 12)) {
             Ok(_) => print("served"),
             Err(e) => print("serve failed"),
         };
@@ -67,6 +72,7 @@ action main(args: string[k]): i32 {
         "GET /missing HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
         "GET / HTTP/1.1\r\n\r\n",
         "GET /headers HTTP/1.1\r\nHost: a\r\nX-Test: été\r\nConnection: close\r\n\r\n",
+        "GET /many HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
     ];
     // D451: a header with a surrogate (ED A0 80): 400, the server going on
     const bad: u8[] = concat(concat(bytes("GET /headers HTTP/1.1\r\nHost: a\r\nX-Test: a"), [0xEDu8, 0xA0u8, 0x80u8]), bytes("\r\nConnection: close\r\n\r\n"));

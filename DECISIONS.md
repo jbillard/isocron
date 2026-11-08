@@ -11975,3 +11975,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   accumulated, a left array still read after (copied), a left array made
   there, against the interpreter, under Valgrind with glibc's allocator,
   the call that grows the block in the code).
+- **D534 — The head of a response of `serve` one text continued in its
+  block (2026-11-08).** TODO, the work of the program a request of `serve`.
+  Profile of `serve.pipelined` alone (one CPU at fixed frequency, the
+  handler `hello` inlined, its request not made, D387): 1323 user cycles
+  and 3120 of the kernel a request; in the program the allocator 20 %
+  (`isc_alloc` 9.4 %, `isc_free` 11.0 %). `responseBytes` made a text for
+  each header of the response (a template), their array (`map`), their
+  `join`, then the head (a template holding that text): four blocks for a
+  response of one header. Now the head is one text continued in its block
+  (rule A, D351: `withHeaders`, its accumulator given at each header): its
+  first lines, each header of the response the server does not write
+  itself (their names compared by bytes as before), then those of the
+  server. Measured (the old and new programs, 5 alternated runs, fixed
+  frequency, 48000 requests): 64.2 -> 61.6 million user cycles (1338 ->
+  1283 a request, -4.1 %), instructions -1.3 %; the time a request, the
+  kernel 70 % of it, within its spread (1171 to 2027 ns between runs).
+  The same outputs as the old module on every request of the test of the
+  server; that test now also answers a handler that gives the headers the
+  server writes itself (any case: dropped) among its own (kept in order):
+  `server_on_requests_of_every_form` (`std_http.rs`).

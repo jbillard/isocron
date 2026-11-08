@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `serve`: the head of each response made as one text continued in its block, not a text for each header joined then copied: -4 % of the cycles of the program a request (D534).
+
 * `concat(a, b)` grows the block of `a` when `a` is read there for the last time: an array accumulated by `concat` no longer copied whole at each step (100000 steps 3777 -> 432 ms, D533).
 
 * Texts compared by their first 8 (or 4) bytes before a call: `==` and `<` of texts -45 to -55 %, `sort` of texts -28 %, a key of text in a map -29 % (D532).
