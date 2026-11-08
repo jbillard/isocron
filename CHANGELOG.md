@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.6 — 2026-11-08
+
+A search from the end for texts, the short texts of templates copied in
+their code, integers padded by zeros from the table of pairs; the same
+results.
+
+### The language
+
+* `s.lastIndexOf(t)`: the byte index of the last `t` in `s`, -1 if none,
+  the length of `s` for an empty `t` (as TypeScript); a byte in a short
+  text by windows of 16 from the end (D482).
+
+### The compiler
+
+* A text of at most 64 bytes in a template is copied in its code by moves
+  that overlap, without a call: `strings.concat` -17.6 %, `time.format`
+  125.6 -> 112.1 ns, `json.message` -13 % (D478).
+* Integers padded to 3 and 4 digits by zeros are written from the table
+  of digit pairs: `time.formatDateTime` -5 % (D477).
+
+### The library
+
+* `path.basename` -20 %, `path.extension` -14 %: the last `/` found by
+  `lastIndexOf` (D482).
+* `http.parseUrl` tells its scheme by its bytes, without a text in lower
+  case: -4 % (D472).
+
+### The measurements
+
+* `json.parse` and `json.decode` measured against C with the
+  representation of Isocron (D471); the waiting of reverse-complement and
+  the 17 cycles of n-body measured again on the code of 0.4.5 (D475).
+* Rejected after measure, their guards kept as tests: the decoder of
+  `json` in one pass (D474), the parts of a path searched from the end
+  one byte at a time (D479), the escapes of `json.quote` found by
+  `filter` (D481).
+* The checks of `publish.sh` read the whole file (D469).
+
 ## 0.4.5 — 2026-11-07
 
 Faster texts, dates, paths and numbers of the library, by general changes

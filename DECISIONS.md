@@ -10666,3 +10666,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the others within 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
+- **D484 — Release 0.4.6 (2026-11-08).** After 0.4.5: D469 to D483, a
+  search from the end for texts (`lastIndexOf`, D482), the short texts of
+  a template copied in its code (D478), integers padded by zeros from the
+  table of pairs (D477), `parseUrl` by the bytes of its scheme (D472);
+  measures that explain `json.parse` and `json.decode` (D471) and the two
+  gaps of D432 and D433 (D475); three leads rejected after measure, their
+  guards kept as tests (D474, D479, D481). No name removed; one method
+  added. The steps of 0.4.3 (D449): the Windows tests in the VM with the
+  `iscc.exe` of the release's sources, the archives built from those
+  sources in the images of the releases, tried before they are published.
+  The ten programs of the Benchmarks Game measured at 543d932 (D483);
+  nothing in `crates/` changed since but the version.
