@@ -11519,3 +11519,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   of the releases, tried before they are published. The ten programs of
   the Benchmarks Game measured at 042ce81 (D513): nothing in `crates/`
   changed since but the version.
+- **D515 — The floor of the stack read in the local-exec model: rejected
+  after measure (2026-11-08).** Profile of `json.decode` after D512: the
+  comparison of a key with the fields (`codecField1`) 14.1 %, most of it
+  its call: the prologue, the parameters past the sixth on the stack, and
+  the check of the stack at the entry of every function (`stack_check`):
+  `isc_stack_floor_tls` (`thread_local`, the general model) read by two
+  loads in a chain (`%fs:0`, then the variable), 24 of its 186 samples on
+  the test that waits for them.
+  - Tried: the variable `thread_local(localexec)` (as `isc_node_thread`),
+    one load from the thread pointer. Measured (A/B against 87047ee, one
+    CPU at fixed frequency): `decode` -2.8 %, `parse` -1.2 %, the other
+    forms of `json` within -1.9 to +0.5 %; `control.fib.call` 1.22 ->
+    1.37 ns (+12.2 %; +12.1 and +11.5 % with the functions aligned on 128
+    and 256 bytes: not the place of the code), binary-trees +2.1 % (+1.7
+    and +2.1 % aligned on 128 and 256 bytes), the nine other programs
+    within -0.6 to +1.6 %. In a program of `fib` alone (`perf stat`, 2
+    runs each, fib(38)) the other way: cycles 4.94e8 -> 4.43e8 (-10 %),
+    instructions 1.74e9 -> 1.55e9, the machine clears 271 and 537 ->
+    19700 and 19000; so the effect hangs on what surrounds the function
+    (the program of `control`, binary-trees), its mechanism not
+    separated further. Not kept, as one of the ten programs is slower.
+  - The check stays at the entry of every function: a function out of
+    every cycle of calls could do without it only if the frames below it
+    held within the margin of the floor (256 KiB), and a frame may hold 32
+    KiB of buffers (`WINDOW_STACK`, `STACK_SCRATCH`) or an array literal of
+    any length (D191): not bounded here.
