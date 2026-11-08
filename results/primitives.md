@@ -8,19 +8,19 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
 | :-- | :-- | --: | --: | --: |
 | sorts | `sortBy.length` | 22.18 | 3.56 | 6.2 |
-| json | `decode` | 447.45 | 91.54 | 4.9 |
-| json | `parse` | 788.61 | 171.37 | 4.6 |
-| json | `quote.escaped` | 81.97 | 19.76 | 4.1 |
+| json | `parse` | 795.78 | 170.98 | 4.7 |
+| json | `decode` | 395.53 | 92.01 | 4.3 |
+| json | `quote.escaped` | 81.50 | 19.83 | 4.1 |
 | sys | `isAbsolute` | 2.00 | 0.57 | 3.5 |
 | sys | `dirname` | 8.55 | 2.89 | 3.0 |
 | http | `parseUrl` | 56.66 | 19.93 | 2.8 |
+| json | `quote.plain` | 4.64 | 1.65 | 2.8 |
 | strings | `padStart` | 5.65 | 2.02 | 2.8 |
 | time | `format` | 112.12 | 40.38 | 2.8 |
 | http | `httpDate` | 35.44 | 12.88 | 2.8 |
-| json | `quote.plain` | 4.52 | 1.64 | 2.7 |
 | sha256 | `hex.32` | 7.17 | 2.63 | 2.7 |
 | numbers | `toFixed.2` | 49.44 | 19.16 | 2.6 |
-| json | `stringify` | 282.84 | 114.14 | 2.5 |
+| json | `stringify` | 286.08 | 113.74 | 2.5 |
 | http | `exchange.chunked64` | 48096.53 | 20317.21 | 2.4 |
 | strings | `split.6` | 77.06 | 32.89 | 2.3 |
 | net | `resolve.hosts` | 4434.18 | 1951.84 | 2.3 |
@@ -43,9 +43,9 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `slice` | 2.09 | 1.23 | 1.7 |
 | sorts | `sort.i64` | 13.47 | 7.97 | 1.7 |
 | http | `header` | 18.96 | 11.36 | 1.7 |
-| json | `message` | 7.61 | 4.56 | 1.7 |
 | sys | `readText.4k` | 3243.70 | 1973.19 | 1.6 |
 | strings | `includes.3` | 20.52 | 12.49 | 1.6 |
+| json | `message` | 7.48 | 4.56 | 1.6 |
 | http | `headerOf` | 18.52 | 11.34 | 1.6 |
 | sys | `envAll` | 1948.34 | 1203.49 | 1.6 |
 | strings | `startsWith.1` | 1.82 | 1.12 | 1.6 |
@@ -98,6 +98,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | net | `server.roundtrip.64` | 6987.22 | 6326.48 | 1.1 |
 | arrays | `zip.sum` | 0.11 | 0.10 | 1.1 |
 | http | `request.post` | 41403.96 | 38271.71 | 1.1 |
+| json | `encode` | 86.90 | 80.35 | 1.1 |
 | http_serve | `serve.connection` | 41218.75 | 38132.71 | 1.1 |
 | control | `match.area` | 0.93 | 0.86 | 1.1 |
 | time | `addMonths` | 3.91 | 3.64 | 1.1 |
@@ -113,7 +114,6 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | https | `get.small` | 1246115.69 | 1189967.29 | 1.0 |
 | net | `connect` | 24855.89 | 23840.90 | 1.0 |
 | arrays | `fold` | 4.58 | 4.40 | 1.0 |
-| json | `encode` | 83.93 | 80.64 | 1.0 |
 | net | `server.conn` | 37046.57 | 35608.57 | 1.0 |
 | sys | `isDir` | 619.01 | 596.17 | 1.0 |
 | arrays | `map.new` | 0.19 | 0.18 | 1.0 |

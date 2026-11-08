@@ -11177,3 +11177,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   not below 3 times the floor. The general lever is an append of a short
   part written in the generated code when its block has room, which needs
   the code generator to read the blocks of the heap (open, TODO).
+- **D504 — A tuple made by an `if` of new tuples is taken apart
+  (2026-11-08).** Profile of `json.decode` (1000 records, one CPU at fixed
+  frequency, 452 ns a record): the main loop 24.8 % (the scan of the index
+  11.4 %, the searches of `below` for the closings 8.7 %), the building of
+  the members (`codecBuildMembers1`) 19.8 %, their check about 30 %,
+  `isc_str_new` 6.2 % (6.3 of its 7.0 % called by the building, call
+  stacks of DWARF). In the building, each field is carried by the loop:
+  `const [n1, e1] = f == 1 ? codecBuild(...) : [f1, -1] as const`. The
+  tuple of that `if` was not new memory for `new_tuple` (a call, an
+  action, a tuple literal, a `fold`), so `split_tuples` (D138) and
+  `bind_projections` (D434) left it whole: `n1` borrowed from it, copied
+  where it was kept (`copy n1` at the next call, the tuple freed after).
+  - Now an `if` whose two branches are new tuples is one too: the tuple
+    taken apart (`Take`), each component owned on its own, moved where it
+    is kept. The IR of the program of `decode`: 95 -> 84 copies.
+  - Measured (A/B of the binaries of the compilers of 165ebab and of this
+    change, `bench/primitives/json.isc`, alternated runs, one CPU at fixed
+    frequency): `decode` 442.4 -> 395.0 ns (-10.7 %, 9 runs; -10.5 % in 13
+    runs). `parse` alone (a program of `parse` only, `perf stat`, 3 runs):
+    765 -> 757 ns, instructions -1.3 %. In the program of all the forms,
+    `parse` +2.0 %, `stringify` +1.3 %, `encode` +1.1 %: the place of the
+    code. Shown by measure: 126 functions of that program have the same
+    machine code in both binaries (`stringify`, `encode` and `quote` among
+    them), `buildAny` of `parse` too, 64 bytes lower (0x188c0 ->
+    0x18880), its branches mispredicted +26 % and its cycles of resteer
+    +36 %; the functions aligned on 128 bytes (`ISC_LLVM_ARGS`) `parse`
+    -0.1 %, on 256 bytes -2.0 %, `decode` -6.0 % and -7.5 %; with `decode`
+    measured last `stringify` -3.9 %, `quote.plain` -2.1 %, `parse` -2.0 %,
+    `decode` -9.1 %. The forms of the same code move by -3.9 to +2.8 % with
+    the place alone; `decode` gains 6.0 to 10.7 % in every placement.
+  - `http` and `https` (`readChunked` alone changed): every form within
+    the spread of its runs (`exchange.chunked64` +0.3 %). The ten programs
+    of the Benchmarks Game: the same IR but the numbers of the variables,
+    their generated functions the same machine code (fasta compared).
+  - `run.py` of `json` (5 runs of 200 rounds): `decode` 395.5 ns, 4.30
+    times its floor (4.89 before). The test
+    `a_tuple_made_by_an_if_is_taken_apart` (`tuples.rs`): a text carried by
+    a recursive function and replaced on some turns, an array, a text and
+    an integer out of an `if` in a `map`; `Take` in the IR, the
+    interpreter's output on 1, 3 and 8 threads, valgrind; it fails without
+    the change (mutation checked).

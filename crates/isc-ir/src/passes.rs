@@ -2719,11 +2719,14 @@ fn set_drops(e: &mut Expr, info: &Info) {
 }
 
 /// A tuple that is new memory: a call, an action, a tuple literal, the
-/// result of a `fold` (D164).
+/// result of a `fold` (D164), an `if` whose two branches are such tuples
+/// (D504: `f == 1 ? build(...) : [f1, -1]`, a field of the decoder of a
+/// record, was borrowed from the tuple and copied at each member).
 fn new_tuple(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Call(..) | ExprKind::Action(..) | ExprKind::Tuple(_) | ExprKind::Fold(..) => true,
         ExprKind::Let { body, .. } | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => new_tuple(body),
+        ExprKind::If(_, t, f) => new_tuple(t) && new_tuple(f),
         _ => false,
     }
 }

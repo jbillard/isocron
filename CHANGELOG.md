@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### The compiler
+
+* A tuple made by an `if` whose branches make new tuples is taken apart
+  where it is destructured: its parts moved, not copied. `json.decode`
+  442 -> 395 ns a record (D504).
+
 ## 0.4.7 — 2026-11-08
 
 Maps found by hashes, numbers sorted by their bytes, `toFixed` and `print`
