@@ -11147,3 +11147,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     searched, measured, a text given away and returned; the interpreter's
     output on 1 and 4 threads; Valgrind; with the case of `toLowerCase`
     made upper there it fails).
+- **D502 — The floor of a concatenation made as Isocron writes it, and the
+  strings at most 2.71 times their floors (2026-11-08).** `run.py` of
+  `strings` gave `concat` 0.66 times its floor: Isocron beat it, so the
+  floor was wrong. It took a block of a bump allocator and copied the line
+  of 60 bytes by a call of `memcpy`; Isocron writes a text only read into a
+  buffer of the stack by moves that overlap (D404, D478). Now the floor
+  copies into a buffer of its stack by two moves of 32 bytes that overlap
+  (`copy_short`, as the runtime, D459), the bytes kept (`KEEP`, D456): 1.89
+  ns, Isocron 2.19 (1.16 times its floor). `run.py` (5 runs of 200 rounds,
+  fixed frequency): every form of `strings` from 1.01 (`toString.i64`) to
+  2.71 (`padStart`); `template` 1.18. The item of TODO "the strings still
+  above their floor: templates, `concat`" closed by these measures.

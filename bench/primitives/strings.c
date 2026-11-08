@@ -10,6 +10,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <immintrin.h>
+
+// the bytes written into `p` kept: an empty `asm` that may read the memory
+// (D456)
+#define KEEP(p) __asm__ volatile("" : : "r"(p) : "memory")
+
+// `n` bytes (at most 64) copied by moves that overlap, without a call (as
+// `copy_short` of Isocron's runtime, D459, D478)
+static inline void copy_short(char *d, const char *s, long n) {
+    if (n >= 32) {
+        __m256i a = _mm256_loadu_si256((const __m256i *)s), b = _mm256_loadu_si256((const __m256i *)(s + n - 32));
+        _mm256_storeu_si256((__m256i *)d, a);
+        _mm256_storeu_si256((__m256i *)(d + n - 32), b);
+    } else if (n >= 16) {
+        __m128i a = _mm_loadu_si128((const __m128i *)s), b = _mm_loadu_si128((const __m128i *)(s + n - 16));
+        _mm_storeu_si128((__m128i *)d, a);
+        _mm_storeu_si128((__m128i *)(d + n - 16), b);
+    } else {
+        for (long i = 0; i < n; i++) d[i] = s[i];
+    }
+}
 
 #define N 4096
 #define W 60
@@ -117,11 +138,16 @@ int main(int argc, char **argv) {
     });
     TIME("equal", for (long i = 0; i < N; i++) acc += ls[i].n == ls[i ^ 1].n && !memcmp(ls[i].p, ls[i ^ 1].p, ls[i].n));
     TIME("less", for (long i = 0; i < N; i++) acc += cmp(ls[i], ls[i ^ 1]) < 0);
+    // into a buffer of the stack by moves that overlap, as Isocron writes a
+    // text only read (D404, D478): a block of the bump and a call of
+    // `memcpy` were beaten (0.66, D501)
     TIME("concat", for (long i = 0; i < N; i++) {
-        char *p = take(ls[i].n + 1);
-        memcpy(p, ls[i].p, ls[i].n);
-        p[ls[i].n] = '!';
-        acc += ls[i].n + 1 + (p[3] == 0);
+        char p[128];
+        long n = ls[i].n;
+        copy_short(p, ls[i].p, n);
+        p[n] = '!';
+        KEEP(p);
+        acc += n + 1 + (p[3] == 0);
     });
     // a part only read: its bounds checked, each at the start of a
     // character or at the end (a byte of continuation is 0x80 to 0xBF), no
