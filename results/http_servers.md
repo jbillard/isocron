@@ -26,23 +26,25 @@ each CPU of the client (at most one a connection). Measured at 5712a39
 ## The server on 2 cores, the client on 6
 
 The servers are the limit here (each keeps its 2 cores busy from 16
-connections on): the measure of the cost of a request. At b7592dd (D385).
+connections on): the measure of the cost of a request. At 03b2847 (D535;
+at b7592dd, D385: `serve` 98.6, 105.7, 115.4 and 114.2 % of nginx, 86.4,
+74.7, 76.4 and 75.2 % of the ceiling of 2 threads).
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 71453 (0.57 cores) | 388309 (2.02 cores) | 431762 (1.99 cores) | 410859 (1.99 cores) |
-| Isocron `serve`, an action | 72128 (0.57 cores) | 385368 (2.02 cores) | 435994 (2.00 cores) | 407856 (1.99 cores) |
-| nginx (2 workers) | 72431 (0.56 cores) | 367315 (2.02 cores) | 374020 (2.00 cores) | 359669 (1.98 cores) |
-| lighttpd | 70686 (0.63 cores) | 183592 (1.01 cores) | 187932 (1.00 cores) | 179096 (0.99 cores) |
-| ceiling, 1 thread | 82320 (0.47 cores) | 268672 (1.01 cores) | 283144 (1.00 cores) | 265843 (1.00 cores) |
-| ceiling, 2 threads | 82659 (0.47 cores) | 519610 (2.02 cores) | 564898 (2.00 cores) | 546707 (1.99 cores) |
+| Isocron `serve` | 75580 (0.54 cores) | 405362 (2.02 cores) | 465282 (2.00 cores) | 425423 (1.97 cores) |
+| Isocron `serve`, an action | 74582 (0.54 cores) | 407141 (2.02 cores) | 456776 (2.00 cores) | 418557 (1.98 cores) |
+| nginx (2 workers) | 71431 (0.57 cores) | 362700 (2.02 cores) | 372409 (2.01 cores) | 357168 (1.98 cores) |
+| lighttpd | 70216 (0.63 cores) | 184746 (1.01 cores) | 186883 (1.00 cores) | 179414 (0.99 cores) |
+| ceiling, 1 thread | 81998 (0.47 cores) | 266727 (1.01 cores) | 282053 (1.00 cores) | 260761 (0.99 cores) |
+| ceiling, 2 threads | 81441 (0.47 cores) | 510276 (2.02 cores) | 563721 (2.00 cores) | 541369 (1.98 cores) |
 
 | Isocron over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| `serve` over nginx | 98.6 % | 105.7 % | 115.4 % | 114.2 % |
-| `serve`, an action, over nginx | 99.6 % | 104.9 % | 116.6 % | 113.4 % |
-| `serve` over the ceiling of 2 threads | 86.4 % | 74.7 % | 76.4 % | 75.2 % |
-| `serve`, an action, over the ceiling of 2 threads | 87.3 % | 74.2 % | 77.2 % | 74.6 % |
+| `serve` over nginx | 105.8 % | 111.8 % | 124.9 % | 119.1 % |
+| `serve`, an action, over nginx | 104.4 % | 112.3 % | 122.7 % | 117.2 % |
+| `serve` over the ceiling of 2 threads | 92.8 % | 79.4 % | 82.5 % | 78.6 % |
+| `serve`, an action, over the ceiling of 2 threads | 91.6 % | 79.8 % | 81.0 % | 77.3 % |
 
 `serve` runs a loop of events on each thread of the pool, each on its own
 listener of the port (D374). Against the measure of D374 on the same

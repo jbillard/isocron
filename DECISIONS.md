@@ -11995,3 +11995,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   server; that test now also answers a handler that gives the headers the
   server writes itself (any case: dropped) among its own (kept in order):
   `server_on_requests_of_every_form` (`std_http.rs`).
+- **D535 — The server of HTTP measured again against nginx (2026-11-08).**
+  In the image `isocron-http` (`bench/http_servers/measure.sh`, the
+  server of `hello.isc` built by the `iscc` of 03b2847, the files of
+  `bench/http_servers` given to it), fixed frequency, the server on 2
+  CPUs and `wrk` on 6, 10 s a point: Isocron `serve` 75580, 405362, 465282
+  and 425423 requests a second with 1, 16, 256 and 1024 connections,
+  nginx (2 workers) 71430, 362700, 372409 and 357168, the ceiling of 2
+  threads 81441, 510276, 563721 and 541369: `serve` 105.8, 111.8, 124.9
+  and 119.1 % of nginx (98.6 to 115.4 % at D385), 92.8, 79.4, 82.5 and
+  78.6 % of the ceiling (74.7 to 86.4 % at D385); `results/http_servers.md`
+  (the table of 2 cores) made again from these lines. D533 and D534 alone
+  (the same server built by the compilers of be7b41b and of 03b2847, 5
+  alternated runs of 10 s): 16 connections 411556 -> 407457 (medians,
+  -1.0 %), 256 connections 460580 -> 466088 (+1.2 %), both within the
+  spread of their runs: the server is bound by the kernel (70 % of its
+  cycles, D534). The gap to the ceiling (about 20 %) is the work of the
+  program a request (1283 user cycles against about 690 for the ceiling,
+  D376), the item of TODO.
