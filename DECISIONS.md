@@ -11100,3 +11100,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     width and their bounds, 16 actions of `mapParallel` printing 300 each
     at the same time to a pipe, against the interpreter, 1 and 4 threads;
     without the newline in `isc_print_i64_line` it fails).
+- **D499 — The Benchmarks Game measured again at 5adf9f3 (2026-11-08).**
+  After D497 (no change of the compiler) and D498 (`print` of an integer
+  in one call: in the ten programs, fannkuch-redux's `print(checksum)`
+  alone, its output the same), on a quiet machine (no `Plex Transcoder` from
+  three minutes before to the end): the image built with the `iscc` of
+  5adf9f3, 102 checks against the references (the same outputs; the known
+  difference of C++ #4 of mandelbrot at N = 200 only), measured in Docker
+  (4 threads, 12 runs, the lowest). The fastest on 10 of 10, every time
+  within its scatter (binary-trees 659 -> 665 ms with Rust #5 842 -> 848
+  ms, reverse-complement 24 -> 23 ms, n-body 1884 -> 1876 ms, the others
+  within 3 ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`,
+  `floors.md`, `floors_isocron.tsv`, the table of the README and its figure
+  made again from these lines.
