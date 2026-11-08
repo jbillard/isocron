@@ -8,20 +8,20 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
 | :-- | :-- | --: | --: | --: |
 | sorts | `sortBy.length` | 22.18 | 3.56 | 6.2 |
-| json | `parse` | 646.92 | 170.81 | 3.8 |
-| json | `decode` | 324.28 | 91.75 | 3.5 |
+| json | `parse` | 625.91 | 170.99 | 3.7 |
 | sys | `isAbsolute` | 2.00 | 0.57 | 3.5 |
+| json | `decode` | 285.75 | 91.56 | 3.1 |
 | sys | `dirname` | 8.55 | 2.89 | 3.0 |
-| json | `quote.escaped` | 57.59 | 19.89 | 2.9 |
+| json | `quote.escaped` | 57.40 | 19.88 | 2.9 |
 | http | `parseUrl` | 56.66 | 19.93 | 2.8 |
-| json | `quote.plain` | 4.64 | 1.64 | 2.8 |
 | strings | `padStart` | 5.65 | 2.02 | 2.8 |
+| json | `quote.plain` | 4.62 | 1.65 | 2.8 |
 | http | `httpDate` | 35.44 | 12.88 | 2.8 |
-| sha256 | `hex.32` | 7.17 | 2.63 | 2.7 |
+| sha256 | `hex.32` | 7.03 | 2.64 | 2.7 |
 | numbers | `toFixed.2` | 49.44 | 19.16 | 2.6 |
 | time | `format` | 101.39 | 40.65 | 2.5 |
-| json | `stringify` | 276.16 | 114.71 | 2.4 |
 | http | `exchange.chunked64` | 48096.53 | 20317.21 | 2.4 |
+| json | `stringify` | 271.52 | 114.78 | 2.4 |
 | strings | `split.6` | 77.06 | 32.89 | 2.3 |
 | net | `resolve.hosts` | 4434.18 | 1951.84 | 2.3 |
 | maps | `get.i64` | 4.19 | 1.89 | 2.2 |
@@ -39,8 +39,8 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sys | `normalize` | 89.90 | 49.94 | 1.8 |
 | arrays | `filter.count` | 1.33 | 0.74 | 1.8 |
 | maps | `get.string` | 20.15 | 11.48 | 1.8 |
+| json | `message` | 7.85 | 4.56 | 1.7 |
 | sys | `env` | 19.43 | 11.33 | 1.7 |
-| json | `message` | 7.83 | 4.57 | 1.7 |
 | strings | `slice` | 2.09 | 1.23 | 1.7 |
 | sorts | `sort.i64` | 13.47 | 7.97 | 1.7 |
 | http | `header` | 18.96 | 11.36 | 1.7 |
@@ -56,9 +56,8 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | io | `print.line` | 25.45 | 16.38 | 1.6 |
 | arrays | `filter.sum` | 1.33 | 0.86 | 1.5 |
 | sys | `basename` | 7.31 | 4.83 | 1.5 |
-| sha256 | `digestText.55` | 427.43 | 285.44 | 1.5 |
-| sha256 | `digest.55` | 426.36 | 285.90 | 1.5 |
-| sha256 | `digest.4k` | 25806.25 | 17468.88 | 1.5 |
+| sha256 | `digestText.55` | 426.52 | 285.38 | 1.5 |
+| sha256 | `digest.4k` | 25817.33 | 17465.85 | 1.5 |
 | maps | `countBy.i64` | 3.47 | 2.35 | 1.5 |
 | sorts | `sort.f64` | 25.74 | 17.51 | 1.5 |
 | time | `parseIso` | 34.35 | 23.50 | 1.5 |
@@ -68,6 +67,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | time | `isLeapYear` | 0.72 | 0.54 | 1.3 |
 | strings | `toUpperCase` | 13.90 | 10.43 | 1.3 |
 | http | `message` | 6.49 | 4.87 | 1.3 |
+| sha256 | `digest.55` | 378.37 | 285.97 | 1.3 |
 | control | `gcd` | 65.22 | 49.45 | 1.3 |
 | http | `text.1k` | 53.64 | 41.33 | 1.3 |
 | http | `serve.action.pipelined` | 1231.78 | 953.26 | 1.3 |
@@ -94,9 +94,9 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | time | `formatIso` | 54.64 | 48.40 | 1.1 |
 | arrays | `concat` | 0.38 | 0.34 | 1.1 |
 | io | `printBytes.byte` | 0.31 | 0.28 | 1.1 |
-| json | `encode` | 89.28 | 80.55 | 1.1 |
 | time | `toDateTime` | 3.70 | 3.35 | 1.1 |
 | net | `server.roundtrip.64` | 6987.22 | 6326.48 | 1.1 |
+| json | `encode` | 88.34 | 80.56 | 1.1 |
 | arrays | `zip.sum` | 0.11 | 0.10 | 1.1 |
 | http | `request.post` | 41403.96 | 38271.71 | 1.1 |
 | http_serve | `serve.connection` | 41218.75 | 38132.71 | 1.1 |

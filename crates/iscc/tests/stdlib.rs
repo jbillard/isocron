@@ -2320,3 +2320,33 @@ action main(args: string[k]): i32 {
     let r = run_bin(&tmp("find_index_one"), &["1000"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, interp_ok(one, &["1000"]).as_str()));
 }
+
+/// D517: the functions too large to be inlined decided one at a time, the
+/// smallest first: the comparison of the keys of a decoder of `json`, whose
+/// reading of escaped keys is a function of its own, inlined at its two
+/// places (the check and the building of the members), no longer a call
+/// twice a member; the values decoded the same, compiled and interpreted.
+#[test]
+fn the_comparison_of_keys_of_a_decoder_is_inlined() {
+    let src = "import * as json from \"json\";
+
+type Rec = { id: i64, x: f64, name: string, ok: boolean };
+
+action main(args: string[k]): i32 {
+    const doc = \"[{\\\"id\\\":1,\\\"x\\\":0.5,\\\"name\\\":\\\"a\\\\\\\"b\\\",\\\"ok\\\":true},{\\\"ok\\\":false,\\\"n\\\\u0061me\\\":\\\"c\\\",\\\"x\\\":-2.5,\\\"id\\\":2}]\";
+    print(match (json.decode<Rec[k]>(doc)) {
+        Ok(v) => join(map(v, (r) => `${r.id} ${r.x} ${r.name} ${r.ok}`), \";\"),
+        Err(e) => json.message(e),
+    });
+    return 0;
+}
+";
+    let ir = iscc::frontend("decode_keys.isc", src).unwrap();
+    let names: Vec<&str> = ir.fns.iter().map(|f| f.name.as_str()).collect();
+    assert!(!names.iter().any(|n| n.starts_with("std:json.codecField") && !n.contains("Escaped")), "the comparison of keys is a function: {:?}", names);
+    let want = interp_ok(src, &[]);
+    assert_eq!(want, "1 0.5 a\"b true;2 -2.5 c false\n");
+    let bin = compile(src, "decode_keys");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()));
+}

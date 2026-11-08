@@ -293,12 +293,15 @@ impl Gen {
     /// fields missing.
     fn record(&mut self, i: usize, fs: &[(String, Shape)], js: &[usize], ty: &str) {
         // a key without escape compared byte by byte where it is; with one,
-        // read first
-        let mut field = format!("function codecField{i}(b: u8[n], text: string, ix: Index, a: i64, z: i64): i64 {{\n    if (findByte(b, 92u8, a, z) < z) {{\n        const k = keyText(b, text, ix, a, z);\n");
+        // read first, in a function of its own (D517: the reading of the
+        // escapes made the comparison too large to be inlined, a call twice
+        // a member, 14 % of `json.decode`)
+        let mut field = format!("function codecFieldEscaped{i}(b: u8[n], text: string, ix: Index, a: i64, z: i64): i64 {{\n    const k = keyText(b, text, ix, a, z);\n");
         for (k, (name, _)) in fs.iter().enumerate() {
-            let _ = write!(field, "        if (k == \"{name}\") {{\n            return {k};\n        }}\n");
+            let _ = write!(field, "    if (k == \"{name}\") {{\n        return {k};\n    }}\n");
         }
-        field.push_str("        return -1;\n    }\n");
+        field.push_str("    return -1;\n}\n\n");
+        let _ = write!(field, "function codecField{i}(b: u8[n], text: string, ix: Index, a: i64, z: i64): i64 {{\n    if (findByte(b, 92u8, a, z) < z) {{\n        return codecFieldEscaped{i}(b, text, ix, a, z);\n    }}\n");
         for (k, (name, _)) in fs.iter().enumerate() {
             let _ = write!(field, "    if (sameBytes(b, a, z, \"{name}\")) {{\n        return {k};\n    }}\n");
         }

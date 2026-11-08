@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### The compiler
+
+* The functions too large to be inlined are decided one at a time, the
+  smallest first: a function no longer counts those it calls that are
+  called rather than inlined. The comparison of keys of a decoder of
+  `json` inlined: `json.decode` 325 -> 287 ns a record, `json.parse`
+  -3.5 %, `sha256.digest` of 55 bytes 425 -> 379 ns (D517).
+
 ## 0.4.8 — 2026-11-08
 
 `findIndex`, a search that stops at the first element found, by vectors;

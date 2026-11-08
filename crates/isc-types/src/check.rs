@@ -4612,19 +4612,25 @@ fn outline_large(fns: &[TFn], mut called: Vec<bool>, main: FnId) -> Vec<bool> {
             }
         }
         let mut memo = vec![None; n];
-        let mut changed = false;
+        // one function a turn, the smallest of those above the limits: a
+        // function called rather than inlined no longer counts in the size of
+        // those that call it, decided after it (D517: the reading of escaped
+        // keys of the decoders of `json` kept the comparison of keys above
+        // the limits once it was a function of its own, both decided in one
+        // turn)
+        let mut pick: Option<FnId> = None;
         for f in 0..n {
             if called[f] || !eligible[f] {
                 continue;
             }
             let c = copies(f, &callers, &called, main, &mut memo);
-            if sz[f] > INLINE_LIMIT || (sz[f] >= COPY_MIN && c >= 2 && sz[f].saturating_mul(c) > COPY_LIMIT) {
-                called[f] = true;
-                changed = true;
+            if (sz[f] > INLINE_LIMIT || (sz[f] >= COPY_MIN && c >= 2 && sz[f].saturating_mul(c) > COPY_LIMIT)) && pick.is_none_or(|p| sz[f] < sz[p]) {
+                pick = Some(f);
             }
         }
-        if !changed {
-            return called;
+        match pick {
+            Some(f) => called[f] = true,
+            None => return called,
         }
     }
 }

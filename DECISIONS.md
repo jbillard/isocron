@@ -11564,3 +11564,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (9 % of 0.16 %), and the copies of 2 bytes nothing: both closed by
     this measure, as D265, the cause of the first left as D288 found it
     (the place of the code moves glibc's own loop by 13 %).
+- **D517 — The functions too large to be inlined decided one at a time,
+  the smallest first (2026-11-08).** Profile of `json.decode` after D516:
+  the comparison of a key with the fields (`codecField1`) 14.1 %, most of
+  it its call (D515), twice a member. It was a function because of its
+  size counted with what it inlines (`outline_large`, D336): 3180 nodes in
+  2 copies, above `COPY_LIMIT`, the reading of escaped keys (`keyText`,
+  `stringAt`) most of them.
+  - The decoders (`codec.rs`) now read an escaped key in a function of its
+    own (`codecFieldEscaped`). That alone kept `codecField1` a function:
+    `outline_large` decided every function in one turn with the sizes of
+    before it, so `codecField1` still counted the 3037 nodes of
+    `codecFieldEscaped1`, outlined in the same turn.
+  - Now one function a turn, the smallest of those above the limits, the
+    sizes and copies counted again after it: a function no longer counts
+    those it calls that were decided before it. `codecField1` then inlined
+    at its two places; in `http`, `exchange` and `readyOf` too. The time of
+    the front of the compiler: `iscc ir` of `http_serve`, `json`, `https`
+    0.034 -> 0.035, 0.041 -> 0.046, 0.035 -> 0.037 s (the best of 3).
+  - Measured (A/B of the binaries of the compilers of 7558273 and of this
+    change, 7 alternated runs, one CPU at fixed frequency, every group
+    whose IR changed): `json.decode` 325.0 -> 287.0 ns (-11.7 %), `parse`
+    -3.5 %, `stringify` -1.9 %, `sha256.digest.55` 424.7 -> 379.1 ns
+    (-10.7 %); `http.parseUrl` +6.2 %: its loop the same machine code (the
+    same hash), 22 KB further, the place of the code (as D509 and D511);
+    every other form of `json`, `sha256`, `http`, `net`, `https`,
+    `http_serve`, `https_serve`, `https_serve_tls` within the spread of its
+    runs. The ten programs: the same IR. `run.py` of `json` and `sha256` (5
+    runs of 200 rounds): `json.decode` 285.75 ns, 3.12 times its floor
+    (3.53 before); `json.parse` 625.91 ns, 3.66 (3.79); `sha256.digest.55`
+    1.32.
+  - Test `the_comparison_of_keys_of_a_decoder_is_inlined` (`stdlib.rs`):
+    no `codecField` function in the IR of a program that decodes records,
+    their values (an escaped key, an escaped text, fields in another
+    order) the same compiled and interpreted; it fails with the decisions
+    of one turn (mutation checked).
