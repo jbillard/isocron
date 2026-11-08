@@ -11501,3 +11501,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D514 — Release 0.4.8 (2026-11-08).** After 0.4.7: D501 to D513.
+  `findIndex(x, p)` in the prelude (rule F of SPEC section 6: a search
+  that stops, by vectors of 64 bytes when `p` cannot fail, its first 8
+  bytes one at a time; D505, D512); a tuple made by an `if` of new tuples
+  taken apart (D504); a `scan` whose source reads several arrays by
+  vectors replayed when a check fails (D507); short parts appended by one
+  move of 16 bytes (D508); a chain of texts after an accumulator written
+  by the compiled code, the room of its block read there (D509, D511);
+  the index of `json` by two sums by prefix (D506); texts of another case
+  on the stack (D501). `json.quote` of escaped texts 2.90 times its floor
+  (4.15 at 0.4.7), `json.parse` 3.79 (4.60), `json.decode` 3.53 (4.89).
+  The language the same but `findIndex`, added; no name removed. The
+  commit of the release the last of `main` (D486); the steps of 0.4.3
+  (D449): the Windows tests in the VM with the `iscc.exe` of the
+  release's sources, the archives built from those sources in the images
+  of the releases, tried before they are published. The ten programs of
+  the Benchmarks Game measured at 042ce81 (D513): nothing in `crates/`
+  changed since but the version.

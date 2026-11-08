@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.8 — 2026-11-08
+
+`findIndex`, a search that stops at the first element found, by vectors;
+texts appended by the compiled code; a tuple of an `if` taken apart; a
+`scan` reading several arrays by vectors. `json.quote` of escaped texts
+below 3 times its floor, `json.parse` and `json.decode` faster. The same
+results.
 
 ### The language
 
