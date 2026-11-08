@@ -33,6 +33,10 @@ run() {
 git diff --quiet && git diff --cached --quiet || fail "changes not committed"
 commit=$(git log --format=%H -1 --grep="^Release $v:" main)
 [ -n "$commit" ] || fail "no commit \"Release $v: ...\" on main"
+# the commit of the release the last of main, the archives built from its
+# sources (D486: 0.4.6 was tagged on its commit of release, its archives
+# built from a fix made after it)
+[ "$commit" = "$(git rev-parse main)" ] || fail "main has commits after the commit of the release $(git rev-parse --short "$commit"): make a commit \"Release $v: ...\" last and build the archives from it"
 # `grep -c`, not `-q`: `-q` leaves at the first line found, `git show` then
 # dies of SIGPIPE, and `pipefail` fails the line (D469: the check of 0.4.5
 # failed once on a section present)

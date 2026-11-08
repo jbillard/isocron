@@ -10728,3 +10728,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     removed from the VM after; three keys of the machine of 2026-11-05
     20:33 to 20:35, probably of the trials of D343, left there).
   - 0.4.6, not yet published, takes this change (D484, its notes).
+- **D486 — The commit of a release the last of `main` (2026-11-08).**
+  0.4.6 was published with its tag on its commit of release, 8541507
+  (D484), and its archives built from 6795010, the commit after it that
+  adds D485 (the Windows tests of the archives of 8541507 had failed):
+  `publish.sh` tags the last commit of `main` whose message starts with
+  `Release 0.4.6:`. The tag stays on 8541507: moving it is a forced push
+  of a published tag, refused here; the author's call (TODO). The notes of
+  the release on GitHub say that its archives come from 6795010 and that
+  the sources of the tag lack D485 (its four files and their sums checked
+  after download). Now `publish.sh` refuses a release whose commit is not
+  the last of `main`: a fix after it needs a new commit `Release VERSION:`
+  and archives built from it. Tried in a clone of the repository: with a
+  commit after that of the release, refused with that message; with the
+  commit of the release last, past that check (stopped by the next one,
+  `main` not ahead of `origin/main`, as that clone was made).
