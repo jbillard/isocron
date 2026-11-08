@@ -1083,7 +1083,9 @@ fn literals_kept_without_a_copy() {
     // the copies left are not of literals: the accumulator of `grow` at its
     // entry (rule A, D351) and the elements `sort` puts in its array (twice)
     assert_eq!(ll.matches("call void @isc_str_new(").count(), 3, "a literal copied");
-    assert!(ll.matches("@.olit.").count() >= 16, "the literals not kept where they are");
+    // the literals of at most 12 bytes are values, their bytes in them
+    // (D530); the one longer kept in the program's data
+    assert!(ll.matches("@.olit.").count() >= 1, "the literals not kept where they are");
 }
 
 /// D368: a concatenation with a literal is written by the compiled code
@@ -1391,4 +1393,68 @@ action main(args: string[k]): i32 {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {}", n);
     }
     valgrind_clean(src, "taken_texts", &["300"]);
+}
+
+/// D531: empty texts of every form (a slice of nothing, `""`, a text made
+/// empty, the zero of a field of another variant) added to a text given or
+/// not, copied into an array, sorted, compared. The representation tried
+/// by D530 copied a short text by one load of 16 bytes where they stay in
+/// their page, and read so at the address Rust gives an empty slice (1): a
+/// fault of segmentation (`time.format`, a field after an empty one). Kept
+/// for every read past the bytes of a text.
+#[test]
+fn empty_texts_of_every_form() {
+    let src = "type T = A(string) | B(i64);
+
+function grow(acc: string, s: string, i: i64): string {
+    if (i == 6) {
+        return acc;
+    }
+    return grow(`${acc}${s.slice(i, i)}${i}`, s, i + 1);
+}
+
+function add(acc: string, s: string, i: i64): string {
+    if (i == 6) {
+        return acc;
+    }
+    return add(acc + s.slice(i, i), s, i + 1);
+}
+
+function pieces(s: string, i: i64): string[] {
+    return map(iota(i), (k) => s.slice(k, k));
+}
+
+function text(t: T): string {
+    return match (t) {
+        A(x) => x,
+        B(n) => \"\",
+    };
+}
+
+action main(args: string[k]): i32 {
+    const s = \"abcdefgh\";
+    const n = parseI64(args[0]);
+    print(grow(\"\", s, 0));
+    print(grow(\"start\", s, 0));
+    print(add(\"\", s, 0).length);
+    print(add(`a${n}`, s, 0));
+    print(add(\"a text longer than twelve\", s, 0));
+    const e = s.slice(n, n);
+    const g = `${s.slice(0, n)}`;
+    print([e.length, g.length, (e + \"\").length, (\"\" + e).length] as const);
+    print(e == \"\" && g == e && text(B(1)) == e && text(A(\"\")) == g);
+    const ps = sort(concat(pieces(s, 5), [\"b\", \"\", \"a\"]));
+    print(ps);
+    print(map(ps, (p) => `[${p}]`).join(\"\"));
+    print(`${e}${e}${g}x${e}`);
+    return 0;
+}
+";
+    let bin = compile(src, "empty_texts");
+    for a in ["0", "3", "8"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    valgrind_clean(src, "empty_texts", &["3"]);
 }

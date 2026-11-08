@@ -11870,3 +11870,48 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     equality by two words; (3) arrays whose texts are views of a text or
     of the texts of an array that lives longer (the result of `sort` and
     `sortBy`, `lines` of a text kept, the base of k-nucleotide: D524).
+
+- **D531 — The texts of 16 bytes of D530: built, tested, measured, not
+  kept (2026-11-08).** The design of D530 was built in full: the runtime
+  (the text as two words of 64 bits, its constructors, the arrays of texts,
+  `lines` and `split`), the code generator (the text as `{ i32, i32, i64
+  }`, its first bytes made with it, the copies, frees, comparisons,
+  literals, slices, concatenations), the interpreter (the limit of the
+  length), the suite green at each step (102 runs). Measured against
+  607c6f0 (the old and new binaries of the 17 groups, 7 alternated runs,
+  and the ten programs, 11 runs, fixed frequency) in four states:
+  - the first bytes alone (step 1): the ten programs within -0.8 to
+    +0.3 %, `toString` +25.5 %, `sortBy.length` +23.3 %, `normalize`
+    +19.8 %, `stringify` +11.5 %: a text made, its first 4 bytes read back
+    from the bytes just written by narrower stores (the processor waits for
+    those stores: `ld_blocks.store_forward` 40 -> 8.3 million in `time`);
+  - the short texts in their values (step 2): `sortBy.length` 22.18 ->
+    7.41 ns (-66.6 %), templates -68.8 %, `equal` -55.3 %, `less` -48.6 %,
+    `sort.string` -46.4 %, `isAbsolute` -36.3 %; but `time.format` +77.4 %,
+    `path.join` +76.4 %, `padStart` +66.8 %, `toFixed` +58.9 %, `trim`
+    +58.0 %, the paths +33 to +48 %: 30 forms slower, 19 faster;
+  - after the causes measured were removed (the first bytes of a text made
+    from its parts or its source, never read back; the value of a short
+    text made in registers; the text of the runtime returned in two
+    registers, not through the stack; a slice a view of its text, a short
+    one copied only when kept): 26 slower, 17 faster;
+  - the texts made by the runtime and by concatenations kept in blocks, a
+    short text in its value only when copied (a literal, a part of `split`
+    or `lines`): `equal` -55.3 %, `startsWith` -52.2 %, `sortBy.length`
+    -50.0 %, `less` -48.9 %, `sort.string` -42.3 %, `isAbsolute` -40.7 %,
+    `split` -36.3 %, `get.string` -18.0 %; and `padStart` +79.0 %,
+    `formatDateTime` +51.1 %, `format` +48.1 %, `basename` +38.5 %,
+    `extension` +34.7 %, `normalize` +33.7 %, `slice` +25.7 %,
+    `stringify` +24.5 %, `toString` +16.5 %: 29 forms slower, 12 faster;
+    the ten programs within -0.4 to +0.3 %.
+  The cost is the layout itself, not the short texts: each text made
+  computes its first bytes, each length is masked, each use of its bytes
+  chooses where they are (a branch or a select, a place on the stack for a
+  short one). Not a general gain: not kept; the code is not in the
+  repository. What it showed, kept for the work after it: comparisons and
+  sorts decided by the first bytes of texts without a call (the gains
+  above, from a word compared before the bytes), and the copies of short
+  texts without a block (`sortBy`, D488). Found on the way: a read of 16
+  bytes past the bytes of an empty slice (the address 1 that Rust gives
+  it): the test `empty_texts_of_every_form` kept for every read past the
+  bytes of a text (it passes with the old representation).
