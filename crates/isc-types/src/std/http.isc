@@ -691,51 +691,37 @@ function frameOf(b: u8[], a: i64, z: i64, h: Head): Frame {
     if (!versionOk || !methodOk || !targetOk || h.eols.length == 0 || count(b.slice(a, z), (c) => c >= 0x80u8) > 0 && !utf8(b.slice(a, z))) {
         return fault(400);
     }
-    // each header: [its kind (1 Content-Length, 2 Transfer-Encoding, 3
-    // Connection, 4 Host, 0 another, -1 not a header), the start and the
-    // end of its value]
-    const hs = map(iota(h.eols.length - 1), (j) => {
+    // its headers read once, in one pass (D536: an array of each header's
+    // kind and value, then six passes over it): a line that is not a
+    // header, whether Host and Transfer-Encoding are there, the value of the
+    // last Content-Length, whether a Connection holds `close` or
+    // `keep-alive`
+    const st = fold(iota(h.eols.length - 1), [false, false, false, -1, -1, false, false] as const, (acc, j) => {
+        const [bad, host, te, cs, ce, close, alive] = acc;
         const s = h.eols[j] + 2;
         const e = h.eols[j + 1];
         const colon = firstBefore(b, s, e, 58u8, 58u8);
         const ok = colon > s && colon < e && count(iota(colon - s), (i) => !tokenByte(b[s + i])) == 0;
+        // its kind: 1 Content-Length, 2 Transfer-Encoding, 3 Connection, 4
+        // Host, 0 another, -1 not a header
         const kind = !ok ? -1 : (isName(b, s, colon, "content-length") ? 1 : (isName(b, s, colon, "transfer-encoding") ? 2 : (isName(b, s, colon, "connection") ? 3 : (isName(b, s, colon, "host") ? 4 : 0))));
-        return [kind, colon + 1, e] as const;
+        return [bad || kind == -1, host || kind == 4, te || kind == 2, kind == 1 ? colon + 1 : cs, kind == 1 ? e : ce, close || (kind == 3 && holdsWord(b, colon + 1, e, "close")), alive || (kind == 3 && holdsWord(b, colon + 1, e, "keep-alive"))] as const;
     });
-    const has = (k: i64) => count(hs, (x) => {
-        const [kind, vs, ve] = x;
-        return kind == k;
-    }) > 0;
-    const last = (k: i64) => fold(hs, -1, (at, x) => {
-        const [kind, vs, ve] = x;
-        return kind == k ? vs : at;
-    });
+    const [bad, host, te, cl, ce, close, alive] = st;
     const http11 = b[v + 7] == 49u8;
-    if (has(-1) || (http11 && !has(4))) {
+    if (bad || (http11 && !host)) {
         return fault(400);
     }
-    if (has(2)) {
+    if (te) {
         return fault(501);
     }
-    const cl = last(1);
-    const length = cl < 0 ? 0 : decimalAt(b, cl, fold(hs, 0, (e, x) => {
-        const [kind, vs, ve] = x;
-        return vs == cl ? ve : e;
-    }));
+    const length = cl < 0 ? 0 : decimalAt(b, cl, ce);
     if (length < 0) {
         return fault(400);
     }
     if (length > REQUEST_BODY_LIMIT) {
         return fault(413);
     }
-    const close = count(hs, (x) => {
-        const [kind, vs, ve] = x;
-        return kind == 3 && holdsWord(b, vs, ve, "close");
-    }) > 0;
-    const alive = count(hs, (x) => {
-        const [kind, vs, ve] = x;
-        return kind == 3 && holdsWord(b, vs, ve, "keep-alive");
-    }) > 0;
     return { length: length, fault: 0, keep: http11 ? !close : alive, head: isName(b, a, h.sp1, "head") && b[a] == 72u8 };
 }
 

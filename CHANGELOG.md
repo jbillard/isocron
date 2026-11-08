@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `serve`: the headers of a request read in one pass, no array of them: -4.5 % of the instructions of the program a request (D536).
+
 * `serve`: the head of each response made as one text continued in its block, not a text for each header joined then copied: -4 % of the cycles of the program a request (D534).
 
 * `concat(a, b)` grows the block of `a` when `a` is read there for the last time: an array accumulated by `concat` no longer copied whole at each step (100000 steps 3777 -> 432 ms, D533).

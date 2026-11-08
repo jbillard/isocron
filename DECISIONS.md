@@ -12013,3 +12013,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   cycles, D534). The gap to the ceiling (about 20 %) is the work of the
   program a request (1283 user cycles against about 690 for the ceiling,
   D376), the item of TODO.
+- **D536 — The headers of a request read in one pass (2026-11-08).** TODO,
+  the work of the program a request of `serve`. `frameOf` made, for each
+  request, an array of the kind and the value of each header (a `map` of
+  tuples: a block), then read it six times (`has` of three kinds, `last`,
+  a `fold` for the end of a value, two `count`s). Now one `fold` over the
+  lines of the head whose state is a tuple of scalars (a line that is not
+  a header, Host and Transfer-Encoding there, the value of the last
+  Content-Length, a Connection holding `close` or `keep-alive`): no block,
+  one pass, the same answers (the same checks in the same order).
+  Measured (`serve.pipelined` alone, 48000 requests, 5 alternated runs,
+  fixed frequency): instructions 207.16 -> 197.76 million (-4.5 %), user
+  cycles 61.39 -> 59.85 million (medians, -2.5 %; one run of the new one at
+  72.0, the others 59.8 to 61.2). The same outputs on every request of
+  `server_on_requests_of_every_form` (requests with Content-Length, without
+  Host in HTTP/1.1, with Transfer-Encoding, Connection close and
+  keep-alive in HTTP/1.0, a line that is not a header).
