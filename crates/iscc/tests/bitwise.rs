@@ -411,7 +411,8 @@ action main(args: string[k]): i32 {
 /// its type), too wide for windows (the whole array made for that output),
 /// elements of 8 bytes (windows on the heap), an index past the end (the
 /// panic of the program), nothing kept; sizes around the blocks of the
-/// count, of the tasks and of the output; 1 to 8 threads; the same bytes as
+/// count, of the tasks (16 KiB of bytes since D490) and of the output; 1 to
+/// 8 threads; the same bytes as
 /// computed here and as the interpreter; nothing lost (valgrind).
 #[test]
 fn filters_read_by_windows() {
@@ -452,7 +453,9 @@ fn filters_read_by_windows() {
     let bin = compile(src, "filter_windows");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     assert!(ll.contains("alloca [32768 x i8], align 64"), "no windows");
-    for n in [4usize, 1030, 5000, 70001, (1 << 20) + 9, (3 << 20) + 12345] {
+    // around the tasks of 16384 bytes of the fill that reads by windows
+    // (D490) and their windows of 4 tasks
+    for n in [4usize, 1030, 5000, 16383, 16384, 16385, 16448, 16449, 32769, 65537, 65600, 70001, (1 << 20) + 9, (3 << 20) + 12345] {
         for t in ["1", "2", "3", "4", "8"] {
             let o = std::process::Command::new(&bin).arg(n.to_string()).env("ISC_THREADS", t).output().unwrap();
             assert_eq!(o.status.code(), Some(0), "n {}: {}", n, String::from_utf8_lossy(&o.stderr));

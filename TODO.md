@@ -318,7 +318,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] The examples of the README run by the tests; a port listened to twice `AlreadyExists` on Linux, Windows and in the interpreter (D349)
 - [x] The payload of a `match` on a temporary taken out of it, not copied (`x ?? d`, `match (f()) { Ok(v) => ... }`: a copy and a free of the payload each time, D346) — done: `env` 4.1 -> 3.6 (D367)
 - [x] `path.normalize` with its text grown in place (rule A): 240.7 -> 213.3 ns; a string built piece by piece linear, 100000 pieces 122.2 -> 3.7 ms (D351)
-- [ ] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions
+- [x] reverse-complement 8.91 % faster with B = 16384 (D321): the use of B that gives it, apart from the reductions: the tasks of its fill that reads by windows, now 16 KiB (D490: 27.5 -> 23.6 ms)
 
 ## The trusted base (the remarks of the author, 2026-11-04)
 

@@ -1811,15 +1811,17 @@ fn lookup_tables(l: &Lambda) -> Vec<VarId> {
 
 /// The blocks of the source of a `filter` made by windows (D293): its
 /// elements counted by blocks of this many, each window the blocks of its
-/// part filtered again (about 1.25 times the elements of a task of BLOCK).
+/// part filtered again (a few blocks more than the elements of a task of its
+/// fill).
 const WINDOW_BLOCK: i64 = 1024;
 /// The bytes of a window on the stack of a task; more on the heap.
 const WINDOW_STACK: i64 = 32 << 10;
-/// The indices a task of BLOCK elements may read past each of its ends
-/// (lanes of vectors) counted in its window.
+/// The indices a task may read past each of its ends (lanes of vectors)
+/// counted in its window.
 const WINDOW_MARGIN: i64 = 64;
-/// The widest window of the first task that keeps the windows.
-const WINDOW_WIDE: i64 = 4 * BLOCK;
+/// The widest window of the first task that keeps the windows, in tasks of
+/// its fill: 4 times the elements of a task.
+const WINDOW_WIDE: i64 = 4;
 
 /// A join of strings read once in order by a `map` of its bytes (D428):
 /// `let s = join(parts, sep) in let t = bytes(s) in let c = map(t, l) in
@@ -5864,7 +5866,11 @@ impl<'p> Gen<'p> {
         // the arrays of `windowed_let` it reads: by windows, or made whole
         // here for this array (`windowed_stream_start`)
         let reads = self.windowed_reads(e);
-        let (ok, wins) = self.windowed_stream_start(e, &reads, &n)?;
+        // a task of the fill writes at least 16 KiB (D321), also where it
+        // reads by windows (D490: tasks of 4096 bytes there, as B,
+        // reverse-complement 14 % slower)
+        let tb = fill_block(esize(&et));
+        let (ok, wins) = self.windowed_stream_start(e, &reads, &n, tb)?;
         let small = self.ins(format!("icmp slt i64 {}, {}", n, STREAM));
         let size = self.ins(format!("select i1 {}, i64 {}, i64 {}", small, n, STREAM));
         let buf = self.ins(format!("call ptr @isc_alloc(i64 {})", size));
@@ -5882,8 +5888,6 @@ impl<'p> Gen<'p> {
                 g.fill_range(&src, &dst, &n, &et, lo, &hi, w)?;
             } else {
                 let len = g.ins(format!("sub i64 {}, {}", hi, lo));
-                // the windows of D293 are made for tasks of B elements
-                let tb = if wins.is_empty() { fill_block(esize(&et)) } else { BLOCK };
                 let c0 = g.ins(format!("add i64 {}, {}", len, tb - 1));
                 let c = g.ins(format!("sdiv i64 {}, {}", c0, tb));
                 let mut extra = vec![v(dst.clone(), "ptr"), v(lo.to_string(), "i64"), v(hi.clone(), "i64")];
@@ -5943,26 +5947,26 @@ impl<'p> Gen<'p> {
     /// Before the blocks of `print_stream` of the `map` `e` (`n` elements)
     /// that reads the arrays of `windowed_let` (`reads`): whether its blocks
     /// read them by windows (`ok`, an `i1`): the bounds of the indices over
-    /// the whole `map` without an overflow, and those of its first task at
-    /// most WINDOW_WIDE apart; never in a task. Otherwise each array is made
-    /// whole here (`windowed_whole`) and its variable holds it. Returns `ok`
-    /// and, for each array, its variable, its places and length, and the
-    /// array made whole (or null).
+    /// the whole `map` without an overflow, and those of its first task (of
+    /// `tb` elements) at most WINDOW_WIDE tasks apart; never in a task.
+    /// Otherwise each array is made whole here (`windowed_whole`) and its
+    /// variable holds it. Returns `ok` and, for each array, its variable, its
+    /// places and length, and the array made whole (or null).
     #[allow(clippy::type_complexity)]
-    fn windowed_stream_start(&mut self, e: &Expr, reads: &[(VarId, Vec<(&Expr, Vec<(VarId, &Expr)>)>)], n: &str) -> R<(String, Vec<(VarId, V, String)>)> {
+    fn windowed_stream_start(&mut self, e: &Expr, reads: &[(VarId, Vec<(&Expr, Vec<(VarId, &Expr)>)>)], n: &str, tb: i64) -> R<(String, Vec<(VarId, V, String)>)> {
         if reads.is_empty() {
             return Ok(("false".into(), Vec::new()));
         }
         let bad = self.alloca("i1");
         self.emit(format!("store i1 {}, ptr {}", self.in_task, bad));
         let last = self.ins(format!("sub i64 {}, 1", n));
-        let first = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, BLOCK + WINDOW_MARGIN));
+        let first = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, tb + WINDOW_MARGIN));
         let first = self.ins(format!("sub i64 {}, 1", first));
         for (_, rs) in reads {
             self.windowed_bounds(e, rs, "0", &last, &bad)?;
             let (a, b) = self.windowed_bounds(e, rs, "0", &first, &bad)?;
             let width = self.checked("sub", &b, &a, &bad);
-            let wide = self.ins(format!("icmp sgt i64 {}, {}", width, WINDOW_WIDE));
+            let wide = self.ins(format!("icmp sgt i64 {}, {}", width, WINDOW_WIDE * tb));
             let was = self.ins(format!("load i1, ptr {}", bad));
             let now = self.ins(format!("or i1 {}, {}", was, wide));
             self.emit(format!("store i1 {}, ptr {}", now, bad));

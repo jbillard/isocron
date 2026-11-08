@@ -10857,3 +10857,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   sorts, no transcoder of Plex before or after: `sortBy.length` 6.24
   times its floor (its representation, D488), `sort.string` 1.81,
   `sort.i64` 1.69, `sort.f64` 1.47, `toReversed` 1.01.
+- **D490 — The tasks of a fill that reads by windows of 16 KiB too
+  (2026-11-08).** The question left by D321: reverse-complement was
+  8.91 % faster with B = 16384, not by its reductions; "another use of B,
+  to be found". Measured again on the code of D489 (the compiler built
+  with B = 16384, the old and new binaries of reverse-complement, 21
+  alternated runs, fixed frequency, no transcoder of Plex): -14.11 %
+  [27.6 -> 23.7 ms]. B is in two places of its LLVM IR: the blocks of its
+  parallel `filter` of the heads (`filter(iota(data.length), ...)`, D178)
+  and the tasks of `printBytes(lines(m, ...))`, a fill that reads `bases`
+  by windows (D293), which D321 had left at tasks of B elements ("the
+  windows of D293 are made for tasks of B elements").
+  - Blocks of 16384 elements for the parallel `filter` alone: +0.08 %
+    (the same 27.5 ms): not that.
+  - Tasks of 16 KiB (`fill_block`, as the other fills of D321) for the
+    fill that reads by windows, its first task checked at that size and
+    its widest window 4 of those tasks (`WINDOW_WIDE` in tasks): -14.31 %
+    [27.5 -> 23.6 ms], the same outputs; `perf stat` (4 threads, 3 runs,
+    the first cold one of the old binary left out): 563.5 -> 484.5 million
+    instructions, 289 -> 238 million cycles, 105 -> 88.5 ms of CPU. A task
+    filters again the blocks of 1024 of the source that its window covers,
+    past both ends: about 6 blocks for 4 of output with tasks of 4096,
+    about 18 for 16 with tasks of 16384, and a quarter of the tasks
+    (61000 -> 15000) with their fixed costs (a model; 79 million
+    instructions less measured). A window of 16 KiB of bytes and its
+    margins stays on the stack (32 KiB); tasks of elements of 8 bytes the
+    same (4096 elements). The LLVM IR of the nine other programs the same.
+  - Test `filters_read_by_windows` (`bitwise.rs`) with sizes around the
+    tasks of 16384 bytes and their windows (16383 to 16449, 32769, 65537,
+    65600), 1 to 8 threads, against the bytes computed in the test and the
+    interpreter.
