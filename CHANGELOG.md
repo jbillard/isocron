@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `serve`: the head of a request checked as UTF-8 once, its parts slices of it (D537).
+
 * `serve`: the headers of a request read in one pass, no array of them: -4.5 % of the instructions of the program a request (D536).
 
 * `serve`: the head of each response made as one text continued in its block, not a text for each header joined then copied: -4 % of the cycles of the program a request (D534).

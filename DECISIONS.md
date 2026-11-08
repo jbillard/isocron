@@ -12029,3 +12029,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `server_on_requests_of_every_form` (requests with Content-Length, without
   Host in HTTP/1.1, with Transfer-Encoding, Connection close and
   keep-alive in HTTP/1.0, a line that is not a header).
+- **D537 — The head of a request one text, its parts slices of it
+  (2026-11-08).** Profile of `serve.pipelined` after D536: `utf8_check`
+  7.3 % and `isc_str_from_bytes` 6.3 % of the user cycles, from the
+  request that `requestAt` makes (built though `hello` does not read it: a
+  `stringOf` may panic, so it is not removed). Each part (the method, the
+  target, each name and value of a header) was made from its bytes and
+  checked as UTF-8 on its own. Now the head is one text, its bytes checked
+  once, and its parts are slices of it, cut at bytes of ASCII (spaces,
+  colons, ends of lines: always between characters, so a slice never
+  panics there); `frameOf` refused a head that is not UTF-8 before (D451).
+  Measured (`serve.pipelined` alone, 48000 requests, 5 alternated runs,
+  fixed frequency): instructions 197.76 -> 190.92 million (-3.5 %), user
+  cycles 59.95 -> 59.07 million (medians, -1.5 %; each run of the new one
+  below its pair). The same outputs on every request of
+  `server_on_requests_of_every_form` (among them a header of UTF-8,
+  `X-Test: été`, and one with a surrogate refused with 400).

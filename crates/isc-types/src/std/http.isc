@@ -727,7 +727,11 @@ function frameOf(b: u8[], a: i64, z: i64, h: Head): Frame {
 
 // the request whose head is `b` from `a` to `z`, its body after it
 function requestAt(b: u8[], a: i64, z: i64, h: Head, length: i64): Request {
-    const text = (s: i64, e: i64) => stringOf(b.slice(s, e));
+    // the head one text, its bytes checked once (D537: each part made from
+    // its bytes and checked before), its parts slices of it: cut at bytes
+    // of ASCII (spaces, colons, ends of lines), always between characters
+    const t = stringOf(b.slice(a, z));
+    const text = (s: i64, e: i64) => t.slice(s - a, e - a);
     const target = text(h.sp1 + 1, h.sp2);
     const q = target.indexOf("?");
     const headers = map(iota(h.eols.length - 1), (j) => {
