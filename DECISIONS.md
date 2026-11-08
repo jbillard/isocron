@@ -11740,3 +11740,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   alternated runs): `parse` 356.6 -> 355.8 ns: the array of places, a
   block made and freed for each object, costs what the second reading
   saved. Not kept.
+- **D524 — The base of k-nucleotide: closed by measure (2026-11-08).** The
+  item of TODO: k-nucleotide's base (the lines, their heads, the join, the
+  codes) measured 343.6 ms of CPU on 2026-11-06. Made since: the join read
+  in parallel (D427, 29.6 -> 21.6 ms), then never made (D428: the base
+  122.5 -> 108.4 ms of 615); the counts of each length within 1.14 times
+  the random increment of the floor (D419), the rolled keys no faster
+  (D420). What is left of the base is its memory: the input read twice by
+  `lines` (its count, then its lines), 336 MB of lines copied into new
+  pages, 384 million cycles of the kernel a run clearing them (D428); the
+  only lever left is lines that are views of the input, a representation
+  of texts without a header before their bytes: a change of the
+  representation of every text of the language, the item of the audit of
+  the representations (TODO, (6)), not of this program. k-nucleotide 606
+  to 609 ms, 2.2 times its floor (D513, D521), the fastest of all
+  languages by 1.9 times. Closed by these measures, as D265.
