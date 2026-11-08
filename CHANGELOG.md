@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### The language
+
+* `findIndex(x, p)`: the first index whose element satisfies `p`, or -1,
+  `p` not called past it; by vectors of 64 bytes when `p` cannot fail.
+  The searches of `json` by it: `json.decode` 396 -> 346 ns a record,
+  `json.parse` 789 -> 726, `json.quote` of a text of 300 bytes 330 -> 93
+  (D505).
+
 ### The compiler
 
 * A tuple made by an `if` whose branches make new tuples is taken apart

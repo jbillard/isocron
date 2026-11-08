@@ -2334,25 +2334,59 @@ fn last_where<'a>(x: &Expr, l: &'a Lambda) -> Option<&'a Expr> {
     (!free.contains(&a) && safe_cond(c)).then_some(&**c)
 }
 
+/// Rule F (D505): `fold(iota(n), init, (a, i) => a < 0 && c ? i : a)`
+/// (`findIndex` of the prelude), `c` a condition that does not read the
+/// accumulator `a`: the first `i` where `c` holds when `init` is negative,
+/// `init` when it is not (the guard never holds) or when none does; `c` is
+/// evaluated only up to that `i`, as written (the `&&`). Returns `c`.
+fn first_where<'a>(x: &Expr, l: &'a Lambda) -> Option<&'a Expr> {
+    if !matches!(x.kind, ExprKind::Iota(_)) || l.params.len() != 2 || l.body.ty != Type::Int(IntKind::I64) {
+        return None;
+    }
+    let (a, i) = (l.params[0], l.params[1]);
+    let ExprKind::If(g, t, f) = &l.body.kind else { return None };
+    if !matches!(t.kind, ExprKind::Var(v, _) if v == i) || !matches!(f.kind, ExprKind::Var(v, _) if v == a) {
+        return None;
+    }
+    // the guard `a < 0 && c`: `if (a < 0) c else false`
+    let ExprKind::If(lt, c, no) = &g.kind else { return None };
+    let guard = matches!(&lt.kind, ExprKind::Binary(BinOp::Lt, u, z)
+        if matches!(u.kind, ExprKind::Var(v, _) if v == a) && matches!(z.kind, ExprKind::Lit(Lit::Int(0))));
+    if !guard || !matches!(no.kind, ExprKind::Lit(Lit::Bool(false))) || c.ty != Type::Bool {
+        return None;
+    }
+    let (mut bound, mut free) = (HashSet::new(), Vec::new());
+    free_vars(c, &mut bound, &mut free);
+    (!free.contains(&a)).then_some(&**c)
+}
+
 /// `e` is computed from scalars without anything that can stop the
 /// program but reads `x[k]` (checked apart, D346): literals, variables,
 /// the operators of scalars but division and remainder (integers wrap,
 /// D329; the amount of a shift is taken modulo its bits), lengths,
 /// projections, conditions, conversions of an integer to a wider one.
 fn safe_cond(e: &Expr) -> bool {
+    safe_cond_in(e, false)
+}
+
+/// `safe_cond`, with `lets` the lets of scalars too (rule F, D505: the
+/// parameter of the predicate of `findIndex` bound to its element).
+fn safe_cond_in(e: &Expr, lets: bool) -> bool {
     use ExprKind::*;
     let scalar = |t: &Type| matches!(t, Type::Int(_) | Type::Bool | Type::F64 | Type::F32);
+    let safe = |x: &Expr| safe_cond_in(x, lets);
     match &e.kind {
         Lit(_) | Var(..) => true,
-        Unary(_, x) => scalar(&e.ty) && safe_cond(x),
-        Binary(op, x, y) => !matches!(op, BinOp::Div | BinOp::Rem) && scalar(&e.ty) && scalar(&x.ty) && scalar(&y.ty) && safe_cond(x) && safe_cond(y),
-        If(c, t, f) => scalar(&e.ty) && safe_cond(c) && safe_cond(t) && safe_cond(f),
-        Len(x) | Proj(x, _) => safe_cond(x),
-        Index(a, k) => scalar(&e.ty) && matches!(a.kind, Var(..)) && safe_cond(k),
+        Unary(_, x) => scalar(&e.ty) && safe(x),
+        Binary(op, x, y) => !matches!(op, BinOp::Div | BinOp::Rem) && scalar(&e.ty) && scalar(&x.ty) && scalar(&y.ty) && safe(x) && safe(y),
+        If(c, t, f) => scalar(&e.ty) && safe(c) && safe(t) && safe(f),
+        Len(x) | Proj(x, _) => safe(x),
+        Index(a, k) => scalar(&e.ty) && matches!(a.kind, Var(..)) && safe(k),
         Convert(x) => match (&x.ty, &e.ty) {
-            (Type::Int(f), Type::Int(t)) => t.bits() >= f.bits() && (f.signed() == t.signed() || (!f.signed() && t.bits() > f.bits())) && safe_cond(x),
+            (Type::Int(f), Type::Int(t)) => t.bits() >= f.bits() && (f.signed() == t.signed() || (!f.signed() && t.bits() > f.bits())) && safe(x),
             _ => false,
         },
+        Let { init, body, .. } if lets => scalar(&init.ty) && safe(init) && safe(body),
         _ => false,
     }
 }
@@ -4434,6 +4468,10 @@ impl<'p> Gen<'p> {
             Fold(x, init, l) if last_where(x, l).is_some() => {
                 let c = last_where(x, l).unwrap();
                 self.fold_last(x, init, l, c)
+            }
+            Fold(x, init, l) if first_where(x, l).is_some() => {
+                let c = first_where(x, l).unwrap();
+                self.fold_first(x, init, l, c)
             }
             Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
             Fold(x, init, l) if affine_recurrence(x, l).is_some() => {
@@ -9899,6 +9937,116 @@ impl<'p> Gen<'p> {
         let slow = self.fold_loop(&src, &n, &iv, &init.ty, l)?;
         self.emit(format!("store i64 {}, ptr {}", slow.r, acc));
         self.br(&ljoin);
+        self.block(&ljoin);
+        Ok(v(self.ins(format!("load i64, ptr {}", acc)), "i64"))
+    }
+
+    /// A `fold` of rule F (`first_where`, D505): `c` from `i = 0` up, the
+    /// first `i` where it holds the result, `init` when none does or when
+    /// `init` is not negative; `c` evaluated only up to that `i`, as
+    /// written. When `c` cannot stop the program (`safe_cond_in`) and its
+    /// reads `x[i + p]` are in bounds at `i = 0` and `i = n - 1`
+    /// (`fold_precheck`), `w` indices at a time first: `c` on `w` lanes, a
+    /// mask, its first lane set the result (64 bytes of the elements read a
+    /// vector where the target has masks of 64 bytes, 32 otherwise); the
+    /// indices left (fewer than `w`), or all of them otherwise, one at a
+    /// time with their checks (a masked vector for those left was slower:
+    /// `parse` -4.7 % instead of -8.0 %, the searches of a few bytes of the
+    /// keys, D505).
+    fn fold_first(&mut self, x: &Expr, init: &Expr, l: &Lambda, c: &Expr) -> R<V> {
+        let (_, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, 1)?;
+        let (a, j) = (l.params[0], l.params[1]);
+        let acc = self.alloca("i64");
+        self.emit(format!("store i64 {}, ptr {}", iv.r, acc));
+        let at = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", at));
+        let (lsearch, lscalar, ljoin) = (self.label(), self.label(), self.label());
+        let neg = self.ins(format!("icmp slt i64 {}, 0", iv.r));
+        self.cbr(&neg, &lsearch, &ljoin);
+        self.block(&lsearch);
+        let reads = self.fold_index_reads(l);
+        let mut indexes = 0;
+        fn count(e: &Expr, k: &mut usize) {
+            if matches!(e.kind, ExprKind::Index(..)) {
+                *k += 1;
+            }
+            for c in e.children() {
+                count(c, k);
+            }
+        }
+        count(c, &mut indexes);
+        let size = reads.iter().map(|(a, _)| if a.ty.is_array() { esize(a.ty.elem()) } else { 8 }).max().unwrap_or(8).max(1);
+        let bytes = if BYTE_MASKS.with(|b| b.get()) { 64 } else { 32 };
+        let w = (bytes / size) as u32;
+        if indexes == reads.len() && safe_cond_in(c, true) && w > 1 && !self.opts.isa.is_wasm() {
+            let some = self.ins(format!("icmp sgt i64 {}, 0", n));
+            let ok = if reads.is_empty() {
+                some
+            } else {
+                let fine = self.fold_precheck(&reads, j, &n, 1)?;
+                self.ins(format!("and i1 {}, {}", some, fine))
+            };
+            let (lvec, lhead, lbody, lhit, lnext, ltail) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+            self.cbr(&ok, &lvec, &lscalar);
+            self.block(&lvec);
+            let full = self.ins(format!("and i64 {}, -{}", n, w));
+            self.br(&lhead);
+            self.block(&lhead);
+            let i = self.ins(format!("load i64, ptr {}", at));
+            let more = self.ins(format!("icmp slt i64 {}, {}", i, full));
+            self.cbr(&more, &lbody, &ltail);
+            self.block(&lbody);
+            for (_, k) in &reads {
+                self.prechecked.insert(*k as *const Expr);
+            }
+            self.bind(a, iv.clone());
+            let lanes = self.elem(&Src::Iota, &i, w)?;
+            self.bind(j, lanes);
+            let cv = self.ex(c, w);
+            for (_, k) in &reads {
+                self.prechecked.remove(&(*k as *const Expr));
+            }
+            let cv = self.widen(&cv?, w);
+            let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, cv.r, w));
+            let any = self.ins(format!("icmp ne i{} {}, 0", w, bits));
+            self.cbr(&any, &lhit, &lnext);
+            self.block(&lhit);
+            self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+            let k = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {b}, i1 true)", w = w, b = bits));
+            let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
+            let found = self.ins(format!("add i64 {}, {}", i, k64));
+            self.emit(format!("store i64 {}, ptr {}", found, acc));
+            self.br(&ljoin);
+            self.block(&lnext);
+            let next = self.ins(format!("add i64 {}, {}", i, w));
+            self.emit(format!("store i64 {}, ptr {}", next, at));
+            self.br(&lhead);
+            self.block(&ltail);
+            self.br(&lscalar);
+        } else {
+            self.br(&lscalar);
+        }
+        // one index at a time, from where the vectors stopped
+        let (lhead, lbody, lhit, lnext) = (self.label(), self.label(), self.label(), self.label());
+        self.block(&lscalar);
+        self.br(&lhead);
+        self.block(&lhead);
+        let i = self.ins(format!("load i64, ptr {}", at));
+        let more = self.ins(format!("icmp slt i64 {}, {}", i, n));
+        self.cbr(&more, &lbody, &ljoin);
+        self.block(&lbody);
+        self.bind(a, iv.clone());
+        self.bind(j, v(i.clone(), "i64"));
+        let cv = self.ex(c, 1)?;
+        self.cbr(&cv.r, &lhit, &lnext);
+        self.block(&lhit);
+        self.emit(format!("store i64 {}, ptr {}", i, acc));
+        self.br(&ljoin);
+        self.block(&lnext);
+        let next = self.ins(format!("add i64 {}, 1", i));
+        self.emit(format!("store i64 {}, ptr {}", next, at));
+        self.br(&lhead);
         self.block(&ljoin);
         Ok(v(self.ins(format!("load i64, ptr {}", acc)), "i64"))
     }

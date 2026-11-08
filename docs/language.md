@@ -1728,6 +1728,37 @@ action main(args: string[k]): i32 {
 2
 ```
 
+### `findIndex`
+
+`findIndex(x, p)` is the first index of `x` whose element satisfies `p`, or
+-1 when none does, as TypeScript's `findIndex`; `p` is not called past that
+index, so it may fail there (a division by zero, a read out of bounds)
+without stopping the program. The loop stops at the index (rule F of SPEC
+section 6): when `p` cannot fail (comparisons, arithmetic but division,
+reads of arrays in bounds), the elements are tested by vectors of 64 bytes
+at a time (32 without AVX-512), the first lane that holds the result. Over
+a part of an array, `findIndex(x.slice(a, z), p)` reads `x` where it is and
+gives the index from `a`.
+
+```isc
+action main(args: string[k]): i32 {
+    const text = bytes("key: \"value\" and more");
+    print(findIndex(text, (c) => c == 34u8));
+    print(findIndex(text.slice(6, text.length), (c) => c == 34u8) + 6);
+    print(findIndex([3, 1, 4, 1, 5], (v) => v > 9));
+    const ds = [4, 2, 0, 1];
+    print(findIndex(ds, (d) => 8 / d == 4));
+    return 0;
+}
+```
+
+```output
+5
+11
+-1
+1
+```
+
 ### `min` and `max`
 
 `min(a, b)` and `max(a, b)` take two numbers of the same type; `min(x)` and

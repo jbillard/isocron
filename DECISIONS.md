@@ -11218,3 +11218,47 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     an integer out of an `if` in a `map`; `Take` in the IR, the
     interpreter's output on 1, 3 and 8 threads, valgrind; it fails without
     the change (mutation checked).
+- **D505 — `findIndex`, a search by a predicate that stops, by vectors
+  (rule F) (2026-11-08).** The language had no search by a predicate
+  (D473): the library searched byte by byte by tail recursions. The
+  profile of `json.decode` (D504): the searches of the closings (`below`)
+  8.7 %, `stringEnd` 8.0 %; `json.quote` of escaped texts, its loop 36 %
+  (D503).
+  - `findIndex(x, p)` (TypeScript's): the first index whose element
+    satisfies `p`, or -1. In the prelude, `fold(iota(n), -1, (a, i) => a <
+    0 && p(x[i]) ? i : a)`: as written, `p` is not called past the index
+    found (the `&&`), so the interpreter and every target give the same
+    result, panics included. Rule F of the code generator (`first_where`,
+    `fold_first`, as rule L of D346 from the other end): a loop that stops
+    at the index; when the condition cannot stop the program (`safe_cond`,
+    with lets of scalars) and its reads `x[i + p]` are in bounds at both
+    ends (`fold_precheck`), the condition on 64 bytes of the elements read
+    a vector (32 without AVX-512 BW), a mask, its first lane set the result
+    (`cttz`); the indices left one at a time. A masked vector for the
+    indices left was measured and rejected: `parse` -4.7 % instead of -8.0
+    %, `decode` -7.5 % instead of -12.6 %, `quote.escaped` unchanged (the
+    searches of keys of a few bytes, one masked vector dearer than two or
+    three turns).
+  - `json` searches by it: `below` (the closing of a container), `stringEnd`
+    (the quote or the backslash), `findByte`, `plain`, and `escapeFrom` of
+    `quote` (the next byte to escape).
+  - Measured (A/B of the binaries of the compilers of 0cc4d66 and of this
+    change, alternated runs, one CPU at fixed frequency, 9 runs; the
+    functions also aligned on 128 and 256 bytes, the place of the code
+    moving the forms by up to 2.8 %, D504): `parse` -8.0, -8.0, -5.5 %;
+    `decode` -12.7, -14.7, -13.9 %; `stringify`, `encode`, `message`,
+    `quote.plain`, `quote.escaped` (texts of 15 bytes: no whole vector)
+    within -1.9 to +1.8 %. `quote` of texts of about 300 bytes with two
+    escapes 329.8 -> 92.6 ns (-71.9 %). `run.py` of `json` (5 runs of 200
+    rounds): `decode` 345.8 ns, 3.78 times its floor (4.30 before);
+    `parse` 724.3 ns, 4.24 (4.65). The other groups and the ten programs:
+    the same IR.
+  - Tests: `find_index_of_every_kind_of_element` (`stdlib.rs`): bytes,
+    `i32`, `u16`, `i64`, `f64`, booleans, a zip, lengths around the widths
+    of the vectors (0 to 1000), the element first, inside, last or absent,
+    a part of an array, a predicate that would divide by zero or read out
+    of bounds past the index; the interpreter's output on 1, 3 and 8
+    threads; a search over `i32` made by masks (`cttz` of 16 or 8 lanes).
+    It fails with the index of the vector instead of its lane, and without
+    the vector loop (mutations checked). The example of the guide
+    (`docs/language.md`, `findIndex`).

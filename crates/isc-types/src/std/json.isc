@@ -328,7 +328,7 @@ export function quote(s: string): string {
     if (count(b, (c) => c < 32u8 || c == 34u8 || c == 92u8) == 0) {
         return `"${s}"`;
     }
-    return escapeFrom(s, b, 0, 0, "\"") + "\"";
+    return escapeFrom(s, b, 0, "\"") + "\"";
 }
 
 // the escape of a byte of a string of JSON: `\"`, `\\`, `\n`, `\r`, `\t`,
@@ -353,19 +353,17 @@ function escapeOf(c: u8): string {
     return `\\u00${k < 16 ? "0" : "1"}${"0123456789abcdef".slice(k % 16, k % 16 + 1)}`;
 }
 
-// the text of `s` escaped from its byte `i`, those from `from` to `i` not
-// yet written, after `acc` (owned: each part written after it in its
-// block, rule A): one pass (D397: six `replaceAll` and a count of the text
-// for each control, 14.1 times its floor)
-function escapeFrom(s: string, b: u8[n], from: i64, i: i64, acc: string): string {
-    if (i == b.length) {
-        return acc + s.slice(from, i);
+// the text of `s` escaped from its byte `i`, after `acc` (owned: each part
+// written after it in its block, rule A): one pass (D397: six `replaceAll`
+// and a count of the text for each control, 14.1 times its floor), the
+// next byte to escape found by vectors (rule F, D505)
+function escapeFrom(s: string, b: u8[n], i: i64, acc: string): string {
+    const k = findIndex(b.slice(i, b.length), (c) => c < 32u8 || c == 34u8 || c == 92u8);
+    if (k < 0) {
+        return acc + s.slice(i, b.length);
     }
-    const c = b[i];
-    if (c >= 32u8 && c != 34u8 && c != 92u8) {
-        return escapeFrom(s, b, from, i + 1, acc);
-    }
-    return escapeFrom(s, b, i + 1, i + 1, acc + s.slice(from, i) + escapeOf(c));
+    const e = i + k;
+    return escapeFrom(s, b, e + 1, acc + s.slice(i, e) + escapeOf(b[e]));
 }
 
 // `j` as text, without spaces; a number in its shortest form, NaN and the
@@ -529,21 +527,26 @@ function stringEnd(b: u8[n], ix: Index, p: i64): i64 {
     if (p >= b.length) {
         return -1;
     }
-    const c = b[p];
-    if (c == 34u8) {
-        return p;
+    // the first quote or backslash, by vectors (rule F, D505)
+    const k = findIndex(b.slice(p, b.length), (c) => c == 34u8 || c == 92u8);
+    if (k < 0) {
+        return -1;
     }
-    return c == 92u8 ? quoteEnd(b, ixPacked(ix), p) : stringEnd(b, ix, p + 1);
+    return b[p + k] == 34u8 ? p + k : quoteEnd(b, ixPacked(ix), p + k);
 }
 
 // the first place of [a, z) whose byte is `c`, or `z`
 function findByte(b: u8[n], c: u8, a: i64, z: i64): i64 {
-    return a >= z || b[a] == c ? a : findByte(b, c, a + 1, z);
+    if (a >= z) {
+        return a;
+    }
+    const k = findIndex(b.slice(a, z), (x) => x == c);
+    return k < 0 ? z : a + k;
 }
 
 // the bytes of [a, z) are neither control characters nor backslashes
 function plain(b: u8[n], a: i64, z: i64): boolean {
-    return a >= z || (b[a] >= 32u8 && b[a] != 92u8 && plain(b, a + 1, z));
+    return a >= z || findIndex(b.slice(a, z), (x) => x < 32u8 || x == 92u8) < 0;
 }
 
 // the bytes of `v` from `j` are those of `b` from `a`
@@ -572,7 +575,8 @@ function below(packed: i32[s], level: i32, q: i64): i64 {
     if (q >= packed.length) {
         return -1;
     }
-    return packed[q] >> 2i32 < level ? q : below(packed, level, q + 1);
+    const k = findIndex(packed.slice(q, packed.length), (d) => d >> 2i32 < level);
+    return k < 0 ? -1 : q + k;
 }
 
 // the closing of the container that opens at `a` (of either kind: the

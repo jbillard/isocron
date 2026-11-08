@@ -2243,3 +2243,80 @@ action main(args: string[k]): i32 {
     }
     valgrind_clean(src, "case_stack", &["50", "Q"]);
 }
+
+/// D505: `findIndex(x, p)` (rule F) on every kind of element (bytes, `i32`,
+/// `u16`, `i64`, `f64`, booleans, a zip), lengths around the widths of the
+/// vectors, the element first, inside, last or absent, a part of an array;
+/// a predicate that would stop the program past the index found (a
+/// division by zero, a read out of bounds) not called there: the
+/// interpreter's output on 1, 3 and 8 threads. A search over `i32` is made
+/// by masks of lanes (`cttz` of 16 lanes with AVX-512, 8 with AVX2).
+#[test]
+fn find_index_of_every_kind_of_element() {
+    let src = "// findIndex on every kind of element, lengths around the widths of the
+// vectors, the element found first, inside, last, or not at all
+function at(n: i64, k: i64): i64 {
+    const xs = map(iota(n), (i) => i == k ? 1 : 0);
+    return findIndex(xs, (x) => x == 1);
+}
+
+action main(args: string[k]): i32 {
+    const m = parseI64(args[0]);
+    const sizes = [0, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 1000];
+    print(join(map(sizes, (n) => `${n}:${at(n, 0)},${at(n, n / 2)},${at(n, n - 1)},${at(n, n)}`), \" \"));
+    // bytes, a text
+    const b = bytes(`${\"a\".repeat(m % 300)}\"tail\\\\end`);
+    print(findIndex(b, (c) => c == 34u8 || c == 92u8));
+    print(findIndex(b, (c) => c < 32u8));
+    // i32 by a shift and a value of the context
+    const level = i32(m % 7);
+    const ps = map(iota(m), (i) => i32((i * 7919) % 97));
+    print(findIndex(ps, (d) => d >> 2i32 < level));
+    print(findIndex(ps.slice(m / 3, m), (d) => d == 96i32));
+    // u16, i64, f64, boolean
+    const us = map(iota(m), (i) => u16((i * 31) % 65536));
+    print(findIndex(us, (u) => u > 60000u16));
+    const ls = map(iota(m), (i) => i * i - 5000 * i);
+    print(findIndex(ls, (v) => v > 0));
+    const fs = map(iota(m), (i) => f64(i) * 0.37);
+    print(findIndex(fs, (f) => f >= 100.0));
+    const bs = map(iota(m), (i) => i % 113 == 112);
+    print(findIndex(bs, (x) => x));
+    // a predicate that would stop the program past the index found: not
+    // called there (a division by zero, a read out of bounds)
+    const ds = map(iota(m + 2), (i) => i == 1 ? 0 : i + 1);
+    print(findIndex(ds, (d) => 100 / d > 10 || d == 0));
+    const small = [5, 6, 7];
+    print(findIndex(iota(m + 10), (i) => small[i] == 6));
+    // a predicate on the index through a zip
+    print(findIndex(zip(iota(m), ps), (p) => {
+        const [i, d] = p;
+        return i > 10 && d == 0i32;
+    }));
+    return 0;
+}
+";
+    let bin = compile(src, "find_index");
+    for m in ["0", "1", "50", "997", "5000"] {
+        let want = interp_ok(src, &[m]);
+        for t in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[m], Some(t));
+            assert_eq!(r.code, 0, "m {} T={}: {}", m, t, r.stderr);
+            assert_eq!(r.stdout, want, "m {} T={}", m, t);
+        }
+    }
+    let one = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const ps = map(iota(n), (i) => i32((i * 7919) % 97));
+    print(findIndex(ps, (d) => d >> 2i32 < 3i32));
+    return 0;
+}
+";
+    let p = iscc::frontend("find_index_one.isc", one).unwrap();
+    let ll = tmp("find_index_one.ll");
+    iscc::build(&p, &iscc::BuildOptions { output: tmp("find_index_one"), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    assert!(text.contains("@llvm.cttz.i16(") || text.contains("@llvm.cttz.i8("), "the search over `i32` is not made by masks of lanes");
+    let r = run_bin(&tmp("find_index_one"), &["1000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, interp_ok(one, &["1000"]).as_str()));
+}

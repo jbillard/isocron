@@ -20,6 +20,13 @@ function count<T>(x: T[n], p: (T) => boolean): i64 {
     return sum(map(x, (v) => p(v) ? 1 : 0));
 }
 
+// the first index of `x` whose element satisfies `p`, or -1 (TypeScript's
+// `findIndex`); `p` is not called past it. Rule F (D505): a loop that
+// stops at it, by vectors of lanes when `p` cannot stop the program
+function findIndex<T>(x: T[n], p: (T) => boolean): i64 {
+    return fold(iota(n), -1, (a, i) => a < 0 && p(x[i]) ? i : a);
+}
+
 // `scatter` (SPEC section 16, v1; DECISIONS D111): `dest` where each
 // `vals[k]` is combined with `op` into the element at `idx[k]`, in the order
 // of k (the rule of collisions: several values at one index are combined
