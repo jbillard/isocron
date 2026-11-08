@@ -249,7 +249,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Windows: the runtimes for x86-64-v3 and v4 linked by an iscc on Windows by its processor, timed: regex-redux 158.0 -> 113.4 ms in the machine of Windows (D382)
   - [x] Windows: the console in UTF-8: the output by `WriteConsoleW` (D408), the input by `ReadConsoleW` (D409)
   - [x] Windows: the MSVC ABI at the boundary of a DLL: the functions of DLLs built by Microsoft called, an import library in the format of `lib.exe` given by `--link` (D425)
-  - [ ] Windows: static libraries built by Visual Studio and the target `x86_64-pc-windows-msvc` (their objects refer to the helpers of Microsoft's C runtime, `__security_check_cookie`, `__chkstk`, `_fltused`, none in MinGW-w64): Microsoft's Build Tools needed in the machine, under its licence, the author's decision (D425)
+  - [ ] Windows: static libraries built by Visual Studio and the target `x86_64-pc-windows-msvc` (their objects refer to the helpers of Microsoft's C runtime, `__security_check_cookie`, `__chkstk`, `_fltused`, none in MinGW-w64): Microsoft's Build Tools needed in the machine, under its licence, the author's decision (D425); installed in the VM at the author's word (D528: Visual Studio Build Tools 2022 17.14, MSVC 14.44.35207, the Windows SDK 10.0.26100.0): the target itself left
   - [x] An iscc that needs nothing else, on Linux (glibc from 2.28 on) and on Windows: LLVM and LLD inside (D248)
   - [x] A first release, 0.1.0: the compilers for Linux and Windows, LICENSE, the notices of third parties, the archives, the measurements published again (D249)
   - [x] A smaller iscc: the embedded runtimes compressed, closed by measure: 43348588 -> 10721556 bytes with gzip, but 31 to 34 ms to inflate one at each build of 38 to 49 ms, and the archives compressed already: not done (D380)
@@ -423,7 +423,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.4.4: the fix of the checks of UTF-8 (D451), bytes known ASCII given to texts unchecked (D450), counts of bytes 64 at a time (D452) (D453)
 - [x] Release 0.4.5: texts, dates, paths and numbers of the library faster (D455 to D467, D468)
 - [x] Release 0.4.6: `s.lastIndexOf(t)`, short texts of templates copied in their code, measures (D469 to D485, D484)
-- [ ] The tag `v0.4.6` on 8541507, its archives built from 6795010 (D485 after it): moving the tag, a forced push, is the author's call (D486)
+- [x] (Done, D526: the tag on 6795010, pushed by force at the author's word, the notes of the release corrected) The tag `v0.4.6` on 8541507, its archives built from 6795010 (D485 after it): moving the tag, a forced push, is the author's call (D486)
 - [x] Release 0.4.7: maps by hashes, numbers sorted by their bytes, `toFixed`, `print` of integers, a `map` of a zip, the audit of every group of forms (D487 to D499, D500)
 - [x] Release 0.4.8: `findIndex` (rule F), texts appended by the compiled code, a tuple of an `if` taken apart, a `scan` of several reads by vectors, the index of `json` by sums by prefix (D501 to D513, D514)
 - [x] Release 0.4.9: the functions too large to be inlined decided one at a time, no literal given to `isc_free`, the maps of a few heavy elements made where they are; `json.parse` and `json.decode` below 3 times their floors (D515 to D521, D522)

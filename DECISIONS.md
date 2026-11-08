@@ -11773,3 +11773,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     times its floor, `serve.action.pipelined` 1.29. The blocks of a
     request are the items of the server left open (the headers of the
     blocks taken cold, the work of the program a request).
+- **D526 — The tag `v0.4.6` moved to the commit of its archives
+  (2026-11-08).** The author asked for it (D486 left it to them). The
+  annotated tag `v0.4.6` was on 8541507, the commit `Release 0.4.6:`, and
+  the archives of the release were built from 6795010, the commit after
+  it that adds D485. Now the tag (annotated, `Isocron 0.4.6`) is on
+  6795010, pushed by force (`git push -f origin refs/tags/v0.4.6`); the
+  release on GitHub keeps its four files (not a draft), and the last
+  paragraph of its notes says where the tag is and why, instead of "the
+  sources of the tag do not have that change". The guard of D486 stays:
+  the commit of a release is the last of `main`.
+- **D527 — `C:\isc` excluded from the scans of Defender in the VM
+  (2026-11-08).** The author asked for it. Defender had quarantined
+  programs of HTTPS built in `C:\isc` (`Trojan:Win32/Wacatac.B!ml`, a
+  guess of its model, D343), so that some runs of the Windows tests
+  failed with "cannot execute"; `Add-MpPreference -ExclusionPath C:\isc`
+  run in the VM (the user of the tests is an administrator), the
+  exclusion read back by `Get-MpPreference`. The threat itself is not
+  allowed: only that folder, where the tests build their programs, is
+  excluded.
+- **D528 — Microsoft's Build Tools in the VM (2026-11-08).** The author
+  accepted their licence (D425 left the decision to them). Installed in
+  the Windows VM: `vs_buildtools.exe` (Visual Studio 2022, its signature
+  by Microsoft checked by `Get-AuthenticodeSignature`) with the workload
+  `Microsoft.VisualStudio.Workload.VCTools` and its recommended parts,
+  quiet, in `C:\BuildTools`: Build Tools 17.14.37827.9 (`vswhere`:
+  complete), MSVC 14.44.35207 (`cl.exe`, `libcmt.lib`), the Windows SDK
+  10.0.26100.0. The VM stopped after. The item of TODO (static
+  libraries built by Visual Studio, the target `x86_64-pc-windows-msvc`)
+  is no longer blocked; its work is not done yet.
