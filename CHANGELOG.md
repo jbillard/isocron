@@ -10,6 +10,12 @@
   `json.parse` 789 -> 726, `json.quote` of a text of 300 bytes 330 -> 93
   (D505).
 
+### The standard library
+
+* The index of a JSON text without a backslash by two sums by prefix, by
+  vectors: `json.decode` 346 -> 324 ns a record, `json.parse` 734 -> 698
+  (D506).
+
 ### The compiler
 
 * A tuple made by an `if` whose branches make new tuples is taken apart

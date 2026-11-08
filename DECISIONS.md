@@ -11262,3 +11262,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     It fails with the index of the vector instead of its lane, and without
     the vector loop (mutations checked). The example of the guide
     (`docs/language.md`, `findIndex`).
+- **D506 — The index of `json` by two sums by prefix when the text has no
+  backslash (2026-11-08).** The index of a text (`indexed`: for each byte
+  its depth times 4 plus its state, outside a string, inside, after a
+  backslash) was a `scan` by a machine of states, byte by byte: 11.4 % of
+  `decode` (D504), 0.83 to 1.0 ns a byte (measured alone).
+  - Without a backslash in the text (counted by masks first), the state
+    after a byte is the parity of the quotes up to it, and a bracket counts
+    only outside a string: the packed state is the sum by prefix of what
+    each byte adds (a quote +1 or -1 by that parity, a bracket outside +4
+    or -4, the rest 0). Two `scan`s of `+`, by vectors: the quotes counted
+    modulo 256 in bytes (integers wrap, D329; their parity alone is read),
+    then the sum of what each byte adds, read through `zip(b, q)`. Measured
+    alone (one thread, a text of 40 KB): 0.11 and 0.17 ns a byte. A text
+    with a backslash keeps the machine of states.
+  - Found on the way: the same `map` written as `map(iota(n), (i) => ...
+    b[i] ... q[i])` in a `scan` was not by vectors, 1.0 to 1.3 ns a byte
+    against 0.17 for the `zip` (TODO).
+  - Measured (A/B of the binaries of the compilers of 8de9c17 and of this
+    change, alternated runs, one CPU at fixed frequency): `parse` -4.9 %,
+    `decode` -6.5 % (9 runs; -3.8 to -4.7 % and -5.0 to -7.0 % with the
+    functions aligned on 64, 128 and 256 bytes, a first version whose
+    quotes were counted in `i32`). `run.py` of `json` (5 runs of 200
+    rounds): `decode` 324.3 ns, 3.55 times its floor (3.78 before);
+    `parse` 694.8 ns, 4.07 (4.24).
+  - `encode` +2.4 to +8.0 % in the programs where a `parse` runs before it,
+    +0.3 % alone: not its work. Shown by measure: its machine code the
+    same (the same instructions, the calls of tasks renumbered), the same
+    calls of the allocator a round (gdb: 1002 `isc_alloc`, 2003 `isc_free`
+    in both); alone 86.6 and 86.8 ns, after one `parse` of the old index
+    82.9 to 83.6 ns, of the new one 84.7 to 87.9: the old `parse` left the
+    blocks of the heap where `encode` ran 4 % faster than alone, the new
+    one leaves `encode` at its cost alone.
+  - The test `json_decode_faults_as_before` (2499 documents one byte away
+    from three valid ones, two of them without a backslash, their quotes
+    and brackets removed or replaced) fails with a closing bracket counted
+    -3 (mutation checked); the other tests of `json` pass.

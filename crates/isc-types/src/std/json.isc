@@ -244,6 +244,25 @@ function numberOk(b: u8[n], at: i64, end: i64): boolean {
 
 // the index of a text `b`
 function indexed(b: u8[n]): Index {
+    // without a backslash, the state after a byte is the parity of the
+    // quotes up to it (1 inside a string), and a bracket counts only
+    // outside one: the packed state a sum by prefix of what each byte adds
+    // (a quote +1 or -1 by that parity, a bracket outside +4 or -4), two
+    // sums by vectors instead of a machine of states byte by byte (D506)
+    if (count(b, (c) => c == 92u8) == 0) {
+        // the quotes counted modulo 256 (bytes wrap, D329): their parity
+        // is all that is read, a byte a byte of the text
+        const q = scan(map(b, (c) => c == 34u8 ? 1u8 : 0u8), (+), 0u8);
+        // (a `zip`, read by vectors: the same reads by `b[i]` and `q[i]` in
+        // the `map` of an `iota` were not, 1.2 against 0.17 ns a byte)
+        return Ix(scan(map(zip(b, q), (x) => {
+            const [c, qc] = x;
+            const o = i32(qc & 1u8);
+            const quote = c == 34u8 ? 2i32 * o - 1i32 : 0i32;
+            const bracket = c == 91u8 || c == 123u8 ? 4i32 : (c == 93u8 || c == 125u8 ? -4i32 : 0i32);
+            return quote + bracket * (1i32 - o);
+        }), (+), 0i32));
+    }
     return Ix(scan(map(b, (c) => i32(c)), (s, c) => {
         const st = s & 3i32;
         if (st == 0i32) {

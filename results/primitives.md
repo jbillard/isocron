@@ -8,19 +8,19 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
 | :-- | :-- | --: | --: | --: |
 | sorts | `sortBy.length` | 22.18 | 3.56 | 6.2 |
-| json | `parse` | 724.27 | 170.87 | 4.2 |
-| json | `quote.escaped` | 81.44 | 19.88 | 4.1 |
-| json | `decode` | 345.84 | 91.55 | 3.8 |
+| json | `quote.escaped` | 82.09 | 19.88 | 4.1 |
+| json | `parse` | 694.84 | 170.89 | 4.1 |
+| json | `decode` | 324.34 | 91.41 | 3.5 |
 | sys | `isAbsolute` | 2.00 | 0.57 | 3.5 |
 | sys | `dirname` | 8.55 | 2.89 | 3.0 |
 | http | `parseUrl` | 56.66 | 19.93 | 2.8 |
+| json | `quote.plain` | 4.64 | 1.64 | 2.8 |
 | strings | `padStart` | 5.65 | 2.02 | 2.8 |
-| json | `quote.plain` | 4.62 | 1.65 | 2.8 |
 | time | `format` | 112.12 | 40.38 | 2.8 |
 | http | `httpDate` | 35.44 | 12.88 | 2.8 |
 | sha256 | `hex.32` | 7.17 | 2.63 | 2.7 |
 | numbers | `toFixed.2` | 49.44 | 19.16 | 2.6 |
-| json | `stringify` | 280.50 | 114.16 | 2.5 |
+| json | `stringify` | 283.15 | 115.60 | 2.4 |
 | http | `exchange.chunked64` | 48096.53 | 20317.21 | 2.4 |
 | strings | `split.6` | 77.06 | 32.89 | 2.3 |
 | net | `resolve.hosts` | 4434.18 | 1951.84 | 2.3 |
@@ -43,9 +43,9 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `slice` | 2.09 | 1.23 | 1.7 |
 | sorts | `sort.i64` | 13.47 | 7.97 | 1.7 |
 | http | `header` | 18.96 | 11.36 | 1.7 |
+| json | `message` | 7.53 | 4.57 | 1.6 |
 | sys | `readText.4k` | 3243.70 | 1973.19 | 1.6 |
 | strings | `includes.3` | 20.52 | 12.49 | 1.6 |
-| json | `message` | 7.50 | 4.58 | 1.6 |
 | http | `headerOf` | 18.52 | 11.34 | 1.6 |
 | sys | `envAll` | 1948.34 | 1203.49 | 1.6 |
 | strings | `startsWith.1` | 1.82 | 1.12 | 1.6 |
@@ -95,6 +95,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | arrays | `concat` | 0.38 | 0.34 | 1.1 |
 | io | `printBytes.byte` | 0.31 | 0.28 | 1.1 |
 | time | `toDateTime` | 3.71 | 3.35 | 1.1 |
+| json | `encode` | 89.11 | 80.67 | 1.1 |
 | net | `server.roundtrip.64` | 6987.22 | 6326.48 | 1.1 |
 | arrays | `zip.sum` | 0.11 | 0.10 | 1.1 |
 | http | `request.post` | 41403.96 | 38271.71 | 1.1 |
@@ -110,7 +111,6 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sys | `modified` | 652.74 | 618.86 | 1.1 |
 | sys | `makeDirs.removeAll` | 21345.46 | 20264.12 | 1.1 |
 | sys | `fileSize` | 652.87 | 620.24 | 1.1 |
-| json | `encode` | 84.74 | 80.74 | 1.0 |
 | https | `get.small` | 1246115.69 | 1189967.29 | 1.0 |
 | net | `connect` | 24855.89 | 23840.90 | 1.0 |
 | arrays | `fold` | 4.58 | 4.40 | 1.0 |
