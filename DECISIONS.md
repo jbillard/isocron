@@ -12045,3 +12045,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   below its pair). The same outputs on every request of
   `server_on_requests_of_every_form` (among them a header of UTF-8,
   `X-Test: été`, and one with a surrogate refused with 400).
+- **D538 — The lock of `print` measured again: no cost past its spread
+  (2026-11-08).** TODO, from D373: a version of the lock with 6.5
+  instructions more a line measured +1.06 to +1.37 %, another with 9.02
+  more +0.37 % in its one A/B, the cause not shown. Since then `print` of
+  an integer writes its digits and its newline at once (`print_line`, one
+  test of the tasks a line). Measured now (a program that prints 10
+  million integers, 11 alternated runs, fixed frequency, `perf stat`): the
+  runtime as it is against the same runtime without the test of the tasks
+  in `print_line`: 154.89 against 147.89 instructions a line (the test,
+  its load and its branches: 7.00), 88.16 against 88.10 cycles a line
+  (medians, +0.06 %; 87.70 to 89.15 and 87.76 to 88.48): the test runs
+  beside the work of the line, its instructions within the slack of a
+  line of 1.76 instructions a cycle. The difference of D373 between its
+  two versions (0.7 to 2.0 cycles a line for one, 0.85 to 1.15 for the
+  other) was below the spread of one version between two runs (0.7 and
+  2.0): not a cause to find. Closed by this measure.
