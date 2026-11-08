@@ -1199,3 +1199,21 @@ fn last_index_of_texts() {
     let r = run_bin(&compile(src, "last_index_of"), &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
 }
+
+/// D487: `toFixed` of 2000 doubles from about 1e-9 to 1e20, of both signs,
+/// with 0 to 20 decimals (the short path up to 18, the exact value beyond):
+/// the compiled program writes what the interpreter writes.
+#[test]
+fn to_fixed_of_many_doubles() {
+    let src = "action main(args: string[k]): i32 {
+    const xs = map(iota(2000), (i) => (i % 2 == 0 ? 1.0 : -1.0) * f64(i * 7919 % 100003 + 1) / 7.0 * [1e-9, 1e-3, 1.0, 1e3, 1e9, 1e15, 1e19][i % 7]);
+    print(join(map(xs, (x) => join(map(iota(21), (d) => x.toFixed(d)), \" \")), \"\\n\"));
+    return 0;
+}
+";
+    let Outcome::Exit(0, want) = interp(src, &[]) else { panic!("the interpreter failed") };
+    assert_eq!(want.lines().count(), 2000);
+    let r = run_bin(&compile(src, "to_fixed_many"), &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want, "{:?}", r.stdout.lines().zip(want.lines()).find(|(a, b)| a != b));
+}

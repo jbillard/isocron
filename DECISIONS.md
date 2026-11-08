@@ -10743,3 +10743,40 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   commit after that of the release, refused with that message; with the
   commit of the release last, past that check (stopped by the next one,
   `main` not ahead of `origin/main`, as that clone was made).
+- **D487 — The group of numbers measured, and `toFixed` by the integer
+  of a double (2026-11-08).** The audit of the forms (TODO: "the other
+  groups of forms: numbers") had no microbenchmark of the texts and the
+  reading of numbers. Now `bench/primitives/numbers.isc` and its floor
+  `numbers.c` (4096 values in the caches, one thread): `toFixed(2)` of
+  thirds from 0.3 to 4e7 of both signs (none halfway between two numbers
+  of 2 decimals), the shortest text of a double (`toString`), `parseI64`
+  of integers of up to 9 digits and a sign, `parseF64` of thousandths from
+  -500 to 500. The floors: `toFixed(2)` by the integer and the power of
+  two of the double, `f64_text.h` (Schubfach, D415), `parseI64` by a loop
+  over its known length without a check of overflow up to 18 digits,
+  `parseF64` by Clinger's fast path (the digits as an integer divided by
+  an exact power of ten); a first floor of `parseI64` by `strlen` and of
+  `parseF64` by `strtod` was beaten by Isocron (7.06 against 7.77 ns, 14.8
+  against 60.6 ns, not at a fixed frequency): wrong, replaced.
+  - `toFixed` wrote the 1100 decimals of `|x|` at each call (`{:.1100}`,
+    then kept `d + 1`): 1156 ns a call, 88 times its floor (not at a fixed
+    frequency). Now for `d` up to 18, its first `d + 1` decimals come from
+    the integer `m` and the power of two `e` of `x`: `m 10^(d+1) / 2^-e` in
+    128 bits (`m < 2^53`, `10^(d+1) < 2^64`), rounded half away from zero,
+    divided in 64 bits when it fits (a division of 128 bits is a call: 74
+    -> 34 ns), its digits and its point written at once; `d` above 18, or
+    a product beyond 128 bits, by the exact value as before.
+  - Measured (the old and new binaries, 7 alternated runs, fixed
+    frequency): `toFixed.2` 1609.32 -> 48.62 ns (-97.0 %), the other
+    forms of the group within 3.5 % (their code the same); `run.py` (5 runs
+    of 200 rounds): `toFixed.2` 49.44 ns, 2.58 times its floor;
+    `parseF64` 1.56, `toString.f64` 1.38, `parseI64` 1.27. n-body,
+    spectral-norm and k-nucleotide, which write by `toFixed`: the same
+    outputs (n-body 1000 and 50000, spectral-norm 100 and 1000,
+    k-nucleotide of 250000 lines of fasta).
+  - Tests: `fixed_short_is_fixed_exact` (`isc-runtime-core`: 200000
+    doubles from 1e-30 to 1e21 and the edges, `d` from 0 to 18, against
+    the exact value; with `> 5` for `>= 5` it fails at `0.5` with 0
+    decimals), `to_fixed_of_many_doubles` (`strings.rs`: 2000 doubles from
+    1e-9 to 1e20 with 0 to 20 decimals, compiled against interpreted), and
+    the cases of JavaScript of D155.

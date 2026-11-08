@@ -1144,6 +1144,84 @@ fn fixed(w: &mut dyn Write, x: f64, d: usize) -> fmt::Result {
     if x.abs() >= 1e21 {
         return write_f64(w, x);
     }
+    if d <= 18 {
+        if let Some((buf, n)) = fixed_short(x, d) {
+            // ASCII: digits, `-` and `.`
+            return w.write_str(core::str::from_utf8(&buf[..n]).unwrap_or(""));
+        }
+    }
+    fixed_exact(w, x, d)
+}
+
+/// `x.toFixed(d)` for `d` at most 18 and a finite `|x|` below 1e21 (D487):
+/// the first `d + 1` decimals of the exact value of `|x|` from its integer
+/// `m` and its power of two `e`, `m 10^(d+1) / 2^-e` in 128 bits, rounded
+/// half away from zero, then its digits and its point written at once
+/// (`fixed_exact` wrote the 1100 decimals of `|x|` each time: 1156 ns a
+/// call). `None` when the product leaves 128 bits (`fixed_exact` then).
+fn fixed_short(x: f64, d: usize) -> Option<([u8; 64], usize)> {
+    let bits = x.to_bits();
+    let be = ((bits >> 52) & 0x7ff) as i32;
+    let mut m = bits & ((1u64 << 52) - 1);
+    let e = if be == 0 {
+        -1074
+    } else {
+        m |= 1u64 << 52;
+        be - 1075
+    };
+    let p = 10u128.pow(d as u32);
+    // |x| 10^d, rounded half away from zero; divided in 64 bits when it fits
+    // (a division of 128 bits is a call)
+    let q: u128 = if e >= 0 {
+        ((m as u128) << e).checked_mul(p)?
+    } else {
+        // m < 2^53 and 10^(d+1) <= 10^19 < 2^64: in 117 bits
+        let t = (m as u128) * p * 10;
+        let n = if -e >= 128 { 0 } else { t >> (-e) };
+        match u64::try_from(n) {
+            Ok(n) => u128::from(n / 10 + u64::from(n % 10 >= 5)),
+            Err(_) => n / 10 + u128::from(n % 10 >= 5),
+        }
+    };
+    // its digits from the end, at least d + 1 of them, the point before
+    // the last d
+    let mut digits = [0u8; 48];
+    let mut k = digits.len();
+    let mut v = q;
+    while v >> 64 != 0 {
+        k -= 1;
+        digits[k] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    let mut v = v as u64;
+    while v != 0 || digits.len() - k < d + 1 {
+        k -= 1;
+        digits[k] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    let nd = digits.len() - k;
+    let mut out = [0u8; 64];
+    let mut o = 0;
+    if x < 0.0 {
+        out[0] = b'-';
+        o = 1;
+    }
+    let int = nd - d;
+    out[o..o + int].copy_from_slice(&digits[k..k + int]);
+    o += int;
+    if d > 0 {
+        out[o] = b'.';
+        o += 1;
+        out[o..o + d].copy_from_slice(&digits[k + int..]);
+        o += d;
+    }
+    Some((out, o))
+}
+
+/// `x.toFixed(d)` by the exact decimal value of `|x|` (a double has at
+/// most 1074 decimals): for `d` above 18, and the reference of
+/// `fixed_short` in its test.
+fn fixed_exact(w: &mut dyn Write, x: f64, d: usize) -> fmt::Result {
     // the exact decimal value of |x| (a double has at most 1074 decimals):
     // its integer digits, then its first d + 1 decimals
     struct Digits {
@@ -2453,6 +2531,52 @@ mod find_bytes_tests {
     use super::find_bytes;
     extern crate alloc;
     use alloc::vec::Vec;
+
+    /// D487: `fixed_short` writes the text of `fixed_exact` (the exact
+    /// decimal value), for 200000 doubles of every size from 1e-30 to
+    /// 1e21 and both signs, halves and the edges (`1.005`, `9.995`, `0.125`,
+    /// `-0`, the subnormals, `1e20`, the powers of two), each with `d` from 0
+    /// to 18.
+    #[test]
+    fn fixed_short_is_fixed_exact() {
+        use super::{fixed_exact, fixed_short};
+        let mut xs = alloc::vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1.005, 9.995, 0.045, 1e20, 9.99e20, -9.99e20, 999999999999999.9, 0.000001, 5e-324, -5e-324, 2.2250738585072014e-308, 123456789.987654321];
+        for k in -60..70 {
+            xs.push(libm_pow2(k));
+            xs.push(-libm_pow2(k) * 1.5);
+        }
+        let mut z = 0x9e3779b97f4a7c15u64;
+        for _ in 0..200000 {
+            z ^= z << 13;
+            z ^= z >> 7;
+            z ^= z << 17;
+            // a mantissa and a decimal exponent from -30 to 21
+            let mant = (z >> 11) as f64 / (1u64 << 53) as f64;
+            let ex = (z % 52) as i32 - 30;
+            let mut v = mant;
+            for _ in 0..ex.unsigned_abs() {
+                v = if ex > 0 { v * 10.0 } else { v / 10.0 };
+            }
+            xs.push(if z & 1 == 0 { v } else { -v });
+        }
+        for &x in &xs {
+            if !(x.abs() < 1e21) {
+                continue;
+            }
+            for d in 0..=18usize {
+                let mut want = alloc::string::String::new();
+                fixed_exact(&mut want, x, d).unwrap();
+                let got = fixed_short(x, d).map(|(b, n)| alloc::string::String::from_utf8(b[..n].to_vec()).unwrap());
+                if let Some(got) = got {
+                    assert_eq!(got, want, "{:e} with {} decimals", x, d);
+                }
+            }
+        }
+    }
+
+    fn libm_pow2(k: i32) -> f64 {
+        f64::from_bits(((1023 + k) as u64) << 52)
+    }
 
     /// D482: `last_index_of` the same place as a search from the end byte
     /// by byte, for texts of 0 to 70 bytes (both sides of 16, 32, 48 and

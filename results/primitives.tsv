@@ -9,6 +9,7 @@ time	format	112.122	40.385
 http	httpDate	35.436	12.875
 json	quote.plain	4.518	1.644
 sha256	hex.32	7.165	2.630
+numbers	toFixed.2	49.439	19.156
 json	stringify	282.843	114.140
 strings	trim	14.369	6.023
 strings	split.6	76.165	32.048
@@ -30,6 +31,7 @@ http	headerOf	18.517	11.336
 sys	envAll	1948.335	1203.490
 strings	includes.3	20.248	12.569
 strings	equal	4.932	3.138
+numbers	parseF64	14.076	9.025
 strings	startsWith.1	1.679	1.108
 sys	basename	7.309	4.825
 sha256	digestText.55	427.430	285.435
@@ -39,6 +41,7 @@ sha256	digest.4k	25806.250	17468.880
 time	parseIso	34.623	23.504
 strings	less	4.944	3.448
 strings	startsWith.8	1.617	1.130
+numbers	toString.f64	61.686	44.720
 sys	extension	10.584	7.682
 time	isLeapYear	0.724	0.541
 http	message	6.488	4.872
@@ -46,6 +49,7 @@ http	text.1k	53.643	41.332
 http	serve.action.pipelined	1231.783	953.257
 net	lookup	30354.465	23675.720
 sys	makeDir.remove	3578.015	2808.720
+numbers	parseI64	9.684	7.632
 http	serve.pipelined	1196.007	957.698
 sys	listDir.66	11204.155	9116.070
 http	get.64k	66152.630	54466.445

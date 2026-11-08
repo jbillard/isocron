@@ -1,0 +1,28 @@
+// The audit of every form against the machine (TODO, D299): the numbers
+// (D487): their texts and their reading, on 4096 values in the caches.
+// Each line of the output: a name, the nanoseconds of one call (the mean
+// over `rounds` rounds, `bench`) and a checksum; run on one thread
+// (ISC_THREADS=1), against `numbers.c` (the same work in C, the floor).
+// usage: numbers <rounds>
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    // doubles from 0.3 to about 4e7, of both signs, none halfway between
+    // two numbers of 2 decimals (thirds)
+    const xs = map(iota(n), (i) => (i % 2 == 0 ? 1.0 : -1.0) * f64(i * i * 7 + 1) / 3.0);
+    const ints = map(iota(n), (i) => toString((i * 7919 * 104729) % 1000000007 - 500000000));
+    // decimals of at most 15 digits (thousandths from -500 to 500): the
+    // exact quotient of two exact doubles (Clinger)
+    const floats = map(iota(n), (i) => toString(f64((i * 7919) % 1000003 - 500000) / 1000.0));
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => sum(map(xs, (x) => x.toFixed(2).length)));
+    print(`toFixed.2 ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => sum(map(xs, (x) => toString(x).length)));
+    print(`toString.f64 ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => sum(map(ints, (s) => parseI64(s))));
+    print(`parseI64 ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => sum(map(floats, (s) => i64(parseF64(s) * 3.0))));
+    print(`parseF64 ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    return 0;
+}

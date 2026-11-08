@@ -18,6 +18,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | http | `httpDate` | 35.44 | 12.88 | 2.8 |
 | json | `quote.plain` | 4.52 | 1.64 | 2.7 |
 | sha256 | `hex.32` | 7.17 | 2.63 | 2.7 |
+| numbers | `toFixed.2` | 49.44 | 19.16 | 2.6 |
 | json | `stringify` | 282.84 | 114.14 | 2.5 |
 | strings | `trim` | 14.37 | 6.02 | 2.4 |
 | strings | `split.6` | 76.17 | 32.05 | 2.4 |
@@ -39,6 +40,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sys | `envAll` | 1948.34 | 1203.49 | 1.6 |
 | strings | `includes.3` | 20.25 | 12.57 | 1.6 |
 | strings | `equal` | 4.93 | 3.14 | 1.6 |
+| numbers | `parseF64` | 14.08 | 9.03 | 1.6 |
 | strings | `startsWith.1` | 1.68 | 1.11 | 1.5 |
 | sys | `basename` | 7.31 | 4.83 | 1.5 |
 | sha256 | `digestText.55` | 427.43 | 285.44 | 1.5 |
@@ -48,6 +50,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | time | `parseIso` | 34.62 | 23.50 | 1.5 |
 | strings | `less` | 4.94 | 3.45 | 1.4 |
 | strings | `startsWith.8` | 1.62 | 1.13 | 1.4 |
+| numbers | `toString.f64` | 61.69 | 44.72 | 1.4 |
 | sys | `extension` | 10.58 | 7.68 | 1.4 |
 | time | `isLeapYear` | 0.72 | 0.54 | 1.3 |
 | http | `message` | 6.49 | 4.87 | 1.3 |
@@ -55,6 +58,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | http | `serve.action.pipelined` | 1231.78 | 953.26 | 1.3 |
 | net | `lookup` | 30354.47 | 23675.72 | 1.3 |
 | sys | `makeDir.remove` | 3578.01 | 2808.72 | 1.3 |
+| numbers | `parseI64` | 9.68 | 7.63 | 1.3 |
 | http | `serve.pipelined` | 1196.01 | 957.70 | 1.2 |
 | sys | `listDir.66` | 11204.16 | 9116.07 | 1.2 |
 | http | `get.64k` | 66152.63 | 54466.44 | 1.2 |

@@ -285,7 +285,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 
 - [x] `print`: the standard output by blocks into files, at each newline into terminals and pipes: a million lines of a number 185.5 -> 22.2 ms (D299)
 - [x] The decimal text of integers written directly (`print`, `toString`, templates): a million lines of a number 22195 -> 12975 µs (D300)
-- [ ] The text of floats (`print`, `toString`, `toFixed`): `print`, `toString`, templates and `json` by Schubfach, the text of `Display` (D467: `json.stringify` -22.6 %); left `toFixed`
+- [x] The text of floats (`print`, `toString`, `toFixed`): `print`, `toString`, templates and `json` by Schubfach, the text of `Display` (D467: `json.stringify` -22.6 %); `toFixed` by the integer of the double, 1609 -> 49 ns, 2.58 times its floor (D487)
 - [x] The audit: `bench/primitives/` (each group of forms in Isocron and in C, the floor), `run.py`, `results/primitives.md`; the strings first (D301)
 - [x] String literals read where they are; `startsWith`/`endsWith` against literals in the generated code; searches of short needles by `memchr`: `startsWith` 18.60 -> 1.90 ns, `indexOf` 56.87 -> 7.66 ns (D301)
 - [x] Case, padding and replacement written once: `replaceAll` 825.43 -> 55.10 ns, `toUpperCase` 186.64 -> 18.29 ns (D302)
@@ -296,6 +296,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `padStart` 4.9 times its floor, shown by measure: 8.7 of its 31.3 cycles a call to free the block of its result, 15.9 to take it, fill and copy; the floor makes no block (D378)
   - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378); done for the concatenations that give a text its scope only reads (D404: a buffer of 128 bytes); left: the other operations that make a text (`padStart`, `toString`, `toUpperCase`, the copies), arrays
 - [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
+  - [x] Numbers: `toFixed`, the text of a double, `parseI64`, `parseF64` (D487: each at most 2.58 times its floor)
 - [x] The fixed alternatives of a search by lanes of AVX-512: a count 0.29 -> 0.20 ns a byte, regex-redux -13.31 % (D306)
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)
 - [x] A part of a search stopped at the next part when no match crosses it: regex-redux -9.76 % (D309)
