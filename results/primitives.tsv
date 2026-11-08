@@ -52,15 +52,18 @@ time	parseIso	34.623	23.504
 sorts	sort.f64	25.737	17.509
 strings	less	4.944	3.448
 strings	startsWith.8	1.617	1.130
+control	collatz	33.512	24.119
 numbers	toString.f64	61.686	44.720
 sys	extension	10.584	7.682
 time	isLeapYear	0.724	0.541
 http	message	6.488	4.872
+control	gcd	65.220	49.450
 http	text.1k	53.643	41.332
 http	serve.action.pipelined	1231.783	953.257
 net	lookup	30354.465	23675.720
 sys	makeDir.remove	3578.015	2808.720
 numbers	parseI64	9.684	7.632
+control	fib.call	1.223	0.974
 http	serve.pipelined	1196.007	957.698
 sys	listDir.66	11204.155	9116.070
 http	get.64k	66152.630	54466.445
@@ -84,6 +87,7 @@ arrays	zip.sum	0.112	0.103
 http	request.post	41403.960	38271.710
 http_serve	serve.connection	41218.750	38132.710
 strings	replaceAll.1	52.981	49.280
+control	match.area	0.927	0.863
 time	addMonths	3.907	3.641
 http	get.small	41461.040	38651.290
 time	weekday	8.258	7.765

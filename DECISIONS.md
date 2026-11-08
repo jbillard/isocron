@@ -11042,3 +11042,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D497 — The group of control and calls measured (2026-11-08).** The
+  audit of the forms (TODO: "control and calls") had no microbenchmark of
+  them. Now `bench/primitives/control.isc` and its floor `control.c` (one
+  thread): a call of a recursion that is not a tail call (`fib(25)`, per
+  call), Euclid's algorithm by a tail recursion (`gcd(b, a % b)`) of 4096
+  pairs, a `match` over a sum of three variants (25 times the rounds: 0.6 ms
+  at 200), the steps of Collatz of 4096 numbers by a tail recursion (branches
+  that the data choose). Measured (`run.py`, 5 runs of 200 rounds, fixed
+  frequency): `collatz` 1.39 times its floor, `gcd` 1.32, `fib.call` 1.26,
+  `match.area` 1.07.
+  - Floors beaten first, so wrong: Collatz in a scalar loop of C was 4
+    times slower than Isocron, which runs the loops of a `map` in vectors
+    (32 numbers in 4 vectors of 8, every lane stepped at each turn, the
+    turn written into a lane when it reaches 1); a floor that gave a lane
+    done its next number (`expandload`, a reduction at each turn) was still
+    twice as slow; the floor now steps 32 numbers as Isocron does (17.1
+    against 23.3 ns, not at a fixed frequency). Euclid's division in 64
+    bits was Isocron's speed; the floor divides in 32 bits once both
+    numbers fit (the remainders only decrease, tested once before the
+    loop).
+  - `gcd` 1.32: Isocron divides in 32 bits too (LLVM's `idivq-to-divl` for
+    this CPU: 5 `divl` in its code with and without that feature asked,
+    64.87 -> 64.81 ns), but tests at each division whether both fit, on the
+    chain of the loop; the floor tests once.

@@ -1,0 +1,49 @@
+// The audit of every form against the machine (TODO, D299): control and
+// calls (D497): a recursion that is not a tail call, a tail recursion, a
+// `match` over a sum of three variants, branches that the data choose. Each
+// line of the output: a name, the nanoseconds of one call or element (the
+// mean over `rounds` rounds, `bench`) and a checksum; run on one thread
+// (ISC_THREADS=1), against `control.c` (the same work in C, the floor).
+// usage: control <rounds>
+
+type Shape = Circle(i64) | Square(i64) | Rect(i64, i64);
+
+// 242785 calls for fib(25)
+function fib(n: i64): i64 {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+
+function gcd(a: i64, b: i64): i64 {
+    return b == 0 ? a : gcd(b, a % b);
+}
+
+function area(s: Shape): i64 {
+    return match (s) {
+        Circle(r) => 3 * r * r,
+        Square(a) => a * a,
+        Rect(w, h) => w * h,
+    };
+}
+
+function collatz(n: i64, steps: i64): i64 {
+    return n == 1 ? steps : collatz(n % 2 == 0 ? n / 2 : 3 * n + 1, steps + 1);
+}
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    const xs = map(iota(n), (i) => (i * 7919 * 104729) % 1000003 + 1);
+    const ys = map(iota(n), (i) => (i * 104729) % 999983 + 1);
+    const shapes = map(iota(n), (i) => i % 3 == 0 ? Circle(i % 7) : (i % 3 == 1 ? Square(i % 11) : Rect(i % 5, i % 13)));
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => fib(25));
+    print(`fib.call ${(f64(t1) / f64(r * 242785)).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => sum(map(iota(n), (i) => gcd(xs[i], ys[i]))));
+    print(`gcd ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    // 25 times the rounds: 0.7 ns an element lasts 0.6 ms at 200 rounds
+    const [a3, t3] = bench(r * 25, () => sum(map(shapes, area)));
+    print(`match.area ${(f64(t3) / (each * 25.0)).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => sum(map(iota(n), (i) => collatz(i % 1000 + 1, 0))));
+    print(`collatz ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    return 0;
+}

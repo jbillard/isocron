@@ -61,15 +61,18 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sorts | `sort.f64` | 25.74 | 17.51 | 1.5 |
 | strings | `less` | 4.94 | 3.45 | 1.4 |
 | strings | `startsWith.8` | 1.62 | 1.13 | 1.4 |
+| control | `collatz` | 33.51 | 24.12 | 1.4 |
 | numbers | `toString.f64` | 61.69 | 44.72 | 1.4 |
 | sys | `extension` | 10.58 | 7.68 | 1.4 |
 | time | `isLeapYear` | 0.72 | 0.54 | 1.3 |
 | http | `message` | 6.49 | 4.87 | 1.3 |
+| control | `gcd` | 65.22 | 49.45 | 1.3 |
 | http | `text.1k` | 53.64 | 41.33 | 1.3 |
 | http | `serve.action.pipelined` | 1231.78 | 953.26 | 1.3 |
 | net | `lookup` | 30354.47 | 23675.72 | 1.3 |
 | sys | `makeDir.remove` | 3578.01 | 2808.72 | 1.3 |
 | numbers | `parseI64` | 9.68 | 7.63 | 1.3 |
+| control | `fib.call` | 1.22 | 0.97 | 1.3 |
 | http | `serve.pipelined` | 1196.01 | 957.70 | 1.2 |
 | sys | `listDir.66` | 11204.16 | 9116.07 | 1.2 |
 | http | `get.64k` | 66152.63 | 54466.44 | 1.2 |
@@ -93,6 +96,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | http | `request.post` | 41403.96 | 38271.71 | 1.1 |
 | http_serve | `serve.connection` | 41218.75 | 38132.71 | 1.1 |
 | strings | `replaceAll.1` | 52.98 | 49.28 | 1.1 |
+| control | `match.area` | 0.93 | 0.86 | 1.1 |
 | time | `addMonths` | 3.91 | 3.64 | 1.1 |
 | http | `get.small` | 41461.04 | 38651.29 | 1.1 |
 | time | `weekday` | 8.26 | 7.76 | 1.1 |
