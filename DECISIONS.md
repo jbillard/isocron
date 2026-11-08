@@ -10655,3 +10655,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`isc-runtime-core`: against a search byte by byte; with the window a
   byte off it fails), `path_parts_as_before` (D479) and
   `normalize_by_the_places_of_its_parts` (D464).
+- **D483 — The Benchmarks Game measured again at 543d932 (2026-11-08).**
+  After D481 (no change of the code) and D482 (`lastIndexOf`; the LLVM IR
+  of the ten programs the same but its declaration): the image built with
+  the `iscc` of 543d932, 102 checks against the references (the same
+  outputs; the known difference of C++ #4 of mandelbrot at N = 200 only),
+  measured in Docker (4 threads, 12 runs, the lowest). The fastest on 10
+  of 10, every time within its scatter (k-nucleotide 614 -> 619 ms, its
+  code the same: from 613 to 622 ms since D429; regex-redux 82 -> 81 ms;
+  the others within 1 ms). `results/benchmarks_game.md`,
+  `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
+  the README and its figure made again from these lines.
