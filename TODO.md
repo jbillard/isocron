@@ -171,6 +171,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] Global searches split among the threads, a replacement searched once: regexredux 2.686 s -> 1.146 s (D189)
   - [x] The literals of a case-insensitive search on ASCII text: one case (the haystack lowered): closed by measure (2026-11-06, 4 threads, fixed frequency, 15 alternated runs, the same outputs): regex-redux with its counts `ig` 81.3 ms, with `g` 82.8 ms (medians -0.14 %; the old against itself +0.00 %): the engine of shapes takes both cases at each byte for nothing, lowering the text would add a pass
 - [ ] (6) Audit of the representations chosen without measurement, each with a microbenchmark and its model of cost
+  - [ ] Texts of 16 bytes with their first 4 bytes, short texts inline (D530, SPEC section 8): (1) the layout with the first bytes, every text by its address, the limit of 4 GiB; (2) the texts of at most 12 bytes inline; (3) arrays whose texts are views (`sort`, `sortBy`, `lines` of a text kept)
   - [x] Maps: an index of hashes for the bisection of D158, `get` of an integer 56.08 -> 4.13 ns, 2.17 times its floor (D492)
   - [x] `countBy` 3.11 times its floor (D492): the keys below the number of keys counted by their value, 1.48 (D494)
   - [x] The costs of the machine measured, the floor of each program (`results/floors.md`, D182): Isocron over its floor fasta 57.8, regexredux 10.1, knucleotide 8.1, revcomp 5.4, nbody 4.9, pidigits 3.7, binarytrees 3.0, fannkuchredux 2.9, mandelbrot 1.5, spectralnorm 1.0

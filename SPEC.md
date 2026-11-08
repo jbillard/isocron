@@ -391,6 +391,16 @@ Aucun ramasse-miettes : chaque allocation est libérée à un point connu à la 
 - Types récursifs : sur le tas, avec comptage de références ; un constructeur sans charge n'est pas alloué (D169).
 - Un littéral de tableau dont tous les éléments sont des constantes scalaires (D173), ou tous des littéraux de texte (D401), est une donnée du programme : le lire n'alloue rien (`@requireNoAlloc` l'accepte), et une valeur qui en est faite (`with`, valeur initiale d'un `fold`, valeur rendue) en est une copie, chacun de ses textes copié.
 
+### Représentation des textes (D530)
+
+- Un texte occupe 16 octets : sa longueur en octets sur 32 bits, ses 4 premiers octets (complétés par des zéros), puis, s'il a au plus 12 octets, ses octets 4 à 11 (complétés par des zéros), sinon l'adresse de tous ses octets.
+- Un texte de 12 octets au plus est **court** : il ne possède aucune mémoire, le copier copie ses 16 octets, le libérer ne fait rien. Cette forme est la seule d'un texte court : deux textes courts égaux ont les mêmes 16 octets.
+- Un texte plus long désigne ses octets : un bloc qu'il possède, une donnée du programme, une ligne du bloc de `lines`, l'entrée standard projetée de son fichier, ou une vue d'un autre texte. Sa possession suit les règles d'unicité ci-dessous.
+- Un tableau de textes est un bloc de 16 octets par texte. Les textes courts y sont en entier, et les 4 premiers octets des autres aussi : une égalité, un ordre, un tri, un test de leurs premiers octets (`startsWith` d'un préfixe d'au plus 4 octets, `isAbsolute`) les lisent sans suivre d'adresse.
+- `bytes(s)` et `s.slice(a, b)` d'un texte court tenu par une variable sont des vues de ses octets là où la variable le garde ; une tranche de 12 octets au plus est un texte court, copié.
+- Un texte a moins de 4 Gio (2³² octets) ; en produire un plus long est une panne, la même dans l'interpréteur et en code compilé. Les tableaux d'octets n'ont pas cette limite.
+- Le modèle de coût, mesuré en C sur cette machine (`bench/primitives/text_repr.c`, un processeur à fréquence fixe) : un tri par longueur de 4096 textes courts dont le résultat possède ses textes, 20,3 ns par texte (un bloc chacun) contre 3,46 ns ; `isAbsolute` de chemins de 21 à 30 octets, 2,23 contre 0,95 ns ; l'égalité de deux textes courts, 4,94 contre 1,11 ns ; un texte court fait puis libéré, 14,6 contre 1,7 ns ; une recherche dans des textes longs, 2,93 contre 3,04 ns (le choix de l'endroit de leurs octets).
+
 ### Unicité
 
 Une valeur est **unique** à un point du programme si aucune utilisation ultérieure ne la référence.

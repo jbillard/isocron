@@ -11825,3 +11825,48 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   spread). Test `a_mapped_input_appended_to_after_an_allocation`
   (`stdin.rs`: 8 MiB from a file then through a pipe, the same output;
   without the change it ends on "invalid free").
+- **D530 — Texts of 16 bytes with their first bytes, short texts inline
+  (2026-11-08).** The author asked for the representation of texts to be
+  attacked (TODO, item (6); D465, D488, D471 and D524 left there the gaps
+  of `sys.isAbsolute`, `sortBy` of texts, `json.parse` and the base of
+  k-nucleotide). Today a text is a pointer and a length (16 bytes); each
+  text that a value owns is a block of its own (64 bytes of header, its
+  bytes rounded to 64: a text of 7 bytes takes 128); the kind of pointer
+  is told by its address (D361, D298, D257). Its readers always follow the
+  pointer, and each copy of a text is a block and a copy.
+  - The decision (SPEC, section 8, "Représentation des textes"): 16 bytes,
+    a length of 32 bits, the first 4 bytes of the text, then its bytes 4
+    to 11 when it has at most 12 (a short text, inline, owning nothing,
+    its only form) or the address of all its bytes (the kinds of pointers
+    of today). A text below 4 GiB, a longer one a panic in both the
+    interpreter and compiled code. The layout of Umbra's strings (Neumann
+    and Freitag, CIDR 2020), also DuckDB's and Arrow's string views; the
+    same 16 bytes an element as today, so the arrays keep their layout.
+  - The cost model, measured in C (`bench/primitives/text_repr.c`, the old
+    layout as the allocator of Isocron lays its blocks; one CPU at fixed
+    frequency, medians of 5 runs of 2000 rounds of 4096 elements):
+    `sortBy` by length of texts of 1 to 8 bytes whose result owns its
+    texts 20.27 -> 3.46 ns a text (the floor of `sorts.c`, which moves
+    shared pointers, 3.52: Isocron 22.19); `isAbsolute` of paths of 21 to
+    30 bytes 2.23 -> 0.95 ns (Isocron 1.89, its floor 0.6); the equality of
+    two texts of 1 to 8 bytes 4.94 -> 1.11 ns; a text of at most 8 bytes
+    made then freed 14.63 -> 1.69 ns (one load of 16 bytes and a mask
+    against a block, a copy and a free); `indexOf` of a byte in paths of
+    21 to 30 bytes 2.93 -> 3.04 ns (+3.6 %: the choice of where the bytes
+    are, a test of the length); the lines of 60 bytes of a text 8.25 ->
+    7.11 ns (a view against a copy into the block of the lines).
+  - Rejected: texts counted by references (a copy then an increment of a
+    count, atomic once two threads may share it: about as dear as the
+    block of a short text, and a load of another line of the cache for each
+    read of its first bytes); texts inline up to 15 bytes without their
+    first bytes in the long form (the gaps of `isAbsolute` and of the
+    comparisons of long texts stay); a length of 64 bits (no room for the
+    first bytes in 16).
+  - The work, in steps that each keep the suite green and are measured:
+    (1) the layout of 16 bytes with the first 4 bytes, every text still by
+    its address (the runtime, the generated code, the limit of 4 GiB), the
+    readers of the first bytes using them; (2) the short texts inline,
+    their only form, their copies and frees without a block, their
+    equality by two words; (3) arrays whose texts are views of a text or
+    of the texts of an array that lives longer (the result of `sort` and
+    `sortBy`, `lines` of a text kept, the base of k-nucleotide: D524).
