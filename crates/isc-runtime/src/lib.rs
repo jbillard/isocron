@@ -1356,7 +1356,17 @@ pub extern "C" fn isc_clock_ns() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn isc_parse_i64(p: *const u8, len: i64, line: i32, col: i32) -> i64 {
     let s = str_of(p, len);
-    match sem::parse_i64(s) {
+    match sem::parse_i64_short(s) {
+        Some(v) => v,
+        None => parse_i64_rest(s, line, col),
+    }
+}
+
+/// `isc_parse_i64` of the texts that are not a sign and 1 to 8 digits,
+/// and its panic, out of it (D539: its frame on the stack only for them).
+#[inline(never)]
+fn parse_i64_rest(s: &str, line: i32, col: i32) -> i64 {
+    match sem::parse_i64_rest(s) {
         Some(v) => v,
         None => die(line, col, &Panic::ParseI64(s)),
     }

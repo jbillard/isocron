@@ -223,9 +223,83 @@ impl fmt::Display for Panic<'_> {
     }
 }
 
-/// `parseI64` (SPEC section 12): decimal, optional sign.
+/// `parseI64` (SPEC section 12): decimal, optional sign; the answers of
+/// Rust's `str::parse::<i64>` (D539: `str::parse` took a branch a digit,
+/// about 105 instructions for 7 digits). A sign and up to 8 digits read
+/// at once, in the caller (`parse_i64_short`); the rest out of it.
+#[inline(always)]
 pub fn parse_i64(s: &str) -> Option<i64> {
-    s.parse::<i64>().ok()
+    match parse_i64_short(s) {
+        Some(v) => Some(v),
+        None => parse_i64_rest(s),
+    }
+}
+
+/// The sign and the digits of a text.
+#[inline(always)]
+fn sign_digits(b: &[u8]) -> (bool, &[u8]) {
+    match b.first() {
+        Some(b'-') => (true, &b[1..]),
+        Some(b'+') => (false, &b[1..]),
+        _ => (false, b),
+    }
+}
+
+/// `parse_i64` of a sign and 1 to 8 digits, `None` for every other text
+/// (that `parse_i64_rest` then reads): no loop, no call, a few registers,
+/// so that its callers need no frame on the stack.
+#[inline(always)]
+pub fn parse_i64_short(s: &str) -> Option<i64> {
+    let (neg, d) = sign_digits(s.as_bytes());
+    if d.is_empty() || d.len() > 8 {
+        return None;
+    }
+    let v = digits8(d)? as i64;
+    Some(if neg { -v } else { v })
+}
+
+/// `parse_i64` of any text, out of its callers: 9 to 16 digits read 8 at a
+/// time (below 2^63, no overflow), more by `str::parse` (its overflows).
+#[inline(never)]
+pub fn parse_i64_rest(s: &str) -> Option<i64> {
+    let (neg, d) = sign_digits(s.as_bytes());
+    let n = d.len();
+    let v = match n {
+        0 => return None,
+        1..=8 => digits8(d)?,
+        9..=16 => digits8(&d[..n - 8])? * 100_000_000 + digits8(&d[n - 8..])?,
+        _ => return s.parse::<i64>().ok(),
+    } as i64;
+    Some(if neg { -v } else { v })
+}
+
+/// The value of 1 to 8 bytes that are decimal digits, `None` if one is not.
+#[inline(always)]
+fn digits8(d: &[u8]) -> Option<u64> {
+    const ZEROS: u64 = 0x3030_3030_3030_3030;
+    let n = d.len();
+    // the bytes in a word, the first at its lowest place: two words of 4
+    // that overlap (the same bytes at the same places), or the first, the
+    // middle and the last byte for 1 to 3
+    let w = if n >= 4 {
+        let lo = u32::from_le_bytes([d[0], d[1], d[2], d[3]]) as u64;
+        let hi = u32::from_le_bytes([d[n - 4], d[n - 3], d[n - 2], d[n - 1]]) as u64;
+        lo | hi << ((n - 4) * 8)
+    } else {
+        d[0] as u64 | (d[n / 2] as u64) << (n / 2 * 8) | (d[n - 1] as u64) << ((n - 1) * 8)
+    };
+    // the digits at the high places, `0`s before them
+    let w = w << ((8 - n) * 8) | ZEROS.checked_shr((n * 8) as u32).unwrap_or(0);
+    // a byte below `0` borrows (its high bit set), above `9` carries to it;
+    // the lowest byte that is not a digit always shows
+    if (w.wrapping_add(0x4646_4646_4646_4646) | w.wrapping_sub(ZEROS)) & 0x8080_8080_8080_8080 != 0 {
+        return None;
+    }
+    // pairs, then fours, then the eight digits (the first the highest)
+    let v = w - ZEROS;
+    let v = v.wrapping_mul(10).wrapping_add(v >> 8);
+    let v = (v & 0x0000_00FF_0000_00FF).wrapping_mul(100 + (1_000_000 << 32)).wrapping_add(((v >> 16) & 0x0000_00FF_0000_00FF).wrapping_mul(1 + (10_000 << 32))) >> 32;
+    Some(v)
 }
 
 /// `parseF64` (D134): the decimal forms of Rust's `f64::from_str`
@@ -633,6 +707,59 @@ mod tests {
     extern crate std;
     use super::*;
     use std::string::String;
+
+    /// `parse_i64` gives the answers of `str::parse::<i64>` (D539): every
+    /// text of up to 4 characters of an alphabet of digits, signs, bytes
+    /// next to the digits and characters of UTF-8; numbers of every length
+    /// around the powers of ten and the bounds; digits with one byte changed.
+    #[test]
+    fn parse_i64_answers_as_str_parse() {
+        let check = |t: &str| assert_eq!(parse_i64(t), t.parse::<i64>().ok(), "{:?}", t);
+        let alpha = ["0", "1", "5", "9", "/", ":", "+", "-", " ", "a", "é", "\u{10348}"];
+        let mut texts = std::vec![String::new()];
+        for _ in 0..4 {
+            let mut next = std::vec::Vec::new();
+            for t in &texts {
+                for c in alpha {
+                    next.push(std::format!("{}{}", t, c));
+                }
+            }
+            for t in &next {
+                check(t);
+            }
+            texts = next;
+        }
+        for k in 0..=19u32 {
+            let p = 10i128.pow(k);
+            for x in [p - 1, p, p + 1, -p + 1, -p, -p - 1] {
+                check(&std::format!("{}", x));
+                check(&std::format!("+{}", x));
+                check(&std::format!("0{}", x));
+                check(&std::format!("-00{}", x));
+            }
+        }
+        for x in [i64::MAX as i128, i64::MAX as i128 + 1, i64::MIN as i128, i64::MIN as i128 - 1, u64::MAX as i128] {
+            check(&std::format!("{}", x));
+        }
+        for n in 0..=24 {
+            check(&"0".repeat(n));
+            check(&std::format!("-{}", "9".repeat(n)));
+            check(&std::format!("{}1", "0".repeat(n)));
+        }
+        let mut r: u64 = 1;
+        for _ in 0..200_000 {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let n = 1 + (r >> 59) as usize % 20;
+            let mut b: std::vec::Vec<u8> = (0..n).map(|i| b'0' + ((r >> (i * 3 % 60)) % 10) as u8).collect();
+            if r % 3 == 0 {
+                let i = (r >> 7) as usize % n;
+                b[i] = [b'/', b':', b' ', b'a', b'+', b'-', 0x7f, 0][(r >> 13) as usize % 8];
+            }
+            let t = String::from_utf8(b).unwrap();
+            check(&t);
+            check(&std::format!("-{}", t));
+        }
+    }
 
     #[test]
     fn alloc_classes_are_contiguous_and_tight() {

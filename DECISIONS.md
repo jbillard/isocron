@@ -12061,3 +12061,73 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   two versions (0.7 to 2.0 cycles a line for one, 0.85 to 1.15 for the
   other) was below the spread of one version between two runs (0.7 and
   2.0): not a cause to find. Closed by this measure.
+- **D539 — `parseI64` reads up to 8 digits at once; the place of its code
+  explained (2026-11-08).** TODO, "the micro-ops delivered fewer a cycle
+  with the runtime 64 bytes further" (D371: `parseI64.7` +7.1 %, the
+  cause not shown). The program of that form alone (`sum(map(nums,
+  parseI64))`, 4096 numbers of 7 digits, 2000 rounds, one CPU at fixed
+  frequency), its compiled functions aligned on 16 to 512 bytes
+  (`ISC_LLVM_ARGS="-align-all-functions=4"` to `9`; the runtime is always
+  on 64, D256): 9.108 and 9.091 ns a number on 16 and 32 bytes, 8.810 to
+  8.816 ns on 64 to 512, the same 1033 M instructions.
+  - Not the uop cache: in both places it delivers every micro-op
+    (`idq.dsb_uops` 869.8 and 866.6 M, `idq.mite_uops` none) in the same
+    cycles (`idq.dsb_cycles_any` 195.5 and 195.0 M); no mispredicted
+    branch, no re-steer of the front end (`baclears.any`,
+    `int_misc.clear_resteer_cycles` none). The difference is cycles where
+    the front end delivers nothing while the back end waits
+    (`idq_uops_not_delivered.core` 296.7 against 254.7 M slots, 239.0
+    against 232.1 M cycles): `frontend_retired.latency_ge_2_bubbles_ge_1`
+    39.5 against 31.5 M, those of `parse_i64` of the runtime 34.4 against
+    24.9 M (its `ret` 9.0 against 2.9 M), after its taken branches. Its
+    code is the same and at the same place of its 64-byte windows in both
+    (moved by 0x80): the cost of a taken branch depends on bits of its
+    address above the window, the tables of the predictor of branches,
+    which Intel does not document (a hypothesis on the mechanism; what is
+    measured is the bubbles after taken branches). No placement rule a
+    compiler can follow; the general remedy is fewer taken branches on
+    hot paths.
+  - `parse_i64` was Rust's `str::parse::<i64>`: a loop with a test of
+    overflow a digit, about 10 taken branches and 105 instructions for 7
+    digits. Now (`isc-runtime-core`): a sign and 1 to 8 digits read as
+    one word (two loads of 4 bytes that overlap, or 3 bytes for 1 to 3),
+    the 8 bytes checked as digits at once (a byte below `0` borrows, one
+    above `9` carries: the lowest byte that is not a digit always shows),
+    combined by three multiplications (pairs, fours, eight); 9 to 16
+    digits as two such words, below 2^63 (no overflow); more by
+    `str::parse` (its overflows). The short path is inlined into
+    `isc_parse_i64`; the others and the panic are one function out of it,
+    reached by a jump: the short path keeps no frame (it saved four, then
+    six registers when the 16 digits were inlined). The same answers as
+    `str::parse` (test `parse_i64_answers_as_str_parse`: every text of up
+    to 4 characters of digits, signs, bytes next to the digits, spaces,
+    letters, characters of 2 and 4 bytes; numbers around each power of ten
+    and the bounds with signs and leading zeros; 400000 random texts of 1
+    to 20 digits, one byte changed in a third of them; checked first in
+    Python on 477155 texts).
+  - Measured (the same program, 5 alternated runs): 126.16 -> 71.16
+    instructions a number, 29.11 -> 16.76 cycles (functions on 16 bytes,
+    the default) and 28.13 -> 16.74 (on 64), 9.116 -> 5.250 ns (-42.4 %)
+    and 8.812 -> 5.244 ns: the place no longer matters (0.1 %).
+  - Against 30f7ff9 (fixed frequency; the ten programs 11 alternated
+    runs, the 17 groups 7): the ten programs the same outputs, minimums
+    -0.09 to +1.41 % (regex-redux, its median -0.21 %); `parseI64.7` 9.12
+    -> 5.48 ns (-40.0 %), `numbers.parseI64` 9.54 -> 8.89 ns (-6.8 %).
+    Above +2 %: `json.stringify` +4.2 %, `json.decode` +3.4 %,
+    `json.message` +2.6 %, `sys.basename` +3.0 %, `sys.cwd` +3.0 %. Every
+    function of the binaries of `json` and `sys` is the same but those of
+    `parseI64` (`fnall2.py`: the instructions of each function, the hashes
+    of the crates set aside), which they call only to read their count of
+    rounds: the code after them moved. Built again with the compiled
+    functions on 16 to 128 bytes (four places of the runtime, each
+    compiler, 7 alternated runs): `decode` 255.0 to 267.8 ns with the old
+    runtime against 253.5 to 261.7 with the new, `stringify` 226.6 to
+    235.7 against 234.1 to 235.8, `message` 7.57 to 7.78 against 7.57 to
+    7.70, `basename` 7.29 to 7.31 against 7.33 to 7.34 (+0.5 %), `cwd`
+    405.6 to 421.4 against 410.4 to 418.4: each within the spread that
+    the place alone gives the old runtime.
+  - Tested by `parse_i64_answers_as_str_parse` (`isc-runtime-core`) and
+    `parse_i64_of_every_length` (`stdlib.rs`: the three paths, compiled
+    with 1 and 4 threads and under Valgrind against the interpreter;
+    `tryParseI64` of 13 texts it refuses; the panic with its place from
+    each path, compiled as interpreted).

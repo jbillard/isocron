@@ -154,6 +154,38 @@ fn conversions_of_texts() {
     assert_eq!(interp_panic(PARSING, &["7", "x"]), "panic at line 6, column 35: parseI64: `x` is not a valid integer");
 }
 
+const PARSE_LENGTHS: &str = r#"action main(args: string[k]): i32 {
+    print(args.map((a) => match (tryParseI64(a)) {
+        Ok(v) => v,
+        Err(e) => 999,
+    }));
+    print(args.map(parseI64));
+    return 0;
+}
+"#;
+
+/// `parseI64` by its three paths (D539): a sign and 1 to 8 digits read at
+/// once where it is called, 9 to 16 digits and more out of it, and the
+/// texts it refuses (`tryParseI64`, and the panic with its place in
+/// compiled code as in the interpreter, from each path).
+#[test]
+fn parse_i64_of_every_length() {
+    let good = ["0", "-7", "+42", "123", "1234", "-12345678", "123456789", "-1234567890123456", "12345678901234567", "9223372036854775807", "-9223372036854775808", "00000000000000000000042", "-0"];
+    agree(PARSE_LENGTHS, "std_parse_lengths", &good, "[0, -7, 42, 123, 1234, -12345678, 123456789, -1234567890123456, 12345678901234567, 9223372036854775807, -9223372036854775808, 42, 0]\n[0, -7, 42, 123, 1234, -12345678, 123456789, -1234567890123456, 12345678901234567, 9223372036854775807, -9223372036854775808, 42, 0]\n");
+    let bad = ["+", "-", "", "12a4", "1 2", "٣", "9223372036854775808", "-9223372036854775809", "--1", "+-1", "1+", "123456789x", "1234567890123456789012"];
+    let want = interp_panic(PARSE_LENGTHS, &bad);
+    assert!(want.starts_with("panic at line 6, column "), "{}", want);
+    let bin = compile(PARSE_LENGTHS, "std_parse_lengths_bad");
+    for b in bad {
+        let r = run_bin(&bin, &["5", b]);
+        assert_eq!(r.code, 101, "{:?}: {}", b, r.stderr);
+        assert_eq!(r.stdout, "[5, 999]\n", "{:?}", b);
+        let want = interp_panic(PARSE_LENGTHS, &["5", b]);
+        assert!(want.contains(&format!("parseI64: `{}` is not a valid integer", b)), "{}", want);
+        assert!(r.stderr.contains(&want), "{:?}: {} against {}", b, r.stderr, want);
+    }
+}
+
 const BIG: &str = r#"function fact(n: i64, acc: bigint): bigint {
     if (n <= 1) return acc;
     return fact(n - 1, acc * BigInt(n));
