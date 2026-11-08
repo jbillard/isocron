@@ -2,11 +2,12 @@
 
 Each form of the language measured in Isocron and as the same work in C
 written the cheapest way known (its floor), on one CPU at fixed frequency,
-the median of 5 runs of 200 rounds (`bench/primitives/run.py`); the
+the median of 5 runs of 100 rounds (`bench/primitives/run.py`); the
 nanoseconds of one call, ranked by Isocron over its floor.
 
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
 | :-- | :-- | --: | --: | --: |
+| sorts | `sortBy.length` | 22.18 | 3.56 | 6.2 |
 | json | `decode` | 447.45 | 91.54 | 4.9 |
 | json | `parse` | 788.61 | 171.37 | 4.6 |
 | json | `quote.escaped` | 81.97 | 19.76 | 4.1 |
@@ -28,11 +29,13 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `indexOf.1` | 6.11 | 3.08 | 2.0 |
 | strings | `bytes` | 1.52 | 0.83 | 1.8 |
 | strings | `endsWith.2` | 1.67 | 0.91 | 1.8 |
+| sorts | `sort.string` | 121.66 | 67.09 | 1.8 |
 | sys | `normalize` | 89.90 | 49.94 | 1.8 |
 | strings | `parseI64.7` | 8.83 | 4.96 | 1.8 |
 | strings | `lines.line` | 15.09 | 8.53 | 1.8 |
 | sys | `env` | 19.43 | 11.33 | 1.7 |
 | strings | `toUpperCase` | 17.71 | 10.47 | 1.7 |
+| sorts | `sort.i64` | 13.47 | 7.97 | 1.7 |
 | http | `header` | 18.96 | 11.36 | 1.7 |
 | json | `message` | 7.61 | 4.56 | 1.7 |
 | sys | `readText.4k` | 3243.70 | 1973.19 | 1.6 |
@@ -48,6 +51,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `slice` | 1.86 | 1.26 | 1.5 |
 | sha256 | `digest.4k` | 25806.25 | 17468.88 | 1.5 |
 | time | `parseIso` | 34.62 | 23.50 | 1.5 |
+| sorts | `sort.f64` | 25.74 | 17.51 | 1.5 |
 | strings | `less` | 4.94 | 3.45 | 1.4 |
 | strings | `startsWith.8` | 1.62 | 1.13 | 1.4 |
 | numbers | `toString.f64` | 61.69 | 44.72 | 1.4 |
@@ -103,6 +107,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | https | `requestWith.small` | 1198733.78 | 1181176.93 | 1.0 |
 | net | `connect.closeWrite` | 24992.07 | 24634.33 | 1.0 |
 | https | `request.system.small` | 1197858.95 | 1181565.42 | 1.0 |
+| sorts | `toReversed` | 0.38 | 0.38 | 1.0 |
 | https_serve | `serve.handshake` | 1167200.17 | 1152696.69 | 1.0 |
 | https | `startTls` | 1062940.91 | 1056992.53 | 1.0 |
 | net | `server.open.close` | 6090.97 | 6101.40 | 1.0 |

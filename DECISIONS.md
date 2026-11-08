@@ -10818,12 +10818,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     moves shared pointers. The floor with that representation
     (`ISC_SORTS_OWNED=1 sorts <rounds>`: each text of the sorted array
     copied into a block of its own, the blocks freed after), alternated
-    with Isocron (5 runs, fixed frequency, Plex running): `sortBy.length`
-    Isocron 37.09 ns, the floor 5.18, the floor that owns 40.95 (Isocron
-    0.91 times it); `sort.string` 260.13, 85.05 and 122.40 (2.13 times it).
-    The gap of `sortBy` of texts is their representation (the change of
-    the representation of texts, TODO); the measures of the ratios of
-    `results/primitives.md` wait for the end of the maintenance of Plex.
+    with Isocron (5 runs, fixed frequency, the machine quiet, D489):
+    `sortBy.length` Isocron 22.19 ns, the floor 3.52 (6.30 times it), the
+    floor that owns 17.92 (1.24 times it); `sort.string` 121.94, 66.73
+    (1.83) and 81.14 (1.50). The representation is 14.4 of the 18.7 ns of
+    the gap of `sortBy` of texts (the change of the representation of
+    texts, TODO). (Measured first while Plex ran: 37.09, 5.18 and 40.95;
+    every side slower, the side that makes blocks more.)
   - The Benchmarks Game measured at 36c84c7 (after D487) while that
     maintenance ran (a `Plex Transcoder` from 03:22:59 to 03:39:25, the
     measure from 03:22 to 03:41): the fastest on 10 of 10, but every
@@ -10839,3 +10840,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     type of number and booleans, unsigned above 2^63, NaN, -0 and the
     infinities, keys of few values, compiled against interpreted; with the
     key of doubles by `b ^ 2^63` alone it fails at the sort of `f32`).
+- **D489 — The Benchmarks Game and the sorts measured on a quiet machine
+  (2026-11-08).** After the maintenance of Plex (D488; no `Plex
+  Transcoder` from three minutes before to the end, the load below 1.5
+  before): the image built with the `iscc` of 4ae540e (D487 `toFixed`,
+  D488 the sorts of numbers), 102 checks against the references (the same
+  outputs; the known difference of C++ #4 of mandelbrot at N = 200 only),
+  measured in Docker (4 threads, 12 runs, the lowest). The fastest on 10
+  of 10, every time within its scatter of D483 (k-nucleotide 619 -> 610
+  ms, n-body 1885 -> 1873 ms, binary-trees 660 -> 662 ms, fasta 5 ms,
+  reverse-complement 27 ms, the others within 1 ms; the other languages
+  within 4 ms of D483: the measure of D488 was the load of Plex).
+  `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines. Then `run.py` (5 runs of 100 rounds) of the group of
+  sorts, no transcoder of Plex before or after: `sortBy.length` 6.24
+  times its floor (its representation, D488), `sort.string` 1.81,
+  `sort.i64` 1.69, `sort.f64` 1.47, `toReversed` 1.01.

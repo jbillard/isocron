@@ -297,7 +297,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378); done for the concatenations that give a text its scope only reads (D404: a buffer of 128 bytes); left: the other operations that make a text (`padStart`, `toString`, `toUpperCase`, the copies), arrays
 - [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
   - [x] Numbers: `toFixed`, the text of a double, `parseI64`, `parseF64` (D487: each at most 2.58 times its floor)
-  - [ ] Sorts: numbers by their bytes (D488: `sort.i64` -70 %, `sortBy.length` -63 %); `sortBy` of texts bound by their representation (D488: 0.91 times C with it); the ratios measured again on a quiet machine
+  - [x] Sorts: numbers by their bytes (D488: `sort.i64` -70 %, `sortBy.length` -63 %); `sortBy` of texts bound by their representation (1.24 times C with it, D488); every other form at most 1.81 times its floor (D489)
 - [x] The fixed alternatives of a search by lanes of AVX-512: a count 0.29 -> 0.20 ns a byte, regex-redux -13.31 % (D306)
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)
 - [x] A part of a search stopped at the next part when no match crosses it: regex-redux -9.76 % (D309)
