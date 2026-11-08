@@ -11485,3 +11485,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     646.9 ns, 3.79 times its floor (4.04 before).
   - The test `find_index_of_every_kind_of_element` (D505) fails with the
     index found by the first loop off by one (mutation checked).
+- **D513 — The Benchmarks Game measured again at 042ce81 (2026-11-08).**
+  After D501 to D512: of the ten programs, k-nucleotide and pidigits alone
+  have another code (D511: the room of the block of an accumulator of text
+  read by the compiled code; A/B 615.4 -> 608.7 ms and 298.7 -> 298.8 ms),
+  the others the same LLVM. On a quiet machine (no `Plex Transcoder`, three
+  calm minutes before): the image built with the `iscc` of 042ce81, the
+  checks against the references (the same outputs; the known difference
+  of C++ #4 of mandelbrot at N = 200 only), measured in Docker (4 threads,
+  12 runs, the lowest). The fastest on 10 of 10, every time within its
+  scatter: binary-trees 665 -> 659 ms, k-nucleotide 609 -> 606 ms,
+  regex-redux 82 -> 81 ms, n-body 1876 -> 1886 ms (its code the same:
+  1876 to 1896 ms since D447), reverse-complement 23 -> 24 ms (the same
+  code, 23 to 24 ms since D490), the others within 3 ms.
+  `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
