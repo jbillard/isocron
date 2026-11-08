@@ -11705,3 +11705,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     with the maps of few elements made where they are without the question
     (their parallelism lost) (mutation checked; made never where they are,
     only the time differs).
+- **D521 — The Benchmarks Game measured again at 20fb492 (2026-11-08).**
+  After D515 to D520: of the ten programs, eight have another code
+  (pidigits by D519; binary-trees, fannkuch-redux, fasta, k-nucleotide,
+  mandelbrot, regex-redux and spectral-norm by D520: the question of
+  `isc_loops_alone` before a `map` of a few heavy elements), their A/B
+  within -0.21 to +0.68 %. On a quiet machine (three calm minutes before,
+  no `Plex Transcoder`): the image built with the `iscc` of 20fb492, 102
+  checks against the references (the same outputs), measured in Docker (4
+  threads, 12 runs, the lowest). The fastest on 10 of 10, every time
+  within 0.5 % of D513 (binary-trees 659 -> 662 ms, the others within 4
+  ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
