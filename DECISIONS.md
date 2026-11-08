@@ -11944,3 +11944,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   to 20 bytes that differ at each place or by their length, the six
   comparisons, `sort`, the keys of a map, against the interpreter; with the
   words compared without swapping their bytes it fails).
+- **D533 — `concat` grows the array it reads for the last time
+  (2026-11-08).** TODO: `concat(a, b)` of arrays made a new block and
+  copied both sides (D340), even when `a` was freed right after: an array
+  built by `concat` onto an accumulator copied it whole at each step
+  (quadratic; the join of the chunks of `http`, D340, 22 µs of 29). Now,
+  in the code generator, a variable freed at the end of its scope (a
+  `let` or a `free`) whose only read on the straight path of that scope
+  (its `let`s and `free`s, no loop, no branch: `concat_alone`) is the
+  `concat` of arrays of scalars of which it is the left side gives its
+  block to that `concat`: grown in place when it has room, else a block
+  of twice its size with its bytes (`isc_str_reserve`, as a text
+  continued, D351), the right side copied after it; the variable is bound
+  to an empty array after it, so that its free frees nothing. The
+  ownership pass is unchanged (the variable is still the one freed); the
+  `map` the `concat` is lowered to (D136) stays the branch taken when the
+  lengths do not fit its form, and frees the variable as before.
+  Measured: an accumulation of 100000 steps by a recursive function (two
+  integers a step, and bytes) 3777 -> 432 ms (5 alternated runs, fixed
+  frequency; 30000 steps 393 -> 103 ms, 10000 steps 105 -> 46 ms, the
+  start of the process counted). The 17 groups (7 alternated runs) and the
+  ten programs (11 runs, the same outputs) against D532: no form slower
+  past its spread but `http.parseUrl` +7.5 % (its code not changed: one
+  function of `http` takes its block, a read of a head grown by `concat`,
+  and the code after it moves; `parseUrl` moves by 3 to 8 % with its
+  place, D466); `regexredux` +1.68 % with the same IR (its spread). The
+  join of the chunks of `http` reads borrowed chunks two by two (`pairs`)
+  and is not changed: it needs an owned accumulator to use this. Test
+  `concat_grows_the_array_it_takes` (`memory.rs`: integers and bytes
+  accumulated, a left array still read after (copied), a left array made
+  there, against the interpreter, under Valgrind with glibc's allocator,
+  the call that grows the block in the code).

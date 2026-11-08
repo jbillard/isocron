@@ -501,6 +501,9 @@ pub struct Gen<'p> {
     /// The texts freed now are parts of tuples (D518): tested as literals
     /// of the program before the call of `isc_free`.
     literal_test: bool,
+    /// The variables whose block a `concat` may take (D533): read by it
+    /// alone, then freed.
+    taking: HashSet<VarId>,
     /// The texts taken out of tuples (their registers): tested as literals
     /// wherever they are freed (D518).
     part_values: HashSet<String>,
@@ -655,6 +658,31 @@ fn concat_parts(e: &Expr) -> Option<(&Expr, &Expr, &Expr, &Expr)> {
     let et = e.ty.elem();
     let fits = is_p(i) && is_p(i1) && is_p(i2) && same_simple(l, l2) && [&**a, &**b, &**l, &**n].iter().all(|x| simple_of(x, p));
     (fits && a.ty.is_array() && b.ty.is_array() && a.ty.elem() == et && b.ty.elem() == et).then(|| (&**a, &**b, &**l, &**n))
+}
+
+/// `concat(x, b)` of arrays of scalars is the only read of `x` in `e`, on its
+/// straight path (`let`s and `free`s, no loop, no branch): its block may be
+/// taken by the `concat` and grown (D533).
+fn concat_alone(e: &Expr, x: VarId) -> bool {
+    let only = HashSet::from([x]);
+    match &e.kind {
+        ExprKind::Let { init, body, .. } => {
+            if concat_reads(init, x) {
+                return !mentions(body, &only) && !frees(body, x);
+            }
+            !mentions(init, &only) && concat_alone(body, x)
+        }
+        ExprKind::Free(y, b) if *y != x => concat_alone(b, x),
+        _ => false,
+    }
+}
+
+/// `m` is `map(iota(n), (i) -> if i < len(x) then x[i] else w[i - len(x)])`
+/// (D136), its elements scalars, `x` read nowhere else in it but its
+/// lengths.
+fn concat_reads(m: &Expr, x: VarId) -> bool {
+    let Some((a, _, _, _)) = concat_parts(m) else { return false };
+    m.ty.elem().is_scalar() && matches!(a.kind, ExprKind::Var(v, _) if v == x)
 }
 
 /// A variable other than `p`, a projection or a length of one, a literal,
@@ -1053,6 +1081,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         divmod: Vec::new(),
         vec_fail: None,
         literal_test: false,
+        taking: HashSet::new(),
         part_values: HashSet::new(),
         split_vars: HashMap::new(),
         split_fail: None,
@@ -4126,7 +4155,19 @@ impl<'p> Gen<'p> {
                 if let Some((a, block)) = &made {
                     self.counts.insert(*a, block.clone());
                 }
+                // its block to the `concat` that reads it alone, which grows
+                // it (D533): what is left to free, its binding after it
+                let takes = *drop && !early && w == 1 && init.ty.is_array() && concat_alone(body, *var);
+                if takes {
+                    self.taking.insert(*var);
+                }
                 let r = self.ex(body, w);
+                let iv = if takes {
+                    self.taking.remove(var);
+                    self.env.get(var).cloned().unwrap_or(iv)
+                } else {
+                    iv
+                };
                 if let Some((a, block)) = &made {
                     self.counts.remove(a);
                     self.emit(format!("call void @isc_free(ptr {})", block));
@@ -4650,7 +4691,14 @@ impl<'p> Gen<'p> {
             Bench(r, body) => self.bench(r, body, e),
             // the body, then a variable freed (D105)
             Free(var, body) => {
-                let r = self.ex(body, w)?;
+                // its block to the `concat` that reads it alone (D533)
+                let takes = w == 1 && self.p.vars[*var as usize].ty.is_array() && concat_alone(body, *var);
+                if takes {
+                    self.taking.insert(*var);
+                }
+                let r = self.ex(body, w);
+                self.taking.remove(var);
+                let r = r?;
                 let x = self.env[var].clone();
                 let ty = self.p.vars[*var as usize].ty.clone();
                 // (a text freed on the paths that do not move it: often a
@@ -5743,6 +5791,37 @@ impl<'p> Gen<'p> {
         let (lfast, lslow, ljoin) = (self.label(), self.label(), self.label());
         self.cbr(&ok, &lfast, &lslow);
         self.block(&lfast);
+        // the left array's block taken (its last read, D533): grown in place
+        // when it has room, else a block of twice its size (as a text
+        // continued, D351), the right one copied after it
+        let took = match &a.kind {
+            ExprKind::Var(va, _) if self.taking.contains(va) && !matches!(et, Type::Tuple(_)) => Some(*va),
+            _ => None,
+        };
+        if let Some(va) = took {
+            let sz = esize(&et);
+            let used = self.ins(format!("mul i64 {}, {}", la, sz));
+            let need = self.ins(format!("mul i64 {}, {}", nv.r, sz));
+            let q = self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", pa, used, need));
+            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", q, used));
+            let second = self.ins(format!("mul i64 {}, {}", rest, sz));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at, pb, second));
+            let fast = self.arr(&q, &nv.r);
+            let lfast_end = self.current_label(&lfast);
+            self.br(&ljoin);
+            self.block(&lslow);
+            let slow = self.materialize_general(e)?;
+            let lslow_end = self.current_label(&lslow);
+            self.br(&ljoin);
+            self.block(&ljoin);
+            let r = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", fast.r, lfast_end, slow.r, lslow_end));
+            // nothing left to free of it when taken: its binding from here
+            // (no read of it follows, `concat_alone`)
+            let left = self.ins(format!("phi {{ ptr, i64 }} [ zeroinitializer, %{} ], [ {}, %{} ]", lfast_end, av.r, lslow_end));
+            self.taking.remove(&va);
+            self.env.insert(va, v(left, "{ ptr, i64 }"));
+            return Ok(V { r, t: "{ ptr, i64 }".into(), uni: fast.uni && slow.uni });
+        }
         let dst = self.alloc_elems(&nv.r, &et);
         let cols = |g: &mut Self, p: &str, len: &str| -> Vec<(Type, String)> {
             if matches!(et, Type::Tuple(_)) {

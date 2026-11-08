@@ -1003,3 +1003,52 @@ fn medium_blocks_to_the_end_of_a_region() {
         }
     }
 }
+
+/// D533: `concat(acc, x)` whose left array is read there for the last time
+/// takes its block and grows it (in place when it has room, else a block
+/// of twice its size), the right one copied after it: an accumulation by a
+/// recursive function, of bytes and of integers, a left array still read
+/// after (copied, not taken), a left array made there; the same outputs as
+/// the interpreter, nothing lost under Valgrind, and the block grown (the
+/// call of the runtime that grows it in the code).
+#[test]
+fn concat_grows_the_array_it_takes() {
+    let src = "function grow(acc: i64[], i: i64, n: i64): i64[] {
+    if (i == n) {
+        return acc;
+    }
+    return grow(concat(acc, [i, i * 2]), i + 1, n);
+}
+
+function bytes3(acc: u8[], i: i64, n: i64): u8[] {
+    if (i >= n) {
+        return acc;
+    }
+    return bytes3(concat(acc, map(iota(i % 7), (k) => u8(k + i))), i + 1, n);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const b = grow([], 0, n);
+    print([b.length, sum(b), b[b.length - 1]] as const);
+    const e = bytes3([], 0, n);
+    print([e.length, sum(map(e, (x) => i64(x)))] as const);
+    const c = map(iota(5), (i) => i + 1);
+    const d = concat(c, [7, 8]);
+    print(d);
+    print(c);
+    const f = concat(map(iota(n), (i) => f64(i) / 2.0), [0.5]);
+    print([f.length, sum(f)] as const);
+    return 0;
+}
+";
+    let bin = compile(src, "concat_grows");
+    for a in ["1", "10", "700"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.matches("call ptr @isc_str_reserve(").count() >= 2, "the blocks of the accumulators not grown");
+    clean(src, "concat_grows_vg", &["700"]);
+}
