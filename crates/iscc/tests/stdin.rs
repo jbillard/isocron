@@ -620,3 +620,39 @@ action main(args: string[k]): i32 {
     let o = std::process::Command::new(&bin).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "{}", String::from_utf8_lossy(&o.stderr));
 }
+
+/// D529: the text of a standard input of 8 MiB mapped from its file (D257),
+/// itself the left text of `+` after the allocator served a first block:
+/// its block has no room (the header of the mapping holds only its class),
+/// so the text is copied into a new block; before, `room` read that header
+/// as a block's and the program ended on "invalid free". Through a pipe the
+/// input is read, not mapped: the same output.
+#[test]
+fn a_mapped_input_appended_to_after_an_allocation() {
+    let src = "action main(args: string[k]): i32 {
+    const a = `n${args.length}`;
+    print(a);
+    const s = readStdinText();
+    const t = s + \"end\";
+    print(`${t.length} ${t.slice(t.length - 5, t.length)}`);
+    return 0;
+}
+";
+    let size = 8 << 20;
+    let text: Vec<u8> = (0..size).map(|i| b'a' + (i % 26) as u8).collect();
+    let path = tmp("appended_mapped.txt");
+    std::fs::write(&path, &text).unwrap();
+    let tail = std::str::from_utf8(&text[size - 2..]).unwrap();
+    let want = format!("n0\n{} {}end\n", size + 3, tail);
+    let bin = compile(src, "appended_mapped");
+    let o = std::process::Command::new(&bin).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{}", String::from_utf8_lossy(&o.stderr));
+    let mut c = std::process::Command::new(&bin).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    {
+        use std::io::Write;
+        let mut i = c.stdin.take().unwrap();
+        i.write_all(&text).unwrap();
+    }
+    let o = c.wait_with_output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want));
+}

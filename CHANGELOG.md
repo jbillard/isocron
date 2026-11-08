@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* A program that added a text to a standard input of 8 MiB or more read from a file (mapped, D257) ended on "invalid free" when the allocator had served a block before: the mapped input has no room, it is copied (D529).
+
 ## 0.4.9 — 2026-11-08
 
 Every function of the standard library at most 3 times its floor but two

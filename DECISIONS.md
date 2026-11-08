@@ -11802,3 +11802,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   10.0.26100.0. The VM stopped after. The item of TODO (static
   libraries built by Visual Studio, the target `x86_64-pc-windows-msvc`)
   is no longer blocked; its work is not done yet.
+- **D529 — The mapped standard input has no room for a text added to it
+  (2026-11-08).** Found by reading the representation of texts (the item
+  (6) of TODO, asked by the author): `room`, which tells whether the block
+  of a text given to `+` can hold what is added, took every pointer aligned
+  on 64 bytes but the empty block for a block of the allocator, and asked
+  `heap::usable` for its size. The standard input mapped from its file
+  (D257, 8 MiB or more) is aligned on its page, and the header written
+  before it holds only a class no block has (`u32::MAX`), its state 0:
+  `heap::usable` took it for a block freed twice. A program that read such
+  an input with `readStdinText()` and added a text to it ended on "invalid
+  free" once the allocator had served a block before (until then
+  `HEAP_MODE` is 0 and `room` answers 0: the same program without a first
+  allocation printed its result, which hid it). Now `room` answers 0 for
+  the mapped input (`mapped::owns`), and for a null pointer (the zero of a
+  type in the slots of the other variants of a sum type, where no text is
+  read; a test that costs nothing). The compiled test of D511 already
+  refused it (its class not below 16). Measured (the old and new binaries
+  of `json` and `strings`, 7 alternated runs, fixed frequency): every form
+  within -4.8 to +0.9 % (`bytes` -4.8 %, `startsWith` -3.2 %,
+  `stringify` -3.0 %: the place of the code; none slower than its
+  spread). Test `a_mapped_input_appended_to_after_an_allocation`
+  (`stdin.rs`: 8 MiB from a file then through a pipe, the same output;
+  without the change it ends on "invalid free").

@@ -1423,8 +1423,17 @@ fn usable_bytes(q: *mut u8) -> usize {
 
 fn room(p: *mut u8) -> usize {
     // only a block of the heap (aligned on 64 bytes) has room: not a literal
-    // of the program (D361), a line of `lines`, the empty string
-    if p == empty_ptr() || p as usize % 64 != 0 {
+    // of the program (D361), a line of `lines`, the empty string, the null
+    // string (the zero of a type, in the slots of the other variants of a
+    // value of a sum type)
+    if p.is_null() || p == empty_ptr() || p as usize % 64 != 0 {
+        return 0;
+    }
+    // nor the standard input mapped from its file (D257), whose header only
+    // holds a class no block has: read as a block, `heap::usable` took it
+    // for a block freed twice (D529)
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if mapped::owns(p) {
         return 0;
     }
     #[cfg(not(target_os = "wasi"))]
