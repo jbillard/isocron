@@ -1087,7 +1087,7 @@ fn literals_kept_without_a_copy() {
 }
 
 /// D368: a concatenation with a literal is written by the compiled code
-/// (the literals stored as constants, the texts by `isc_put_text`), not
+/// (the literals stored as constants, the texts by moves or `memcpy`), not
 /// by `isc_str_concat`; the copies of 33 to 64 bytes by two moves that
 /// overlap: texts of 0 to 80 bytes around literals, an accumulator grown by
 /// literals, replacements whose matches are 0 to 80 bytes apart; the text
@@ -1106,7 +1106,9 @@ fn concatenations_with_literals_written_by_the_code() {
     valgrind_clean(src, "concat_literals", &["1"]);
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     assert!(!ll.contains("call void @isc_str_concat"), "a concatenation with a literal given to the runtime");
-    assert!(ll.matches("call void @isc_put_text(").count() >= 5, "the texts not written by the compiled code");
+    // each text by moves here, a long one by `memcpy` of its length (D509)
+    let copies = ll.lines().filter(|l| l.contains("call void @llvm.memcpy.p0.p0.i64(") && l.trim_end().ends_with("i1 false)") && l.contains(", i64 %")).count();
+    assert!(copies >= 5, "the texts not written by the compiled code");
 }
 
 /// D369: `padStart` and `padEnd` of a text by a fill of one byte write the
@@ -1172,7 +1174,8 @@ fn short_texts_of_templates_by_masks() {
     for (name, isa) in [("short_parts", isc_codegen::Isa::Native), ("short_parts_avx2", isc_codegen::Isa::Avx2)] {
         let bin = compile_with(src, name, isc_codegen::Options { isa, ..isc_codegen::Options::default() });
         let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-        assert!(ll.contains("load i128, ptr") && ll.contains("call void @isc_put_text"), "{}: moves here, the runtime beyond", name);
+        let long = ll.lines().any(|l| l.contains("call void @llvm.memcpy.p0.p0.i64(") && l.contains(", i64 %"));
+        assert!(ll.contains("load i128, ptr") && long, "{}: moves here, `memcpy` beyond", name);
         let r = run_bin_threads(&bin, &[], Some(1));
         assert_eq!(r.code, 0, "{}", r.stderr);
         assert_eq!(r.stdout, want, "{}", name);
@@ -1218,14 +1221,36 @@ fn to_fixed_of_many_doubles() {
     assert!(r.stdout == want, "{:?}", r.stdout.lines().zip(want.lines()).find(|(a, b)| a != b));
 }
 
-/// D508: a text grown by appends of parts of every length from 0 to 40
-/// bytes and of the text of a call (`isc_str_append_n`, rule A, its block
-/// with room or a new one), the parts of at most 16 bytes copied by one
-/// move of 16: the interpreter's text, from 0 to 2000 appends, on 1 and 4
-/// threads.
+/// D508, D509: a text grown by appends of parts of every length, the
+/// interpreter's text from 0 to 2000 appends, on 1 and 4 threads. `acc +
+/// part` (`isc_str_append`, `append_parts`: a part of at most 16 bytes by
+/// one move of 16, D508), parts of 0 to 40 bytes; `acc + part + sep(i)`,
+/// texts only after the text given (written by the compiled code after
+/// `isc_str_reserve`, D509: no `isc_str_append_n`), parts of 0 to 100
+/// bytes (beyond 64 by `memcpy`).
 #[test]
 fn appends_of_parts_of_every_length() {
-    let src = "function sep(i: i64): string {
+    let two = "function grow(i: i64, n: i64, acc: string, src: string): string {
+    if (i == n) {
+        return acc;
+    }
+    const len = i % 41;
+    const at = (i * 7) % (src.length - 41);
+    return grow(i + 1, n, acc + src.slice(at, at + len), src);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const src = join(map(iota(200), (i) => `${i * 7919 % 1000}`), \"-\");
+    const r = grow(0, n, \"<\", src);
+    print(r.length);
+    print(r.slice(0, Math.min(300, r.length)));
+    print(r.slice(Math.max(0, r.length - 300), r.length));
+    print(sum(map(bytes(r), (c) => i64(c))));
+    return 0;
+}
+";
+    let three = "function sep(i: i64): string {
     return i % 3 == 0 ? \"|\" : (i % 3 == 1 ? \"<>\" : \"\");
 }
 
@@ -1233,8 +1258,8 @@ function grow(i: i64, n: i64, acc: string, src: string): string {
     if (i == n) {
         return acc;
     }
-    const len = i % 41;
-    const at = (i * 7) % (src.length - 41);
+    const len = i % 101;
+    const at = (i * 7) % (src.length - 101);
     return grow(i + 1, n, acc + src.slice(at, at + len) + sep(i), src);
 }
 
@@ -1249,12 +1274,17 @@ action main(args: string[k]): i32 {
     return 0;
 }
 ";
-    let bin = compile(src, "appends_every_length");
-    for n in ["0", "1", "17", "50", "2000"] {
-        let want = interp_ok(src, &[n]);
-        for t in [1, 4] {
-            let r = run_bin_threads(&bin, &[n], Some(t));
-            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+    for (name, src, call, not) in [("two", two, "@isc_str_append(", "@isc_str_reserve("), ("three", three, "@isc_str_reserve(", "@isc_str_append_n(")] {
+        let bin = compile(src, &format!("appends_every_length_{}", name));
+        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        assert!(ll.contains(&format!("call void {}", call)) || ll.contains(&format!("call ptr {}", call)), "{}: no call of {}", name, call);
+        assert!(!ll.contains(&format!("call void {}", not)) && !ll.contains(&format!("call ptr {}", not)), "{}: a call of {}", name, not);
+        for n in ["0", "1", "17", "50", "2000"] {
+            let want = interp_ok(src, &[n]);
+            for t in [1, 4] {
+                let r = run_bin_threads(&bin, &[n], Some(t));
+                assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} n {} {} threads: {}", name, n, t, r.stderr);
+            }
         }
     }
 }

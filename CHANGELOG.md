@@ -24,6 +24,10 @@
 
 ### The compiler
 
+* A chain of texts after an accumulator (`acc + a + b`) is written by the
+  compiled code, a long part by one call of `memcpy`: `json.quote` of an
+  escaped text 73.6 -> 66.6 ns, of a text of 300 bytes 89.6 -> 77.6
+  (D509).
 * A `scan` whose source reads several arrays by the index (several places
   that can fail) is read by vectors, a vector whose check fails computed
   again one element at a time (the same panics): 1.29 -> 0.24 ns an

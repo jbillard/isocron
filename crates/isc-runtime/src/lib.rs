@@ -1515,13 +1515,6 @@ pub unsafe extern "C" fn isc_str_reserve(p: *mut u8, n: i64, total: i64) -> *mut
     q
 }
 
-/// A text of `n` bytes of a template written at `dst` (D363): by moves
-/// (`copy_short`), its parts being short.
-#[no_mangle]
-pub unsafe extern "C" fn isc_put_text(dst: *mut u8, p: *const u8, n: i64) {
-    copy_short(p, dst, n as usize)
-}
-
 /// The text of an integer of a template written at `dst` (D363): its
 /// magnitude `mag`, its sign `neg`, its `n` bytes (the sign counted), in
 /// `width` bytes, the rest the fill `fs & 0xff`, before it when `fs` has

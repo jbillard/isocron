@@ -918,7 +918,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_to_case_into(ptr, ptr, i64, ptr, i64, i32)",
     "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
     "declare ptr @isc_str_reserve(ptr, i64, i64)",
-    "declare void @isc_put_text(ptr, ptr, i64)",
     "declare void @isc_put_int(ptr, i64, i64, i64, i64, i64)",
     "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
     "declare void @isc_str_append(ptr, ptr, i64, ptr, i64)",
@@ -11929,7 +11928,7 @@ impl<'p> Gen<'p> {
                 // and the `vzeroupper` before it, a third of `json.quote` of a
                 // name; a masked store of AVX-512 instead could not forward
                 // its bytes to the loads that read them back, `parseUrl`
-                // +5.7 %); longer, the runtime
+                // +5.7 %); longer, `memcpy`
                 P::Text(p, n) => {
                     let small = self.ins(format!("icmp ule i64 {}, 64", n));
                     let (lsmall, l32, lrest16, l16, l8, l4, l1, lrest8, lrest4, lrest1, lcall, lj) = (
@@ -11995,8 +11994,10 @@ impl<'p> Gen<'p> {
                         self.emit(format!("store i8 {}, ptr {}, align 1", c, dp));
                     }
                     self.br(&lj);
+                    // longer: `memcpy` called here (D509: through `isc_put_text`,
+                    // which called it, two calls a part)
                     self.block(&lcall);
-                    self.emit(format!("call void @isc_put_text(ptr {}, ptr {}, i64 {})", dst, p, n));
+                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, p, n));
                     self.br(&lj);
                     self.block(&lj);
                     n.clone()
@@ -12213,13 +12214,16 @@ impl<'p> Gen<'p> {
             }
         }
         // a concatenation with the text of an integer (D359) or a literal
-        // (D368): written by the compiled code, its literals as constants
+        // (D368): written by the compiled code, its literals as constants;
+        // texts after a left text given (D351) too (D509: `isc_str_append_n`
+        // summed its parts and copied each by a call, 36 % of `json.quote`
+        // of escaped texts)
         if op == S::Concat
-            && es.iter().any(|x| match &x.kind {
+            && (es.iter().any(|x| match &x.kind {
                 ExprKind::Var(t, _) => self.int_texts.contains_key(t) || self.lit_vars.contains_key(t),
                 ExprKind::StrLit(_) => x.ty == Type::Str,
                 _ => false,
-            })
+            }) || (es.len() >= 3 && matches!(es[0].kind, ExprKind::Var(_, Use::Move))))
         {
             let slot = self.stack_concats.get(&(e as *const Expr)).cloned();
             return self.concat_parts_built(es, slot);

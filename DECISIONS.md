@@ -11364,3 +11364,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (`map_stdin`), so a read past the page of a part does not fault there
     (the test passes with the check of the page removed). The check stays
     for the parts whose page may end a mapping (literals, lines).
+- **D509 — A chain of texts after a text given written by the compiled code
+  (2026-11-08).** Profile of `json.quote` of escaped texts after D508 (one
+  CPU at fixed frequency, 71.1 ns a text): the loop 43.4 %, `append_parts`
+  30.9 %, `isc_free` 9.8 %, `isc_str_reserve` 5.6 %, `isc_str_append_n`
+  4.7 %. `acc + s.slice(i, e) + escapeOf(c)` called `isc_str_append_n`
+  (its parts in memory, summed by a loop, each copied by a branch on its
+  length, the block's room read), where a chain with a literal or the text
+  of an integer is written by the compiled code (`concat_parts_built`,
+  D359, D363, D368: the total summed here, one `isc_str_reserve`, each
+  text of at most 64 bytes copied by moves that overlap, D478).
+  - Now a chain of at least three parts whose left text is given (moved,
+    D351) is written so too, texts only. A part longer than 64 bytes is
+    copied by `memcpy` called from the compiled code: through
+    `isc_put_text`, which called it, there were two calls a part
+    (`quote` of texts of 300 bytes +8 % in a first version, run without a
+    fixed frequency); `isc_put_text`, no longer called, removed from the
+    runtime, the tests that looked for it in the LLVM
+    (`concatenations_with_literals_written_by_the_code`,
+    `short_texts_of_templates_by_masks`) now look for the `memcpy` of a
+    length not known (suite 335 failed on them before).
+  - Measured (A/B of the binaries of the compilers of e40f850 and of this
+    change, 9 alternated runs, one CPU at fixed frequency): `quote.escaped`
+    73.62 -> 66.58 ns (-9.6 %), `quote` of texts of 300 bytes 89.56 ->
+    77.64 ns (-13.3 %); the other forms of `json` within -2.4 to +1.7 %;
+    `net` and `https` every form within the spread of its runs; `http`
+    every form but `parseUrl` +6.4 %: its loop the same machine code (no
+    call of an append in it), 2.9 KB further, the place of the code (D504;
+    the functions changed: `net.answers`, `http.exchange`,
+    `http.readResponse`, `http.serveActionLoop`, `http.request`, each by
+    the call of a long part, `request` by a chain written here). The ten
+    programs: the same code (their LLVM compared). `run.py` of `json` (5
+    runs of 200 rounds): `quote.escaped` 66.51 ns, 3.35 times its floor
+    (3.70 before).
+  - Test `appends_of_parts_of_every_length` (`strings.rs`) made two forms:
+    `acc + part` by `isc_str_append` (parts of 0 to 40 bytes, D508) and
+    `acc + part + sep(i)` written by the compiled code (no
+    `isc_str_append_n` in its LLVM; parts of 0 to 100 bytes), the
+    interpreter's text from 0 to 2000 appends on 1 and 4 threads. It fails
+    with moves of 8 bytes for the parts of 16, without the new rule (the
+    call of `isc_str_reserve` absent) and with `memcpy` a byte short
+    (mutations checked).
