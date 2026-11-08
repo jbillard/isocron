@@ -1458,3 +1458,40 @@ action main(args: string[k]): i32 {
     }
     valgrind_clean(src, "empty_texts", &["3"]);
 }
+
+/// D532: texts of 0 to 20 bytes that differ at each place, or not, or only
+/// by their length, compared (`==`, `!=`, `<`, `<=`, `>`, `>=`), sorted and
+/// used as keys of a map: their first 8 bytes decide without a call when
+/// they differ, the runtime otherwise; the same answers as the interpreter.
+#[test]
+fn comparisons_of_texts_by_their_first_bytes() {
+    let src = "function text(n: i64, at: i64, c: i64): string {
+    return stringOf(map(iota(n), (j) => j == at ? u8(c) : u8(97 + j % 3)));
+}
+
+action main(args: string[k]): i32 {
+    const m = parseI64(args[0]);
+    const ts = concat(map(iota(m * 21), (k) => text(k / 21, k % 21, 98)), map(iota(m), (n) => text(n, -1, 0)));
+    const n = ts.length;
+    print(count(iota(n * n), (k) => ts[k / n] == ts[k % n]));
+    print(count(iota(n * n), (k) => ts[k / n] != ts[k % n]));
+    print(count(iota(n * n), (k) => ts[k / n] < ts[k % n]));
+    print(count(iota(n * n), (k) => ts[k / n] <= ts[k % n]));
+    print(count(iota(n * n), (k) => ts[k / n] > ts[k % n]));
+    print(sum(map(iota(n * n), (k) => ts[k / n] >= ts[k % n] ? k % 7 : 0)));
+    const s = sort(ts);
+    print(s.slice(0, 30));
+    print(sum(map(iota(n), (k) => s[k].length * (k % 5))));
+    const keys = new Map(map(iota(n), (k) => [ts[k], k] as const));
+    print(sum(map(ts, (t) => keys.get(t) ?? -1)));
+    print(keys.get(\"abcabcabc\") ?? -1);
+    return 0;
+}
+";
+    let bin = compile(src, "text_comparisons");
+    for a in ["21"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+}

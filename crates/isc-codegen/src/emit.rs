@@ -12792,7 +12792,49 @@ impl<'p> Gen<'p> {
             S::Cmp(b) => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
-                let c = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
+                // decided without a call when it can be (D532): two lengths
+                // that differ for an equality; the first 8 bytes of two texts
+                // of 8 bytes or more when they differ (their order by the
+                // same bytes read in the order of the text)
+                let eq = matches!(b, BinOp::Eq | BinOp::Ne);
+                let (lw, lload, ldiff, lcall, ljoin) = (self.label(), self.label(), self.label(), self.label(), self.label());
+                let lfrom = self.current_label("entry");
+                let mut ins = Vec::new();
+                if eq {
+                    let lenne = self.ins(format!("icmp ne i64 {}, {}", n, m));
+                    self.cbr(&lenne, &ljoin, &lw);
+                    ins.push(("1".to_string(), lfrom.clone()));
+                } else {
+                    self.br(&lw);
+                }
+                self.block(&lw);
+                let a8 = self.ins(format!("icmp uge i64 {}, 8", n));
+                let b8 = self.ins(format!("icmp uge i64 {}, 8", m));
+                let both = self.ins(format!("and i1 {}, {}", a8, b8));
+                self.cbr(&both, &lload, &lcall);
+                self.block(&lload);
+                let x = self.ins(format!("load i64, ptr {}, align 1", p));
+                let y = self.ins(format!("load i64, ptr {}, align 1", q));
+                let differ = self.ins(format!("icmp ne i64 {}, {}", x, y));
+                self.cbr(&differ, &ldiff, &lcall);
+                self.block(&ldiff);
+                let cd = if eq {
+                    "1".to_string()
+                } else {
+                    self.decls.insert("declare i64 @llvm.bswap.i64(i64)".into());
+                    let sx = self.ins(format!("call i64 @llvm.bswap.i64(i64 {})", x));
+                    let sy = self.ins(format!("call i64 @llvm.bswap.i64(i64 {})", y));
+                    let below = self.ins(format!("icmp ult i64 {}, {}", sx, sy));
+                    self.ins(format!("select i1 {}, i32 -1, i32 1", below))
+                };
+                ins.push((cd, ldiff.clone()));
+                self.br(&ljoin);
+                self.block(&lcall);
+                let cc = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
+                ins.push((cc, self.current_label(&lcall)));
+                self.br(&ljoin);
+                self.block(&ljoin);
+                let c = self.ins(format!("phi i32 {}", ins.iter().map(|(x, l)| format!("[ {}, %{} ]", x, l)).collect::<Vec<_>>().join(", ")));
                 let pred = match b {
                     BinOp::Eq => "eq",
                     BinOp::Ne => "ne",

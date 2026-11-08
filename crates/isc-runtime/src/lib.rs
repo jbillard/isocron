@@ -3092,7 +3092,7 @@ pub unsafe extern "C" fn isc_argsort(out: *mut IscArray, p: *const u8, n: i64, k
             }
             _ => {
                 let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
-                bytes_of(a.ptr, a.len).cmp(bytes_of(b.ptr, b.len))
+                text_order(bytes_of(a.ptr, a.len), bytes_of(b.ptr, b.len))
             }
         }
     };
@@ -3165,12 +3165,54 @@ pub unsafe extern "C" fn isc_hash_find(p: *const u8, n: i64, q: *const i64, m: i
         let key = bytes_of(kp, kn);
         sem::hash_find(slots, sem::hash_bytes(key), |j| {
             let s = *(p as *const IscStr).add(j);
-            bytes_of(s.ptr, s.len) == key
+            text_same(bytes_of(s.ptr, s.len), key)
         })
     } else {
         let kw = kw as u64;
         sem::hash_find(slots, sem::hash_word(kw), |j| map_key_word(p, j, kind) == kw)
     }
+}
+
+/// The order of the bytes of two texts (D532): by their first 8 bytes read
+/// as one word when both have them and they differ, or their first 4,
+/// without a call of `memcmp`; else by all their bytes.
+#[inline(always)]
+fn text_order(x: &[u8], y: &[u8]) -> core::cmp::Ordering {
+    if x.len() >= 8 && y.len() >= 8 {
+        let u = u64::from_be_bytes(x[..8].try_into().unwrap());
+        let v = u64::from_be_bytes(y[..8].try_into().unwrap());
+        if u != v {
+            return u.cmp(&v);
+        }
+    } else if x.len() >= 4 && y.len() >= 4 {
+        // shorter texts by their first 4 bytes (the texts of numbers of
+        // `sorts`, 1 to 8 bytes)
+        let u = u32::from_be_bytes(x[..4].try_into().unwrap());
+        let v = u32::from_be_bytes(y[..4].try_into().unwrap());
+        if u != v {
+            return u.cmp(&v);
+        }
+    }
+    x.cmp(y)
+}
+
+/// The same bytes (D532): two texts of 4 to 16 bytes by two words each,
+/// overlapping, without a call of `memcmp`.
+#[inline(always)]
+fn text_same(x: &[u8], y: &[u8]) -> bool {
+    let n = x.len();
+    if n != y.len() {
+        return false;
+    }
+    if (8..=16).contains(&n) {
+        let w = |b: &[u8], k: usize| u64::from_le_bytes(b[k..k + 8].try_into().unwrap());
+        return w(x, 0) == w(y, 0) && w(x, n - 8) == w(y, n - 8);
+    }
+    if (4..8).contains(&n) {
+        let w = |b: &[u8], k: usize| u32::from_le_bytes(b[k..k + 4].try_into().unwrap());
+        return w(x, 0) == w(y, 0) && w(x, n - 4) == w(y, n - 4);
+    }
+    x == y
 }
 
 /// From this many numbers on, `argsort` sorts their keys by their bytes
@@ -3457,7 +3499,7 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
             },
             |i, j| {
                 let (a, b) = (at::<IscStr>(p, i), at::<IscStr>(p, j));
-                bytes_of(a.ptr, a.len) == bytes_of(b.ptr, b.len)
+                text_same(bytes_of(a.ptr, a.len), bytes_of(b.ptr, b.len))
             },
         ),
     };

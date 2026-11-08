@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* Texts compared by their first 8 (or 4) bytes before a call: `==` and `<` of texts -45 to -55 %, `sort` of texts -28 %, a key of text in a map -29 % (D532).
+
 * A program that added a text to a standard input of 8 MiB or more read from a file (mapped, D257) ended on "invalid free" when the allocator had served a block before: the mapped input has no room, it is copied (D529).
 
 ## 0.4.9 — 2026-11-08

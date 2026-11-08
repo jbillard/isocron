@@ -11915,3 +11915,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   bytes past the bytes of an empty slice (the address 1 that Rust gives
   it): the test `empty_texts_of_every_form` kept for every read past the
   bytes of a text (it passes with the old representation).
+- **D532 — Texts compared by their first bytes without a call
+  (2026-11-08).** What D531 showed was the gain of the first bytes of
+  texts: a comparison decided by a word, not by `memcmp`. Without the
+  layout of D530 (each text still its address and its length):
+  - the code generated for `==`, `!=`, `<`, `<=`, `>`, `>=` of two texts
+    (not literals, D301): two lengths that differ decide an equality; two
+    texts of 8 bytes or more, their first 8 bytes loaded as one word each,
+    decide when they differ (an order by those words with their bytes
+    swapped, the first byte the highest); `isc_str_cmp` otherwise;
+  - `argsort` of texts (`sort`, `sortBy` by a text): the first 8 bytes of
+    both as words (big-endian), else their first 4 when both have 4, else
+    all their bytes (`text_order`);
+  - the keys of texts of `$hashFind` and `group`: two of 4 to 16 bytes by
+    two words each that overlap, not `memcmp` (`text_same`).
+  Measured (the old and new binaries, 7 alternated runs, fixed frequency):
+  `equal` 4.94 -> 2.24 ns (-54.6 %), `less` 4.92 -> 2.72 ns (-44.7 %),
+  `get.string` 19.83 -> 14.08 ns (-29.0 %), `sort.string` 121.52 -> 87.56
+  ns (-27.9 %; 122 -> 124 with the words of 8 bytes alone, its texts of 1
+  to 8 bytes, hence the words of 4); every other form of `sorts`,
+  `strings`, `maps`, `json`, `http` and `sys` within its spread but
+  `parseI64.7` +3.4 %, whose code is the same (`isc_parse_i64` the same 58
+  instructions but the names of the crates in its calls, 192 bytes further,
+  both on a line of 64 bytes): the place of the code. The 17 groups before
+  the words of 4 bytes: no form slower past its spread, the ten programs
+  within -0.4 to +0.5 % (11 runs, the same outputs). Test
+  `comparisons_of_texts_by_their_first_bytes` (`strings.rs`: texts of 0
+  to 20 bytes that differ at each place or by their length, the six
+  comparisons, `sort`, the keys of a map, against the interpreter; with the
+  words compared without swapping their bytes it fails).
