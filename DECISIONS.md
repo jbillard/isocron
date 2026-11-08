@@ -11732,3 +11732,11 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   name removed. The commit of the release the last of `main` (D486); the
   steps of 0.4.3 (D449). The ten programs of the Benchmarks Game measured
   at 20fb492 (D521): nothing in `crates/` changed since but the version.
+- **D523 — The keys of an object of `json.parse` read once: rejected after
+  measure (2026-11-08).** `buildAny` reads each key twice (`keyAt`: its
+  bounds for the keys, the place of its value for the values). Tried: the
+  bounds and the place of each member made once into an array of tuples
+  of integers, both maps reading it. Measured (without a fixed frequency,
+  alternated runs): `parse` 356.6 -> 355.8 ns: the array of places, a
+  block made and freed for each object, costs what the second reading
+  saved. Not kept.
