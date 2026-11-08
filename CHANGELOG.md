@@ -5,7 +5,8 @@
 ### The language
 
 * `findIndex(x, p)`: the first index whose element satisfies `p`, or -1,
-  `p` not called past it; by vectors of 64 bytes when `p` cannot fail.
+  `p` not called past it; by vectors of 64 bytes when `p` cannot fail,
+  the first 8 bytes one at a time (`json.parse` -4 to -7 %, D512).
   The searches of `json` by it: `json.decode` 396 -> 346 ns a record,
   `json.parse` 789 -> 726, `json.quote` of a text of 300 bytes 330 -> 93
   (D505).

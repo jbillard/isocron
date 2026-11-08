@@ -8,20 +8,20 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
 | :-- | :-- | --: | --: | --: |
 | sorts | `sortBy.length` | 22.18 | 3.56 | 6.2 |
-| json | `parse` | 688.30 | 170.49 | 4.0 |
+| json | `parse` | 646.92 | 170.81 | 3.8 |
+| json | `decode` | 324.28 | 91.75 | 3.5 |
 | sys | `isAbsolute` | 2.00 | 0.57 | 3.5 |
-| json | `decode` | 316.68 | 92.01 | 3.4 |
 | sys | `dirname` | 8.55 | 2.89 | 3.0 |
-| json | `quote.escaped` | 56.64 | 19.83 | 2.9 |
+| json | `quote.escaped` | 57.59 | 19.89 | 2.9 |
 | http | `parseUrl` | 56.66 | 19.93 | 2.8 |
-| json | `quote.plain` | 4.65 | 1.65 | 2.8 |
+| json | `quote.plain` | 4.64 | 1.64 | 2.8 |
 | strings | `padStart` | 5.65 | 2.02 | 2.8 |
 | http | `httpDate` | 35.44 | 12.88 | 2.8 |
 | sha256 | `hex.32` | 7.17 | 2.63 | 2.7 |
 | numbers | `toFixed.2` | 49.44 | 19.16 | 2.6 |
 | time | `format` | 101.39 | 40.65 | 2.5 |
+| json | `stringify` | 276.16 | 114.71 | 2.4 |
 | http | `exchange.chunked64` | 48096.53 | 20317.21 | 2.4 |
-| json | `stringify` | 271.77 | 115.51 | 2.4 |
 | strings | `split.6` | 77.06 | 32.89 | 2.3 |
 | net | `resolve.hosts` | 4434.18 | 1951.84 | 2.3 |
 | maps | `get.i64` | 4.19 | 1.89 | 2.2 |
@@ -40,10 +40,10 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | arrays | `filter.count` | 1.33 | 0.74 | 1.8 |
 | maps | `get.string` | 20.15 | 11.48 | 1.8 |
 | sys | `env` | 19.43 | 11.33 | 1.7 |
+| json | `message` | 7.83 | 4.57 | 1.7 |
 | strings | `slice` | 2.09 | 1.23 | 1.7 |
 | sorts | `sort.i64` | 13.47 | 7.97 | 1.7 |
 | http | `header` | 18.96 | 11.36 | 1.7 |
-| json | `message` | 7.56 | 4.56 | 1.7 |
 | sys | `readText.4k` | 3243.70 | 1973.19 | 1.6 |
 | strings | `includes.3` | 20.52 | 12.49 | 1.6 |
 | http | `headerOf` | 18.52 | 11.34 | 1.6 |
@@ -61,7 +61,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sha256 | `digest.4k` | 25806.25 | 17468.88 | 1.5 |
 | maps | `countBy.i64` | 3.47 | 2.35 | 1.5 |
 | sorts | `sort.f64` | 25.74 | 17.51 | 1.5 |
-| time | `parseIso` | 34.36 | 23.50 | 1.5 |
+| time | `parseIso` | 34.35 | 23.50 | 1.5 |
 | control | `collatz` | 33.51 | 24.12 | 1.4 |
 | numbers | `toString.f64` | 61.69 | 44.72 | 1.4 |
 | sys | `extension` | 10.58 | 7.68 | 1.4 |
@@ -92,9 +92,9 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `concat` | 2.19 | 1.89 | 1.2 |
 | net | `setTimeout` | 471.52 | 410.08 | 1.1 |
 | time | `formatIso` | 54.64 | 48.40 | 1.1 |
-| json | `encode` | 89.99 | 80.42 | 1.1 |
 | arrays | `concat` | 0.38 | 0.34 | 1.1 |
 | io | `printBytes.byte` | 0.31 | 0.28 | 1.1 |
+| json | `encode` | 89.28 | 80.55 | 1.1 |
 | time | `toDateTime` | 3.70 | 3.35 | 1.1 |
 | net | `server.roundtrip.64` | 6987.22 | 6326.48 | 1.1 |
 | arrays | `zip.sum` | 0.11 | 0.10 | 1.1 |
@@ -106,7 +106,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | time | `weekday` | 8.25 | 7.76 | 1.1 |
 | time | `addMonths` | 3.88 | 3.65 | 1.1 |
 | sys | `isFile` | 665.99 | 627.04 | 1.1 |
-| time | `addDays` | 19.22 | 18.13 | 1.1 |
+| time | `addDays` | 19.21 | 18.13 | 1.1 |
 | net | `roundtrip.64` | 6374.75 | 6035.02 | 1.1 |
 | sys | `modified` | 652.74 | 618.86 | 1.1 |
 | sys | `makeDirs.removeAll` | 21345.46 | 20264.12 | 1.1 |

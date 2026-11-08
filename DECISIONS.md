@@ -11454,3 +11454,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the runtime), under the allocator of Isocron and of glibc (the suite
     runs `strings.rs` with both); with the size of a class read twice too
     large the program faults (mutation checked).
+- **D512 — A search of rule F over bytes tries its first 8 indices one at a
+  time; fewer indices than a vector, no checks before (2026-11-08).**
+  Profile of `json.decode` after D511 (one CPU at fixed frequency): the
+  building of the members 27.4 %, their check 22.8 %, the main loop 11.3
+  %, `codecField1` 8.2 %. In the building and the check, about 30 % of the
+  samples on the end of `stringEnd`: a vector of 64 bytes, its masks, the
+  first lane, then the byte found read again before the branch on it, a
+  chain of latency for keys and texts of 1 to 5 bytes found in the first
+  vector.
+  - Now a search of rule F over bytes (`size` 1) with at least a vector of
+    indices tests its first 8 (`FIRST_SCALAR`) one at a time, their reads
+    checked at both ends before, then whole vectors from where it stopped
+    (while one fits before `n`), then the rest one at a time. A search of
+    fewer indices than a vector goes to the loop one at a time at once,
+    without the checks of the reads at both ends.
+  - A first version (the 8 first indices of any search of bytes, the
+    checks at both ends for short ones too): `parse` -4.6 and -4.7 %,
+    `quote.escaped` -6.6 and -7.6 %, `decode` +0.2 and +4.7 % (functions
+    aligned on 128 and 256 bytes): `codecField1` 89 -> 145 samples (its
+    searches of a backslash in keys of 1 to 4 bytes, the checks at both
+    ends and two loops). Not kept.
+  - Measured (A/B of the binaries of the compilers of 7fc0ee0 and of this
+    change, 9 alternated runs, one CPU at fixed frequency, the functions
+    aligned on 64, 128 and 256 bytes): `parse` -6.9, -4.2, -5.5 %; `decode`
+    +2.0, -0.8, +0.1 %; `quote.escaped` +0.9, +1.1, +0.1 %; `stringify`
+    +1.2, +0.3, +1.8 %; the other forms within -0.9 to +2.3 %. The ten
+    programs and the other groups: the same IR (`json` alone uses
+    `findIndex`). `run.py` of `json` (5 runs of 200 rounds): `parse`
+    646.9 ns, 3.79 times its floor (4.04 before).
+  - The test `find_index_of_every_kind_of_element` (D505) fails with the
+    index found by the first loop off by one (mutation checked).

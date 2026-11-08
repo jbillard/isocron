@@ -179,6 +179,10 @@ const UNROLL_FULL: i64 = 16;
 const UNROLL_IDS: u64 = 1 << 20;
 /// Width of the element-wise loops (speed only, never results).
 pub const MAP_WIDTH: u32 = 16;
+
+/// The indices a search of rule F tests one at a time before its vectors
+/// (D512).
+const FIRST_SCALAR: i64 = 8;
 /// Chunks per thread of a `map` whose elements are loops (D121, D143).
 const HEAVY_CHUNKS: i64 = 8;
 
@@ -10046,6 +10050,13 @@ impl<'p> Gen<'p> {
         let bytes = if BYTE_MASKS.with(|b| b.get()) { 64 } else { 32 };
         let w = (bytes / size) as u32;
         if indexes == reads.len() && safe_cond_in(c, true) && w > 1 && !self.opts.isa.is_wasm() {
+            // fewer indices than a vector: one at a time at once, without
+            // the checks of the reads at both ends (D512: the searches of a
+            // backslash in the keys of a few bytes of `json.decode`)
+            let lcheck = self.label();
+            let wide = self.ins(format!("icmp sge i64 {}, {}", n, w));
+            self.cbr(&wide, &lcheck, &lscalar);
+            self.block(&lcheck);
             let some = self.ins(format!("icmp sgt i64 {}, 0", n));
             let ok = if reads.is_empty() {
                 some
@@ -10056,11 +10067,45 @@ impl<'p> Gen<'p> {
             let (lvec, lhead, lbody, lhit, lnext, ltail) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
             self.cbr(&ok, &lvec, &lscalar);
             self.block(&lvec);
-            let full = self.ins(format!("and i64 {}, -{}", n, w));
-            self.br(&lhead);
+            // the first FIRST_SCALAR indices one at a time, in bounds (their
+            // reads checked at both ends): a short search ends there, before
+            // the latency of a vector, its mask and its first lane (D512:
+            // the end of a key or a text of a few bytes of `json.decode`, a
+            // vector then the byte found read again, 30 % of the building
+            // of its members)
+            let (lpre, lpbody, lphit, lpnext) = (self.label(), self.label(), self.label(), self.label());
+            let first = if size == 1 { FIRST_SCALAR } else { 0 };
+            let pre_end = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, first));
+            self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".to_string());
+            let last = self.ins(format!("sub i64 {}, {}", n, w));
+            self.br(&lpre);
+            self.block(&lpre);
+            let pi = self.ins(format!("load i64, ptr {}", at));
+            let pmore = self.ins(format!("icmp slt i64 {}, {}", pi, pre_end));
+            self.cbr(&pmore, &lpbody, &lhead);
+            self.block(&lpbody);
+            for (_, k) in &reads {
+                self.prechecked.insert(*k as *const Expr);
+            }
+            self.bind(a, iv.clone());
+            self.bind(j, v(pi.clone(), "i64"));
+            let pv = self.ex(c, 1);
+            for (_, k) in &reads {
+                self.prechecked.remove(&(*k as *const Expr));
+            }
+            let pv = pv?;
+            self.cbr(&pv.r, &lphit, &lpnext);
+            self.block(&lphit);
+            self.emit(format!("store i64 {}, ptr {}", pi, acc));
+            self.br(&ljoin);
+            self.block(&lpnext);
+            let pn = self.ins(format!("add i64 {}, 1", pi));
+            self.emit(format!("store i64 {}, ptr {}", pn, at));
+            self.br(&lpre);
+            // then whole vectors from there, while one fits before `n`
             self.block(&lhead);
             let i = self.ins(format!("load i64, ptr {}", at));
-            let more = self.ins(format!("icmp slt i64 {}, {}", i, full));
+            let more = self.ins(format!("icmp sle i64 {}, {}", i, last));
             self.cbr(&more, &lbody, &ltail);
             self.block(&lbody);
             for (_, k) in &reads {
