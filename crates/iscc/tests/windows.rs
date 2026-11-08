@@ -395,7 +395,8 @@ impl Drop for Servers {
 /// the real VM: the pair of programs of `data/std_https_pair_*.isc` (a
 /// script of `cmd` starts the server, then the client), compiled, then
 /// interpreted by `$ISC_WINDOWS_ISCC` when it is given; certificates made
-/// by the test (EC); the same outputs as the pair on Linux.
+/// by the test (EC); the same outputs as the pair on Linux; its key in the
+/// store of the machine while it serves, removed after it (D485).
 #[test]
 fn https_server_on_windows() {
     let Some(runner) = runner() else {
@@ -448,11 +449,19 @@ fn https_server_on_windows() {
         "param([int]$port)\r\n$s = Get-Date\r\nwhile (((Get-Date) - $s).TotalSeconds -lt 60) {\r\n  try { $c = New-Object System.Net.Sockets.TcpClient; $c.Connect('127.0.0.1', $port); $c.Close(); exit 0 } catch { Start-Sleep -Milliseconds 100 }\r\n}\r\nexit 1\r\n",
     )
     .unwrap();
+    // D485: the key of the server in the store of the machine while it
+    // serves (one file more in its folder), removed when it ends (as many
+    // files as before); the user of the machine of the tests may write there.
+    // `/a-d`: the files of keys are hidden and of the system, which `dir`
+    // leaves out by default
+    let count = "for /f %%c in ('dir /b /a-d C:\\ProgramData\\Microsoft\\Crypto\\Keys 2^>nul ^| find /c /v \"\"') do set";
+    let keys = "set /a plus=before+1\r\nif \"%during%\"==\"%plus%\" (echo a key of the machine while serving) else (echo keys of the machine: %before% then %during% while serving)\r\nif \"%before%\"==\"%after%\" (echo keys of the machine as before) else (echo keys of the machine: %before% then %after%)\r\n";
+    let want = format!("{}a key of the machine while serving\nkeys of the machine as before\n", want);
     for (name, s, c) in ways {
         // the server in the background, its output in a file (written at
         // its end), the client when it listens
         let script = format!(
-            "@echo off\r\nstart \"\" /b cmd /c \"{} 47970 server.pem server.key 3 > server.txt 2>&1\"\r\npowershell -NoProfile -ExecutionPolicy Bypass -File wait.ps1 47970\r\n{} 47970 ca.pem other.pem\r\nping -n 3 127.0.0.1 > nul\r\ntype server.txt\r\nexit /b 0\r\n",
+            "@echo off\r\n{count} before=%%c\r\nstart \"\" /b cmd /c \"{} 47970 server.pem server.key 3 > server.txt 2>&1\"\r\npowershell -NoProfile -ExecutionPolicy Bypass -File wait.ps1 47970\r\n{count} during=%%c\r\n{} 47970 ca.pem other.pem\r\nping -n 3 127.0.0.1 > nul\r\ntype server.txt\r\n{count} after=%%c\r\n{keys}exit /b 0\r\n",
             s, c
         );
         std::fs::write(d.join("pair.cmd"), script).unwrap();

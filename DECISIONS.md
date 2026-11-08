@@ -10666,15 +10666,65 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the others within 1 ms). `results/benchmarks_game.md`,
   `benchmarks_game.tsv`, `floors.md`, `floors_isocron.tsv`, the table of
   the README and its figure made again from these lines.
-- **D484 — Release 0.4.6 (2026-11-08).** After 0.4.5: D469 to D483, a
+- **D484 — Release 0.4.6 (2026-11-08).** After 0.4.5: D469 to D485, a
   search from the end for texts (`lastIndexOf`, D482), the short texts of
   a template copied in its code (D478), integers padded by zeros from the
   table of pairs (D477), `parseUrl` by the bytes of its scheme (D472);
   measures that explain `json.parse` and `json.decode` (D471) and the two
   gaps of D432 and D433 (D475); three leads rejected after measure, their
-  guards kept as tests (D474, D479, D481). No name removed; one method
-  added. The steps of 0.4.3 (D449): the Windows tests in the VM with the
-  `iscc.exe` of the release's sources, the archives built from those
-  sources in the images of the releases, tried before they are published.
-  The ten programs of the Benchmarks Game measured at 543d932 (D483);
-  nothing in `crates/` changed since but the version.
+  guards kept as tests (D474, D479, D481); the key of a server of HTTPS
+  on Windows in the store of the machine (D485). No name removed; one
+  method added. The steps of 0.4.3 (D449): the Windows tests in the VM
+  with the `iscc.exe` of the release's sources, the archives built from
+  those sources in the images of the releases, tried before they are
+  published. The ten programs of the Benchmarks Game measured at 543d932
+  (D483); nothing in `crates/` changed since but the version and the code
+  of TLS for Windows (`mod schannel`, D485), which they do not reach.
+- **D485 — The key of a server of HTTPS on Windows in the store of the
+  machine (2026-11-08).** The Windows tests of 0.4.6 (the `iscc.exe` of
+  8541507, the VM just started) failed on `https_server_on_windows`:
+  `serve failed: tls: the certificate or the key of the server:
+  0x8009030d of SChannel`, in the log of the system the event 36870 ("a
+  fatal error occurred when attempting to access the TLS server credential
+  private key ... the internal error state is 10001"), as once at D365,
+  where it was left unexplained.
+  - Measured in the VM: the whole file of the Windows tests at once after
+    a start of the VM failed 3 times of 3; the pair alone, started after a
+    first PowerShell (59 to 63 s after the start), 6 of 6 passed; the
+    client of the tests then the pair, after 90 s, with `KeyIso` started
+    by hand, 4 of 4 passed; the pair alone at once when `ssh` answers,
+    3 of 3 failed (started 34.7 s after the start, refused 1.0 s later).
+    The log of the starts of the night (00:28 to 01:22, the clock of the
+    VM): the 7 failures from 35.2 to 58.1 s after a start, from 9.9 s
+    before to 6.2 s after the session of the user opened with its password
+    by `AutoAdminLogon` (event 4624 of type 2, 38.7 to 62.1 s after the
+    start); no failure of a server started later.
+    Started 1.76 s after that session (seen by `quser`), refused; 1.79 s
+    after, served.
+  - So `lsass`, where SChannel uses the key of a server (D343), reads a
+    key of the store of the user (CNG, protected by DPAPI with the secret
+    of the user) only a few seconds after a session of that user opened
+    with its password, more under load (6.2 s while the 14 tests ran); a
+    session of `ssh` by a key (type 3) gives no password. A server started
+    by `ssh` with a key, or by a task, on a machine where the user has no
+    such session, was refused.
+  - Now the key is imported into the store of the machine
+    (`CRYPT_MACHINE_KEYSET`, protected by the DPAPI of the system), into
+    that of the user when the process may not write there, and removed by
+    `NCRYPT_MACHINE_KEY_FLAG` when it is the machine's; a refusal of a key
+    of the user says that it needs a session opened with the password.
+    Measured: a server with the key of the machine started at once when
+    `ssh` answers, 4.2 and 5.6 s before the session of the user, served,
+    no event 36870; the folder of the keys of the machine 3 files, 4 while
+    it serves, 3 after; the whole file of the Windows tests at once after a
+    start of the VM, 14 passed, no event 36870 (twice, the second with the
+    count of the test below).
+  - Test: `https_server_on_windows` counts the files of the keys of the
+    machine before, while and after the server (`dir /a-d`: they are
+    hidden files of the system; without it the count was 0): one more,
+    then as before. With the key not removed (its flag of the machine
+    dropped) it fails, `keys of the machine: 3 then 4`; with the key in the
+    store of the user, `4 then 4 while serving` (the key left by the first
+    removed from the VM after; three keys of the machine of 2026-11-05
+    20:33 to 20:35, probably of the trials of D343, left there).
+  - 0.4.6, not yet published, takes this change (D484, its notes).

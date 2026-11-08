@@ -793,6 +793,7 @@ mod schannel {
     const CERT_CHAIN_POLICY_SSL: usize = 4;
     const AUTHTYPE_SERVER: u32 = 2;
     const CERT_KEY_PROV_INFO_PROP_ID: u32 = 2;
+    const NCRYPT_MACHINE_KEY_FLAG: u32 = 0x20;
     const WSAEWOULDBLOCK: c_int = 10035;
     const POLLWRNORM: i16 = 0x0010;
 
@@ -1132,13 +1133,18 @@ mod schannel {
     /// process of the system, `lsass`, which uses the keys that this import
     /// makes; a key that `NCryptImportKey` makes and that this process can
     /// use, it refuses: `0x8009030d`, D343), the container of the key
-    /// removed with the server.
+    /// removed with the server. The key in the store of the machine when
+    /// the process may write there, else in the store of the user (D485:
+    /// `lsass` reads a key of the user by the secret of DPAPI of its
+    /// session opened with its password; a server started before such a
+    /// session, by `ssh` with a key or by a task, was refused, `0x8009030d`).
     struct Server {
         cred: Handle,
         cert: *const CertContext,
         store: *mut c_void,
         provider: Vec<u16>,
         container: Vec<u16>,
+        machine: bool,
     }
 
     extern "system" {
@@ -1164,15 +1170,15 @@ mod schannel {
     }
 
     /// The key of the container `container` of the provider of keys
-    /// `provider` removed.
-    fn remove_key(provider: &[u16], container: &[u16]) {
+    /// `provider` removed, a key of the machine or of the user.
+    fn remove_key(provider: &[u16], container: &[u16], machine: bool) {
         // SAFETY: the provider and the key opened, the key deleted (which
         // frees it), the provider freed
         unsafe {
             let mut prov = 0usize;
             if NCryptOpenStorageProvider(&mut prov, provider.as_ptr(), 0) == 0 {
                 let mut k = 0usize;
-                if NCryptOpenKey(prov, &mut k, container.as_ptr(), 0, 0) == 0 {
+                if NCryptOpenKey(prov, &mut k, container.as_ptr(), 0, if machine { NCRYPT_MACHINE_KEY_FLAG } else { 0 }) == 0 {
                     NCryptDeleteKey(k, 0);
                 }
                 NCryptFreeObject(prov);
@@ -1187,12 +1193,20 @@ mod schannel {
         let Some(der_key) = keys.first() else { return Err((TLS_FAULT, String::from("the certificate or the key of the server: no key of PKCS #8 (BEGIN PRIVATE KEY) in the PEM text"))) };
         let p = pfx(der_cert, der_key);
         const PKCS12_PREFER_CNG_KSP: u32 = 0x100;
+        const CRYPT_MACHINE_KEYSET: u32 = 0x20;
         // SAFETY: each call on the objects made just before, each freed on
         // the paths that fail
         unsafe {
             let blob: [usize; 2] = [p.len(), p.as_ptr() as usize];
             let empty = wide("");
-            let store = PFXImportCertStore(&blob, empty.as_ptr(), PKCS12_PREFER_CNG_KSP);
+            // the store of the machine first (D485), that of the user when
+            // the process may not write there
+            let mut machine = true;
+            let mut store = PFXImportCertStore(&blob, empty.as_ptr(), PKCS12_PREFER_CNG_KSP | CRYPT_MACHINE_KEYSET);
+            if store.is_null() {
+                machine = false;
+                store = PFXImportCertStore(&blob, empty.as_ptr(), PKCS12_PREFER_CNG_KSP);
+            }
             if store.is_null() {
                 return Err((TLS_FAULT, String::from("the certificate or the key of the server: the certificate and the key do not go together")));
             }
@@ -1231,10 +1245,13 @@ mod schannel {
             if r != SEC_E_OK {
                 CertFreeCertificateContext(c);
                 CertCloseStore(store, 0);
-                remove_key(&provider, &container);
-                return Err((TLS_FAULT, alloc::format!("the certificate or the key of the server: 0x{:08x} of SChannel", r as u32)));
+                remove_key(&provider, &container, machine);
+                // a key of the user: refused before a session of the user
+                // opened with its password (D485)
+                let why = if !machine && r as u32 == 0x8009030d { " (a key of the user, read by SChannel once the user has a session opened with its password)" } else { "" };
+                return Err((TLS_FAULT, alloc::format!("the certificate or the key of the server: 0x{:08x} of SChannel{}", r as u32, why)));
             }
-            let s = alloc::boxed::Box::new(Server { cred, cert: c, store, provider, container });
+            let s = alloc::boxed::Box::new(Server { cred, cert: c, store, provider, container, machine });
             Ok(ServerCtx(alloc::boxed::Box::into_raw(s) as usize))
         }
     }
@@ -1247,7 +1264,7 @@ mod schannel {
             CertFreeCertificateContext(s.cert);
             CertCloseStore(s.store, 0);
             // the key and its container removed
-            remove_key(&s.provider, &s.container);
+            remove_key(&s.provider, &s.container, s.machine);
         }
     }
 

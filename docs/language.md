@@ -3176,7 +3176,9 @@ the PEM text `ca` (a server of one's own). `serveTls(port, cert, key,
 handler)` and `serveTlsOn(l, cert, key, handler, limit)` are the server of
 `http` over TLS, the certificate and the private key in PEM (the key of
 PKCS #8, `BEGIN PRIVATE KEY`; under Windows it is put in the store of
-keys of the user while the server runs, removed when it closes).
+keys of the machine while the server runs, in that of the user when the
+program may not write there, removed when it closes: SChannel reads a key
+of the user only once that user has a session opened with its password).
 WebAssembly has no sockets: a program that reaches TLS is refused when
 built for it.
 

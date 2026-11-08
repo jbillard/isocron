@@ -22,6 +22,10 @@ results.
 
 ### The library
 
+* An HTTPS server on Windows keeps its key in the store of the machine
+  when it may: started before a session of its user opened with a
+  password (by `ssh` with a key, a task, the first seconds after a start),
+  SChannel refused the key of the user, `0x8009030d` (D485).
 * `path.basename` -20 %, `path.extension` -14 %: the last `/` found by
   `lastIndexOf` (D482).
 * `http.parseUrl` tells its scheme by its bytes, without a text in lower
