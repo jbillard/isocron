@@ -101,7 +101,7 @@
 - [x] `extern` (SPEC section 12, D125)
 - [x] A `map` building arrays of arrays (D126)
 - [x] String literals and comparison (not in SPEC v0's grammar: part 3; D134)
-- [ ] The ARM64 target (SPEC section 1: "x86-64, then ARM64"; not a phase of stage 2)
+- [x] (Set aside at the author's word, D540: x86-64 only) The ARM64 target (SPEC section 1: "x86-64, then ARM64"; not a phase of stage 2)
 - [x] Part 3 (designs decided provisionally in D133, to be confirmed by the author) (decided for v1, SPEC section 16, D161)
   - [x] Strings: literals, `++`, order by bytes, `len`, `bytes`, `string_of`, `to_string`, `parse_f64`; owned and freed as arrays; `reduce` and `scan` of owned values (D134)
   - [x] Text input/output: `read_text`, `write_text`, `lines`, `split`, `trim`, `join`; `len` of arrays (D135)
@@ -339,7 +339,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] The start of the programs, their threads (`clone`) and their thread-local storage, static programs without glibc (`isc_start`); the glibc kept for the programs that declare C functions (D289)
   - [ ] The tests of the allocator in C (`tests/c/heap_stress.c`, `heap_double_free.c`) rewritten in Rust or Isocron; a mode of checks of the allocator (leaks, uses after free) so that the static programs are checked as Valgrind checks those of glibc
   - [x] n-body static against glibc measured again: +0.06 % [+0.06, +0.07] in one run of 11 rounds, then -0.04 % [-0.93, +0.24] (15 rounds) and -0.03 % [-1.07, +0.00] (31 rounds): no loss (D289)
-  - [ ] WASI without wasi-libc; Windows with `kernel32` only
+  - [ ] WASI without wasi-libc (D540, step 3); Windows with `kernel32` only: done (D541)
 - [x] The step HTTPS of the standard library decided again: the TLS of the system as the goal of 2026-11-05 asks (SChannel, OpenSSL loaded at run time), confined to one module of the runtime, only for the programs that import `https` (D328)
 - [ ] The primitives of a runtime written in Isocron designed in SPEC: typed system calls on arrays, bounded regions of memory, atomics, in a module of the system only, checked by the compiler (D290); then the pure functions of the runtime moved to Isocron one by one, each kept in Rust while its Isocron version is slower; then the allocator, the pool and the start
 - [ ] The generated code checked as the IR is (D96 checks the ownership of the IR; nothing checks the LLVM code made from it): a fault of the code generator or of the runtime is a fault of segmentation, as in Rust a fault of `rustc` or of `unsafe`; found by measure on 2026-11-08 (D530, a read of 16 bytes at the address Rust gives an empty slice). The memory reads past a text's bytes kept in its page listed and each tested with an empty text and a text at the end of a page
@@ -432,3 +432,12 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.4.7: maps by hashes, numbers sorted by their bytes, `toFixed`, `print` of integers, a `map` of a zip, the audit of every group of forms (D487 to D499, D500)
 - [x] Release 0.4.8: `findIndex` (rule F), texts appended by the compiled code, a tuple of an `if` taken apart, a `scan` of several reads by vectors, the index of `json` by sums by prefix (D501 to D513, D514)
 - [x] Release 0.4.9: the functions too large to be inlined decided one at a time, no literal given to `isc_free`, the maps of a few heavy elements made where they are; `json.parse` and `json.decode` below 3 times their floors (D515 to D521, D522)
+
+## The targets first (the author's decision, 2026-11-08, D540)
+
+ARM64 set aside; the targets before the rest of this list, in this order:
+
+- [x] (Done, D541: a hello imports 47 functions of `kernel32` and 2 of the synchronization API set, a start about 35 % faster) 1. Windows with the system alone: no C runtime of MinGW (its start files, `msvcrt`, `libgcc`, `mingwex`); an entry of the runtime that reads the command line by the rules of Windows, the six functions of the C library the runtime calls (`strlen`, `getenv`, `exit`, `abort`, `_aligned_malloc`, `_aligned_free`) over `kernel32`, the functions of memory of `isc-mem`; the DLLs of `net` and `https` (`ws2_32`, `secur32`, `crypt32`, `ncrypt`) loaded from `System32` at their first use (a hello imports 7 DLLs today, 4 of them unused: the linker drops their functions, not their imports); the programs that link C libraries (`--link`) keep MinGW's C runtime, as glibc on Linux (D289)
+- [ ] 2. The target `x86_64-pc-windows-msvc` (the item of the performance section): the runtime of step 1, linked by LLD as COFF, the static libraries of Visual Studio, the helpers they need without a C runtime (`__security_check_cookie`, `__chkstk`, `_fltused`) from the runtime; Microsoft's C runtime linked only when a library given by `--link` needs it, from the Build Tools of the machine (never shipped)
+- [ ] 3. WASI without wasi-libc: the functions of WASI preview 1 called directly, the runtime's own `_start`, its heap over `memory.grow`, the threads of wasi-threads without pthread
+- [ ] 4. Linux: a static program checked at its build for its relocations (the item of the trusted base), a mode of checks of the allocator (the item of its tests in C)

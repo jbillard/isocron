@@ -3443,11 +3443,18 @@ iscc completions bash|zsh|fish              the completion of the shell
   CPU, or `--isa`): a console program with threads, reading and writing its
   files and standard streams as bytes (no `\r\n` added), its errors and
   panics with the messages of Linux. Its stack, and that of the threads, as
-  on Linux. Linking uses `rust-lld` (the Rust target `x86_64-pc-windows-gnu`,
-  `rustup target add x86_64-pc-windows-gnu`) and the start files and
-  import libraries of MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian
-  packages `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the
-  program needs no DLL beyond those of Windows.
+  on Linux. The program has no C library: it starts in the runtime, reads
+  its arguments and its environment from Windows in UTF-16 (any character,
+  whatever the code page), and imports only `kernel32` (and the
+  synchronization API set of the system); the DLLs of the network and of
+  TLS are loaded from the directory of the system at their first use. A
+  program that declares C functions or links libraries (`--link`) is
+  linked with the start files and the C runtime of MinGW-w64 (`msvcrt`)
+  instead. Linking uses `rust-lld` (the Rust target `x86_64-pc-windows-gnu`,
+  `rustup target add x86_64-pc-windows-gnu`) and the import libraries of
+  MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian packages
+  `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the program
+  needs no DLL beyond those of Windows.
 * `iscc` also runs on Windows (`iscc.exe`): there, `build` writes a
   Windows executable by default (`<file>.exe`). `run` calls the C
   functions of Windows (`--link name` loads `name.dll`), the errors of files
@@ -3458,7 +3465,8 @@ iscc completions bash|zsh|fish              the completion of the shell
   executable without a C library (its start, its threads and its functions
   of memory are the runtime's), unless it declares C functions: then it is
   linked with glibc's start files and the `libc.so.6` of the machine, as
-  with `cc`; MinGW-w64 for Windows; WASI. An `iscc` built from the sources
+  with `cc`; the same on Windows (`kernel32` alone, MinGW-w64's C runtime
+  for the programs with C); WASI. An `iscc` built from the sources
   without `ISC_LLVM_STATIC` uses the LLVM 21 shared library and the linkers
   of the Rust toolchain or of the system (`rust-lld` for the static programs,
   Windows and WebAssembly; `cc`, or `$ISC_CC`, for the programs with C).

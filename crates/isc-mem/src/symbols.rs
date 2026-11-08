@@ -145,3 +145,21 @@ pub unsafe extern "C" fn strlen(s: *const c_char) -> usize {
     // SAFETY: the same contract
     unsafe { crate::length(s as *const u8) }
 }
+
+/// `wcslen` under Windows (D541), which LLVM calls for the loops that read
+/// a string of UTF-16 up to its zero (the command line and the environment
+/// of the runtime): its units before the first zero one, read one at a time
+/// by volatile reads, which LLVM does not turn back into a call of itself.
+///
+/// # Safety
+/// `s` is a string of 16-bit units ending with a zero unit.
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn wcslen(s: *const u16) -> usize {
+    let mut n = 0;
+    // SAFETY: the units up to the zero one are readable (the contract)
+    while unsafe { s.add(n).read_volatile() } != 0 {
+        n += 1;
+    }
+    n
+}

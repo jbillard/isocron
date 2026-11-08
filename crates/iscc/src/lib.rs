@@ -49,6 +49,37 @@ fn with_glibc(p: &isc_ir::Program, opts: &BuildOptions) -> bool {
         || std::env::var("ISC_CC").is_ok()
 }
 
+/// A program for Windows linked with MinGW's C runtime (D541): one that
+/// declares C functions or links libraries, whose C code may need it.
+fn windows_c_runtime(p: &isc_ir::Program, opts: &BuildOptions) -> bool {
+    !p.externs.is_empty() || !opts.link.is_empty()
+}
+
+/// What MinGW's start files gave a program for Windows, for one that starts
+/// without them (D541): `__main`, which LLVM calls at the start of `main`
+/// for MinGW (there, the constructors of C, here none), `_Unwind_Resume`,
+/// which the precompiled `alloc` of Rust refers to and never calls (the
+/// runtime does not unwind; there, `libgcc_eh`'s), and the directory
+/// of the thread-local storage that the loader of Windows reads
+/// (`_tls_used`, its data from `_tls_start` to `_tls_end`, the variables of
+/// the generated code between them; no callback), as `tlssup.c` of
+/// MinGW-w64.
+const WINDOWS_START_IR: &str = r#"
+define void @__main() {
+  ret void
+}
+define void @_Unwind_Resume(ptr %e) noreturn nounwind {
+  call void asm sideeffect "ud2", ""()
+  unreachable
+}
+@_tls_index = global i32 0
+@_tls_start = global i8 0, section ".tls"
+@_tls_end = global i8 0, section ".tls$ZZZ"
+@__xl_z = constant ptr null, section ".CRT$XLZ"
+@_tls_used = constant { ptr, ptr, ptr, ptr, i32, i32 } { ptr @_tls_start, ptr @_tls_end, ptr @_tls_index, ptr @__xl_z, i32 0, i32 0 }, section ".rdata$T"
+@llvm.used = appending global [1 x ptr] [ptr @_tls_used], section "llvm.metadata"
+"#;
+
 /// Compiles the IR to a native executable.
 pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     // a primitive of the system that the target lacks (D324)
@@ -63,7 +94,13 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
             ));
         }
     }
-    let ir = isc_codegen::emit_with(p, &opts.codegen)?;
+    let mut ir = isc_codegen::emit_with(p, &opts.codegen)?;
+    // a program for Windows starts without a C library unless it calls C
+    // (D541): what MinGW's start files gave it then comes with its code
+    let own_start = opts.codegen.windows && !opts.codegen.isa.is_wasm() && !windows_c_runtime(p, opts);
+    if own_start {
+        ir.push_str(WINDOWS_START_IR);
+    }
     if let Some(f) = &opts.emit_llvm {
         std::fs::write(f, &ir).map_err(|e| format!("cannot write `{}`: {}", f.display(), e))?;
     }
@@ -107,7 +144,7 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
         }
     };
     let linked = if windows {
-        link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link)
+        link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link, own_start)
     } else if wasm {
         link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link)
     } else if !with_glibc(p, opts) {
@@ -290,7 +327,10 @@ fn lib_arg(l: &str) -> std::ffi::OsString {
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
-fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
+    if own_start {
+        return link_windows_alone(obj, rt, out, debug);
+    }
     let tmp = out.with_extension("mingw");
     let (lib, gcc) = if MINGW_FILES.is_empty() {
         mingw_dirs()?
@@ -311,6 +351,40 @@ fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String])
     }
     a.push("--end-group".into());
     a.push(gcc.join("crtend.o").into());
+    if !debug {
+        a.push("-s".into());
+    }
+    let r = run_linker("ld.lld", "gnu", a, &windows_linker);
+    if !MINGW_FILES.is_empty() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    r
+}
+
+/// Links a program for Windows that starts without a C library (D541): its
+/// entry `isc_win_start` of the runtime, `kernel32` and the synchronization
+/// API set only (their import libraries, from MinGW-w64: no code of MinGW
+/// in the program); a console executable whose main thread has a stack of
+/// 8 MiB.
+fn link_windows_alone(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
+    let tmp = out.with_extension("mingw");
+    let lib = if MINGW_FILES.is_empty() {
+        mingw_dirs()?.0
+    } else {
+        write_files(&tmp, MINGW_FILES)?;
+        tmp.clone()
+    };
+    let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-e", "isc_win_start", "-o"].iter().map(|x| x.into()).collect();
+    a.push(out.into());
+    a.push(obj.into());
+    a.push(rt.into());
+    a.extend(["-L".into(), lib.clone().into(), "--start-group".into()]);
+    // the DLLs of the network and of TLS loaded by the runtime at their
+    // first use (`isc_runtime_core::winload`)
+    for l in ["kernel32", "synchronization"] {
+        a.push(format!("-l{}", l).into());
+    }
+    a.push("--end-group".into());
     if !debug {
         a.push("-s".into());
     }

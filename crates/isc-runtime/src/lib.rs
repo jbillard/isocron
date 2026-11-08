@@ -61,7 +61,7 @@ struct Timespec {
     tv_nsec: core::ffi::c_long,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "wasi")]
 extern "C" {
     fn strlen(s: *const c_char) -> usize;
     fn exit(code: c_int) -> !;
@@ -92,7 +92,7 @@ mod net;
 // `isc-mem`, the runtime's own under Linux; in a program linked with glibc,
 // they are the ones of the program too (the definitions of an executable
 // come first).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use isc_mem::symbols::strlen;
 #[cfg(target_os = "linux")]
 use linux::{abort, close, exit, lseek, open, pread, read, strerror, write};
@@ -129,7 +129,7 @@ unsafe fn free(p: *mut c_void) {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-use windows::{aligned_alloc, close, free, lseek, open, pread, read, strerror, write};
+use windows::{abort, aligned_alloc, close, free, getenv, lseek, open, pread, read, strerror, write};
 
 // The constants of the C library: Linux (glibc, musl) or WASI (wasi-libc);
 // those of `windows` under Windows.
@@ -1380,14 +1380,29 @@ pub unsafe extern "C" fn isc_args(out: *mut IscArray, argc: i32, argv: *const *c
     // (which reads `ISC_ALLOC`)
     #[cfg(target_os = "linux")]
     ENVIRON.store(argv.add(argc.max(0) as usize + 1) as usize, Ordering::Relaxed);
-    let n = (argc.max(1) - 1) as usize;
-    let p = isc_alloc((n * core::mem::size_of::<IscStr>()) as i64) as *mut IscStr;
-    for i in 0..n {
-        let s = *argv.add(i + 1);
-        let len = strlen(s as *const c_char) as i64;
-        *p.add(i) = new_str(core::slice::from_raw_parts(s, len as usize));
+    // under Windows, from the command line in UTF-16 (D541)
+    #[cfg(windows)]
+    {
+        let _ = (argc, argv);
+        let mut all = alloc::vec::Vec::new();
+        windows::args(&mut |a| all.push(new_str(a)));
+        let p = isc_alloc((all.len() * core::mem::size_of::<IscStr>()) as i64) as *mut IscStr;
+        for (i, s) in all.iter().enumerate() {
+            *p.add(i) = *s;
+        }
+        *out = IscArray { ptr: p as *mut u8, len: all.len() as i64 };
     }
-    *out = IscArray { ptr: p as *mut u8, len: n as i64 };
+    #[cfg(not(windows))]
+    {
+        let n = (argc.max(1) - 1) as usize;
+        let p = isc_alloc((n * core::mem::size_of::<IscStr>()) as i64) as *mut IscStr;
+        for i in 0..n {
+            let s = *argv.add(i + 1);
+            let len = strlen(s as *const c_char) as i64;
+            *p.add(i) = new_str(core::slice::from_raw_parts(s, len as usize));
+        }
+        *out = IscArray { ptr: p as *mut u8, len: n as i64 };
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -3854,7 +3869,7 @@ use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 
 type Task = extern "C" fn(ctx: *mut c_void, i: i64);
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "wasi")]
 extern "C" {
     fn getenv(name: *const c_char) -> *const c_char;
 }

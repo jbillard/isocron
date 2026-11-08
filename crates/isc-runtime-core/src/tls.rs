@@ -714,8 +714,8 @@ mod schannel {
         key_spec: u32,
     }
 
-    #[link(name = "secur32")]
-    extern "system" {
+    crate::system_dll! {
+        "secur32.dll";
         fn AcquireCredentialsHandleW(principal: W, package: W, cred_use: u32, logon: *mut c_void, auth: *const c_void, get_key: *mut c_void, arg: *mut c_void, cred: *mut Handle, expiry: *mut i64) -> i32;
         fn FreeCredentialsHandle(cred: *mut Handle) -> i32;
         fn InitializeSecurityContextW(cred: *mut Handle, ctx: *mut Handle, target: W, req: u32, r1: u32, rep: u32, input: *mut SecBufferDesc, r2: u32, new_ctx: *mut Handle, output: *mut SecBufferDesc, attrs: *mut u32, expiry: *mut i64) -> i32;
@@ -728,8 +728,8 @@ mod schannel {
         fn ApplyControlToken(ctx: *mut Handle, input: *mut SecBufferDesc) -> i32;
     }
 
-    #[link(name = "crypt32")]
-    extern "system" {
+    crate::system_dll! {
+        "crypt32.dll";
         fn CertCreateCertificateContext(enc: u32, der: *const u8, len: u32) -> *const CertContext;
         fn CertFreeCertificateContext(c: *const CertContext) -> i32;
         fn CertOpenStore(provider: usize, enc: u32, prov: usize, flags: u32, para: *const c_void) -> *mut c_void;
@@ -742,15 +742,15 @@ mod schannel {
         fn CertVerifyCertificateChainPolicy(oid: usize, chain: *const c_void, para: *const PolicyPara, status: *mut PolicyStatus) -> i32;
     }
 
-    #[link(name = "ncrypt")]
-    extern "system" {
+    crate::system_dll! {
+        "ncrypt.dll";
         fn NCryptOpenStorageProvider(prov: *mut usize, name: W, flags: u32) -> i32;
         fn NCryptDeleteKey(key: usize, flags: u32) -> i32;
         fn NCryptFreeObject(h: usize) -> i32;
     }
 
-    #[link(name = "ws2_32")]
-    extern "system" {
+    crate::system_dll! {
+        "ws2_32.dll";
         fn send(s: usize, buf: *const u8, len: c_int, flags: c_int) -> c_int;
         fn recv(s: usize, buf: *mut u8, len: c_int, flags: c_int) -> c_int;
         fn WSAGetLastError() -> c_int;
@@ -1147,10 +1147,14 @@ mod schannel {
         machine: bool,
     }
 
-    extern "system" {
+    crate::system_dll! {
+        "crypt32.dll";
         fn PFXImportCertStore(blob: *const [usize; 2], password: W, flags: u32) -> *mut c_void;
         fn CertEnumCertificatesInStore(store: *mut c_void, prev: *const CertContext) -> *const CertContext;
         fn CertGetCertificateContextProperty(c: *const CertContext, prop: u32, data: *mut c_void, n: *mut u32) -> i32;
+    }
+    crate::system_dll! {
+        "ncrypt.dll";
         fn NCryptOpenKey(prov: usize, key: *mut usize, name: W, spec: u32, flags: u32) -> i32;
     }
 

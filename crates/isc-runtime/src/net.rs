@@ -992,8 +992,8 @@ mod imp {
     const SO_SNDTIMEO: c_int = 0x1005;
     const INVALID_SOCKET: usize = !0;
 
-    #[link(name = "ws2_32")]
-    extern "system" {
+    isc_runtime_core::system_dll! {
+        "ws2_32.dll";
         fn WSAStartup(version: u16, data: *mut u8) -> c_int;
         fn WSAGetLastError() -> c_int;
         fn socket(af: c_int, kind: c_int, protocol: c_int) -> usize;

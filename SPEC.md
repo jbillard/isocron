@@ -26,7 +26,7 @@ Nom : **Isocron** (« de durée égale »). C'est un nom d'intention : le langag
 
 - Paradigme : fonctionnel pur, évaluation stricte.
 - Données : scalaires, tableaux contigus à taille typée, tuples, records, types somme.
-- Cible : CPU x86-64, puis ARM64.
+- Cible : CPU x86-64, sous Linux, Windows et WebAssembly (WASI) ; ARM64 écarté (D540).
 - Hors périmètre : GPU, `@requireVectorized`, concurrence écrite par le programmeur, fonctions stockées dans des structures de données.
 
 ### Principes directeurs
@@ -60,7 +60,7 @@ Les choix ci-dessous sont pris ; ceux marqués « recommandation » restent à c
 | Flottants | IEEE 754, reproductibles par défaut ; mode `allowReassoc` optionnel | 10 |
 | Fonctions d'ordre supérieur | Résolues à la compilation, aucune fermeture allouée | 11 |
 | Effets | Isolés dans les `action`, aux bords du programme | 12 |
-| Cible | CPU x86-64, puis ARM64 ; GPU non exclu par la conception | 1 |
+| Cible | CPU x86-64 (Linux, Windows, WASI ; ARM64 écarté, D540) ; GPU non exclu par la conception | 1 |
 | Implémentation | Compilateur en Rust, back-end LLVM (recommandation) | 13 |
 
 ## 3. Syntaxe
@@ -658,7 +658,7 @@ Pour le POC, je recommande LLVM directement plutôt que MLIR : moins de couches,
 | Langage du compilateur | Rust | accès mature à LLVM, sûreté mémoire, langage que tu utilises déjà |
 | Lexer et parser | écrits à la main, descente récursive | indentation significative, messages d'erreur précis |
 | IR haut niveau | IR propre à Isocron | fusion, unicité et exigences doivent suivre cette spécification, pas un outil externe |
-| Back-end | LLVM via [inkwell](https://github.com/TheDan64/inkwell) | génération de code éprouvée pour x86-64 et ARM64 |
+| Back-end | LLVM via [inkwell](https://github.com/TheDan64/inkwell) | génération de code éprouvée pour x86-64 et WebAssembly |
 | Flottants dans LLVM | opérations émises sans drapeaux fast-math | sans les drapeaux `reassoc` et `contract`, LLVM ne réassocie ni ne contracte ([LangRef](https://llvm.org/docs/LangRef.html)) |
 | MLIR | reporté | plus puissant mais plus complexe ; utile surtout pour un futur back-end GPU |
 | Runtime | minimal : allocation alignée, comptage de références, pool de threads, fonctions mathématiques | aucun coût caché à l'exécution |

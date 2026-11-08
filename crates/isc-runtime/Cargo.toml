@@ -21,7 +21,8 @@ isc-runtime-core = { path = "../isc-runtime-core" }
 memchr = { version = "2", default-features = false }
 
 # the functions of memory (`memcpy`...) of the runtime under Linux (D288)
-[target.'cfg(target_os = "linux")'.dependencies]
+# and Windows (D541)
+[target.'cfg(any(target_os = "linux", windows))'.dependencies]
 isc-mem = { path = "../isc-mem", features = ["symbols"] }
 
 [profile.release]

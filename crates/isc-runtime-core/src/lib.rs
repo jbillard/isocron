@@ -825,6 +825,9 @@ mod tests {
 /// TLS by the library of the system (D343): OpenSSL loaded at run time.
 #[cfg(not(target_family = "wasm"))]
 pub mod tls;
+pub mod winargs;
+#[cfg(windows)]
+pub mod winload;
 pub mod f64text;
 mod pow10_g;
 

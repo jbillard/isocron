@@ -137,7 +137,9 @@ fn programs_on_windows() {
         return;
     };
     let d = dir("basics");
-    same_on_windows(&runner, BASICS, "basics", &d, &["one", "two words", ""], None);
+    // the arguments read from the command line in UTF-16 by the runtime
+    // (D541): characters beyond the code page, quotes, backslashes
+    same_on_windows(&runner, BASICS, "basics", &d, &["one", "two words", "", "été 東京 🦀", "say \"hi\"", "C:\\dir\\file"], None);
     let d = dir("files");
     std::fs::write(d.join("big.txt"), "x".repeat(9 << 20)).unwrap();
     std::fs::write(d.join("in.txt"), "a\nb\nc\n").unwrap();

@@ -12131,3 +12131,100 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     with 1 and 4 threads and under Valgrind against the interpreter;
     `tryParseI64` of 13 texts it refuses; the panic with its place from
     each path, compiled as interpreted).
+- **D540 — ARM64 set aside; the targets first (2026-11-08).** The author:
+  ARM64 is set aside, and the targets come before the rest of TODO. SPEC
+  section 1 and its table now name x86-64 alone (Linux, Windows, WASI).
+  The targets, in this order (TODO, "The targets first"):
+  1. Windows with the system alone. A hello for Windows imports 7 DLLs:
+     `msvcrt` (31 functions: the start of MinGW's `crt2.o` and
+     `libmingw32`, `malloc`, the copies of memory, `fprintf`, `exit`...),
+     `kernel32` (53), the synchronization API set (2), and `ws2_32`,
+     `secur32`, `crypt32` and `ncrypt`, which it does not use: their
+     functions are dropped by the linker (`--gc-sections`, no function of
+     the runtime calls them in the program), their imports are kept, so
+     Windows loads 4 DLLs for nothing at each start. The runtime itself
+     calls 6 functions of the C library (`strlen`, `getenv`, `exit`,
+     `abort`, `_aligned_malloc`, `_aligned_free`). The way: an entry of
+     the runtime (the command line read by the rules of Windows), those 6
+     over `kernel32` in Rust, `isc-mem` for the copies, the DLLs of
+     `net` and `https` loaded from `System32` at their first use (as
+     OpenSSL on Linux, D328); MinGW's C runtime kept for the programs that
+     link C libraries, as glibc on Linux (D289). No C in a program that
+     calls none, and the base of the next step.
+  2. The target `x86_64-pc-windows-msvc`: the runtime without a C runtime,
+     LLD as COFF, the helpers that the static libraries of Visual Studio
+     refer to (`__security_check_cookie`, `__chkstk`, `_fltused`) from the
+     runtime, Microsoft's C runtime only when a library needs it, from
+     the Build Tools of the machine (D425, D528).
+  3. WASI without wasi-libc (its own `_start`, the functions of WASI
+     called directly, its heap, its threads).
+  4. Linux, the smallest: the relocations of a static program checked at
+     its build, a mode of checks of the allocator.
+- **D541 — Windows programs without a C library (2026-11-09).** Step 1 of
+  D540. A hello for Windows imported 132 functions of 7 DLLs (`msvcrt`
+  31, `kernel32` 53, the synchronization API set 2, `ws2_32` 19,
+  `secur32` 10, `crypt32` 13, `ncrypt` 4), 66560 bytes; now 47 of
+  `kernel32` and the 2 of the API set, 59904 bytes. A program that
+  declares C functions or links libraries keeps MinGW's start files and C
+  runtime (its C code may need them), as glibc on Linux (D289).
+  - The start: `isc_win_start` (the entry given to the linker) calls the
+    generated `main` and ends the process with its code (`ExitProcess`).
+    What MinGW's start files gave comes with the code of the program
+    (`WINDOWS_START_IR` of iscc, only without them, so that no symbol is
+    defined twice with them): `__main` (LLVM calls it at the start of
+    `main` for MinGW: the constructors of C, none here), `_Unwind_Resume`
+    (the precompiled `alloc` of Rust refers to it; nothing unwinds, `ud2`)
+    and the directory of the thread-local storage (`_tls_used`, `_tls_index`,
+    `_tls_start` in `.tls`, `_tls_end` in `.tls$ZZZ`, no callback), as
+    `tlssup.c` of MinGW-w64: the loader of Windows reads it (`objdump`:
+    the Thread Storage Directory of the image), the generated code keeps
+    its variables between them.
+  - The six functions of the C library the runtime called: `strlen` (and
+    the copies of memory that LLVM calls) from `isc-mem`, as on Linux;
+    `getenv` over an environment in UTF-8 made once from
+    `GetEnvironmentStringsW` in the heap of the process (its first reads
+    come before the allocator, which reads `ISC_ALLOC`; names compared
+    without the case of ASCII letters, as Windows does); `exit` by
+    `ExitProcess`, `abort` by `TerminateProcess` with the code 3;
+    `_aligned_malloc` and `_aligned_free` by `HeapAlloc` of the heap of
+    the process, the address of the block kept before the aligned one.
+    LLVM turned the loops that read a string of UTF-16 up to its zero into
+    calls of `wcslen`, which `msvcrt` gave: `isc-mem` has it under Windows,
+    read by volatile loads that LLVM does not turn back into a call of
+    itself.
+  - The arguments: `isc_args` reads the command line in UTF-16
+    (`GetCommandLineW`) by the rules of Windows (`isc_runtime_core::winargs`:
+    those of its C runtime since 2008, as Rust's standard library), in both
+    starts; MinGW's `argv` was in the code page of the system, so that an
+    argument out of it reached the program changed. Tested by
+    `command_lines_as_windows_reads_them` (the examples of Microsoft's
+    documentation and the cases around them), `programs_on_windows` with
+    the arguments `été 東京 🦀`, `say "hi"` and `C:\dir\file`.
+  - The DLLs of the network and of TLS (`ws2_32`, `secur32`, `crypt32`,
+    `ncrypt`) loaded at the first call of one of their functions
+    (`system_dll!` of `isc_runtime_core::winload`: the same names and
+    signatures as an `extern` block, `LoadLibraryExW` with
+    `LOAD_LIBRARY_SEARCH_SYSTEM32` then `GetProcAddress`, the address kept),
+    in the runtime and in the interpreter: their functions were dropped
+    by the linker in a program that does not use them, their imports were
+    not, so that Windows loaded 4 DLLs at each start for nothing.
+  - Measured in the virtual machine (a hello, 200 starts by PowerShell a
+    series, alternated): 6.38 to 6.91 ms a start with the old program
+    against 4.23 to 4.67 ms (5 series each, fresh copies), 6.32 and 6.33
+    against 4.09 and 4.18 with other code: about -35 %. The first series
+    of an executable whose content Windows has not seen is slower for
+    both (6.94 and 9.69 ms against 4.1 and 6.3 after it, new and old):
+    its first start is examined once; once 84.7 ms a start for the first
+    such series of the session (a longer examination: a hypothesis, its
+    size not measured further).
+  - Tests: `windows.rs`, 14 of 14 in the virtual machine, three times
+    with the programs built here (the start, the arguments, the DLLs
+    loaded at their first use: the client and the server of HTTPS, the
+    sockets), then with an `iscc.exe` of these sources
+    (`iscc_on_windows`: programs built and interpreted on Windows itself,
+    those that call C functions of Windows linked with MinGW's C runtime);
+    one run of it failed before the program ran ("run.py: cannot reach
+    the Windows machine: mux_client_request_session: read from master
+    failed: Broken pipe", the shared SSH session of before the restart of
+    the machine), the whole file again: 14 of 14. The end-to-end tests of
+    Linux unchanged (the suite).

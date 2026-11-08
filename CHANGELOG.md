@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* Windows: programs without a C library, importing only `kernel32` (132 functions of 7 DLLs before); their arguments read in UTF-16, any character; the DLLs of the network and of TLS loaded at their first use; a start about 35 % faster (D541).
+
 * `parseI64` reads a sign and up to 8 digits at once, without a loop: -40 % for numbers of 7 digits; up to 16 digits without `str::parse` (D539).
 
 * `serve`: the head of a request checked as UTF-8 once, its parts slices of it (D537).

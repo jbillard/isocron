@@ -1,8 +1,11 @@
 //! The system under Windows (target `x86_64-pc-windows-gnu`, D246): the
 //! functions of Linux that the runtime calls, with the same names and
 //! meanings, over the Win32 API (`kernel32`, `WaitOnAddress` of the
-//! synchronization API set) and the few functions of the C library of
-//! MinGW (`msvcrt`: `strlen`, `getenv`, `exit`, `abort`, `_aligned_malloc`).
+//! synchronization API set), without a C library (D541): the program
+//! starts at `isc_win_start`, its arguments and its environment are read in
+//! UTF-16 from the system, its blocks of the system's allocator come from
+//! the heap of the process; MinGW's C runtime only when the program links
+//! C libraries, and then its `main` is called by it.
 //! A file descriptor is a handle (handles of kernel objects fit in 32 bits);
 //! 0, 1 and 2 are the standard handles. The bytes are written and read as
 //! they are (no text mode: no `\r\n`). Errors: `errno()` is the last Win32
@@ -92,17 +95,19 @@ extern "system" {
     fn FlsAlloc(callback: Option<unsafe extern "system" fn(*mut c_void)>) -> u32;
     fn FlsSetValue(index: u32, value: *const c_void) -> BOOL;
     fn TerminateProcess(p: HANDLE, code: u32) -> BOOL;
+    fn GetCommandLineW() -> *const u16;
+    fn GetEnvironmentStringsW() -> *mut u16;
+    fn FreeEnvironmentStringsW(p: *mut u16) -> BOOL;
+    fn GetProcessHeap() -> HANDLE;
+    fn HeapAlloc(heap: HANDLE, flags: u32, n: usize) -> *mut c_void;
+    fn HeapFree(heap: HANDLE, flags: u32, p: *mut c_void) -> BOOL;
+    fn ExitProcess(code: u32) -> !;
 }
 
 #[link(name = "synchronization")]
 extern "system" {
     fn WaitOnAddress(addr: *const c_void, compare: *const c_void, size: usize, ms: u32) -> BOOL;
     fn WakeByAddressAll(addr: *const c_void);
-}
-
-extern "C" {
-    fn _aligned_malloc(size: usize, align: usize) -> *mut c_void;
-    fn _aligned_free(p: *mut c_void);
 }
 
 // ---------------------------------------------------------------------
@@ -161,7 +166,7 @@ pub unsafe fn open(path: *const c_char, flags: c_int, _mode: c_int) -> c_int {
     if n > 0 && wn <= 0 {
         return -1;
     }
-    let w = _aligned_malloc((wn as usize + 1) * 2, 16) as *mut u16;
+    let w = aligned_alloc(16, (wn as usize + 1) * 2) as *mut u16;
     if w.is_null() {
         return -1;
     }
@@ -174,7 +179,7 @@ pub unsafe fn open(path: *const c_char, flags: c_int, _mode: c_int) -> c_int {
     // a directory opens too (as on Linux), its read then fails
     let h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, core::ptr::null_mut(), disposition, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, core::ptr::null_mut());
     let e = GetLastError();
-    _aligned_free(w as *mut c_void);
+    free(w as *mut c_void);
     if h == INVALID_HANDLE_VALUE {
         SetLastError(e);
         return -1;
@@ -394,13 +399,30 @@ pub unsafe fn lseek(fd: c_int, off: i64, whence: c_int) -> i64 {
 // ---------------------------------------------------------------------
 // memory
 
+/// A block of `size` bytes at a multiple of `align` (a power of two, at
+/// least 16) from the heap of the process (D541: `_aligned_malloc` of
+/// MinGW's C library before): `align` bytes more than asked, the address
+/// given by the heap kept in the 8 bytes before the block. Null when
+/// refused.
 pub unsafe fn aligned_alloc(align: usize, size: usize) -> *mut c_void {
-    _aligned_malloc(size.max(1), align)
+    // SAFETY: the heap of the process, which the system made
+    let raw = unsafe { HeapAlloc(GetProcessHeap(), 0, size.max(1).saturating_add(align)) } as usize;
+    if raw == 0 {
+        return core::ptr::null_mut();
+    }
+    // the heap gives multiples of 16: the block starts 16 to `align` bytes in
+    let p = (raw + align) & !(align - 1);
+    // SAFETY: 8 bytes of the block of the heap, before `p`
+    unsafe { ((p - 8) as *mut usize).write(raw) };
+    p as *mut c_void
 }
 
+/// Frees a block of `aligned_alloc` (null: nothing).
 pub unsafe fn free(p: *mut c_void) {
     if !p.is_null() {
-        _aligned_free(p)
+        // SAFETY: `p` from `aligned_alloc`, the address of its block of the
+        // heap before it
+        unsafe { HeapFree(GetProcessHeap(), 0, ((p as usize - 8) as *const usize).read() as *mut c_void) };
     }
 }
 
@@ -591,4 +613,134 @@ pub fn terminate(code: c_int) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+// ---------------------------------------------------------------------
+// the start, the arguments and the environment (D541)
+
+/// The string of UTF-16 at `p`, ended by a zero.
+///
+/// # Safety
+/// `p` a string of UTF-16 ended by a zero, that lives as long as the
+/// process (the command line of the process).
+unsafe fn wide_str(p: *const u16) -> &'static [u16] {
+    let mut n = 0;
+    // SAFETY: see above
+    unsafe {
+        while *p.add(n) != 0 {
+            n += 1;
+        }
+        core::slice::from_raw_parts(p, n)
+    }
+}
+
+/// The arguments of the program after its name, in UTF-8, each given to
+/// `each`: read from its command line in UTF-16 by the rules of Windows,
+/// whatever started the program (its own start, or MinGW's, whose `argv` is
+/// in the code page of the system).
+pub fn args(each: &mut dyn FnMut(&[u8])) {
+    // SAFETY: the command line of the process, which lives as long as it
+    let w = unsafe { wide_str(GetCommandLineW()) };
+    let mut cur = alloc::vec::Vec::new();
+    let mut bytes = alloc::vec![0u8; 3 * w.len()];
+    let mut first = true;
+    isc_runtime_core::winargs::command_line_args(w, &mut cur, &mut |a| {
+        if !core::mem::take(&mut first) {
+            let n = isc_runtime_core::winargs::utf8_of_utf16(a, &mut bytes);
+            each(&bytes[..n]);
+        }
+    });
+}
+
+/// The environment of the process in UTF-8 (`NAME=value` strings each ended
+/// by a zero byte, the block by an empty one), made once at the first
+/// `getenv` from the system's in UTF-16, in the heap of the process (the
+/// first reads come before the runtime's allocator, which reads
+/// `ISC_ALLOC`): the address of its length (8 bytes) followed by it, 0
+/// before.
+static ENV: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+fn env_block() -> &'static [u8] {
+    use core::sync::atomic::Ordering::Acquire;
+    let p = ENV.load(Acquire);
+    if p != 0 {
+        // SAFETY: a block made below, never freed nor changed
+        return unsafe { core::slice::from_raw_parts((p + 8) as *const u8, (p as *const usize).read()) };
+    }
+    // SAFETY: the environment of the process, units ended by two zeros; a
+    // block of the heap of `8 + cap` bytes
+    unsafe {
+        let base = GetEnvironmentStringsW();
+        let mut n = 0;
+        if !base.is_null() {
+            while *base.add(n) != 0 || *base.add(n + 1) != 0 {
+                n += 1;
+            }
+            n += 1;
+        }
+        let w: &[u16] = if base.is_null() { &[] } else { core::slice::from_raw_parts(base, n) };
+        let cap = 3 * w.len() + 2;
+        let q = HeapAlloc(GetProcessHeap(), 0, 8 + cap) as usize;
+        if q == 0 {
+            if !base.is_null() {
+                FreeEnvironmentStringsW(base);
+            }
+            return &[];
+        }
+        let out = core::slice::from_raw_parts_mut((q + 8) as *mut u8, cap);
+        // the strings with their zeros (units of `w`), then an empty one
+        let mut len = isc_runtime_core::winargs::utf8_of_utf16(w, out);
+        out[len] = 0;
+        out[len + 1] = 0;
+        len += 2;
+        (q as *mut usize).write(len);
+        if !base.is_null() {
+            FreeEnvironmentStringsW(base);
+        }
+        // another thread may have made one first: its block is kept
+        match ENV.compare_exchange(0, q, core::sync::atomic::Ordering::Release, Acquire) {
+            Ok(_) => core::slice::from_raw_parts((q + 8) as *const u8, len),
+            Err(other) => {
+                HeapFree(GetProcessHeap(), 0, q as *mut c_void);
+                core::slice::from_raw_parts((other + 8) as *const u8, (other as *const usize).read())
+            }
+        }
+    }
+}
+
+/// The value of the variable `name` (a string ended by a zero byte) of the
+/// environment, a string ended by a zero byte, or null; the case of the
+/// ASCII letters of a name does not matter, as under Windows.
+pub unsafe fn getenv(name: *const c_char) -> *const c_char {
+    // SAFETY: `name` ends with a zero byte (see above)
+    let name = unsafe { core::slice::from_raw_parts(name as *const u8, super::strlen(name)) };
+    let block = env_block();
+    match isc_runtime_core::winargs::env_find(block, name) {
+        Some((at, _)) => block[at..].as_ptr() as *const c_char,
+        None => core::ptr::null(),
+    }
+}
+
+/// Ends the process with `code`.
+pub fn exit(code: c_int) -> ! {
+    // SAFETY: the end of the process
+    unsafe { ExitProcess(code as u32) }
+}
+
+/// Ends the process at once with the code of `abort` (3).
+pub fn abort() -> ! {
+    terminate(3)
+}
+
+/// The start of a program for Windows without a C library (D541): its
+/// `main` (the generated code, whose arguments `isc_args` reads from the
+/// command line), then the end of the process with its code.
+#[no_mangle]
+pub extern "system" fn isc_win_start() -> ! {
+    extern "C" {
+        fn main(argc: c_int, argv: *const *const c_char) -> c_int;
+    }
+    // SAFETY: the `main` of the generated code, which does not read its
+    // parameters under Windows but to give them to `isc_args`
+    exit(unsafe { main(0, core::ptr::null()) })
 }
