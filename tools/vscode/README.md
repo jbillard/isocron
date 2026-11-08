@@ -29,11 +29,11 @@ Download `isocron-VERSION.vsix` from the
 the archives), or make it (Python 3 only, no npm):
 
 ```sh
-python3 tools/vscode/package.py          # tools/vscode/isocron-0.4.6.vsix
+python3 tools/vscode/package.py          # tools/vscode/isocron-0.4.7.vsix
 ```
 
 then in VS Code: Extensions, `...`, **Install from VSIX...**, or
-`code --install-extension isocron-0.4.6.vsix`.
+`code --install-extension isocron-0.4.7.vsix`.
 
 * **On the machine of the files**: put `iscc` (or `iscc.exe`) in the PATH,
   or set `isocron.iscc` to its path; `isc-lsp` beside it (or in the PATH)

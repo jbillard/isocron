@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.7 — 2026-11-08
+
+Maps found by hashes, numbers sorted by their bytes, `toFixed` and `print`
+of integers faster, a `map` of a zip made one loop; the audit of every
+group of forms against its floor done. The same results.
+
+### The language
+
+* A map keeps an index of hashes of its keys (fixed hashes, the same bits
+  everywhere): `get` of an integer 56.1 -> 4.1 ns, of a text 167.7 -> 20.1
+  ns; built in O(n) (D492).
+
+### The compiler
+
+* `map(zip(a, b), (p) => ...)` reading its pairs by their components is
+  one `map` over `a` and `b`: its sum 0.56 -> 0.11 ns an element (D495).
+* `print` of an integer writes its digits and its newline in one call:
+  26.7 -> 24.9 ns a line (D498).
+* The tasks of a fill that reads a `filter` by windows write 16 KiB too:
+  reverse-complement 27.5 -> 23.6 ms (D490).
+
+### The runtime
+
+* `toFixed` from the integer and the power of two of the double, up to 18
+  decimals: 1609 -> 49 ns (D487).
+* `sort` and `sortBy` of numbers and booleans by their bytes (radix) from
+  64 elements: integers -70 %, a key of a few values -63 % (D488).
+* `countBy` counts by value the keys below the number of keys, its table
+  sized from the start: 9.7 -> 3.5 ns an element (D492, D494).
+
+### The measurements
+
+* New groups of microbenchmarks with their floors in C: numbers, sorts,
+  maps, arrays, control and calls, the standard streams (`run.py` gives
+  the last its input and output) (D487, D488, D492, D495, D497, D498).
+  Every form of them at most 3 times its floor but `sortBy` of texts, bound
+  by the representation of texts (1.24 times C with it, D488).
+* Floors beaten by Isocron found wrong and made faster (loops of GCC with
+  one accumulator, a shift for an addition, scalar Collatz and others).
+* A measure of the Benchmarks Game during the maintenance of Plex found
+  slower for every language, measured again on a quiet machine (D488,
+  D489).
+
 ## 0.4.6 — 2026-11-08
 
 A search from the end for texts, the short texts of templates copied in

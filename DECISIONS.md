@@ -11113,3 +11113,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   within 3 ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`,
   `floors.md`, `floors_isocron.tsv`, the table of the README and its figure
   made again from these lines.
+- **D500 — Release 0.4.7 (2026-11-08).** After 0.4.6: D487 to D499, maps
+  found by an index of hashes (D492), numbers and booleans sorted by their
+  bytes (D488), `toFixed` from the integer of the double (D487), `countBy`
+  by value below the number of keys (D494), a `map` of a zip made one `map`
+  (D495), `print` of an integer in one call (D498), the tasks of a fill
+  that reads by windows of 16 KiB (D490); the audit of every group of forms
+  against its floor (numbers, sorts, maps, arrays, control and calls, the
+  standard streams). No name removed, the language the same but the speed
+  of its maps. The commit of the release the last of `main` (D486); the
+  steps of 0.4.3 (D449): the Windows tests in the VM with the `iscc.exe` of
+  the release's sources, the archives built from those sources in the
+  images of the releases, tried before they are published. The ten
+  programs of the Benchmarks Game measured at 5adf9f3 (D499); nothing in
+  `crates/` changed since but the version.
