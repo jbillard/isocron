@@ -25,6 +25,7 @@ strings	bytes	1.520	0.827
 strings	endsWith.2	1.673	0.913
 sorts	sort.string	121.658	67.093
 sys	normalize	89.903	49.943
+arrays	filter.count	1.335	0.744
 strings	parseI64.7	8.829	4.965
 strings	lines.line	15.092	8.534
 maps	get.string	20.146	11.483
@@ -39,6 +40,7 @@ sys	envAll	1948.335	1203.490
 strings	includes.3	20.248	12.569
 strings	equal	4.932	3.138
 numbers	parseF64	14.076	9.025
+arrays	filter.sum	1.332	0.861
 strings	startsWith.1	1.679	1.108
 sys	basename	7.309	4.825
 sha256	digestText.55	427.430	285.435
@@ -62,6 +64,7 @@ numbers	parseI64	9.684	7.632
 http	serve.pipelined	1196.007	957.698
 sys	listDir.66	11204.155	9116.070
 http	get.64k	66152.630	54466.445
+arrays	slice.sum	0.046	0.038
 strings	template	12.953	10.714
 sys	cwd	396.270	328.685
 http_serve	serve.keepalive	13642.529	11330.392
@@ -74,8 +77,10 @@ https_serve	serve.keepalive	39476.250	34056.128
 time	daysBetween	13.158	11.358
 net	setTimeout	471.520	410.080
 time	formatIso	54.546	48.496
+arrays	concat	0.376	0.338
 time	toDateTime	3.714	3.351
 net	server.roundtrip.64	6987.215	6326.480
+arrays	zip.sum	0.112	0.103
 http	request.post	41403.960	38271.710
 http_serve	serve.connection	41218.750	38132.710
 strings	replaceAll.1	52.981	49.280
@@ -90,17 +95,22 @@ sys	makeDirs.removeAll	21345.460	20264.125
 sys	fileSize	652.870	620.235
 https	get.small	1246115.690	1189967.290
 net	connect	24855.890	23840.905
+arrays	fold	4.584	4.402
 json	encode	83.933	80.645
 net	server.conn	37046.570	35608.570
 sys	isDir	619.015	596.170
+arrays	map.new	0.192	0.185
 https	serverOfTls.close	257900.140	249119.920
 https_serve_tls	serve.handshake	1187117.540	1147825.800
 net	listen.close	3879.040	3759.330
+arrays	map.sum	0.082	0.080
+arrays	fill	0.042	0.041
 https	get.64k	1259186.910	1229904.560
 https	get.system.small	1209154.420	1184367.720
 sys	rename.2	3975.535	3894.610
 strings	toString.i64	11.358	11.178
 https	requestWith.small	1198733.780	1181176.930
+arrays	scan	0.205	0.202
 net	connect.closeWrite	24992.070	24634.325
 https	request.system.small	1197858.950	1181565.420
 sorts	toReversed	0.380	0.375

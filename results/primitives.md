@@ -2,7 +2,7 @@
 
 Each form of the language measured in Isocron and as the same work in C
 written the cheapest way known (its floor), on one CPU at fixed frequency,
-the median of 5 runs of 50 rounds (`bench/primitives/run.py`); the
+the median of 5 runs of 200 rounds (`bench/primitives/run.py`); the
 nanoseconds of one call, ranked by Isocron over its floor.
 
 | group | form | Isocron (ns) | floor (ns) | Isocron / floor |
@@ -34,6 +34,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `endsWith.2` | 1.67 | 0.91 | 1.8 |
 | sorts | `sort.string` | 121.66 | 67.09 | 1.8 |
 | sys | `normalize` | 89.90 | 49.94 | 1.8 |
+| arrays | `filter.count` | 1.33 | 0.74 | 1.8 |
 | strings | `parseI64.7` | 8.83 | 4.96 | 1.8 |
 | strings | `lines.line` | 15.09 | 8.53 | 1.8 |
 | maps | `get.string` | 20.15 | 11.48 | 1.8 |
@@ -48,6 +49,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `includes.3` | 20.25 | 12.57 | 1.6 |
 | strings | `equal` | 4.93 | 3.14 | 1.6 |
 | numbers | `parseF64` | 14.08 | 9.03 | 1.6 |
+| arrays | `filter.sum` | 1.33 | 0.86 | 1.5 |
 | strings | `startsWith.1` | 1.68 | 1.11 | 1.5 |
 | sys | `basename` | 7.31 | 4.83 | 1.5 |
 | sha256 | `digestText.55` | 427.43 | 285.44 | 1.5 |
@@ -71,6 +73,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | http | `serve.pipelined` | 1196.01 | 957.70 | 1.2 |
 | sys | `listDir.66` | 11204.16 | 9116.07 | 1.2 |
 | http | `get.64k` | 66152.63 | 54466.44 | 1.2 |
+| arrays | `slice.sum` | 0.05 | 0.04 | 1.2 |
 | strings | `template` | 12.95 | 10.71 | 1.2 |
 | sys | `cwd` | 396.27 | 328.69 | 1.2 |
 | http_serve | `serve.keepalive` | 13642.53 | 11330.39 | 1.2 |
@@ -83,8 +86,10 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | time | `daysBetween` | 13.16 | 11.36 | 1.2 |
 | net | `setTimeout` | 471.52 | 410.08 | 1.1 |
 | time | `formatIso` | 54.55 | 48.50 | 1.1 |
+| arrays | `concat` | 0.38 | 0.34 | 1.1 |
 | time | `toDateTime` | 3.71 | 3.35 | 1.1 |
 | net | `server.roundtrip.64` | 6987.22 | 6326.48 | 1.1 |
+| arrays | `zip.sum` | 0.11 | 0.10 | 1.1 |
 | http | `request.post` | 41403.96 | 38271.71 | 1.1 |
 | http_serve | `serve.connection` | 41218.75 | 38132.71 | 1.1 |
 | strings | `replaceAll.1` | 52.98 | 49.28 | 1.1 |
@@ -99,17 +104,22 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | sys | `fileSize` | 652.87 | 620.24 | 1.1 |
 | https | `get.small` | 1246115.69 | 1189967.29 | 1.0 |
 | net | `connect` | 24855.89 | 23840.90 | 1.0 |
+| arrays | `fold` | 4.58 | 4.40 | 1.0 |
 | json | `encode` | 83.93 | 80.64 | 1.0 |
 | net | `server.conn` | 37046.57 | 35608.57 | 1.0 |
 | sys | `isDir` | 619.01 | 596.17 | 1.0 |
+| arrays | `map.new` | 0.19 | 0.18 | 1.0 |
 | https | `serverOfTls.close` | 257900.14 | 249119.92 | 1.0 |
 | https_serve_tls | `serve.handshake` | 1187117.54 | 1147825.80 | 1.0 |
 | net | `listen.close` | 3879.04 | 3759.33 | 1.0 |
+| arrays | `map.sum` | 0.08 | 0.08 | 1.0 |
+| arrays | `fill` | 0.04 | 0.04 | 1.0 |
 | https | `get.64k` | 1259186.91 | 1229904.56 | 1.0 |
 | https | `get.system.small` | 1209154.42 | 1184367.72 | 1.0 |
 | sys | `rename.2` | 3975.53 | 3894.61 | 1.0 |
 | strings | `toString.i64` | 11.36 | 11.18 | 1.0 |
 | https | `requestWith.small` | 1198733.78 | 1181176.93 | 1.0 |
+| arrays | `scan` | 0.20 | 0.20 | 1.0 |
 | net | `connect.closeWrite` | 24992.07 | 24634.33 | 1.0 |
 | https | `request.system.small` | 1197858.95 | 1181565.42 | 1.0 |
 | sorts | `toReversed` | 0.38 | 0.38 | 1.0 |

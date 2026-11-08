@@ -420,6 +420,9 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     table_functions(body, vars, &mut HashMap::new());
     inline_zips(body, vars);
     fuse_fixpoint(body);
+    // a `map` of a zip of scalars that reads its pairs by their components:
+    // one `map` over the inputs of the zip (D495)
+    compose_zip_maps(body);
     // (after the fusion: the size checks around an `iota` floated out)
     iota_vars(body, vars);
     bind_temporaries(body, vars);
@@ -1680,6 +1683,63 @@ fn table_functions(e: &mut Expr, vars: &mut Vec<VarInfo>, lens: &mut HashMap<Var
 
 /// The `map` that `zip` is lowered to: its lambda builds the tuple of its
 /// parameters, in order.
+/// D495: `map(zip(a, b), (p) => f)`, the components of the pairs scalars
+/// and `f` reading `p` only by its components (`const [x, y] = p`, `p[0]`):
+/// one `map` over `a` and `b` whose parameters are the components, each
+/// `p[k]` replaced by the k-th. The pairs are never made: a reduction of
+/// that `map` reads its inputs in vectors (the sum of `map(zip(...))` 3.36
+/// times its floor: the `map` made into a buffer, its source of pairs not
+/// read in vectors).
+fn compose_zip_maps(e: &mut Expr) {
+    for c in e.children_mut() {
+        compose_zip_maps(c);
+    }
+    let ExprKind::Map(ins, l2) = &mut e.kind else { return };
+    if ins.len() != 1 || l2.params.len() != 1 || !is_zip(&ins[0]) {
+        return;
+    }
+    let ExprKind::Map(_, l1) = &ins[0].kind else { return };
+    let ExprKind::Tuple(comps) = &l1.body.kind else { return };
+    if !comps.iter().all(|c| c.ty.is_scalar()) {
+        return;
+    }
+    let p = l2.params[0];
+    if !only_projected(&l2.body, p) {
+        return;
+    }
+    let tys: Vec<Type> = comps.iter().map(|c| c.ty.clone()).collect();
+    let inner = ins.pop().unwrap();
+    let ExprKind::Map(srcs, l1) = inner.kind else { unreachable!() };
+    let params = l1.params.clone();
+    let mut body = take(&mut l2.body);
+    replace_projections(&mut body, p, &params, &tys);
+    let n = params.len();
+    e.kind = ExprKind::Map(srcs, Lambda { params, body: Box::new(body), drop_params: vec![false; n] });
+}
+
+/// `p` read only by its components in `e` (`Proj` of the variable itself).
+fn only_projected(e: &Expr, p: VarId) -> bool {
+    match &e.kind {
+        ExprKind::Proj(inner, _) if matches!(inner.kind, ExprKind::Var(w, _) if w == p) => true,
+        ExprKind::Var(w, _) => *w != p,
+        _ => e.children().into_iter().all(|c| only_projected(c, p)),
+    }
+}
+
+/// Each `p[k]` of `e` replaced by the variable `params[k]` (of type `tys[k]`).
+fn replace_projections(e: &mut Expr, p: VarId, params: &[VarId], tys: &[Type]) {
+    if let ExprKind::Proj(inner, k) = &e.kind {
+        if matches!(inner.kind, ExprKind::Var(w, _) if w == p) {
+            let k = *k as usize;
+            *e = Expr::var(params[k], tys[k].clone(), e.span);
+            return;
+        }
+    }
+    for c in e.children_mut() {
+        replace_projections(c, p, params, tys);
+    }
+}
+
 fn is_zip(e: &Expr) -> bool {
     let ExprKind::Map(ins, l) = &e.kind else { return false };
     let ExprKind::Tuple(es) = &l.body.kind else { return false };

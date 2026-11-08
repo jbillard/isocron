@@ -1,0 +1,52 @@
+// The audit of every form against the machine (TODO, D299): the arrays
+// (D495), 4096 integers in the caches. Each line of the output: a name, the
+// nanoseconds of one element (the mean over `rounds` rounds, `bench`) and a
+// checksum; run on one thread (ISC_THREADS=1), against `arrays.c` (the same
+// work in C, the floor).
+// usage: arrays <rounds>
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    // 25 times the rounds asked: a form of 0.1 ns an element would last
+    // 80 µs at 200 rounds, too short a measure (D495)
+    const r = parseI64(args[0]) * 25;
+    const xs = map(iota(n), (i) => (i * 7919 * 104729) % 1000000007 - 500000000);
+    const ys = map(iota(n), (i) => (i * 104729) % 1000003);
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => sum(map(xs, (x) => x * 3 + 1)));
+    print(`map.sum ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => {
+        const zs = map(xs, (x) => x * 3 + 1);
+        return zs[17] + zs[n - 1] + zs.length;
+    });
+    print(`map.new ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => filter(xs, (x) => x % 3 == 0).length);
+    print(`filter.count ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => sum(filter(xs, (x) => x % 3 == 0)));
+    print(`filter.sum ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    const [a5, t5] = bench(r, () => {
+        const c = concat(xs, ys);
+        return c[5] + c[n + 7] + c.length;
+    });
+    print(`concat ${(f64(t5) / each).toFixed(3)} ${a5}`);
+    const [a6, t6] = bench(r, () => sum(map(zip(xs, ys), (p) => {
+        const [x, y] = p;
+        return x ^ y;
+    })));
+    print(`zip.sum ${(f64(t6) / each).toFixed(3)} ${a6}`);
+    const [a7, t7] = bench(r, () => fold(xs, 0, (a, x) => (a ^ x) * 31 % 1000000007));
+    print(`fold ${(f64(t7) / each).toFixed(3)} ${a7}`);
+    const [a8, t8] = bench(r, () => {
+        const s = scan(ys, (a, b) => a + b, 0);
+        return s[n - 1] + s[n / 2];
+    });
+    print(`scan ${(f64(t8) / each).toFixed(3)} ${a8}`);
+    const [a9, t9] = bench(r, () => {
+        const f = fill(n, r);
+        return f[3] + f[n - 1] + f.length;
+    });
+    print(`fill ${(f64(t9) / each).toFixed(3)} ${a9}`);
+    const [a10, t10] = bench(r, () => sum(xs.slice(100, n - 100)));
+    print(`slice.sum ${(f64(t10) / each).toFixed(3)} ${a10}`);
+    return 0;
+}

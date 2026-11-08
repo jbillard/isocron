@@ -2116,3 +2116,88 @@ fn counts_by_value_and_by_hashes() {
         }
     }
 }
+
+/// D495: `map(zip(a, b), (p) => f)` made one `map` over `a` and `b` when
+/// the pairs are scalars read only by their components (destructured): of
+/// mixed types, summed, made into an array, filtered, a pair as the result;
+/// left as it was when `p` is used whole (a function, a call) or the
+/// elements are texts; sizes known at run time, and their difference a
+/// panic. Each value against the same computed by indices (`iota`), which
+/// that pass does not change (the interpreter runs the optimized program
+/// too), compiled and interpreted.
+#[test]
+fn maps_of_zips_by_their_components() {
+    let src = "function whole(p: [i64, f64]): f64 {
+    const [x, y] = p;
+    return f64(x) + y;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const a = map(iota(n), (i) => (i * 7919) % 1009 - 500);
+    const b = map(iota(n), (i) => f64(i) / 4.0);
+    const c = map(iota(n), (i) => i32(i % 77));
+    print([sum(map(zip(a, c), (p) => {
+        const [x, y] = p;
+        return x * i64(y) + 1;
+    })), sum(map(iota(n), (i) => a[i] * i64(c[i]) + 1))] as const);
+    print([sum(map(zip(a, b), (p) => {
+        const [x, y] = p;
+        return f64(x) * y;
+    })), sum(map(iota(n), (i) => f64(a[i]) * b[i]))] as const);
+    const m = map(zip(c, a), (p) => {
+        const [x, y] = p;
+        return y - i64(x);
+    });
+    const mi = map(iota(n), (i) => a[i] - i64(c[i]));
+    print([m.length * 1000000 + m[0] * 1000 + m[n - 1], mi.length * 1000000 + mi[0] * 1000 + mi[n - 1]] as const);
+    print([filter(map(zip(a, c), (p) => {
+        const [x, y] = p;
+        return x + i64(y);
+    }), (v) => v % 3 == 0).length, count(iota(n), (i) => (a[i] + i64(c[i])) % 3 == 0)] as const);
+    const sw = map(zip(a, c), (p) => {
+        const [x, y] = p;
+        return [y, x] as const;
+    });
+    const [s0, s1] = sw[n / 2];
+    print([i64(s0) * 100000 + s1, i64(c[n / 2]) * 100000 + a[n / 2]] as const);
+    print([sum(map(zip(a, b), whole)), sum(map(iota(n), (i) => f64(a[i]) + b[i]))] as const);
+    print([sum(map(zip(a, b), (p) => whole(p))), sum(map(iota(n), (i) => f64(a[i]) + b[i]))] as const);
+    const s = map(iota(n), (i) => `w${i % 10}`);
+    print([sum(map(zip(s, a), (p) => {
+        const [x, y] = p;
+        return x.length + y;
+    })), sum(map(iota(n), (i) => s[i].length + a[i]))] as const);
+    const e = map(iota(n), (i) => i * 3);
+    print([sum(map(zip(a, e), (p) => {
+        const [x, y] = p;
+        return x - 3 * y;
+    })), sum(map(iota(n), (i) => a[i] - 3 * e[i]))] as const);
+    const d = map(iota(n + parseI64(args[1])), (i) => i);
+    print([sum(map(zip(a, d), (p) => {
+        const [x, y] = p;
+        return x ^ y;
+    })), sum(map(iota(n), (i) => a[i] ^ d[i]))] as const);
+    return 0;
+}
+";
+    let pairs = |out: &str| {
+        for l in out.lines() {
+            let t = l.trim_start_matches('(').trim_end_matches(')');
+            let (x, y) = t.split_once(", ").unwrap_or((t, ""));
+            assert_eq!(x, y, "{}", l);
+        }
+        assert_eq!(out.lines().count(), 10, "{}", out);
+    };
+    for args in [["1000", "0"], ["5", "0"], ["4099", "0"]] {
+        let Outcome::Exit(0, want) = interp(src, &args) else { panic!("the interpreter failed at {:?}", args) };
+        pairs(&want);
+        let r = run_bin(&compile(src, "maps_of_zips"), &args);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", args, r.stderr);
+    }
+    // sizes that differ: the panic of the zip, in both
+    let r = run_bin(&compile(src, "maps_of_zips"), &["1000", "1"]);
+    assert_eq!(r.code, 101, "{}", r.stdout);
+    let Outcome::Panic(m, _) = interp(src, &["1000", "1"]) else { panic!("no panic in the interpreter") };
+    assert!(r.stderr.contains(&m), "{} against {}", r.stderr, m);
+}

@@ -10990,3 +10990,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     threads, the keys in the order of their first element and their counts,
     against the interpreter; with the bound taken as `<=` in `add_count`
     the compiled program does not end, the test does not pass).
+- **D495 — The group of arrays measured, and a `map` of a zip made one
+  `map` (2026-11-08).** The audit of the forms (TODO: "arrays") had no
+  microbenchmark of the arrays. Now `bench/primitives/arrays.isc` and its
+  floor `arrays.c` (4096 integers in the caches, one thread, 25 times the
+  rounds asked: a form of 0.1 ns an element measured over 200 rounds lasted
+  80 µs, and two runs differed by half): the sum of a `map`, a `map` made
+  into an array, `filter` counted and summed, `concat`, the sum of a `map`
+  of a `zip`, `fold`, `scan`, `fill`, the sum of a slice. The floors: sums
+  in 32 lanes (4 vectors of 8), a prefix sum within vectors of 8 and a
+  carry kept in a vector, stores of whole vectors into arrays aligned on 64
+  bytes. First floors were beaten by Isocron, so wrong (fixed frequency):
+  loops of GCC (one vector accumulator; the sum of a `map` 0.54, `scan`
+  0.53, the sum of a slice 0.64), `x << 1` for `x + x` (a shift of 512 bits
+  has one port, an addition two: 0.108 -> 0.079 ns), a carry of `scan`
+  extracted to a scalar and broadcast again (0.262 against 0.245 ns).
+  - The sum of `map(zip(xs, ys), (p) => { const [x, y] = p; ... })` 3.36
+    times its floor: the pairs a source that the reduction does not read in
+    vectors, so the `map` was made into a buffer first; the same written by
+    indices (`map(iota(n), (i) => xs[i] ^ ys[i])`) one loop in vectors.
+    Now a pass of the IR (`compose_zip_maps`, after the first fusion):
+    `map(zip(a, b), (p) => f)`, the components scalars and `f` reading `p`
+    only by its components, is one `map` over `a` and `b` whose parameters
+    are the components; otherwise it stays as it was (a `p` used whole, a
+    zip of texts).
+  - Measured (the old and new binaries of `arrays`, 7 alternated runs,
+    fixed frequency): `zip.sum` 0.56 -> 0.11 ns (-80.0 %), the nine others
+    the same; `run.py`: every form of the group from 1.01 to 1.79 times its
+    floor (`filter.count` 1.79, `filter.sum` 1.55, the sum of a slice 1.21,
+    `concat` 1.11, `zip.sum` 1.09, `fold` 1.04, the others 1.01 to 1.04).
+    The LLVM IR of the ten programs the same (none reads a zip so).
+  - Test `maps_of_zips_by_their_components` (`stdlib.rs`): each form of a
+    `map` of a zip (mixed types, summed, made into an array, filtered, a
+    pair as the result, `p` whole by a function and a call, texts, sizes
+    known at run time and their difference a panic) against the same value
+    computed by indices, which that pass does not change, compiled and
+    interpreted (the interpreter runs the optimized program too: compiled
+    against interpreted alone cannot see a fault of a pass of the IR); with
+    the components of pairs of one type swapped by the pass it fails
+    (1484466 against -4490822).
