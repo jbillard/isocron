@@ -10887,3 +10887,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     tasks of 16384 bytes and their windows (16383 to 16449, 32769, 65537,
     65600), 1 to 8 threads, against the bytes computed in the test and the
     interpreter.
+- **D491 — The Benchmarks Game measured again at 2182c59 (2026-11-08).**
+  After D490 (the tasks of the fill of reverse-complement that reads by
+  windows, the LLVM IR of the nine others the same), on a quiet machine
+  (no `Plex Transcoder` from three minutes before to the end, the load
+  below 1.5 before): the image built with the `iscc` of 2182c59, 102
+  checks against the references (the same outputs; the known difference
+  of C++ #4 of mandelbrot at N = 200 only), measured in Docker (4 threads,
+  12 runs, the lowest). The fastest on 10 of 10; reverse-complement 27 ->
+  24 ms (Rust 64 ms), the others within their scatter (k-nucleotide 610 ->
+  607 ms, n-body 1873 -> 1876 ms, the others within 1 ms).
+  `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors_isocron.tsv`, the table of the README and its figure made again
+  from these lines.
