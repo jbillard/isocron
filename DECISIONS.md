@@ -11718,3 +11718,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   ms). `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors_isocron.tsv`, the table of the README and its figure made again
   from these lines.
+- **D522 — Release 0.4.9 (2026-11-08).** After 0.4.8: D515 to D521. The
+  functions too large to be inlined decided one at a time, the smallest
+  first (D517); the texts taken out of tuples, or freed as their parts,
+  that are literals not given to `isc_free` (D518, D519); a `map` of at
+  most 4 heavy elements made where it is when the loops run one task after
+  the other (D520); rejected after measure: the floor of the stack in the
+  local-exec model (D515); closed by measure: `memcmp` and the copies of 2
+  bytes (D516). `json.parse` 2.998 and `json.decode` 2.80 times their
+  floors (4.04 and 3.58 at 0.4.8): every function of the standard library
+  at most 3 times its floor but `sys.isAbsolute` and `sorts.sortBy.length`
+  (the representation of texts, D465, D488). The language the same; no
+  name removed. The commit of the release the last of `main` (D486); the
+  steps of 0.4.3 (D449). The ten programs of the Benchmarks Game measured
+  at 20fb492 (D521): nothing in `crates/` changed since but the version.

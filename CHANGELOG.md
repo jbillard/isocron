@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.9 — 2026-11-08
+
+Every function of the standard library at most 3 times its floor but two
+bound by the representation of texts: `json.parse` 4.04 -> 3.00 and
+`json.decode` 3.58 -> 2.80 times their floors. The functions too large to
+be inlined decided one at a time, no literal given to the allocator, the
+maps of a few heavy elements made where they are. The same results.
 
 ### The compiler
 

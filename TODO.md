@@ -426,3 +426,4 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [ ] The tag `v0.4.6` on 8541507, its archives built from 6795010 (D485 after it): moving the tag, a forced push, is the author's call (D486)
 - [x] Release 0.4.7: maps by hashes, numbers sorted by their bytes, `toFixed`, `print` of integers, a `map` of a zip, the audit of every group of forms (D487 to D499, D500)
 - [x] Release 0.4.8: `findIndex` (rule F), texts appended by the compiled code, a tuple of an `if` taken apart, a `scan` of several reads by vectors, the index of `json` by sums by prefix (D501 to D513, D514)
+- [x] Release 0.4.9: the functions too large to be inlined decided one at a time, no literal given to `isc_free`, the maps of a few heavy elements made where they are; `json.parse` and `json.decode` below 3 times their floors (D515 to D521, D522)
