@@ -10,6 +10,12 @@
   `json.parse` 789 -> 726, `json.quote` of a text of 300 bytes 330 -> 93
   (D505).
 
+### The runtime
+
+* A part of at most 16 bytes appended to a text by one move of 16 when the
+  block has room: `json.quote` of an escaped text 81.6 -> 74.2 ns, with
+  its closing quote written with its last part (D508).
+
 ### The standard library
 
 * The index of a JSON text without a backslash by two sums by prefix, by

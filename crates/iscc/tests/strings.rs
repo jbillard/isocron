@@ -1217,3 +1217,44 @@ fn to_fixed_of_many_doubles() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout == want, "{:?}", r.stdout.lines().zip(want.lines()).find(|(a, b)| a != b));
 }
+
+/// D508: a text grown by appends of parts of every length from 0 to 40
+/// bytes and of the text of a call (`isc_str_append_n`, rule A, its block
+/// with room or a new one), the parts of at most 16 bytes copied by one
+/// move of 16: the interpreter's text, from 0 to 2000 appends, on 1 and 4
+/// threads.
+#[test]
+fn appends_of_parts_of_every_length() {
+    let src = "function sep(i: i64): string {
+    return i % 3 == 0 ? \"|\" : (i % 3 == 1 ? \"<>\" : \"\");
+}
+
+function grow(i: i64, n: i64, acc: string, src: string): string {
+    if (i == n) {
+        return acc;
+    }
+    const len = i % 41;
+    const at = (i * 7) % (src.length - 41);
+    return grow(i + 1, n, acc + src.slice(at, at + len) + sep(i), src);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const src = join(map(iota(200), (i) => `${i * 7919 % 1000}`), \"-\");
+    const r = grow(0, n, \"<\", src);
+    print(r.length);
+    print(r.slice(0, Math.min(300, r.length)));
+    print(r.slice(Math.max(0, r.length - 300), r.length));
+    print(sum(map(bytes(r), (c) => i64(c))));
+    return 0;
+}
+";
+    let bin = compile(src, "appends_every_length");
+    for n in ["0", "1", "17", "50", "2000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+}

@@ -1409,6 +1409,18 @@ fn empty_bytes() -> *mut u8 {
 /// The bytes the block of the string `p` can hold (D351): the allocator of
 /// Isocron knows it; with glibc's (`ISC_ALLOC=glibc`) or under WASI, none
 /// counted (a new block).
+/// The usable bytes of the new block `q` of the allocator of Isocron
+/// (`heap::usable`); 0 where they are not known (glibc's allocator, WASI).
+fn usable_bytes(q: *mut u8) -> usize {
+    #[cfg(not(target_os = "wasi"))]
+    if HEAP_MODE.load(Ordering::Relaxed) == 2 && q as usize % 64 == 0 {
+        // SAFETY: a block just taken from the allocator of Isocron
+        return unsafe { heap::usable(q) };
+    }
+    let _ = q;
+    0
+}
+
 fn room(p: *mut u8) -> usize {
     // only a block of the heap (aligned on 64 bytes) has room: not a literal
     // of the program (D361), a line of `lines`, the empty string
@@ -1433,19 +1445,34 @@ unsafe fn append_parts(p: *mut u8, n: usize, parts: &[IscStr]) -> IscStr {
     if more == 0 {
         return IscStr { ptr: p, len: n as i64 };
     }
-    let (q, keep) = if room(p) >= total {
-        (p, true)
+    let r = room(p);
+    let (q, keep, cap) = if r >= total {
+        (p, true, r)
     } else {
-        let q = isc_alloc(total.max(2 * n) as i64);
+        let size = total.max(2 * n);
+        let q = isc_alloc(size as i64);
         copy_short(p, q, n);
-        (q, false)
+        (q, false, usable_bytes(q))
     };
     // short parts by moves, not by calls of `memcpy` (D459: 9.5 % of
-    // `json.quote` of escaped texts, parts of one or two bytes)
+    // `json.quote` of escaped texts, parts of one or two bytes); a part of
+    // at most 16 bytes by one move of 16 when the block of the result has
+    // room for them past its place and the 16 bytes read stay in the page
+    // of the part (D508: the moves of 1 to 3 bytes, each a branch and a
+    // load after another, 31 % of `append_parts`); `cap` 0 (the allocator
+    // of glibc, whose blocks are not known) never
     let mut at = n;
     for s in parts {
-        copy_short(s.ptr, q.add(at), s.len as usize);
-        at += s.len as usize;
+        let len = s.len as usize;
+        if len <= 16 && at + 16 <= cap && (s.ptr as usize) & 4095 <= 4096 - 16 {
+            // SAFETY: 16 bytes in the page of the part (mapped), written
+            // inside the block of the result (`cap` its usable bytes)
+            let v = core::ptr::read_unaligned(s.ptr as *const u128);
+            core::ptr::write_unaligned(q.add(at) as *mut u128, v);
+        } else {
+            copy_short(s.ptr, q.add(at), len);
+        }
+        at += len;
     }
     if !keep {
         isc_free(p);

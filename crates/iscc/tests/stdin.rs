@@ -582,3 +582,41 @@ fn a_join_read_by_a_map_is_never_made() {
         assert_eq!(r.stderr.trim_end(), msg, "T={}", t);
     }
 }
+
+/// D508: parts of 0 to 15 bytes taken at the end of a standard input of 8
+/// MiB mapped from its file (D257), whose last page ends the mapping,
+/// appended to a text: the moves of 16 bytes stop at the end of the page of
+/// a part (copied by moves of their own size there).
+#[test]
+fn appends_of_parts_at_the_end_of_a_mapped_input() {
+    let src = "function bar(k: i64): string {
+    return k % 2 == 0 ? \"|\" : \"!\";
+}
+
+function grow(t: string, k: i64, acc: string): string {
+    if (k == 16) {
+        return acc;
+    }
+    const n = t.length;
+    return grow(t, k + 1, acc + t.slice(n - k, n) + bar(k));
+}
+
+action main(args: string[k]): i32 {
+    print(grow(readStdinText(), 0, \"[\"));
+    return 0;
+}
+";
+    let size = 8 << 20;
+    let text: Vec<u8> = (0..size).map(|i| b'a' + (i % 26) as u8).collect();
+    let path = tmp("appends_mapped.txt");
+    std::fs::write(&path, &text).unwrap();
+    let mut want = String::from("[");
+    for k in 0..16 {
+        want.push_str(std::str::from_utf8(&text[size - k..]).unwrap());
+        want.push(if k % 2 == 0 { '|' } else { '!' });
+    }
+    want.push('\n');
+    let bin = compile(src, "appends_mapped");
+    let o = std::process::Command::new(&bin).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want), "{}", String::from_utf8_lossy(&o.stderr));
+}

@@ -11328,3 +11328,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     panic; the prefix sums of `i32` in vectors of 16 lanes. It fails
     without the replay (no vectors) and with the vectors not replayed (the
     panic of `a[82]`) (mutations checked).
+- **D508 — Short parts appended by one move of 16 bytes; the closing quote
+  of `json.quote` with its last part (2026-11-08).** Profile of
+  `json.quote` of escaped texts (one CPU at fixed frequency): the loop
+  38.3 %, `append_parts` 38.0 %, `isc_free` 7.9 %, the other calls of the
+  appends 8.3 %. The 619 samples of `append_parts`: the moves of 1 to 3
+  bytes (three loads and stores, one after a shift) 31 %, its entry and
+  exit (six registers saved) 25 %, the sum of the lengths 14.5 %, the room
+  of the block 7 %.
+  - `append_parts` (`isc_str_append_n`, `isc_str_append`) copies a part of
+    at most 16 bytes by one load and one store of 16 when the block of the
+    result has room for them past its place (`room`, or the usable bytes of
+    a new block of the allocator of Isocron: `usable_bytes`, 0 with glibc's
+    allocator and under WASI, never then) and the 16 bytes read stay in the
+    page of the part. The bytes past the part are written inside the block
+    of the result, past the end of its text.
+  - `escapeFrom` writes the closing quote with the last part of the text:
+    one append less a text.
+  - Measured (A/B of the binaries of the compilers of fb1eee4 and of this
+    change, 9 alternated runs, one CPU at fixed frequency):
+    `quote.escaped` 81.55 -> 74.20 ns (-9.0 %); the other forms of `json`
+    within -1.1 to +2.4 % (`decode` +2.4 %: its IR the same, its functions
+    calling no append, the place of the code, D504); `quote` of texts of
+    300 bytes +1.9 % (overlapping); `pidigits` (an append a digit) 299.0 ->
+    298.6 ms; `sys`, `time`, `net`, `http`, `https` every form within the
+    spread of its runs. `run.py` of `json` (5 runs of 200 rounds):
+    `quote.escaped` 73.17 ns, 3.70 times its floor (4.13 before).
+  - Tests: `appends_of_parts_of_every_length` (`strings.rs`): a text grown
+    by 0 to 2000 appends of parts of 0 to 40 bytes and of the text of a
+    call (`isc_str_append_n`), the interpreter's; it fails with moves of 8
+    bytes for the parts of 16 (mutation checked).
+    `appends_of_parts_at_the_end_of_a_mapped_input` (`stdin.rs`): parts of
+    0 to 15 bytes at the end of a standard input of 8 MiB mapped from its
+    file; its values only: the mapping has a readable page after the file
+    (`map_stdin`), so a read past the page of a part does not fault there
+    (the test passes with the check of the page removed). The check stays
+    for the parts whose page may end a mapping (literals, lines).

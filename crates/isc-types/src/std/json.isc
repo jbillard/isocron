@@ -347,7 +347,7 @@ export function quote(s: string): string {
     if (count(b, (c) => c < 32u8 || c == 34u8 || c == 92u8) == 0) {
         return `"${s}"`;
     }
-    return escapeFrom(s, b, 0, "\"") + "\"";
+    return escapeFrom(s, b, 0, "\"");
 }
 
 // the escape of a byte of a string of JSON: `\"`, `\\`, `\n`, `\r`, `\t`,
@@ -373,13 +373,14 @@ function escapeOf(c: u8): string {
 }
 
 // the text of `s` escaped from its byte `i`, after `acc` (owned: each part
-// written after it in its block, rule A): one pass (D397: six `replaceAll`
-// and a count of the text for each control, 14.1 times its floor), the
-// next byte to escape found by vectors (rule F, D505)
+// written after it in its block, rule A), then its closing quote: one pass
+// (D397: six `replaceAll` and a count of the text for each control, 14.1
+// times its floor), the next byte to escape found by vectors (rule F,
+// D505), the quote with the last part (D508)
 function escapeFrom(s: string, b: u8[n], i: i64, acc: string): string {
     const k = findIndex(b.slice(i, b.length), (c) => c < 32u8 || c == 34u8 || c == 92u8);
     if (k < 0) {
-        return acc + s.slice(i, b.length);
+        return acc + s.slice(i, b.length) + "\"";
     }
     const e = i + k;
     return escapeFrom(s, b, e + 1, acc + s.slice(i, e) + escapeOf(b[e]));
