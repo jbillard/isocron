@@ -1288,3 +1288,62 @@ action main(args: string[k]): i32 {
         }
     }
 }
+
+/// D518: a text freed by the compiled code as a part of a tuple (taken out
+/// of it, or the tuple freed) tests first whether it is a literal of the
+/// program kept as a string (D361: 4 bytes past a multiple of 16, where no
+/// block starts), which the runtime never frees, and does not call
+/// `isc_free` then. Literals and texts of the heap in tuples, records,
+/// accumulators and the branches of `if`s, freed at the end of their
+/// scopes: the interpreter's output on 1 and 4 threads, nothing lost or
+/// freed twice under valgrind, the test before the call in the LLVM.
+#[test]
+fn literals_kept_as_strings_not_given_to_isc_free() {
+    let src = "type Item = { label: string, n: i64 };
+
+function item(i: i64): Item {
+    return { label: i % 3 == 0 ? \"zero\" : (i % 3 == 1 ? `one ${i}` : \"\"), n: i };
+}
+
+function why(i: i64): [i64, string] {
+    return i % 2 == 0 ? [i, \"\"] as const : [-1, `odd ${i}`] as const;
+}
+
+function grow(i: i64, n: i64, acc: string): string {
+    if (i == n) {
+        return acc;
+    }
+    const [k, w] = why(i);
+    return grow(i + 1, n, k >= 0 ? acc : acc + w);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(sum(map(iota(n), (i) => item(i).label.length)));
+    print(sum(map(iota(n), (i) => {
+        const [k, w] = why(i);
+        return k + w.length;
+    })));
+    print(grow(0, n, \"\").length);
+    print(grow(0, 7, \"start\"));
+    return 0;
+}
+";
+    let bin = compile(src, "literals_not_freed");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    // the low bits of the pointer of a text tested against 4 before a call
+    // of `isc_free`
+    let lines: Vec<&str> = ll.lines().collect();
+    let tested = lines.iter().enumerate().any(|(k, l)| {
+        l.contains("call void @isc_free(ptr") && lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4"))
+    });
+    assert!(tested, "a text freed without the test of a literal");
+    for n in ["0", "1", "10", "1000"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "n {} {} threads: {}", n, t, r.stderr);
+        }
+    }
+    valgrind_clean(src, "literals_not_freed", &["300"]);
+}

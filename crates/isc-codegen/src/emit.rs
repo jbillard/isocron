@@ -494,6 +494,9 @@ pub struct Gen<'p> {
     /// elements of the vector again one at a time, where a failed check
     /// jumps, so that the panic is the one of the scalar loop (D185).
     vec_fail: Option<String>,
+    /// The texts freed now are parts of tuples (D518): tested as literals
+    /// of the program before the call of `isc_free`.
+    literal_test: bool,
     /// The `let`s of a split `fold` (D260): the values of each element
     /// computed before its loop, in a slot on the stack, its type, and the
     /// variable of the element (the index into the slot).
@@ -1042,6 +1045,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         env: HashMap::new(),
         divmod: Vec::new(),
         vec_fail: None,
+        literal_test: false,
         split_vars: HashMap::new(),
         split_fail: None,
         split_fresh: VarId::MAX,
@@ -3129,8 +3133,32 @@ impl<'p> Gen<'p> {
                 self.br(&ljoin);
                 self.block(&ljoin);
             }
-            // a string: its bytes (D134)
-            Type::Str | Type::Big => {
+            // a string: its bytes (D134); a part of a tuple (a message of
+            // the faults of a reader, often a literal): a literal of the
+            // program kept as a string (D361, 4 bytes past a multiple of 16,
+            // where no block starts) not given to the runtime, which would
+            // only find it out (D518; tested for every text, the code around
+            // other drops laid out otherwise by LLVM: `time.formatDateTime`
+            // +8.2 %, `strings.template` +3.8 %)
+            Type::Str if !self.literal_test => {
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+                self.emit(format!("call void @isc_free(ptr {})", p));
+            }
+            Type::Str => {
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+                let pi = self.ins(format!("ptrtoint ptr {} to i64", p));
+                let low = self.ins(format!("and i64 {}, 15", pi));
+                let lit0 = self.ins(format!("icmp eq i64 {}, 4", low));
+                self.decls.insert("declare i1 @llvm.expect.i1(i1, i1)".to_string());
+                let lit = self.ins(format!("call i1 @llvm.expect.i1(i1 {}, i1 false)", lit0));
+                let (lfree, ljoin) = (self.label(), self.label());
+                self.cbr(&lit, &ljoin, &lfree);
+                self.block(&lfree);
+                self.emit(format!("call void @isc_free(ptr {})", p));
+                self.br(&ljoin);
+                self.block(&ljoin);
+            }
+            Type::Big => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
                 self.emit(format!("call void @isc_free(ptr {})", p));
             }
@@ -3185,12 +3213,14 @@ impl<'p> Gen<'p> {
                 self.block(&lj);
             }
             Type::Tuple(ts) => {
+                let saved = std::mem::replace(&mut self.literal_test, true);
                 for (i, c) in ts.iter().enumerate() {
                     if c.has_heap() {
                         let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
                         self.drop_value(&v(f, lt(c)), c);
                     }
                 }
+                self.literal_test = saved;
             }
             _ => {}
         }
@@ -4074,7 +4104,10 @@ impl<'p> Gen<'p> {
                 if *drop && !early {
                     if let Ok(_) = &r {
                         let t = self.var_ty(*var).clone();
+                        // a part taken out of a tuple (D518)
+                        let saved = std::mem::replace(&mut self.literal_test, matches!(init.kind, ExprKind::Take(..)));
                         self.drop_value(&iv, &t);
+                        self.literal_test = saved;
                     }
                 }
                 if buf.is_some() {

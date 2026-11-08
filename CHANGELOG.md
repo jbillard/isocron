@@ -4,6 +4,10 @@
 
 ### The compiler
 
+* A text freed as a part of a tuple that is a literal of the program is not
+  given to the runtime: `json.decode` -2.3 %, `sys.normalize` -3.9 %
+  (D518).
+
 * The functions too large to be inlined are decided one at a time, the
   smallest first: a function no longer counts those it calls that are
   called rather than inlined. The comparison of keys of a decoder of

@@ -11599,3 +11599,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     their values (an escaped key, an escaped text, fields in another
     order) the same compiled and interpreted; it fails with the decisions
     of one turn (mutation checked).
+- **D518 — A part of a tuple freed tests whether it is a literal before
+  the call of `isc_free` (2026-11-08).** Profile of `json.decode` after
+  D517: `isc_free` 7.7 %, many of its calls on literals of the program
+  kept as strings (D361: the empty messages of the faults of the readers,
+  `[i64, string]` and the like), which `isc_free` only finds out (`p % 16
+  == 4`, `is_literal`, after its other tests).
+  - Tried first for every text freed by the compiled code: the low bits of
+    its pointer tested, no call for a literal. Measured (A/B against
+    a725e4f, 7 runs, one CPU at fixed frequency): `json.decode` -8.7 %
+    (-10.7 % with `llvm.expect` on the test), `parse` -5.6 %,
+    `time.format` -4.4 %, `sys.normalize` -2.8 %; but `http.headerOf`
+    +12.1 % (its task of 4100 instructions laid out otherwise by LLVM, more
+    constants kept in registers; back within its spread with
+    `llvm.expect`), `time.formatDateTime` +8.2 % (+7.5 and +7.8 % with the
+    functions aligned on 128 and 256 bytes; alone +2.6 %, 4 instructions
+    more a call, the registers of its task allocated otherwise),
+    `strings.trim` +2.1 to +4.3 %, `strings.template` +3.8 %: not kept.
+  - Kept: the test only for a text freed as a part of a tuple (the parts of
+    a tuple freed, or a `let` of a part taken out of one, `Take`), where the
+    messages of faults are. The ten programs: the same LLVM. Measured (A/B
+    against a725e4f, 7 runs, the groups whose LLVM changed: `json`, `maps`,
+    `sys`, `http`, `net`, `https`, `http_serve`, `https_serve`,
+    `https_serve_tls`): `json.decode` -2.3 %, `sys.normalize` -3.9 %;
+    `http.parseUrl` -5.6 % (its loop the same, the place of the code);
+    `net.setTimeout` +3.1 %: its function the same machine code, only
+    `isc_main_body` 26 instructions longer (the place of the code); every
+    other form within the spread of its runs. `run.py` of `json` and `sys`
+    (5 runs of 200 rounds): `json.decode` 279.11 ns, 3.06 times its floor
+    (3.12 before); `json.parse` 617.22 ns, 3.61 (3.66).
+  - Test `literals_kept_as_strings_not_given_to_isc_free` (`strings.rs`):
+    literals and texts of the heap in tuples, records, accumulators and
+    branches, the interpreter's output on 1 and 4 threads, valgrind clean,
+    the test of the pointer before the call in the LLVM; it fails without
+    the test (mutation checked).
