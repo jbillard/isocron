@@ -11545,3 +11545,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     held within the margin of the floor (256 KiB), and a frame may hold 32
     KiB of buffers (`WINDOW_STACK`, `STACK_SCRATCH`) or an array literal of
     any length (D191): not bounded here.
+- **D516 — `memcmp` and the copies of 2 bytes weighed in the ten programs:
+  closed by measure (2026-11-08).** Two items of TODO (D288): `memcmp` of
+  384 to 2048 bytes 6 to 9 % slower than glibc's, its cause not shown
+  (the loop alone as fast as glibc's whole `memcmp`; copies of glibc's
+  loop vary by 13 % with the place of the code alone); the copies and
+  fills of 2 bytes 2 to 3 cycles slower, "to be laid out without
+  assembly, or shown not to matter in the programs".
+  - Measured: the ten programs of the Benchmarks Game built with the
+    compiler of cf92c0b (symbols kept), `perf record` of user cycles at 4
+    kHz, 4 threads, one run each: `memcmp` 0.16 % of pidigits, in no other
+    program; `memcpy` 2.44 % of regex-redux (30 samples, spread over its
+    paths), 1.82 % of k-nucleotide (197 samples, all in the path of 32 to
+    64 bytes: its lines of 60 bytes, on the loads), 0.55 % of pidigits;
+    `memset` below 0.01 % of fannkuch-redux; none in the six others. No
+    sample in the paths of 1 to 3 bytes.
+  - So the difference of `memcmp` weighs at most 0.016 % of one program
+    (9 % of 0.16 %), and the copies of 2 bytes nothing: both closed by
+    this measure, as D265, the cause of the first left as D288 found it
+    (the place of the code moves glibc's own loop by 13 %).
