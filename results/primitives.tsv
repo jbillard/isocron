@@ -19,6 +19,7 @@ net	resolve.hosts	4434.180	1951.835
 maps	get.i64	4.193	1.892
 sys	readFile.4k	4219.195	1918.450
 maps	Map.build.i64	4.965	2.371
+io	readStdinLines.line	24.730	12.332
 strings	indexOf.1	6.105	3.083
 maps	has.miss.i64	3.032	1.572
 strings	bytes	1.520	0.827
@@ -40,6 +41,7 @@ sys	envAll	1948.335	1203.490
 strings	includes.3	20.248	12.569
 strings	equal	4.932	3.138
 numbers	parseF64	14.076	9.025
+io	print.line	25.453	16.383
 arrays	filter.sum	1.332	0.861
 strings	startsWith.1	1.679	1.108
 sys	basename	7.309	4.825
@@ -81,6 +83,7 @@ time	daysBetween	13.158	11.358
 net	setTimeout	471.520	410.080
 time	formatIso	54.546	48.496
 arrays	concat	0.376	0.338
+io	printBytes.byte	0.310	0.279
 time	toDateTime	3.714	3.351
 net	server.roundtrip.64	6987.215	6326.480
 arrays	zip.sum	0.112	0.103

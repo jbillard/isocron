@@ -28,6 +28,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | maps | `get.i64` | 4.19 | 1.89 | 2.2 |
 | sys | `readFile.4k` | 4219.19 | 1918.45 | 2.2 |
 | maps | `Map.build.i64` | 4.96 | 2.37 | 2.1 |
+| io | `readStdinLines.line` | 24.73 | 12.33 | 2.0 |
 | strings | `indexOf.1` | 6.11 | 3.08 | 2.0 |
 | maps | `has.miss.i64` | 3.03 | 1.57 | 1.9 |
 | strings | `bytes` | 1.52 | 0.83 | 1.8 |
@@ -49,6 +50,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | strings | `includes.3` | 20.25 | 12.57 | 1.6 |
 | strings | `equal` | 4.93 | 3.14 | 1.6 |
 | numbers | `parseF64` | 14.08 | 9.03 | 1.6 |
+| io | `print.line` | 25.45 | 16.38 | 1.6 |
 | arrays | `filter.sum` | 1.33 | 0.86 | 1.5 |
 | strings | `startsWith.1` | 1.68 | 1.11 | 1.5 |
 | sys | `basename` | 7.31 | 4.83 | 1.5 |
@@ -90,6 +92,7 @@ nanoseconds of one call, ranked by Isocron over its floor.
 | net | `setTimeout` | 471.52 | 410.08 | 1.1 |
 | time | `formatIso` | 54.55 | 48.50 | 1.1 |
 | arrays | `concat` | 0.38 | 0.34 | 1.1 |
+| io | `printBytes.byte` | 0.31 | 0.28 | 1.1 |
 | time | `toDateTime` | 3.71 | 3.35 | 1.1 |
 | net | `server.roundtrip.64` | 6987.22 | 6326.48 | 1.1 |
 | arrays | `zip.sum` | 0.11 | 0.10 | 1.1 |

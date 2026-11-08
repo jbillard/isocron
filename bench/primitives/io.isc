@@ -1,0 +1,36 @@
+// bench-io
+// The audit of every form against the machine (TODO, D299): the standard
+// output and input (D498): `print` of a number a line, `printBytes` of 64
+// KiB, `readStdinLines` of a million lines of numbers. The standard output
+// a regular file, the input a file of `run.py`; the results written into
+// the file `args[1]` (a name, the nanoseconds of one line or byte, a
+// checksum); run on one thread (ISC_THREADS=1), against `io.c` (the same
+// work in C, the floor).
+// usage: io <rounds> <results> < input > output
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    const n = 4096;
+    const xs = map(iota(n), (i) => (i * 7919 * 104729) % 1000000007 - 500000000);
+    const block = map(iota(65536), (i) => u8(65 + i % 26));
+    const t0 = clock();
+    forEach(iota(r), (k) => {
+        forEach(xs, (x) => {
+            print(x);
+        });
+    });
+    const t1 = clock();
+    forEach(iota(r), (k) => {
+        printBytes(block);
+    });
+    const t2 = clock();
+    const lines = readStdinLines();
+    const s = sum(map(lines, parseI64));
+    const t3 = clock();
+    const m = lines.length;
+    writeText(args[1], `print.line ${(f64(t1 - t0) / f64(r * n)).toFixed(3)} ${sum(xs) * r}
+printBytes.byte ${(f64(t2 - t1) / f64(r * 65536)).toFixed(3)} ${r * 65536}
+readStdinLines.line ${(f64(t3 - t2) / f64(m)).toFixed(3)} ${s}
+`);
+    return 0;
+}

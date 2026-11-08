@@ -874,6 +874,8 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_print_bool(i32)",
     "declare void @isc_print_str(ptr, i64)",
     "declare void @isc_print_newline()",
+    "declare void @isc_print_i64_line(i64)",
+    "declare void @isc_print_u64_line(i64)",
     "declare void @isc_print_bytes(ptr, i64)",
     "declare void @isc_flush()",
     "declare void @isc_try_parse_i64(ptr, ptr, ptr, i64)",
@@ -12618,6 +12620,19 @@ impl<'p> Gen<'p> {
                     _ => "isc_write_bytes",
                 };
                 self.emit(format!("call void @{}(ptr {}, i64 {}, ptr {}, i64 {}, {})", f, p, n, d, m, pos));
+                v("false", "i1")
+            }
+            // an integer: its digits and the newline in one call (D498)
+            ActionOp::Print(_) if matches!(args[0].ty, Type::Int(_)) => {
+                let Type::Int(k) = &args[0].ty else { unreachable!() };
+                let w = if k.bits() < 64 {
+                    let op = if k.signed() { "sext" } else { "zext" };
+                    self.ins(format!("{} i{} {} to i64", op, k.bits(), vals[0].r))
+                } else {
+                    vals[0].r.clone()
+                };
+                let f = if k.signed() { "isc_print_i64_line" } else { "isc_print_u64_line" };
+                self.emit(format!("call void @{}(i64 {})", f, w));
                 v("false", "i1")
             }
             ActionOp::Print(k) => {

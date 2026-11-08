@@ -49,6 +49,36 @@ def run(cmd, cpu, env=()):
     return forms
 
 
+def io_input():
+    """The standard input of a group that declares `// bench-io` (D498): a
+    million lines of numbers of both signs, made once."""
+    path = os.path.join(build, "io_input.txt")
+    if not os.path.exists(path):
+        with open(path + ".tmp", "w") as f:
+            f.write("".join("%d\n" % ((i * 7919 * 104729) % 1000000007 - 500000000) for i in range(1000000)))
+        os.replace(path + ".tmp", path)
+    return path
+
+
+def run_io(cmd, cpu):
+    """For a group that declares `// bench-io` (D498): `cmd` as `run` does,
+    its standard input the file of `io_input`, its standard output a regular
+    file, the path of a file for its lines as its last argument; those lines
+    as {name: (ns, checksum)}."""
+    res = os.path.join(build, "io_results.txt")
+    if os.path.exists(res):
+        os.remove(res)
+    full = ["sudo", "-n", "systemd-run", "--quiet", "--scope", "--slice=isc-bench", "-p", "AllowedCPUs=" + cpu,
+            "--uid=%d" % os.getuid(), "--gid=%d" % os.getgid(), "-E", "ISC_THREADS=1"] + cmd + [res]
+    with open(io_input()) as stdin, open(os.path.join(build, "io_output.txt"), "w") as stdout:
+        subprocess.run(full, check=True, stdin=stdin, stdout=stdout)
+    forms = {}
+    for line in open(res):
+        name, ns, check = line.split()
+        forms[name] = (float(ns), check)
+    return forms
+
+
 def run_served(cmd, cpu, port, client):
     """For a group that declares `// bench-client: tls` (D416) or `http`
     (D431): `cmd`, a server on `port`, on the CPU `cpu` alone as `run` does,
@@ -210,6 +240,8 @@ def main():
                         else:
                             args = [str(a.rounds), str(port), os.path.join(d, "server.pem"), os.path.join(d, "server.key")]
                             lines = run_served([b] + args, cpu, port, [client, str(a.rounds), str(port), os.path.join(d, "ca.pem")])
+                    elif "// bench-io" in text:
+                        lines = run_io([b, str(a.rounds)], cpu)
                     else:
                         # the authority of the session as the authorities of
                         # the system for both (`https.get`, D431)

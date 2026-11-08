@@ -392,7 +392,9 @@ fn out_held(bytes: &[u8]) {
                 return;
             }
         }
-        o.data[o.len..o.len + bytes.len()].copy_from_slice(bytes);
+        // a few bytes by moves, not a call of `memcpy` (D498: the digits of a
+        // number a line, 15 % of the cycles of `print` there)
+        copy_short(bytes.as_ptr(), o.data.as_mut_ptr().add(o.len), bytes.len());
         o.len += bytes.len();
     }
 }
@@ -1205,6 +1207,43 @@ pub extern "C" fn isc_print_i64(v: i64) {
 pub extern "C" fn isc_print_u64(v: u64) {
     let mut b = [0u8; 20];
     out(decimal(v, &mut b));
+}
+
+/// `print(v)` of an integer: its digits and the newline written at once,
+/// as `isc_print_i64` then `isc_print_newline` (one test of the tasks, the
+/// end of the line for a terminal or a pipe) (D498: two calls a line, the
+/// buffer taken twice).
+#[no_mangle]
+pub extern "C" fn isc_print_i64_line(v: i64) {
+    let mut b = [0u8; 21];
+    let n = signed_decimal(v, (&mut b[..20]).try_into().unwrap()).len();
+    // the digits are at the end of the 20 bytes: the newline after them
+    b[20] = b'\n';
+    print_line(&b[20 - n..]);
+}
+
+#[no_mangle]
+pub extern "C" fn isc_print_u64_line(v: u64) {
+    let mut b = [0u8; 21];
+    let n = decimal(v, (&mut b[..20]).try_into().unwrap()).len();
+    b[20] = b'\n';
+    print_line(&b[20 - n..]);
+}
+
+/// The bytes of a whole line (its newline included) to the standard
+/// output, as `isc_print_newline` ends one.
+fn print_line(bytes: &[u8]) {
+    let shared = ACTIONS.load(core::sync::atomic::Ordering::Relaxed) != 0;
+    if shared {
+        hold_out_shared();
+    }
+    out_held(bytes);
+    if out_by_lines() {
+        flush_stdout();
+    }
+    if shared {
+        release_out();
+    }
 }
 
 /// The pairs of decimal digits "00" to "99".

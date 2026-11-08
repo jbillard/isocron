@@ -11066,3 +11066,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     this CPU: 5 `divl` in its code with and without that feature asked,
     64.87 -> 64.81 ns), but tests at each division whether both fit, on the
     chain of the loop; the floor tests once.
+- **D498 — The group of the standard output and input measured, and an
+  integer printed in one call (2026-11-08).** The audit of the forms (TODO:
+  "input and output") had no microbenchmark of the standard streams (the
+  files are in `sys`). Now `bench/primitives/io.isc` and its floor `io.c`
+  (one thread): `print` of 4096 numbers a round (a line each), `printBytes`
+  of 64 KiB a round, `readStdinLines` of a million lines of numbers summed
+  once. `run.py` gives a group that declares `// bench-io` a standard
+  input it makes once (`build/io_input.txt`), a regular file as its
+  standard output, and the path of a file for its lines of results as its
+  last argument (its standard output is what it measures). The floor: the
+  digits written into a buffer of 64 KiB written by `write` when full, the
+  64 KiB written at once, the input read whole and its lines parsed as
+  `memchr` finds them; the outputs of the floor and of Isocron the same
+  bytes.
+  - `print` of a number: profile (one CPU at fixed frequency, 2048000
+    lines): 26.5 ns a line; `memcpy` 15.3 % (the digits copied into the
+    buffer by `copy_from_slice`), two calls a line (`isc_print_i64`, then
+    `isc_print_newline`, the buffer taken twice), the loop of `forEach` (a
+    call of its action by its address an element) 32.7 %. Now a few bytes
+    written to the buffer of the standard output are copied by moves
+    (`copy_short` of D459), and `print` of one integer calls
+    `isc_print_i64_line` (or `_u64_`): its digits and the newline in one
+    buffer, one test of the tasks, the end of the line for a terminal or a
+    pipe as before.
+  - Measured (the old and new binaries of `io` and the floor, 7 alternated
+    runs, fixed frequency, the same outputs): `print.line` 26.735 -> 24.937
+    ns (-6.7 %), `printBytes` and `readStdinLines` within 0.4 %; `run.py`:
+    `readStdinLines.line` 2.01 times its floor, `print.line` 1.55,
+    `printBytes.byte` 1.11. The LLVM IR of the ten programs the same but
+    fannkuch-redux's `print(checksum)` (one call; its output the same).
+  - Test `integers_printed_a_line_at_once` (`actions.rs`: integers of every
+    width and their bounds, 16 actions of `mapParallel` printing 300 each
+    at the same time to a pipe, against the interpreter, 1 and 4 threads;
+    without the newline in `isc_print_i64_line` it fails).

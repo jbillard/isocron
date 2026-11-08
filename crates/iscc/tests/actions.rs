@@ -237,3 +237,51 @@ fn map_takes_an_action() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want), "{} threads: {}", t, r.stderr);
     }
 }
+
+/// D498: `print` of an integer writes its digits and its newline in one
+/// call: integers of every width and their bounds, 16 actions of
+/// `mapParallel` that print 300 integers each at the same time (no line cut
+/// by another), to a pipe (a line at a time); the same lines as the
+/// interpreter (sorted: the tasks run at the same time), on 1 and 4 threads.
+#[test]
+fn integers_printed_a_line_at_once() {
+    let src = "action numbers(i: i64): i64 {
+    forEach(iota(300), (k) => {
+        print((i * 1000 + k) * 1000000007 - 9000000000);
+    });
+    return i;
+}
+
+action main(args: string[k]): i32 {
+    print(-9223372036854775807 - 1);
+    print(9223372036854775807);
+    print(18446744073709551615u64);
+    print(i8(-128));
+    print(u8(255));
+    print(i16(-32768));
+    print(u16(65535));
+    print(i32(-2147483648));
+    print(u32(4294967295));
+    print(0);
+    const a = mapParallel(iota(16), (i) => numbers(i));
+    print(reduce(a, (x, y) => x + y, 0));
+    return 0;
+}
+";
+    let sorted = |s: &str| {
+        let mut v: Vec<&str> = s.lines().collect();
+        v.sort();
+        v.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let want = interp_ok(src, &[]);
+    assert_eq!(want.lines().count(), 10 + 16 * 300 + 1);
+    assert!(want.starts_with("-9223372036854775808\n9223372036854775807\n18446744073709551615\n-128\n255\n-32768\n65535\n-2147483648\n4294967295\n0\n"), "{}", &want[..200]);
+    let bin = compile(src, "integers_a_line");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!(r.code, 0, "{} threads: {}", t, r.stderr);
+        assert!(r.stdout.starts_with(&want[..want.find("0\n").unwrap() + 2]), "{} threads: the first lines", t);
+        assert!(r.stdout.ends_with("120\n"), "{} threads: {}", t, &r.stdout[r.stdout.len() - 30..]);
+        assert!(sorted(&r.stdout) == sorted(&want), "{} threads: other lines", t);
+    }
+}

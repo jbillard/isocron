@@ -297,10 +297,11 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [ ] The strings still above their floor: templates (3.6 -> 1.4, D359, D363), `concat` (2.9 -> 2.0, D368)
   - [x] `padStart` 4.9 times its floor, shown by measure: 8.7 of its 31.3 cycles a call to free the block of its result, 15.9 to take it, fill and copy; the floor makes no block (D378)
   - [ ] The strings that live inside one expression placed on the stack (an analysis of where a value escapes): no block made and freed for them (D378); done for the concatenations that give a text its scope only reads (D404: a buffer of 128 bytes); left: the other operations that make a text (`padStart`, `toString`, `toUpperCase`, the copies), arrays
-- [ ] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output
+- [x] The other groups of forms: numbers (parsing, floats), arrays, control and calls, groupings and maps, sorts, input and output (D487, D488, D492, D495, D497, D498)
   - [x] Numbers: `toFixed`, the text of a double, `parseI64`, `parseF64` (D487: each at most 2.58 times its floor)
   - [x] Arrays: `map`, `filter`, `concat`, `zip`, `fold`, `scan`, `fill`, slices (D495: a `map` of a zip made one `map`, every form at most 1.79 times its floor)
   - [x] Control and calls: a recursion, a tail recursion, a `match`, branches of the data (D497: every form at most 1.39 times its floor)
+  - [x] Input and output: `print`, `printBytes`, `readStdinLines` (D498: an integer printed in one call; every form at most 2.01 times its floor)
   - [x] Sorts: numbers by their bytes (D488: `sort.i64` -70 %, `sortBy.length` -63 %); `sortBy` of texts bound by their representation (1.24 times C with it, D488); every other form at most 1.81 times its floor (D489)
 - [x] The fixed alternatives of a search by lanes of AVX-512: a count 0.29 -> 0.20 ns a byte, regex-redux -13.31 % (D306)
 - [x] The text between the matches of a replacement moved by 32 bytes, no branch on its length: regex-redux -9.65 % (D308)
