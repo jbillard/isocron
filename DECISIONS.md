@@ -4564,6 +4564,9 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   of the cycles changed). The runtime is now built with
   `-align-all-functions=6 -align-loops=64` (LLVM): a function and its loops
   keep their place in those windows whatever code comes before them.
+  (Contradicted, D550: the uop cache gives 99.4 to 99.8 % of the
+  micro-ops of regex-redux with and without the alignment, its cycles the
+  same within 1 %: the windows of the decoders are not the cause.)
   - Measured (fixed frequency, 4 threads, best of 15): regex-redux by a
     pipe, D255 and D255 with D257 aligned: 318.74 and 317.15 ms; from its
     file: 0.294 and 0.289 s. The functions alone aligned: 321.67 and 321.05
@@ -12475,3 +12478,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   this machine, as D55 measured on the kernels (up to 36 % less time than
   V = 16 in L1, nothing more from V = 64). The hypothesis is a fact here;
   the other cores (SSE2, ARM64 set aside, D540) not measured.
+- **D550 — The windows of the decoders behind the alignment of the
+  runtime: not the cause (2026-11-09).** TODO, the hypotheses behind
+  choices (D375: D256 aligned every function and loop of the runtime on 64
+  bytes for « the 32-byte windows of the decoders »). Two runtimes for
+  x86-64-v4 built alike but for the two flags of D256 (8515654 and
+  8389446 bytes), regex-redux built with each and with the functions of
+  the program on 16, 32, 64 and 128 bytes (the runtime after them at
+  other places: its functions moved by 0x20 to 0x80), 9 alternated runs
+  on 4 CPUs at fixed frequency (`perf stat`, the input of 5 million
+  bases): the same output; the cycles of the aligned runtime 793 to 801
+  million over the four places, of the other 798 to 800 million; the uop
+  cache gives 99.4 to 99.8 % of the micro-ops in all eight (`idq.dsb_uops`
+  against `idq.mite_uops`): the decoders and their windows take no part,
+  and the alignment does not make the program less sensitive to its place
+  here (the medians of the cycles 1.0 % apart aligned, 0.25 % not). The
+  effects of the place measured since come from the bubbles after taken
+  branches (D539). The alignment is kept (no cost measured but the size,
+  126208 bytes in this runtime); the cause written in D256 marked
+  contradicted.
