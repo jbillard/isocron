@@ -16,6 +16,10 @@
   faster (D557).
 - `sha256.digest` 17 % faster on large messages: its schedule made first, its
   rounds eight at a time (D560).
+- The body of an HTTP response read in many pieces is joined with each byte
+  copied about three times instead of log2(n) times: a chunked body of 64 KiB
+  26 % faster. A tail call that passes a part of a borrowed parameter (the
+  tail of a list) is now a jump even when values are freed after it (D561).
 
 ## 0.5.0 — 2026-11-09
 

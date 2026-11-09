@@ -643,85 +643,149 @@ fn check_require_tail(p: &Program) -> R<()> {
 // ---------------------------------------------------------------------
 // direct tail calls (SPEC section 11, D102)
 
-thread_local! {
-    /// The variables bound to a string literal around the expression that
-    /// `tail_calls` walks (D301).
-    static LITERALS: core::cell::RefCell<Vec<VarId>> = const { core::cell::RefCell::new(Vec::new()) };
-}
-
 /// A direct tail call: the parameters that receive a temporary (moved into
-/// the loop), those that receive a string literal (borrowed, D301), the
-/// temporaries freed before the jump.
+/// the loop), those that receive a value the loop keeps without owning it
+/// (`lent`: a string literal, D301, or a part of a parameter the loop never
+/// owns, D561), the temporaries freed before the jump.
 pub struct TailCall {
     pub moved: Vec<(usize, VarId)>,
-    pub literals: Vec<usize>,
+    pub lent: Vec<usize>,
     pub free_first: Vec<VarId>,
 }
 
 /// The direct tail calls of function `fi` that can be jumps: each array
 /// argument is the same parameter, a temporary freed after the call (then
-/// moved into the loop), or a variable bound to a string literal (borrowed
-/// data of the program, D301: the loop keeps it without owning it); the
-/// other temporaries freed after the call are freed before the jump.
+/// moved into the loop), a variable bound to a string literal (borrowed
+/// data of the program, D301: the loop keeps it without owning it), or a
+/// variable bound to a part of a borrowed parameter (the tail of a list, a
+/// row, a component: D561), when that parameter's place never receives a
+/// value the loop owns (moved there by a tail call: freed at a later jump,
+/// it would free the part); the other temporaries freed after the call are
+/// freed before the jump.
 pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
-    fn walk(e: &Expr, fi: u32, f: &Function, pending: &mut Vec<VarId>, out: &mut HashMap<*const Expr, TailCall>) {
-        match &e.kind {
-            ExprKind::Let { var, init, body, drop, .. } => {
-                if *drop {
-                    pending.push(*var);
-                }
-                let literal = matches!(init.kind, ExprKind::StrLit(_)) && init.ty == Type::Str && !*drop;
-                if literal {
-                    LITERALS.with(|l| l.borrow_mut().push(*var));
-                }
-                walk(body, fi, f, pending, out);
-                if literal {
-                    LITERALS.with(|l| l.borrow_mut().pop());
-                }
-                if *drop {
-                    pending.pop();
-                }
-            }
-            ExprKind::If(_, t, x) => {
-                walk(t, fi, f, pending, out);
-                walk(x, fi, f, pending, out);
-            }
-            ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => walk(b, fi, f, pending, out),
-            ExprKind::Free(v, b) => {
-                pending.push(*v);
-                walk(b, fi, f, pending, out);
-                pending.pop();
-            }
-            ExprKind::Call(g, args) if *g == fi => {
-                let mut moved = Vec::new();
-                let mut literals = Vec::new();
-                // an owned parameter given again at its place (D351): it
-                // stays in its slot, the next iteration owns it, not freed
-                let mut kept = Vec::new();
-                for (k, a) in args.iter().enumerate() {
-                    if !a.ty.has_heap() {
-                        continue;
+    struct Walk<'a> {
+        fi: u32,
+        f: &'a Function,
+        pending: Vec<VarId>,
+        literals: Vec<VarId>,
+        /// The variables bound to a part of borrowed parameters: the places
+        /// of those parameters.
+        parts: Vec<(VarId, Vec<usize>)>,
+        out: HashMap<*const Expr, TailCall>,
+        /// For each call, the places of the parameters its lent parts come
+        /// from.
+        roots: Vec<(*const Expr, Vec<usize>)>,
+    }
+    impl Walk<'_> {
+        /// The places of the borrowed parameters `e` is a part of (a
+        /// projection, the payload of a node, an element, a view, through
+        /// `let`s of such parts), or None.
+        fn part_of(&self, e: &Expr, inner: &mut Vec<(VarId, Vec<usize>)>) -> Option<Vec<usize>> {
+            match &e.kind {
+                ExprKind::Var(v, _) => {
+                    if let Some(k) = self.f.params.iter().position(|p| p == v) {
+                        let consumed = self.f.consumed.get(k).copied().unwrap_or(false);
+                        return (!consumed).then(|| vec![k]);
                     }
-                    match a.kind {
-                        ExprKind::Var(v, _) if v == f.params[k] => {
-                            if f.consumed.get(k).copied().unwrap_or(false) {
-                                kept.push(v);
-                            }
+                    inner.iter().rev().chain(self.parts.iter().rev()).find(|(w, _)| w == v).map(|(_, r)| r.clone())
+                }
+                ExprKind::Proj(x, _) | ExprKind::Unbox(x) | ExprKind::Index(x, _) | ExprKind::Window(x, _) => self.part_of(x, inner),
+                ExprKind::Slice(x, _, _) if e.ty.slice_is_view() => self.part_of(x, inner),
+                ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => self.part_of(b, inner),
+                ExprKind::Let { var, init, body, drop: false, .. } => {
+                    let r = self.part_of(init, inner)?;
+                    inner.push((*var, r));
+                    let out = self.part_of(body, inner);
+                    inner.pop();
+                    out
+                }
+                _ => None,
+            }
+        }
+
+        fn walk(&mut self, e: &Expr) {
+            match &e.kind {
+                ExprKind::Let { var, init, body, drop, .. } => {
+                    if *drop {
+                        self.pending.push(*var);
+                    }
+                    let literal = matches!(init.kind, ExprKind::StrLit(_)) && init.ty == Type::Str && !*drop;
+                    if literal {
+                        self.literals.push(*var);
+                    }
+                    let part = if !*drop && init.ty.has_heap() { self.part_of(init, &mut Vec::new()) } else { None };
+                    let has_part = part.is_some();
+                    if let Some(r) = part {
+                        self.parts.push((*var, r));
+                    }
+                    self.walk(body);
+                    if has_part {
+                        self.parts.pop();
+                    }
+                    if literal {
+                        self.literals.pop();
+                    }
+                    if *drop {
+                        self.pending.pop();
+                    }
+                }
+                ExprKind::If(_, t, x) => {
+                    self.walk(t);
+                    self.walk(x);
+                }
+                ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => self.walk(b),
+                ExprKind::Free(v, b) => {
+                    self.pending.push(*v);
+                    self.walk(b);
+                    self.pending.pop();
+                }
+                ExprKind::Call(g, args) if *g == self.fi => {
+                    let mut moved = Vec::new();
+                    let mut lent = Vec::new();
+                    let mut roots = Vec::new();
+                    // an owned parameter given again at its place (D351): it
+                    // stays in its slot, the next iteration owns it, not freed
+                    let mut kept = Vec::new();
+                    for (k, a) in args.iter().enumerate() {
+                        if !a.ty.has_heap() {
+                            continue;
                         }
-                        ExprKind::Var(v, _) if pending.contains(&v) && !moved.iter().any(|(_, w)| *w == v) => moved.push((k, v)),
-                        ExprKind::Var(v, _) if LITERALS.with(|l| l.borrow().contains(&v)) => literals.push(k),
-                        _ => return,
+                        match a.kind {
+                            ExprKind::Var(v, _) if v == self.f.params[k] => {
+                                if self.f.consumed.get(k).copied().unwrap_or(false) {
+                                    kept.push(v);
+                                }
+                            }
+                            ExprKind::Var(v, _) if self.pending.contains(&v) && !moved.iter().any(|(_, w)| *w == v) => moved.push((k, v)),
+                            ExprKind::Var(v, _) if self.literals.contains(&v) => lent.push(k),
+                            ExprKind::Var(v, _) if self.parts.iter().any(|(w, _)| *w == v) => {
+                                let (_, r) = self.parts.iter().rev().find(|(w, _)| *w == v).unwrap();
+                                roots.extend(r.iter().copied());
+                                lent.push(k);
+                            }
+                            _ => return,
+                        }
                     }
+                    let free_first = self.pending.iter().copied().filter(|v| !moved.iter().any(|(_, w)| w == v) && !kept.contains(v)).collect();
+                    self.roots.push((e as *const Expr, roots));
+                    self.out.insert(e as *const Expr, TailCall { moved, lent, free_first });
                 }
-                let free_first = pending.iter().copied().filter(|v| !moved.iter().any(|(_, w)| w == v) && !kept.contains(v)).collect();
-                out.insert(e as *const Expr, TailCall { moved, literals, free_first });
+                _ => {}
             }
-            _ => {}
         }
     }
-    let mut out = HashMap::new();
-    walk(&f.body, fi, f, &mut Vec::new(), &mut out);
-    out
+    let mut w = Walk { fi, f, pending: Vec::new(), literals: Vec::new(), parts: Vec::new(), out: HashMap::new(), roots: Vec::new() };
+    w.walk(&f.body);
+    // the places that receive a value the loop owns: a part of the value
+    // there would be freed with it at a later jump; the calls that lend such
+    // parts stay calls
+    let owned: HashSet<usize> = w.out.values().flat_map(|c| c.moved.iter().map(|(k, _)| *k)).collect();
+    for (call, roots) in &w.roots {
+        if roots.iter().any(|k| owned.contains(k)) {
+            w.out.remove(call);
+        }
+    }
+    w.out
 }
 
 /// The tail calls of function `fi` to another function that can reuse its

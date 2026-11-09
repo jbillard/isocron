@@ -144,29 +144,32 @@ function requestFault(method: string, target: string, headers: [string, string][
 // arrays of bytes, the last read first
 type Chunks = Done | More(u8[k], Chunks);
 
-// the arrays of `cs` concatenated two by two onto `acc`, in the reverse
-// order of `cs` (a loop); `newest` when `cs` has the newest first
-function pairs(cs: Chunks, acc: Chunks, newest: boolean): Chunks {
+// `cs` in the reverse order, onto `acc` (a loop)
+function reversed(cs: Chunks, acc: Chunks): Chunks {
     return match (cs) {
         Done => acc,
-        More(x, rest) => match (rest) {
-            Done => More(x, acc),
-            More(y, more) => pairs(more, More(newest ? concat(y, x) : concat(x, y), acc), newest),
-        },
+        More(x, rest) => reversed(rest, More(x, acc)),
     };
 }
 
-// the bytes of the `n` nodes of `cs` in the order they were read (`cs`
-// has the newest first when `newest`): two by two, each byte copied
-// log2(n) times, n nodes made in all
-function flatten(cs: Chunks, n: i64, newest: boolean): u8[k] {
-    if (n <= 1) {
-        return match (cs) {
-            Done => [],
-            More(x, rest) => x,
-        };
-    }
-    return flatten(pairs(cs, Done, newest), (n + 1) / 2, !newest);
+// `acc` followed by the arrays of `cs`, in their order: `acc` owned by the
+// loop and grown in its block (rule A, D351; `concat`, D533)
+function joined(cs: Chunks, acc: u8[a]): u8[k] {
+    return match (cs) {
+        Done => acc,
+        More(x, rest) => joined(rest, concat(acc, x)),
+    };
+}
+
+// the bytes of the nodes of `cs`, the newest first, in the order they were
+// read: each byte copied about three times (the list reversed, then each
+// array added at the end of one that grows), where joining them two by two
+// copied it log2(n) times (D561)
+function flatten(cs: Chunks): u8[k] {
+    return match (reversed(cs, Done)) {
+        Done => [],
+        More(x, rest) => joined(rest, x),
+    };
 }
 
 // the place after the end of the head (CR LF CR LF) from `at`, or -1: a
@@ -198,7 +201,7 @@ action readHead(c: net.Conn, buf: u8[n], from: i64): Result<[u8[k], i64], HttpEr
 // `count` nodes of `cs`)
 action readLength(c: net.Conn, status: i64, hs: [string, string][h], cs: Chunks, count: i64, have: i64, want: i64): Result<Response, HttpError> {
     if (have >= want) {
-        return Ok({ status: status, headers: hs, body: have == want ? flatten(cs, count, true) : flatten(cs, count, true).slice(0, want) });
+        return Ok({ status: status, headers: hs, body: have == want ? flatten(cs) : flatten(cs).slice(0, want) });
     }
     return match (net.read(c, Math.min(want - have, 1048576))) {
         Ok(b) => b.length == 0 ? Err(Malformed(`the body ended after ${have} of ${want} bytes`)) : readLength(c, status, hs, More(b, cs), count + 1, have + b.length, want),
@@ -212,7 +215,7 @@ action readToEnd(c: net.Conn, status: i64, hs: [string, string][h], cs: Chunks, 
         return Err(TooLarge(BODY_LIMIT));
     }
     return match (net.read(c, 1048576)) {
-        Ok(b) => b.length == 0 ? Ok({ status: status, headers: hs, body: flatten(cs, count, true) }) : readToEnd(c, status, hs, More(b, cs), count + 1, have + b.length),
+        Ok(b) => b.length == 0 ? Ok({ status: status, headers: hs, body: flatten(cs) }) : readToEnd(c, status, hs, More(b, cs), count + 1, have + b.length),
         Err(e) => Err(Io(e)),
     };
 }
@@ -279,7 +282,7 @@ function chunksIn(buf: u8[n], at: i64, cs: Chunks, count: i64, have: i64): [Chun
 action readChunked(c: net.Conn, status: i64, hs: [string, string][h], buf: u8[n], crlf: boolean, cs: Chunks, count: i64, have: i64, ps: Chunks, pn: i64, got: i64, want: i64): Result<Response, HttpError> {
     if (want > 0) {
         if (got >= want) {
-            return readChunked(c, status, hs, buf, true, More(flatten(ps, pn, true), cs), count + 1, have + want, Done, 0, 0, 0);
+            return readChunked(c, status, hs, buf, true, More(flatten(ps), cs), count + 1, have + want, Done, 0, 0, 0);
         }
         // at least 64 KiB read (what follows the chunk too, kept in `buf`)
         return match (net.read(c, Math.min(Math.max(want - got, 65536), 1048576))) {
@@ -298,7 +301,7 @@ action readChunked(c: net.Conn, status: i64, hs: [string, string][h], buf: u8[n]
     }
     const [found, n2, h2, at, state, why, len] = crlf && buf.length < 2 ? [cs, count, have, 0, 0, "", 0] as const : chunksIn(buf, crlf ? 2 : 0, cs, count, have);
     if (state == 1) {
-        return Ok({ status: status, headers: hs, body: flatten(found, n2, true) });
+        return Ok({ status: status, headers: hs, body: flatten(found) });
     }
     if (state == -1) {
         return Err(Malformed(why));

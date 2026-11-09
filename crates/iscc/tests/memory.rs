@@ -1097,6 +1097,56 @@ fn sorting_an_array_read_for_the_last_time_moves_its_elements() {
     clean(src, "sort_moves_vg", &["700"]);
 }
 
+/// A tail call that gives a part of a borrowed parameter again (the tail
+/// of a list) is a jump of the loop (D561): a list of 3 million nodes
+/// summed by its loop; a function whose place also receives a new list
+/// (owned by the loop, freed at a later jump) keeps its calls. The same
+/// results as the interpreter, every node freed once (the checked
+/// allocator).
+#[test]
+fn tails_of_borrowed_lists_given_to_loops() {
+    let src = "type List = Nil | Cons(i64, List);
+
+function build(n: i64, acc: List): List {
+    return n == 0 ? acc : build(n - 1, Cons(n, acc));
+}
+
+function sumOf(l: List, acc: i64): i64 {
+    return match (l) {
+        Nil => acc,
+        Cons(x, rest) => sumOf(rest, acc + x),
+    };
+}
+
+function mixed(l: List, n: i64): i64 {
+    if (n == 0) {
+        return sumOf(l, 0);
+    }
+    return match (l) {
+        Nil => n,
+        Cons(x, rest) => n % 3 == 0 ? mixed(Cons(x + 1, rest), n - 1) : mixed(rest, n - 1),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const l = build(n, Nil);
+    print(sumOf(l, 0));
+    print(mixed(build(1000, Nil), 500));
+    return 0;
+}
+";
+    let bin = compile(src, "lent_tails");
+    let want = interp_ok(src, &["1000"]);
+    let r = run_bin(&bin, &["1000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    let n: i64 = 3_000_000;
+    let r = run_bin(&bin, &["3000000"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout.lines().next(), Some((n * (n + 1) / 2).to_string().as_str()));
+    checked_clean(src, "lent_tails", &["100000"]);
+}
+
 /// The texts of a large array sorted by moves (D548), so out of the order of
 /// their places, freed from the highest place down (D557): 200000 texts of
 /// blocks of 128 bytes and more, literals among them, sorted, freed, made

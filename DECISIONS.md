@@ -12837,3 +12837,46 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     array literals that their scope reads), most of what one block costs
     more than its floor; the instructions SHA of the processor stay out of
     v1 (D338).
+- **D561 — The chunks of `http` joined by a loop that grows its array; the
+  parts of a borrowed parameter given to a loop (2026-11-09).** TODO: the
+  join of the chunks of a body (`flatten`: two by two, `pairs`, each byte
+  copied log2(n) times; 22 µs of the 29 that `exchange.chunked64` took more
+  than its floor, D340, D533). The readers cannot own an accumulator (their
+  result wraps the body: rule A wants the parameter itself as a result).
+  Now `flatten(cs)` reverses the list (`reversed`: each chunk copied into
+  its node) and gives it to `joined(cs, acc)`, a pure function whose result
+  is its accumulator: owned (rule A, D351), grown in its block by `concat`
+  (D533, twice its size when it has no room); each byte copied about three
+  times. (`acc: u8[a]` and the result `u8[k]`: the same size variable for
+  both was refused, the accumulator growing.)
+  - Measured first: `exchange.chunked64` 47914.750 -> 148830.420 ns
+    (+210.6 %): `joined` copied its whole accumulator at each call. Its
+    calls to itself were not jumps: `tail_calls` refused the argument
+    `rest`, the tail of the list, a part of the parameter `cs` (neither the
+    parameter itself, a temporary, nor a literal), so the call stayed a
+    call, followed by the frees of its temporaries; rule A copies the
+    accumulator on the entry of each call (the copy that a loop makes once).
+  - `tail_calls` now takes such an argument: a variable bound to a part of
+    a borrowed parameter (a projection, the payload of a node, an element,
+    a view, through `let`s of such parts) is kept by the loop without being
+    owned (`TailCall::lent`, which the string literals of D301 now share:
+    its place's flag set to not owned, the old value freed if the loop
+    owned it; copied into the place of a parameter the loop owns), when the
+    place of that parameter never receives a value the loop owns (moved
+    there by one of its tail calls: freed at a later jump, it would free the
+    part): otherwise the calls that lend such parts stay calls. A borrowed
+    parameter's value lives in its caller for the whole loop, so each part
+    of it does.
+  - Measured (the binaries of 4b198f0 and of this, 7 alternated runs, fixed
+    frequency): `exchange.chunked64` 48025.665 -> 35586.995 ns (-25.9 %,
+    2.36 -> 1.75 times its floor), `get.64k` within 3 %, `textResponse`
+    +3.9 % (12.883 -> 13.389, the spreads overlapping: 12.786 to 14.189
+    against 12.770 to 22.439); the other groups whose code changed
+    (`http_serve`, `https`, `https_serve`, `https_serve_tls`, 5 runs) within
+    3 % but `https.startTls` -3.3 % (one run of the old one at 1.21 ms, the
+    others 1.060 to 1.10 ms); the ten programs the same code.
+  - Tests: `tails_of_borrowed_lists_given_to_loops` (`memory.rs`: the sum of
+    a list of 3 million nodes by a function that gives its tail again; a
+    function whose place also receives a new node, which keeps its calls;
+    against the interpreter, the checked allocator) and the 12 tests of
+    `std_http` (bodies by their length, to their end, chunked).

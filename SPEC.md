@@ -572,7 +572,7 @@ Les fonctions passées en argument sont résolues à la compilation : aucune fer
 
 ### Récursion
 
-- Récursion terminale directe : doit être compilée en boucle, sans croissance de pile.
+- Récursion terminale directe : doit être compilée en boucle, sans croissance de pile. Un argument qui est une partie d'un paramètre emprunté (la queue d'une liste, une composante, une ligne) est gardé par la boucle sans être possédé, sauf si la place de ce paramètre reçoit ailleurs une valeur que la boucle possède : l'appel reste alors un appel (D561).
 - Récursion terminale mutuelle (D113) : un appel en position terminale d'une fonction récursive à une autre réutilise le cadre quand les tableaux qu'il passe sont des paramètres de l'appelant et que la boucle de l'appelant ne possède aucun tableau ; `@requireTail` l'accepte.
 - Récursion non terminale : autorisée, utilise la pile, signalée dans le memory report. Un dépassement de pile est une panne.
 - Une `function` récursive n'est pas inlinée, ni une fonction trop grande (section 7, D336) ; son résultat tableau est matérialisé (règle M2).

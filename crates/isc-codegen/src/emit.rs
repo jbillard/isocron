@@ -2758,14 +2758,14 @@ impl<'p> Gen<'p> {
             let t = lt(ty);
             // a string literal for an owned parameter (a slot without a
             // flag, D351): the loop owns a copy of it
-            if tc.literals.contains(&k) && owned.is_none() && ty.has_heap() {
+            if tc.lent.contains(&k) && owned.is_none() && ty.has_heap() {
                 let c = self.copy_value(x, ty);
                 self.emit(format!("store {} {}, ptr {}", t, c.r, s));
                 continue;
             }
             // a string literal (D301): kept by the loop without owning it,
             // the old value freed if the loop owned it
-            if let (true, Some(o)) = (tc.literals.contains(&k), owned.as_ref()) {
+            if let (true, Some(o)) = (tc.lent.contains(&k), owned.as_ref()) {
                 let own = self.ins(format!("load i1, ptr {}", o));
                 let lf = self.label();
                 let ld = self.label();
