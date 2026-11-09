@@ -1642,3 +1642,30 @@ action main(args: string[k]): i32 {
     let named = "action main(args: string[k]): i32 {\n    const x: i64 = $panic(\"boom\", \"\", \"\");\n    print(x);\n    return 0;\n}\n";
     assert!(isc_types::check_source(named).is_err());
 }
+
+/// D586: `tryParseI64` written in Isocron (the prelude, on the reading of
+/// `parseI64`): `Ok` of the value of Rust's `str::parse::<i64>`, `Err` of
+/// the message of the panic of `parseI64` for any other text, interpreted
+/// and compiled the same.
+#[test]
+fn try_parse_i64_written_in_isocron() {
+    let texts = [
+        "0", "-0", "+7", "12345678", "-1234567", "123456789012", "-9223372036854775808", "9223372036854775807",
+        "000000000000000000000042", "", "+", "-", "x", "1a", " 1", "9223372036854775808", "99999999999999999999",
+    ];
+    let src = "action main(args: string[k]): i32 {
+    forEach(args, (s) => {
+        print(match (tryParseI64(s)) { Ok(v) => `ok ${v}`, Err(e) => `err ${e}` });
+    });
+    return 0;
+}
+";
+    let want: String = texts
+        .iter()
+        .map(|t| match t.parse::<i64>() {
+            Ok(v) => format!("ok {}\n", v),
+            Err(_) => format!("err parseI64: `{}` is not a valid integer\n", t),
+        })
+        .collect();
+    agree(src, "try_parse_i64_isocron", &texts, &want);
+}

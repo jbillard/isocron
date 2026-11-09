@@ -13521,7 +13521,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     apart from one session to the next). The ten programs call `parseI64` on their arguments
     only. The primitive is now hidden by the function of the prelude:
     `isc_parse_i64` is no longer called; `tryParseI64` still reads by
-    Rust (`isc_try_parse_i64`), next to move, then the primitive goes.
+    Rust (`isc_try_parse_i64`), next to move (D586).
   - The report: the inside of a function of the prelude called rather
     than inlined (`$parseRest`) had positions of the prelude, shown as
     lines of the program ("line 326"); the report leaves them out (their
@@ -13558,3 +13558,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   The guide (section on performance requirements), SPEC section 9; the
   test `cold_functions_called_not_inlined` (results interpreted and
   compiled, 1 and 4 threads, the calls in the report, the refusal).
+- **D586 — `tryParseI64` written in Isocron (2026-11-09).** The second
+  function of the runtime moved (SPEC section 17, order 2): `parseI64` and
+  `tryParseI64` share `$parseI64Value` (the value and a word not 0 for a
+  text that is no integer, D582); `tryParseI64` returns `Ok` of the value
+  or `Err` of the message, built by `$parseI64Message` (`@cold`) where the
+  text is no integer only. The Rust version wrote the value and the message
+  through pointers, then the code built the `Result`. The answers: the
+  values and messages of the old compiler on texts valid and not, compiled
+  and interpreted the same (the test `try_parse_i64_written_in_isocron`).
+  Measured as D582 (`map` of 4096 texts of one length, `match` of the
+  result; the median of 7 runs, the two versions in turn; the load average
+  of the machine still falling from the incident of 20:00, no other job
+  running): 1 digit 7.811 → 5.727 ns (−26.7 %), 3 −28.0 %, 7 −25.5 %, 8
+  −33.9 %, a negative of 7 −24.5 %, 12 −20.5 %, 16 −23.9 %, 19 23.093 →
+  22.721 (−1.6 %), mixed 8.317 → 5.905 (−29.0 %). `parseI64OrError` and
+  `isc_try_parse_i64` are no longer called by the prelude; the primitives
+  `parseI64` and `parseI64OrError` stay (hidden or unused) until the step
+  that removes the Rust functions the prelude replaced.
+  - The incident of the session: a parallel agent built the workspace
+    (capped at 8 GB) while the full suite ran: a global lack of memory at
+    20:00 (15 minutes of stall, the kernel killed the test `phase3` of the
+    suite 406, the services kept running). An agent builds or tests only
+    when no suite, memcheck, Miri or measurement runs.

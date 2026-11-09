@@ -39,6 +39,8 @@
   runtime moved out of Rust: the same answers and panics, 6 to 17 % faster
   than the Rust version on its micro-benchmarks and up to 16 digits, equal
   for 19 digits (D582).
+- `tryParseI64` is written in Isocron too, on the reading of `parseI64`:
+  20 to 34 % faster than its Rust version up to 16 digits (D586).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

@@ -55,8 +55,11 @@ function doneOr(e: string): Result<void, string> {
     return e == "" ? Ok(()) : Err(e);
 }
 
+// `tryParseI64(s)` written in Isocron (D586): the reading of `parseI64`,
+// its message in `Err` where `parseI64` panics.
 function tryParseI64(s: string): Result<i64, string> {
-    return resultOf(parseI64OrError(s));
+    const [v, bad] = $parseI64Value(s);
+    return bad == 0u64 ? Ok(v) : Err($parseI64Message(s));
 }
 
 function tryParseF64(s: string): Result<f64, string> {
@@ -300,6 +303,13 @@ action mapInOrderFirst<T, U>(x: T[n], f: action (T) => U): U[n] {
 // (`$digits16`); more, and the texts that are no number, out of the loop
 // (`$parseRest`, `@cold`, D584).
 function parseI64(s: string): i64 {
+    const [v, bad] = $parseI64Value(s);
+    return bad == 0u64 ? v : $panic("parseI64: `", s, "` is not a valid integer");
+}
+
+// The value of `s` and a word not 0 if it is no integer (`parseI64`,
+// `tryParseI64`).
+function $parseI64Value(s: string): [i64, u64] {
     const b = bytes(s);
     const k = b.length;
     const c = k > 0 ? b[0] : 0u8;
@@ -308,7 +318,14 @@ function parseI64(s: string): i64 {
         : k >= 2 && k <= 8 && (neg || c == 43u8) ? $digits8(b, 1, k - 1)
         : k > 8 && k <= 16 ? $digits16(b, k)
         : $parseRest(b, k, neg);
-    return bad == 0u64 ? i64(neg ? 0u64 - v : v) : $panic("parseI64: `", s, "` is not a valid integer");
+    return [i64(neg ? 0u64 - v : v), bad];
+}
+
+// The message of `tryParseI64`, made where a text is no integer only
+// (`@cold`): the panic of `parseI64` writes the same in three parts.
+@cold
+function $parseI64Message(s: string): string {
+    return "parseI64: `" + s + "` is not a valid integer";
 }
 
 // The texts of `parseI64` of more than 16 bytes (after their sign and

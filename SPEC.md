@@ -887,7 +887,7 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 ### Ordre de travail
 
 1. Les primitives dans le compilateur et l'interpréteur, avec leurs tests.
-2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher. Fait : `parseI64`, dans le prélude (D582) : de 6,3 à 10,6 % plus rapide que la version Rust sur ses trois microbenchmarks, de 6,6 à 16,6 % de 1 à 16 chiffres, égal pour un négatif de 7 chiffres et pour 19 chiffres (+0,5 %, dans le bruit des mesures).
+2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher. Fait : `tryParseI64` (D586, de 20 à 34 % plus rapide jusqu'à 16 chiffres) et `parseI64`, dans le prélude (D582) : de 6,3 à 10,6 % plus rapide que la version Rust sur ses trois microbenchmarks, de 6,6 à 16,6 % de 1 à 16 chiffres, égal pour un négatif de 7 chiffres et pour 19 chiffres (+0,5 %, dans le bruit des mesures).
 3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads.
 4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
 5. Les entrées et sorties (fichiers, entrée standard projetée).
