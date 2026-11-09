@@ -10,6 +10,10 @@
 - `lines`, `split` and `readStdinLines()` make views of their text when it
   outlives them: no byte copied (k-nucleotide 6 % faster, 24 % less memory)
   (D556).
+- A large array of texts freed out of the order of their places (the texts of
+  a sorted array) frees them in that order, so that the texts made after it
+  lie in order: after a sort of 300000 texts, making texts 2 to 3 times
+  faster (D557).
 
 ## 0.5.0 — 2026-11-09
 

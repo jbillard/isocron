@@ -2210,9 +2210,74 @@ pub unsafe extern "C" fn isc_free_strs(p: *const IscStr, n: i64) {
     }
     // SAFETY: the `n` strings of the caller's array
     let strs = unsafe { core::slice::from_raw_parts(p, n as usize) };
+    // the strings of a large array out of the order of their places (the
+    // texts of a sorted array that moved them, D548), spread over more than
+    // the caches hold: freed from the highest place down, so that the lists
+    // of the heap, which give back the block freed last first, give the next
+    // blocks in the order of their places (D557: freed in the order of the
+    // array, the texts made after them were made scattered, and read so)
+    if strs.len() >= SCATTERED_MIN {
+        if let Some(hi) = scattered(strs) {
+            let mut at: alloc::vec::Vec<u64> = strs.iter().map(|s| s.ptr as u64).collect();
+            let mut other = alloc::vec![0u64; at.len()];
+            isc_runtime_core::places_down(&mut at, &mut other, hi as u64);
+            // SAFETY: the same strings, in another order
+            unsafe { free_strs_in(at.len(), |i| at[i] as *const u8) };
+            return;
+        }
+    }
+    // SAFETY: the strings of the caller's array, freed only here
+    unsafe { free_strs_in(strs.len(), |i| strs[i].ptr) };
+}
+
+/// From this many strings, an array whose strings are out of the order of
+/// their places may free them in that order (D557).
+const SCATTERED_MIN: usize = 4096;
+
+/// The blocks of the strings must take this many bytes for that order to be
+/// worth its sort (D557): three quarters of the last cache of the machine
+/// measured (16 MiB). Below, their blocks stay in that cache in any order:
+/// the sort costs (72 instructions a text) and the blocks given in order
+/// fall in step with the array that keeps them (4 KiB aliasing, D552):
+/// 65536 texts in blocks of 128 bytes (8 MiB) 4 to 22 % slower with it,
+/// 98304 (12 MiB) 8 + 8 - 3 ns faster a text, 131072 (16 MiB) 8 to 26 %.
+const SCATTERED_SPAN: usize = 12 << 20;
+
+/// The highest place of the strings when they are out of the order of their
+/// places and their blocks of the heap take `SCATTERED_SPAN` bytes or more
+/// (each its header and its bytes to the next multiple of 64; the places of
+/// the blocks spread farther, between other blocks: 65536 texts in 8 MiB
+/// spanned more than 12 MiB). Both judged on one string in 16 (more than one
+/// in 16 of them placed below the one before): a pass over every string cost
+/// 2 ns a text on the arrays freed in order (`sortBy` and the making of
+/// texts 8 to 10 % slower on 4096 and 65536).
+fn scattered(strs: &[IscStr]) -> Option<usize> {
+    const STEP: usize = 16;
+    let (mut below, mut bytes, mut seen, mut prev) = (0usize, 0usize, 0usize, 0usize);
+    for s in strs.iter().step_by(STEP) {
+        let a = s.ptr as usize;
+        below += (a < prev) as usize;
+        prev = a;
+        seen += 1;
+        if a % 64 == 0 {
+            bytes += 64 + (s.len as usize).next_multiple_of(64).max(64);
+        }
+    }
+    if below * 16 <= seen || bytes * STEP < SCATTERED_SPAN {
+        return None;
+    }
+    strs.iter().map(|s| s.ptr as usize).max()
+}
+
+/// The `n` strings `at(0)` to `at(n - 1)` freed in that order, those of one
+/// block of strings one after the other at once (see `isc_free_strs`).
+///
+/// # Safety
+/// The strings of an array the caller owns, freed only here.
+unsafe fn free_strs_in(n: usize, at: impl Fn(usize) -> *const u8) {
     let mut i = 0;
-    while i < strs.len() {
-        let s = strs[i].ptr as *mut u8;
+    while i < n {
+        let s = at(i) as *mut u8;
         if s as usize % 16 != 8 {
             isc_free(s);
             i += 1;
@@ -2229,7 +2294,7 @@ pub unsafe extern "C" fn isc_free_strs(p: *const IscStr, n: i64) {
         // read (a line of cache for each)
         let inside = |t: *const u8| t as usize % 16 == 8 && t as usize > block && t as usize - block < size as usize;
         let mut k = 1;
-        while i + k < strs.len() && inside(strs[i + k].ptr) {
+        while i + k < n && inside(at(i + k)) {
             k += 1;
         }
         // SAFETY: `k` strings of that block, not freed before

@@ -12723,3 +12723,60 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (owned, so in one block: D298 still tested, its code checked to call
     `isc_lines`); the input of the interpreter taken by one test at a time
     (`interp_with_stdin`: two tests read it).
+- **D557 — The texts of a large array freed in the order of their places
+  (2026-11-09).** TODO (D548): the lists of the heap give back the block
+  freed last first; the texts of an array sorted by moves are freed in the
+  order of the sort, so the texts made after them are made scattered and
+  read so. Measured again before (`sort`, `sortBy` by the length, then the
+  making of texts alone, each its texts made then sorted, one thread, fixed
+  frequency): 300000 texts, one round a process: `sort` 297 to 315 ns a
+  text; ten rounds: 335 ns (+12 %), the making 72 -> 80 ns, the misses of
+  the last cache 2.0 -> 2.8 a text a round.
+  - `isc_free_strs` (the strings of an array of texts freed by the generated
+    code): when the array holds 4096 strings or more, more than one in 16
+    placed below the one before it and their blocks of the heap taking 12
+    MiB or more (each its header and its bytes to the next multiple of 64;
+    both judged on one string in 16), the strings are freed from the highest
+    place down: the lists then give the next blocks from the lowest up. The
+    places sorted by a radix sort from the lowest digit, 11 bits a pass, of
+    their distance below the highest in units of 16 bytes
+    (`isc_runtime_core::places_down`; `radix_order` of D488, by bytes, made
+    3 or 4 passes where this makes 2: the first round's `sort` +5.2 %
+    against +2.5 %).
+  - The bound, measured (5 alternated runs each, the binaries of D556 and of
+    this): a pass over every string cost 2 ns a text on the arrays freed in
+    order (4096 and 65536 texts: `sortBy` and the making 8 to 10 % slower;
+    without the pass, against the old binary, within 2 %: no effect of
+    place), hence the sample; the span of the places in place of the bytes
+    of the blocks sorted 65536 texts (8 MiB, but their places spread over
+    more than 12 MiB between other blocks): 4 to 36 % slower, the order not
+    worth its sort while the blocks stay in the last cache (16 MiB): the
+    sort 72 instructions a text more (`perf stat`: 1.140 -> 1.352 billion,
+    45 rounds of 65536), and the blocks given in order fall in step with the
+    array that keeps them (`ld_blocks_partial.address_alias` 5.9 -> 16.1
+    million, D552). With the final bound: 4096 texts within 0.5 %, 65536
+    within -1.5 to +2.2 %, 98304 (12 MiB) `sort` +1.6 %, `sortBy` -11.5 %,
+    the making +13.2 % (+1.5 ns of 274 a text the three), 131072 -8.5 %,
+    -30.0 %, -10.6 %; 300000, one round: `sort` 297.05 -> 304.86 (+2.6 %,
+    its sort of places), `sortBy` 117.16 -> 37.98 (-67.6 %), the making
+    72.85 -> 47.39 (-34.9 %); ten rounds: `sort` 335.20 -> 282.50
+    (-15.7 %), `sortBy` 102.12 -> 47.19 (-53.8 %), the making 80.53 ->
+    35.05 (-56.5 %). The bound is that of this machine's last cache (12 of
+    its 16 MiB); a machine with another cache would want another one (a
+    hypothesis, not measured).
+  - The ten programs (7 alternated runs each, 4 threads, the binaries of
+    D556 and of this; each frees only small arrays of texts): within -4.8
+    to +1.7 %, the spreads overlapping, but fasta: 19.3 -> 87.9 ms, its
+    runs in two groups for both binaries (17 ms, or 50 to 120 ms); 21 runs
+    each, the same two groups, medians 87.8 and 83.0 ms; under `perf stat`
+    the program itself takes 4.9 to 5.2 ms in 12 runs of 14 (17.5 and 33.4
+    the others), `systemd-run` alone 12 to 13 ms in 20 runs of 21: the slow
+    group is in the start or the end of a run by the tool of these A/Bs,
+    not in the program (its cause not measured further: a tool of these
+    measurements, not of the published ones).
+  - Tests: `texts_of_a_sorted_array_freed_in_the_order_of_their_places`
+    (`memory.rs`: 200000 texts, literals among them, sorted by moves, freed,
+    made again three times; against the interpreter; the checked allocator;
+    its run 36.5 million instructions more, the path taken, and 18 % fewer
+    cycles); `places_down_sorts_from_the_highest` (`isc-runtime-core`:
+    places of every spread, 0 to 300 and 5000, against a sort).

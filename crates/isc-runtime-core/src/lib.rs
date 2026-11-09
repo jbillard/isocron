@@ -1036,6 +1036,44 @@ pub fn order_key_f64(x: f64) -> u64 {
     }
 }
 
+/// The places `at` (all at most `hi`) put from the highest down (D557): a
+/// radix sort from the lowest digit, 11 bits a pass, of their distance below
+/// `hi` in units of 16 bytes (places of strings: 16 bytes apart at least),
+/// as many passes as that distance needs; `other` a place to work of the
+/// same length.
+pub fn places_down(at: &mut [u64], other: &mut [u64], hi: u64) {
+    let span = at.iter().map(|&a| (hi - a) >> 4).max().unwrap_or(0);
+    let bits = (u64::BITS - span.leading_zeros()) as u64;
+    let (mut from, mut to) = (at, other);
+    let mut shift = 4;
+    let mut swapped = false;
+    while shift < bits + 4 {
+        let digit = |a: u64| (((hi - a) >> shift) & 2047) as usize;
+        let mut count = [0usize; 2048];
+        for &a in from.iter() {
+            count[digit(a)] += 1;
+        }
+        let mut sum = 0;
+        for c in count.iter_mut() {
+            let k = *c;
+            *c = sum;
+            sum += k;
+        }
+        for &a in from.iter() {
+            let d = digit(a);
+            to[count[d]] = a;
+            count[d] += 1;
+        }
+        core::mem::swap(&mut from, &mut to);
+        swapped = !swapped;
+        shift += 11;
+    }
+    // the result in `at`
+    if swapped {
+        to.copy_from_slice(from);
+    }
+}
+
 /// The indices `idx` put in the stable order of their `keys` (unsigned
 /// integers, `keys[j]` the key of `idx[j]`; both changed) (D488): a sort by
 /// the bytes of `key - min`, the lowest first (radix), as many bytes as the
@@ -2763,6 +2801,34 @@ mod find_bytes_tests {
                 assert_eq!(hash_find(&slots, hash_bytes(t.as_bytes()), |j| texts[j] == *t), i as i64);
             }
             assert_eq!(hash_find(&slots, hash_bytes(b"absent"), |j| texts[j] == "absent"), -1);
+        }
+    }
+
+    /// `places_down` (D557) against a sort from the highest down: places of
+    /// every spread (one, near, across 4 GiB, past 2^48), 0 to 300 of them
+    /// and 5000, ties included; an odd and an even number of passes.
+    #[test]
+    fn places_down_sorts_from_the_highest() {
+        use super::places_down;
+        use alloc::vec::Vec;
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for spread in [0u64, 16 << 4, 1 << 20, 1 << 32, 1 << 48] {
+            for n in (0..300).chain([5000]) {
+                let hi = 1u64 << 52;
+                let mut at: Vec<u64> = (0..n).map(|_| hi - (next() % (spread + 1)) / 16 * 16).collect();
+                let mut want = at.clone();
+                want.sort_unstable_by(|a, b| b.cmp(a));
+                let top = at.iter().copied().max().unwrap_or(hi);
+                let mut other = alloc::vec![0u64; at.len()];
+                places_down(&mut at, &mut other, top);
+                assert_eq!(at, want, "{} places spread over {}", n, spread);
+            }
         }
     }
 

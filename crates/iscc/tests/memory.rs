@@ -1097,6 +1097,30 @@ fn sorting_an_array_read_for_the_last_time_moves_its_elements() {
     clean(src, "sort_moves_vg", &["700"]);
 }
 
+/// The texts of a large array sorted by moves (D548), so out of the order of
+/// their places, freed from the highest place down (D557): 200000 texts of
+/// blocks of 128 bytes and more, literals among them, sorted, freed, made
+/// again three times; the same output as the interpreter, every block freed
+/// once (the checked allocator).
+#[test]
+fn texts_of_a_sorted_array_freed_in_the_order_of_their_places() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(fold(iota(3), 0, (acc, r) => {
+        const xs = map(iota(n), (i) => i % 7 == 0 ? \"seven\" : `${(i * 7919 + r) % 100003}-${i % 13}`);
+        const ys = sort(xs);
+        return acc + ys[n / 2].length + ys[n - 1].length;
+    }));
+    return 0;
+}
+";
+    let want = interp_ok(src, &["200000"]);
+    let bin = compile(src, "freed_by_places");
+    let r = run_bin(&bin, &["200000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    checked_clean(src, "freed_by_places", &["200000"]);
+}
+
 /// Arrays whose texts are views of the texts of a value that lives longer
 /// (D555): the sorts of an array read again after them, of such a view, of
 /// the lines of a text kept, of a parameter of a recursive function (the
