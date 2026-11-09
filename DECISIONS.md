@@ -12523,3 +12523,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (1552 faults then). Old archives of the releases removed from the
   scratch tmpfs of these sessions (20 files, already published: 841 MB
   of `Shmem`).
+- **D552 — The prefetcher of pairs of lines and the aliasing of 4 KiB
+  behind the places of blocks measured (2026-11-09).** TODO, the
+  hypotheses behind choices (D375: D77 put 128 bytes between the blocks of
+  two tasks « so that the L2 prefetcher of a core, which completes aligned
+  pairs of 64-byte lines, never fetches a line of another thread's
+  block »; D79 and D81 placed large arrays against « the worst case of 4K
+  aliasing at 64 bytes »). Measured on this core (one CPU, or two cores
+  0 and 1, siblings 8 and 9, at fixed frequency):
+  - `bench/floor/line_pairs.c`: two threads on two cores each adding to
+    its own counter, the counters `gap` bytes apart: 0 or 8 bytes (one
+    line) 2.302 to 2.314 ns a step; 64 bytes (two lines of the same pair
+    of 128) 0.848 to 0.911; 128, 192 and 256 bytes 0.850 to 0.905 (3 runs
+    each). Lines of one pair written by two cores cost nothing more than
+    lines of two pairs: no traffic from the prefetcher of pairs measured;
+    the 128 bytes of D77 are kept (they cost nothing) but not for that.
+  - `bench/floor/alias_4k.c`: `b[i] = a[i] + 1.0` over 16 KiB in L1, `b`
+    64 KiB plus `d` bytes after `a`: `d` 32 and 64 bytes 0.5226 and 0.5239
+    ns an element against 0.4373 for 0 (+20 %), 1.000 and 0.996
+    `ld_blocks_partial.address_alias` an element; 128 bytes 0.5217 ns and
+    0.692; 0, 176 to 1024, 2048, 4032 and 4064 bytes 0.432 to 0.443 ns and
+    none (the sweep of 0 to 4095 by 16 once: its highest points, 560, 192
+    and 176 bytes, measured again alone at 0.436 to 0.440, no aliasing).
+    The aliasing is there, worst when the written array is 32 to 64 bytes
+    after the read one modulo 4 KiB; the 2048 bytes of the colors of D81
+    keep large arrays farthest from it. The hypotheses are facts here (the
+    first one only in its effect: none).
