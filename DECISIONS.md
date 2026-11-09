@@ -12549,3 +12549,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     after the read one modulo 4 KiB; the 2048 bytes of the colors of D81
     keep large arrays farthest from it. The hypotheses are facts here (the
     first one only in its effect: none).
+- **D553 — A core whose sibling sleeps, and the desktop session on the
+  cores 0 to 3, measured (2026-11-09).** TODO, the hypotheses behind
+  choices (D375: D261 « the core of one thread has states of different
+  speed while its sibling sleeps », D300 « a session of a desktop on the
+  cores 0 to 3 » behind the protocol of the measures). n-body, one
+  thread, 50 million steps, on CPU 7 (its sibling 15), fixed frequency, 5
+  runs each, the busy time of CPU 15 read in `/proc/stat` around each run:
+  - the sibling left to the system (the mode `parallel` of
+    `bench/machine.sh` confines every other process to the siblings):
+    121.28 to 122.25 cycles a step, CPU 15 busy 0.03 to 0.08 s of each run
+    of about 2.4 s;
+  - the sibling running a loop of `pause`: 146.04 to 146.06 (the core
+    shared);
+  - the sibling offline: 118.89 to 118.92, the same in every run.
+  A sibling online but nearly idle costs the core 2.0 to 2.8 % and 0.8 %
+  of spread, more than its own work could take (the fastest run of the
+  five had 0.04 s of it, not the least): the effect of D261, measured; its
+  mechanism (the resources of the core kept shared while the sibling is
+  online) a hypothesis. The measures of this log are alternated runs of
+  two binaries on the same CPU in the same state: the effect is in both.
+  - No session of a desktop on this machine now (no process of one), and
+    n-body on CPU 0 and on CPU 7 the same (121.44 to 123.02 and 120.06 to
+    122.35 cycles a step, 5 alternated runs): the condition of D300 is
+    gone.
