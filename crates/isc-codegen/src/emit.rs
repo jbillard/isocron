@@ -297,12 +297,16 @@ pub struct Options {
     /// An executable for Windows (`x86_64-pc-windows-gnu`, D246): the same
     /// code for the same instruction set, another object format and ABI.
     pub windows: bool,
+    /// For Windows, Microsoft's ABI (`x86_64-pc-windows-msvc`, D542): the
+    /// same code, in objects that the static libraries of Visual Studio and
+    /// Microsoft's C runtime agree with.
+    pub msvc: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
         // native code of an iscc on Windows is for Windows (D247)
-        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: cfg!(windows) }
+        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: cfg!(windows), msvc: false }
     }
 }
 

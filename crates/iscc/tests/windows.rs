@@ -14,7 +14,12 @@ fn runner() -> Option<PathBuf> {
 }
 
 fn compile_windows(src: &str, name: &str) -> PathBuf {
-    let o = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
+    compile_windows_with(src, name, false)
+}
+
+/// `compile_windows`, with Microsoft's ABI when `msvc` (D542).
+fn compile_windows_with(src: &str, name: &str, msvc: bool) -> PathBuf {
+    let o = isc_codegen::Options { windows: true, msvc, ..isc_codegen::Options::default() };
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(&format!("{}.exe", name));
     let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
@@ -56,8 +61,17 @@ fn run_linux(bin: &Path, d: &Path, args: &[&str], stdin: Option<&str>, threads: 
 /// `src` built for both systems and run with `args` (files of `d`), on 1 and
 /// 4 threads: the same results.
 fn same_on_windows(runner: &Path, src: &str, name: &str, d: &Path, args: &[&str], stdin: Option<&str>) -> Vec<u8> {
-    let bin = compile(src, &format!("winlinux_{}", name));
-    let exe = compile_windows(src, &format!("win_{}", name));
+    same_on_windows_with(runner, src, name, d, args, stdin, false)
+}
+
+/// `same_on_windows`, the program for Windows with Microsoft's ABI when
+/// `msvc` (D542).
+fn same_on_windows_with(runner: &Path, src: &str, name: &str, d: &Path, args: &[&str], stdin: Option<&str>, msvc: bool) -> Vec<u8> {
+    // names of their own: a test and its variant for Microsoft's ABI run
+    // at the same time
+    let suffix = if msvc { "_msvc" } else { "" };
+    let bin = compile(src, &format!("winlinux_{}{}", name, suffix));
+    let exe = compile_windows_with(src, &format!("win_{}{}", name, suffix), msvc);
     let mut first = None;
     for t in [1, 4] {
         let l = run_linux(&bin, d, args, stdin, t);
@@ -124,6 +138,73 @@ action main(args: string[k]): i32 {
     return 0;
 }
 "#;
+
+/// The programs of `programs_on_windows` built with Microsoft's ABI (`--target
+/// x86_64-windows-msvc`, D542): linked by LLD as Microsoft's `link`, without
+/// a C library, the same outputs as on Linux.
+#[test]
+fn programs_on_windows_msvc() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let d = dir("basics_msvc");
+    same_on_windows_with(&runner, BASICS, "basics", &d, &["one", "two words", "", "été 東京 🦀", "say \"hi\"", "C:\\dir\\file"], None, true);
+    let d = dir("files_msvc");
+    std::fs::write(d.join("big.txt"), "x".repeat(9 << 20)).unwrap();
+    std::fs::write(d.join("in.txt"), "a\nb\nc\n").unwrap();
+    same_on_windows_with(&runner, FILES, "files", &d, &["big.txt"], Some("in.txt"), true);
+    let d = dir("panics_msvc");
+    same_on_windows_with(&runner, PANICS, "panics", &d, &[], None, true);
+    let d = dir("overflow_msvc");
+    same_on_windows_with(&runner, OVERFLOW, "overflow", &d, &[], None, true);
+}
+
+/// A static library built by Visual Studio (`cl /GS`, `lib`) in the machine
+/// of Windows (its Build Tools, D528) linked into a program of Isocron by
+/// `iscc.exe build --target x86_64-windows-msvc --link` (D542): its
+/// functions use what Microsoft's C runtime gives (the cookie of `/GS` of a
+/// buffer on the stack, `snprintf`, `_fltused` of floats, `__chkstk` of a
+/// frame of more than a page, `malloc`), so that the program is linked with
+/// that runtime, static, found by the `LIB` of `vcvars64.bat`: the right
+/// results, and no DLL but those of Windows.
+#[test]
+fn msvc_static_library_on_windows() {
+    let (Some(runner), Ok(iscc)) = (runner(), std::env::var("ISC_WINDOWS_ISCC")) else {
+        eprintln!("no Windows machine or no iscc.exe (ISC_WINDOWS_RUNNER, ISC_WINDOWS_ISCC): the static libraries of Visual Studio not run");
+        return;
+    };
+    let vcvars = std::env::var("ISC_WINDOWS_VCVARS").unwrap_or_else(|_| "C:\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat".into());
+    let llvm = std::env::var("ISC_WINDOWS_LLVM_BIN").unwrap_or_else(|_| "C:\\LLVM\\bin".into());
+    let d = dir("msvc_static");
+    std::fs::copy(&iscc, d.join("iscc.exe")).unwrap();
+    std::fs::write(
+        d.join("calc.c"),
+        "#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n\
+int64_t calc_digits(int64_t n) { char buf[32]; return (int64_t)snprintf(buf, sizeof buf, \"%lld\", (long long)n); }\n\
+double calc_scale(double x) { return x * 2.5; }\n\
+int64_t calc_big(int64_t n) { volatile char a[20000]; a[0] = (char)n; a[19999] = (char)(n + 1); return a[0] + a[19999]; }\n\
+int64_t calc_heap(int64_t n) { int64_t *p = malloc((size_t)n * sizeof *p); int64_t s = 0; for (int64_t i = 0; i < n; i++) p[i] = i; for (int64_t i = 0; i < n; i++) s += p[i]; free(p); return s; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("prog.isc"),
+        "declare function calc_digits(n: i64): i64;\ndeclare function calc_scale(x: f64): f64;\ndeclare function calc_big(n: i64): i64;\ndeclare function calc_heap(n: i64): i64;\n\n\
+action main(args: string[k]): i32 {\n    print(calc_digits(1234567));\n    print(calc_scale(4.0));\n    print(calc_big(20));\n    print(calc_heap(1000));\n    print(sum(map(iota(1000000), (i) => i)));\n    print(args);\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let script = format!(
+        "@echo off\r\ncall \"{}\" > nul || exit /b 78\r\nset \"PATH={};%PATH%\"\r\ncl /nologo /c /O2 /GS calc.c > nul || exit /b 79\r\nlib /nologo /out:calc.lib calc.obj || exit /b 80\r\niscc.exe build prog.isc --target x86_64-windows-msvc --link calc.lib || exit /b 77\r\nprog.exe \"a b\" c\r\necho == %ERRORLEVEL%\r\ndumpbin /nologo /dependents prog.exe | findstr /i /c:\".dll\"\r\n",
+        vcvars, llvm
+    );
+    std::fs::write(d.join("go.cmd"), script).unwrap();
+    let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg(d.join("go.cmd")).output().unwrap();
+    let (out, err) = (String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n"), String::from_utf8_lossy(&o.stderr).to_string());
+    assert_eq!(o.status.code(), Some(0), "{}\n{}", out, err);
+    let dlls: Vec<&str> = out.lines().skip(7).map(|l| l.trim()).collect();
+    assert_eq!(out.lines().take(7).collect::<Vec<_>>(), ["7", "10", "41", "499500", "499999500000", "[a b, c]", "== 0"], "{}\n{}", out, err);
+    assert!(!dlls.is_empty() && dlls.iter().all(|l| l.eq_ignore_ascii_case("kernel32.dll") || l.to_ascii_lowercase().starts_with("api-ms-win-core-")), "the DLLs of the program: {:?}", dlls);
+}
 
 /// Printing, threads, floats, strings in UTF-8, maps, sorting, regular
 /// expressions, big integers, a recursion a million deep (the big stack of

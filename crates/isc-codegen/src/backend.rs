@@ -155,15 +155,18 @@ fn init_llvm() {
 }
 
 pub fn compile_with(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa) -> Result<(), String> {
-    compile_for(ir, obj, asm, isa, false)
+    compile_for(ir, obj, asm, isa, false, false)
 }
 
 /// The triple of the Windows target (D246).
 pub const WINDOWS_TRIPLE: &str = "x86_64-pc-windows-gnu";
 
+/// The triple of the Windows target with Microsoft's ABI (D542).
+pub const WINDOWS_MSVC_TRIPLE: &str = "x86_64-pc-windows-msvc";
+
 /// `compile_with` for Windows too (`windows`: the object of
 /// `x86_64-pc-windows-gnu`, for the CPU that `isa` names).
-pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool) -> Result<(), String> {
+pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<(), String> {
     init_llvm();
     unsafe {
         let wasm = isa.is_wasm();
@@ -186,6 +189,8 @@ pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::I
         take_msg(msg);
         let triple = if wasm {
             cstr(WASM_TRIPLE)
+        } else if windows && msvc {
+            cstr(WINDOWS_MSVC_TRIPLE)
         } else if windows {
             cstr(WINDOWS_TRIPLE)
         } else {

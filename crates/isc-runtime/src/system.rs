@@ -412,10 +412,7 @@ mod imp {
         if !base.is_null() {
             let mut e = base;
             while *e != 0 {
-                let mut n = 0;
-                while *e.add(n) != 0 {
-                    n += 1;
-                }
+                let n = isc_runtime_core::winargs::wide_len(e);
                 // the entries of the drives (`=C:=C:\...`) are not variables
                 if *e != b'=' as u16 {
                     all.push(narrow(e, n));

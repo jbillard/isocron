@@ -219,6 +219,7 @@ action main(args: string[k]): i32 {
 iscc run hello.isc                             # the interpreter
 iscc build hello.isc && ./hello                # a native program
 iscc build hello.isc --target x86_64-windows   # hello.exe
+iscc build hello.isc --target x86_64-windows-msvc   # hello.exe, Microsoft's ABI
 iscc build hello.isc --target wasm32-wasi      # hello.wasm
 ```
 

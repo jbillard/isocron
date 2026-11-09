@@ -12228,3 +12228,55 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     failed: Broken pipe", the shared SSH session of before the restart of
     the machine), the whole file again: 14 of 14. The end-to-end tests of
     Linux unchanged (the suite).
+- **D542 — The target `x86_64-windows-msvc` (2026-11-09).** Step 2 of
+  D540. `iscc build --target x86_64-windows-msvc` (or
+  `x86_64-pc-windows-msvc`): the same code (the generator has nothing of
+  Windows; the option `msvc` only chooses the triple of the backend), the
+  runtime built for `x86_64-pc-windows-msvc` (embedded in iscc and
+  iscc.exe: the Rust target added to the images of the releases), linked by
+  the LLD of iscc as Microsoft's `link` (`lld-link`).
+  - Without C: as D541, the entry of the runtime, `kernel32` and the
+    synchronization API set (the import libraries of MinGW-w64, which
+    `lld-link` reads), `/nodefaultlib`; what Microsoft's C runtime would
+    give comes with the code of the program (`WINDOWS_MSVC_START_IR`):
+    the directory of the thread-local storage, `_fltused` (the objects
+    that use floats refer to it), `__chkstk` (called first by a function
+    whose frame passes a page: the loop of `chkstk.S` of LLVM's
+    compiler-rt) and `__CxxFrameHandler3` (the routine of the tables of
+    unwinding of Rust's precompiled `core`, never called). A hello: 70656
+    bytes, 47 functions of `kernel32` and 2 of the API set, the same
+    outputs as the target of MinGW in the machine of Windows.
+  - With C (declared functions or `--link`): Microsoft's C runtime,
+    static (`libcmt`, `libvcruntime`, `libucrt`: no DLL beyond those of
+    Windows), its start calling `main`, its libraries and those of the
+    SDK in the directories of `LIB`, as Visual Studio's own tools find
+    them (a Developer Command Prompt, `vcvars64.bat`); without `LIB`, a
+    message that says so. iscc never has them (D425: Microsoft's, under
+    its licence).
+  - The runtime defined `wcslen` since D541 (LLVM made the loops that read
+    a string of UTF-16 up to its zero calls of it, which `msvcrt` gave):
+    `libucrt.lib` defines it too (`strnlen.obj`, pulled for its other
+    functions), so that `lld-link` refused the two ("duplicate symbol:
+    wcslen"). Now those loops read by volatile loads
+    (`winargs::wide_len`), which LLVM does not turn into a call, and no
+    `wcslen` is defined (`nm`: none in either runtime of Windows).
+  - Tests (`windows.rs`, the machine of Windows):
+    `programs_on_windows_msvc` (the programs of `programs_on_windows`
+    built with Microsoft's ABI: the same outputs, errors and codes as on
+    Linux, 1 and 4 threads); `msvc_static_library_on_windows` (in the
+    machine, after `vcvars64.bat` of its Build Tools, D528: `cl /GS` and
+    `lib` make a static library whose functions use the cookie of `/GS`,
+    `snprintf`, floats, a frame of 20000 bytes and `malloc`;
+    `iscc.exe build --target x86_64-windows-msvc --link calc.lib`: the
+    right results, and `dumpbin /dependents` names only `KERNEL32.dll`
+    and API sets of Windows). The file: 16 of 16 (two runs before failed
+    on the two causes below, then the test of the static library on the
+    duplicate `wcslen`).
+  - `tools/windows/run.py`: the program run with `LogLevel=QUIET` for
+    ssh itself: a shared session that refuses one more (the sessions of
+    the machine are limited; the tests run at once) is followed by a
+    connection of its own, whose warnings mixed with the program's error
+    ("mux_client_request_session: session request failed: Session open
+    refused by peer", `sys_on_windows` failed once so). Two tests of the
+    same program (a variant for Microsoft's ABI) built the same Linux
+    binary at once: their names now differ.

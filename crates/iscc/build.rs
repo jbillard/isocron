@@ -109,8 +109,11 @@ fn main() {
         ("wasm32-wasip1", "ISC_RUNTIME_WASM_LIB"),
         ("wasm32-wasip1-threads", "ISC_RUNTIME_WASM_THREADS_LIB"),
         ("x86_64-pc-windows-gnu", "ISC_RUNTIME_WINDOWS_LIB"),
+        // the runtime for `--target x86_64-windows-msvc` (D542)
+        ("x86_64-pc-windows-msvc", "ISC_RUNTIME_MSVC_LIB"),
     ] {
-        let lib = target.join(triple).join("release").join("libisc_runtime.a");
+        let name = if triple.ends_with("msvc") { "isc_runtime.lib" } else { "libisc_runtime.a" };
+        let lib = target.join(triple).join("release").join(name);
         let installed = sysroot.as_ref().map(|r| r.join("lib").join("rustlib").join(triple).exists()).unwrap_or(false);
         let built = build(Some(triple)) && lib.exists();
         assert!(built || !installed, "building crates/isc-runtime for {} failed (the target is installed)", triple);

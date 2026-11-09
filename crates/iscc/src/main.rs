@@ -5,7 +5,7 @@
 //! iscc ir    <file.isc>                     print the optimized IR
 //! iscc run   [--lanes V] <file.isc> [args...]   run with the reference interpreter
 //! iscc build <file.isc> [-o out] [--emit-llvm f.ll] [--emit-asm f.s] [--debug] [--report]
-//!            [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows]
+//!            [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows|x86_64-windows-msvc]
 //! ```
 //!
 //! `--lanes` changes V, the number of accumulators of the fixed reduction
@@ -39,7 +39,7 @@ _iscc() {
     done
     case "$prev" in
         --isa) COMPREPLY=($(compgen -W "native sse avx avx2 avx512" -- "$cur")); return ;;
-        --target) COMPREPLY=($(compgen -W "native wasm32-wasi wasm32-wasi-threads x86_64-windows" -- "$cur")); return ;;
+        --target) COMPREPLY=($(compgen -W "native wasm32-wasi wasm32-wasi-threads x86_64-windows x86_64-windows-msvc" -- "$cur")); return ;;
         --color) COMPREPLY=($(compgen -W "auto always never" -- "$cur")); return ;;
         --lanes) COMPREPLY=($(compgen -W "2 4 8 16 32 64 128 256" -- "$cur")); return ;;
         -o|--emit-llvm|--emit-asm|--link) compopt -o filenames 2>/dev/null; COMPREPLY=($(compgen -f -- "$cur")); return ;;
@@ -91,7 +91,7 @@ complete -c iscc -n "__fish_seen_subcommand_from build" -l emit-llvm -r -F
 complete -c iscc -n "__fish_seen_subcommand_from build" -l emit-asm -r -F
 complete -c iscc -n "__fish_seen_subcommand_from build" -l debug
 complete -c iscc -n "__fish_seen_subcommand_from build" -l isa -x -a "native sse avx avx2 avx512"
-complete -c iscc -n "__fish_seen_subcommand_from build" -l target -x -a "native wasm32-wasi wasm32-wasi-threads x86_64-windows"
+complete -c iscc -n "__fish_seen_subcommand_from build" -l target -x -a "native wasm32-wasi wasm32-wasi-threads x86_64-windows x86_64-windows-msvc"
 "#;
 
 /// The colors of the messages of `iscc` (D231): ANSI codes, or nothing.
@@ -188,7 +188,7 @@ impl Style {
 
 fn usage() -> ! {
     eprintln!(
-        "usage (--color auto|always|never anywhere):\n  iscc --version\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows] [--link lib]..."
+        "usage (--color auto|always|never anywhere):\n  iscc --version\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows|x86_64-windows-msvc] [--link lib]..."
     );
     exit(2)
 }
@@ -315,6 +315,11 @@ fn main() {
                         }
                         "x86_64-windows" | "x86_64-pc-windows-gnu" | "windows" => {
                             opts.codegen.windows = true;
+                            windows_target = true;
+                        }
+                        "x86_64-windows-msvc" | "x86_64-pc-windows-msvc" => {
+                            opts.codegen.windows = true;
+                            opts.codegen.msvc = true;
                             windows_target = true;
                         }
                         _ => usage(),

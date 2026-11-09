@@ -9,6 +9,6 @@ RUN /opt/python/cp312-cp312/bin/pip install --no-cache-dir cmake ninja \
     && ln -sf /opt/python/cp312-cp312/bin/ninja /usr/local/bin/ninja
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path \
-    && rustup target add wasm32-wasip1 wasm32-wasip1-threads x86_64-pc-windows-gnu \
+    && rustup target add wasm32-wasip1 wasm32-wasip1-threads x86_64-pc-windows-gnu x86_64-pc-windows-msvc \
     && chmod -R a+rwX /opt/rustup /opt/cargo
 WORKDIR /work

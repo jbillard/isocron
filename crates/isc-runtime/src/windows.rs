@@ -624,14 +624,8 @@ pub fn terminate(code: c_int) -> ! {
 /// `p` a string of UTF-16 ended by a zero, that lives as long as the
 /// process (the command line of the process).
 unsafe fn wide_str(p: *const u16) -> &'static [u16] {
-    let mut n = 0;
     // SAFETY: see above
-    unsafe {
-        while *p.add(n) != 0 {
-            n += 1;
-        }
-        core::slice::from_raw_parts(p, n)
-    }
+    unsafe { core::slice::from_raw_parts(p, isc_runtime_core::winargs::wide_len(p)) }
 }
 
 /// The arguments of the program after its name, in UTF-8, each given to

@@ -3455,6 +3455,15 @@ iscc completions bash|zsh|fish              the completion of the shell
   MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian packages
   `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the program
   needs no DLL beyond those of Windows.
+* `build --target x86_64-windows-msvc` writes the same Windows program
+  with Microsoft's ABI (D542), linked by LLD as Microsoft's `link`: without
+  C, as above (`kernel32` alone, no C library); a program that declares C
+  functions or links libraries (`--link name.lib`, among them static
+  libraries built by Visual Studio) is linked with Microsoft's C runtime,
+  static (no DLL beyond those of Windows), whose libraries `iscc` does not
+  have: it finds them, with those of the Windows SDK, in the directories
+  of `LIB`, as Visual Studio's own tools do (build from a Developer Command
+  Prompt, or after `vcvars64.bat`).
 * `iscc` also runs on Windows (`iscc.exe`): there, `build` writes a
   Windows executable by default (`<file>.exe`). `run` calls the C
   functions of Windows (`--link name` loads `name.dll`), the errors of files

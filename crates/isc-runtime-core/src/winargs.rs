@@ -84,6 +84,22 @@ pub fn command_line_args(w: &[u16], cur: &mut alloc::vec::Vec<u16>, each: &mut d
     }
 }
 
+/// The units of the string of UTF-16 at `p` before its zero one, read by
+/// volatile loads (D542): LLVM would make the loop a call of `wcslen`,
+/// which the runtime does not define, Microsoft's C runtime defining it
+/// (a program linked with that runtime would have two).
+///
+/// # Safety
+/// `p` is a string of UTF-16 ended by a zero unit.
+pub unsafe fn wide_len(p: *const u16) -> usize {
+    let mut n = 0;
+    // SAFETY: the units up to the zero one are readable (see above)
+    while unsafe { p.add(n).read_volatile() } != 0 {
+        n += 1;
+    }
+    n
+}
+
 /// The UTF-8 of the UTF-16 `w` into `out`, which holds at least `3 *
 /// w.len()` bytes (a unit gives at most 3 bytes, a pair of two units 4); a
 /// half of a pair alone gives U+FFFD, as Windows itself converts it. The

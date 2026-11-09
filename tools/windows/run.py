@@ -81,7 +81,12 @@ def main():
         if stdin:
             line += " < " + os.path.basename(stdin)
         try:
-            r = ssh(line, timeout=float(os.environ.get("ISC_WINDOWS_TIMEOUT", "300")))
+            # the messages of ssh itself left out of the program's error: a
+            # shared session that refuses one more (the sessions of a
+            # machine of Windows are limited) is followed by a connection
+            # of its own, whose warnings would mix with the program's (D542)
+            # (the first value of an option is the one ssh keeps)
+            r = subprocess.run(["ssh", "-p", port, "-o", "LogLevel=QUIET"] + ssh_opts + [host, line], timeout=float(os.environ.get("ISC_WINDOWS_TIMEOUT", "300")))
             code = r.returncode
         except subprocess.TimeoutExpired:
             # stopped there too, so that it does not run on

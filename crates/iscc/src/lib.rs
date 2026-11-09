@@ -80,6 +80,47 @@ define void @_Unwind_Resume(ptr %e) noreturn nounwind {
 @llvm.used = appending global [1 x ptr] [ptr @_tls_used], section "llvm.metadata"
 "#;
 
+/// `WINDOWS_START_IR` for Microsoft's ABI (D542): the directory of the
+/// thread-local storage; `_fltused`, which the objects that use floats
+/// refer to; `__chkstk`, which a function whose frame passes a page calls
+/// first (the size in `rax`: each page of the frame touched from the top,
+/// no register changed; the loop of `chkstk.S` of LLVM's compiler-rt); and
+/// `__CxxFrameHandler3`, the routine of the tables of unwinding of the
+/// precompiled `core` of Rust, never called (nothing unwinds: it lets the
+/// search go on, 1).
+const WINDOWS_MSVC_START_IR: &str = r#"
+@_fltused = global i32 0
+@_tls_index = global i32 0
+@_tls_start = global i8 0, section ".tls"
+@_tls_end = global i8 0, section ".tls$ZZZ"
+@__xl_z = constant ptr null, section ".CRT$XLZ"
+@_tls_used = constant { ptr, ptr, ptr, ptr, i32, i32 } { ptr @_tls_start, ptr @_tls_end, ptr @_tls_index, ptr @__xl_z, i32 0, i32 0 }, section ".rdata$T"
+@llvm.used = appending global [1 x ptr] [ptr @_tls_used], section "llvm.metadata"
+define i32 @__CxxFrameHandler3(ptr %a, ptr %b, ptr %c, ptr %d) {
+  ret i32 1
+}
+module asm ".text"
+module asm ".globl __chkstk"
+module asm "__chkstk:"
+module asm "  push %rcx"
+module asm "  push %rax"
+module asm "  cmp $0x1000, %rax"
+module asm "  lea 24(%rsp), %rcx"
+module asm "  jb 1f"
+module asm "2:"
+module asm "  sub $0x1000, %rcx"
+module asm "  test %rcx, (%rcx)"
+module asm "  sub $0x1000, %rax"
+module asm "  cmp $0x1000, %rax"
+module asm "  ja 2b"
+module asm "1:"
+module asm "  sub %rax, %rcx"
+module asm "  test %rcx, (%rcx)"
+module asm "  pop %rax"
+module asm "  pop %rcx"
+module asm "  ret"
+"#;
+
 /// Compiles the IR to a native executable.
 pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     // a primitive of the system that the target lacks (D324)
@@ -98,8 +139,9 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     // a program for Windows starts without a C library unless it calls C
     // (D541): what MinGW's start files gave it then comes with its code
     let own_start = opts.codegen.windows && !opts.codegen.isa.is_wasm() && !windows_c_runtime(p, opts);
+    let msvc = opts.codegen.windows && opts.codegen.msvc && !opts.codegen.isa.is_wasm();
     if own_start {
-        ir.push_str(WINDOWS_START_IR);
+        ir.push_str(if msvc { WINDOWS_MSVC_START_IR } else { WINDOWS_START_IR });
     }
     if let Some(f) = &opts.emit_llvm {
         std::fs::write(f, &ir).map_err(|e| format!("cannot write `{}`: {}", f.display(), e))?;
@@ -110,12 +152,14 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     // (WebAssembly from an iscc on Windows too)
     let windows = opts.codegen.windows && !wasm;
     let obj = opts.output.with_extension("o");
-    isc_codegen::backend::compile_for(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows)?;
+    isc_codegen::backend::compile_for(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows, msvc)?;
     // the embedded runtime, written next to the object file for the linker
     // (an iscc on Windows: its own runtimes are those of Windows, for the
     // levels of its processor below, D382; RUNTIME_WINDOWS, the base level,
     // for an iscc that builds for Windows from elsewhere)
-    let (var, bytes, triple) = if windows && !cfg!(windows) {
+    let (var, bytes, triple) = if msvc {
+        ("ISC_RUNTIME_MSVC", RUNTIME_MSVC, "x86_64-pc-windows-msvc")
+    } else if windows && !cfg!(windows) {
         ("ISC_RUNTIME_WINDOWS", RUNTIME_WINDOWS, "x86_64-pc-windows-gnu")
     } else if threads {
         ("ISC_RUNTIME_WASM_THREADS", RUNTIME_WASM_THREADS, "wasm32-wasip1-threads")
@@ -143,7 +187,9 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
             (f, true)
         }
     };
-    let linked = if windows {
+    let linked = if msvc {
+        link_windows_msvc(&obj, &rt, &opts.output, opts.debug, &opts.link, own_start)
+    } else if windows {
         link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link, own_start)
     } else if wasm {
         link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link)
@@ -208,6 +254,7 @@ const RUNTIME_WASM_THREADS: &[u8] = include_bytes!(env!("ISC_RUNTIME_WASM_THREAD
 /// The same runtime for Windows (`x86_64-pc-windows-gnu`, D246); empty when
 /// the Rust target was not installed when `iscc` was built.
 const RUNTIME_WINDOWS: &[u8] = include_bytes!(env!("ISC_RUNTIME_WINDOWS_LIB"));
+const RUNTIME_MSVC: &[u8] = include_bytes!(env!("ISC_RUNTIME_MSVC_LIB"));
 
 /// The files of MinGW-w64 the linker needs for Windows (D246), under a
 /// prefix like `/usr` (`x86_64-w64-mingw32/lib` and
@@ -390,6 +437,56 @@ fn link_windows_alone(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<
     }
     let r = run_linker("ld.lld", "gnu", a, &windows_linker);
     if !MINGW_FILES.is_empty() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    r
+}
+
+/// Links a program for Windows with Microsoft's ABI (D542), by LLD as
+/// Microsoft's `link` (`lld-link`): a console executable whose main thread
+/// has a stack of 8 MiB. Without C (`own_start`), as `link_windows_alone`:
+/// the entry of the runtime, `kernel32` and the synchronization API set
+/// (the import libraries of MinGW-w64), no default library. With C,
+/// Microsoft's C runtime, static (`libcmt`, `libvcruntime`, `libucrt`: no
+/// DLL beyond those of Windows), its start calling `main`; its libraries
+/// and those of the SDK found as Visual Studio's own tools find them, in
+/// the directories of `LIB` (set by a Developer Command Prompt): iscc never
+/// has them.
+fn link_windows_msvc(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
+    let mut a: Vec<std::ffi::OsString> = vec!["/nologo".into(), "/subsystem:console".into(), "/stack:8388608".into(), "/opt:ref".into(), "/machine:x64".into()];
+    a.push(format!("/out:{}", out.display()).into());
+    if debug {
+        a.push("/debug:dwarf".into());
+    }
+    let tmp = out.with_extension("mingw");
+    if own_start {
+        let lib = if MINGW_FILES.is_empty() {
+            mingw_dirs()?.0
+        } else {
+            write_files(&tmp, MINGW_FILES)?;
+            tmp.clone()
+        };
+        a.extend(["/entry:isc_win_start".into(), "/nodefaultlib".into()]);
+        a.push(obj.into());
+        a.push(rt.into());
+        for l in ["kernel32", "synchronization"] {
+            a.push(lib.join(format!("lib{}.a", l)).into());
+        }
+    } else {
+        if std::env::var_os("LIB").map(|v| v.is_empty()).unwrap_or(true) {
+            return Err("a program with C for x86_64-windows-msvc is linked with Microsoft's C runtime, which iscc does not have: build it from a Developer Command Prompt of Visual Studio, whose `LIB` names the directories of its libraries and of the Windows SDK".into());
+        }
+        a.push(obj.into());
+        for l in libs {
+            a.push(if l.contains('/') || l.contains('\\') || l.ends_with(".lib") || l.ends_with(".a") || l.ends_with(".obj") { l.into() } else { format!("{}.lib", l).into() });
+        }
+        a.push(rt.into());
+        for l in ["libcmt", "libvcruntime", "libucrt", "kernel32", "synchronization"] {
+            a.push(format!("/defaultlib:{}", l).into());
+        }
+    }
+    let r = run_linker("lld-link", "link", a, &windows_linker);
+    if own_start && !MINGW_FILES.is_empty() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
     r
