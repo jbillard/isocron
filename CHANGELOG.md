@@ -20,6 +20,8 @@
   copied about three times instead of log2(n) times: a chunked body of 64 KiB
   26 % faster. A tail call that passes a part of a borrowed parameter (the
   tail of a list) is now a jump even when values are freed after it (D561).
+- `mapParallel` takes the rows of an array of arrays and may return arrays
+  (the rows of an array of arrays), as `map` does (D562).
 
 ## 0.5.0 — 2026-11-09
 

@@ -393,7 +393,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
     - [x] The search of the ends of the heads in vector code (a `filter` guarded by `&&`): 7596 -> 6469 instructions a request, `serve.pipelined` -5.4 % (D362); left: 2116.8 user cycles a request against 613.6 for the floor in C, the kernel the same
   - [x] (D354) Many connections: the bytes that arrive and those left matched to their connections by linear searches (`arrive`, `serveLoop`), quadratic with thousands of them; a body that comes in many reads copied with each (`concat`, as D340's)
   - [x] Actions as values (D352): the type `action (T) => U`, the checker, the lowering; `forEach`, `mapAction`; `serveAction`, `serveActionOn`, `serveTlsAction`; tests on Linux and in the VM; `serveAction.pipelined` 1.9 times its floor
-  - [ ] `mapParallel` over arrays and of arrays (refused at compile time in the POC, D373)
+  - [x] (D562) `mapParallel` over arrays and of arrays (refused at compile time in the POC, D373)
   - [x] (Closed by measure, D538: today 7 instructions a line and +0.06 % of the cycles, within the spread; the gap of D373 below the spread of one version) The lock of `print` (D373): the version with 6.5 instructions more a line measured +1.06 to +1.37 %, the first with 9.02 more +0.37 % (one A/B): the cause not shown
   - [x] A lambda that reads a function of its context given to a recursive function: the functions read part of the key of the specialization (D387)
   - [ ] A lambda that reads a function of its context which reads values of its own, given to a recursive function (refused, D387)

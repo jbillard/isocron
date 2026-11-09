@@ -966,8 +966,23 @@ impl<'a> Interp<'a> {
             Tasks(x, l) => {
                 let arr = self.array(x)?;
                 let mut out = Array::with_capacity(e.ty.elem(), arr.len());
+                // rows (D562): all of the length of the first, as those of
+                // a `map`
+                let rows = e.ty.elem().is_array();
+                let mut first: Option<i64> = None;
                 for i in 0..arr.len() {
                     let v = self.call(l, vec![arr.get(i)])?;
+                    if rows {
+                        let len = match &v {
+                            Value::Array(a) => a.len() as i64,
+                            _ => 0,
+                        };
+                        match first {
+                            None => first = Some(len),
+                            Some(m) if m != len => return panic_at(&l.body, rt::msg_size(len, m)),
+                            _ => {}
+                        }
+                    }
                     out.push(v);
                 }
                 Value::Array(Rc::new(out))

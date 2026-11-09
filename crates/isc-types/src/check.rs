@@ -2749,7 +2749,8 @@ impl<'g> FnCx<'g> {
                 Ok(mk(vec![x, f], Ty::Array(size, Box::new(b)), self))
             }
             // the action of the lambda on each element, at the same time
-            // (D373): its results are not arrays (in the POC)
+            // (D373); over the rows of an array of arrays, or making them
+            // (D562)
             Prim::MapParallel => {
                 let x = self.check(&args[0], None)?;
                 let a = self.expect_array(&x.ty, x.span, "the first argument of `mapParallel`")?;
@@ -2757,11 +2758,6 @@ impl<'g> FnCx<'g> {
                 let fty = Ty::Fn(vec![a.clone()], Box::new(b.clone()), true);
                 let f = self.check(&args[1], Some(&fty))?;
                 self.unify(&fty, &f.ty, f.span)?;
-                for (t, what) in [(&a, "its elements"), (&b, "its results")] {
-                    if matches!(self.shallow(t), Ty::Array(..)) {
-                        return err(span, format!("`mapParallel` over arrays of arrays is not supported in the POC ({} are arrays; a record may hold one)", what));
-                    }
-                }
                 let size = match self.shallow(&x.ty) {
                     Ty::Array(s, _) => s,
                     _ => unreachable!(),

@@ -1,0 +1,20 @@
+// mapParallel over the rows of an array of arrays, and making them (D562)
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const m = map(iota(n), (i) => map(iota(3), (j) => i * 7 + j));
+    // over rows: each task reads its row
+    print(mapParallel(m, (r) => r[0] + r[1] * 10 + r[2] * 100));
+    // of rows: each task makes an array
+    print(mapParallel(iota(n), (i) => map(iota(4), (j) => i * 10 + j)));
+    // rows of texts
+    print(mapParallel(iota(n), (i) => [toString(i), `${i}!`, "lit"]));
+    // over rows and of rows
+    print(mapParallel(m, (r) => map(r, (v) => v * 2)));
+    // rows of no element
+    print(mapParallel(iota(n), (i) => map(iota(0), (j) => j)).length);
+    // rows of different lengths: a panic of their size
+    if (args.length > 1) {
+        print(mapParallel(iota(n), (i) => iota(i % 2 + 1)));
+    }
+    return 0;
+}

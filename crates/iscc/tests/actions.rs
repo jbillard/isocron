@@ -159,10 +159,9 @@ fn actions_in_parallel_wait_for_each_other() {
 #[test]
 fn actions_in_parallel_refused() {
     let main = "\naction main(args: string[k]): i32 {\n    return 0;\n}\n";
-    let cases: [(&str, &str); 4] = [
+    let cases: [(&str, &str); 3] = [
         ("function f(xs: i64[n]): i64[n] {\n    return mapParallel(xs, (x) => x + 1);\n}\n", "a `function` cannot call the action `mapParallel`"),
         ("action f(xs: i64[n]): void {\n    print(fold(xs, 0, (a, x) => a + mapParallel([x], (y) => y).length));\n}\n", "the action `mapParallel` cannot be called inside a lambda"),
-        ("action f(n: i64): void {\n    print(mapParallel(iota(n), (i) => iota(i)).length);\n}\n", "`mapParallel` over arrays of arrays is not supported in the POC"),
         (
             "import * as net from \"net\";\naction f(c: net.Conn): void {\n    print(mapParallel([1, 2], (i) => match (net.writeText(c, \"x\")) {\n        Ok(_) => 1,\n        Err(e) => 0,\n    }));\n    net.close(c);\n}\n",
             "a lambda cannot capture it",
@@ -172,6 +171,30 @@ fn actions_in_parallel_refused() {
         let e = error(&format!("{}{}", src, main));
         assert!(e.contains(want), "{}\n--- gives ---\n{}", src, e);
     }
+}
+
+/// `mapParallel` over the rows of an array of arrays and making arrays
+/// (D562): rows read by their tasks, rows of numbers and of texts made by
+/// them, both, rows of no element; rows of different lengths a panic of
+/// their size. The interpreter and the code compiled on 1 and 4 threads:
+/// the same output, the same panic; every block freed once (the checked
+/// allocator).
+#[test]
+fn actions_in_parallel_over_and_of_arrays() {
+    let src = include_str!("data/actions_parallel_rows.isc");
+    let bin = compile(src, "actions_parallel_rows");
+    for n in ["0", "1", "5", "300"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} rows, {} threads: {}", n, t, r.stderr);
+        }
+    }
+    let want = interp_panic(src, &["5", "ragged"]);
+    let r = run_bin(&bin, &["5", "ragged"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    assert!(r.stderr.contains(want.lines().next().unwrap_or("")), "the interpreter: {}\nthe code: {}", want, r.stderr);
+    checked_clean(src, "actions_parallel_rows", &["300"]);
 }
 
 /// D386: `isPure(f)` gives whether the function received is pure (a

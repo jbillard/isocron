@@ -9018,28 +9018,93 @@ impl<'p> Gen<'p> {
     /// `mapParallel(x, f)` (D373): a task of the pool for each element of
     /// `x`, the action of the lambda applied to it and its result written at
     /// its place; `isc_parallel_actions` runs them at the same time on the
-    /// threads of the pool (never on the calling thread alone).
+    /// threads of the pool (never on the calling thread alone). Over an
+    /// array of arrays, each element is a row, a view of its block; results
+    /// that are arrays (D562) are kept apart by their tasks (each its own
+    /// block), then, all of one length (else the panic of a size, as a `map`
+    /// whose rows differ), moved into the one block of an array of arrays,
+    /// row after row, their blocks freed.
     fn tasks(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
         let et = e.ty.elem().clone();
         let xt = x.ty.elem().clone();
-        if et.is_array() || xt.is_array() {
-            return Err(format!("{}:{}: `mapParallel` over arrays or of arrays is not supported in the POC", e.span.line, e.span.col));
+        let leaf = |t: &Type| t.is_scalar() || matches!(t, Type::Str | Type::Big);
+        if (et.is_array() && !leaf(et.elem())) || (xt.is_array() && !xt.elem().is_scalar() && !matches!(xt.elem(), Type::Str | Type::Big)) {
+            return Err(format!("{}:{}: `mapParallel` over arrays of arrays of arrays, or of them, is not supported", e.span.line, e.span.col));
         }
+        let rows_in = xt.is_array();
+        let rows_out = et.is_array();
         let xv = self.ex(x, 1)?;
-        let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
-        let p = self.alloc_elems(&n, &et);
+        let n = if rows_in { self.nested_parts(&xv).1 } else { self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r)) };
+        // the results, or the arrays the tasks make (16 bytes each)
+        let p = if rows_out {
+            let bytes = self.ins(format!("mul i64 {}, 16", n));
+            self.ins(format!("call ptr @isc_alloc(i64 {})", bytes))
+        } else {
+            self.alloc_elems(&n, &et)
+        };
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &[v(p.clone(), "ptr")], &mut |g, extra, i| {
             let xv = g.ex(x, 1)?;
-            let xp = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
-            let xn = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
-            let el = g.load_elem(&xp, &xn, i, &xt, 1);
+            let el = if rows_in {
+                let (xp, rows, cols, stride) = g.nested_parts(&xv);
+                let _ = rows;
+                g.row_view(&xp, &cols, &stride, i, xt.elem())
+            } else {
+                let xp = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                let xn = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+                g.load_elem(&xp, &xn, i, &xt, 1)
+            };
             g.bind(l.params[0], el);
             let r = g.ex(&l.body, 1)?;
-            g.store_elem(&extra[0].r, &xn, i, &et, &r, 1);
+            if rows_out {
+                let at = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr {}, i64 {}", extra[0].r, i));
+                g.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, at));
+            } else {
+                let xn = if rows_in { g.nested_parts(&xv).1 } else { g.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r)) };
+                g.store_elem(&extra[0].r, &xn, i, &et, &r, 1);
+            }
             Ok(())
         })?;
         self.emit(format!("call void @isc_parallel_actions(i64 {}, ptr {}, ptr {}, i64 {})", n, task, ctx, ctx_bytes));
-        Ok(self.arr(&p, &n))
+        if !rows_out {
+            return Ok(self.arr(&p, &n));
+        }
+        // the rows: their length that of the first (none: 0), each checked,
+        // their elements moved into one block, their blocks freed
+        let inner = et.elem().clone();
+        let mslot = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", mslot));
+        let some = self.ins(format!("icmp sgt i64 {}, 0", n));
+        let (lfirst, ljoin) = (self.label(), self.label());
+        self.cbr(&some, &lfirst, &ljoin);
+        self.block(&lfirst);
+        let r0 = self.ins(format!("load {{ ptr, i64 }}, ptr {}", p));
+        let m0 = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", r0));
+        self.emit(format!("store i64 {}, ptr {}", m0, mslot));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let m = self.ins(format!("load i64, ptr {}", mslot));
+        let total = self.ins(format!("mul i64 {}, {}", n, m));
+        let block = self.alloc_elems(&total, &inner);
+        let esz = esize(&inner);
+        let span = l.body.span;
+        let (pp, bb, mm) = (p.clone(), block.clone(), m.clone());
+        self.for_range_scalar("0", &n, 1, &mut |g, i| {
+            let at = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr {}, i64 {}", pp, i));
+            let r = g.ins(format!("load {{ ptr, i64 }}, ptr {}", at));
+            let rp = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", r));
+            let rn = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", r));
+            let same = g.ins(format!("icmp eq i64 {}, {}", rn, mm));
+            g.guard(&same, format!("call void @isc_panic_size(i64 {}, i64 {}, {})", rn, mm, Self::pos(span)));
+            let off = g.ins(format!("mul i64 {}, {}", i, mm));
+            let off = g.ins(format!("mul i64 {}, {}", off, esz));
+            let dest = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", bb, off));
+            let bytes = g.ins(format!("mul i64 {}, {}", mm, esz));
+            g.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dest, rp, bytes));
+            g.emit(format!("call void @isc_free(ptr {})", rp));
+            Ok(())
+        })?;
+        self.emit(format!("call void @isc_free(ptr {})", p));
+        Ok(self.nested(&block, &n, &m, &m))
     }
 
     fn filter(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {

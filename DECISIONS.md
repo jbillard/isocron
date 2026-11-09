@@ -12880,3 +12880,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     function whose place also receives a new node, which keeps its calls;
     against the interpreter, the checked allocator) and the 12 tests of
     `std_http` (bodies by their length, to their end, chunked).
+- **D562 — `mapParallel` over the rows of an array of arrays, and making
+  them (2026-11-09).** TODO, the gaps of the language: refused at compile
+  time since D373 (the rows of an array of arrays are written by
+  `materialize_rows`, whose tasks know the length of a row from the first
+  one; the tasks of `mapParallel` run at once).
+  - Over rows: each task reads its element as a view of the block of the
+    array of arrays (`row_view`), as a `map` over rows does.
+  - Making rows: each task keeps the array it makes (its own block) at its
+    place in a temporary array of their values; after the job, the rows,
+    all of the length of the first (else the panic of a size at the body of
+    the lambda, `isc_panic_size`, as a `map` whose rows differ), are moved
+    into one block of the array of arrays, row after row (their elements'
+    bits: texts and integers of any size moved, not copied), their blocks
+    and the temporary array freed. Rows of rows (a third level) stay
+    refused at compile time.
+  - The type checker no longer refuses them; the interpreter now checks the
+    lengths of the rows of `mapParallel` as those of `map` (it built a
+    ragged array: `[[0], [0, 1], [0], ...]` where the compiled code
+    panicked).
+  - Test `actions_in_parallel_over_and_of_arrays` (`actions.rs`,
+    `data/actions_parallel_rows.isc`: rows read by their tasks, rows of
+    numbers and of texts made, both, rows of no element; 0, 1, 5 and 300
+    rows, 1 and 4 threads, against the interpreter; rows of different
+    lengths the same panic in both; the checked allocator);
+    `actions_in_parallel_refused` no longer expects the refusal.

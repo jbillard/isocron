@@ -2190,8 +2190,11 @@ is never cut by another. Nothing is shared that two applications could
 write: values are immutable, and a connection or a listener cannot be
 captured by the lambda (each application opens its own). With one thread
 (`ISC_THREADS=1`, and in the interpreter) the applications run one after
-the other, in order: a program must not make one wait for another. Its
-results are not arrays (in the POC), and it is called only in an action.
+the other, in order: a program must not make one wait for another. It is
+called only in an action. Its elements may be the rows of an array of
+arrays, and its results arrays: the rows of the array of arrays it
+returns, all of the length of the first one, as with `map` (rows of
+different lengths are a panic).
 
 ```isc
 // an action: it reads the clock around its work (a time not printed)
