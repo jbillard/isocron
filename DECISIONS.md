@@ -12365,4 +12365,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the check. Test `static_programs_have_only_relative_relocations`
   (`static_programs.rs`): a static program checked, then its first
   relocation made `R_X86_64_64` and synthetic files with each tag refused,
-  each named by the check.
+  each named by the check. Its first part only for a static program: the
+  second run of the suite builds with `ISC_ALLOC=glibc`, its programs
+  linked with glibc (the first commit of the test failed there,
+  "the static program needs a library (DT_NEEDED)").

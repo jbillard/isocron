@@ -35,13 +35,17 @@ fn static_programs_have_only_relative_relocations() {
     let bin = compile(src, "static_relocations");
     let r = run_bin(&bin, &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "[a, bc]\n499500\n"), "{}", r.stderr);
-    let mut elf = std::fs::read(&bin).unwrap();
-    let (n, at) = iscc::check_static_relocations(&elf).unwrap();
-    assert!(n > 0, "no relocation in a static program");
-    // the first one made `R_X86_64_64` (1)
-    elf[at + 8..at + 16].copy_from_slice(&1u64.to_le_bytes());
-    let e = iscc::check_static_relocations(&elf).unwrap_err();
-    assert!(e.contains("relocation of type 1"), "{}", e);
+    // (a program built with `ISC_ALLOC=glibc` in the environment is linked
+    // with glibc, not static: the second run of the suite)
+    if std::env::var("ISC_ALLOC").map(|v| v != "glibc").unwrap_or(true) {
+        let mut elf = std::fs::read(&bin).unwrap();
+        let (n, at) = iscc::check_static_relocations(&elf).unwrap();
+        assert!(n > 0, "no relocation in a static program");
+        // the first one made `R_X86_64_64` (1)
+        elf[at + 8..at + 16].copy_from_slice(&1u64.to_le_bytes());
+        let e = iscc::check_static_relocations(&elf).unwrap_err();
+        assert!(e.contains("relocation of type 1"), "{}", e);
+    }
     for (tag, what) in [(36, "dynamic tag 36"), (17, "dynamic tag 17"), (23, "dynamic tag 23"), (1, "DT_NEEDED")] {
         let e = iscc::check_static_relocations(&elf_with_dynamic(&[(tag, 0)])).unwrap_err();
         assert!(e.contains(what), "{}: {}", tag, e);
