@@ -12325,3 +12325,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Tests: the files that run WebAssembly, whole (`std_sys`, `codegen`,
     `tuples`, `phase5`, `std_net`, `std_https`, `docs`) green after the
     two faults of rights above.
+- **D544 — The threads of wasi-threads without pthread (2026-11-09).**
+  Step 3 of D540, its second half: no program for WebAssembly links
+  wasi-libc unless it declares C functions. The runtime starts its threads
+  itself: a stack of 8 MiB (that of the main thread), a block for the
+  thread-local storage (its size and alignment from the intrinsics of
+  LLVM, `isc_wasm_tls_size` and `isc_wasm_tls_align` of the generated
+  module) and a start block in its heap, then the import
+  `wasi.thread-spawn`. The engine calls `wasi_thread_start(tid, start)`
+  in the new thread with the stack pointer of the module's start: the
+  generated module defines it in assembly (a global of WebAssembly cannot
+  be set otherwise; as `wasi_thread_start.s` of wasi-libc): the stack
+  pointer from the first word of the start block, then `isc_wasi_thread`
+  of the runtime (`__wasm_init_tls` of the block, then the function). The
+  same with wasi-libc's start (a program with C): the module's
+  `wasi_thread_start` comes first, wasi-libc's is not linked.
+  - A hello for `wasm32-wasi-threads`: its imports are the memory, 6
+    functions of WASI preview 1 and `wasi.thread-spawn`; its exports
+    `memory`, `wasi_thread_start`, `_start`.
+  - Measured (mandelbrot 4000, wasmtime, 4 CPUs of the measurements, 9
+    alternated runs, the start of the engine included): with pthread 170
+    to 747 ms (median 185), with the runtime's threads 170 to 238 ms
+    (median 185); with 1 thread 512 to 528 ms against 513 to 532 (3
+    runs). The same output.
+  - Tests: the files that run WebAssembly, whole (`codegen` with its
+    histogram on 4 threads, `std_sys`, `tuples`, `phase5`, `std_net`,
+    `std_https`, `docs`).

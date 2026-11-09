@@ -131,6 +131,41 @@ define void @_start() {
 }
 "#;
 
+/// The start of a thread of wasi-threads without wasi-libc (D543): the
+/// engine calls `wasi_thread_start(tid, start)` in the new thread, whose
+/// stack pointer is that of the module's start; it is set from the first
+/// word of `start` (the top of the stack the runtime made for it) before
+/// any code that uses the stack, in assembly (a global of WebAssembly,
+/// as `wasi_thread_start.s` of wasi-libc), then the runtime's function of
+/// the thread runs. And the size and alignment of the thread-local
+/// storage, which only the intrinsics of LLVM give.
+const WASI_THREADS_IR: &str = r#"
+declare i32 @llvm.wasm.tls.size.i32()
+declare i32 @llvm.wasm.tls.align.i32()
+define i32 @isc_wasm_tls_size() {
+  %s = call i32 @llvm.wasm.tls.size.i32()
+  ret i32 %s
+}
+define i32 @isc_wasm_tls_align() {
+  %a = call i32 @llvm.wasm.tls.align.i32()
+  ret i32 %a
+}
+module asm ".globaltype __stack_pointer, i32"
+module asm ".functype isc_wasi_thread (i32, i32) -> ()"
+module asm ".section .text.wasi_thread_start,\22\22,@"
+module asm ".globl wasi_thread_start"
+module asm ".type wasi_thread_start,@function"
+module asm "wasi_thread_start:"
+module asm ".functype wasi_thread_start (i32, i32) -> ()"
+module asm "local.get 1"
+module asm "i32.load 0"
+module asm "global.set __stack_pointer"
+module asm "local.get 0"
+module asm "local.get 1"
+module asm "call isc_wasi_thread"
+module asm "end_function"
+"#;
+
 /// Compiles the IR to a native executable.
 pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     // a primitive of the system that the target lacks (D324)
@@ -154,10 +189,14 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
         ir.push_str(if msvc { WINDOWS_MSVC_START_IR } else { WINDOWS_START_IR });
     }
     // and a program for WASI without wasi-libc unless it calls C (D543)
-    // (the threads of wasi-threads still by wasi-libc's pthread)
-    let wasi_alone = opts.codegen.isa == isc_codegen::Isa::Wasm32 && p.externs.is_empty() && opts.link.is_empty();
+    let wasi_alone = opts.codegen.isa.is_wasm() && p.externs.is_empty() && opts.link.is_empty();
     if wasi_alone {
         ir.push_str(WASI_START_IR);
+    }
+    // the threads are the runtime's under wasi-libc's start too: its
+    // `wasi_thread_start` is not linked (the module's comes first)
+    if opts.codegen.isa == isc_codegen::Isa::Wasm32Threads {
+        ir.push_str(WASI_THREADS_IR);
     }
     if let Some(f) = &opts.emit_llvm {
         std::fs::write(f, &ir).map_err(|e| format!("cannot write `{}`: {}", f.display(), e))?;

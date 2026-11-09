@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `wasm32-wasi-threads`: the threads started by the runtime through `wasi.thread-spawn`, without wasi-libc's pthread (D544).
+
 * `wasm32-wasi`: programs without wasi-libc, the functions of WASI called by the runtime, its own heap: binary-trees 44 % faster under wasmtime (D543).
 
 * `--target x86_64-windows-msvc`: Windows programs with Microsoft's ABI, linked by LLD as `link`; static libraries of Visual Studio linked with Microsoft's C runtime, static, found in `LIB` (D542).

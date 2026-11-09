@@ -3852,12 +3852,6 @@ unsafe fn getenv(name: *const c_char) -> *const c_char {
     core::ptr::null()
 }
 
-// `pthread_t` is a pointer in wasi-libc (the threads of Linux: `process`)
-#[cfg(all(target_os = "wasi", isc_wasm_threads))]
-extern "C" {
-    fn pthread_create(tid: *mut usize, attr: *const c_void, f: extern "C" fn(*mut c_void) -> *mut c_void, arg: *mut c_void) -> c_int;
-}
-
 #[cfg(all(not(target_os = "wasi"), not(windows)))]
 use linux::{futex, nanosleep, sched_getaffinity};
 
@@ -3884,10 +3878,11 @@ fn start_worker(k: usize) {
     (process::os().spawn)(BIG_STACK, worker, k as *mut c_void);
 }
 
+/// (WASI: a thread of wasi-threads started by the runtime, D543; the stack
+/// of the main thread, 8 MiB)
 #[cfg(all(target_os = "wasi", isc_wasm_threads))]
 fn start_worker(k: usize) {
-    let mut tid = 0usize;
-    unsafe { pthread_create(&mut tid, core::ptr::null(), worker, k as *mut c_void) };
+    wasi::spawn(8 << 20, worker, k as *mut c_void);
 }
 
 #[cfg(windows)]

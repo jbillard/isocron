@@ -662,3 +662,79 @@ pub fn rename(from: &[u8], to: &[u8]) -> Result<(), u16> {
     // SAFETY: two paths and their lengths
     status(unsafe { path_rename(d1, r1.as_ptr(), r1.len(), d2, r2.as_ptr(), r2.len()) })
 }
+
+// ---------------------------------------------------------------------
+// the threads of wasi-threads (D543)
+
+#[cfg(isc_wasm_threads)]
+#[link(wasm_import_module = "wasi")]
+extern "C" {
+    #[link_name = "thread-spawn"]
+    fn thread_spawn(start: *mut c_void) -> i32;
+}
+
+#[cfg(isc_wasm_threads)]
+extern "C" {
+    /// The thread-local storage of the calling thread at `p` (made by the
+    /// linker: the first values copied, `__tls_base` set).
+    fn __wasm_init_tls(p: *mut c_void);
+    /// Its size and alignment (the generated module: intrinsics of LLVM).
+    fn isc_wasm_tls_size() -> i32;
+    fn isc_wasm_tls_align() -> i32;
+}
+
+/// What a new thread starts with: the top of its stack first (read by
+/// `wasi_thread_start` of the generated module before anything else), its
+/// thread-local storage, its function.
+#[cfg(isc_wasm_threads)]
+#[repr(C)]
+struct ThreadStart {
+    stack_top: usize,
+    tls: *mut c_void,
+    f: extern "C" fn(*mut c_void) -> *mut c_void,
+    arg: *mut c_void,
+}
+
+/// A thread of wasi-threads running `f(arg)` on a stack of `stack` bytes;
+/// false when it cannot be had. Its blocks are kept (the threads of the
+/// runtime run as long as the process).
+#[cfg(isc_wasm_threads)]
+pub fn spawn(stack: usize, f: extern "C" fn(*mut c_void) -> *mut c_void, arg: *mut c_void) -> bool {
+    // SAFETY: blocks of the heap for the stack, the storage and the start
+    unsafe {
+        let size = isc_wasm_tls_size().max(1) as usize;
+        if isc_wasm_tls_align() > 64 {
+            return false;
+        }
+        let low = aligned_alloc(64, stack) as usize;
+        let tls = aligned_alloc(64, size);
+        let start = aligned_alloc(64, core::mem::size_of::<ThreadStart>()) as *mut ThreadStart;
+        if low == 0 || tls.is_null() || start.is_null() {
+            free(low as *mut c_void);
+            free(tls);
+            free(start as *mut c_void);
+            return false;
+        }
+        start.write(ThreadStart { stack_top: (low + stack) & !15, tls, f, arg });
+        if thread_spawn(start as *mut c_void) < 0 {
+            free(low as *mut c_void);
+            free(tls);
+            free(start as *mut c_void);
+            return false;
+        }
+    }
+    true
+}
+
+/// The start of a thread of `spawn`, called by `wasi_thread_start` once its
+/// stack is set: its thread-local storage, then its function.
+#[cfg(isc_wasm_threads)]
+#[no_mangle]
+pub extern "C" fn isc_wasi_thread(_tid: i32, start: *mut c_void) {
+    // SAFETY: the block of `spawn`, never freed
+    let s = unsafe { &*(start as *const ThreadStart) };
+    // SAFETY: the storage of this thread, before any thread-local variable
+    unsafe { __wasm_init_tls(s.tls) };
+    (s.f)(s.arg);
+}
+
