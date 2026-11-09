@@ -1,0 +1,59 @@
+// The pilot of `toString` of an `i64` written in Isocron (SPEC section 17,
+// order 2): 8 digits made at once in a word (the reverse of `digits8`),
+// the text by `map` and `stringOf`, against the builtin (Rust).
+// D588: the pilot of an attempt kept in Rust (DECISIONS D588).
+// usage: text_pilot <rounds>
+
+// the 8 digits of `v` (below 10^8), the highest at the lowest place, as
+// ASCII: two halves of 4, then pairs, then digits, in lanes of the word
+function asciiWord8(v: u64): u64 {
+    const merged = (v / 10000u64) | ((v % 10000u64) << 32u64);
+    const q1 = ((merged * 10486u64) >> 20u64) & 0x0000007F0000007Fu64;
+    const m2 = q1 | ((merged - q1 * 100u64) << 16u64);
+    const q2 = ((m2 * 103u64) >> 10u64) & 0x000F000F000F000Fu64;
+    const m3 = q2 | ((m2 - q2 * 10u64) << 8u64);
+    return m3 + 0x3030303030303030u64;
+}
+
+// the number of decimal digits of `v`
+function digitCount(v: u64): i64 {
+    const t = [10u64, 100u64, 1000u64, 10000u64, 100000u64, 1000000u64, 10000000u64, 100000000u64,
+        1000000000u64, 10000000000u64, 100000000000u64, 1000000000000u64, 10000000000000u64,
+        100000000000000u64, 1000000000000000u64, 10000000000000000u64, 100000000000000000u64,
+        1000000000000000000u64, 10000000000000000000u64];
+    return 1 + count(t, (p) => v >= p);
+}
+
+function textOf(x: i64): string {
+    const neg = x < 0;
+    const v = neg ? 0u64 - u64(x) : u64(x);
+    const n = digitCount(v);
+    const k = n + (neg ? 1 : 0);
+    // the digits in three words: the last 8, the 8 before, the first 4
+    const lo = asciiWord8(v % 100000000u64);
+    const mid = asciiWord8((v / 100000000u64) % 100000000u64);
+    const hi = asciiWord8(v / 10000000000000000u64);
+    // byte j of the 24 digits (j = 24 - n + i for the i-th digit)
+    const at = (j: i64) => u8((j < 8 ? hi : j < 16 ? mid : lo) >> u64((j % 8) * 8));
+    const b = map(iota(k), (i) => neg && i == 0 ? 45u8 : at(24 - n + i - (neg ? 1 : 0)));
+    return stringOf(b);
+}
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    const each = f64(r * n);
+    const xs = map(iota(n), (i) => (i * 7919 * 104729) % 1000000007 - 500000000);
+    const smalls = map(iota(n), (i) => i % 1000);
+    const [a1, t1] = bench(r, () => sum(map(xs, (x) => len(toString(x)))));
+    print(`builtin.9 ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => sum(map(xs, (x) => len(textOf(x)))));
+    print(`pilot.9 ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => sum(map(smalls, (x) => len(toString(x)))));
+    print(`builtin.3 ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => sum(map(smalls, (x) => len(textOf(x)))));
+    print(`pilot.3 ${(f64(t4) / each).toFixed(3)} ${a4}`);
+    print(join(map([0, -1, 7, -9223372036854775807 - 1, 9223372036854775807, 100000000, 12345678901234567], textOf), " "));
+    print(join(map([0, -1, 7, -9223372036854775807 - 1, 9223372036854775807, 100000000, 12345678901234567], toString), " "));
+    return 0;
+}

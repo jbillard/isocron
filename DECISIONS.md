@@ -13630,3 +13630,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   instruction more on the path of a medium block taken from the cache
   (`cmpb $0xc3` becomes a load and a compare) and `free_medium` three
   (under the lock). The invariant H3 says so.
+- **D588 — The text of an integer written in Isocron: tried, kept in Rust
+  (2026-11-09).** The next pure function of SPEC section 17, order 2, after
+  `parseI64` (D582, D586). `toString` of an integer is not one call: the
+  code generator fuses it with `padStart` and `padEnd` (D348) and writes it
+  inside a concatenation (D359), on the node `StrOp::ToString`; a function
+  of the prelude in its place would lose those fusions. So the attempt
+  kept the node and had the code generator call, for a text that no fusion
+  writes, the functions `$rtIntText` and `$rtUintText` of the prelude,
+  lowered once when a program writes an integer (`lower_fn`, the indices in
+  `Program::int_text`), `alwaysinline`, with no test of the stack (a leaf
+  of 24 bytes): the number of digits by `leadingZeros` (a new builtin,
+  `llvm.ctlz`) and one power of ten, 8 digits a word by products (the
+  reverse of `digits8`, 4 digits by three products for the small numbers),
+  the `-` in place of a `0`, then `$asciiText(w0, w1, w2, at, n)` (a new
+  primitive of the prelude: `n` bytes of three words, one check, a block of
+  `n` bytes, stores that overlap). The same texts as the runtime: 84216
+  numbers of every width (three seeds, the bounds, the powers of ten and
+  their neighbours), compiled and interpreted; the fusions untouched
+  (`strings.template` −0.3 to +0.6 %, `strings.padStart` within the noise).
+  - Slower, every version (`bench/primitives/strings.isc` and
+    `text_pilot.isc`, the compiler before D580 for the Rust version, the
+    median of 7 runs): called (not inlined): `toString.i64` +18.5 %, 9
+    digits +27.3 %, 3 digits +49.9 %; inlined, 4 digits by three products:
+    +3.6 %, +19.6 %, +23.0 %; the words shifted in the registers and stored
+    whole into a block of 24 bytes (to spare a buffer read at a byte not a
+    multiple of 8): +16.1 %, +40.7 %, +31.5 %.
+  - The cause, counted (`perf stat` a number, one CPU at fixed frequency):
+    3 digits, Rust 31.0 cycles and 127.7 uops, the buffer version 37.8 and
+    150.2, the register version 40.2 and 158.1; 9 digits, Rust 40.7 and
+    175.4, 51.4 and 189.6, 58.2 and 201.8. Not the forwarding of stores to
+    loads (`ld_blocks.store_forward`: 0 and 0.9 a number for the buffer
+    version, 0.9 and 2.0 for Rust): 15 to 25 uops more a number — the
+    products of the SWAR where Rust's loop divides by 100 once or twice for
+    a small number and copies two digits from a table, the sign made by
+    selects, the checks of `$asciiText`, the branches of the copy.
+  - Principle 6: the text of an integer stays in Rust. The attempt is kept
+    on the local branch `attempt-int-text` (commit `dcba9e1`); the pilot
+    in `bench/primitives/text_pilot.isc`. To try again: Rust's form (two
+    digits a turn from a table of 200 bytes, read by `readWord`), the sign
+    written by a branch, and a text built without the checks of a general
+    primitive.
