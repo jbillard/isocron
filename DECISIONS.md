@@ -13356,3 +13356,31 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     290.4 ms (median, -9.5 %), 297.4 -> 283.9 ms (min, -4.5 %), the new
     faster in 7 of 7 pairs. Under Linux the program calls `mremap` 6
     times in 3 passes (`strace`): the path taken.
+- **D578 — The programs of the tests under Valgrind's memcheck, a mode of
+  the tests and `tools/memcheck.py` (2026-11-09).** The item of the
+  trusted base: each load and store of the generated code checked against
+  the block it reaches. Valgrind's memcheck does that at run time for the
+  blocks of glibc's allocator; it ran on chosen programs (D95, D546), not
+  on those of the tests at large.
+  - `ISC_TEST_MEMCHECK=1` (`crates/iscc/tests/common`): the programs that
+    `compile_built` makes are linked with glibc and built for AVX2
+    (Valgrind 3.24 decodes no AVX-512, D576), and `run_bin` runs them under
+    `valgrind -q --error-exitcode=99` with `ISC_ALLOC=glibc` and 2 threads;
+    a program built another way (a test that wants the native
+    instructions) runs as before. `tools/memcheck.py [FILE...]` runs the
+    test files so, one at a time, 2 tests at a time, each file in a scope
+    of systemd whose memory is capped (10 GB, no swap).
+  - The cap after a fault of mine: the first try ran 4 tests at once
+    under Valgrind with 16 threads each; the kernel killed three of them
+    for want of memory of the whole machine (`dmesg`: 3.5 to 4.1 GB each),
+    and a later try had one program at 10.5 GB before I stopped it. With
+    the scope, the kernel kills the program over the cap alone
+    (`CONSTRAINT_MEMCG`, checked with a program of 2 GB in a scope of 1).
+  - First results: `memory` 29 tests, `stdin` 14, `text` 3, `functions`
+    12, `tuples` 3, `result` 4: no error of memcheck. `strings`: the
+    program of one of its tests of large texts went over 10 GB under
+    Valgrind (52 GB of address space), killed alone: not checked.
+  - Its limits: only the programs that `run_bin` runs (233 calls);
+    `stdin` runs most of its programs itself (18 `Command::new`), and so
+    do other files; the programs of large inputs are too large for
+    Valgrind. Not in the suite: hours for every file.

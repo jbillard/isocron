@@ -141,7 +141,28 @@ pub fn compile_glibc(src: &str, name: &str, codegen: isc_codegen::Options) -> Pa
     compile_built(src, name, codegen, &[], true)
 }
 
-fn compile_built(src: &str, name: &str, codegen: isc_codegen::Options, link: &[&str], glibc: bool) -> PathBuf {
+/// The memory of every program checked (D578): with `ISC_TEST_MEMCHECK` set,
+/// the programs of the tests are linked with glibc for AVX2 (Valgrind decodes
+/// no AVX-512) and run under Valgrind's memcheck on glibc's allocator
+/// (`run_bin`): a read or a write outside the blocks of the heap, or of
+/// memory never written, is an error, the exit code 99.
+pub fn memcheck() -> bool {
+    std::env::var_os("ISC_TEST_MEMCHECK").is_some()
+}
+
+/// The programs built for the memory check (`compile_built`): only they run
+/// under Valgrind (a test may build its program another way, for the native
+/// instructions, which Valgrind may not decode).
+static MEMCHECKED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link: &[&str], mut glibc: bool) -> PathBuf {
+    let checked = memcheck() && !codegen.windows;
+    if checked {
+        if matches!(codegen.isa, isc_codegen::Isa::Native | isc_codegen::Isa::Avx512) {
+            codegen.isa = isc_codegen::Isa::Avx2;
+        }
+        glibc = true;
+    }
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(name);
     let opts = iscc::BuildOptions {
@@ -154,6 +175,9 @@ fn compile_built(src: &str, name: &str, codegen: isc_codegen::Options, link: &[&
         glibc,
     };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
+    if checked {
+        MEMCHECKED.lock().unwrap().push(out.clone());
+    }
     out
 }
 
@@ -169,7 +193,15 @@ pub fn run_bin(bin: &std::path::Path, args: &[&str]) -> Run {
 
 /// Runs a compiled program with `ISC_THREADS` set (None: the default).
 pub fn run_bin_threads(bin: &std::path::Path, args: &[&str], threads: Option<usize>) -> Run {
-    let mut cmd = std::process::Command::new(bin);
+    let mut cmd = if memcheck() && MEMCHECKED.lock().unwrap().iter().any(|b| b == bin) {
+        let mut c = std::process::Command::new("valgrind");
+        // 2 threads, as the other runs under Valgrind (it runs one at a
+        // time; the threads of the pool spin before they sleep)
+        c.args(["-q", "--error-exitcode=99"]).arg(bin).env("ISC_ALLOC", "glibc").env("ISC_THREADS", "2");
+        c
+    } else {
+        std::process::Command::new(bin)
+    };
     cmd.args(args);
     if let Some(t) = threads {
         cmd.env("ISC_THREADS", t.to_string());
