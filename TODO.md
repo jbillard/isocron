@@ -396,7 +396,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] (D562) `mapParallel` over arrays and of arrays (refused at compile time in the POC, D373)
   - [x] (Closed by measure, D538: today 7 instructions a line and +0.06 % of the cycles, within the spread; the gap of D373 below the spread of one version) The lock of `print` (D373): the version with 6.5 instructions more a line measured +1.06 to +1.37 %, the first with 9.02 more +0.37 % (one A/B): the cause not shown
   - [x] A lambda that reads a function of its context given to a recursive function: the functions read part of the key of the specialization (D387)
-  - [ ] A lambda that reads a function of its context which reads values of its own, given to a recursive function (refused, D387)
+  - [x] (D563) A lambda that reads a function of its context which reads values of its own, given to a recursive function (refused, D387)
   - [x] Actions in parallel on the pool: `mapParallel(x, f)`, a task of the pool for each element (the node `Tasks`, `isc_parallel_actions`); the primitives of the runtime checked from several threads: a line of `print` held whole by its thread while tasks run, sockets, listeners and servers linear (never shared), files by path (D373)
   - [x] `serveAction` with a loop on each thread, its responses written in one pass: 2 cores, 199602 -> 380690, 215475 -> 437783 and 188792 -> 408195 requests a second with 16, 256 and 1024 connections, 99.9, 99.4 and 98.4 % of `serve` (D385)
   - [x] One `serve` for a pure function or an action: the purity of a lambda inferred, `isPure` and its first branch; `serveAction` and the other forms of actions removed (D386)

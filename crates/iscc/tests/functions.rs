@@ -548,3 +548,21 @@ action main(args: string[k]): i32 {
     // 5 panics where `codes` did); not the read alone (`+ 1`)
     assert_eq!(ir.lines().filter(|l| l.contains(" table%") && l.trim_start().starts_with("let")).count(), 3, "{}", ir);
 }
+
+/// A lambda that reads a function of its context which reads values of its
+/// own (D563), given to a recursive function: those values parameters of
+/// its specialization too, through several functions (`h` reads `g`, which
+/// reads `k`), in a `map`. The interpreter and the code compiled on 1 and 4
+/// threads: the same output; every block freed once (the checked
+/// allocator).
+#[test]
+fn functions_read_that_read_values_of_their_own() {
+    let src = include_str!("data/functions_read_capturing.isc");
+    let want = interp_ok(src, &["a", "b"]);
+    let bin = compile(src, "functions_read_capturing");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &["a", "b"], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, r.stderr);
+    }
+    checked_clean(src, "functions_read_capturing", &["a", "b"]);
+}

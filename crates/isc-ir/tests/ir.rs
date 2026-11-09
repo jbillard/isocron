@@ -333,10 +333,15 @@ action main(args: string[k]): i32 {
 ";
     let p = lower(&isc_types::check_source(src).unwrap()).unwrap();
     assert_eq!(p.fns.iter().filter(|f| f.name.starts_with("apply")).count(), 2, "one `apply` for each function read: {:?}", p.fns.iter().map(|f| &f.name).collect::<Vec<_>>());
-    // a function read that reads a value of its own context: refused
+    // a function read that reads a value of its own context: that value a
+    // parameter of the specialization too (D563)
     let t = isc_types::check_source(&src.replace("print(twice((v) => v * 3));", "const k = i64(args.length);\n    print(twice((v) => v * k));")).unwrap();
-    let e = lower(&t).unwrap_err();
-    assert!(e.message.contains("a recursive function given a function that reads, of its context, a size or a function that reads values of its own"), "{}", e);
+    let p = lower(&t).unwrap();
+    let applies: Vec<_> = p.fns.iter().filter(|f| f.name.starts_with("apply")).collect();
+    assert_eq!(applies.len(), 2, "one `apply` for each function read");
+    let mut counts: Vec<usize> = applies.iter().map(|f| f.params.len()).collect();
+    counts.sort();
+    assert_eq!(counts, vec![1, 2], "n, and n with the value k that `g` reads");
 }
 
 /// Uniqueness in the branches of an `if` (D105): the last use of a variable

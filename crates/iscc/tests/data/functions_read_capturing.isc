@@ -1,0 +1,32 @@
+// a lambda that reads a function of its context which reads values of its own, given to a recursive function (D563)
+function apply(f: (i64) => i64, n: i64): i64 {
+    if (n == 0) {
+        return 0;
+    } else {
+        return f(n) + apply(f, n - 1);
+    }
+}
+
+function twice(g: (i64) => i64): i64 {
+    return apply((v) => g(g(v)), 3);
+}
+
+function nested(h: (i64) => i64, m: i64): i64 {
+    // h reads its own value; the lambda reads h and a value of its own
+    return apply((v) => h(v) * m, 4);
+}
+
+action main(args: string[k]): i32 {
+    const k = i64(args.length) + 2;
+    const j = k * 10;
+    print(twice((v) => v + 1));
+    print(twice((v) => v * k));
+    print(twice((v) => v * k + j));
+    print(nested((v) => v - k, 3));
+    const g = (v: i64) => v * k;
+    const h = (v: i64) => g(v) + j;
+    print(apply((v) => h(v) + 1, 5));
+    const xs = map(iota(3), (i) => apply((v) => h(v) * i, 2));
+    print(xs);
+    return 0;
+}

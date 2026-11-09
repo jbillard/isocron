@@ -22,6 +22,8 @@
   tail of a list) is now a jump even when values are freed after it (D561).
 - `mapParallel` takes the rows of an array of arrays and may return arrays
   (the rows of an array of arrays), as `map` does (D562).
+- A recursive function may receive a lambda that reads functions of its
+  context which read values of their own (D563).
 
 ## 0.5.0 — 2026-11-09
 

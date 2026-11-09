@@ -12905,3 +12905,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     rows, 1 and 4 threads, against the interpreter; rows of different
     lengths the same panic in both; the checked allocator);
     `actions_in_parallel_refused` no longer expects the refusal.
+- **D563 — A function read by a lambda given to a recursive function may
+  read values of its own context (2026-11-09).** TODO, the gaps of the
+  language (D387: refused, "a recursive function given a function that
+  reads, of its context, a size or a function that reads values of its
+  own"). The specialization of a recursive function for a lambda takes the
+  values and sizes the lambda reads of its context as parameters after the
+  others (D131, D152); the functions of its context it reads were part of
+  the key only when they read nothing of theirs.
+  - Now `captures` gives, in one order, what the function given reads of
+    its context, then, depth first, what each function of its context it
+    reads reads of its own; the caller passes them in that order
+    (`call_recursive`), and the specialization (`lower_fn`) makes the
+    function again with each of them read from a new parameter (`rebind`,
+    the same order). The key holds the functions read whatever they read
+    (their values are arguments, not part of the key). A function stored
+    in a value of a sum type (D153) still reads nothing of its context:
+    checked on all of what it reads, through the functions it reads.
+  - Tests: the IR test of D152/D387 (`ir.rs`: the function read that reads
+    `k` no longer refused: two specializations of `apply`, one of them with
+    `k` a parameter more); `functions_read_that_read_values_of_their_own`
+    (`functions.rs`, `data/functions_read_capturing.isc`: `twice` given
+    functions that read `k` and `j`, a lambda that reads `h` and a value of
+    its own, `h` reading `g` reading `k`, inside a `map`; the interpreter
+    and the code on 1 and 4 threads; the checked allocator).

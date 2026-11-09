@@ -223,7 +223,7 @@ impl<'p> Lower<'p> {
             }
             fv => {
                 let sk = match &fv {
-                    FuncVal::Lambda { env, .. } if captured_vars(&fv).is_empty() && captured_sizes(&fv).is_empty() => {
+                    FuncVal::Lambda { env, .. } if captures(&fv).is_empty() => {
                         fn_key(&fv).map(|k| (k, (*env.type_args).clone()))
                     }
                     FuncVal::Lambda { .. } => None,
@@ -428,13 +428,14 @@ fn fn_key(f: &FuncVal) -> Option<FnKey> {
             let mut sizes = Vec::new();
             free_locals(body, &mut bound, &mut free, &mut sizes);
             // a function of its context it reads: known when the program is
-            // compiled, part of the key, when it reads nothing of its own
-            // context (a value of the caller would not be there, D387)
+            // compiled, part of the key (D387); what it reads of its own
+            // context, parameters of the specialization too (`captures`,
+            // D563)
             let mut fns = Vec::new();
             for l in &free {
                 match env.locals.get(l) {
                     Some(Binding::Var(_)) => {}
-                    Some(Binding::Func(g)) if captured_vars(g).is_empty() && captured_sizes(g).is_empty() => fns.push((*l, fn_key(g)?)),
+                    Some(Binding::Func(g)) => fns.push((*l, fn_key(g)?)),
                     _ => return None,
                 }
             }
@@ -547,31 +548,43 @@ fn free_locals(e: &TExpr, bound: &mut HashSet<LocalId>, out: &mut Vec<LocalId>, 
     }
 }
 
-/// The captured locals of a function given to a recursive function, with
-/// the variables of the caller that hold them (D131).
-fn captured_vars(f: &FuncVal) -> Vec<(LocalId, VarId)> {
-    let FuncVal::Lambda { params, body, env, .. } = f else { return Vec::new() };
-    let mut bound: HashSet<LocalId> = params.iter().copied().collect();
-    let mut free = Vec::new();
-    let mut sizes = Vec::new();
-    free_locals(body, &mut bound, &mut free, &mut sizes);
-    free.into_iter()
-        .filter_map(|l| match env.locals.get(&l) {
-            Some(Binding::Var(v)) => Some((l, *v)),
-            _ => None,
-        })
-        .collect()
+/// What a function given to a recursive function reads of the context where
+/// it was written: a value of a variable of the caller, or a size.
+enum Capture {
+    Var(VarId),
+    Size(Expr),
 }
 
-/// The sizes of its context a function given to a recursive function reads
-/// (D152), with their values in the caller.
-fn captured_sizes(f: &FuncVal) -> Vec<(SymId, Expr)> {
-    let FuncVal::Lambda { params, body, env, .. } = f else { return Vec::new() };
-    let mut bound: HashSet<LocalId> = params.iter().copied().collect();
-    let mut free = Vec::new();
-    let mut sizes = Vec::new();
-    free_locals(body, &mut bound, &mut free, &mut sizes);
-    sizes.into_iter().filter_map(|s| env.sizes.get(&s).map(|x| (s, x.clone()))).collect()
+/// What `f` reads of its context (D131, D152), then, depth first, what the
+/// functions of its context it reads read of theirs (D563): the arguments
+/// of its specialization after the others, in this order (`rebind` makes
+/// the parameters in the same order).
+fn captures(f: &FuncVal) -> Vec<Capture> {
+    fn into(f: &FuncVal, out: &mut Vec<Capture>) {
+        let FuncVal::Lambda { params, body, env, .. } = f else { return };
+        let mut bound: HashSet<LocalId> = params.iter().copied().collect();
+        let mut free = Vec::new();
+        let mut sizes = Vec::new();
+        free_locals(body, &mut bound, &mut free, &mut sizes);
+        for l in &free {
+            if let Some(Binding::Var(v)) = env.locals.get(l) {
+                out.push(Capture::Var(*v));
+            }
+        }
+        for s in &sizes {
+            if let Some(x) = env.sizes.get(s) {
+                out.push(Capture::Size(x.clone()));
+            }
+        }
+        for l in &free {
+            if let Some(Binding::Func(g)) = env.locals.get(l) {
+                into(g, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    into(f, &mut out);
+    out
 }
 
 fn pat_locals(p: &TPat, out: &mut HashSet<LocalId>) {
@@ -2289,14 +2302,16 @@ impl<'p> Lower<'p> {
                     let Some(k) = fn_key(&f) else {
                         return poc(span, "a recursive function given a function that reads, of its context, a size or a function that reads values of its own (SPEC section 11)");
                     };
-                    // the values it captures, then the sizes it reads:
-                    // arguments after the others
-                    for (_, v) in captured_vars(&f) {
-                        let t = self.vars[v as usize].ty.clone();
-                        captured.push(Expr::var(v, t, span));
-                    }
-                    for (_, x) in captured_sizes(&f) {
-                        captured.push(x);
+                    // the values it captures, the sizes it reads, then those
+                    // of the functions it reads: arguments after the others
+                    for c in captures(&f) {
+                        match c {
+                            Capture::Var(v) => {
+                                let t = self.vars[v as usize].ty.clone();
+                                captured.push(Expr::var(v, t, span));
+                            }
+                            Capture::Size(x) => captured.push(x),
+                        }
                     }
                     keys.push(Some(k));
                     funcs.push(Some(f));
@@ -2311,6 +2326,44 @@ impl<'p> Lower<'p> {
         };
         let ret = self.rets[idx as usize].clone();
         Ok(Expr::new(ExprKind::Call(idx, vals), ret, span))
+    }
+
+    /// `f` reading what it read of its context from new parameters of the
+    /// specialization (pushed onto `params`), in the order of `captures`:
+    /// its values, its sizes, then the functions it reads, made again the
+    /// same way (D131, D152, D563).
+    fn rebind(&mut self, f: &FuncVal<'p>, params: &mut Vec<VarId>, pvars: &mut Vec<Option<VarId>>, span: Span) -> FuncVal<'p> {
+        let FuncVal::Lambda { params: lp, body: lb, env: le, act: la } = f else { return f.clone() };
+        let mut bound: HashSet<LocalId> = lp.iter().copied().collect();
+        let mut free = Vec::new();
+        let mut sizes = Vec::new();
+        free_locals(lb, &mut bound, &mut free, &mut sizes);
+        let mut inner = (**le).clone();
+        for l in &free {
+            if let Some(Binding::Var(cv)) = le.locals.get(l) {
+                let t = self.vars[*cv as usize].ty.clone();
+                let name = self.vars[*cv as usize].name.clone();
+                let p = self.new_var(&name, t);
+                inner.locals.insert(*l, Binding::Var(p));
+                params.push(p);
+                pvars.push(None);
+            }
+        }
+        for s in &sizes {
+            if le.sizes.contains_key(s) {
+                let p = self.new_var("size", Type::Int(IntKind::I64));
+                inner.sizes.insert(*s, Expr::var(p, Type::Int(IntKind::I64), span));
+                params.push(p);
+                pvars.push(None);
+            }
+        }
+        for l in &free {
+            if let Some(Binding::Func(g)) = le.locals.get(l) {
+                let g2 = self.rebind(g, params, pvars, span);
+                inner.locals.insert(*l, Binding::Func(g2));
+            }
+        }
+        FuncVal::Lambda { params: lp, body: lb, env: Rc::new(inner), act: *la }
     }
 
     fn lower_fn(&mut self, id: FnId, type_args: Vec<Ty>, funcs: Vec<Option<FuncVal<'p>>>, keys: Vec<Option<FnKey>>, span: Span) -> R<u32> {
@@ -2347,31 +2400,15 @@ impl<'p> Lower<'p> {
             pvars.push(Some(v));
         }
         // the captured values of the functions given: parameters after the
-        // others, the functions bound to them in this specialization (D131)
+        // others, the functions bound to them in this specialization (D131),
+        // those of the functions they read too (D563)
         for (i, &l) in f.params.iter().enumerate() {
             let Some(Some(fv)) = funcs.get(i) else { continue };
-            let caps = captured_vars(fv);
-            let sizes = captured_sizes(fv);
-            if caps.is_empty() && sizes.is_empty() {
+            if captures(fv).is_empty() {
                 continue;
             }
-            let FuncVal::Lambda { params: lp, body: lb, env: le, act: la } = fv else { continue };
-            let mut inner = (**le).clone();
-            for (cl, cv) in caps {
-                let t = self.vars[cv as usize].ty.clone();
-                let name = self.vars[cv as usize].name.clone();
-                let p = self.new_var(&name, t);
-                inner.locals.insert(cl, Binding::Var(p));
-                params.push(p);
-                pvars.push(None);
-            }
-            for (s, _) in sizes {
-                let p = self.new_var("size", Type::Int(IntKind::I64));
-                inner.sizes.insert(s, Expr::var(p, Type::Int(IntKind::I64), span));
-                params.push(p);
-                pvars.push(None);
-            }
-            env.locals.insert(l, Binding::Func(FuncVal::Lambda { params: lp, body: lb, env: Rc::new(inner), act: *la }));
+            let g = self.rebind(fv, &mut params, &mut pvars, span);
+            env.locals.insert(l, Binding::Func(g));
         }
         let ret = self.ty(&env, &f.ret, f.span)?;
         self.rets.push(ret);

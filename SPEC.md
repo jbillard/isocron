@@ -567,7 +567,7 @@ Les fonctions passées en argument sont résolues à la compilation : aucune fer
 - Une fonction peut être passée en argument, retournée par une fonction non récursive (développée en ligne, D152), ou liée par `const`.
 - Elle peut être rangée dans un tuple, un record ou un tableau, connus à la compilation (D114), et dans un champ d'un type somme : la valeur y tient le code de la fonction parmi celles que le programme range dans ce champ, et l'appel est un aiguillage sur ce code (D153). Une fonction rangée dans un type somme ne lit ni variable ni taille de son contexte.
 - Une lambda peut capturer des variables : elles deviennent des arguments supplémentaires après spécialisation (lambda lifting).
-- Chaque appel d'une fonction d'ordre supérieur est spécialisé pour la fonction reçue : `map(x, f)` devient une boucle dédiée à `f`.
+- Chaque appel d'une fonction d'ordre supérieur est spécialisé pour la fonction reçue : `map(x, f)` devient une boucle dédiée à `f`. Une fonction récursive reçoit en paramètres de plus ce que la fonction donnée lit de son contexte (valeurs, tailles), et ce que lisent du leur les fonctions qu'elle lit, de proche en proche (D131, D152, D563).
 - Si la fonction dépend d'une condition connue seulement à l'exécution (`const f = c ? g : h;`), elle est compilée en branchement : chaque fonction possible reçoit une étiquette, et l'appel devient un aiguillage sur cette étiquette (defunctionalization, Reynolds 1972). Aucune allocation ; le cas est signalé dans le memory report.
 
 ### Récursion

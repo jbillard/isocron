@@ -3412,8 +3412,9 @@ available yet (the compiler reports `... is not supported in the POC`):
 
 * a recursive function that returns a function (D152);
 * a function stored in a value of a sum type that reads a variable or a
-  size of its context, and a lambda given to a recursive function that
-  reads a function of its context (D153);
+  size of its context (D153); a lambda given to a recursive function may
+  read functions of its context, and those may read values of theirs
+  (D387, D563);
 * arrays of arrays whose rows have different lengths, and arrays of arrays
   of arrays (D154).
 
