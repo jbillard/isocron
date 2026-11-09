@@ -5169,7 +5169,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   one call per thread (2026-11-04).** A large file given as the standard
   input is mapped (D257), its pages touched by every thread, one read per
   page (`touch_pages`): where the page cache holds the file in pages of 4
-  KiB (a tmpfs, here after the memory of the machine was short [contradicted: D375]), each page
+  KiB (a tmpfs, here after the memory of the machine was short [contradicted: D375; the cause, D551: pages marked by the reclaim, `PG_reclaim` being `PG_readahead`, which the mapping around a fault skips]), each page
   is a fault, 63629 for the 254 MB of reverse-complement, 29 % of its CPU
   in their handling. Each thread now asks the kernel for the pages of its
   part in one call (`madvise(MADV_POPULATE_READ)`, Linux 5.14), touching
@@ -12497,3 +12497,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   branches (D539). The alignment is kept (no cost measured but the size,
   126208 bytes in this runtime); the cause written in D256 marked
   contradicted.
+- **D551 — The faults of a file in a tmpfs: pages marked by the reclaim
+  (2026-11-09).** TODO, the trusted base (D285 measured one fault a page,
+  63629, for a standard input of 254 MB in a tmpfs, its cause written
+  « the memory of the machine short » and contradicted by D375: the pages
+  of a tmpfs are of 4 KiB here anyway). A file mapped as the runtime maps
+  a large standard input (private, read only) and read one byte a page
+  (`bench/floor/mapped_faults.c`): the same 254 MB on ext4 and copied into
+  the tmpfs `/tmp`, 3879 minor faults for 62052 pages each (one in 16: the
+  kernel maps 16 pages around a fault); but files of the tmpfs written the
+  day before (the archives of 0.4.8 and 0.4.9, 10581 to 11711 pages, all
+  in memory by `mincore`), one minor fault a page, at every read, and none
+  major; a copy of one of them made by `cp`, 733 for 11711. The flags of
+  their pages (`bench/floor/page_flags.c`, `/proc/kpageflags` as root):
+  the old file's 11711 pages all `RECLAIM`, the copy's none (both
+  `UPTODATE`, `LRU`, `SWAPBACKED`, `DIRTY`). Linux 6.12 (this kernel,
+  6.12.115): `PG_readahead = PG_reclaim` (`include/linux/page-flags.h`,
+  line 131), and the mapping around a fault skips a folio that has it
+  (`next_uptodate_folio`, `mm/filemap.c`, line 3510: `if
+  (!folio_test_uptodate(folio) || folio_test_readahead(folio)) goto
+  skip;`): a page that the reclaim marked and left in memory is mapped by
+  a fault of its own. Why the reclaim left them marked: a hypothesis, the
+  swap full (1023 of 1023 MB used now, 664 kB free) when it tried to write
+  out pages of the tmpfs. `MADV_POPULATE_READ` of D285 maps them anyway
+  (1552 faults then). Old archives of the releases removed from the
+  scratch tmpfs of these sessions (20 files, already published: 841 MB
+  of `Shmem`).
