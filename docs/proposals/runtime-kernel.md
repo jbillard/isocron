@@ -97,8 +97,30 @@ Moyens de vérification proposés : l'allocateur vérifié (`ISC_ALLOC=check`, D
 
 Les fonctions pures de texte et de nombres continuent en parallèle : elles ne dépendent pas de ce modèle.
 
+## 6 bis. L'étape 1 mesurée (2026-11-09, D594)
+
+Le prototype `bench/prototypes/arena_handles.rs` (une mesure, pas une partie du runtime) écrit le chemin rapide des petits blocs de cinq façons, avec le même algorithme, sur une arène de 1 Tio d'adresses réservées. Cycles par opération (une allocation ou une libération), médiane de 5 passes :
+
+| Forme | Un bloc pris puis rendu | 64 blocs pris à la suite, puis rendus |
+| --- | --- | --- |
+| Aujourd'hui : adresses, fonction appelée | 7,86 | 8,46 |
+| Poignée = l'adresse, vérifiée dans l'arène, intégrée à l'appelant | 6,33 (−19 %) | 7,42 (−12 %) |
+| Poignée de 64 bits vérifiée, intégrée | 6,58 | 7,89 |
+| Poignée de 64 bits masquée, intégrée (autre séance : aujourd'hui 7,62 et 8,06) | 6,52 | 7,88 |
+| Poignée de 32 bits, intégrée (même séance) | 6,82 | 8,22 |
+| Adresses intégrées (interdites par le modèle, pour repère) | 6,81 | 7,13 |
+
+Ce que la mesure établit :
+
+- Le modèle passe son premier test avec des poignées de 64 bits : plus rapide que le chemin actuel dans les deux cas.
+- La forme à retenir est **l'adresse vérifiée** : un test « dans l'arène » avant l'usage, à la place d'un masque. Elle confine autant, et elle laisse les lectures en chaîne (chaque bloc libre désigne le suivant) aussi courtes qu'avec des adresses. Un masque ou un décalage se trouve sur cette chaîne ; un test est à côté.
+- Dans `free`, ce test unique remplace les tests de l'adresse nulle, du bloc vide et de l'alignement (26 instructions contre 28) et couvre les littéraux du programme.
+- Les poignées de 32 bits sont plus lentes que le chemin actuel sur les allocations en chaîne (+2 %) : la variante à 256 Gio n'est pas à retenir.
+
+Ce que la mesure n'établit pas : le prototype est du Rust compilé par le même LLVM, pas de l'Isocron ; il ne couvre que les petits blocs trouvés dans le cache du thread (ni remplissage des listes, ni blocs moyens ou grands) ; son « aujourd'hui » compte 22 et 28 instructions là où les entrées réelles en comptent 27 et 36 (des contrôles omis), l'écart réel n'est donc pas moindre.
+
 ## 7. Questions pour l'auteur
 
 1. **Le modèle de l'arène confinée convient-il**, avec ses deux invariants de la section 5 ?
-2. **La limite de taille du tas** : une arène de 1 Tio d'adresses réservées (poignées de 64 bits) ou de 256 Gio (poignées de 32 bits, sans contrôle par accès) ? La mesure de l'étape 1 éclairera ce choix.
+2. **La limite de taille du tas** : une arène de 1 Tio d'adresses réservées (poignées de 64 bits) ou de 256 Gio (poignées de 32 bits, sans contrôle par accès) ? La mesure de l'étape 1 (section 6 bis) répond : 1 Tio, avec des poignées de 64 bits vérifiées ; les poignées de 32 bits sont plus lentes que le chemin actuel sur les allocations en chaîne.
 3. **Windows** : les appels à `kernel32` sont-ils acceptables comme seule exception à « pas d'appel de C » ?

@@ -13872,3 +13872,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     allocator for three arguments, Valgrind),
     `a_row_of_another_length_panics_at_the_place_of_the_row` (7 forms),
     `scan_and_kept_filter_of_rows_refused`.
+- **D594 — The first step of the proposal for the kernel, measured:
+  handles confined to the arena against the fast paths of today
+  (2026-11-09).** The proposal (docs/proposals/runtime-kernel.md, not
+  decided) asks first whether its model can equal the hottest path of the
+  allocator, before anything of it is built. A prototype
+  (`bench/prototypes/arena_handles.rs`: a measurement, not a part of the
+  runtime) writes the fast paths of the small blocks (`alloc_cached`,
+  `free_cached` and their entries) five ways with the same algorithm, on
+  an arena of 1 TiB of reserved addresses: addresses as today; handles of
+  64 bits masked into the arena; the same handles checked to be in the
+  arena; a handle that is the address itself, checked to be in the arena;
+  handles of 32 bits counted in 64 bytes. Each inlined into its caller,
+  as code of the prelude is, against the addresses called, as the
+  functions of the runtime are today.
+  - Cycles an operation (an allocation or a free; the median of 5 runs of
+    the difference of two round counts), for a block taken then given
+    back, and for 64 blocks taken one after the other then given back:
+    today (addresses, called) 7.86 and 8.46; the address checked, inlined
+    6.33 and 7.42 (−19 % and −12 %); the handle checked 6.58 and 7.89;
+    the handle masked 6.52 and 7.88 (another session, where today's
+    measured 7.62 and 8.06); the handle of 32 bits 6.82 and 8.22 (the same
+    session: +2 % on the 64 blocks); addresses inlined, which the model
+    forbids, 6.81 and 7.13.
+  - What it says. The model passes its first test with handles of 64
+    bits. One test « in the arena » costs less than what it replaces in
+    `free` (the tests of the null address, of the empty block and of the
+    alignment: 26 instructions against 28) and covers the literals of the
+    program. Blocks taken one after the other read each list through the
+    block before: a mask or a shift is on that chain of loads (the handle
+    of 32 bits is slower than today there), a test is beside it. The form
+    to keep is the address checked: confined as the others, the loads of
+    addresses.
+  - What it does not say: the prototype is Rust compiled by the same LLVM,
+    not Isocron; only the small blocks found in the cache of the thread
+    (no list refilled, no medium or large block); its « today » has 22 and
+    28 instructions where the runtime's entries have 27 and 36 (checks
+    left out), so the gain against the real ones is not less; the cache of
+    the thread stays in the thread-local storage in every form.
