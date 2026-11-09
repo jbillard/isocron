@@ -2844,8 +2844,10 @@ unsafe fn env_value(name: &[u8]) -> Option<&'static [u8]> {
 }
 
 /// A `String` of the runtime as a string of the program: its buffer is a
-/// block of the heap of the runtime (the global allocator), no copy.
-unsafe fn adopt(s: alloc::string::String) -> IscStr {
+/// block of the heap of the runtime (the global allocator of this crate,
+/// `RuntimeAlloc`, takes its blocks from `isc_alloc`), no copy; the string
+/// frees it by `isc_free`.
+fn adopt(s: alloc::string::String) -> IscStr {
     let mut s = core::mem::ManuallyDrop::new(s);
     if s.capacity() == 0 {
         return IscStr { ptr: isc_alloc(0), len: 0 };

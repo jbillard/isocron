@@ -43,8 +43,14 @@ pub(crate) fn code_of_call(r: isize) -> i64 {
 
 /// The path of `n` bytes at `p` with a zero byte after it; None when it
 /// holds one (no file has such a name).
+///
+/// # Safety
+/// `p` and `n` the bytes of a string of the generated code, alive during
+/// the call.
+#[deny(unsafe_op_in_unsafe_fn)]
 unsafe fn zpath(p: *const u8, n: i64) -> Option<alloc::vec::Vec<u8>> {
-    let b = bytes_of(p, n);
+    // SAFETY: the contract of this function
+    let b = unsafe { bytes_of(p, n) };
     if b.contains(&0) {
         return None;
     }
@@ -55,9 +61,10 @@ unsafe fn zpath(p: *const u8, n: i64) -> Option<alloc::vec::Vec<u8>> {
 }
 
 /// A new array of bytes holding `b`.
-unsafe fn byte_array(b: &[u8]) -> IscArray {
+fn byte_array(b: &[u8]) -> IscArray {
     let q = isc_alloc(b.len().max(1) as i64);
-    core::ptr::copy_nonoverlapping(b.as_ptr(), q, b.len());
+    // SAFETY: `q` a new block of at least `b.len()` bytes, apart from `b`
+    unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), q, b.len()) };
     IscArray { ptr: q, len: b.len() as i64 }
 }
 
@@ -65,7 +72,7 @@ unsafe fn byte_array(b: &[u8]) -> IscArray {
 /// bytes that are not UTF-8 replaced: each checked by `from_utf8` (its ASCII
 /// by words) and copied once, `from_utf8_lossy` (byte by byte) only for one
 /// that is not UTF-8 (D400).
-unsafe fn sorted_strings<B: AsRef<[u8]> + Ord>(mut names: alloc::vec::Vec<B>) -> IscArray {
+fn sorted_strings<B: AsRef<[u8]> + Ord>(mut names: alloc::vec::Vec<B>) -> IscArray {
     // equal names are the same bytes: the order of the stable sort
     names.sort_unstable();
     strings_of(names)
@@ -74,7 +81,7 @@ unsafe fn sorted_strings<B: AsRef<[u8]> + Ord>(mut names: alloc::vec::Vec<B>) ->
 /// The entries `name=value` of the environment in the order of the bytes of
 /// their names (D423: by the whole entries before, `VAR1=` came before
 /// `VAR=`, a byte below `=` after the name), as `strings_of`.
-unsafe fn sorted_entries<B: AsRef<[u8]> + Ord>(all: alloc::vec::Vec<B>) -> IscArray {
+fn sorted_entries<B: AsRef<[u8]> + Ord>(all: alloc::vec::Vec<B>) -> IscArray {
     // the length of each name measured once, not at each comparison (D435:
     // a scan of both names a comparison made `envAll` 1684 -> 2376 ns)
     let mut keyed: alloc::vec::Vec<(usize, B)> = all
@@ -90,7 +97,7 @@ unsafe fn sorted_entries<B: AsRef<[u8]> + Ord>(all: alloc::vec::Vec<B>) -> IscAr
 
 /// A new array of the strings `names` in their order, the bytes that are
 /// not UTF-8 replaced (D400).
-unsafe fn strings_of<B: AsRef<[u8]>>(names: alloc::vec::Vec<B>) -> IscArray {
+fn strings_of<B: AsRef<[u8]>>(names: alloc::vec::Vec<B>) -> IscArray {
     let q = new_str_array(names.len());
     for (slot, b) in q.iter_mut().zip(names.iter()) {
         let b = b.as_ref();
@@ -104,6 +111,11 @@ unsafe fn strings_of<B: AsRef<[u8]>>(names: alloc::vec::Vec<B>) -> IscArray {
 
 #[cfg(target_os = "linux")]
 mod imp {
+    // every unsafe operation in a block of its own, each justified (D564):
+    // the pointers of the generated code read once at each entry, the
+    // system's calls of paths behind `ZPath`
+    #![deny(unsafe_op_in_unsafe_fn)]
+    #![deny(clippy::undocumented_unsafe_blocks)]
     use super::*;
 
     const O_WRONLY: c_int = 0o1;
@@ -113,64 +125,144 @@ mod imp {
     const O_DIRECTORY: c_int = 0o200000;
     const O_CLOEXEC: c_int = 0o2000000;
 
+    /// A path with a zero byte after it and none in it (`zpath`): what the
+    /// system's calls of paths read; they are made only by its methods.
+    struct ZPath(alloc::vec::Vec<u8>);
+
+    impl ZPath {
+        /// The path of the string `p`, `n` of the generated code; None when
+        /// it holds a zero byte.
+        ///
+        /// # Safety
+        /// As `zpath`.
+        unsafe fn of(p: *const u8, n: i64) -> Option<ZPath> {
+            // SAFETY: the contract of this function
+            unsafe { zpath(p, n) }.map(ZPath)
+        }
+
+        fn ptr(&self) -> *const c_char {
+            self.0.as_ptr() as *const c_char
+        }
+
+        fn stat(&self) -> Result<(i64, i64, i64), isize> {
+            // SAFETY: a path ending with its zero byte, alive during the call
+            unsafe { linux::stat(self.ptr()) }
+        }
+
+        fn open(&self, flags: c_int, mode: c_int) -> c_int {
+            // SAFETY: as above
+            unsafe { linux::open(self.ptr(), flags, mode) }
+        }
+
+        fn mkdir(&self) -> isize {
+            // SAFETY: as above
+            unsafe { linux::mkdir(self.ptr()) }
+        }
+
+        fn unlink(&self, folder: bool) -> isize {
+            // SAFETY: as above
+            unsafe { linux::unlink(self.ptr(), folder) }
+        }
+
+        fn rename(&self, to: &ZPath) -> isize {
+            // SAFETY: two paths ending with their zero bytes, alive during
+            // the call
+            unsafe { linux::rename(self.ptr(), to.ptr()) }
+        }
+    }
+
+    /// `read` of `fd` into `buf`.
+    fn read_into(fd: c_int, buf: &mut [u8]) -> isize {
+        // SAFETY: `buf` writable for its length
+        unsafe { linux::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len()) }
+    }
+
     /// `sysEnviron()`: the entries `name=value` of the environment.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_environ(out: *mut IscArray) {
         let mut all = alloc::vec::Vec::new();
         let mut e = ENVIRON.load(Ordering::Relaxed) as *const *const u8;
         if !e.is_null() {
-            while !(*e).is_null() {
-                let v = *e;
-                // its length by aligned vectors (`strlen`, D400)
-                let n = strlen(v as *const c_char);
-                // the bytes of the entry, copied once into its string
-                all.push(core::slice::from_raw_parts(v, n));
-                e = e.add(1);
+            // SAFETY: `environ` (the start of the process, D289): pointers to
+            // texts each ending with a zero byte, then a null one; never
+            // changed by the program (no `setenv`)
+            unsafe {
+                while !(*e).is_null() {
+                    let v = *e;
+                    // its length by aligned vectors (`strlen`, D400)
+                    let n = strlen(v as *const c_char);
+                    // the bytes of the entry, copied once into its string
+                    all.push(core::slice::from_raw_parts(v, n));
+                    e = e.add(1);
+                }
             }
         }
-        *out = sorted_entries(all);
+        // SAFETY: the contract of this function
+        unsafe { out.write(sorted_entries(all)) };
     }
 
     /// `sysNow()`: CLOCK_REALTIME in nanoseconds since 1970.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
         let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
-        linux::clock_gettime(0, &mut ts);
-        *out = ts.tv_sec.wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as i64);
+        // SAFETY: `ts` a place of this frame
+        unsafe { linux::clock_gettime(0, &mut ts) };
+        // SAFETY: the contract of this function
+        unsafe { out.write(ts.tv_sec.wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as i64)) };
     }
 
     /// `sysStat(path)`: [kind, size, modified, code].
+    ///
+    /// # Safety
+    /// `out` the place of the result, `p` and `n` a string, the generated
+    /// code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
+        // SAFETY: the contract of this function
+        let r = match unsafe { ZPath::of(p, n) } {
             None => [0, 0, 0, -1],
-            Some(z) => match linux::stat(z.as_ptr() as *const c_char) {
+            Some(z) => match z.stat() {
                 Ok((kind, size, at)) => [kind, size, at, 0],
                 Err(r) => [0, 0, 0, code_of_call(r)],
             },
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysReadDir(path)`: [names, code], without `.` and `..`.
+    ///
+    /// # Safety
+    /// As `isc_sys_stat`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
-        let Some(z) = zpath(p, n) else {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
-            return;
+        // SAFETY: the contract of this function
+        let r = match unsafe { ZPath::of(p, n) } {
+            None => IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 },
+            Some(z) => read_dir(&z),
         };
-        let fd = linux::open(z.as_ptr() as *const c_char, O_DIRECTORY | O_CLOEXEC, 0);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn read_dir(z: &ZPath) -> IscArrayCode {
+        let fd = z.open(O_DIRECTORY | O_CLOEXEC, 0);
         if fd < 0 {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: code_of_call(fd as isize) };
-            return;
+            return IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: code_of_call(fd as isize) };
         }
         let mut names = alloc::vec::Vec::new();
         let mut buf = alloc::vec![0u8; 32 << 10];
-        let mut code = 0;
-        loop {
-            let r = linux::getdents(fd, buf.as_mut_ptr(), buf.len());
+        let code = loop {
+            // SAFETY: `buf` writable for its length
+            let r = unsafe { linux::getdents(fd, buf.as_mut_ptr(), buf.len()) };
             if r <= 0 {
-                code = code_of_call(r);
-                break;
+                break code_of_call(r);
             }
             // each entry: inode (8), offset (8), its length (2), its type
             // (1), its name ending with a zero byte
@@ -184,114 +276,160 @@ mod imp {
                 }
                 at += len;
             }
-        }
+        };
         linux::close(fd);
-        *out = IscArrayCode { a: sorted_strings(if code == 0 { names } else { alloc::vec::Vec::new() }), code };
+        IscArrayCode { a: sorted_strings(if code == 0 { names } else { alloc::vec::Vec::new() }), code }
     }
 
     /// `sysMkdir(path)`: its code.
+    ///
+    /// # Safety
+    /// As `isc_sys_stat`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_mkdir(out: *mut i64, p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
+        // SAFETY: the contract of this function
+        let r = match unsafe { ZPath::of(p, n) } {
             None => -1,
-            Some(z) => code_of_call(linux::mkdir(z.as_ptr() as *const c_char)),
+            Some(z) => code_of_call(z.mkdir()),
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysRemoveFile(path)`: its code.
+    ///
+    /// # Safety
+    /// As `isc_sys_stat`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_removefile(out: *mut i64, p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
+        // SAFETY: the contract of this function
+        let r = match unsafe { ZPath::of(p, n) } {
             None => -1,
-            Some(z) => code_of_call(linux::unlink(z.as_ptr() as *const c_char, false)),
+            Some(z) => code_of_call(z.unlink(false)),
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysRemoveDir(path)`: its code (an empty folder).
+    ///
+    /// # Safety
+    /// As `isc_sys_stat`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_removedir(out: *mut i64, p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
+        // SAFETY: the contract of this function
+        let r = match unsafe { ZPath::of(p, n) } {
             None => -1,
-            Some(z) => code_of_call(linux::unlink(z.as_ptr() as *const c_char, true)),
+            Some(z) => code_of_call(z.unlink(true)),
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysRename(from, to)`: its code.
+    ///
+    /// # Safety
+    /// `out` the place of the result, `p` and `n`, `q` and `m` two strings,
+    /// the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_rename(out: *mut i64, p: *const u8, n: i64, q: *const u8, m: i64) {
-        *out = match (zpath(p, n), zpath(q, m)) {
-            (Some(a), Some(b)) => code_of_call(linux::rename(a.as_ptr() as *const c_char, b.as_ptr() as *const c_char)),
+        // SAFETY: the contract of this function
+        let (a, b) = unsafe { (ZPath::of(p, n), ZPath::of(q, m)) };
+        let r = match (a, b) {
+            (Some(a), Some(b)) => code_of_call(a.rename(&b)),
             _ => -1,
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysCwd()`: [path, code].
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_cwd(out: *mut IscStrCode) {
         let mut buf = alloc::vec![0u8; 4096];
-        loop {
-            let r = linux::getcwd(buf.as_mut_ptr(), buf.len());
+        let r = loop {
+            // SAFETY: `buf` writable for its length
+            let r = unsafe { linux::getcwd(buf.as_mut_ptr(), buf.len()) };
             // the path too long for the buffer (ERANGE): a larger one
             if r == -34 && buf.len() < 1 << 20 {
                 buf = alloc::vec![0u8; buf.len() * 4];
                 continue;
             }
             if r < 0 {
-                *out = IscStrCode { s: adopt(alloc::string::String::new()), code: code_of_call(r) };
-                return;
+                break IscStrCode { s: adopt(alloc::string::String::new()), code: code_of_call(r) };
             }
             let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-            *out = IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&buf[..len]).into_owned()), code: 0 };
-            return;
-        }
+            break IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&buf[..len]).into_owned()), code: 0 };
+        };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysReadFile(path)`: [bytes, code].
+    ///
+    /// # Safety
+    /// As `isc_sys_stat`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_readfile(out: *mut IscArrayCode, p: *const u8, n: i64) {
-        let Some(z) = zpath(p, n) else {
-            *out = IscArrayCode { a: byte_array(&[]), code: -1 };
-            return;
+        // SAFETY: the contract of this function
+        let r = match unsafe { ZPath::of(p, n) } {
+            None => IscArrayCode { a: byte_array(&[]), code: -1 },
+            Some(z) => read_file(&z),
         };
-        let fd = linux::open(z.as_ptr() as *const c_char, O_CLOEXEC, 0);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn read_file(z: &ZPath) -> IscArrayCode {
+        let fd = z.open(O_CLOEXEC, 0);
         if fd < 0 {
-            *out = IscArrayCode { a: byte_array(&[]), code: code_of_call(fd as isize) };
-            return;
+            return IscArrayCode { a: byte_array(&[]), code: code_of_call(fd as isize) };
         }
         let mut data = alloc::vec::Vec::new();
         let mut buf = alloc::vec![0u8; 1 << 16];
-        let mut code = 0;
-        loop {
-            let r = linux::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+        let code = loop {
+            let r = read_into(fd, &mut buf);
             if r <= 0 {
-                code = code_of_call(r);
-                break;
+                break code_of_call(r);
             }
             data.extend_from_slice(&buf[..r as usize]);
-        }
+        };
         linux::close(fd);
-        *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
+        IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code }
     }
 
     /// `sysWriteFile(path, bytes, append)`: its code; the file made if it
     /// is not there, emptied first unless `append`.
+    ///
+    /// # Safety
+    /// `out` the place of the result, `p` and `n` a string, `d` and `m` an
+    /// array of bytes, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_writefile(out: *mut i64, p: *const u8, n: i64, d: *const u8, m: i64, append: i32) {
-        let Some(z) = zpath(p, n) else {
-            *out = -1;
-            return;
+        // SAFETY: the contract of this function
+        let (z, data) = unsafe { (ZPath::of(p, n), bytes_of(d, m)) };
+        let r = match z {
+            None => -1,
+            Some(z) => write_file(&z, data, append != 0),
         };
-        let flags = O_WRONLY | O_CREAT | O_CLOEXEC | if append != 0 { O_APPEND } else { O_TRUNC };
-        let fd = linux::open(z.as_ptr() as *const c_char, flags, 0o666);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn write_file(z: &ZPath, data: &[u8], append: bool) -> i64 {
+        let flags = O_WRONLY | O_CREAT | O_CLOEXEC | if append { O_APPEND } else { O_TRUNC };
+        let fd = z.open(flags, 0o666);
         if fd < 0 {
-            *out = code_of_call(fd as isize);
-            return;
+            return code_of_call(fd as isize);
         }
-        let data = bytes_of(d, m);
         let mut at = 0;
         let mut code = 0;
         while at < data.len() {
-            let r = linux::write(fd, data[at..].as_ptr() as *const c_void, data.len() - at);
+            // SAFETY: the bytes of `data` from `at`, readable
+            let r = unsafe { linux::write(fd, data[at..].as_ptr() as *const c_void, data.len() - at) };
             if r <= 0 {
                 code = if r < 0 { code_of_call(r) } else { -5 };
                 break;
@@ -299,7 +437,7 @@ mod imp {
             at += r as usize;
         }
         linux::close(fd);
-        *out = code;
+        code
     }
 }
 

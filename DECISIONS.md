@@ -12956,3 +12956,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `system.rs`, 25 in `mapped.rs`), 55 blocks without a justification, 2
     `unsafe impl` without one: each to be given its block and its reason
     (not a comment of form), module by module, the smallest first.
+- **D565 — The unsafe of `mapped.rs` and of the system's calls of Linux
+  justified and denied (2026-11-09).** The plan of D564, the smallest
+  modules first.
+  - `mapped.rs` (the standard input mapped, D257): each unsafe operation in
+    a block of its own with its reason (the new mappings at a place the
+    kernel chooses, the file put in place of a part of one no one knows yet,
+    the header written in the page before the array, the actions of signals
+    read into places of a frame, `OLD_SEGV` written before the handler that
+    reads it is installed, the `siginfo_t` the kernel gives a handler of
+    `SA_SIGINFO`, the copy taken by one thread by the state of the mapping);
+    each `unsafe fn` its contract (`# Safety`); the two lints denied for the
+    module. `core::mem::zeroed()` of a `SigAction` replaced by its fields
+    made zero (one unsafe operation less).
+  - `system.rs`, its Linux part: the pointers of the generated code read
+    once at each entry (`# Safety`: the place of the result, the strings,
+    the generated code's), the system's calls of paths made only by the
+    methods of `ZPath` (a path with a zero byte after it and none in it),
+    the reading of a folder, of a file and the writing of one in safe
+    functions; the two lints denied for that part. `byte_array`,
+    `sorted_strings`, `sorted_entries`, `strings_of` and `adopt` made safe
+    functions (they read no pointer: `adopt` relies on the global allocator
+    of the runtime being its heap, now written). The Windows and WASI parts
+    of `system.rs` stay to be done, checked on their targets (the runtime
+    still builds for both).
+  - The suite of D564 failed on `isc-runtime-core` built for x86-64-v4: its
+    paths of AVX-512 (the classes of a regular expression by VBMI) and of
+    BMI2/ADX (three chains of `bigint`, whose reason stood above their `if`,
+    not above each block) are built only for those processors; given their
+    blocks and reasons in D564's commit. The core and the runtime now
+    checked for x86-64-v3 and v4, Windows (gnu, msvc) and WASI before a
+    commit.
+  - Tests: `std_sys` (12) and `stdin` (14, the mapped input among them),
+    then the suite.
