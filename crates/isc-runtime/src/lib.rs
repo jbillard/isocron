@@ -93,9 +93,18 @@ mod par;
 #[cfg(target_os = "linux")]
 mod process;
 
-/// The allocator of glibc (`ISC_ALLOC=glibc`) when the program has glibc.
+// The allocator checked (`ISC_ALLOC=check`, D546)
+#[cfg(target_os = "linux")]
+mod checked;
+
+/// The allocator of glibc (`ISC_ALLOC=glibc`) when the program has glibc,
+/// or the allocator checked (`ISC_ALLOC=check`).
 #[cfg(target_os = "linux")]
 unsafe fn aligned_alloc(align: usize, size: usize) -> *mut c_void {
+    if checked::CHECKED.load(Ordering::Relaxed) {
+        let _ = align;
+        return checked::alloc(size, false) as *mut c_void;
+    }
     match process::os().alloc {
         // SAFETY: glibc's `aligned_alloc`
         Some(f) => unsafe { f(align, size) },
@@ -105,6 +114,9 @@ unsafe fn aligned_alloc(align: usize, size: usize) -> *mut c_void {
 
 #[cfg(target_os = "linux")]
 unsafe fn free(p: *mut c_void) {
+    if checked::CHECKED.load(Ordering::Relaxed) {
+        return checked::free(p as *mut u8);
+    }
     if let Some(f) = process::os().free {
         // SAFETY: glibc's `free`, of a block of its `aligned_alloc`
         unsafe { f(p) }
@@ -161,6 +173,16 @@ unsafe impl core::alloc::GlobalAlloc for RuntimeAlloc {
     unsafe fn alloc(&self, l: core::alloc::Layout) -> *mut u8 {
         if l.align() > ARRAY_ALIGN {
             return core::ptr::null_mut();
+        }
+        // the runtime's own blocks, not counted as leaks of the program
+        // when the allocator is checked (D546)
+        #[cfg(target_os = "linux")]
+        if !isc_heap() && checked::CHECKED.load(Ordering::Relaxed) {
+            let p = checked::alloc(l.size().max(1).div_ceil(ARRAY_ALIGN) * ARRAY_ALIGN, true);
+            if p.is_null() {
+                die(0, 0, &Panic::OutOfMemory(l.size() as i64));
+            }
+            return p;
         }
         isc_alloc(l.size().max(1) as i64)
     }
@@ -486,6 +508,13 @@ fn isc_heap() -> bool {
 #[inline(never)]
 fn heap_mode() -> bool {
     let v = unsafe { getenv(b"ISC_ALLOC\0".as_ptr() as *const c_char) };
+    // the allocator checked: every block through the runtime (mode 1)
+    #[cfg(target_os = "linux")]
+    if !v.is_null() && unsafe { c_str(v) } == "check" {
+        checked::CHECKED.store(true, Ordering::Relaxed);
+        HEAP_MODE.store(1, Ordering::Relaxed);
+        return false;
+    }
     let mut isc = v.is_null() || unsafe { c_str(v) } != "glibc";
     // a program without glibc has only its own (D289)
     #[cfg(target_os = "linux")]
@@ -1267,6 +1296,24 @@ pub unsafe extern "C" fn isc_print_str(p: *const u8, len: i64) {
 #[no_mangle]
 pub extern "C" fn isc_flush() {
     flush_stdout_held();
+}
+
+/// The end of `main` (after its last free): its output written; with the
+/// allocator checked (D546), the blocks freed checked and those of the
+/// program still allocated counted: a message and the code 9 (that of the
+/// tests under Valgrind) when there are.
+#[no_mangle]
+pub extern "C" fn isc_main_end(code: c_int) -> c_int {
+    flush_stdout_held();
+    #[cfg(target_os = "linux")]
+    if checked::CHECKED.load(Ordering::Relaxed) {
+        let (blocks, bytes) = checked::end();
+        if blocks > 0 {
+            let _ = writeln!(Stderr, "the allocator (ISC_ALLOC=check): {} blocks of {} bytes not freed at the end of main", blocks, bytes);
+            return 9;
+        }
+    }
+    code
 }
 
 /// `printBytes(x)` (D136): the bytes, in the buffer of `print`.

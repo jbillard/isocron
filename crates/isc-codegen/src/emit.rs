@@ -924,6 +924,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_print_u64_line(i64)",
     "declare void @isc_print_bytes(ptr, i64)",
     "declare void @isc_flush()",
+    "declare i32 @isc_main_end(i32)",
     "declare void @isc_try_parse_i64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_parse_f64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_bytes(ptr, ptr, ptr, i64)",
@@ -1124,8 +1125,9 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         let t = Type::Array(Box::new(Type::Str), isc_ir::Fixed::ANY);
         g.drop_value(&v(args.clone(), "{ ptr, i64 }"), &t);
     }
-    g.emit("call void @isc_flush()");
-    g.emit(format!("ret i32 {}", r.r));
+    // its output written, the allocator checked at its end (D546)
+    let end = g.ins(format!("call i32 @isc_main_end(i32 {})", r.r));
+    g.emit(format!("ret i32 {}", end));
     let attrs = g.attrs();
     // the C library of WASI calls `__main_argc_argv`, the name clang gives to
     // `main(argc, argv)` on WebAssembly

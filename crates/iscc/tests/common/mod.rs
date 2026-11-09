@@ -232,3 +232,30 @@ pub fn run_wasm_threads(runner: &std::path::Path, wasm: &std::path::Path, args: 
         stderr: String::from_utf8_lossy(&o.stderr).to_string(),
     }
 }
+
+/// `src` built as a static program (without glibc) and run with the
+/// allocator checked (`ISC_ALLOC=check`, D546) on 2 threads: no fault and
+/// no block left at the end of `main` (the code 0), as its version linked
+/// with glibc under Valgrind.
+pub fn checked_clean(src: &str, name: &str, args: &[&str]) {
+    let bin = compile(src, &format!("{}_chk", name));
+    checked_clean_bin(&bin, args, None);
+}
+
+/// `bin` run with the allocator checked (D546), `input` its standard input.
+pub fn checked_clean_bin(bin: &std::path::Path, args: &[&str], input: Option<&[u8]>) {
+    use std::io::Write;
+    let mut c = std::process::Command::new(bin)
+        .args(args)
+        .env("ISC_ALLOC", "check")
+        .env("ISC_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(input.unwrap_or(&[])).unwrap();
+    let o = c.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{:?} with the allocator checked: {}", bin, String::from_utf8_lossy(&o.stderr));
+}
+

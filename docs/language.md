@@ -3389,7 +3389,11 @@ action main(args: string[k]): i32 {
   program no longer uses goes back to the system. A program that declares C
   functions runs with glibc's allocator under `ISC_ALLOC=glibc ./prog`
   (one built with `ISC_ALLOC=glibc` in the environment of `iscc` is linked
-  with glibc for that). WebAssembly uses a heap of the runtime over the
+  with glibc for that). Under `ISC_ALLOC=check ./prog` (Linux) the
+  allocator checks the program's blocks: a block freed twice, written past
+  its end or after its free stops the program with a message, and a block
+  not freed at the end of `main` gives the exit code 9 (the reads of a block
+  freed are not seen). WebAssembly uses a heap of the runtime over the
   pages of its memory.
 
 ## Not implemented yet

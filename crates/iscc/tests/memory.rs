@@ -13,6 +13,7 @@ fn valgrind() -> Option<std::path::PathBuf> {
 }
 
 fn clean(src: &str, name: &str, args: &[&str]) {
+    checked_clean(src, name, args);
     let Some(vg) = valgrind() else {
         eprintln!("valgrind not installed: {} skipped", name);
         return;

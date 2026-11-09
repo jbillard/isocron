@@ -12369,3 +12369,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   second run of the suite builds with `ISC_ALLOC=glibc`, its programs
   linked with glibc (the first commit of the test failed there,
   "the static program needs a library (DT_NEEDED)").
+- **D546 — The allocator checked, and its tests without C (2026-11-09).**
+  Step 4 of D540, its second part (TODO, the trusted base: the tests of
+  the allocator in C rewritten, a mode of checks so that the static
+  programs are checked as Valgrind checks those of glibc).
+  - `ISC_ALLOC=check` (Linux, static programs and those with glibc): the
+    mode of the system's allocator (`HEAP_MODE` 1: the compiled code calls
+    the runtime for every block, its cells of nodes, regions and strings
+    grown in place among them) over a layer of checks
+    (`checked.rs`) on the blocks of the allocator of Isocron: a header of
+    64 bytes before each block (its state, its size, its kind) and a guard
+    of 64 bytes after it. A free checks the header (a block freed twice,
+    an address that is no block) and the guard (a write past the end),
+    fills the block with a poison and keeps it in a quarantine (4096
+    blocks, 64 MiB); a block leaving it has its poison checked (a write
+    after the free). `isc_main_end`, which the end of the generated `main`
+    now calls after its last free (in place of `isc_flush`), checks the
+    whole quarantine and counts the blocks of the program still allocated:
+    a message and the exit code 9 (that of the tests under Valgrind). The
+    runtime's own blocks (its `GlobalAlloc`, for its vectors and boxes) are
+    of another kind, not counted, as Valgrind leaves out the blocks still
+    reachable. Not seen: the reads of a block freed (Valgrind sees them).
+  - The tests of the allocator, without C (`heap.rs`; `tests/c/` removed):
+    `heap_stress.isc`, strings of 16 bytes to 1 MiB and one in about 500 of
+    4 to 40 MiB, made by the threads of a `map`, checked by others, freed
+    by `main`, with the allocator of Isocron and checked, on 1 and 4
+    threads; the faults that no program of Isocron can make (the compiler
+    frees each value once), written in LLVM IR, compiled by the backend of
+    iscc and linked with the runtime as a static program
+    (`iscc::link_static_object`): a block freed twice (a panic of both
+    allocators), a byte past the end, a byte after the free, a block never
+    freed (code 9; unseen without the check). The names of the runtime
+    cannot be declared as C functions by a program (`isc_alloc` is
+    reserved): that way was refused by the compiler.
+  - Every program that a test runs under Valgrind (its version with glibc)
+    is also built static and run with `ISC_ALLOC=check` on 2 threads
+    (`checked_clean`), 11 files of tests; the ten programs of the
+    Benchmarks Game with it by hand: the same outputs, the code 0 (a first
+    run of k-nucleotide panicked on an input cut before its third
+    sequence, in every mode: the input, not the allocator).

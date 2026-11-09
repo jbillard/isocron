@@ -88,6 +88,7 @@ action main(args: string[k]): i32 {
 "##;
 
 fn valgrind_clean(bin: &std::path::Path) {
+    checked_clean_bin(bin, &[], None);
     let vg = std::path::PathBuf::from("/usr/bin/valgrind");
     if !vg.is_file() {
         return;

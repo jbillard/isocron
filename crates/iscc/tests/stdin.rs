@@ -8,6 +8,7 @@ use common::*;
 /// The program `src` run by valgrind (glibc's allocator, 2 threads): no
 /// error, nothing lost.
 fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
+    checked_clean(src, name, args);
     let vg = std::path::PathBuf::from("/usr/bin/valgrind");
     if !vg.is_file() {
         eprintln!("valgrind not installed: {} skipped", name);

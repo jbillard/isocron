@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* `ISC_ALLOC=check`: the allocator checks the blocks of a program (freed twice, written past their end or after their free, not freed at the end of `main`); the tests of the allocator without C (D546).
+* Static programs for Linux: their relocations checked at their build (D545).
+
 * `wasm32-wasi-threads`: the threads started by the runtime through `wasi.thread-spawn`, without wasi-libc's pthread (D544).
 
 * `wasm32-wasi`: programs without wasi-libc, the functions of WASI called by the runtime, its own heap: binary-trees 44 % faster under wasmtime (D543).

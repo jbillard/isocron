@@ -718,6 +718,18 @@ fn link_linux_static(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(
     check_static_relocations(&bytes).map(|_| ()).map_err(|e| format!("`{}`: {} (a fault of iscc)", out.display(), e))
 }
 
+/// Links the object `obj` (made from LLVM IR, with a `main`) with the
+/// runtime as a static program for Linux (D546): for the tests of the
+/// runtime itself, whose faults (a block freed twice, a byte written past
+/// its end) no program of Isocron can make.
+pub fn link_static_object(obj: &Path, out: &Path) -> Result<(), String> {
+    let rt = out.with_extension("rt.a");
+    std::fs::write(&rt, RUNTIME).map_err(|e| format!("cannot write `{}`: {}", rt.display(), e))?;
+    let r = link_linux_static(obj, &rt, out, false);
+    let _ = std::fs::remove_file(&rt);
+    r
+}
+
 /// The relocations of a static program for Linux, read as its start
 /// (`isc_start`) reads them (D545): the table `DT_RELA` of its dynamic
 /// segment, each entry `R_X86_64_RELATIVE` (8), the only kind it applies;

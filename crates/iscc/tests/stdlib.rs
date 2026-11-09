@@ -6,6 +6,7 @@ mod common;
 use common::*;
 
 fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
+    checked_clean(src, name, args);
     let vg = std::path::PathBuf::from("/usr/bin/valgrind");
     if !vg.is_file() {
         eprintln!("valgrind not installed: {} skipped", name);

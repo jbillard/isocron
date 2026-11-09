@@ -1,0 +1,34 @@
+// D546: the allocator under load (it was a program of C,
+// `tests/c/heap_stress.c`): strings of sizes from 16 bytes to 1 MiB, and
+// one in about 500 of 4 to 40 MiB, made by the threads of a `map`, their
+// contents checked by the tasks of a `count`, freed by `main`, round
+// after round.
+function blockSize(i: i64, r: i64): i64 {
+    const h = (i * 2654435761 + r * 40503) % 1000003;
+    if (h % 500 == 0) {
+        return (4 << 20) + h % (36 << 20);
+    }
+    const bits = 4 + h % 17;
+    return (1 << bits) + h % (1 << bits);
+}
+
+function block(i: i64, r: i64): string {
+    return stringOf(map(iota(blockSize(i, r)), (j) => u8(97 + (i + j + r) % 26)));
+}
+
+function check(xs: string[k], r: i64): i64 {
+    return count(iota(xs.length), (i) => xs[i].length != blockSize(i, r) || xs[i] != block(i, r));
+}
+
+action rounds(r: i64, n: i64, bad: i64): i64 {
+    if (r == 0) {
+        return bad;
+    }
+    const xs = map(iota(n), (i) => block(i, r));
+    return rounds(r - 1, n, bad + check(xs, r));
+}
+
+action main(args: string[k]): i32 {
+    print(rounds(parseI64(args[0]), parseI64(args[1]), 0));
+    return 0;
+}
