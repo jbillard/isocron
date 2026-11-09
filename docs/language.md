@@ -2415,6 +2415,31 @@ action main(args: string[k]): i32 {
 11
 ```
 
+`@cold`, at the same place, tells where the code goes, not what it
+computes: the function is rarely called (the text of an error, a rare
+case), so it is compiled once and called, never copied into the
+functions that call it, and its calls are taken as unlikely; a loop that
+may call it keeps its registers for the common case. The results are
+the same. A function that takes or returns a function cannot be `@cold`
+(each call specializes it), and the compiler says so.
+
+```isc
+@cold
+function tooLarge(x: i64): string {
+    return `${x} is above the limit`;
+}
+
+action main(args: string[k]): i32 {
+    const xs = [3, 1000, 7];
+    print(map(xs, (x) => x > 100 ? len(tooLarge(x)) : x));
+    return 0;
+}
+```
+
+```output
+[3, 23, 7]
+```
+
 ## Errors and panics
 
 Compile errors are printed as `file:line:column: error: message`, and `iscc`

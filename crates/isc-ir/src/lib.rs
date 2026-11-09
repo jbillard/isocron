@@ -234,6 +234,8 @@ pub enum StrOp {
     HashFind,
     /// `readWord(b, at, n)` (D580): the `n` bytes of `b` from `at` as a word.
     ReadWord,
+    /// `$panic(message)` (D582): a panic, of the type its place expects.
+    Panic,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.
@@ -266,6 +268,7 @@ impl StrOp {
                 | StrOp::Repeat
                 | StrOp::ToFixed
                 | StrOp::ReadWord
+                | StrOp::Panic
                 | StrOp::Big(BigOp::Div | BigOp::Rem | BigOp::Pow | BigOp::Parse)
                 | StrOp::Rx(RxOp::New | RxOp::Replace | RxOp::ReplaceAll)
         )
@@ -452,6 +455,8 @@ pub struct Function {
     pub span: isc_syntax::Span,
     /// `requireTail` (SPEC section 9), with its position (D106).
     pub require_tail: Option<isc_syntax::Span>,
+    /// `@cold` (D584): compiled `cold` and `noinline`, its calls unlikely.
+    pub cold: bool,
     /// Per parameter: owned by the function and taken apart on entry (the
     /// state of a loop, D206); its caller lends it, so the generated code
     /// copies it once on entry.

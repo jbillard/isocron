@@ -204,6 +204,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$hashIndex" => Prim::HashIndex,
         "$hashFind" => Prim::HashFind,
         "readWord" => Prim::ReadWord,
+        "$panic" => Prim::Panic,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2683,7 +2684,7 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString => 1,
+            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::Panic => 1,
             Prim::Concat => 2,
             Prim::ReadText | Prim::Lines | Prim::Trim | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
@@ -3087,6 +3088,16 @@ impl<'g> FnCx<'g> {
                 let s = self.syms.len() as SymId;
                 self.syms.push(SymInfo { name: format!("s@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
                 Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
+            }
+            // a panic (D582): its message, then the type of its place
+            Prim::Panic => {
+                let m = self.check(&args[0], Some(&Ty::Str))?;
+                self.unify(&Ty::Str, &m.ty, m.span)?;
+                let t = match expected {
+                    Some(t) => t.clone(),
+                    None => self.fresh(0, LitKind::None, span),
+                };
+                Ok(mk(vec![m], t, self))
             }
             Prim::ReadWord => {
                 let (arr, _, _) = self.fresh_array(span);
@@ -3980,7 +3991,17 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
     }
     // the connections and listeners closed exactly once (D339)
     check_linear(&fns, &sums_for_linear(&globals))?;
-    let recursive = recursive_fns(&fns);
+    let mut recursive = recursive_fns(&fns);
+    // `@cold` (D584): called, never inlined; not a function that takes or
+    // returns a function (each call specializes it, SPEC section 11)
+    for (id, f) in fns.iter().enumerate() {
+        if let Some((_, at)) = f.requires.iter().find(|(m, _)| *m == isc_syntax::ast::Modifier::Cold) {
+            if f.param_tys.iter().chain(std::iter::once(&f.ret)).any(|t| holds_function(&globals, t, &mut Vec::new())) {
+                return err(*at, format!("`@cold` function `{}` takes or returns a function: it would be specialized at each call, never compiled once", f.name));
+            }
+            recursive[id] = true;
+        }
+    }
     let recursive = outline_large(&fns, recursive, main);
     // a constant computed from itself would never end (D159)
     for (id, f) in fns.iter().enumerate() {
@@ -4582,7 +4603,12 @@ fn outline_large(fns: &[TFn], mut called: Vec<bool>, main: FnId) -> Vec<bool> {
             todo.extend(calls[f].iter().copied());
         }
     }
-    let eligible: Vec<bool> = (0..n).map(|f| f != main && reached[f] && !fns[f].param_tys.iter().any(holds_fn) && !holds_fn(&fns[f].ret)).collect();
+    // nor a function of the prelude (D582): inlined, its positions are those
+    // of its call (D111), a panic of `parseI64` at the line of the program;
+    // the prelude puts its rare paths in `@cold` functions instead
+    let eligible: Vec<bool> = (0..n)
+        .map(|f| f != main && reached[f] && !fns[f].from_prelude && !fns[f].param_tys.iter().any(holds_fn) && !holds_fn(&fns[f].ret))
+        .collect();
     loop {
         // the size of each function with what it inlines, from the leaves
         fn size(f: FnId, calls: &[Vec<FnId>], own: &[usize], called: &[bool], sizes: &mut Vec<Option<usize>>) -> usize {

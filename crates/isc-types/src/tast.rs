@@ -157,6 +157,9 @@ pub enum Prim {
     /// `readWord(b, at, n)` (D580): the `n` bytes (1 to 8) of `b` from
     /// `at`, little-endian, as a `u64`, checked once
     ReadWord,
+    /// `$panic(message)` (D582): a panic of the prelude, of any type (the
+    /// one its place expects); the prelude alone can name it
+    Panic,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// `argsort(x)`: the indices of the elements in their order, stable

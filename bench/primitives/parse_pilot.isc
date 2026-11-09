@@ -1,5 +1,9 @@
 // The pilot of SPEC section 17, order 2 (D579): `parseI64` written in
 // Isocron against the builtin (Rust, D539), on 4096 texts of 7 digits.
+// Since D582 `parseI64` is itself the function of the prelude written in
+// Isocron (with `readWord` and `$panic`): `builtin` measures it, and the
+// Rust version is measured by building this file with a compiler before
+// D582 (DECISIONS D579, D580, D582).
 // usage: parse_pilot <rounds>
 
 // the value of 1 to 8 digits at `b[a .. a + n]`, -1 if a byte is not one:

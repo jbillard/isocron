@@ -13465,3 +13465,85 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   cases, interpreted, compiled, 1 and 4 threads) fails without the change.
   The 58 programs of `bench/` and `examples/` compile to the same LLVM IR
   as before (compared one by one): no optimization lost there.
+- **D582 — `parseI64` written in Isocron, the first function of the
+  runtime moved (2026-11-09).** SPEC section 17, order 2, principle 6:
+  `parseI64` is now a function of the prelude (it takes the place of the
+  primitive: a function of the prelude comes before a primitive of the
+  same name), faster than the Rust version on every measure.
+  - `$panic(message)`: a panic of the prelude, its message given, of the
+    type its place expects (`StrOp::Panic`, `isc_panic_text` of the
+    runtime, `panic_at` of the interpreter); only the prelude can name it
+    (the lexer reads `$` there alone: a program that writes it is refused
+    at compilation). It may panic for the passes (D581).
+  - The function: a sign and 1 to 7 digits, or 1 to 8 digits, in one word
+    (`readWord`, D580, then the SWAR of the runtime's `digits8`), 9 to 16
+    bytes in two words, more in `$parseRest` (`@cold`, D584), its message
+    built by `$parseI64Message` (`@cold`); the panic itself stays in
+    `parseI64`, so at the place of the call. The answers of Rust's
+    `str::parse::<i64>`: 1574 texts (signs, leading zeros, the bounds of
+    `i64`, the bytes next to the digits, `١`), the old compiler and the new
+    one, compiled and interpreted, the same values, codes, messages and
+    positions; WebAssembly the same (Windows built, not run: the VM stays
+    off during the suite). The test `parse_i64_written_in_isocron`.
+  - What the measures found, in order (`perf stat`, cycles and uops a
+    text, one CPU at fixed frequency):
+    - the first version, its sign read as a value (`at = sign ? 1 : 0`):
+      fewer instructions than Rust, but the address of the word waited for
+      the first byte (a `sete`): 18.3 cycles against 16.8 for 7 digits;
+      the place a constant (no sign, a test only) 15.7: the cause. Two
+      paths, a branch on the first byte (foreseen), each its constant
+      place.
+    - LLVM made `n == 8 ? w : (w << …) | (zeros >> …)` a `shrd` by `%cl`
+      (4 uops on this Rocket Lake); Rust's form (the select on the zeros
+      only) was not faster here: kept as written.
+    - in a program of ten calls, the rule of D336 took the hot function
+      out (its copies above 2000 nodes), and every called function paid
+      `__tls_get_addr` and six registers on entry: D583. A function of the
+      prelude is no longer taken out for its size (its positions would be
+      those of the prelude, D111: a panic at line 315 of the prelude was
+      seen); its rare paths are `@cold` instead. Of the 58 programs of
+      `bench/` and `examples/`, the only function of the prelude taken out
+      today is `forEachFrom`, recursive: nothing else changes.
+    - the 9 to 16 bytes in `$parseRest` (cold, called) were 6 % slower
+      than Rust: the 9-digit numbers of the micro-benchmarks are not rare;
+      inline again, the sign of the first word made a `0` in the word.
+  - The result (`bench/primitives` numbers, strings and io, and 4096 texts
+    of each length; the median of 9 runs, Rust built by the compiler
+    before D580): numbers.parseI64 9.137 → 7.911 ns (−13.4 %),
+    strings.parseI64.7 5.488 → 5.006 (−8.8 %), io.readStdinLines 15.510 →
+    14.533 (−6.3 %); 1 digit −9.2 %, 3 −8.5 %, 7 −6.0 %, 8 −12.2 %, −7
+    −0.7 %, 12 −10.5 %, 16 −17.5 %, 19 +0.3 % (the cold path, equal),
+    mixed −11.5 %. The ten programs call `parseI64` on their arguments
+    only. The primitive is now hidden by the function of the prelude:
+    `isc_parse_i64` is no longer called; `tryParseI64` still reads by
+    Rust (`isc_try_parse_i64`), next to move, then the primitive goes.
+  - Found on the way: a tuple literal first in a choice
+    (`n == 0 ? [0u64, 1u64] : f()`) is typed as an array; the call first
+    is accepted. A gap of the language, noted in TODO.
+- **D583 — The test of the stack of a called function without a call of
+  `__tls_get_addr` nor a frame pointer (2026-11-09).** Found by D582: at
+  the entry of every recursive or called function, the floor of the stack
+  was read from `isc_stack_floor_tls`, a thread-local variable of the
+  general model, so a call of `__tls_get_addr` (the code is PIC), and its
+  first computation (`isc_stack_floor()`, once per thread) was a call LLVM
+  thought as likely as not, so the arguments were kept in six saved
+  registers on every entry; `llvm.frameaddress` forced a frame pointer.
+  Now: the model local-exec (as `isc_node_thread`, a load relative to
+  `%fs`; Windows reaches its variables by `_tls_index` whatever the
+  model), the call `cold`, and the stack pointer by `llvm.stacksave` (the
+  test a frame stricter). The outlined `parseI64` of D582 went from seven
+  pushes and a call to five pushes and one load. Every recursive function
+  of a program runs this lighter test; its gain on the ten programs is not
+  measured (a hypothesis); the panic of a stack overflow is unchanged (the
+  tests of the suite).
+- **D584 — `@cold`: a function rarely called (2026-11-09).** A decorator
+  as Rust's `#[cold]` and `#[inline(never)]`: the function is compiled
+  once and called (the rule of D336 counts it out of its callers),
+  `cold noinline` for LLVM, so its calls are unlikely and the loops that
+  may call it keep their registers for the common case. It changes no
+  result. A `@cold` function that takes or returns a function is refused
+  at compilation (each call would specialize it). Needed by D582: the
+  rare paths of `parseI64` out of the loops, as Rust's `parse_i64_rest`.
+  The guide (section on performance requirements), SPEC section 9; the
+  test `cold_functions_called_not_inlined` (results interpreted and
+  compiled, 1 and 4 threads, the calls in the report, the refusal).

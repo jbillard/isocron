@@ -352,7 +352,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 Une fusion évite de créer un tableau intermédiaire en mémoire ; les règles ci-dessous sont garanties, et ce sont les seules sur lesquelles `requireFused` s'appuie.
 
-Préalable : avant la fusion, toute fonction non récursive est intégrée à son point d'appel (inlining), et toute fonction d'ordre supérieur est spécialisée (section 11). Seule exception, une fonction trop grande pour être recopiée partout : plus de 4000 nœuds une fois ses appels intégrés, ou au moins 100 nœuds et plus de 2000 dans toutes ses copies. Elle est compilée une fois et appelée, comme une fonction récursive ; ni `main`, ni une fonction qui prend ou rend une fonction (D336). Les seuils sont choisis loin des programmes de calcul (le plus grand des dix programmes de mesure pèse 569 nœuds ; aucune de leurs fonctions n'est concernée, leur code est identique) : ils bornent la croissance du code que les décodeurs écrits pour chaque type feraient sinon exploser.
+Préalable : avant la fusion, toute fonction non récursive est intégrée à son point d'appel (inlining), et toute fonction d'ordre supérieur est spécialisée (section 11). Seule exception, une fonction trop grande pour être recopiée partout : plus de 4000 nœuds une fois ses appels intégrés, ou au moins 100 nœuds et plus de 2000 dans toutes ses copies. Elle est compilée une fois et appelée, comme une fonction récursive ; ni `main`, ni une fonction qui prend ou rend une fonction (D336). Les seuils sont choisis loin des programmes de calcul (le plus grand des dix programmes de mesure pèse 569 nœuds ; aucune de leurs fonctions n'est concernée, leur code est identique) : ils bornent la croissance du code que les décodeurs écrits pour chaque type feraient sinon exploser. Deux règles s'y ajoutent (D582, D584) : une fonction marquée `@cold` est toujours compilée une fois et appelée, et ses appels sont tenus pour improbables ; une fonction du prélude n'est jamais sortie pour sa taille, afin que ses positions restent celles de son appel (D111), et le prélude range ses chemins rares dans des fonctions `@cold`.
 
 ### Règles de fusion
 
@@ -459,6 +459,8 @@ Une exigence est une garantie écrite par le programmeur ; si le compilateur ne 
 | `@requireNoAlloc` | une `function` et tout ce qu'elle appelle | aucune création de tableau ni allocation, ni sur la pile ni sur le tas, hors la destination fournie par l'appelant (section 8) | IR après fusion et unicité |
 | `@requireFused` | une `function` | aucun tableau intermédiaire matérialisé à l'intérieur | règles F1 à F4 et M1 à M3 (section 7) |
 | `@requireTail` | une `function` récursive | chaque appel récursif est terminal ; compilé en boucle | IR après inlining |
+
+`@cold` (D584), écrit à la même place, n'est pas une exigence mais une indication de placement : la fonction est rarement appelée, elle est compilée une fois et appelée, jamais intégrée à ses appelants, et ses appels sont improbables. Les résultats ne changent pas. Une fonction qui prend ou rend une fonction ne peut pas être `@cold` (refus à la compilation).
 
 ### Portabilité des verdicts
 
@@ -880,11 +882,12 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 | Mémoire partagée | `sharedMap(bytes) => Shared`, `atomicLoad`, `atomicStore`, `atomicAdd`, `atomicCas`, `wait(s, at, expected)`, `wake(s, at, count)` | une `Shared` n'a que des accès atomiques ; `wait` et `wake` sont le futex de Linux |
 | Threads | `spawn(stackBytes, task: action)`, `join(t)`, `threadLocal() => Region` | utilisés par `isocron:pool` seul ; la région locale d'un thread n'est lue que par lui |
 | Démarrage | `isc_start` (assembleur du compilateur) | les relocalisations, le stockage local du thread principal, puis le `main` du runtime en Isocron, qui appelle celui du programme |
+| Mots et pannes | `readWord(b, at, n)`, `$panic(message)` | `readWord` : les `n` octets (1 à 8) de `b` depuis `at` en un mot, le premier au poids faible, contrôlés une fois (D580) ; `$panic` : une panne, son message donné, à la position de l'appel de la fonction du prélude, du type que sa place attend ; seul le prélude peut la nommer (D582) |
 
 ### Ordre de travail
 
 1. Les primitives dans le compilateur et l'interpréteur, avec leurs tests.
-2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher.
+2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher. Fait : `parseI64`, dans le prélude (D582) : de 6,3 à 13,4 % plus rapide que la version Rust sur ses trois microbenchmarks, de 0,7 à 17,5 % de 1 à 16 chiffres, égal à 19 chiffres (+0,3 %).
 3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads.
 4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
 5. Les entrées et sorties (fichiers, entrée standard projetée).

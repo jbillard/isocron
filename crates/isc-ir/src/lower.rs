@@ -2465,7 +2465,8 @@ impl<'p> Lower<'p> {
         let require_tail = f.requires.iter().find(|(m, _)| *m == isc_syntax::ast::Modifier::RequireTail).map(|(_, s)| *s);
         self.reassoc_body(f, &mut body);
         let consumed = vec![false; params.len()];
-        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, consumed });
+        let cold = f.requires.iter().any(|(m, _)| *m == isc_syntax::ast::Modifier::Cold);
+        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, cold, consumed });
         Ok(idx)
     }
 
@@ -2534,6 +2535,7 @@ impl<'p> Lower<'p> {
             | Prim::HashIndex
             | Prim::HashFind
             | Prim::ReadWord
+            | Prim::Panic
             | Prim::ParseFloat
             | Prim::ParseInt
             | Prim::StrSlice => {
@@ -2544,6 +2546,7 @@ impl<'p> Lower<'p> {
                     Prim::HashIndex => StrOp::HashIndex,
                     Prim::HashFind => StrOp::HashFind,
                     Prim::ReadWord => StrOp::ReadWord,
+                    Prim::Panic => StrOp::Panic,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),

@@ -289,3 +289,89 @@ action mapInOrderFirst<T, U>(x: T[n], f: action (T) => U): U[n] {
     const first = f(x[0]);
     return mapInOrderFrom(x, f, 1, fill(x.length, first));
 }
+
+// `parseI64(s)` written in Isocron (D582, SPEC section 17, step 2): a
+// decimal integer, its sign optional, the answers of Rust's
+// `str::parse::<i64>`, and for any other text the panic of the runtime's.
+// 1 to 8 digits, or a sign and 1 to 7, in one word (`$digits8`), the place
+// of the digits a constant on each path: the word never waits for the
+// first byte (a branch, foreseen, rather than a place computed from it);
+// 9 to 16 bytes in two words, a sign in the first made a `0`
+// (`$digits16`); more, and the texts that are no number, out of the loop
+// (`$parseRest`, `@cold`, D584).
+function parseI64(s: string): i64 {
+    const b = bytes(s);
+    const k = b.length;
+    const c = k > 0 ? b[0] : 0u8;
+    const neg = c == 45u8;
+    const [v, bad] = k >= 1 && k <= 8 && c >= 48u8 ? $digits8(b, 0, k)
+        : k >= 2 && k <= 8 && (neg || c == 43u8) ? $digits8(b, 1, k - 1)
+        : k > 8 && k <= 16 ? $digits16(b, k)
+        : $parseRest(b, k, neg);
+    return bad == 0u64 ? i64(neg ? 0u64 - v : v) : $panic($parseI64Message(s));
+}
+
+// The message of the panic of `parseI64`, built out of the caller
+// (`@cold`): no frame there for a text it almost never makes. The panic
+// stays in `parseI64`, inlined, at the place of its call (D111).
+@cold
+function $parseI64Message(s: string): string {
+    return "parseI64: `" + s + "` is not a valid integer";
+}
+
+// The texts of `parseI64` of more than 16 bytes (after their sign and
+// leading zeros, at most 19 digits); up to 8, none, a sign alone or a first
+// byte below `0` that is no sign: no number.
+@cold
+function $parseRest(b: u8[k], k: i64, neg: boolean): [u64, u64] {
+    const c = k > 0 ? b[0] : 0u8;
+    const sign = neg || c == 43u8;
+    return k > 16 ? $digitsHuge(b, sign ? 1 : 0, k - (sign ? 1 : 0), neg) : [0u64, 1u64];
+}
+
+// The value of the `n` bytes (1 to 8) of `b` from `at`, and a word not 0
+// if one is not a decimal digit: the bytes in one word (`readWord`), `0`s
+// before them up to 8, a byte below `0` or above `9` found in every byte at
+// once, then the digits paired, by fours, by eights (as `digits8` of the
+// runtime core).
+function $digits8(b: u8[k], at: i64, n: i64): [u64, u64] {
+    return $digitsWord(readWord(b, at, n), n);
+}
+
+function $digitsWord(w0: u64, n: i64): [u64, u64] {
+    const zeros = 0x3030303030303030u64;
+    const w = n == 8 ? w0 : (w0 << u64((8 - n) * 8)) | (zeros >> u64(n * 8));
+    const bad = ((w + 0x4646464646464646u64) | (w - zeros)) & 0x8080808080808080u64;
+    const v1 = w - zeros;
+    const v2 = v1 * 10u64 + (v1 >> 8u64);
+    const m = 0x000000FF000000FFu64;
+    const v3 = ((v2 & m) * 0x000F424000000064u64 + ((v2 >> 16u64) & m) * 0x0000271000000001u64) >> 32u64;
+    return [v3, bad];
+}
+
+// 9 to 16 bytes: the first `k - 8` (a sign there made a `0`: the word read
+// from the first byte), then the last 8, each in a word.
+function $digits16(b: u8[k], k: i64): [u64, u64] {
+    const w0 = readWord(b, 0, k - 8);
+    const c = w0 & 0xFFu64;
+    const w = c == 45u64 || c == 43u64 ? (w0 & 0xFFFFFFFFFFFFFF00u64) | 0x30u64 : w0;
+    const [hi, bh] = $digitsWord(w, k - 8);
+    const [lo, bl] = $digits8(b, k - 8, 8);
+    return [hi * 100000000u64 + lo, bh | bl];
+}
+
+// More than 16 digits from `at`: their leading zeros skipped, at most 19
+// left (the first 1 to 3 in a word of their own), below 2^63 or equal for
+// a negative.
+function $digitsHuge(b: u8[k], at: i64, n: i64, neg: boolean): [u64, u64] {
+    const end = at + n;
+    const z = fold(iota(n), end, (a, i) => a == end && b[at + i] != 48u8 ? at + i : a);
+    const m = end - z;
+    const [hi, bh] = m > 16 && m <= 19 ? $digits8(b, z, m - 16) : [0u64, 0u64];
+    const [mid, bm] = m > 8 ? $digits8(b, end - (m <= 16 ? m : 16), m <= 16 ? m - 8 : 8) : [0u64, 0u64];
+    const [lo, bl] = m > 0 ? $digits8(b, end - (m >= 8 ? 8 : m), m >= 8 ? 8 : m) : [0u64, 0u64];
+    const v = (hi * 100000000u64 + mid) * 100000000u64 + lo;
+    const limit = (1u64 << 63u64) - (neg ? 0u64 : 1u64);
+    const over = m > 19 || (m == 19 && v > limit) ? 1u64 : 0u64;
+    return [v, bh | bm | bl | over];
+}

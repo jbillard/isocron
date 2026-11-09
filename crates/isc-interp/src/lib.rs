@@ -407,6 +407,8 @@ impl Interp<'_> {
                 };
                 Value::Array(Rc::new(Array::Int(slots)))
             }
+            // `$panic(message)` (D582)
+            S::Panic => return panic_at(e, s(&vs[0]).to_string()),
             // `readWord` (D580): the code of the runtime core
             S::ReadWord => {
                 let b: Vec<u8> = match &vs[0] {

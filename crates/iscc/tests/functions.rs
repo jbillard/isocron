@@ -605,3 +605,53 @@ fn table_elements_never_read_never_computed() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, r.stderr);
     }
 }
+
+/// D584: `@cold`, a function rarely called: compiled once and called, never
+/// inlined (D336 counts it out of its callers), its calls unlikely. The
+/// same results interpreted and compiled, 1 and 4 threads; the report names
+/// its calls; one that takes a function is refused at compilation.
+#[test]
+fn cold_functions_called_not_inlined() {
+    let src = "@cold
+function describe(x: i64): string {
+    return `odd value ${x} of ${x * 3}`;
+}
+
+function step(x: i64): i64 {
+    return x % 1000 == 999 ? len(describe(x)) : x % 7;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(sum(map(iota(n), step)));
+    print(describe(n));
+    return 0;
+}
+";
+    let bin = compile(src, "cold_functions");
+    for args in [["10"], ["5000"]] {
+        let want = interp_ok(src, &args);
+        let n: i64 = args[0].parse().unwrap();
+        let sum: i64 = (0..n).map(|x| if x % 1000 == 999 { format!("odd value {} of {}", x, x * 3).len() as i64 } else { x % 7 }).sum();
+        assert_eq!(want, format!("{}\nodd value {} of {}\n", sum, n, n * 3));
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &args, Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?} {} threads: {}", args, t, r.stderr);
+        }
+    }
+    let p = iscc::frontend("cold.isc", src).unwrap();
+    let calls = isc_ir::report::entries(&p).into_iter().filter(|e| e.kind == "stack" && e.what.contains("describe")).count();
+    assert!(calls >= 2, "the calls of `describe` in the report: {}", calls);
+    let bad = "@cold
+function apply(f: (i64) => i64, x: i64): i64 {
+    return f(x);
+}
+
+action main(args: string[k]): i32 {
+    print(apply((v) => v + 1, 2));
+    return 0;
+}
+";
+    let e = iscc::frontend("cold_bad.isc", bad).err().expect("refused");
+    assert!(e.to_string().contains("`@cold` function `apply` takes or returns a function"), "{}", e);
+}

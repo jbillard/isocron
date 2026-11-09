@@ -1543,3 +1543,89 @@ fn words_read_from_bytes() {
         assert!(r.stderr.contains(msg), "{:?} compiled: {}", args, r.stderr);
     }
 }
+
+/// D582: `parseI64` written in Isocron (the prelude, its panic `$panic`):
+/// the answers of Rust's `str::parse::<i64>` (that the runtime gave),
+/// valid texts of 1 to 25 characters (signs, leading zeros, the bounds of
+/// `i64`) in one program, interpreted and compiled; texts that are no
+/// integer (a sign alone, a character next to the digits, an overflow
+/// after leading zeros), each the panic of the runtime, at the call. A
+/// program cannot name `$panic`.
+#[test]
+fn parse_i64_written_in_isocron() {
+    let mut texts: Vec<String> = [
+        "0", "-0", "+0", "00", "9223372036854775807", "-9223372036854775808", "+9223372036854775807",
+        "000000000000000000000009223372036854775807", "-000000000000000000000009223372036854775808",
+        "00000000000000000000", "000000000000000000001", "12345678", "123456789", "1234567890123456",
+        "12345678901234567", "1234567890123456789", "-1234567890123456789", "1000000000000000000",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut x: u64 = 582;
+    for n in 1..=19 {
+        for _ in 0..6 {
+            let d: String = (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    char::from(b'0' + (x >> 59) as u8 % 10)
+                })
+                .collect();
+            for t in [d.clone(), format!("-{}", d), format!("+{}", d), format!("000{}", d)] {
+                if t.parse::<i64>().is_ok() {
+                    texts.push(t);
+                }
+            }
+        }
+    }
+    let src = "action main(args: string[k]): i32 {\n    print(map(args, parseI64));\n    return 0;\n}\n";
+    let args: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let values: Vec<String> = texts.iter().map(|s| s.parse::<i64>().unwrap().to_string()).collect();
+    agree(src, "parse_i64_isocron", &args, &format!("[{}]\n", values.join(", ")));
+    let one = "action main(args: string[k]): i32 {\n    print(parseI64(args[0]));\n    return 0;\n}\n";
+    let bin = compile(one, "parse_i64_isocron_bad");
+    for s in [
+        "", "+", "-", "--1", "+-1", "1a", " 1", "1 ", "/", ":", "1/2", "١", "9223372036854775808", "-9223372036854775809",
+        "99999999999999999999", "000000000000000000000009223372036854775808", "12345678901234567x",
+    ] {
+        assert!(s.parse::<i64>().is_err(), "{}", s);
+        let msg = format!("panic at line 2, column 19: parseI64: `{}` is not a valid integer", s);
+        let m = interp_panic(one, &[s]);
+        assert!(m.contains(&msg), "{:?} interpreted: {}", s, m);
+        let r = run_bin(&bin, &[s]);
+        assert_eq!(r.code, 101, "{:?}: {}", s, r.stderr);
+        assert!(r.stderr.contains(&msg), "{:?} compiled: {}", s, r.stderr);
+    }
+    // ten calls (D582: a function of the prelude is always inlined, its
+    // panic at the place of each call, as the runtime's)
+    let ten = "action main(args: string[k]): i32 {
+    const a = parseI64(args[0]);
+    const b = map(args, parseI64);
+    const c = map(args, (s) => parseI64(s) + 1);
+    const d = map(args, (s) => parseI64(s) * 2);
+    const e = map(args, (s) => parseI64(s) - 3);
+    const f = map(args, (s) => parseI64(s) / 2);
+    const g = map(args, (s) => parseI64(s) % 7);
+    const h = map(args, (s) => parseI64(s) & 255);
+    const i = map(args, (s) => parseI64(s) | 1);
+    const j = map(args, (s) => parseI64(s) ^ 5);
+    print([a, sum(b), sum(c), sum(d), sum(e), sum(f), sum(g), sum(h), sum(i), sum(j)]);
+    return 0;
+}
+";
+    let bin10 = compile(ten, "parse_i64_ten");
+    for (args, msg) in [
+        (["12", "x"], "panic at line 3, column 18: parseI64: `x` is not a valid integer"),
+        (["x", "1"], "panic at line 2, column 23: parseI64: `x` is not a valid integer"),
+        (["7", "-"], "panic at line 3, column 18: parseI64: `-` is not a valid integer"),
+    ] {
+        let m = interp_panic(ten, &args);
+        assert!(m.contains(msg), "{:?} interpreted: {}", args, m);
+        let r = run_bin(&bin10, &args);
+        assert!(r.stderr.contains(msg), "{:?} compiled: {}", args, r.stderr);
+    }
+    let r = run_bin(&bin10, &["-9223372036854775808", "1"]);
+    assert_eq!(r.stdout, "[-9223372036854775808, -9223372036854775807, -9223372036854775805, 2, 9223372036854775803, -4611686018427387904, 0, 1, -9223372036854775806, -9223372036854775799]\n", "{}", r.stderr);
+    let named = "action main(args: string[k]): i32 {\n    const x: i64 = $panic(\"boom\");\n    print(x);\n    return 0;\n}\n";
+    assert!(isc_types::check_source(named).is_err());
+}

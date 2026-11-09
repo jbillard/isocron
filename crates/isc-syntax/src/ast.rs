@@ -83,6 +83,9 @@ pub enum Modifier {
     RequireFused,
     RequireTail,
     AllowReassoc,
+    /// `@cold` (D584): a function rarely called, compiled once and called,
+    /// never inlined, its calls unlikely.
+    Cold,
 }
 
 /// A `fn` or an `action` declaration.

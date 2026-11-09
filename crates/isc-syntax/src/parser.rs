@@ -146,6 +146,7 @@ impl P {
                     "requireFused" => Modifier::RequireFused,
                     "requireTail" => Modifier::RequireTail,
                     "allowReassoc" => Modifier::AllowReassoc,
+                    "cold" => Modifier::Cold,
                     _ => return Err(Diagnostic::new(sp, format!("unknown decorator `@{}`", m))),
                 };
                 modifiers.push((m, sp));

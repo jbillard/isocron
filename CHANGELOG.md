@@ -35,6 +35,13 @@
   longer computed at elements the program never reads when it can panic
   there (`readWord`, `repeat`, `toFixed` and other operations of strings):
   such a program panicked wrongly (D581).
+- `parseI64` is written in Isocron (the prelude), the first function of the
+  runtime moved out of Rust: the same answers and panics, 6 to 17 % faster
+  than the Rust version on its micro-benchmarks and lengths (D582).
+- `@cold`: a decorator for a function rarely called, compiled once and
+  called, its calls unlikely (D584).
+- A recursive or called function tests its stack without calling
+  `__tls_get_addr` nor setting a frame pointer (D583).
 
 ## 0.5.0 — 2026-11-09
 

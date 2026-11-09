@@ -1039,6 +1039,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_panic_negexp(i64, i32, i32) noreturn",
     "declare void @isc_panic_bench(i64, i32, i32) noreturn",
     "declare void @isc_panic_word(i64, i32, i32) noreturn",
+    "declare void @isc_panic_text(ptr, i64, i32, i32) noreturn",
     "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)",
     "declare ptr @llvm.stacksave.p0()",
     "declare void @llvm.stackrestore.p0(ptr)",
@@ -2718,7 +2719,9 @@ impl<'p> Gen<'p> {
         };
         // on 64 bytes (D213): a small function called at each node of a
         // tree stays whole in the cache of decoded instructions
-        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){} align 64", cc, ret, name, ps.join(", "), attrs));
+        // `@cold` (D584): never inlined back by LLVM, its calls unlikely
+        let cold = if self.p.fns[i].cold { " cold noinline" } else { "" };
+        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}{} align 64", cc, ret, name, ps.join(", "), attrs, cold));
         self.region = saved_region;
         self.other_tails = saved_others;
         self.f = saved_f;
@@ -2818,10 +2821,16 @@ impl<'p> Gen<'p> {
     /// below the floor of the thread's stack (`isc_stack_floor`, computed
     /// once per thread, kept in a thread-local variable).
     fn stack_check(&mut self, name: &str, span: Span) {
-        self.decls.insert("declare i64 @isc_stack_floor()".into());
+        // once per thread: cold, so that the registers of the function are
+        // not kept across it on every entry (D583)
+        self.decls.insert("declare i64 @isc_stack_floor() cold".into());
         self.decls.insert("declare void @isc_panic_stack(ptr, i64, i32, i32) noreturn".into());
-        self.decls.insert("declare ptr @llvm.frameaddress.p0(i32)".into());
-        let tls = "@isc_stack_floor_tls = internal thread_local global i64 0".to_string();
+        // the model of a program (local-exec, as `isc_node_thread`): a load
+        // relative to `%fs`, not a call of `__tls_get_addr` at each entry
+        // (D583); Windows reaches its variables by `_tls_index` whatever the
+        // model
+        let model = if self.opts.windows { "" } else { "(localexec)" };
+        let tls = format!("@isc_stack_floor_tls = internal thread_local{} global i64 0", model);
         if !self.globals.contains(&tls) {
             self.globals.push(tls);
         }
@@ -2833,7 +2842,7 @@ impl<'p> Gen<'p> {
         let ljoin = self.label();
         self.cbr(&unset, &linit, &ljoin);
         self.block(&linit);
-        let x = self.ins("call i64 @isc_stack_floor()".to_string());
+        let x = self.ins("call i64 @isc_stack_floor() cold".to_string());
         // unknown (0): 1, so that it is not asked again and never stops
         let z = self.ins(format!("icmp eq i64 {}, 0", x));
         let x1 = self.ins(format!("select i1 {}, i64 1, i64 {}", z, x));
@@ -2842,7 +2851,10 @@ impl<'p> Gen<'p> {
         self.br(&ljoin);
         self.block(&ljoin);
         let floor = self.ins(format!("load i64, ptr {}", slot));
-        let fa = self.ins("call ptr @llvm.frameaddress.p0(i32 0)".to_string());
+        // the stack pointer, not the frame address: no frame pointer set up
+        // at the entry, so that the registers are saved only on the paths
+        // that need them (D583)
+        let fa = self.ins("call ptr @llvm.stacksave.p0()".to_string());
         let fi = self.ins(format!("ptrtoint ptr {} to i64", fa));
         let ok = self.ins(format!("icmp uge i64 {}, {}", fi, floor));
         let (sname, n) = self.str_const(name);
@@ -12953,6 +12965,16 @@ impl<'p> Gen<'p> {
                 self.br(&lloop);
                 self.block(&ldone);
                 v(self.ins(format!("load i64, ptr {}", res)), "i64")
+            }
+            // `$panic(message)` (D582): the call that does not return, then
+            // a block no path reaches, where the value of its type is zero
+            S::Panic => {
+                let (p, n) = self.str_parts(&vals[0]);
+                self.emit(format!("call void @isc_panic_text(ptr {}, i64 {}, {})", p, n, Self::pos(e.span)));
+                self.emit("unreachable");
+                let dead = self.label();
+                self.block(&dead);
+                v(Self::zero(&e.ty), lt(&e.ty))
             }
             // `readWord(b, at, n)` (D580), as `read_word` of the runtime core:
             // `n` in 1 ..= 8, then one check of the bytes `at .. at + n`, then
