@@ -2611,41 +2611,11 @@ unsafe fn text<'a>(p: *const u8, n: i64) -> &'a str {
 /// # Safety
 /// The pointers as the generated code gives them (C1).
 #[no_mangle]
-pub unsafe extern "C" fn isc_index_of(p: *const u8, n: i64, q: *const u8, m: i64) -> i64 {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        sem::index_of(text(p, n), text(q, m))
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
 pub unsafe extern "C" fn isc_last_index_of(p: *const u8, n: i64, q: *const u8, m: i64) -> i64 {
     // SAFETY: the pointers the generated code gives (C1): its places of results
     // and its strings and arrays, alive during the call
     unsafe {
         sem::last_index_of(text(p, n), text(q, m))
-    }
-}
-
-/// 0 `includes`, 1 `startsWith`, 2 `endsWith`.
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_str_test(p: *const u8, n: i64, q: *const u8, m: i64, which: i32) -> i32 {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let (s, t) = (bytes_of(p, n), bytes_of(q, m));
-        (match which {
-            0 => sem::find_bytes(s, t).is_some(),
-            1 => s.starts_with(t),
-            _ => s.ends_with(t),
-        }) as i32
     }
 }
 

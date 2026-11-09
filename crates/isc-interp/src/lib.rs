@@ -210,9 +210,7 @@ impl Interp<'_> {
                 Value::Array(Rc::new(Array::Str(t.split(&*sep).map(Rc::from).collect())))
             }
             // the functions of TypeScript (D155): the code of the runtime
-            S::IndexOf => Value::Int(isc_runtime_core::index_of(&s(&vs[0]), &s(&vs[1]))),
             S::LastIndexOf => Value::Int(isc_runtime_core::last_index_of(&s(&vs[0]), &s(&vs[1]))),
-            S::Includes => Value::Bool(s(&vs[0]).contains(&*s(&vs[1]))),
             S::StartsWith => Value::Bool(s(&vs[0]).starts_with(&*s(&vs[1]))),
             S::EndsWith => Value::Bool(s(&vs[0]).ends_with(&*s(&vs[1]))),
             // through the engine of regular expressions: `$` patterns (D157)

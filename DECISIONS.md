@@ -13951,3 +13951,58 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     another after it, absent, from the start, in a slice, from the end,
     with a second byte two places further; no wrong answer, interpreted
     and compiled for the native set of instructions, SSE and AVX2.
+- **D596 — `indexOf` and `includes` written in Isocron, 12 to 83 % faster
+  than their Rust versions (2026-11-10).** Two functions of the runtime
+  less (D589); what D595 was for.
+  - In the prelude (`$find` and its functions). An empty needle: 0. A
+    byte: `findIndex`. More, in a text of at most 256 bytes: the places
+    where two bytes of the needle both are, by vectors (`$pairAt`: two
+    slices of the text read at the same index), then its bytes compared,
+    as one or two words (`readWord`) up to 16 bytes, by vectors beyond. In
+    a longer text, first the places of one of the two bytes alone
+    (`$findOne`), which passes the text at the speed of the search of a
+    byte while that byte is rare there (more than 8 places in vain and one
+    for 32 bytes passed: by two bytes from there).
+  - The two bytes (`$filterAt`): the last one, and the first one; when
+    they are the same byte, the last byte that differs from it. In a text
+    of one byte repeated, a needle of that byte but one cost its length at
+    each place otherwise (measured: 1.491 ns a byte passed against 0.027
+    for the runtime, 55 times slower; 0.008 now).
+  - Linear time whatever the texts: the bytes compared in vain are
+    counted; past 8 for each byte passed, the search of Crochemore and
+    Perrin takes over (`$twoWay`, cold: the maximal suffixes of the needle,
+    its period, the part known equal not compared again when the needle
+    repeats). The runtime had that guarantee from `memmem` for needles of
+    more than 16 bytes.
+  - In the code generator, for these searches: the vectors of a search
+    among bytes start, after a first whole one, at an address that is a
+    multiple of their size (the first array read, when several are): each
+    load of 64 bytes was across two lines of the cache. A byte absent of a
+    text of 250 kB: 0.0101 → 0.0054 ns a byte passed (`memchr` of the
+    runtime: 0.0077).
+  - Measured (the median of 7 runs, Rust by the compiler before D580). A
+    line of 60 bytes, ns a search: a byte 6.027 → 5.322 (−11.7 %), 3 bytes
+    20.131 → 13.366 (−33.6 %), 8 bytes 17.423 → 11.836 (−32.1 %), 16 bytes
+    15.581 → 12.153 (−22.0 %), 30 bytes 44.990 → 11.005 (−75.5 %);
+    `includes` of 2 bytes 20.534 → 11.902 (−42.0 %), of 8 bytes 17.554 →
+    12.132 (−30.9 %). A text of 249855 bytes, ns a byte passed: a byte absent
+    0.010 → 0.008 (−25.0 %), 4 bytes absent whose first is frequent 0.317 →
+    0.053 (−83.3 %), 31 bytes absent 0.053 → 0.021 (−60.4 %); found at its
+    end, a byte 0.010 → 0.008 (−26.2 %), 4 bytes whose first is rare 0.010
+    → 0.008 (−24.5 %; 0.031 before `$findOne`, 3 times slower than the
+    runtime), 24 bytes 0.030 → 0.008 (−74.2 %), `includes` of 7 bytes
+    0.010 → 0.008 (−24.8 %). One byte repeated 65536 times, a needle of it
+    but one byte: 0.027 → 0.008 (−70.6 %). The groups json, maps, numbers,
+    control and arrays before and after: no form slower, `json.decode`
+    −3.0 %, `json.encode` −3.4 %, `json.quote` of escaped texts −5.5 %.
+  - The same answers as the runtime's and as a search one place at a
+    time: 16000 searches in texts over alphabets of 1 to 4 letters (needles
+    cut from them or not) and 909 in long repeated texts that spend the
+    budget, compiled; a part of them interpreted and in WebAssembly; the
+    two-way search alone on the same texts while it was written. Test
+    `index_of_and_includes_written_in_isocron`.
+  - Removed: `isc_index_of`, `isc_str_test`, `index_of` of the runtime
+    core, the primitives `indexOf` and `includes` of the compiler and their
+    operations of the IR, of the interpreter and of the code generator.
+    `lastIndexOf` stays in the runtime until a search from the end is made
+    by vectors (TODO).

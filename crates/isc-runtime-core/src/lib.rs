@@ -1019,11 +1019,6 @@ pub fn radix_order(keys: &mut [u64], idx: &mut [i64]) {
     }
 }
 
-/// `s.indexOf(t)`: the byte index of the first `t` in `s`, -1 if none.
-pub fn index_of(s: &str, t: &str) -> i64 {
-    find_bytes(s.as_bytes(), t.as_bytes()).map(|i| i as i64).unwrap_or(-1)
-}
-
 /// The byte index of the last `t` in `s`, -1 if none; the length of `s` for
 /// an empty `t` (as TypeScript; D482): a byte by `memrchr`, more by
 /// `memmem::rfind`.

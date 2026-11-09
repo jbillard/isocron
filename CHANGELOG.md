@@ -70,6 +70,9 @@
   `json.quote` of escaped texts 8 % faster. A search over `iota(n)` whose
   predicate reads an array at its index (`b[j] == x && b[j + 2] == y`) is
   made by vectors too (D595).
+- `indexOf` and `includes` are written in Isocron: 12 to 76 % faster in a
+  line of 60 bytes, 25 to 83 % faster in a long text, in linear time
+  whatever the texts (D596).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

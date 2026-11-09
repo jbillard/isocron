@@ -974,8 +974,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines_view(ptr, ptr, i64)",
     "declare void @isc_split_view(ptr, ptr, i64, ptr, i64, i32, i32)",
-    "declare i64 @isc_index_of(ptr, i64, ptr, i64)",
-    "declare i32 @isc_str_test(ptr, i64, ptr, i64, i32)",
     "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64, i32)",
     "declare void @isc_rx_new(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare i64 @isc_rx_int(ptr, i64, ptr, i64, i32)",
@@ -10500,6 +10498,38 @@ impl<'p> Gen<'p> {
             for (t, &width) in widths.iter().enumerate() {
                 let (lloop, lbody, lhit, lnext, ldone) = (self.label(), self.label(), self.label(), self.label(), self.label());
                 let last = self.ins(format!("sub i64 {}, {}", n, width));
+                // one array of bytes read: after a first whole vector where
+                // the search is, the next ones from an address that is a
+                // multiple of the vector (D596: the vectors of 64 bytes of a
+                // long search were each across two lines of the cache; the
+                // lanes tested twice hold no hit)
+                if t == 0 && size == 1 && !reads.is_empty() {
+                    if let (Src::Mat { ptr, .. }, _) = self.prepare_src(reads[0].0)? {
+                        let (lfirst, lhit0, lalign) = (self.label(), self.label(), self.label());
+                        let i0 = self.ins(format!("load i64, ptr {}", at));
+                        let more0 = self.ins(format!("icmp sle i64 {}, {}", i0, last));
+                        self.cbr(&more0, &lfirst, &ldone);
+                        self.block(&lfirst);
+                        let (any, bits) = self.fold_first_vector(c, (a, j), &iv, &reads, &i0, width)?;
+                        self.cbr(&any, &lhit0, &lalign);
+                        self.block(&lhit0);
+                        let found = self.fold_first_lane(&bits, &i0, width);
+                        self.emit(format!("store i64 {}, ptr {}", found, acc));
+                        self.br(&ljoin);
+                        self.block(&lalign);
+                        self.bind(j, v(i0.clone(), "i64"));
+                        self.prechecked.insert(reads[0].1 as *const Expr);
+                        let ix = self.ex(reads[0].1, 1);
+                        self.prechecked.remove(&(reads[0].1 as *const Expr));
+                        let ix = ix?;
+                        let base = self.ins(format!("ptrtoint ptr {} to i64", ptr));
+                        let addr = self.ins(format!("add i64 {}, {}", base, ix.r));
+                        let mis = self.ins(format!("and i64 {}, {}", addr, width - 1));
+                        let adv = self.ins(format!("sub i64 {}, {}", width, mis));
+                        let next = self.ins(format!("add i64 {}, {}", i0, adv));
+                        self.emit(format!("store i64 {}, ptr {}", next, at));
+                    }
+                }
                 self.br(&lloop);
                 self.block(&lloop);
                 let i = self.ins(format!("load i64, ptr {}", at));
@@ -12917,11 +12947,6 @@ impl<'p> Gen<'p> {
                 new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", f, p, n, q, m, pos))
             }
             // the functions of TypeScript (D155)
-            S::IndexOf => {
-                let (p, n) = self.str_parts(&vals[0]);
-                let (q, m) = self.str_parts(&vals[1]);
-                v(self.ins(format!("call i64 @isc_index_of(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m)), "i64")
-            }
             S::LastIndexOf => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
@@ -12949,12 +12974,6 @@ impl<'p> Gen<'p> {
                 };
                 let same = self.text_same(&at, &q, &k);
                 v(self.ins(format!("and i1 {}, {}", fits, same)), "i1")
-            }
-            S::Includes => {
-                let (p, n) = self.str_parts(&vals[0]);
-                let (q, m) = self.str_parts(&vals[1]);
-                let r = self.ins(format!("call i32 @isc_str_test(ptr {}, i64 {}, ptr {}, i64 {}, i32 0)", p, n, q, m));
-                v(self.ins(format!("icmp ne i32 {}, 0", r)), "i1")
             }
             S::ReplaceAll | S::ReplaceFirst => {
                 let (p, n) = self.str_parts(&vals[0]);

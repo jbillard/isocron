@@ -526,3 +526,176 @@ function $spaceWidth(b: u8[k], p: i64): i64 {
         : c == 0xE3u8 ? (x == 0x80u8 && y == 0x80u8 ? 3 : 0)
         : 0;
 }
+
+// ---------------------------------------------------------------------
+// `indexOf` and `includes` (D596): the search of a text in a text.
+//
+// A byte: `findIndex`. More: in a long text, the places of one byte of the
+// needle first, while it is rare there; then, and at once in a short text,
+// the places where two bytes of the needle both are (two reads by vectors);
+// at each, its bytes compared, as one or two words up to 16 bytes, by
+// vectors beyond. The two bytes: the last one, and the
+// first one; when they are the same byte, the last byte that differs from
+// it instead (`$filterAt`: in a text of one byte repeated, a needle of that
+// byte but one is then never a candidate). A text that repeats otherwise
+// would cost the length of the needle at each place: past a budget of bytes
+// compared in vain, the search of Crochemore and Perrin (two-way) takes
+// over, linear in the lengths whatever the texts.
+
+// `s.indexOf(t)`: the byte index of the first `t` in `s`, -1 if none (0 for
+// an empty `t`).
+function indexOf(s: string, t: string): i64 {
+    return $find(bytes(s), bytes(t));
+}
+
+// `s.includes(t)`: `t` is somewhere in `s`.
+function includes(s: string, t: string): boolean {
+    return $find(bytes(s), bytes(t)) >= 0;
+}
+
+// The first byte `c` of `b`, -1 if none.
+function $findByte(b: u8[k], c: u8): i64 {
+    return findIndex(b, (x) => x == c);
+}
+
+// The first index where `h` holds `first` and `t` holds `last`.
+function $pairAt(h: u8[n], t: u8[n], first: u8, last: u8): i64 {
+    return findIndex(iota(n), (j) => h[j] == first && t[j] == last);
+}
+
+// The bytes of `p` (2 to 16) are those of `b` from `i`.
+function $sameWords(b: u8[k], i: i64, p: u8[m]): boolean {
+    return m <= 8 ? readWord(b, i, m) == readWord(p, 0, m)
+        : readWord(b, i, 8) == readWord(p, 0, 8) && readWord(b, i + m - 8, 8) == readWord(p, m - 8, 8);
+}
+
+// The first index from `from` where `p` differs from `b` at `i`, -1 if none.
+function $mismatch(b: u8[k], i: i64, p: u8[m], from: i64): i64 {
+    const at = i + from;
+    const d = findIndex(iota(m - from), (j) => b[j + at] != p[j + from]);
+    return d < 0 ? -1 : d + from;
+}
+
+// The place of the byte of `p` (2 bytes or more) tested with its last one:
+// its first byte; when that is the last byte too, the last byte that
+// differs from it (0 if none: one byte repeated).
+function $filterAt(p: u8[m]): i64 {
+    const last = p[m - 1];
+    const d = p[0] != last ? -1 : findIndex(iota(m - 1), (j) => p[m - 2 - j] != last);
+    return d < 0 ? 0 : m - 2 - d;
+}
+
+// The first place of `p` (2 to 16 bytes) in `b` from `at`: the places where
+// its byte `x` (at `o`) and its last byte are, then its bytes compared as
+// words.
+function $findShort(b: u8[k], p: u8[m], o: i64, x: u8, last: u8, at: i64): i64 {
+    const d = at + m > k ? -1 : $pairAt(b.slice(at + o, k - m + 1 + o), b.slice(at + m - 1, k), x, last);
+    return d < 0 ? -1 : $sameWords(b, at + d, p) ? at + d : $findShort(b, p, o, x, last, at + d + 1);
+}
+
+// The first place of `p` (more than 16 bytes) in `b` from `at`, the same
+// way, its bytes compared by vectors; `spent` the bytes compared in vain:
+// past 8 for each byte passed, the search of linear time takes over (a text
+// of one byte repeated and a needle of it but one byte: each place would
+// cost the length of the needle).
+function $findLong(b: u8[k], p: u8[m], o: i64, x: u8, last: u8, at: i64, spent: i64): i64 {
+    const d = at + m > k ? -1 : $pairAt(b.slice(at + o, k - m + 1 + o), b.slice(at + m - 1, k), x, last);
+    const i = at + d;
+    const w = d < 0 ? -1 : $mismatch(b, i, p, 0);
+    return d < 0 ? -1 : w < 0 ? i : spent + w > 8 * i + 4096 ? $twoWay(b, p, i + 1) : $findLong(b, p, o, x, last, i + 1, spent + w + 64);
+}
+
+// ---- the search of Crochemore and Perrin (two-way): linear time, no memory
+
+// The maximal suffix of `p` for the order of the bytes (`rev`: reversed):
+// [its start - 1, its period].
+function $maxSuffix(p: u8[m], rev: boolean, ms: i64, j: i64, q: i64, per: i64): [i64, i64] {
+    if (j + q >= m) {
+        return [ms, per];
+    }
+    const a = p[j + q];
+    const c = p[ms + q];
+    const less = rev ? c < a : a < c;
+    return less ? $maxSuffix(p, rev, ms, j + q, 1, j + q - ms)
+        : a == c ? (q != per ? $maxSuffix(p, rev, ms, j, q + 1, per) : $maxSuffix(p, rev, ms, j + per, 1, per))
+        : $maxSuffix(p, rev, j, j + 1, 1, 1);
+}
+
+// From `i` down to above `low`, the last index where `p` differs from `b`
+// at `j`; `low` if none.
+function $mismatchBack(b: u8[k], j: i64, p: u8[m], i: i64, low: i64): i64 {
+    return i <= low ? low : p[i] != b[j + i] ? i : $mismatchBack(b, j, p, i - 1, low);
+}
+
+// `p` whose start repeats with the period `per`: the part already known
+// equal (`memory`) is not compared again.
+function $twoWayPeriodic(b: u8[k], p: u8[m], ell: i64, per: i64, j: i64, memory: i64): i64 {
+    if (j + m > k) {
+        return -1;
+    }
+    const from = (ell > memory ? ell : memory) + 1;
+    const x = $mismatch(b, j, p, from);
+    if (x >= 0) {
+        return $twoWayPeriodic(b, p, ell, per, j + x - ell, -1);
+    }
+    const y = $mismatchBack(b, j, p, ell, memory);
+    return y <= memory ? j : $twoWayPeriodic(b, p, ell, per, j + per, m - per - 1);
+}
+
+function $twoWayPlain(b: u8[k], p: u8[m], ell: i64, per: i64, j: i64): i64 {
+    if (j + m > k) {
+        return -1;
+    }
+    const x = $mismatch(b, j, p, ell + 1);
+    if (x >= 0) {
+        return $twoWayPlain(b, p, ell, per, j + x - ell);
+    }
+    const y = $mismatchBack(b, j, p, ell, -1);
+    return y < 0 ? j : $twoWayPlain(b, p, ell, per, j + per);
+}
+
+// The first place of `p` in `b` from `at`, in time linear in their lengths.
+@cold
+function $twoWay(b: u8[k], p: u8[m], at: i64): i64 {
+    const [i1, p1] = $maxSuffix(p, false, -1, 0, 1, 1);
+    const [i2, p2] = $maxSuffix(p, true, -1, 0, 1, 1);
+    const ell = i1 > i2 ? i1 : i2;
+    const per = i1 > i2 ? p1 : p2;
+    // the start of `p`, up to `ell`, is found again `per` further
+    const periodic = per + ell + 1 <= m && findIndex(iota(ell + 1), (t) => p[t] != p[t + per]) < 0;
+    const side = ell + 1 > m - ell - 1 ? ell + 1 : m - ell - 1;
+    return periodic ? $twoWayPeriodic(b, p, ell, per, at, -1) : $twoWayPlain(b, p, ell, side + 1, at);
+}
+
+function $find(b: u8[k], p: u8[m]): i64 {
+    return m == 0 ? 0 : m > k ? -1 : m == 1 ? $findByte(b, p[0]) : $findFrom(b, p, $filterAt(p));
+}
+
+// In a long text, first by one byte of the needle alone (`$findOne`): a
+// rare byte passes the text at the speed of the search of a byte. A short
+// text: by two bytes at once, one pass.
+function $findFrom(b: u8[k], p: u8[m], o: i64): i64 {
+    return k > 256 ? $findOne(b, p, o, p[o], p[m - 1], 0, 0) : $findPairs(b, p, o, p[o], p[m - 1], 0);
+}
+
+function $findPairs(b: u8[k], p: u8[m], o: i64, x: u8, last: u8, at: i64): i64 {
+    return m <= 16 ? $findShort(b, p, o, x, last, at) : $findLong(b, p, o, x, last, at, 0);
+}
+
+// The first place of `p` in `b` from `at` by its byte `x` (at `o`) alone,
+// then its last byte and the others. `misses`: the places where `x` was
+// and `p` was not; more than 8 and one for 32 bytes passed, `x` is not
+// rare in this text: by two bytes at once from there.
+function $findOne(b: u8[k], p: u8[m], o: i64, x: u8, last: u8, at: i64, misses: i64): i64 {
+    const d = at + m > k ? -1 : $findByte(b.slice(at + o, k - m + 1 + o), x);
+    const i = at + d;
+    return d < 0 ? -1
+        : b[i + m - 1] == last && $sameAt(b, i, p) ? i
+        : misses * 32 > i + 256 ? $findPairs(b, p, o, x, last, i + 1)
+        : $findOne(b, p, o, x, last, i + 1, misses + 1);
+}
+
+// The bytes of `p` (2 or more) are those of `b` from `i`.
+function $sameAt(b: u8[k], i: i64, p: u8[m]): boolean {
+    return m <= 16 ? $sameWords(b, i, p) : $mismatch(b, i, p, 0) < 0;
+}

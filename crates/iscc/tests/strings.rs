@@ -1948,3 +1948,48 @@ fn find_index_among_bytes_by_narrow_vectors() {
         checked_clean_bin(&bin, &[], None);
     }
 }
+
+/// D596: `s.indexOf(t)` and `s.includes(t)` are functions of the prelude,
+/// written in Isocron: a byte by `findIndex`; more, the places where two
+/// bytes of the needle are (by vectors), then its bytes compared; past a
+/// budget of bytes compared in vain, the two-way search, of linear time.
+/// Against a search one place at a time: texts over alphabets of 1 to 4
+/// letters, needles cut from them or not, long repeated texts that spend
+/// the budget; no wrong answer, compiled, interpreted and in WebAssembly,
+/// each block freed once; the values of the documentation; no call of the
+/// runtime left.
+#[test]
+fn index_of_and_includes_written_in_isocron() {
+    let src = include_str!("data/strings_search.isc");
+    assert_eq!(interp_ok(src, &["120"]), "[0, 0]\n", "interpreted");
+    let bin = compile(src, "strings_search");
+    let r = run_bin(&bin, &["4000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "{}", r.stderr);
+    checked_clean_bin(&bin, &["400"], None);
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    for f in ["@isc_index_of(", "@isc_str_test("] {
+        assert!(!ll.contains(f), "{} still called", f);
+    }
+    let values = r#"action main(args: string[k]): i32 {
+    const s = "Hello, World";
+    const t = "héllo wörld";
+    print([s.indexOf("World"), s.indexOf("x"), s.indexOf(""), s.indexOf("Hello, World!"), s.indexOf("o"), s.indexOf("o, W")] as const);
+    print([t.indexOf("llo"), t.indexOf("ö"), t.indexOf("é"), "".indexOf(""), "".indexOf("a"), args[0].indexOf(args[1])] as const);
+    print([s.includes("lo, Wo"), s.includes("world"), s.includes(""), t.includes("rld"), "".includes(""), args[0].includes(args[1])] as const);
+    return 0;
+}
+"#;
+    let want = "(7, -1, 0, -1, 4, 4)\n(3, 8, 1, 0, -1, 7)\n(true, false, true, true, true, true)\n";
+    let args = ["a text of twenty-nine bytes..", "of twenty-nine bytes"];
+    assert_eq!(interp_ok(values, &args), want, "interpreted");
+    let vbin = compile(values, "strings_search_values");
+    let r = run_bin(&vbin, &args);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+    let Some(runner) = wasi_runner() else {
+        eprintln!("no WASI engine (wasmtime): the WebAssembly program not run");
+        return;
+    };
+    let wasm = compile_wasm(src, "strings_search_wasm");
+    let r = run_wasm(&runner, &wasm, &["400"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "WebAssembly: {}", r.stderr);
+}

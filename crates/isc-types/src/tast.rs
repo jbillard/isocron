@@ -117,10 +117,9 @@ pub enum Prim {
     PrintBytes,
     /// A fallible form of an action (D138).
     OrError(Fallible),
-    /// The functions of strings of TypeScript (D155), on bytes of UTF-8.
-    IndexOf,
+    /// The functions of strings of TypeScript (D155), on bytes of UTF-8
+    /// (`indexOf` and `includes`: functions of the prelude, D596).
     LastIndexOf,
-    Includes,
     StartsWith,
     EndsWith,
     ReplaceAll,

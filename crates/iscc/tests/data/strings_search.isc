@@ -1,0 +1,51 @@
+// `indexOf` and `includes` of the prelude (D596) against a search one place
+// at a time: texts over alphabets of 1 to 4 letters and needles cut from
+// them or not; long repeated texts whose needles spend the budget of the
+// search by pairs (the two-way search takes over). The counts of wrong
+// answers, each 0.
+
+// the reference: one place at a time
+function slowAt(b: u8[k], p: u8[m], at: i64): i64 {
+    return at + m > k ? -1 : findIndex(iota(m), (j) => b[at + j] != p[j]) < 0 ? at : slowAt(b, p, at + 1);
+}
+
+function check(s: string, t: string): i64 {
+    const want = slowAt(bytes(s), bytes(t), 0);
+    return (s.indexOf(t) == want ? 0 : 1) + (s.includes(t) == (want >= 0) ? 0 : 1);
+}
+
+// texts over an alphabet of `letters` letters, from a seed
+function text(seed: i64, n: i64, letters: i64): string {
+    return stringOf(map(iota(n), (j) => u8(97 + ((seed * 31 + j * j * 7 + j * (seed % 13 + 1)) % 1009) % letters)));
+}
+
+action main(args: string[k]): i32 {
+    // random texts and needles cut from them or not, small alphabets
+    const rounds = parseI64(args[0]);
+    const wrong1 = sum(map(iota(rounds), (q) => {
+        const letters = 1 + q % 4;
+        const s = text(q, q % 97, letters);
+        const from = (q * 7) % (s.length + 1);
+        const len = (q * 3) % (s.length - from + 1);
+        const cut = s.slice(from, from + len);
+        const other = text(q + 5, q % 23, letters);
+        return check(s, cut) + check(s, other) + check(s, cut + "z") + check(s, "z" + cut);
+    }));
+    // long repeated texts: the budget of the search by pairs spent
+    const a = stringOf(map(iota(6000), (j) => 97u8));
+    const ab = stringOf(map(iota(6000), (j) => u8(97 + j % 2)));
+    const abc = stringOf(map(iota(6000), (j) => u8(97 + j % 3)));
+    const wrong2 = sum(map(iota(rounds / 40 + 1), (q) => {
+        const m = 17 + q * 5;
+        const n1 = a.slice(0, m - 2) + "b" + "a";
+        const n2 = a.slice(0, m - 1) + "b";
+        const n3 = "b" + a.slice(0, m - 1);
+        const n4 = ab.slice(0, m - 1) + "aa";
+        const n5 = abc.slice(0, m) + abc.slice(0, m);
+        const n6 = ab.slice(1, m) + "b" + ab.slice(0, 4);
+        return check(a, n1) + check(a, n2) + check(a, n3) + check(ab, n4) + check(abc, n5) + check(ab, n6)
+            + check(a + n1, n1) + check(ab + n4 + ab, n4) + check(abc + "x" + abc, "x" + abc.slice(0, m));
+    }));
+    print([wrong1, wrong2]);
+    return 0;
+}
