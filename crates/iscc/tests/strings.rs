@@ -1771,9 +1771,9 @@ fn float_texts_by_prelude(e: &mut isc_ir::Expr, f64_text: u32, f32_text: u32) ->
 ///   around 2^53; the same for `f32`. Interpreted (the runtime core's text),
 ///   compiled, in WebAssembly, and interpreted with each `toString` made a
 ///   call of the function of the prelude (its primitives `$floatBits`,
-///   `$mulHigh` and `$decimalText` as the interpreter has them); a part of
-///   them with the checked allocator and under Valgrind (the words written
-///   past the end of a text stay inside its block).
+///   `$mulHigh` and `$decimalText` as the interpreter has them); all of
+///   them with the checked allocator and a part under Valgrind (the words
+///   written past the end of a text stay inside its block).
 /// - By sums of hashes of 4096 texts, compiled: the 100000 least subnormal
 ///   doubles, two million doubles of random bits (those of the test of the
 ///   runtime core, `shortest_as_display`), a million of random mantissas
@@ -1919,6 +1919,8 @@ fn float_text_written_in_isocron() {
         assert_eq!(got, exp, "compiled, the text of the float {} (after {} doubles)", i, d.len());
     }
     assert!(run.stdout == expected, "compiled: the texts differ from `Display`");
+    // every layout with the allocator checked: nothing written past a block
+    checked_clean_bin(&bin, &args, None);
     match wasi_runner() {
         Some(runner) => {
             let wasm = compile_wasm(texts, "float_text_isocron");
