@@ -333,7 +333,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 ## The trusted base (the remarks of the author, 2026-11-04)
 
 - [ ] The `unsafe` of the runtime justified and checked at compile time (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`), confined to a few modules (`sys`, `heap`, `simd`) behind safe interfaces; the tests of `isc-runtime-core` under Miri
-- [ ] Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread
+- [x] (Every part done; WASI and Windows without their C libraries too, D541, D543, D544) Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread
   - [x] The system called directly: `linux.rs` (D287, B1)
   - [x] The functions of memory (`memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`, `strlen`): the crate `isc-mem`, safe code on slices (D288)
   - [x] `memcmp` of 384 to 2048 bytes 6 to 9 % slower than glibc's (closed by measure, D516: 0.16 % of pidigits, in no other of the ten programs) (51.68 cycles against 48.62 for 1 KiB, 96.53 against 88.81 for 2 KiB), the cause not shown yet. Ruled out by measure: the count of instructions (271 against 296 for 2 KiB), its loop alone (89.49 cycles against 89.54 for glibc's whole `memcmp`, the same places), the test of the mask (`vptestmb` and `kmovd` as glibc: 95.41 against 95.49 cycles with `vptest`), the indexed addresses of the folded loads (40 micro-operations more per call, the same cycles: 89.53 and 90.58), a piece of the loop more than glibc (the count of turns is the same on these places; the variant that stops before the last 4 vectors: 107.13 cycles). Copies of glibc's loop in assembly vary by 13 % with the place of the code alone: their comparisons prove nothing (D288)
@@ -434,6 +434,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.4.7: maps by hashes, numbers sorted by their bytes, `toFixed`, `print` of integers, a `map` of a zip, the audit of every group of forms (D487 to D499, D500)
 - [x] Release 0.4.8: `findIndex` (rule F), texts appended by the compiled code, a tuple of an `if` taken apart, a `scan` of several reads by vectors, the index of `json` by sums by prefix (D501 to D513, D514)
 - [x] Release 0.4.9: the functions too large to be inlined decided one at a time, no literal given to `isc_free`, the maps of a few heavy elements made where they are; `json.parse` and `json.decode` below 3 times their floors (D515 to D521, D522)
+- [x] Release 0.5.0: the targets without a C library (Windows, WebAssembly), the target `x86_64-windows-msvc`, the allocator checked, the relocations of static programs checked; texts compared by their first bytes, `concat` and `sort` taking what they read last (D523 to D553, D554)
 
 ## The targets first (the author's decision, 2026-11-08, D540)
 

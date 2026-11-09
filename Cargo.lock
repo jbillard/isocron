@@ -19,7 +19,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "isc-codegen"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "isc-ir",
  "isc-runtime-core",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "isc-interp"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "isc-ir",
  "isc-runtime-core",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "isc-ir"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "isc-runtime-core",
  "isc-syntax",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "isc-lsp"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "isc-syntax",
  "isc-types",
@@ -55,11 +55,11 @@ dependencies = [
 
 [[package]]
 name = "isc-mem"
-version = "0.4.9"
+version = "0.5.0"
 
 [[package]]
 name = "isc-runtime-core"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "libm",
  "memchr",
@@ -71,18 +71,18 @@ dependencies = [
 
 [[package]]
 name = "isc-syntax"
-version = "0.4.9"
+version = "0.5.0"
 
 [[package]]
 name = "isc-types"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "isc-syntax",
 ]
 
 [[package]]
 name = "iscc"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "isc-codegen",
  "isc-interp",

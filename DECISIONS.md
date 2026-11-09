@@ -12573,3 +12573,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     n-body on CPU 0 and on CPU 7 the same (121.44 to 123.02 and 120.06 to
     122.35 cycles a step, 5 alternated runs): the condition of D300 is
     gone.
+- **D554 — Release 0.5.0 (2026-11-09).** After 0.4.9: D523 to D553. The
+  targets first at the author's word (D540): Windows without a C library
+  (D541), the target `x86_64-windows-msvc` (D542), WebAssembly without
+  wasi-libc (D543, D544), the relocations of static programs checked (D545),
+  the allocator checked (D546); ARM64 set aside. The texts compared by their
+  first bytes (D532), `concat` growing what it reads last (D533), `sort`
+  moving the elements of a source read last (D548), `parseI64` without a
+  loop (D539), the work of `serve` a request (D534 to D537); the
+  representation of texts of 16 bytes built and rejected (D530, D531); the
+  hypotheses behind choices measured (D549 to D553). The language the
+  same; no name removed. The commit of the release the last of `main`
+  (D486); the steps of 0.4.3 (D449); the image of the release for Linux
+  built again (the Rust target `x86_64-pc-windows-msvc` added, D542). The
+  ten programs of the Benchmarks Game not published again: their code
+  changed by the end of `main` only (D546) and the moves of `sort` (D548),
+  k-nucleotide alone sorting, its code without a copy of a text before and
+  after.

@@ -2,32 +2,44 @@
 
 ## Unreleased
 
-* `sort` and `sortBy` of an array read for the last time move its elements instead of copying them: `sortBy` of 4096 texts 31 % faster (D548).
+## 0.5.0 — 2026-11-09
 
-* `ISC_ALLOC=check`: the allocator checks the blocks of a program (freed twice, written past their end or after their free, not freed at the end of `main`); the tests of the allocator without C (D546).
-* Static programs for Linux: their relocations checked at their build (D545).
+The targets without a C library: a program for Windows imports only
+`kernel32` (its arguments in UTF-16, the DLLs of the network and of TLS
+loaded at their first use), a target with Microsoft's ABI that links the
+static libraries of Visual Studio, WebAssembly without wasi-libc (the
+runtime's own heap and threads), the relocations of static programs for
+Linux checked at their build, and an allocator that checks the blocks of a
+program (`ISC_ALLOC=check`). ARM64 set aside. The same results.
 
-* `wasm32-wasi-threads`: the threads started by the runtime through `wasi.thread-spawn`, without wasi-libc's pthread (D544).
-
-* `wasm32-wasi`: programs without wasi-libc, the functions of WASI called by the runtime, its own heap: binary-trees 44 % faster under wasmtime (D543).
-
-* `--target x86_64-windows-msvc`: Windows programs with Microsoft's ABI, linked by LLD as `link`; static libraries of Visual Studio linked with Microsoft's C runtime, static, found in `LIB` (D542).
+### The targets
 
 * Windows: programs without a C library, importing only `kernel32` (132 functions of 7 DLLs before); their arguments read in UTF-16, any character; the DLLs of the network and of TLS loaded at their first use; a start about 35 % faster (D541).
+* `--target x86_64-windows-msvc`: Windows programs with Microsoft's ABI, linked by LLD as `link`; static libraries of Visual Studio linked with Microsoft's C runtime, static, found in `LIB` (D542).
+* `wasm32-wasi`: programs without wasi-libc, the functions of WASI called by the runtime, its own heap: binary-trees 44 % faster under wasmtime (D543).
+* `wasm32-wasi-threads`: the threads started by the runtime through `wasi.thread-spawn`, without wasi-libc's pthread (D544).
+* Static programs for Linux: their relocations checked at their build (D545).
+* ARM64 set aside (D540).
 
+### The runtime
+
+* `ISC_ALLOC=check`: the allocator checks the blocks of a program (freed twice, written past their end or after their free, not freed at the end of `main`); the tests of the allocator without C (D546).
 * `parseI64` reads a sign and up to 8 digits at once, without a loop: -40 % for numbers of 7 digits; up to 16 digits without `str::parse` (D539).
+* A program that added a text to a standard input of 8 MiB or more read from a file (mapped, D257) ended on "invalid free" when the allocator had served a block before: the mapped input has no room, it is copied (D529).
 
-* `serve`: the head of a request checked as UTF-8 once, its parts slices of it (D537).
+### The compiler
 
-* `serve`: the headers of a request read in one pass, no array of them: -4.5 % of the instructions of the program a request (D536).
-
-* `serve`: the head of each response made as one text continued in its block, not a text for each header joined then copied: -4 % of the cycles of the program a request (D534).
-
+* `sort` and `sortBy` of an array read for the last time move its elements instead of copying them: `sortBy` of 4096 texts 31 % faster (D548).
 * `concat(a, b)` grows the block of `a` when `a` is read there for the last time: an array accumulated by `concat` no longer copied whole at each step (100000 steps 3777 -> 432 ms, D533).
-
 * Texts compared by their first 8 (or 4) bytes before a call: `==` and `<` of texts -45 to -55 %, `sort` of texts -28 %, a key of text in a map -29 % (D532).
 
-* A program that added a text to a standard input of 8 MiB or more read from a file (mapped, D257) ended on "invalid free" when the allocator had served a block before: the mapped input has no room, it is copied (D529).
+### The standard library
+
+* `serve`: the head of each response made as one text continued in its block, the headers of a request read in one pass, the head of a request checked as UTF-8 once: -4 %, -4.5 % and -3.5 % of the work of the program a request (D534, D536, D537); 112 to 125 % of nginx on 2 cores (D535).
+
+### The measurements
+
+* The hypotheses behind choices measured: the reason of V = 32 (D549), the alignment of the runtime (D550), the faults of a file in a tmpfs (D551), the prefetcher of pairs of lines and the aliasing of 4 KiB (D552), a core whose sibling sleeps (D553); the lock of `print` (D538) and the place of code (D539).
 
 ## 0.4.9 — 2026-11-08
 
