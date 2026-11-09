@@ -1410,9 +1410,10 @@ mod schannel {
         let base = msg.as_mut_ptr();
         let mut bufs = [
             SecBuffer { cb: h as u32, kind: SECBUFFER_STREAM_HEADER, pv: base as *mut c_void },
-            // SAFETY: inside `msg`
-            SecBuffer { cb: n as u32, kind: SECBUFFER_DATA, pv: unsafe { base.add(h) } as *mut c_void },
-            SecBuffer { cb: t as u32, kind: SECBUFFER_STREAM_TRAILER, pv: unsafe { base.add(h + n) } as *mut c_void },
+            // the parts of `msg` (pointers made without a block: only the
+            // system reads and writes through them)
+            SecBuffer { cb: n as u32, kind: SECBUFFER_DATA, pv: base.wrapping_add(h) as *mut c_void },
+            SecBuffer { cb: t as u32, kind: SECBUFFER_STREAM_TRAILER, pv: base.wrapping_add(h + n) as *mut c_void },
             SecBuffer { cb: 0, kind: SECBUFFER_EMPTY, pv: core::ptr::null_mut() },
         ];
         let mut desc = SecBufferDesc { version: 0, count: 4, buffers: bufs.as_mut_ptr() };

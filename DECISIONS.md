@@ -13174,3 +13174,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     The outputs the same (10000 digits). The unit tests of the big
     integers (num-bigint, the two forms, `muladd` against two passes) in
     debug, x86-64-v3 and v4.
+- **D572 — Clippy in the suite, on the crates that deny its lints, for
+  every target (2026-11-09).** The item of D564: `undocumented_unsafe_
+  blocks` is a lint of clippy, which the suite did not run; what D564 to
+  D569 deny was checked by hand, on the configurations I thought of (D569
+  found two blocks of the threads runtime of WebAssembly that no check had
+  compiled). `tools/suite.py` now runs `cargo clippy` on `isc-mem` and
+  `isc-runtime-core` (workspace) and on `isc-runtime` (its own manifest)
+  for x86-64, x86-64-v3, x86-64-v4, Windows gnu and msvc, `wasm32-wasip1`
+  and `wasm32-wasip1-threads` with `--cfg=isc_wasm_threads` (14
+  configurations, each in its own directory, two at a time while the tests
+  run): an error of one fails the suite; a target not installed is a line
+  "skipped".
+  - Running them found what no check had seen, now fixed: under Windows,
+    the call of a function of a DLL in the macro `system_dll!`
+    (`isc-runtime-core`, six expansions) without its reason; the two
+    pointers into the message of `tls::write` (SChannel) made by
+    `wrapping_add`, without a block (only the system reads through them);
+    on WebAssembly, `n >= WordGroups::MAX_INDEX` in `group_words`, a
+    comparison with the largest `usize` there, which clippy denies by
+    default (`absurd_extreme_comparisons`): compared in 64 bits.

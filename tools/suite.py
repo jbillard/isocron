@@ -1,5 +1,6 @@
 """The complete suite (`cargo test`, then `ISC_ALLOC=glibc cargo test`, then
-the tests of isc-mem in its variants of x86-64) in
+the tests of isc-mem in its variants of x86-64, and clippy on the crates that
+deny its lints for each target and level of x86-64, D572) in
 a few minutes instead of a quarter of an hour (D223): one build, then every
 test binary run twice (Isocron's allocator, then glibc's), JOBS at a time,
 the longest first (their times of the previous run, in LOG.times), each
@@ -26,6 +27,31 @@ for l in b.stdout.splitlines():
     if m.get("reason") == "compiler-artifact" and m.get("executable") and m.get("profile", {}).get("test"):
         bins.append((m["executable"], os.path.dirname(m["manifest_path"])))
 out.write("build %.0f s, %d binaries\n" % (time.time() - t0, len(bins)))
+# clippy (D572) on the crates that deny its lints (`isc-mem`,
+# `isc-runtime-core`, `isc-runtime`: every unsafe operation in a block with
+# its reason, D564 to D569), for every target the runtime is built for and
+# the levels of x86-64 whose code differs (AVX2, AVX-512), each in its own
+# directory (incremental from one suite to the next); two at a time while
+# the tests run; a configuration whose target is not installed is skipped
+installed = subprocess.run(["rustup", "target", "list", "--installed"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.split()
+lint_configs = []
+for name, triple, flags in (("x86-64", None, ""), ("x86-64-v3", None, "-C target-cpu=x86-64-v3"), ("x86-64-v4", None, "-C target-cpu=x86-64-v4"),
+                            ("windows-gnu", "x86_64-pc-windows-gnu", ""), ("windows-msvc", "x86_64-pc-windows-msvc", ""),
+                            ("wasip1", "wasm32-wasip1", ""), ("wasip1-threads", "wasm32-wasip1-threads", "--cfg=isc_wasm_threads")):
+    for crates, args in (("core", ["-p", "isc-runtime-core", "-p", "isc-mem"]), ("runtime", ["--manifest-path", "crates/isc-runtime/Cargo.toml"])):
+        lint_configs.append(("%s %s" % (crates, name), triple, flags, args, os.path.join(target, "clippy-%s-%s" % (crates, name))))
+def lint(c):
+    label, triple, flags, args, tdir = c
+    if triple and triple not in installed:
+        return label, None, "skipped: target %s not installed" % triple
+    e = dict(env, CARGO_TARGET_DIR=tdir)
+    e.pop("RUSTFLAGS", None)
+    if flags:
+        e["RUSTFLAGS"] = flags
+    p = subprocess.run(["cargo", "clippy", "-q"] + args + (["--target", triple] if triple else []), cwd=wt, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return label, p.returncode, p.stdout
+lint_pool = cf.ThreadPoolExecutor(2)
+lint_futures = [lint_pool.submit(lint, c) for c in lint_configs]
 # the longest first (their time in the previous run, if any)
 prev = {}
 try:
@@ -93,6 +119,15 @@ if " avx512bw " in cpu:
     out.write("isc-runtime-core x86-64-v4  %s\n" % (res[0] if res else "code %d" % p.returncode))
     if p.returncode != 0:
         failed.append(("isc-runtime-core", "x86-64-v4")); out.write(p.stdout[-4000:] + "\n")
+for fut in lint_futures:
+    label, code, text = fut.result()
+    if code is None:
+        out.write("clippy %-24s %s\n" % (label, text))
+        continue
+    out.write("clippy %-24s %s\n" % (label, "ok" if code == 0 else "code %d" % code))
+    if code != 0:
+        failed.append(("clippy", label)); out.write(text[-4000:] + "\n")
+lint_pool.shutdown()
 with open(log + ".times", "w") as f:
     for n, d in times.items():
         f.write("%s %.1f\n" % (n, d))

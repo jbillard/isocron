@@ -338,7 +338,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] (D564) `isc-runtime-core`: every unsafe operation in a block of its own, each justified, both lints denied
   - [x] `isc-runtime` (D564: 1150 operations in `unsafe fn`s without a block, 55 blocks without a justification, 2 `unsafe impl`): `mapped.rs` (25, done: D565), `system.rs` (59; its Linux part done, D565; Windows and WASI left, checked on their targets), `net.rs` (114; its Linux part done, D566), `heap.rs` (426, done: D567), `lib.rs` (657 with the blocks without a reason, done: D568: the whole crate denied under Linux), `linux.rs` (1, done: D567); the modules of Windows and WASI (`windows.rs` 67, `system.rs` 64 and 40, `net.rs` 126, `wasi.rs` 2, done: D569); both lints denied on every target (D569)
   - [x] (Done, D571: pidigits -2.7 % native, -0.9 % `--isa avx`, no loss) `bigint::unwritten` (D196, D564): a `Vec<u8>` of bytes not yet written (clippy's `uninit_vec`); written through the spare capacity, pidigits measured
-  - [ ] Clippy run by the suite on the crates that deny its lints
+  - [x] (Done, D572: 14 configurations, every target and level of x86-64) Clippy run by the suite on the crates that deny its lints
 - [x] (Every part done; WASI and Windows without their C libraries too, D541, D543, D544) Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread
   - [x] The system called directly: `linux.rs` (D287, B1)
   - [x] The functions of memory (`memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`, `strlen`): the crate `isc-mem`, safe code on slices (D288)

@@ -4125,7 +4125,8 @@ const GROUP_AHEAD: usize = 16;
 /// part of consecutive indices, then the tables merged in their order.
 unsafe fn group_words(n: usize, key: impl Fn(usize) -> u64 + Sync) -> alloc::vec::Vec<i64> {
     let threads = thread_count();
-    if n >= sem::WordGroups::MAX_INDEX {
+    // in 64 bits: `MAX_INDEX` is the largest `usize` on WebAssembly
+    if n as u64 >= sem::WordGroups::MAX_INDEX as u64 {
         return sem::group(n, |i| sem::hash_word(key(i)), |i, j| key(i) == key(j));
     }
     if threads <= 1 || n < GROUP_PARALLEL_MIN {

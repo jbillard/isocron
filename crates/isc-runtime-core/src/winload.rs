@@ -64,6 +64,9 @@ macro_rules! system_dll {
                 // DLL, whose signature is the one declared (the caller's
                 // contract, as for an `extern` block)
                 let f: unsafe extern "system" fn( $( $ty ),* ) $( -> $ret )? = unsafe { core::mem::transmute::<usize, _>(f) };
+                // SAFETY: the function of the system with the arguments of
+                // the caller, under the contract of that function (the
+                // caller's, as for a function of an `extern` block)
                 unsafe { f( $( $arg ),* ) }
             }
         )*
