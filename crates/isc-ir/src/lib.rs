@@ -236,6 +236,13 @@ pub enum StrOp {
     /// `$textTail(w0, w1, w2, n, minus)` (D588): the last `n` bytes of
     /// three words, a `-` before them when `minus`.
     TextTail,
+    /// `$floatBits(x)`: the bits of a float as a `u64`.
+    FloatBits,
+    /// `$mulHigh(a, b)`: the high half of the product of two `u64`.
+    MulHigh,
+    /// `$decimalText(d, w1, w2, n, point, minus)`: a decimal number of 17
+    /// digits as a string, `n` of them written, `point` before the point.
+    DecimalText,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.
@@ -270,6 +277,7 @@ impl StrOp {
                 | StrOp::ReadWord
                 | StrOp::Panic
                 | StrOp::TextTail
+                | StrOp::DecimalText
                 | StrOp::Big(BigOp::Div | BigOp::Rem | BigOp::Pow | BigOp::Parse)
                 | StrOp::Rx(RxOp::New | RxOp::Replace | RxOp::ReplaceAll)
         )
@@ -511,6 +519,10 @@ pub struct Program {
     /// writes one: the code generator calls them for `toString` of an
     /// integer that none of its fusions writes in place.
     pub int_text: Option<(u32, u32)>,
+    /// The functions of the prelude that write the text of a `f64` and of
+    /// a `f32` (`$rtF64Text`, `$rtF32Text`), lowered when the program
+    /// writes one: the code generator calls them for `toString` of a float.
+    pub float_text: Option<(u32, u32)>,
 }
 
 /// What `print` shows beyond the IR type of a value: the names of the

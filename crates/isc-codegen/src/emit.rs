@@ -966,8 +966,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare double @isc_parse_f64(ptr, i64, i32, i32)",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_str_adopt_bytes(ptr, ptr, i64, i32, i32)",
-    "declare void @isc_to_string_f64(ptr, double)",
-    "declare void @isc_to_string_f32(ptr, float)",
     "declare void @isc_read_text(ptr, ptr, i64, i32, i32)",
     "declare void @isc_write_text(ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines(ptr, ptr, i64)",
@@ -2626,7 +2624,10 @@ impl<'p> Gen<'p> {
         // the text of an integer (D588): a leaf of a frame of 24 bytes, no
         // test of the stack, copied into its callers
         let int_text = self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
-        if !self.opts.isa.is_wasm() && !int_text {
+        // the text of a float: a small frame too, its rare paths `@cold`
+        // functions that test the stack themselves
+        let float_text = self.p.float_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
+        if !self.opts.isa.is_wasm() && !int_text && !float_text {
             self.stack_check(&f.name, f.span);
         }
         // the state of a loop (D206): lent by the caller, copied once here;
@@ -12912,7 +12913,7 @@ impl<'p> Gen<'p> {
             }
             S::ToString => {
                 let x = &vals[0];
-                let call = match &es[0].ty {
+                match &es[0].ty {
                     Type::Int(k) => {
                         let w = if k.bits() < 64 {
                             let op = if k.signed() { "sext" } else { "zext" };
@@ -12922,12 +12923,19 @@ impl<'p> Gen<'p> {
                         };
                         return self.int_text(&w, k.signed());
                     }
-                    Type::F64 => format!("call void @isc_to_string_f64(ptr OUT, double {})", x.r),
-                    Type::F32 => format!("call void @isc_to_string_f32(ptr OUT, float {})", x.r),
+                    // the text of a float: the function of the prelude
+                    // that writes it
+                    t @ (Type::F64 | Type::F32) => {
+                        let Some((d, f)) = self.p.float_text else {
+                            return Err("codegen: the text of a float, its function of the prelude not lowered".into());
+                        };
+                        let (i, lty) = if *t == Type::F64 { (d, "double") } else { (f, "float") };
+                        let call = format!("call {}{{ ptr, i64 }} @isc_fn_{}({} {})", self.fn_cc(), i, lty, x.r);
+                        return Ok(v(self.ins(call), "{ ptr, i64 }"));
+                    }
                     // (a boolean: made above, D591)
                     t => return Err(format!("codegen: toString of {:?}", t)),
-                };
-                new_str(self, call)
+                }
             }
             // text (D135): an array of strings has the layout of a string
             // views of the text that lives longer than the array (D555)
@@ -13337,6 +13345,169 @@ impl<'p> Gen<'p> {
                 put(self, &nm1, &tl, 8);
                 self.br(&ljoin);
                 self.block(&ljoin);
+                self.arr(&dst, &total)
+            }
+            // `$floatBits(x)`: the bits of the float, those of a `f32` in
+            // the low half
+            S::FloatBits => {
+                let r = if es[0].ty == Type::F32 {
+                    let b = self.ins(format!("bitcast float {} to i32", vals[0].r));
+                    self.ins(format!("zext i32 {} to i64", b))
+                } else {
+                    self.ins(format!("bitcast double {} to i64", vals[0].r))
+                };
+                v(r, "i64")
+            }
+            // `$mulHigh(a, b)`: the high half of the product of 128 bits,
+            // one instruction of x86-64; WebAssembly has no such product
+            // (LLVM would call a function of a C library there): the four
+            // products of the halves of 32 bits and their carries
+            S::MulHigh => {
+                let (a, b) = (vals[0].r.clone(), vals[1].r.clone());
+                let r = if self.opts.isa.is_wasm() {
+                    let a0 = self.ins(format!("and i64 {}, 4294967295", a));
+                    let a1 = self.ins(format!("lshr i64 {}, 32", a));
+                    let b0 = self.ins(format!("and i64 {}, 4294967295", b));
+                    let b1 = self.ins(format!("lshr i64 {}, 32", b));
+                    let p00 = self.ins(format!("mul i64 {}, {}", a0, b0));
+                    let p01 = self.ins(format!("mul i64 {}, {}", a0, b1));
+                    let p10 = self.ins(format!("mul i64 {}, {}", a1, b0));
+                    let p11 = self.ins(format!("mul i64 {}, {}", a1, b1));
+                    let c0 = self.ins(format!("lshr i64 {}, 32", p00));
+                    let m0 = self.ins(format!("and i64 {}, 4294967295", p01));
+                    let m1 = self.ins(format!("and i64 {}, 4294967295", p10));
+                    let s0 = self.ins(format!("add i64 {}, {}", c0, m0));
+                    let mid = self.ins(format!("add i64 {}, {}", s0, m1));
+                    let h0 = self.ins(format!("lshr i64 {}, 32", p01));
+                    let h1 = self.ins(format!("lshr i64 {}, 32", p10));
+                    let c1 = self.ins(format!("lshr i64 {}, 32", mid));
+                    let s1 = self.ins(format!("add i64 {}, {}", p11, h0));
+                    let s2 = self.ins(format!("add i64 {}, {}", s1, h1));
+                    self.ins(format!("add i64 {}, {}", s2, c1))
+                } else {
+                    let x = self.ins(format!("zext i64 {} to i128", a));
+                    let y = self.ins(format!("zext i64 {} to i128", b));
+                    let m = self.ins(format!("mul nuw i128 {}, {}", x, y));
+                    let h = self.ins(format!("lshr i128 {}, 64", m));
+                    self.ins(format!("trunc i128 {} to i64", h))
+                };
+                v(r, "i64")
+            }
+            // `$decimalText(d, w1, w2, n, point, minus)`: one check (the
+            // digit, the bytes ASCII, `n` in 1 to 17, `point` within 400), a
+            // block of 64 bytes or more (one class of the allocator up to
+            // 44 zeros), the `-` written first (the digits over it when
+            // there is none), then the digits from the registers by whole
+            // words, past the end of the text where that is shorter:
+            // - the point inside the digits: the 17 digits, then those of
+            //   the fraction again one byte further (a word shifted, and
+            //   the last word when the fraction starts in the first), the
+            //   point between them;
+            // - the point after them: the 17 digits and 16 zeros, the
+            //   other zeros by `memset`;
+            // - the point before them: `0.` and 16 zeros, the other zeros
+            //   by `memset`, then the 17 digits.
+            S::DecimalText => {
+                let (d, w1, w2) = (vals[0].r.clone(), vals[1].r.clone(), vals[2].r.clone());
+                let (n, point, minus) = (vals[3].r.clone(), vals[4].r.clone(), vals[5].r.clone());
+                let o = self.ins(format!("or i64 {}, {}", w1, w2));
+                let hi = self.ins(format!("and i64 {}, -9187201950435737472", o));
+                let od = self.ins(format!("or i64 {}, {}", hi, d));
+                let dok = self.ins(format!("icmp ult i64 {}, 10", od));
+                let nm1 = self.ins(format!("sub i64 {}, 1", n));
+                let nok = self.ins(format!("icmp ult i64 {}, 17", nm1));
+                let pp = self.ins(format!("add i64 {}, 400", point));
+                let pok = self.ins(format!("icmp ult i64 {}, 801", pp));
+                let ok1 = self.ins(format!("and i1 {}, {}", dok, nok));
+                let ok = self.ins(format!("and i1 {}, {}", ok1, pok));
+                let (msg, mlen) = self.str_const("decimalText: a digit and 16 bytes of ASCII, 1 to 17 of them written, the point within 400 digits");
+                let (none, _) = self.str_const("");
+                self.guard(&ok, format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 0, ptr {}, i64 0, {})", msg, mlen, none, none, Self::pos(e.span)));
+                let off = self.ins(format!("zext i1 {} to i64", minus));
+                let before = self.ins(format!("icmp sgt i64 {}, 0", point));
+                let z = self.ins(format!("sub i64 0, {}", point));
+                let mag = self.ins(format!("select i1 {}, i64 {}, i64 {}", before, point, z));
+                let need = self.ins(format!("add i64 {}, 20", mag));
+                let big = self.ins(format!("icmp ugt i64 {}, 64", need));
+                let size = self.ins(format!("select i1 {}, i64 {}, i64 64", big, need));
+                let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", size));
+                self.emit(format!("store i8 45, ptr {}, align 1", dst));
+                let p = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+                let d8 = self.ins(format!("trunc i64 {} to i8", d));
+                let dch = self.ins(format!("add i8 {}, 48", d8));
+                // `x` (of the type `t`) stored `at` bytes after `base`
+                let put = |g: &mut Self, base: &str, at: &str, t: &str, x: &str| {
+                    let q = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, at));
+                    g.emit(format!("store {} {}, ptr {}, align 1", t, x, q));
+                };
+                let zeros = "3472328296227680304";
+                self.decls.insert("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
+                let (lpos, lsmall, lpoint, lzeros, lfill, lfill2, ldigits, ljoin) =
+                    (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+                self.cbr(&before, &lpos, &lsmall);
+                // digits before the point: the 17 digits first
+                self.block(&lpos);
+                self.emit(format!("store i8 {}, ptr {}, align 1", dch, p));
+                put(self, &p, "1", "i64", &w1);
+                put(self, &p, "9", "i64", &w2);
+                let inside = self.ins(format!("icmp slt i64 {}, {}", point, n));
+                self.cbr(&inside, &lpoint, &lzeros);
+                // the point inside: the digits `point` to 16 one byte further
+                self.block(&lpoint);
+                let j = self.ins(format!("sub i64 {}, 1", point));
+                let j7 = self.ins(format!("and i64 {}, 7", j));
+                let sh = self.ins(format!("shl i64 {}, 3", j7));
+                let low = self.ins(format!("icmp ult i64 {}, 8", j));
+                let src = self.ins(format!("select i1 {}, i64 {}, i64 {}", low, w1, w2));
+                let x = self.ins(format!("lshr i64 {}, {}", src, sh));
+                let fp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, point));
+                put(self, &fp, "1", "i64", &x);
+                // the last word after a fraction that starts in the first;
+                // else written past the text, where it changes nothing
+                let near = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 10", p));
+                let far = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 48", dst));
+                let q = self.ins(format!("select i1 {}, ptr {}, ptr {}", low, near, far));
+                self.emit(format!("store i64 {}, ptr {}, align 1", w2, q));
+                self.emit(format!("store i8 46, ptr {}, align 1", fp));
+                let len_a = self.ins(format!("add i64 {}, 1", n));
+                self.br(&ljoin);
+                // the point after the digits: zeros up to it
+                self.block(&lzeros);
+                put(self, &p, "17", "i64", zeros);
+                put(self, &p, "25", "i64", zeros);
+                let more = self.ins(format!("icmp sgt i64 {}, 33", point));
+                self.cbr(&more, &lfill, &ljoin);
+                self.block(&lfill);
+                let rest = self.ins(format!("sub i64 {}, 33", point));
+                let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 33", p));
+                self.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 48, i64 {}, i1 false)", at, rest));
+                self.br(&ljoin);
+                // the point before the digits: `0.`, zeros, the digits
+                self.block(&lsmall);
+                put(self, &p, "0", "i16", "11824");
+                put(self, &p, "2", "i64", zeros);
+                put(self, &p, "10", "i64", zeros);
+                let more = self.ins(format!("icmp sgt i64 {}, 16", z));
+                self.cbr(&more, &lfill2, &ldigits);
+                self.block(&lfill2);
+                let rest = self.ins(format!("sub i64 {}, 16", z));
+                let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 18", p));
+                self.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 48, i64 {}, i1 false)", at, rest));
+                self.br(&ldigits);
+                self.block(&ldigits);
+                let r0 = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, z));
+                put(self, &r0, "2", "i8", &dch);
+                put(self, &r0, "3", "i64", &w1);
+                put(self, &r0, "11", "i64", &w2);
+                let n2 = self.ins(format!("add i64 {}, 2", n));
+                let len_c = self.ins(format!("add i64 {}, {}", n2, z));
+                self.br(&ljoin);
+                self.block(&ljoin);
+                let len = self.ins(format!(
+                    "phi i64 [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
+                    len_a, lpoint, point, lzeros, point, lfill, len_c, ldigits
+                ));
+                let total = self.ins(format!("add i64 {}, {}", len, off));
                 self.arr(&dst, &total)
             }
             // `$panic(a, b, c)` (D582): the call that does not return, then

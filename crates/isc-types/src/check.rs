@@ -201,6 +201,9 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$panic" => Prim::Panic,
         "leadingZeros" => Prim::LeadingZeros,
         "$textTail" => Prim::TextTail,
+        "$floatBits" => Prim::FloatBits,
+        "$mulHigh" => Prim::MulHigh,
+        "$decimalText" => Prim::DecimalText,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2706,8 +2709,8 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros => 1,
-            Prim::Concat => 2,
+            Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits => 1,
+            Prim::Concat | Prim::MulHigh => 2,
             Prim::ReadText | Prim::Lines | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
             Prim::OrError(_) => 1,
@@ -2717,6 +2720,7 @@ impl<'g> FnCx<'g> {
             Prim::ToUpper | Prim::ToLower | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
             Prim::HashFind | Prim::ReadWord | Prim::Panic => 3,
             Prim::TextTail => 5,
+            Prim::DecimalText => 6,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -3121,6 +3125,39 @@ impl<'g> FnCx<'g> {
                     let t = match k {
                         0..=2 => Ty::Int(IntKind::U64),
                         3 => Ty::Int(IntKind::I64),
+                        _ => Ty::Bool,
+                    };
+                    let x = self.check(a, Some(&t))?;
+                    self.unify(&t, &x.ty, x.span)?;
+                    parts.push(x);
+                }
+                Ok(mk(parts, Ty::Str, self))
+            }
+            // `$floatBits(x)`: a `f64` or a `f32`, a `u64`
+            Prim::FloatBits => {
+                let x = self.check(&args[0], None)?;
+                self.require(&x.ty, class::FLOAT | class::SCALAR, x.span)?;
+                Ok(mk(vec![x], Ty::Int(IntKind::U64), self))
+            }
+            // `$mulHigh(a, b)`: two `u64`, a `u64`
+            Prim::MulHigh => {
+                let t = Ty::Int(IntKind::U64);
+                let mut parts = Vec::new();
+                for a in args {
+                    let x = self.check(a, Some(&t))?;
+                    self.unify(&t, &x.ty, x.span)?;
+                    parts.push(x);
+                }
+                Ok(mk(parts, t, self))
+            }
+            // `$decimalText(d, w1, w2, n, point, minus)`: a digit and two
+            // words, two counts and a sign, a string
+            Prim::DecimalText => {
+                let mut parts = Vec::new();
+                for (k, a) in args.iter().enumerate() {
+                    let t = match k {
+                        0..=2 => Ty::Int(IntKind::U64),
+                        3 | 4 => Ty::Int(IntKind::I64),
                         _ => Ty::Bool,
                     };
                     let x = self.check(a, Some(&t))?;

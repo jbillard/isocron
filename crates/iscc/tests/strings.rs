@@ -1720,6 +1720,288 @@ fn integer_text_written_in_isocron() {
     agree(src, "integer_text_isocron", &[], &want);
 }
 
+/// The text of a `f64` as the runtime wrote it: `NaN` without sign, `inf`,
+/// `-inf`, else Rust's `Display` (no exponent).
+fn display64(v: f64) -> String {
+    if v.is_nan() {
+        "NaN".to_string()
+    } else if v.is_infinite() {
+        (if v > 0.0 { "inf" } else { "-inf" }).to_string()
+    } else {
+        format!("{}", v)
+    }
+}
+
+/// The same for a `f32`.
+fn display32(v: f32) -> String {
+    if v.is_nan() {
+        "NaN".to_string()
+    } else if v.is_infinite() {
+        (if v > 0.0 { "inf" } else { "-inf" }).to_string()
+    } else {
+        format!("{}", v)
+    }
+}
+
+/// Every `toString` of a float of `e` made a call of the function of the
+/// prelude that the code generator calls for it; the number replaced.
+fn float_texts_by_prelude(e: &mut isc_ir::Expr, f64_text: u32, f32_text: u32) -> usize {
+    let mut n: usize = e.children_mut().into_iter().map(|c| float_texts_by_prelude(c, f64_text, f32_text)).sum();
+    let f = match &e.kind {
+        isc_ir::ExprKind::StrOp(isc_ir::StrOp::ToString, xs) if xs[0].ty == isc_ir::Type::F64 => f64_text,
+        isc_ir::ExprKind::StrOp(isc_ir::StrOp::ToString, xs) if xs[0].ty == isc_ir::Type::F32 => f32_text,
+        _ => return n,
+    };
+    let isc_ir::ExprKind::StrOp(_, xs) = std::mem::replace(&mut e.kind, isc_ir::ExprKind::Zero) else { unreachable!() };
+    e.kind = isc_ir::ExprKind::Call(f, xs);
+    n += 1;
+    n
+}
+
+/// The text of a float written in Isocron (`$rtF64Text`, `$rtF32Text` of
+/// the prelude, called by the code generator in place of the runtime's
+/// `isc_to_string_f64` and `isc_to_string_f32`, removed): the texts of
+/// Rust's `Display`, `NaN`, `inf` and `-inf`.
+/// - The edges, as texts: zeros, what is not a number (NaN of several
+///   signs and payloads), every power of two and the ends of the mantissas
+///   of every exponent, the subnormal floats of few bits, the powers of ten
+///   and decimals of 1 to 17 digits at every place of the point (where the
+///   layout changes: the point at the ends of the digits, 16 and 17 zeros
+///   after `0.`, 33 and 34 digits before the point), integers and halves
+///   around 2^53; the same for `f32`. Interpreted (the runtime core's text),
+///   compiled, in WebAssembly, and interpreted with each `toString` made a
+///   call of the function of the prelude (its primitives `$floatBits`,
+///   `$mulHigh` and `$decimalText` as the interpreter has them); a part of
+///   them with the checked allocator and under Valgrind (the words written
+///   past the end of a text stay inside its block).
+/// - By sums of hashes of 4096 texts, compiled: the 100000 least subnormal
+///   doubles, two million doubles of random bits (those of the test of the
+///   runtime core, `shortest_as_display`), a million of random mantissas
+///   between 2^-70 and 2^70, the 100000 least subnormal `f32` and two
+///   million `f32` of random bits.
+#[test]
+fn float_text_written_in_isocron() {
+    let texts = r#"action main(args: string[k]): i32 {
+    print(join(map(readF64(args[0]), toString), "\n"));
+    print(join(map(readF32(args[1]), toString), "\n"));
+    return 0;
+}
+"#;
+    let mut d: Vec<f64> = vec![
+        0.0,
+        -0.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+        -f64::NAN,
+        f64::from_bits(0x7ff0_0000_0000_0001),
+        f64::from_bits(0xfff8_0000_0000_0123),
+        f64::from_bits(u64::MAX),
+        f64::MIN_POSITIVE,
+        f64::MAX,
+        f64::MIN,
+        f64::EPSILON,
+        0.1,
+        0.2,
+        0.3,
+        1.0 / 3.0,
+        5e-324,
+        1e-323,
+        1.5e-323,
+        2.2250738585072009e-308,
+        9007199254740992.0,
+        9007199254740993.0,
+        123456789012345680.0,
+        1e21,
+        1e22,
+        1e23,
+        0.5,
+        1.5,
+        100.0,
+        1234.5678,
+    ];
+    let mut r = Rng(0x9e37_79b9_7f4a_7c15);
+    for be in 0..2047u64 {
+        let top = (1u64 << 52) - 1;
+        for m in [0, 1, 2, top, top - 1, 1 << 51, (1 << 51) + 1, r.next() & top, r.next() & top, (r.next() & 0xfff) << 40] {
+            d.push(f64::from_bits(be << 52 | m));
+        }
+        d.push(-f64::from_bits(be << 52 | (r.next() & top)));
+    }
+    for i in 0..52 {
+        d.extend([f64::from_bits(1 << i), f64::from_bits((1 << i) + 1), f64::from_bits((3 << i) >> 1)]);
+    }
+    for e in -330..=310 {
+        for digits in ["1", "5", "9.5", "1.2", "9.999999999999999", "1.2345678", "1.2345678901234567", "1.7976931348623157", "2.2250738585072014"] {
+            let v: f64 = format!("{}e{}", digits, e).parse().unwrap();
+            if v.is_finite() {
+                d.extend([v, f64::from_bits(v.to_bits() + 1), f64::from_bits(v.to_bits().wrapping_sub(1) & (u64::MAX >> 1))]);
+            }
+        }
+    }
+    for nd in 1..=17usize {
+        let digits = &"12345678901234567"[..nd];
+        for e in -(nd as i32) - 19..=36 - nd as i32 {
+            let v: f64 = format!("{}e{}", digits, e).parse().unwrap();
+            d.extend([v, -v]);
+        }
+    }
+    for i in 0..2000u64 {
+        d.extend([f64::from_bits(i), (9007199254740992u64 - 1000 + i) as f64, i as f64 * 0.5, i as f64, -(i as f64) * 0.125]);
+    }
+    let mut s: Vec<f32> = vec![
+        0.0,
+        -0.0,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        -f32::NAN,
+        f32::from_bits(0x7f80_0001),
+        f32::MIN_POSITIVE,
+        f32::MAX,
+        f32::MIN,
+        f32::EPSILON,
+        0.1,
+        0.2,
+        0.3,
+        1.0 / 3.0,
+        1e-45,
+        3e-45,
+        16777216.0,
+        16777218.0,
+        1e10,
+        0.5,
+        1.5,
+        100.0,
+        1234.5678,
+    ];
+    for be in 0..255u32 {
+        let top = (1u32 << 23) - 1;
+        for m in [0, 1, 2, top, top - 1, 1 << 22, r.next() as u32 & top, r.next() as u32 & top, (r.next() as u32 & 0xff) << 15] {
+            s.push(f32::from_bits(be << 23 | m));
+        }
+        s.push(-f32::from_bits(be << 23 | (r.next() as u32 & top)));
+    }
+    for e in -50..=40 {
+        for digits in ["1", "5", "9.5", "1.2", "9.999999", "1.2345678", "3.4028235", "1.1754944"] {
+            let v: f32 = format!("{}e{}", digits, e).parse().unwrap();
+            if v.is_finite() {
+                s.extend([v, f32::from_bits(v.to_bits() + 1), f32::from_bits(v.to_bits().wrapping_sub(1) & (u32::MAX >> 1)), -v]);
+            }
+        }
+    }
+    for i in 0..2000u32 {
+        s.extend([f32::from_bits(i), (16777216 - 1000 + i) as f32, i as f32 * 0.5, -(i as f32)]);
+    }
+    let file64 = |name: &str, xs: &[f64]| -> String {
+        let p = tmp(name);
+        std::fs::write(&p, xs.iter().flat_map(|x| x.to_bits().to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let file32 = |name: &str, xs: &[f32]| -> String {
+        let p = tmp(name);
+        std::fs::write(&p, xs.iter().flat_map(|x| x.to_bits().to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let want = |d: &[f64], s: &[f32]| -> String {
+        let a: Vec<String> = d.iter().map(|&v| display64(v)).collect();
+        let b: Vec<String> = s.iter().map(|&v| display32(v)).collect();
+        format!("{}\n{}\n", a.join("\n"), b.join("\n"))
+    };
+    let (f64s, f32s) = (file64("float_text_edges.f64", &d), file32("float_text_edges.f32", &s));
+    let args = [f64s.as_str(), f32s.as_str()];
+    let expected = want(&d, &s);
+    assert!(interp_ok(texts, &args) == expected, "interpreted: the texts of {} floats differ from `Display`", d.len() + s.len());
+    let bin = compile(texts, "float_text_isocron");
+    let run = run_bin(&bin, &args);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    for (i, (got, exp)) in run.stdout.lines().zip(expected.lines()).enumerate() {
+        assert_eq!(got, exp, "compiled, the text of the float {} (after {} doubles)", i, d.len());
+    }
+    assert!(run.stdout == expected, "compiled: the texts differ from `Display`");
+    match wasi_runner() {
+        Some(runner) => {
+            let wasm = compile_wasm(texts, "float_text_isocron");
+            let run = run_wasm(&runner, &wasm, &args);
+            assert_eq!(run.code, 0, "{}", run.stderr);
+            assert!(run.stdout == expected, "WebAssembly: the texts differ from `Display`");
+        }
+        None => eprintln!("wasmtime not installed: the texts of floats in WebAssembly skipped"),
+    }
+    // the functions of the prelude interpreted: each `toString` their call
+    let mut p = iscc::frontend("test.isc", texts).unwrap_or_else(|e| panic!("{}", e));
+    let (f64_text, f32_text) = p.float_text.expect("the functions of the prelude lowered");
+    assert_eq!(float_texts_by_prelude(&mut p.body, f64_text, f32_text), 2);
+    let mut out = Vec::new();
+    let code = isc_interp::run(&p, &args.map(String::from), &mut out).unwrap_or_else(|e| panic!("the prelude interpreted: {}", e));
+    assert_eq!(code, 0);
+    for (i, (got, exp)) in String::from_utf8(out).unwrap().lines().zip(expected.lines()).enumerate() {
+        assert_eq!(got, exp, "the prelude interpreted, the text of the float {} (after {} doubles)", i, d.len());
+    }
+    // a part with the allocator checked and under Valgrind
+    let part64: Vec<f64> = d.iter().copied().step_by(13).collect();
+    let part32: Vec<f32> = s.iter().copied().step_by(13).collect();
+    let (p64, p32) = (file64("float_text_part.f64", &part64), file32("float_text_part.f32", &part32));
+    valgrind_clean(texts, "float_text_isocron", &[&p64, &p32]);
+    // the forms of `toString`
+    let forms = "action main(args: string[k]): i32 {
+    const third = 1.0 / f64(args.length + 3);
+    print(`${1.5}|${-0.0}|${0.1f32}|${1e21}|${third}|${f32(third)}`);
+    print(String(2.5) + \" \" + (0.25).toString() + \" \" + toString(1e-7) + \" \" + String(-1e100 * 1e300));
+    return 0;
+}
+";
+    agree(forms, "float_text_forms", &[], "1.5|-0|0.1|1000000000000000000000|0.3333333333333333|0.33333334\n2.5 0.25 0.0000001 -inf\n");
+    // the sums of the hashes of 4096 texts
+    let sums = r#"function hash(s: string): u64 {
+    return fold(bytes(s), 0xcbf29ce484222325u64, (h, b) => (h ^ u64(b)) * 0x100000001b3u64);
+}
+
+action main(args: string[k]): i32 {
+    const xs = readF64(args[0]);
+    const hs = map(xs, (x) => hash(toString(x)));
+    print(join(map(iota(xs.length / 4096), (c) => toString(sum(map(iota(4096), (j) => hs[c * 4096 + j])))), "\n"));
+    const ys = readF32(args[1]);
+    const gs = map(ys, (y) => hash(toString(y)));
+    print(join(map(iota(ys.length / 4096), (c) => toString(sum(map(iota(4096), (j) => gs[c * 4096 + j])))), "\n"));
+    return 0;
+}
+"#;
+    let hash = |t: &str| t.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    let mut many64: Vec<f64> = (0..100_000u64).map(f64::from_bits).collect();
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    for _ in 0..2_000_000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        many64.push(f64::from_bits(x));
+    }
+    for _ in 0..1_000_000 {
+        let m = r.next();
+        many64.push(f64::from_bits((953 + m % 141) << 52 | (m >> 12) | (m & 1) << 63));
+    }
+    many64.truncate(many64.len() / 4096 * 4096);
+    let mut many32: Vec<f32> = (0..100_000u32).map(f32::from_bits).collect();
+    for _ in 0..2_000_000 {
+        many32.push(f32::from_bits(r.next() as u32));
+    }
+    many32.truncate(many32.len() / 4096 * 4096);
+    let (m64, m32) = (file64("float_text_many.f64", &many64), file32("float_text_many.f32", &many32));
+    let bin = compile(sums, "float_text_sums");
+    let run = run_bin_threads(&bin, &[&m64, &m32], Some(4));
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let mut got = run.stdout.lines();
+    for (c, chunk) in many64.chunks(4096).enumerate() {
+        let sum = chunk.iter().fold(0u64, |a, &v| a.wrapping_add(hash(&display64(v))));
+        assert_eq!(got.next(), Some(sum.to_string().as_str()), "the texts of the doubles {} to {}", c * 4096, c * 4096 + 4095);
+    }
+    for (c, chunk) in many32.chunks(4096).enumerate() {
+        let sum = chunk.iter().fold(0u64, |a, &v| a.wrapping_add(hash(&display32(v))));
+        assert_eq!(got.next(), Some(sum.to_string().as_str()), "the texts of the `f32` {} to {}", c * 4096, c * 4096 + 4095);
+    }
+    assert_eq!(got.next(), None);
+}
+
 /// D590: `trim`, `trimStart` and `trimEnd` written in Isocron (the
 /// prelude), the white space of Rust's `char::is_whitespace` at the ends
 /// (every character of it, and characters of several bytes that are not

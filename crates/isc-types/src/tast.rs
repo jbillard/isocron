@@ -162,6 +162,24 @@ pub enum Prim {
     /// a `-` before them when `minus`, a string; every byte of the words
     /// ASCII (a panic otherwise); the prelude alone can name it
     TextTail,
+    /// `$floatBits(x)`: the bits of a `f64`, or of a `f32` (in the low
+    /// half), as a `u64`; a NaN has the bits its target gave it, so the
+    /// prelude alone can name it (the text of a float reads no bit of a
+    /// NaN but that it is one)
+    FloatBits,
+    /// `$mulHigh(a, b)`: the high 64 bits of the product of two `u64` (128
+    /// bits); the prelude alone can name it
+    MulHigh,
+    /// `$decimalText(d, w1, w2, n, point, minus)`: a decimal number of 17
+    /// digits as a string, without exponent: the first digit `d` (0 to 9),
+    /// the 16 next the bytes of the words `w1` and `w2` (ASCII, the first
+    /// at the lowest place), the first `n` of the 17 written (1 to 17: the
+    /// others are zeros), `point` digits before the point (zeros added
+    /// after the digits when there are fewer, `0.` and zeros before them
+    /// when `point` is 0 or less), a `-` first when `minus`; a panic for a
+    /// `d`, an `n` or a `point` out of their bounds or a byte not ASCII;
+    /// the prelude alone can name it
+    DecimalText,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// `argsort(x)`: the indices of the elements in their order, stable

@@ -1920,31 +1920,6 @@ pub unsafe extern "C" fn isc_str_adopt_bytes(out: *mut IscStr, p: *const u8, n: 
     }
 }
 
-/// A writer into a buffer of `N` bytes (the text of a scalar). A float is
-/// written without exponent (D108): 5e-324 takes 326 bytes, so the buffer
-/// of an `f64` holds 352 (D336: a buffer of 64 cut such texts).
-struct Small<const N: usize> {
-    buf: [u8; N],
-    len: usize,
-}
-
-/// The longest text of an `f64` (`-0.` and 323 zeros then a digit; 309
-/// digits for the largest) and of an `f32` (48 bytes), with room.
-const F64_TEXT: usize = 352;
-const F32_TEXT: usize = 64;
-
-impl<const N: usize> Write for Small<N> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let b = s.as_bytes();
-        if self.len + b.len() > self.buf.len() {
-            return Err(core::fmt::Error);
-        }
-        self.buf[self.len..self.len + b.len()].copy_from_slice(b);
-        self.len += b.len();
-        Ok(())
-    }
-}
-
 /// `toString(v).padStart(len, c)` (`start`) or `.padEnd`, `c` one byte,
 /// in one block of its size (D348): the text of `v` (signed or not), `c`
 /// before or after it up to `len` bytes; the text alone when it has `len`
@@ -1970,33 +1945,6 @@ pub unsafe extern "C" fn isc_pad_int(out: *mut IscStr, v: i64, signed: i32, len:
         copy_short(t.as_ptr(), r.add(at), t.len());
         fill_short(r.add(from), c as u8, gap);
         *out = IscStr { ptr: r, len: total as i64 };
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_string_f64(out: *mut IscStr, v: f64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let mut s = Small::<F64_TEXT> { buf: [0; F64_TEXT], len: 0 };
-        let _ = sem::write_f64(&mut s, v);
-        *out = new_str(&s.buf[..s.len]);
-    }
-}
-
-///
-/// # Safety
-/// `out` the place of the result (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_string_f32(out: *mut IscStr, v: f32) {
-    // SAFETY: `out` the place of the result (C1)
-    unsafe {
-        let mut s = Small::<F32_TEXT> { buf: [0; F32_TEXT], len: 0 };
-        let _ = sem::write_f32(&mut s, v);
-        *out = new_str(&s.buf[..s.len]);
     }
 }
 

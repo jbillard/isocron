@@ -424,8 +424,32 @@ impl Interp<'_> {
                     Err(p) => return panic_at(e, std::format!("{}", p)),
                 }
             }
+            // `$floatBits(x)`: the bits of the float, those of a `f32` in the
+            // low half
+            S::FloatBits => match &vs[0] {
+                Value::F64(f) => Value::Int(f.to_bits() as i64),
+                Value::F32(f) => Value::Int(f.to_bits() as i64),
+                v => panic!("a float expected, got {:?}", v),
+            },
+            // `$mulHigh(a, b)`: the high half of the product of 128 bits
+            S::MulHigh => match (&vs[0], &vs[1]) {
+                (Value::Int(a), Value::Int(b)) => Value::Int(((*a as u64 as u128 * *b as u64 as u128) >> 64) as i64),
+                v => panic!("integers expected, got {:?}", v),
+            },
+            // `$decimalText(d, w1, w2, n, point, minus)`
+            S::DecimalText => {
+                let int = |v: &Value| match v {
+                    Value::Int(x) => *x,
+                    v => panic!("an integer expected, got {:?}", v),
+                };
+                let minus = matches!(vs[5], Value::Bool(true));
+                match rt::decimal_text(int(&vs[0]) as u64, int(&vs[1]) as u64, int(&vs[2]) as u64, int(&vs[3]), int(&vs[4]), minus) {
+                    Some(t) => Value::Str(Rc::from(t)),
+                    None => return panic_at(e, "decimalText: a digit and 16 bytes of ASCII, 1 to 17 of them written, the point within 400 digits".to_string()),
+                }
+            }
             // `$panic(a, b, c)` (D582): the three texts one after the other
-            S::Panic => return panic_at(e, std::format!("{}{}{}", s(&vs[0]), s(&vs[1]), s(&vs[2]))),
+            S::Panic =>return panic_at(e, std::format!("{}{}{}", s(&vs[0]), s(&vs[1]), s(&vs[2]))),
             // `readWord` (D580): the code of the runtime core
             S::ReadWord => {
                 let b: Vec<u8> = match &vs[0] {

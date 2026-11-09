@@ -16,6 +16,40 @@ pub fn format_f64(v: f64) -> String {
     s
 }
 
+/// `$decimalText(d, w1, w2, n, point, minus)`, as the compiled code writes
+/// it: the 17 digits (`d`, then the bytes of `w1` and `w2`), `point` of
+/// them before the point (zeros added past the 17th), the point and the
+/// digits up to the `n`-th after it when `point` is below `n`, `0.` and
+/// zeros before them when `point` is 0 or less, a `-` first when `minus`;
+/// `None` for arguments out of their bounds.
+pub fn decimal_text(d: u64, w1: u64, w2: u64, n: i64, point: i64, minus: bool) -> Option<String> {
+    if d >= 10 || (w1 | w2) & 0x8080_8080_8080_8080 != 0 || !(1..=17).contains(&n) || !(-400..=400).contains(&point) {
+        return None;
+    }
+    let mut digits = vec![b'0' + d as u8];
+    digits.extend_from_slice(&w1.to_le_bytes());
+    digits.extend_from_slice(&w2.to_le_bytes());
+    let (n, mut t) = (n as usize, Vec::new());
+    if minus {
+        t.push(b'-');
+    }
+    if point <= 0 {
+        t.extend_from_slice(b"0.");
+        t.resize(t.len() + (-point) as usize, b'0');
+        t.extend_from_slice(&digits[..n]);
+    } else if point < n as i64 {
+        let p = point as usize;
+        t.extend_from_slice(&digits[..p]);
+        t.push(b'.');
+        t.extend_from_slice(&digits[p..n]);
+    } else {
+        let p = point as usize;
+        t.extend_from_slice(&digits[..p.min(17)]);
+        t.resize(t.len() + p.saturating_sub(17), b'0');
+    }
+    String::from_utf8(t).ok()
+}
+
 pub fn panic_text(line: u32, col: u32, msg: &str) -> String {
     let mut s = String::new();
     let _ = sem::write_panic(&mut s, line, col, &msg);
