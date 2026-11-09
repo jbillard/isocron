@@ -1,0 +1,39 @@
+// lines and parts that are views of a text that lives longer (D555)
+function parts(t: string): string[k] {
+    // returned: its parts owned (copied)
+    return t.split(";");
+}
+
+action main(args: string[k]): i32 {
+    const input = readStdinLines();
+    print(input.length);
+    print(input.slice(0, 2).join("|"));
+    // the lines of a text kept, read again after them
+    const t = input.join("\n");
+    const ls = lines(t);
+    print(ls.length);
+    print(t.length);
+    const sorted = sortBy(ls, (l) => l.length);
+    print(sorted[0].length);
+    print(sorted[sorted.length - 1]);
+    // the parts by one byte and by several
+    const cs = split(t, ",");
+    const ds = split(t, "::");
+    print([cs.length, ds.length]);
+    print(cs[cs.length - 1]);
+    print(ds[0].length);
+    // in a loop: the parts of each line, the line a parameter of the map
+    print(map(input, (l) => split(l, ",").length).sum());
+    // returned by a function, kept in a tuple: owned
+    const p = parts(t);
+    const kept = [lines(t), 1] as const;
+    const [kl, one] = kept;
+    print([p.length, kl.length, one]);
+    // a text grown in place while its lines live: its lines copied
+    const g = t + "";
+    const gl = lines(g);
+    const g2 = g + "!";
+    print(gl[0]);
+    print(g2.length);
+    return 0;
+}

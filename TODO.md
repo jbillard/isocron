@@ -176,7 +176,7 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [ ] Arrays whose texts are views of the texts of an array that lives longer (`sort`, `sortBy`: their copies 63 % of `sortBy` of texts, D488) or of a text kept (`lines`: k-nucleotide's base, D524)
     - [x] (D548) The elements of a permutation of an array read for the last time moved, not copied (`sort`, `sortBy` of an owned source)
     - [x] (D555: `sortBy.length` -61.3 %, 2.4 times its floor; `sort.string` -16.7 %) The texts of a `map` taken from an array or a text that lives longer left as views: the sorts of a source read again after them, the keys of a `Map` being built
-    - [ ] The lines of a text kept as views of it (`lines`, `split`, `readStdinLines`: k-nucleotide's base, D524)
+    - [x] (D556: k-nucleotide -6.4 %, its kernel cycles -60 %, its peak memory 655 -> 499 MB) The lines of a text kept as views of it (`lines`, `split`, `readStdinLines`: k-nucleotide's base, D524)
   - [ ] The lists of the heap give the blocks in the reverse order of their frees: blocks freed scattered (the texts of an array sorted by moves, D548) make the next ones scattered (`LLC-load-misses` +40 % on a sort of 300000 texts made again ten times); free lists by page (mimalloc) would keep them near
   - [x] Maps: an index of hashes for the bisection of D158, `get` of an integer 56.08 -> 4.13 ns, 2.17 times its floor (D492)
   - [x] `countBy` 3.11 times its floor (D492): the keys below the number of keys counted by their value, 1.48 (D494)

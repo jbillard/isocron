@@ -287,8 +287,21 @@ impl<'p> Checker<'p> {
     }
 
     /// The value of an array whose texts are views (D555): a `map` of texts
-    /// each borrowed; the owned variables whose memory they borrow.
+    /// each borrowed, or the lines or parts of a borrowed text; the owned
+    /// variables whose memory they borrow.
     fn view_init(&mut self, e: &Expr) -> R<Vec<VarId>> {
+        // the lines or the parts of a text, made as views of it
+        if let ExprKind::StrOp(crate::StrOp::Lines | crate::StrOp::Split, es) = &e.kind {
+            let owners = match self.eval(&es[0])? {
+                Val::View(o) => o,
+                _ => return fail(e.span, "the lines of a new text as views of it, which nothing frees".into()),
+            };
+            for x in &es[1..] {
+                let v = self.eval(x)?;
+                self.borrow(v, x)?;
+            }
+            return Ok(owners);
+        }
         let ExprKind::Map(ins, l) = &e.kind else {
             return fail(e.span, "an array of views of texts that no `map` makes".into());
         };

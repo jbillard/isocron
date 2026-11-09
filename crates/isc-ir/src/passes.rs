@@ -3115,6 +3115,7 @@ impl Elements {
     }
 
     fn walk(&mut self, e: &mut Expr) {
+        hoist_text(e);
         if let ExprKind::Let { var, init, body, drop, .. } = &mut e.kind {
             let y = *var;
             if init.ty.has_heap() {
@@ -3153,6 +3154,15 @@ impl Elements {
     /// `let y = init in body`: `init` a `map` of texts each copied from
     /// memory that lives longer than `y`; the copies left out.
     fn try_view(&mut self, y: VarId, init: &mut Expr, body: &Expr) {
+        // the lines or the parts of a text that lives longer (made as views
+        // of it by the runtime)
+        if let ExprKind::StrOp(StrOp::Lines | StrOp::Split, es) = &init.kind {
+            let Some(roots) = borrowed_from(&es[0], &|v| self.base(v)) else { return };
+            if init.ty.elem() == &Type::Str && !moves_var(body, y) && !takes_var(body, y) && read_before_consumed(body, y, &roots) {
+                self.views.insert(y);
+            }
+            return;
+        }
         let ExprKind::Map(ins, l) = &init.kind else { return };
         if *init.ty.elem() != Type::Str {
             return;
@@ -3168,8 +3178,8 @@ impl Elements {
         let Some(roots) = borrowed_from(inner, &|v| params.get(&v).cloned().unwrap_or_else(|| self.base(v))) else { return };
         let mut inside = HashSet::new();
         bound_in(init, &mut inside);
-        let consumed = |v: VarId| moves_var(body, v) || frees_var(body, v) || takes_var(body, v) || moves_var(init, v) || frees_var(init, v) || takes_var(init, v);
-        if moves_var(body, y) || takes_var(body, y) || roots.iter().any(|r| inside.contains(r) || consumed(*r)) {
+        let in_init = |v: VarId| moves_var(init, v) || frees_var(init, v) || takes_var(init, v);
+        if moves_var(body, y) || takes_var(body, y) || roots.iter().any(|r| inside.contains(r) || in_init(*r)) || !read_before_consumed(body, y, &roots) {
             return;
         }
         let ExprKind::Map(_, l) = &mut init.kind else { unreachable!() };
@@ -3178,6 +3188,118 @@ impl Elements {
         l.body.kind = inner.kind;
         self.views.insert(y);
     }
+}
+
+/// `let y = (let t = i in lines(t)) in b` (`readStdinLines()`, a `lines`
+/// or `split` of a temporary text, its separator bound first), `y` never
+/// moved nor taken apart in `b`: the `let`s of its value taken out of it,
+/// `let t = i in let y = lines(t) in b`, so that `t` lives as long as `y`,
+/// whose lines are then views of it (D555). A `let` that frees a value the
+/// text does not come from stays (its value would live longer for nothing).
+fn hoist_text(e: &mut Expr) {
+    let ExprKind::Let { var: y, init, body, drop: true, .. } = &e.kind else { return };
+    // the chain of `let`s of the value, down to a `lines` or a `split`
+    let mut lets = Vec::new();
+    let mut tail = &**init;
+    while let ExprKind::Let { var, body: b, stmt: false, drop, .. } = &tail.kind {
+        lets.push((*var, *drop));
+        tail = b;
+    }
+    let ExprKind::StrOp(StrOp::Lines | StrOp::Split, es) = &tail.kind else { return };
+    if lets.is_empty() || *tail.ty.elem() != Type::Str || moves_var(body, *y) || takes_var(body, *y) {
+        return;
+    }
+    let text_vars: HashSet<VarId> = lets.iter().map(|(v, _)| *v).collect();
+    let roots = borrowed_from(&es[0], &|v| vec![v]).unwrap_or_default();
+    if crate::blocks::mentions(body, &text_vars) || lets.iter().any(|(v, d)| *d && !roots.contains(v)) {
+        return;
+    }
+    let (ty, span, reassoc) = (e.ty.clone(), e.span, e.reassoc);
+    let ExprKind::Let { var: y, init, body, stmt, .. } = std::mem::replace(&mut e.kind, ExprKind::Zero) else { unreachable!() };
+    // the `let`s of the value, outermost first, then the `lines` or `split`
+    let mut outer = Vec::new();
+    let mut cur = *init;
+    while let ExprKind::Let { var, init: i, body: b, drop, .. } = cur.kind {
+        outer.push((var, i, drop));
+        cur = *b;
+    }
+    let mut out = Expr { kind: ExprKind::Let { var: y, init: Box::new(cur), body, stmt, drop: true }, ty: ty.clone(), span, reassoc };
+    for (var, i, drop) in outer.into_iter().rev() {
+        out = Expr { kind: ExprKind::Let { var, init: i, body: Box::new(out), stmt: false, drop }, ty: ty.clone(), span, reassoc };
+    }
+    *e = out;
+}
+
+/// In `body`, evaluated after the value of `y`, every read of `y` and of the
+/// values that borrow from it (bound to variables, or the elements a lambda
+/// reads) comes before any move, free or taking apart of the variables
+/// `roots`: the texts of `y` are read only while they live (its block,
+/// freed at the end of its scope, never reads them).
+fn read_before_consumed(body: &Expr, y: VarId, roots: &[VarId]) -> bool {
+    struct Order<'a> {
+        deps: HashSet<VarId>,
+        roots: &'a [VarId],
+        at: usize,
+        last_read: usize,
+        first_consumed: Option<usize>,
+    }
+    impl Order<'_> {
+        fn borrows_y(&self, e: &Expr) -> bool {
+            borrowed_from(e, &|v| vec![v]).is_some_and(|b| b.iter().any(|v| self.deps.contains(v)))
+        }
+        fn consumed(&mut self) {
+            self.first_consumed.get_or_insert(self.at);
+        }
+        fn walk(&mut self, e: &Expr) {
+            match &e.kind {
+                ExprKind::Var(v, u) => {
+                    self.at += 1;
+                    if self.deps.contains(v) {
+                        self.last_read = self.at;
+                    }
+                    if *u == Use::Move && self.roots.contains(v) {
+                        self.consumed();
+                    }
+                    return;
+                }
+                ExprKind::Take(x, _) if matches!(x.kind, ExprKind::Var(v, _) if self.roots.contains(&v)) => {
+                    self.at += 1;
+                    self.consumed();
+                    return;
+                }
+                ExprKind::Free(v, b) => {
+                    self.walk(b);
+                    self.at += 1;
+                    if self.roots.contains(v) {
+                        self.consumed();
+                    }
+                    return;
+                }
+                ExprKind::Let { var, init, body, .. } => {
+                    self.walk(init);
+                    if self.borrows_y(init) {
+                        self.deps.insert(*var);
+                    }
+                    self.walk(body);
+                    return;
+                }
+                _ => {}
+            }
+            let params: Vec<VarId> = match &e.kind {
+                ExprKind::Map(ins, l) => ins.iter().zip(&l.params).filter(|(i, _)| self.borrows_y(i)).map(|(_, p)| *p).collect(),
+                ExprKind::Filter(x, l) | ExprKind::Tasks(x, l) if self.borrows_y(x) => vec![l.params[0]],
+                ExprKind::Fold(x, _, l) if self.borrows_y(x) => vec![l.params[1]],
+                _ => Vec::new(),
+            };
+            self.deps.extend(params);
+            for c in e.children() {
+                self.walk(c);
+            }
+        }
+    }
+    let mut o = Order { deps: HashSet::from([y]), roots, at: 0, last_read: 0, first_consumed: None };
+    o.walk(body);
+    o.first_consumed.is_none_or(|c| c > o.last_read)
 }
 
 /// `v` is moved somewhere in `e`, lambdas included.

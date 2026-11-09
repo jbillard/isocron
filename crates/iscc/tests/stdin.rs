@@ -1,6 +1,6 @@
 //! The standard input (D155): `readStdin()`, `readStdinText()`,
 //! `readStdinLines()`, the same in the interpreter and in the compiled
-//! program. One test: the input of the interpreter is a global.
+//! program. The input of the interpreter is a global (`interp_with_stdin`).
 
 mod common;
 use common::*;
@@ -41,7 +41,12 @@ fn run_with_stdin(bin: &std::path::Path, input: &[u8]) -> (i32, String, String) 
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
 }
 
+/// The input of the interpreter is a global: one test at a time sets it and
+/// runs the interpreter.
+static INTERP_STDIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn interp_with_stdin(src: &str, input: &[u8]) -> Outcome {
+    let _one = INTERP_STDIN.lock().unwrap_or_else(|e| e.into_inner());
     *isc_interp::rt::STDIN.lock().unwrap() = Some(input.to_vec());
     interp(src, &[])
 }
@@ -225,6 +230,74 @@ fn lines_of_a_large_text_made_in_parallel() {
     }
 }
 
+/// Lines and parts that are views of a text that lives longer (D555):
+/// `readStdinLines()` (its text kept as long as its lines), `lines` and
+/// `split` (by one byte, by several) of a text read again after them, a sort
+/// of such lines, the parts of each line of a `map`; and the lines that must
+/// own their bytes: returned by a function, kept in a tuple, of a text grown
+/// in place while they live. Small and large inputs (the lines made by parts
+/// in parallel), empty lines, `\r\n`, with and without a final newline, on
+/// 1 and 4 threads; the same output as the interpreter, each block freed
+/// once (the checked allocator, valgrind); the runtime makes views.
+#[test]
+fn lines_and_parts_that_are_views_of_a_text() {
+    let src = include_str!("data/views_of_lines.isc");
+    let bin = compile(src, "views_of_lines");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call void @isc_lines_view(") && ll.contains("call void @isc_split_view("), "no lines or parts made as views");
+    let mut x = 4242u64;
+    let mut text = Vec::new();
+    while text.len() < 3 << 20 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let len = if x % 9 == 0 { 0 } else { (x >> 8) as usize % 90 };
+        text.extend((0..len).map(|j| match (x >> (j % 40)) % 29 { 26 => b',', 27 => b':', 28 => b';', c => b'a' + c as u8 }));
+        if x % 11 == 0 {
+            text.push(b'\r');
+        }
+        text.push(b'\n');
+    }
+    for input in [b"a,b::c;d\r\n\nxyz,,\n".to_vec(), b"one line,\nno newline".to_vec(), text] {
+        for last in [true, false] {
+            let mut t = input.clone();
+            if !last {
+                t.extend_from_slice(b"tail::x,y");
+            }
+            let want = match interp_with_stdin(src, &t) {
+                Outcome::Exit(0, out) => out,
+                Outcome::Exit(c, _) => panic!("the interpreter: exit {}", c),
+                Outcome::Panic(m, _) => panic!("the interpreter: {}", m),
+            };
+            let path = tmp(&format!("views_of_lines_{}_{}.txt", t.len(), last));
+            std::fs::write(&path, &t).unwrap();
+            for threads in ["1", "4"] {
+                let o = std::process::Command::new(&bin).env("ISC_THREADS", threads).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
+                assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} bytes, {} threads: {}", t.len(), threads, String::from_utf8_lossy(&o.stderr));
+            }
+            checked_clean_bin(&bin, &[], Some(&t));
+        }
+    }
+    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    if !vg.is_file() {
+        eprintln!("valgrind not installed: views_of_lines skipped");
+        return;
+    }
+    let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
+    let vbin = compile_glibc(src, "views_of_lines_vg", opts);
+    let vg_input = tmp("views_of_lines_vg.txt");
+    std::fs::write(&vg_input, b"a,b::c;d\r\n\nxyz,,\n".repeat(20000)).unwrap();
+    let o = std::process::Command::new(vg)
+        .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
+        .arg(&vbin)
+        .env("ISC_ALLOC", "glibc")
+        .env("ISC_THREADS", "2")
+        .stdin(std::fs::File::open(&vg_input).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "under valgrind:\n{}", String::from_utf8_lossy(&o.stderr));
+}
+
 /// D298: the lines of a large text made in parallel are kept in one block,
 /// freed with the last of them: lines kept in another array and sorted
 /// after the array of all the lines is gone, empty lines, `\r\n` lines;
@@ -233,14 +306,16 @@ fn lines_of_a_large_text_made_in_parallel() {
 /// (valgrind, glibc's allocator).
 #[test]
 fn lines_kept_in_one_block_freed_with_the_last() {
-    let src = "action kept(): string[k] {
+    // the lines returned: owned, so made in one block (not views of the
+    // input, D555)
+    let src = "action all(): string[k] {
     const lines = readStdinLines();
     print(lines.length);
     print(lines.slice(lines.length / 2, lines.length / 2 + 3).join(\"|\"));
-    return filter(lines, (l) => l.length % 7 == 3);
+    return lines;
 }
 action main(args: string[k]): i32 {
-    const keep = kept();
+    const keep = filter(all(), (l) => l.length % 7 == 3);
     const sorted = sortBy(keep, (l) => l);
     print(keep.length);
     print(sum(map(keep, (l) => l.length)));
@@ -279,6 +354,8 @@ action main(args: string[k]): i32 {
     let path = tmp("stdin_lines_block.txt");
     std::fs::write(&path, &text).unwrap();
     let bin = compile(src, "stdin_lines_block");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call void @isc_lines(") && !ll.contains("call void @isc_lines_view("), "the lines returned not made in one block");
     for threads in ["1", "3", "4", "8"] {
         let o = std::process::Command::new(&bin).env("ISC_THREADS", threads).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
         assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads: {}", threads, String::from_utf8_lossy(&o.stderr));

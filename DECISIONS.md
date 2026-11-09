@@ -12668,3 +12668,58 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `verify.rs`: such an array passes, and is rejected when moved, when
     freed as the owner of its texts, and when read after the array of its
     texts is freed.
+- **D556 — The lines and parts of a text that lives longer as views of it
+  (2026-11-09).** The rest of the item of D555: `lines`, `split` and
+  `readStdinLines()` copied each line or part into a block made for them all
+  (D298, D305), freed with the last; k-nucleotide's base was the input read
+  then its 336 MB of lines copied into new pages (D524).
+  - `borrow_elements` (D555) also takes a `lines` or `split` of a text
+    borrowed from variables, bound to a variable never moved nor taken
+    apart: the variable goes into `Program::views`, and the generated code
+    calls `isc_lines_view` or `isc_split_view` (the runtime: the place and
+    the length of each part in the text, no byte copied; a large text by
+    parts in parallel as `isc_lines`), chosen by the expression whatever
+    path of the generated code binds it (`view_parts`). A value whose `let`s
+    bind the text and the separator (`let t = readStdinText() in lines(t)`,
+    which is what `readStdinLines()` is; `let s = "," in split(x, s)`) has
+    them taken out around the variable's `let` (`hoist_text`), so that the
+    text lives as long as its lines; a `let` that frees a value the text
+    does not come from stays, and no view is made.
+  - The condition on the memory the texts borrow is now an order, for both
+    kinds (`read_before_consumed`): every read of the array, of the values
+    bound from it and of the elements a lambda reads from it comes, in the
+    order of evaluation, before any move, free or taking apart of the
+    variables that memory belongs to. The scope of the array may go on
+    after that (its block alone is freed at its end): `lines(t)` read, then
+    `t + "!"` growing `t` in place, makes views; read after that growth, its
+    lines are copied (tested).
+  - The memory check (D96) takes such a value as the value of a view: its
+    text a borrowed value, whose owners are those of the lines.
+  - Measured (the binaries of D555 and of this one, alternated runs, fixed
+    frequency): k-nucleotide on 4 threads, its 254 MB input, 11 runs:
+    708.9 -> 663.5 ms (median, -6.4 %), 669.8 -> 637.5 ms (lowest, -4.8 %),
+    the same output; its kernel cycles 425 to 554 million -> 180 to 186
+    million (`perf stat`, 3 runs each: the new pages of the lines no longer
+    cleared), its user cycles the same (6.4 to 7.4 billion both), its peak
+    of resident memory 655340 -> 498972 KiB. The groups whose code changed
+    (5 runs, then 9 for `sys`): `split.6` 75.952 -> 25.057 ns (-67.0 %),
+    `lines.line` 14.979 -> 7.052 (-52.9 %), `readStdinLines.line` 24.079 ->
+    15.523 (-35.5 %), `net.resolve.hosts` -8.0 %, `http.parseUrl` -7.9 %,
+    `http.headerOf` -3.1 %; `https` within 3 %; `sys.cwd` -3.4 % in 9 runs
+    of its group with the same code for it (a call of the system; the user
+    cycles of the group the same, 357 against 357 million; alone in a
+    program of its own, -1.1 % with overlapping spreads): not a change of
+    this decision. The other programs: the same code (two declarations
+    more).
+  - Tests: `lines_and_parts_that_are_views_of_a_text` (`stdin.rs`,
+    `data/views_of_lines.isc`: `readStdinLines()`, `lines` and `split` by
+    one byte and by several of a text read again after them, a sort of such
+    lines, the parts of each line of a `map`; lines returned by a function,
+    kept in a tuple, of a text grown in place while they live: copies;
+    small and 3 MB inputs, `\r\n`, empty lines, with and without a final
+    newline, 1 and 4 threads, against the interpreter, the checked
+    allocator, valgrind; the generated code calls the views);
+    `lines_kept_in_one_block_freed_with_the_last` now returns its lines
+    (owned, so in one block: D298 still tested, its code checked to call
+    `isc_lines`); the input of the interpreter taken by one test at a time
+    (`interp_with_stdin`: two tests read it).

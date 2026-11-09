@@ -511,6 +511,10 @@ pub struct Gen<'p> {
     /// The owned arrays whose elements the gather of a permutation takes
     /// (D548): read without a copy, the array freed alone.
     moving: HashSet<VarId>,
+    /// The `lines` and `split` whose parts are views of their text (D555):
+    /// the values of the variables of `Program::views`, whatever path of
+    /// the generated code binds them.
+    view_parts: HashSet<*const Expr>,
     /// The texts taken out of tuples (their registers): tested as literals
     /// wherever they are freed (D518).
     part_values: HashSet<String>,
@@ -670,6 +674,27 @@ fn concat_parts(e: &Expr) -> Option<(&Expr, &Expr, &Expr, &Expr)> {
 /// `concat(x, b)` of arrays of scalars is the only read of `x` in `e`, on its
 /// straight path (`let`s and `free`s, no loop, no branch): its block may be
 /// taken by the `concat` and grown (D533).
+/// The `lines` and `split` that are the values of the variables of
+/// `Program::views` (D555): made as views of their text.
+fn view_parts(p: &Program) -> HashSet<*const Expr> {
+    fn walk(e: &Expr, views: &std::collections::BTreeSet<VarId>, out: &mut HashSet<*const Expr>) {
+        if let ExprKind::Let { var, init, .. } = &e.kind {
+            if views.contains(var) && matches!(init.kind, ExprKind::StrOp(isc_ir::StrOp::Lines | isc_ir::StrOp::Split, _)) {
+                out.insert(&**init as *const Expr);
+            }
+        }
+        for c in e.children() {
+            walk(c, views, out);
+        }
+    }
+    let mut out = HashSet::new();
+    walk(&p.body, &p.views, &mut out);
+    for f in &p.fns {
+        walk(&f.body, &p.views, &mut out);
+    }
+    out
+}
+
 fn concat_alone(e: &Expr, x: VarId) -> bool {
     let only = HashSet::from([x]);
     match &e.kind {
@@ -953,6 +978,8 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_write_text(ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines(ptr, ptr, i64)",
     "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_lines_view(ptr, ptr, i64)",
+    "declare void @isc_split_view(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_trim(ptr, ptr, i64)",
     "declare i64 @isc_index_of(ptr, i64, ptr, i64)",
     "declare i32 @isc_str_test(ptr, i64, ptr, i64, i32)",
@@ -1091,6 +1118,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         literal_test: false,
         taking: HashSet::new(),
         moving: HashSet::new(),
+        view_parts: view_parts(p),
         part_values: HashSet::new(),
         split_vars: HashMap::new(),
         split_fail: None,
@@ -12598,6 +12626,11 @@ impl<'p> Gen<'p> {
                 new_str(self, call)
             }
             // text (D135): an array of strings has the layout of a string
+            // views of the text that lives longer than the array (D555)
+            S::Lines if self.view_parts.contains(&(e as *const Expr)) => {
+                let (p, n) = self.str_parts(&vals[0]);
+                new_str(self, format!("call void @isc_lines_view(ptr OUT, ptr {}, i64 {})", p, n))
+            }
             S::Lines => {
                 let (p, n) = self.str_parts(&vals[0]);
                 new_str(self, format!("call void @isc_lines(ptr OUT, ptr {}, i64 {})", p, n))
@@ -12606,7 +12639,8 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 let pos = Self::pos(e.span);
-                new_str(self, format!("call void @isc_split(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, q, m, pos))
+                let f = if self.view_parts.contains(&(e as *const Expr)) { "isc_split_view" } else { "isc_split" };
+                new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", f, p, n, q, m, pos))
             }
             S::Trim => {
                 let (p, n) = self.str_parts(&vals[0]);

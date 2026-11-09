@@ -1944,6 +1944,104 @@ pub unsafe extern "C" fn isc_split(out: *mut IscArray, p: *const u8, n: i64, q: 
     *out = if t.len() == 1 { block_strs(&ByteParts(b, t[0])) } else { block_strs(&SepParts(b, t)) };
 }
 
+/// `split(text, sep)` whose parts are views of the text (D555): the text
+/// lives longer than the array (the compiler's `borrow_elements`), which
+/// owns its block alone. No byte copied.
+#[no_mangle]
+pub unsafe extern "C" fn isc_split_view(out: *mut IscArray, p: *const u8, n: i64, q: *const u8, m: i64, line: i32, col: i32) {
+    // SAFETY: the `n` and `m` bytes of two strings of the generated code,
+    // alive during the call
+    let (b, t) = unsafe { (bytes_of(p, n), bytes_of(q, m)) };
+    if t.is_empty() {
+        die(line, col, &Panic::SplitEmpty)
+    }
+    let r = if t.len() == 1 { view_strs(&ByteParts(b, t[0])) } else { view_strs(&SepParts(b, t)) };
+    // SAFETY: the place of the result, the generated code's
+    unsafe { out.write(r) };
+}
+
+/// `lines(text)` whose lines are views of the text (D555), as `isc_lines`
+/// otherwise (`sem::text_lines`); a large text by parts in parallel (D252):
+/// each part counts its `\n`, then writes the place and the length of each
+/// line it owns. No byte copied.
+#[no_mangle]
+pub unsafe extern "C" fn isc_lines_view(out: *mut IscArray, p: *const u8, n: i64) {
+    // SAFETY: the `n` bytes of a string of the generated code, alive while
+    // the array lives (the compiler's `borrow_elements`)
+    let b = unsafe { bytes_of(p, n) };
+    let r = lines_view(b);
+    // SAFETY: the place of the result, the generated code's
+    unsafe { out.write(r) };
+}
+
+/// `lines` of a text as views of it (see `isc_lines_view`), in safe code.
+fn lines_view(b: &[u8]) -> IscArray {
+    let threads = thread_count();
+    if b.len() < LINES_PARALLEL_MIN || threads <= 1 {
+        return view_strs(&Lines(b));
+    }
+    // the text without its final `\n`: its lines are `split('\n')`
+    let body = &b[..b.len() - (b[b.len() - 1] == b'\n') as usize];
+    let parts = (threads * 4).min(256);
+    let range = move |k: usize| (body.len() * k / parts, body.len() * (k + 1) / parts);
+    let unit: [usize; 257] = core::array::from_fn(|i| i);
+    let mut counts = [0usize; 256];
+    par::parts_mut(&par::Parts::new(&mut counts[..parts], &unit[..=parts]), par::Order::Interleaved, |k, c| {
+        let (a, e) = range(k);
+        c[0] = memchr::memchr_iter(b'\n', &body[a..e]).count();
+    });
+    // the lines of part k from `first[k]` on: a line starts at the start of
+    // the text (part 0's) and after each `\n` (the part of the `\n` has it)
+    let mut first = [0usize; 257];
+    let mut total = 1 + counts[0];
+    for k in 1..parts {
+        first[k] = total;
+        total += counts[k];
+    }
+    first[parts] = total;
+    let q = new_str_array(total);
+    let (ptr, len) = (q.as_mut_ptr(), q.len());
+    par::parts_mut(&par::Parts::new(q, &first[..=parts]), par::Order::Interleaved, |k, out| {
+        let (a, e) = range(k);
+        let mut s = if k == 0 {
+            0
+        } else {
+            match memchr::memchr(b'\n', &body[a..e]) {
+                Some(o) => a + o + 1,
+                None => return,
+            }
+        };
+        let mut idx = 0;
+        loop {
+            let end = memchr::memchr(b'\n', &body[s..]).map(|o| s + o).unwrap_or(body.len());
+            let m = if end > s && body[end - 1] == b'\r' { end - 1 - s } else { end - s };
+            out[idx] = IscStr { ptr: body.as_ptr().wrapping_add(s), len: m as i64 };
+            idx += 1;
+            if end >= e {
+                break;
+            }
+            s = end + 1;
+        }
+    });
+    IscArray { ptr: ptr as *mut u8, len: len as i64 }
+}
+
+/// The parts `parts` as views of its text (D555): each the place of its
+/// first byte in the text and its length; the array owns its block alone.
+fn view_strs(parts: &impl Parts) -> IscArray {
+    let mut count = 0;
+    parts.each(|_, _| count += 1);
+    let text = parts.text();
+    let q = new_str_array(count);
+    let ptr = q.as_mut_ptr();
+    let mut k = 0;
+    parts.each(|s, e| {
+        q[k] = IscStr { ptr: text.as_ptr().wrapping_add(s), len: (e - s) as i64 };
+        k += 1;
+    });
+    IscArray { ptr: ptr as *mut u8, len: count as i64 }
+}
+
 /// Each `i` where `b[i] == c`, in order (D305): 32 bytes compared at a
 /// time into the bits of a mask (written so that LLVM makes it one vector
 /// comparison and `vpmovmskb`), then its bits one by one. No call for each

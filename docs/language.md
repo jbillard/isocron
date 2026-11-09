@@ -682,7 +682,9 @@ it must outlive its owner (see [Memory](#memory)). An array of strings
 made of strings that live longer than it, such as `sort(xs)` or
 `sortBy(xs, f)` while `xs` is still read after it, holds views of them:
 nothing is copied, unless the array itself is returned, stored in another
-value or made while `xs` changes. `reduce` and `scan` of
+value or made while `xs` changes. The same holds for `lines(t)`,
+`split(t, sep)` and `readStdinLines()`: their strings are views of the text,
+which is kept while they are read. `reduce` and `scan` of
 strings follow the fixed order of section 10, so with a non-commutative
 operator such as `+` of strings the result of `reduce` is not the
 left-to-right concatenation: use `fold` for that.

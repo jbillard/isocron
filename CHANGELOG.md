@@ -7,6 +7,9 @@
   texts: `sortBy` of short texts 2.6 times faster, `sort` of texts 17 %
   faster; the building of a `Map` with texts as keys copies each key twice
   instead of four times (D555).
+- `lines`, `split` and `readStdinLines()` make views of their text when it
+  outlives them: no byte copied (k-nucleotide 6 % faster, 24 % less memory)
+  (D556).
 
 ## 0.5.0 — 2026-11-09
 
