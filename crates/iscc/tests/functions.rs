@@ -566,3 +566,42 @@ fn functions_read_that_read_values_of_their_own() {
     }
     checked_clean(src, "functions_read_capturing", &["a", "b"]);
 }
+
+/// D581: a function of an element of a table computed once per element
+/// (D230) only when it cannot panic whatever the element: an operation of
+/// strings that panics for some values (`readWord` out of its bytes,
+/// `repeat` of a negative count, `toFixed` of 500 digits) at an element the
+/// `map` never reads is not computed. The program reads elements 0 and 2
+/// only: no panic, interpreted and compiled, 1 and 4 threads.
+#[test]
+fn table_elements_never_read_never_computed() {
+    let src = "action main(args: string[k]): i32 {
+    const b = bytes(\"0123456789abcdef\");
+    const t = [0, 100, 4];
+    const idx = [0, 2, 0, 2, 0, 2, 0, 2];
+    print(map(idx, (i) => Math.sqrt(f64(readWord(b, t[i], 4)))));
+    const c = [1, -1, 2];
+    print(map(idx, (i) => Math.sqrt(f64(len(\"ab\".repeat(c[i]))))));
+    const u = [1.5, 2.25, 4.0];
+    const d = [2, 500, 1];
+    print(map(idx, (i) => len(Math.sqrt(u[i]).toFixed(d[i]))));
+    return 0;
+}
+";
+    let w = |a: &str, b: &str| format!("[{}]", [a, b, a, b, a, b, a, b].join(", "));
+    let want = format!(
+        "{}\n{}\n{}\n",
+        w(&(858927408f64).sqrt().to_string(), &(926299444f64).sqrt().to_string()),
+        w("1.4142135623730951", "2"),
+        w("4", "3")
+    );
+    match interp(src, &[]) {
+        Outcome::Exit(code, out) => assert_eq!((code, out.as_str()), (0, want.as_str()), "interpreted"),
+        Outcome::Panic(m, _) => panic!("interpreted: {}", m),
+    }
+    let bin = compile(src, "table_never_read");
+    for t in [1, 4] {
+        let r = run_bin_threads(&bin, &[], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, r.stderr);
+    }
+}

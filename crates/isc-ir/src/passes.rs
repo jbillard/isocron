@@ -1118,6 +1118,8 @@ pub fn cannot_panic(e: &Expr) -> bool {
     use ExprKind::*;
     match &e.kind {
         Index(..) | Update { .. } | Slice(..) | Window(..) | CheckSize(..) | CheckNonNegative(..) | Action(..) | Bench(..) => false,
+        // an operation of strings that panics for some values (D581)
+        StrOp(op, _) if op.may_panic() => false,
         Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) => {
             matches!(b.kind, Lit(crate::Lit::Int(d)) if d != 0) && cannot_panic(a)
         }
@@ -1502,6 +1504,7 @@ fn total(e: &Expr, lens: &HashMap<VarId, i64>) -> bool {
         }
         CheckSize(a, b, body) => matches!((&a.kind, &b.kind), (Lit(crate::Lit::Int(x)), Lit(crate::Lit::Int(y))) if x == y) && total(body, lens),
         Update { .. } | Slice(..) | Window(..) | CheckNonNegative(..) | Action(..) | Bench(..) | Call(..) => false,
+        StrOp(op, _) if op.may_panic() => false,
         Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) => {
             matches!(b.kind, Lit(crate::Lit::Int(d)) if d != 0 && d != -1) && total(a, lens)
         }
@@ -2720,6 +2723,7 @@ fn may_panic(e: &Expr) -> bool {
     use ExprKind::*;
     match &e.kind {
         Index(..) | CheckSize(..) | CheckNonNegative(..) | Call(..) | Slice(..) | Window(..) | Update { .. } => true,
+        StrOp(op, _) if op.may_panic() => true,
         Binary(BinOp::Div | BinOp::Rem, a, _) if !a.ty.is_float() => true,
         _ => e.children().into_iter().any(may_panic),
     }

@@ -246,6 +246,32 @@ pub enum StrOp {
     JsParseInt,
 }
 
+impl StrOp {
+    /// The operation panics for some values of its operands (D581): bytes
+    /// that are not UTF-8 (`stringOf`), an empty separator (`split`), a
+    /// slice past the end or inside a character, a negative count
+    /// (`repeat`), a number of digits out of 0 to 100 (`toFixed`), a word
+    /// out of its bytes (`readWord`), a `bigint` from a text that is no
+    /// integer, divided by zero or raised to a negative or huge exponent, a
+    /// regular expression made of a pattern that is not one or replacing
+    /// all without the flag `g`. The passes never compute it where the
+    /// program does not (`passes::cannot_panic`). A memory exhausted is no
+    /// panic of a value: not counted, as for `iota(n)`.
+    pub fn may_panic(&self) -> bool {
+        matches!(
+            self,
+            StrOp::FromBytes
+                | StrOp::Split
+                | StrOp::Slice
+                | StrOp::Repeat
+                | StrOp::ToFixed
+                | StrOp::ReadWord
+                | StrOp::Big(BigOp::Div | BigOp::Rem | BigOp::Pow | BigOp::Parse)
+                | StrOp::Rx(RxOp::New | RxOp::Replace | RxOp::ReplaceAll)
+        )
+    }
+}
+
 /// The operations of `bigint` (D156): `/` truncated toward zero, `%` of the
 /// sign of the dividend, as ECMAScript.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

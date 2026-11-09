@@ -1696,6 +1696,7 @@ fn panic_sites(e: &Expr) -> usize {
         // lanes at once (D183)
         CheckNonNegative(..) => 0,
         Index(..) | Update { .. } | Slice(..) | Window(..) | CheckSize(..) | Action(..) | Bench(..) => 1,
+        StrOp(op, _) if op.may_panic() => 1,
         Binary(BinOp::Div | BinOp::Rem, a, b) if matches!(a.ty, Type::Int(_)) && !matches!(b.kind, Lit(isc_ir::Lit::Int(d)) if d != 0) => 1,
         Pow(_, k) if !(matches!(k.kind, Lit(isc_ir::Lit::Int(n)) if n >= 0) || !matches!(k.ty, Type::Int(ik) if ik.signed())) => 1,
         _ => 0,
@@ -1725,6 +1726,7 @@ fn maskable(e: &Expr) -> bool {
         }
         // (a size check of vector code is of every lane: `uniform_check`)
         Update { .. } | Slice(..) | Window(..) | Action(..) | Bench(..) => false,
+        StrOp(op, _) if op.may_panic() => false,
         Pow(..) => isc_ir::passes::cannot_panic(e),
         _ => e.children().into_iter().all(maskable),
     }

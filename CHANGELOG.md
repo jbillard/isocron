@@ -31,6 +31,10 @@
 - `readWord(b, at, n)`: the `n` bytes (1 to 8) of an array of bytes from
   `at` as one `u64`, little-endian, checked once and compiled to one or two
   loads (D580).
+- A function of a table element computed once per element (D230) is no
+  longer computed at elements the program never reads when it can panic
+  there (`readWord`, `repeat`, `toFixed` and other operations of strings):
+  such a program panicked wrongly (D581).
 
 ## 0.5.0 — 2026-11-09
 

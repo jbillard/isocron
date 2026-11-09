@@ -13443,3 +13443,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     taken); the language has no panic a program can raise, so a
     `parseI64` in Isocron needs one: a primitive of panic for the modules
     of the runtime only, the next need of step 7.
+- **D581 — The passes never compute an operation of strings that may
+  panic where the program does not (2026-11-09).** Found while designing
+  the next primitive of step 7: `cannot_panic` and `total` (the passes:
+  what may be computed for elements a program never reads, or on every
+  lane) looked only at indexings, sizes, divisions and actions, so an
+  operation of strings was safe whenever its operands were. The table of
+  D230 then computed `h(t[i])` for every element of `t`, read or not:
+  `map([0, 2, …], (i) => Math.sqrt(f64(readWord(b, t[i], 4))))` with
+  `t = [0, 100, 4]` panicked on `t[1]`, which the program never reads,
+  interpreted and compiled the same (the passes are shared); so did
+  `repeat` of a negative count and `toFixed` of 500 digits, before D580.
+  `StrOp::may_panic` lists the operations that panic for some values:
+  `stringOf` (bytes not UTF-8), `split` (an empty separator), `slice`,
+  `repeat`, `toFixed`, `readWord`, the `bigint` division, remainder,
+  power and reading of a text, the construction of a regular expression
+  and its replacements (the flag `g`). `cannot_panic`, `total`, `may_panic`
+  (D207) and, in the code generator, `panic_sites` and `maskable` count
+  them. A memory exhausted is no panic of a value (as for `iota(n)`): not
+  counted. The test `table_elements_never_read_never_computed` (the three
+  cases, interpreted, compiled, 1 and 4 threads) fails without the change.
+  The 58 programs of `bench/` and `examples/` compile to the same LLVM IR
+  as before (compared one by one): no optimization lost there.
