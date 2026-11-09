@@ -12408,3 +12408,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     Benchmarks Game with it by hand: the same outputs, the code 0 (a first
     run of k-nucleotide panicked on an input cut before its third
     sequence, in every mode: the input, not the allocator).
+- **D547 — The targets checked in the machine of Windows after D546
+  (2026-11-09).** The end of the generated `main` changed for every target
+  (`isc_main_end`, D546): `windows.rs` with an `iscc.exe` of 3360afd, 16 of
+  16 (the MinGW and MSVC targets, the static library of Visual Studio,
+  `iscc.exe` building and interpreting on Windows). A first run failed
+  before a program ran: `lookup_on_windows`, "run.py: cannot reach the
+  Windows machine: " (an empty message: the first command of the runner,
+  `mkdir`, refused while 16 tests opened their sessions at once on a
+  machine just started; the same kind as D542 and the release 0.4.9).
+  `tools/windows/run.py` now closes the shared session and tries that
+  first command once more before it gives up.

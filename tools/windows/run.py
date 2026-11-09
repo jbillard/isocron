@@ -65,6 +65,12 @@ def main():
     # the commands around the program keep their messages, shown on failure
     r = ssh('mkdir "%s"' % remote.replace("/", "\\"), capture_output=True)
     if r.returncode != 0:
+        # once more after the shared session closed: many tests start at
+        # once on a machine just started, and the first sessions may be
+        # refused (D547)
+        subprocess.run(["ssh", "-p", port] + ssh_opts + ["-O", "exit", host], capture_output=True)
+        r = ssh('mkdir "%s"' % remote.replace("/", "\\"), capture_output=True)
+    if r.returncode != 0:
         sys.exit("run.py: cannot reach the Windows machine: " + r.stderr.decode(errors="replace"))
     try:
         r = subprocess.run(["scp", "-q", "-P", port] + ssh_opts + files + ["%s:%s/" % (host, remote)], capture_output=True)
