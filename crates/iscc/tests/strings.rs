@@ -1771,3 +1771,108 @@ fn trim_and_slice_written_in_isocron() {
         assert!(r.stderr.contains(msg), "{:?} compiled: {}", args, r.stderr);
     }
 }
+
+/// D591: the answers of `str::parse::<i64>` for the reading of integers of
+/// the prelude (`tryParseI64`, the reading of `parseI64`, D582, D586), on
+/// the texts of the test of the runtime's reader (D539), removed with it:
+/// every text of up to 4 characters of an alphabet of digits, signs, bytes
+/// next to the digits and characters of UTF-8; numbers of every length
+/// around the powers of ten and the bounds; digits with one byte changed.
+/// Interpreted and compiled on a part, compiled on all of them.
+#[test]
+fn parse_i64_of_the_prelude_answers_as_str_parse() {
+    let src = "action main(args: string[k]): i32 {
+    forEach(lines(readText(args[0])), (s) => {
+        print(match (tryParseI64(s)) { Ok(v) => toString(v), Err(e) => \"x\" });
+    });
+    return 0;
+}
+";
+    let texts = |random: usize| -> Vec<String> {
+        let alpha = ["0", "1", "5", "9", "/", ":", "+", "-", " ", "a", "é", "\u{10348}"];
+        let mut all: Vec<String> = Vec::new();
+        let mut level = vec![String::new()];
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for t in &level {
+                for c in alpha {
+                    next.push(format!("{}{}", t, c));
+                }
+            }
+            all.extend(next.iter().cloned());
+            level = next;
+        }
+        // the empty text, a line between the others
+        all.insert(7, String::new());
+        for k in 0..=19u32 {
+            let p = 10i128.pow(k);
+            for x in [p - 1, p, p + 1, -p + 1, -p, -p - 1] {
+                all.extend([format!("{}", x), format!("+{}", x), format!("0{}", x), format!("-00{}", x)]);
+            }
+        }
+        for x in [i64::MAX as i128, i64::MAX as i128 + 1, i64::MIN as i128, i64::MIN as i128 - 1, u64::MAX as i128] {
+            all.push(format!("{}", x));
+        }
+        for n in 0..=24 {
+            all.extend(["0".repeat(n), format!("-{}", "9".repeat(n)), format!("{}1", "0".repeat(n))]);
+        }
+        let mut r: u64 = 1;
+        for _ in 0..random {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let n = 1 + (r >> 59) as usize % 20;
+            let mut b: Vec<u8> = (0..n).map(|i| b'0' + ((r >> (i * 3 % 60)) % 10) as u8).collect();
+            if r % 3 == 0 {
+                let i = (r >> 7) as usize % n;
+                b[i] = [b'/', b':', b' ', b'a', b'+', b'-', 0x7f, 0][(r >> 13) as usize % 8];
+            }
+            let t = String::from_utf8(b).unwrap();
+            all.push(format!("-{}", t));
+            all.push(t);
+        }
+        // an empty text cannot be the last line (`lines` gives none for it)
+        all.push("7".to_string());
+        all
+    };
+    let want = |ts: &[String]| -> String { ts.iter().map(|t| t.parse::<i64>().map(|v| format!("{}\n", v)).unwrap_or_else(|_| "x\n".to_string())).collect() };
+    let part = texts(2_000);
+    let file = tmp("parse_i64_texts_part.txt");
+    std::fs::write(&file, part.join("\n")).unwrap();
+    agree(src, "parse_i64_answers", &[file.to_str().unwrap()], &want(&part));
+    let all = texts(200_000);
+    let file = tmp("parse_i64_texts_all.txt");
+    std::fs::write(&file, all.join("\n")).unwrap();
+    let bin = compile(src, "parse_i64_answers_all");
+    let r = run_bin(&bin, &[file.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout == want(&all), "the answers of {} texts differ from `str::parse::<i64>`", all.len());
+}
+
+/// D591: `repeat` and the text of a boolean made by the generated code (a
+/// block of the final size, the bytes written copied after themselves; a
+/// word stored into a block of 8 bytes): every count from 0 to 70 of texts
+/// of 0 to 4 bytes a character, the text of a `join` of as many; a
+/// negative count the panic of the runtime; interpreted and compiled.
+#[test]
+fn repeat_and_boolean_text_made_by_the_generated_code() {
+    let src = "action main(args: string[k]): i32 {
+    print(map(args, (s) => map(iota(71), (i) => s.repeat(i)) == map(iota(71), (i) => join(fill(i, s), \"\"))));
+    print(map(args, (s) => s.repeat(3)));
+    print(map([true, false, 1 < 2, 2 < 1], toString));
+    print(`${true}|${false}|${args.length > 2}`);
+    return 0;
+}
+";
+    let texts = ["", "a", "ab", "é€😀", "0123456789"];
+    let thrice: Vec<String> = texts.iter().map(|t| t.repeat(3)).collect();
+    let want = format!("[true, true, true, true, true]\n[{}]\n[true, false, true, false]\ntrue|false|true\n", thrice.join(", "));
+    agree(src, "repeat_bool_text", &texts, &want);
+    let bad = "action main(args: string[k]): i32 {\n    print(args[0].repeat(parseI64(args[1])).length);\n    return 0;\n}\n";
+    let m = interp_panic(bad, &["ab", "-3"]);
+    assert!(m.contains("repeat: the count is negative: -3"), "{}", m);
+    let bin = compile(bad, "repeat_negative");
+    let r = run_bin(&bin, &["ab", "-3"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    assert!(r.stderr.contains("panic at line 2, column 25: repeat: the count is negative: -3"), "{}", r.stderr);
+    let r = run_bin(&bin, &["ab", "1000000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "2000000\n"), "{}", r.stderr);
+}

@@ -1571,32 +1571,6 @@ pub extern "C" fn isc_clock_ns() -> u64 {
     (ts.tv_sec as u64).wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as u64)
 }
 
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_parse_i64(p: *const u8, len: i64, line: i32, col: i32) -> i64 {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let s = str_of(p, len);
-        match sem::parse_i64_short(s) {
-            Some(v) => v,
-            None => parse_i64_rest(s, line, col),
-        }
-    }
-}
-
-/// `isc_parse_i64` of the texts that are not a sign and 1 to 8 digits,
-/// and its panic, out of it (D539: its frame on the stack only for them).
-#[inline(never)]
-fn parse_i64_rest(s: &str, line: i32, col: i32) -> i64 {
-    match sem::parse_i64_rest(s) {
-        Some(v) => v,
-        None => die(line, col, &Panic::ParseI64(s)),
-    }
-}
-
 /// The program arguments, without the program name, as `[k]string`: each
 /// a copy, owned by the array (a string is freed as an array, D134).
 ///
@@ -2045,19 +2019,6 @@ impl<const N: usize> Write for Small<N> {
     }
 }
 
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_string_i64(out: *mut IscStr, v: i64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let mut b = [0u8; 20];
-        *out = new_str(signed_decimal(v, &mut b));
-    }
-}
-
 /// `toString(v).padStart(len, c)` (`start`) or `.padEnd`, `c` one byte,
 /// in one block of its size (D348): the text of `v` (signed or not), `c`
 /// before or after it up to `len` bytes; the text alone when it has `len`
@@ -2090,19 +2051,6 @@ pub unsafe extern "C" fn isc_pad_int(out: *mut IscStr, v: i64, signed: i32, len:
 /// # Safety
 /// The pointers as the generated code gives them (C1).
 #[no_mangle]
-pub unsafe extern "C" fn isc_to_string_u64(out: *mut IscStr, v: u64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let mut b = [0u8; 20];
-        *out = new_str(decimal(v, &mut b));
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
 pub unsafe extern "C" fn isc_to_string_f64(out: *mut IscStr, v: f64) {
     // SAFETY: the pointers the generated code gives (C1): its places of results
     // and its strings and arrays, alive during the call
@@ -2123,18 +2071,6 @@ pub unsafe extern "C" fn isc_to_string_f32(out: *mut IscStr, v: f32) {
         let mut s = Small::<F32_TEXT> { buf: [0; F32_TEXT], len: 0 };
         let _ = sem::write_f32(&mut s, v);
         *out = new_str(&s.buf[..s.len]);
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_string_bool(out: *mut IscStr, b: i32) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        *out = new_str(if b != 0 { b"true" } else { b"false" });
     }
 }
 
@@ -2720,19 +2656,6 @@ unsafe fn free_strs_in(n: usize, at: impl Fn(usize) -> *const u8) {
         // SAFETY: `k` strings of that block, not freed before
         unsafe { arena_free_many(block, k as u64) };
         i += k;
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_trim(out: *mut IscStr, p: *const u8, n: i64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let s = core::str::from_utf8_unchecked(bytes_of(p, n));
-        *out = new_str(s.trim().as_bytes());
     }
 }
 
@@ -3687,39 +3610,6 @@ pub unsafe extern "C" fn isc_pad1_into(out: *mut IscStr, buf: *mut u8, p: *const
             return;
         }
         isc_pad(out, p, n, len, &c, 1, cs >> 8)
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_repeat(out: *mut IscStr, p: *const u8, n: i64, count: i64, line: i32, col: i32) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let s = text(p, n);
-        if count < 0 {
-            die(line, col, &Panic::RepeatNegative(count))
-        }
-        *out = written(&|w| {
-            let _ = sem::repeat(w, s, count);
-            Ok(())
-        });
-    }
-}
-
-/// 0 `trimStart`, 1 `trimEnd`.
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_trim_side(out: *mut IscStr, p: *const u8, n: i64, end: i32) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let s = text(p, n);
-        *out = new_str(if end != 0 { s.trim_end() } else { s.trim_start() }.as_bytes());
     }
 }
 
@@ -4749,22 +4639,6 @@ fn try_csv(s: &str, skip: i64) -> Result<IscNested, Panic<'_>> {
     let (q, values) = new_f64s((rows * cols) as usize);
     let _ = sem::parse_csv_f64(s, skip, &mut |i, v| values[i] = v);
     Ok(IscNested { ptr: q as *mut u8, rows, cols, stride: cols })
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_try_parse_i64(v: *mut i64, e: *mut IscStr, p: *const u8, n: i64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // (the value, the message) and its strings and arrays
-    unsafe {
-        let s = str_of(p, n);
-        match sem::parse_i64(s) {
-            Some(x) => (*v, *e) = (x, no_error()),
-            None => (*v, *e) = (0, message(&Panic::ParseI64(s))),
-        }
-    }
 }
 
 ///
@@ -5908,6 +5782,13 @@ pub unsafe extern "C" fn isc_panic_text(a: *const u8, na: i64, b: *const u8, nb:
     let (a, b, c) = unsafe { (bytes_of(a, na), bytes_of(b, nb), bytes_of(c, nc)) };
     let text = |x: &'static [u8]| core::str::from_utf8(x).unwrap_or("?");
     die(line, col, &format_args!("{}{}{}", text(a), text(b), text(c)))
+}
+
+/// `s.repeat(count)` of a negative count (D591): the text is made by the
+/// generated code.
+#[no_mangle]
+pub extern "C" fn isc_panic_repeat(count: i64, line: i32, col: i32) -> ! {
+    die(line, col, &Panic::RepeatNegative(count))
 }
 
 /// `s.slice(a, b)` out of the bytes of `s` (D590): the slice is made by the

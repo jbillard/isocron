@@ -58,10 +58,6 @@ pub fn msg_bench(r: i64) -> String {
     text(&Panic::BenchReps(r))
 }
 
-pub fn parse_i64(s: &str) -> Result<i64, String> {
-    sem::parse_i64(s).ok_or_else(|| text(&Panic::ParseI64(s)))
-}
-
 pub fn parse_f64(s: &str) -> Result<f64, String> {
     sem::parse_f64(s).ok_or_else(|| text(&Panic::ParseF64(s)))
 }

@@ -159,7 +159,6 @@ pub enum ActionOp {
     /// `print`, with the index of its shape in `Program::shapes`.
     Print(u32),
     Clock,
-    ParseI64,
     ParseF64,
     /// Text (D135).
     ReadText,
@@ -199,7 +198,6 @@ pub enum StrOp {
     /// Text (D135): new arrays of new strings, or a new string.
     Lines,
     Split,
-    Trim,
     Join,
     /// The functions of TypeScript (D155).
     IndexOf,
@@ -214,8 +212,6 @@ pub enum StrOp {
     PadStart,
     PadEnd,
     Repeat,
-    TrimStart,
-    TrimEnd,
     /// `toFixed(x, d)` of a `f64`.
     ToFixed,
     Slice,

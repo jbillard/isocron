@@ -953,7 +953,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_print_bytes(ptr, i64)",
     "declare void @isc_flush()",
     "declare i32 @isc_main_end(i32)",
-    "declare void @isc_try_parse_i64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_parse_f64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_bytes(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_f64(ptr, ptr, ptr, i64)",
@@ -961,7 +960,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_try_read_csv_f64(ptr, ptr, ptr, i64, i64)",
     "declare void @isc_try_write_bytes(ptr, ptr, i64, ptr, i64)",
     "declare i64 @isc_clock_ns()",
-    "declare i64 @isc_parse_i64(ptr, i64, i32, i32)",
     "declare double @isc_parse_f64(ptr, i64, i32, i32)",
     "declare void @isc_str_new(ptr, ptr, i64)",
     "declare void @isc_str_concat(ptr, ptr, i64, ptr, i64)",
@@ -969,18 +967,14 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare i32 @isc_str_cmp(ptr, i64, ptr, i64)",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_str_adopt_bytes(ptr, ptr, i64, i32, i32)",
-    "declare void @isc_to_string_i64(ptr, i64)",
-    "declare void @isc_to_string_u64(ptr, i64)",
     "declare void @isc_to_string_f64(ptr, double)",
     "declare void @isc_to_string_f32(ptr, float)",
-    "declare void @isc_to_string_bool(ptr, i32)",
     "declare void @isc_read_text(ptr, ptr, i64, i32, i32)",
     "declare void @isc_write_text(ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines(ptr, ptr, i64)",
     "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines_view(ptr, ptr, i64)",
     "declare void @isc_split_view(ptr, ptr, i64, ptr, i64, i32, i32)",
-    "declare void @isc_trim(ptr, ptr, i64)",
     "declare i64 @isc_index_of(ptr, i64, ptr, i64)",
     "declare i32 @isc_str_test(ptr, i64, ptr, i64, i32)",
     "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64, i32)",
@@ -999,8 +993,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
     "declare void @isc_str_append(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_str_append_n(ptr, ptr, i64)",
-    "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
-    "declare void @isc_trim_side(ptr, ptr, i64, i32)",
+    "declare void @isc_panic_repeat(i64, i32, i32) noreturn",
     "declare void @isc_panic_str_slice(i64, i64, i64, i32, i32) noreturn",
     "declare void @isc_panic_boundary(i64, i32, i32) noreturn",
     "declare void @isc_panic_text_slice(ptr, i64, i64, i64, i32, i32) noreturn",
@@ -12587,10 +12580,30 @@ impl<'p> Gen<'p> {
         v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", s0, len)), "{ ptr, i64 }")
     }
 
+    /// The text of the integer `x` (an `i64`, or a `u64` when not `signed`)
+    /// by the function of the prelude lowered for it (D588).
+    fn int_text(&mut self, x: &str, signed: bool) -> R<V> {
+        let Some((s, u)) = self.p.int_text else {
+            return Err("codegen: the text of an integer, its function of the prelude not lowered".into());
+        };
+        let call = format!("call {}{{ ptr, i64 }} @isc_fn_{}(i64 {})", self.fn_cc(), if signed { s } else { u }, x);
+        Ok(v(self.ins(call), "{ ptr, i64 }"))
+    }
+
     fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
         use isc_ir::StrOp as S;
         if matches!(op, S::Group | S::GroupCounts) && group_stream_ok(&es[0]) {
             return self.group_stream(&es[0], op == S::GroupCounts);
+        }
+        // the text of a boolean (D591): `true` or `false` stored as one word
+        // into a block of 8 bytes, its first 4 or 5 the text
+        if let (S::ToString, Type::Bool) = (op, &es[0].ty) {
+            let x = self.ex(&es[0], 1)?;
+            let dst = self.ins("call noalias ptr @isc_alloc(i64 8)".to_string());
+            let w = self.ins(format!("select i1 {}, i64 1702195828, i64 435728179558", x.r));
+            self.emit(format!("store i64 {}, ptr {}, align 8", w, dst));
+            let n = self.ins(format!("select i1 {}, i64 4, i64 5", x.r));
+            return Ok(self.arr(&dst, &n));
         }
         // the text of an integer that no fusion writes in place: the
         // function of the prelude that writes it (D588), its argument made
@@ -12623,10 +12636,7 @@ impl<'p> Gen<'p> {
                         self.emit(format!("call void @isc_pad_int(ptr {}, i64 {}, i32 {}, i64 {}, i32 {}, i32 {})", out, x, signed as i32, len.r, f.as_bytes()[0], start));
                     }
                     _ => {
-                        let tx = self.alloca("{ ptr, i64 }");
-                        let f = if signed { "isc_to_string_i64" } else { "isc_to_string_u64" };
-                        self.emit(format!("call void @{}(ptr {}, i64 {})", f, tx, x));
-                        let text = v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", tx)), "{ ptr, i64 }");
+                        let text = self.int_text(&x, signed)?;
                         let (p, n) = self.str_parts(&text);
                         let (q, m) = self.str_parts(&fill);
                         self.emit(format!("call void @isc_pad(ptr {}, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", out, p, n, len.r, q, m, start));
@@ -12713,15 +12723,11 @@ impl<'p> Gen<'p> {
                         } else {
                             x.r.clone()
                         };
-                        let f = if k.signed() { "isc_to_string_i64" } else { "isc_to_string_u64" };
-                        format!("call void @{}(ptr OUT, i64 {})", f, w)
+                        return self.int_text(&w, k.signed());
                     }
                     Type::F64 => format!("call void @isc_to_string_f64(ptr OUT, double {})", x.r),
                     Type::F32 => format!("call void @isc_to_string_f32(ptr OUT, float {})", x.r),
-                    Type::Bool => {
-                        let b = self.ins(format!("zext i1 {} to i32", x.r));
-                        format!("call void @isc_to_string_bool(ptr OUT, i32 {})", b)
-                    }
+                    // (a boolean: made above, D591)
                     t => return Err(format!("codegen: toString of {:?}", t)),
                 };
                 new_str(self, call)
@@ -12742,10 +12748,6 @@ impl<'p> Gen<'p> {
                 let pos = Self::pos(e.span);
                 let f = if self.view_parts.contains(&(e as *const Expr)) { "isc_split_view" } else { "isc_split" };
                 new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", f, p, n, q, m, pos))
-            }
-            S::Trim => {
-                let (p, n) = self.str_parts(&vals[0]);
-                new_str(self, format!("call void @isc_trim(ptr OUT, ptr {}, i64 {})", p, n))
             }
             // the functions of TypeScript (D155)
             S::IndexOf => {
@@ -12844,15 +12846,48 @@ impl<'p> Gen<'p> {
                     None => new_str(self, format!("call void @isc_pad(ptr OUT, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, vals[1].r, q, m, start)),
                 }
             }
+            // `s.repeat(count)` (D591), made here: a negative count a panic,
+            // a block of `len * count` bytes (a product past `i64` asks for
+            // the most, refused by the allocator), the text copied once, then
+            // the bytes written copied after themselves, twice as many each
+            // turn
             S::Repeat => {
-                let (p, n) = self.str_parts(&vals[0]);
+                let (p, len) = self.str_parts(&vals[0]);
+                let count = vals[1].r.clone();
                 let pos = Self::pos(e.span);
-                new_str(self, format!("call void @isc_repeat(ptr OUT, ptr {}, i64 {}, i64 {}, {})", p, n, vals[1].r, pos))
-            }
-            S::TrimStart | S::TrimEnd => {
-                let (p, n) = self.str_parts(&vals[0]);
-                let end = (op == S::TrimEnd) as i32;
-                new_str(self, format!("call void @isc_trim_side(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, end))
+                let ok = self.ins(format!("icmp sge i64 {}, 0", count));
+                self.guard(&ok, format!("call void @isc_panic_repeat(i64 {}, {})", count, pos));
+                self.decls.insert("declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)".into());
+                let m = self.ins(format!("call {{ i64, i1 }} @llvm.smul.with.overflow.i64(i64 {}, i64 {})", len, count));
+                let prod = self.ins(format!("extractvalue {{ i64, i1 }} {}, 0", m));
+                let over = self.ins(format!("extractvalue {{ i64, i1 }} {}, 1", m));
+                let total = self.ins(format!("select i1 {}, i64 9223372036854775807, i64 {}", over, prod));
+                let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", total));
+                let some = self.ins(format!("icmp sgt i64 {}, 0", total));
+                let (lfirst, lloop, lbody, ldone) = (self.label(), self.label(), self.label(), self.label());
+                // the bytes written so far (a slot of the stack, a register
+                // once compiled)
+                let slot = self.alloca("i64");
+                self.cbr(&some, &lfirst, &ldone);
+                self.block(&lfirst);
+                self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, p, len));
+                self.emit(format!("store i64 {}, ptr {}", len, slot));
+                self.br(&lloop);
+                self.block(&lloop);
+                let filled = self.ins(format!("load i64, ptr {}", slot));
+                let more = self.ins(format!("icmp slt i64 {}, {}", filled, total));
+                self.cbr(&more, &lbody, &ldone);
+                self.block(&lbody);
+                let left = self.ins(format!("sub i64 {}, {}", total, filled));
+                let small = self.ins(format!("icmp slt i64 {}, {}", left, filled));
+                let c = self.ins(format!("select i1 {}, i64 {}, i64 {}", small, left, filled));
+                let to = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, filled));
+                self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", to, dst, c));
+                let next = self.ins(format!("add i64 {}, {}", filled, c));
+                self.emit(format!("store i64 {}, ptr {}", next, slot));
+                self.br(&lloop);
+                self.block(&ldone);
+                self.arr(&dst, &total)
             }
             S::Slice if isc_ir::passes::str_view(op, es, &e.ty) => {
                 let (p, n) = self.str_parts(&vals[0]);
@@ -13472,10 +13507,6 @@ impl<'p> Gen<'p> {
                 v("false", "i1")
             }
             ActionOp::Clock => v(self.ins("call i64 @isc_clock_ns()".into()), "i64"),
-            ActionOp::ParseI64 => {
-                let (p, n) = self.str_parts(&vals[0]);
-                v(self.ins(format!("call i64 @isc_parse_i64(ptr {}, i64 {}, {})", p, n, pos)), "i64")
-            }
             ActionOp::ParseF64 => {
                 let (p, n) = self.str_parts(&vals[0]);
                 v(self.ins(format!("call double @isc_parse_f64(ptr {}, i64 {}, {})", p, n, pos)), "double")
@@ -13528,7 +13559,6 @@ impl<'p> Gen<'p> {
                     return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", err)), "{ ptr, i64 }"));
                 }
                 let (vt, name) = match f {
-                    F::ParseI64 => ("i64".to_string(), "isc_try_parse_i64"),
                     F::ParseF64 => ("double".to_string(), "isc_try_parse_f64"),
                     F::ReadBytes => ("{ ptr, i64 }".to_string(), "isc_try_read_bytes"),
                     F::ReadF64 => ("{ ptr, i64 }".to_string(), "isc_try_read_f64"),

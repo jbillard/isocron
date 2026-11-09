@@ -46,6 +46,9 @@
   (D588).
 - `trim`, `trimStart` and `trimEnd` are written in Isocron (45 % faster), and
   `slice` of a string is made by the generated code (D590).
+- `repeat` is made by the generated code in a block of its final size (63
+  to 93 % faster; a size past memory is a panic at once), as the text of a
+  boolean; the Rust functions that the prelude replaced are removed (D591).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

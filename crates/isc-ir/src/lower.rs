@@ -2095,23 +2095,17 @@ impl<'p> Lower<'p> {
             }
             // the functions of strings used as values (D135)
             FuncVal::Prim(
-                p @ (Prim::Trim
-                | Prim::StrLen
+                p @ (Prim::StrLen
                 | Prim::Concat
                 | Prim::ToString
                 | Prim::StringOf
                 | Prim::Join
                 | Prim::ToUpper
-                | Prim::ToLower
-                | Prim::TrimStart
-                | Prim::TrimEnd),
+                | Prim::ToLower),
             ) => {
                 let op = match p {
-                    Prim::Trim => StrOp::Trim,
                     Prim::ToUpper => StrOp::ToUpper,
                     Prim::ToLower => StrOp::ToLower,
-                    Prim::TrimStart => StrOp::TrimStart,
-                    Prim::TrimEnd => StrOp::TrimEnd,
                     Prim::StrLen => StrOp::Len,
                     Prim::Concat => StrOp::Concat,
                     Prim::ToString => StrOp::ToString,
@@ -2141,7 +2135,6 @@ impl<'p> Lower<'p> {
                     }
                     Prim::Convert(_) => Ok(Expr::new(ExprKind::Convert(Box::new(x)), ret.clone(), span)),
                     // parsing as a function (D156): `lines(t).map(parseF64)`
-                    Prim::ParseI64 => Ok(Expr::new(ExprKind::Action(ActionOp::ParseI64, vec![x]), ret.clone(), span)),
                     Prim::ParseF64 => Ok(Expr::new(ExprKind::Action(ActionOp::ParseF64, vec![x]), ret.clone(), span)),
                     Prim::ParseFloat => Ok(Expr::new(ExprKind::StrOp(StrOp::JsParseFloat, vec![x]), ret.clone(), span)),
                     Prim::JsNumber => Ok(Expr::new(ExprKind::StrOp(StrOp::JsNumber, vec![x]), ret.clone(), span)),
@@ -2540,8 +2533,6 @@ impl<'p> Lower<'p> {
             | Prim::PadStart
             | Prim::PadEnd
             | Prim::Repeat
-            | Prim::TrimStart
-            | Prim::TrimEnd
             | Prim::ToFixed
             | Prim::ArgSort
             | Prim::Group
@@ -2579,8 +2570,6 @@ impl<'p> Lower<'p> {
                     Prim::PadStart => StrOp::PadStart,
                     Prim::PadEnd => StrOp::PadEnd,
                     Prim::Repeat => StrOp::Repeat,
-                    Prim::TrimStart => StrOp::TrimStart,
-                    Prim::TrimEnd => StrOp::TrimEnd,
                     Prim::ToFixed => StrOp::ToFixed,
                     _ => StrOp::Slice,
                 };
@@ -2601,7 +2590,7 @@ impl<'p> Lower<'p> {
                     ExprKind::StrOp(op, out)
                 }
             }
-            Prim::Concat | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::Lines | Prim::Split | Prim::Trim | Prim::Join => {
+            Prim::Concat | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::Lines | Prim::Split | Prim::Join => {
                 let op = match p {
                     Prim::Concat => StrOp::Concat,
                     Prim::StrLen => StrOp::Len,
@@ -2609,7 +2598,6 @@ impl<'p> Lower<'p> {
                     Prim::StringOf => StrOp::FromBytes,
                     Prim::Lines => StrOp::Lines,
                     Prim::Split => StrOp::Split,
-                    Prim::Trim => StrOp::Trim,
                     Prim::Join => StrOp::Join,
                     _ => StrOp::ToString,
                 };
@@ -2947,7 +2935,6 @@ impl<'p> Lower<'p> {
             | Prim::WriteBytes
             | Prim::Print
             | Prim::Clock
-            | Prim::ParseI64
             | Prim::Sys(_) => {
                 let op = match p {
                     Prim::Sys(o) => ActionOp::Sys(o),
@@ -2962,8 +2949,7 @@ impl<'p> Lower<'p> {
                         self.shapes.push(sh);
                         ActionOp::Print(self.shapes.len() as u32 - 1)
                     }
-                    Prim::Clock => ActionOp::Clock,
-                    _ => ActionOp::ParseI64,
+                    _ => ActionOp::Clock,
                 };
                 let mut out = Vec::new();
                 for a in args {

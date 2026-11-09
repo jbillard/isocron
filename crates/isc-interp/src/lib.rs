@@ -209,15 +209,12 @@ impl Interp<'_> {
                 }
                 Value::Array(Rc::new(Array::Str(t.split(&*sep).map(Rc::from).collect())))
             }
-            S::Trim => Value::Str(Rc::from(s(&vs[0]).trim())),
             // the functions of TypeScript (D155): the code of the runtime
             S::IndexOf => Value::Int(isc_runtime_core::index_of(&s(&vs[0]), &s(&vs[1]))),
             S::LastIndexOf => Value::Int(isc_runtime_core::last_index_of(&s(&vs[0]), &s(&vs[1]))),
             S::Includes => Value::Bool(s(&vs[0]).contains(&*s(&vs[1]))),
             S::StartsWith => Value::Bool(s(&vs[0]).starts_with(&*s(&vs[1]))),
             S::EndsWith => Value::Bool(s(&vs[0]).ends_with(&*s(&vs[1]))),
-            S::TrimStart => Value::Str(Rc::from(s(&vs[0]).trim_start())),
-            S::TrimEnd => Value::Str(Rc::from(s(&vs[0]).trim_end())),
             // through the engine of regular expressions: `$` patterns (D157)
             S::ReplaceAll | S::ReplaceFirst => {
                 let mut out = String::new();
@@ -1404,10 +1401,6 @@ impl<'a> Interp<'a> {
                 };
                 let a = self.string(&args[0])?;
                 match f {
-                    F::ParseI64 => match rt::parse_i64(&a) {
-                        Ok(v) => pair(Value::Int(v), Ok(())),
-                        Err(m) => pair(Value::Int(0), Err(m)),
-                    },
                     F::ParseF64 => match rt::parse_f64(&a) {
                         Ok(v) => pair(Value::F64(v), Ok(())),
                         Err(m) => pair(Value::F64(0.0), Err(m)),
@@ -1468,13 +1461,6 @@ impl<'a> Interp<'a> {
             ActionOp::Clock => {
                 thread_local! { static T0: std::time::Instant = std::time::Instant::now(); }
                 Value::Int(T0.with(|t| t.elapsed().as_nanos() as i64))
-            }
-            ActionOp::ParseI64 => {
-                let s = self.string(&args[0])?;
-                match rt::parse_i64(&s) {
-                    Ok(v) => Value::Int(v),
-                    Err(m) => return panic_at(e, m),
-                }
             }
             ActionOp::ParseF64 => {
                 let s = self.string(&args[0])?;

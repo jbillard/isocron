@@ -30,7 +30,6 @@ impl ScalarTy {
 /// and an error message, `""` when the action succeeds, instead of a panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fallible {
-    ParseI64,
     ParseF64,
     ReadBytes,
     ReadF64,
@@ -43,7 +42,6 @@ pub enum Fallible {
 impl Fallible {
     pub fn from_name(name: &str) -> Option<Fallible> {
         Some(match name.strip_suffix("OrError")? {
-            "parseI64" => Fallible::ParseI64,
             "parseF64" => Fallible::ParseF64,
             "readBytes" => Fallible::ReadBytes,
             "readF64" => Fallible::ReadF64,
@@ -96,7 +94,6 @@ pub enum Prim {
     Print,
     Clock,
     Bench,
-    ParseI64,
     /// Strings (D134): `concat(a, b)` (also `a ++ b`), `len(s)` (bytes),
     /// `bytes(s)`, `stringOf(b)` (UTF-8 checked), `toString(v)` of a
     /// scalar, and the action `parseF64(s)`.
@@ -108,14 +105,13 @@ pub enum Prim {
     ParseF64,
     /// Text (D135): the actions `readText`, `writeText`,
     /// `parseCsvF64(text, skip)`, `readCsvF64(path, skip)`; the
-    /// functions `lines`, `split`, `trim`, `join`.
+    /// functions `lines`, `split`, `join` (`trim` is of the prelude, D590).
     ReadText,
     WriteText,
     ParseCsvF64,
     ReadCsvF64,
     Lines,
     Split,
-    Trim,
     Join,
     /// `printBytes(x)`: the bytes of `x` to the standard output (D136).
     PrintBytes,
@@ -133,8 +129,6 @@ pub enum Prim {
     PadStart,
     PadEnd,
     Repeat,
-    TrimStart,
-    TrimEnd,
     /// `x.toFixed(d)`: `d` decimals, as JavaScript.
     ToFixed,
     /// `s.slice(a, b)` of a string.

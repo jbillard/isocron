@@ -13722,3 +13722,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     by the compiler before D580): `strings.trim` 14.153 → 7.748 ns
     (−45.3 %), `strings.slice` 2.050 → 1.973 (−3.8 %); the other forms
     within the noise.
+- **D591 — `repeat` and the text of a boolean made by the generated code;
+  the Rust that the prelude replaced, removed (2026-11-09).** D589: no Rust
+  in the end, so what is replaced leaves.
+  - `s.repeat(count)`: made in place by the code generator: a negative
+    count the panic of the runtime (`isc_panic_repeat`), a block of
+    `len * count` bytes (a product past `i64` asks for the most, which the
+    allocator refuses: a panic at once, where the runtime's version wrote
+    until the system killed it, seen with a cap of memory), the text
+    copied once, then the bytes written copied after themselves, twice as
+    many each turn. The runtime wrote the text `count` times into a string
+    that grew.
+  - `toString` of a boolean: `true` or `false` stored as one word into a
+    block of 8 bytes, its first 4 or 5 bytes the text.
+  - The same texts as before, compiled and interpreted (every count from 0
+    to 70 of texts of 0 to 4 bytes a character against a `join` of as many;
+    the panic of a negative count); the test
+    `repeat_and_boolean_text_made_by_the_generated_code`.
+  - Measured (4096 values a round, the median of 7 runs, Rust by the
+    compiler before D580): `repeat` of 3: 32.684 → 11.529 ns (−64.7 %), of
+    40: 166.731 → 27.189 (−83.7 %), of 0 to 6: 29.740 → 10.918 (−63.3 %),
+    a byte 200 times: 609.839 → 42.926 (−93.0 %); the text of a boolean
+    5.610 → 5.167 (−7.9 %).
+  - Removed, no caller left: of the runtime, `isc_parse_i64`,
+    `isc_try_parse_i64` (D582, D586), `isc_to_string_i64`,
+    `isc_to_string_u64` (D588: the padded text whose fill is not one byte
+    now calls the function of the prelude too, `int_text`),
+    `isc_to_string_bool`, `isc_trim`, `isc_trim_side` (D590), `isc_repeat`;
+    of the runtime core, the reader of integers (`parse_i64`,
+    `parse_i64_short`, `parse_i64_rest`, `digits8`) and its panic; of the
+    compiler, the primitives `parseI64`, `parseI64OrError`, `trim`,
+    `trimStart`, `trimEnd` and their operations of the IR, of the
+    interpreter and of the code generator. 260 lines of Rust less in the
+    runtime and its core.
+  - The test of the runtime's reader (D539: every text of up to 4
+    characters of an alphabet, the powers of ten, the bounds, 400000 texts
+    of digits with a byte changed) is now that of the prelude's:
+    `parse_i64_of_the_prelude_answers_as_str_parse`, on the same texts
+    (a part interpreted and compiled, all of them compiled).

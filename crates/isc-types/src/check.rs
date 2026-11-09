@@ -158,7 +158,6 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "print" => Prim::Print,
         "clock" => Prim::Clock,
         "bench" => Prim::Bench,
-        "parseI64" => Prim::ParseI64,
         "parseF64" => Prim::ParseF64,
         "concat" | "++" => Prim::Concat,
         "len" | "$length" => Prim::StrLen,
@@ -174,7 +173,6 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "readCsvF64" => Prim::ReadCsvF64,
         "lines" => Prim::Lines,
         "split" => Prim::Split,
-        "trim" => Prim::Trim,
         "indexOf" => Prim::IndexOf,
         "lastIndexOf" => Prim::LastIndexOf,
         "includes" => Prim::Includes,
@@ -186,8 +184,6 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "padStart" => Prim::PadStart,
         "padEnd" => Prim::PadEnd,
         "repeat" => Prim::Repeat,
-        "trimStart" => Prim::TrimStart,
-        "trimEnd" => Prim::TrimEnd,
         "toFixed" => Prim::ToFixed,
         "readStdin" => Prim::ReadStdin,
         "readStdinText" => Prim::ReadStdinText,
@@ -1940,10 +1936,9 @@ impl<'g> FnCx<'g> {
                 }
                 // the functions of strings whose result has no size of its
                 // own (D135): `map(xs, trim)`, `reduce(xs, (++), "")`
-                Prim::Trim | Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd => {
+                Prim::ToUpper | Prim::ToLower => {
                     Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str), false), span))
                 }
-                Prim::ParseI64 => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64)), false), span)),
                 Prim::ParseF64 | Prim::ParseFloat | Prim::JsNumber => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::F64), false), span)),
                 Prim::StrLen => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64)), false), span)),
                 Prim::Concat => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str, Ty::Str], Box::new(Ty::Str), false), span)),
@@ -2713,15 +2708,15 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros => 1,
+            Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros => 1,
             Prim::Concat => 2,
-            Prim::ReadText | Prim::Lines | Prim::Trim | Prim::PrintBytes => 1,
+            Prim::ReadText | Prim::Lines | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
             Prim::OrError(_) => 1,
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
-            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
+            Prim::ToUpper | Prim::ToLower | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
             Prim::HashFind | Prim::ReadWord | Prim::Panic => 3,
             Prim::TextTail => 5,
             Prim::ParseInt => {
@@ -3018,11 +3013,6 @@ impl<'g> FnCx<'g> {
                 }
                 Ok(mk(vec![f], Ty::Bool, self))
             }
-            Prim::ParseI64 => {
-                let x = self.check(&args[0], None)?;
-                self.unify(&Ty::Str, &x.ty, x.span)?;
-                Ok(mk(vec![x], Ty::Int(IntKind::I64), self))
-            }
             Prim::ParseF64 => {
                 let x = self.check(&args[0], None)?;
                 self.unify(&Ty::Str, &x.ty, x.span)?;
@@ -3064,7 +3054,6 @@ impl<'g> FnCx<'g> {
                     Size::Poly(Poly::sym(s))
                 };
                 let value = match f {
-                    Fallible::ParseI64 => Ty::Int(IntKind::I64),
                     Fallible::ParseF64 => Ty::F64,
                     Fallible::ReadBytes => Ty::Array(exist(self, "k"), Box::new(Ty::Int(IntKind::U8))),
                     Fallible::ReadF64 => Ty::Array(exist(self, "k"), Box::new(Ty::F64)),
@@ -3240,7 +3229,7 @@ impl<'g> FnCx<'g> {
                 Ok(mk(vec![], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Str)), self))
             }
             // the functions of strings of TypeScript (D155)
-            Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd => {
+            Prim::ToUpper | Prim::ToLower => {
                 let a = self.check(&args[0], Some(&Ty::Str))?;
                 self.unify(&Ty::Str, &a.ty, a.span)?;
                 Ok(mk(vec![a], Ty::Str, self))
@@ -3392,7 +3381,7 @@ impl<'g> FnCx<'g> {
                 Ok(mk(vec![x, d], Ty::Str, self))
             }
             // text (D135)
-            Prim::ReadText | Prim::Trim => {
+            Prim::ReadText => {
                 let a = self.check(&args[0], Some(&Ty::Str))?;
                 self.unify(&Ty::Str, &a.ty, a.span)?;
                 Ok(mk(vec![a], Ty::Str, self))
