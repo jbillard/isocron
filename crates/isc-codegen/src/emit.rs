@@ -635,6 +635,9 @@ pub struct Gen<'p> {
     pow10: bool,
     /// The table of the pairs of digits `00` to `99` is a global (D441).
     digits2: bool,
+    /// The functions of the large joins and of the joins never made are
+    /// emitted (`join_fns`, D607).
+    join_fns: bool,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
@@ -1033,7 +1036,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare double @isc_big_to_f64(ptr, i64)",
     "declare void @isc_big_to_string(ptr, ptr, i64)",
     "declare void @isc_read_stdin_text(ptr, i32, i32)",
-    "declare void @isc_join(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_parse_csv_f64(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_read_csv_f64(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_args(ptr, i32, ptr)",
@@ -1116,6 +1118,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         lit_vars: HashMap::new(),
         pow10: false,
         digits2: false,
+        join_fns: false,
         unrolled_loops: 0,
         ntask: 0,
         decls: BTreeSet::new(),
@@ -1755,6 +1758,10 @@ fn stack_array(v: VarId, e: &Expr) -> bool {
 /// reads (D404): the texts of messages, of dates, of keys; a longer one
 /// takes a block of the heap as before.
 const STACK_STR: i64 = 128;
+
+/// From this many bytes on, a join is made by ranges of its strings in
+/// parallel (D427).
+const JOIN_PARALLEL_MIN: i64 = 1 << 20;
 
 /// `v` is moved somewhere in `e` (given to an owner: a consumer, a call, a
 /// result), lambdas included.
@@ -6757,7 +6764,8 @@ impl<'p> Gen<'p> {
     /// as `join`, D427), each by a task that gathers its bytes 16 KiB at a
     /// time into a buffer on its stack (`isc_join_next`) and maps them from
     /// there into `c`, in vector code (`fill_range`): the join never made,
-    /// its bytes read in the caches.
+    /// its bytes read in the caches. Both functions are emitted with the
+    /// program (`join_fns`, D607).
     #[allow(clippy::too_many_arguments)]
     fn join_map_let(&mut self, lets: &[(VarId, &Expr)], parts: &Expr, sep: &Expr, c: VarId, m: &Expr, l: &Lambda, rest: &Expr, drop: bool, stmt: bool) -> R<V> {
         const GATHER: i64 = 16 << 10;
@@ -6777,13 +6785,13 @@ impl<'p> Gen<'p> {
             (true, None) if es == 1 && et.is_scalar() => 2 * MAP_WIDTH,
             (true, None) => MAP_WIDTH,
         };
-        self.decls.insert("declare i64 @isc_join_ranges(ptr, i64, i64, ptr, ptr)".into());
-        self.decls.insert("declare i64 @isc_join_next(ptr, ptr, ptr, i64, ptr, i64)".into());
+        // (a mark for the tests)
+        self.emit("; join read by a map, never made".to_string());
+        self.join_fns()?;
         let first = self.alloca("[257 x i64]");
         let place = self.alloca("[257 x i64]");
-        let ranges = self.ins(format!("call i64 @isc_join_ranges(ptr {}, i64 {}, i64 {}, ptr {}, ptr {})", pp, pn, sn, first, place));
-        let tslot = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", place, ranges));
-        let total = self.ins(format!("load i64, ptr {}", tslot));
+        let total = self.join_total(&pp, &pn, &sn)?;
+        let ranges = self.ins(format!("call i64 @isc_join_ranges(ptr {}, i64 {}, i64 {}, i64 {}, ptr {}, ptr {})", pp, pn, sn, total, first, place));
         let out = self.alloc_elems(&total, &et);
         // the lambda's captures: a `map` of it over nothing
         let scope = Expr { kind: ExprKind::Map(vec![Expr { kind: ExprKind::Lit(Lit::Unit), ty: Type::Bool, span: m.span, reassoc: false }], l.clone()), ty: m.ty.clone(), span: m.span, reassoc: false };
@@ -13081,6 +13089,299 @@ impl<'p> Gen<'p> {
         Ok(self.arr(&dst, &total))
     }
 
+    /// The bytes of the join of the `n` strings at `xs` by a separator of
+    /// `m` bytes (D607): their lengths added, and the separators between
+    /// them.
+    fn join_total(&mut self, xs: &str, n: &str, m: &str) -> R<String> {
+        let sum = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", sum));
+        self.for_range("0", n, 1, &mut |g, i| {
+            let lp = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr {}, i64 {}, i32 1", xs, i));
+            let len = g.ins(format!("load i64, ptr {}", lp));
+            let s = g.ins(format!("load i64, ptr {}", sum));
+            let s2 = g.ins(format!("add i64 {}, {}", s, len));
+            g.emit(format!("store i64 {}, ptr {}", s2, sum));
+            Ok(())
+        })?;
+        let s = self.ins(format!("load i64, ptr {}", sum));
+        let several = self.ins(format!("icmp sgt i64 {}, 1", n));
+        let n1 = self.ins(format!("sub i64 {}, 1", n));
+        let between = self.ins(format!("select i1 {}, i64 {}, i64 0", several, n1));
+        let seps = self.ins(format!("mul i64 {}, {}", between, m));
+        Ok(self.ins(format!("add i64 {}, {}", s, seps)))
+    }
+
+    /// The strings `from .. to` of the array `xs` written at `dst` one after
+    /// the other, each after the separator (`q`, `m`; `lit` its text when
+    /// the compiler knows it) but the first of all (D607): a text of at
+    /// most 64 bytes by moves, a longer one by `memcpy` (`copy_short`); a
+    /// separator known here by a copy of a constant length (a store), none
+    /// for an empty one.
+    #[allow(clippy::too_many_arguments)]
+    fn join_write(&mut self, dst: &str, xs: &str, from: &str, to: &str, q: &str, m: &str, lit: Option<&str>) -> R<()> {
+        let at = self.alloca("ptr");
+        self.emit(format!("store ptr {}, ptr {}", dst, at));
+        self.for_range_scalar(from, to, 1, &mut |g, i| {
+            if lit != Some("") {
+                let (lsep, ltext) = (g.label(), g.label());
+                let later = g.ins(format!("icmp sgt i64 {}, 0", i));
+                g.cbr(&later, &lsep, &ltext);
+                g.block(&lsep);
+                let a = g.ins(format!("load ptr, ptr {}", at));
+                match lit {
+                    Some(t) => {
+                        let (c, k) = g.str_const(t);
+                        g.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", a, c, k));
+                    }
+                    None => g.copy_short(&a, q, m),
+                }
+                let a2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", a, m));
+                g.emit(format!("store ptr {}, ptr {}", a2, at));
+                g.br(&ltext);
+                g.block(&ltext);
+            }
+            let a = g.ins(format!("load ptr, ptr {}", at));
+            let sp = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr {}, i64 {}, i32 0", xs, i));
+            let p = g.ins(format!("load ptr, ptr {}", sp));
+            let lp = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr {}, i64 {}, i32 1", xs, i));
+            let len = g.ins(format!("load i64, ptr {}", lp));
+            g.copy_short(&a, &p, &len);
+            let a3 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", a, len));
+            g.emit(format!("store ptr {}, ptr {}", a3, at));
+            Ok(())
+        })
+    }
+
+    /// `join(xs, sep)` (D607), made here as the runtime made it: one block
+    /// of the lengths of the `n` strings at `xs` and of the separators
+    /// between them (`q`, `m`; `lit` its text when the compiler knows it),
+    /// the strings written one after the other, each after its separator
+    /// (`join_write`); a result of 1 MiB or more, of two strings or more, by
+    /// ranges of its strings in parallel (`isc_join_large`, D427).
+    fn join_text(&mut self, xs: &str, n: &str, q: &str, m: &str, lit: Option<&str>) -> R<V> {
+        // (a mark for the tests)
+        self.emit("; text join".to_string());
+        let total = self.join_total(xs, n, m)?;
+        let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", total));
+        let large = self.ins(format!("icmp sge i64 {}, {}", total, JOIN_PARALLEL_MIN));
+        let several = self.ins(format!("icmp sge i64 {}, 2", n));
+        let by_ranges = self.ins(format!("and i1 {}, {}", large, several));
+        let (lranges, lwhole, ldone) = (self.label(), self.label(), self.label());
+        self.cbr(&by_ranges, &lranges, &lwhole);
+        self.block(&lranges);
+        self.join_fns()?;
+        self.emit(format!("call void @isc_join_large(ptr {}, ptr {}, i64 {}, ptr {}, i64 {}, i64 {})", dst, xs, n, q, m, total));
+        self.br(&ldone);
+        self.block(&lwhole);
+        self.join_write(&dst, xs, "0", n, q, m, lit)?;
+        self.br(&ldone);
+        self.block(&ldone);
+        Ok(self.arr(&dst, &total))
+    }
+
+    /// A function of the module written by `body` with the emission
+    /// helpers, apart from the function being written (kept aside
+    /// meanwhile); `body` reads the parameters of `header` by their names.
+    fn helper_fn(&mut self, header: &str, body: &mut dyn FnMut(&mut Self) -> R<()>) -> R<()> {
+        let saved = std::mem::take(&mut self.f);
+        let r = body(self);
+        let text = self.finish(header);
+        self.f = saved;
+        r?;
+        self.funcs.push(text);
+        Ok(())
+    }
+
+    /// The functions of the joins, emitted once in a program that needs
+    /// them (D607), as the runtime had them (D427, D428):
+    /// - `isc_join_write(dst, xs, from, to, q, m)`: `join_write`, called;
+    /// - `isc_join_ranges(xs, n, m, total, first, place)`: the ranges of the
+    ///   join of the `n` strings `xs` by a separator of `m` bytes (`total`
+    ///   bytes) made in parallel: the first string of each into `first` and
+    ///   the place of the separator before it into `place` (257 slots
+    ///   each), a range each `total / k` bytes about (`k` four a thread, at
+    ///   most 256); their count, `first[count]` the number of strings and
+    ///   `place[count]` the length of the join;
+    /// - `isc_join_task(ctx, k)`: the range `k` written at its place;
+    /// - `isc_join_large(dst, xs, n, q, m, total)`: a large join, written by
+    ///   its ranges on the pool (each thread its own pages), or whole on one
+    ///   thread;
+    /// - `isc_join_next(cur, xs, q, m, buf, cap)`: the next bytes of the
+    ///   join from the cursor `cur` (the string `i`, the byte `off` of it
+    ///   with the separator before it, but the first string, the string
+    ///   `end` where its range ends) to the end of its range, at most `cap`
+    ///   of them, written into `buf`: their count (0 at the end); the cursor
+    ///   moved past them.
+    fn join_fns(&mut self) -> R<()> {
+        if self.join_fns {
+            return Ok(());
+        }
+        self.join_fns = true;
+        let attrs = self.attrs();
+        self.helper_fn(&format!("define internal void @isc_join_write(ptr %dst, ptr %xs, i64 %from, i64 %to, ptr %q, i64 %m){}", attrs), &mut |g| {
+            g.join_write("%dst", "%xs", "%from", "%to", "%q", "%m", None)?;
+            g.emit("ret void");
+            Ok(())
+        })?;
+        self.helper_fn(&format!("define internal i64 @isc_join_ranges(ptr %xs, i64 %n, i64 %m, i64 %total, ptr %first, ptr %place){}", attrs), &mut |g| {
+            g.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".to_string());
+            g.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".to_string());
+            let t = g.ins("call i64 @isc_thread_count()".to_string());
+            let t4 = g.ins(format!("shl i64 {}, 2", t));
+            let k1 = g.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 1)", t4));
+            let k = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 256)", k1));
+            let step = g.ins(format!("udiv i64 %total, {}", k));
+            g.emit("store i64 0, ptr %first");
+            g.emit("store i64 0, ptr %place");
+            let cut = g.alloca("i64");
+            // where the bytes of the string `i` start
+            let at = g.alloca("i64");
+            g.emit(format!("store i64 1, ptr {}", cut));
+            g.emit(format!("store i64 0, ptr {}", at));
+            g.for_range_scalar("0", "%n", 1, &mut |g, i| {
+                let c = g.ins(format!("load i64, ptr {}", cut));
+                let a = g.ins(format!("load i64, ptr {}", at));
+                let later = g.ins(format!("icmp sgt i64 {}, 0", i));
+                let room = g.ins(format!("icmp slt i64 {}, {}", c, k));
+                let bound = g.ins(format!("mul i64 {}, {}", step, c));
+                let reached = g.ins(format!("icmp sge i64 {}, {}", a, bound));
+                let c0 = g.ins(format!("and i1 {}, {}", later, room));
+                let cuts = g.ins(format!("and i1 {}, {}", c0, reached));
+                let (lcut, lnext) = (g.label(), g.label());
+                g.cbr(&cuts, &lcut, &lnext);
+                // a range starts at the string `i`, its place the separator
+                // before it
+                g.block(&lcut);
+                let fs = g.ins(format!("getelementptr inbounds i64, ptr %first, i64 {}", c));
+                g.emit(format!("store i64 {}, ptr {}", i, fs));
+                let ps = g.ins(format!("getelementptr inbounds i64, ptr %place, i64 {}", c));
+                let before = g.ins(format!("sub i64 {}, %m", a));
+                g.emit(format!("store i64 {}, ptr {}", before, ps));
+                let c1 = g.ins(format!("add i64 {}, 1", c));
+                g.emit(format!("store i64 {}, ptr {}", c1, cut));
+                g.br(&lnext);
+                g.block(&lnext);
+                let lp = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr %xs, i64 {}, i32 1", i));
+                let len = g.ins(format!("load i64, ptr {}", lp));
+                let i1 = g.ins(format!("add i64 {}, 1", i));
+                let more = g.ins(format!("icmp slt i64 {}, %n", i1));
+                let sep = g.ins(format!("select i1 {}, i64 %m, i64 0", more));
+                let a1 = g.ins(format!("add i64 {}, {}", a, len));
+                let a2 = g.ins(format!("add i64 {}, {}", a1, sep));
+                g.emit(format!("store i64 {}, ptr {}", a2, at));
+                Ok(())
+            })?;
+            let c = g.ins(format!("load i64, ptr {}", cut));
+            let fs = g.ins(format!("getelementptr inbounds i64, ptr %first, i64 {}", c));
+            g.emit(format!("store i64 %n, ptr {}", fs));
+            let ps = g.ins(format!("getelementptr inbounds i64, ptr %place, i64 {}", c));
+            g.emit(format!("store i64 %total, ptr {}", ps));
+            g.emit(format!("ret i64 {}", c));
+            Ok(())
+        })?;
+        // the context of the tasks of a large join: the block, the strings,
+        // the separator, the ranges
+        let ctx_ty = "{ ptr, ptr, ptr, i64, ptr, ptr }";
+        self.helper_fn(&format!("define internal void @isc_join_task(ptr %ctx, i64 %k){}", attrs), &mut |g| {
+            let field = |g: &mut Self, i: u32, t: &str| {
+                let p = g.ins(format!("getelementptr inbounds {}, ptr %ctx, i32 0, i32 {}", ctx_ty, i));
+                g.ins(format!("load {}, ptr {}", t, p))
+            };
+            let (dst, xs, q, m) = (field(g, 0, "ptr"), field(g, 1, "ptr"), field(g, 2, "ptr"), field(g, 3, "i64"));
+            let (first, place) = (field(g, 4, "ptr"), field(g, 5, "ptr"));
+            let f0 = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 %k", first));
+            let from = g.ins(format!("load i64, ptr {}", f0));
+            let k1 = g.ins("add i64 %k, 1".to_string());
+            let f1 = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", first, k1));
+            let to = g.ins(format!("load i64, ptr {}", f1));
+            let p0 = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 %k", place));
+            let at = g.ins(format!("load i64, ptr {}", p0));
+            let d = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, at));
+            g.emit(format!("call void @isc_join_write(ptr {}, ptr {}, i64 {}, i64 {}, ptr {}, i64 {})", d, xs, from, to, q, m));
+            g.emit("ret void");
+            Ok(())
+        })?;
+        self.helper_fn(&format!("define internal void @isc_join_large(ptr %dst, ptr %xs, i64 %n, ptr %q, i64 %m, i64 %total){} cold noinline", attrs), &mut |g| {
+            let t = g.ins("call i64 @isc_thread_count()".to_string());
+            let one = g.ins(format!("icmp sle i64 {}, 1", t));
+            let (lwhole, lranges) = (g.label(), g.label());
+            g.cbr(&one, &lwhole, &lranges);
+            g.block(&lwhole);
+            g.emit("call void @isc_join_write(ptr %dst, ptr %xs, i64 0, i64 %n, ptr %q, i64 %m)");
+            g.emit("ret void");
+            g.block(&lranges);
+            let first = g.alloca("[257 x i64]");
+            let place = g.alloca("[257 x i64]");
+            let ranges = g.ins(format!("call i64 @isc_join_ranges(ptr %xs, i64 %n, i64 %m, i64 %total, ptr {}, ptr {})", first, place));
+            let ctx = g.alloca(ctx_ty);
+            for (i, (t, x)) in [("ptr", "%dst"), ("ptr", "%xs"), ("ptr", "%q"), ("i64", "%m"), ("ptr", first.as_str()), ("ptr", place.as_str())].into_iter().enumerate() {
+                let p = g.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 {}", ctx_ty, ctx, i));
+                g.emit(format!("store {} {}, ptr {}", t, x, p));
+            }
+            let end = g.ins(format!("getelementptr {}, ptr null, i32 1", ctx_ty));
+            let bytes = g.ins(format!("ptrtoint ptr {} to i64", end));
+            g.emit(format!("call void @isc_parallel_for_fill(i64 {}, ptr @isc_join_task, ptr {}, i64 {})", ranges, ctx, bytes));
+            g.emit("ret void");
+            Ok(())
+        })?;
+        let cur_ty = "{ i64, i64, i64 }";
+        self.helper_fn(&format!("define internal i64 @isc_join_next(ptr %cur, ptr %xs, ptr %q, i64 %m, ptr %buf, i64 %cap){}", attrs), &mut |g| {
+            g.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".to_string());
+            let ip = g.ins(format!("getelementptr inbounds {}, ptr %cur, i32 0, i32 0", cur_ty));
+            let op = g.ins(format!("getelementptr inbounds {}, ptr %cur, i32 0, i32 1", cur_ty));
+            let ep = g.ins(format!("getelementptr inbounds {}, ptr %cur, i32 0, i32 2", cur_ty));
+            let end = g.ins(format!("load i64, ptr {}", ep));
+            let got = g.alloca("i64");
+            g.emit(format!("store i64 0, ptr {}", got));
+            let (head, lbody, lnext, lstay, ldone) = (g.label(), g.label(), g.label(), g.label(), g.label());
+            g.br(&head);
+            g.block(&head);
+            let have = g.ins(format!("load i64, ptr {}", got));
+            let i = g.ins(format!("load i64, ptr {}", ip));
+            let room = g.ins(format!("icmp slt i64 {}, %cap", have));
+            let left = g.ins(format!("icmp slt i64 {}, {}", i, end));
+            let more = g.ins(format!("and i1 {}, {}", room, left));
+            g.cbr(&more, &lbody, &ldone);
+            g.block(&lbody);
+            let sp = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr %xs, i64 {}, i32 0", i));
+            let p = g.ins(format!("load ptr, ptr {}", sp));
+            let lp = g.ins(format!("getelementptr inbounds {{ ptr, i64 }}, ptr %xs, i64 {}, i32 1", i));
+            let len = g.ins(format!("load i64, ptr {}", lp));
+            // the separator before every string but the first, then the string
+            let later = g.ins(format!("icmp sgt i64 {}, 0", i));
+            let sl = g.ins(format!("select i1 {}, i64 %m, i64 0", later));
+            let off = g.ins(format!("load i64, ptr {}", op));
+            let in_sep = g.ins(format!("icmp slt i64 {}, {}", off, sl));
+            let from = g.ins(format!("select i1 {}, ptr %q, ptr {}", in_sep, p));
+            let past = g.ins(format!("sub i64 {}, {}", off, sl));
+            let a = g.ins(format!("select i1 {}, i64 {}, i64 {}", in_sep, off, past));
+            let flen = g.ins(format!("select i1 {}, i64 {}, i64 {}", in_sep, sl, len));
+            let rest = g.ins(format!("sub i64 {}, {}", flen, a));
+            let space = g.ins(format!("sub i64 %cap, {}", have));
+            let k = g.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", rest, space));
+            let src = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", from, a));
+            let to = g.ins(format!("getelementptr inbounds i8, ptr %buf, i64 {}", have));
+            g.copy_short(&to, &src, &k);
+            let have2 = g.ins(format!("add i64 {}, {}", have, k));
+            g.emit(format!("store i64 {}, ptr {}", have2, got));
+            let off2 = g.ins(format!("add i64 {}, {}", off, k));
+            let whole = g.ins(format!("add i64 {}, {}", sl, len));
+            let done = g.ins(format!("icmp eq i64 {}, {}", off2, whole));
+            g.cbr(&done, &lnext, &lstay);
+            g.block(&lnext);
+            let i1 = g.ins(format!("add i64 {}, 1", i));
+            g.emit(format!("store i64 {}, ptr {}", i1, ip));
+            g.emit(format!("store i64 0, ptr {}", op));
+            g.br(&head);
+            g.block(&lstay);
+            g.emit(format!("store i64 {}, ptr {}", off2, op));
+            g.br(&head);
+            g.block(&ldone);
+            g.emit(format!("ret i64 {}", have));
+            Ok(())
+        })
+    }
+
     /// The string `p`, `n` starts (`start`) or ends with the bytes `t` (at
     /// most 16): at least as long, and its first or last bytes, read as
     /// one integer (up to 8) or two that overlap, equal to those of `t`.
@@ -14006,10 +14307,12 @@ impl<'p> Gen<'p> {
                 let pos = Self::pos(e.span);
                 new_str(self, format!("call void @isc_to_fixed(ptr OUT, double {}, i64 {}, {})", vals[0].r, vals[1].r, pos))
             }
+            // made here (`join_text`, D607)
             S::Join => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
-                new_str(self, format!("call void @isc_join(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+                let lit = self.literal_of(&es[1]);
+                self.join_text(&p, &n, &q, &m, lit.as_deref())?
             }
             // equal to a literal of at most 16 bytes: its length, then its
             // bytes compared as one or two integers, without a call

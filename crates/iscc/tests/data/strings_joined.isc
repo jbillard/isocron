@@ -1,0 +1,83 @@
+// The joins made by the generated code (D607): arrays of 0 to `n` texts of
+// 0 to 300 bytes (and one of 3 MB), separators of 0, 1 and several bytes,
+// of one and several bytes a character, known to the compiler or not; small
+// joins printed, large ones hashed (1 MiB or more: by ranges in parallel);
+// a join read once by a map of its bytes (never made); joins of the views
+// of a text and joins made inside the tasks of a map.
+// usage: strings_joined <small | large | map | views> <n> <big> <separators...>
+
+function text(n: i64, i: i64): string {
+    return stringOf(map(iota(n), (j) => u8(97 + (i + j * 7) % 26)));
+}
+
+function hash(t: string): i64 {
+    const b = bytes(t);
+    return sum(map(iota(b.length), (i) => i64(b[i]) * (i % 251 + 1)));
+}
+
+// the text `i` of an array of a kind: empty, short, both sides of the moves
+// of 4 to 64 bytes, up to 300 bytes with empty ones, 60 bytes; the text
+// `big` 3 MB
+function part(i: i64, kind: i64, big: i64): string {
+    return text(i == big ? 3000000 : kind == 0 ? 0 : kind == 1 ? i % 7 : kind == 2 ? (i * 37) % 131 : kind == 3 ? (i * 7919) % 300 * (i % 5 == 0 ? 0 : 1) : 60, i);
+}
+
+action main(args: string[k]): i32 {
+    const mode = args[0];
+    const n = parseI64(args[1]);
+    const big = parseI64(args[2]);
+    const given = map(iota(k - 3), (i) => args[i + 3]);
+    const seps = concat(given, ["", ",", ", ", "--|", "é", "€😀", text(70, 3), text(200, 5)]);
+    if (mode == "small") {
+        // every count from 0 to n, each kind of lengths, each separator
+        print(map(iota(n + 1), (c) => map(iota(5), (kind) => map(seps, (sep) => map(iota(c), (i) => part(i, kind, -1)).join(sep)).join("\n")).join("\n")).join("\n"));
+        // separators known to the compiler
+        print(map(iota(n + 1), (c) => {
+            const ps = map(iota(c), (i) => part(i, 2, -1));
+            return [ps.join(""), ps.join(","), ps.join(", "), ps.join("--|"), ps.join("é€"), join(ps, "\n")].join("|");
+        }).join("\n"));
+    } else if (mode == "large") {
+        // texts of up to 300 bytes, some empty, and the text `big`, by each
+        // separator; texts of 60 bytes by separators known to the compiler
+        const ps = map(iota(n), (i) => part(i, 3, big));
+        print(map(seps, (sep) => {
+            const t = ps.join(sep);
+            return `${t.length}:${hash(t)}`;
+        }));
+        const ls = map(iota(n), (i) => part(i, 4, -1));
+        const a = ls.join("\n");
+        const b = ls.join("");
+        const c = join(ps, ", ");
+        print([a.length, hash(a), b.length, hash(b), c.length, hash(c)]);
+    } else if (mode == "map") {
+        const parts = map(iota(n), (i) => part(i, 3, -1));
+        const long = map(iota(n), (i) => text(i == big ? 40000 : (i * 7919) % 300 * (i % 5 == 0 ? 0 : 1), i));
+        const table = map(iota(128), (c) => c * 3 + 1);
+        const a = long.join("");
+        const codes = map(bytes(a), (b) => u8((b | 32u8) == 97u8 ? 0 : 3));
+        const c = long.join(",");
+        const wide = map(bytes(c), (b) => i64(b) * 1000 + 7);
+        const d = long.join("--|");
+        const looked = map(bytes(d), (b) => table[i64(b)]);
+        const sep = given[0];
+        const e = parts.join(sep);
+        const other = map(bytes(e), (b) => i64(b) + 1);
+        print([codes.length, sum(map(iota(codes.length), (i) => i64(codes[i]) * (i % 7 + 1)))]);
+        print([wide.length, sum(map(iota(wide.length), (i) => wide[i] % 1000003 * (i % 5 + 1)))]);
+        print([looked.length, sum(map(iota(looked.length), (i) => looked[i] * (i % 3 + 1)))]);
+        print([other.length, sum(map(iota(other.length), (i) => other[i] * (i % 11 + 1)))]);
+    } else {
+        // the views of a text joined again; joins inside the tasks of a map
+        const ps = map(iota(n), (i) => part(i, 2, -1));
+        const whole = ps.join("\n");
+        const ls = lines(whole);
+        const again = ls.join("\n");
+        print([whole.length, hash(whole), again.length, hash(again), whole == again ? 1 : 0]);
+        const words = whole.split("a");
+        const back = words.join("a");
+        print([words.length, back.length, hash(back), back == whole ? 1 : 0]);
+        print(sum(map(iota(n), (i) => hash(map(iota(i % 9), (j) => ps[(i + j) % n]).join(seps[i % seps.length])))));
+        print(map(iota(n < 40 ? n : 40), (i) => map(iota(i % 5), (j) => ps[(i + j) % n]).join("+")));
+    }
+    return 0;
+}

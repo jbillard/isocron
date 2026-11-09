@@ -2328,3 +2328,62 @@ fn padded_texts_made_by_the_generated_code() {
         assert!(r.stdout == want, "WebAssembly, {}: the text of the interpreter not printed", args[0]);
     }
 }
+
+/// D607: `join` is made by the generated code (the lengths added, one block,
+/// each text copied after its separator; 1 MiB or more by ranges of its
+/// texts on the pool), and the join read once by a `map` of its bytes
+/// (D428) has its ranges and its bytes from functions emitted with the
+/// program, no longer from the runtime. Arrays of 0 to 24 texts of every
+/// kind of lengths (empty, both sides of the moves of 4 to 64 bytes, up to
+/// 300 bytes) by separators of 0, 1 and several bytes, of several bytes a
+/// character, known to the compiler or not; joins of 6000 texts and of one
+/// of 3 MB (by ranges, on 1 to 8 threads); a join
+/// never made; joins of the views of a text, and inside the tasks of a
+/// `map`: the text of the interpreter, each block freed once (the checked
+/// allocator, Valgrind); the same in WebAssembly, with and without threads.
+#[test]
+fn joins_made_by_the_generated_code() {
+    let src = include_str!("data/strings_joined.isc");
+    let bin = compile(src, "strings_joined");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    for f in ["declare void @isc_join(", "declare i64 @isc_join_ranges(", "declare i64 @isc_join_next("] {
+        assert!(!ll.contains(f), "{} of the runtime still called", f);
+    }
+    assert!(ll.contains("; text join\n") && ll.contains("; join read by a map, never made\n"), "the joins not made here");
+    assert!(ll.contains("define internal void @isc_join_large(") && ll.contains("define internal i64 @isc_join_next("), "the functions of the joins not emitted");
+    // (the large joins of 30000 and 90000 texts, the large text first and
+    // last: `a_large_join_made_in_parallel`, `stdin.rs`)
+    let sets: [&[&str]; 5] = [
+        &["small", "24", "-1", ";", "é"],
+        &["large", "6000", "17", "+"],
+        &["large", "2", "1", "ab"],
+        &["map", "3000", "1234", "+"],
+        &["views", "700", "-1", "/"],
+    ];
+    let wants: Vec<String> = sets.iter().map(|args| interp_ok(src, args)).collect();
+    for (args, want) in sets.iter().zip(&wants) {
+        for t in [1, 2, 3, 4, 8] {
+            let r = run_bin_threads(&bin, args, Some(t));
+            assert_eq!(r.code, 0, "{:?}: {}", args, r.stderr);
+            assert!(r.stdout == *want, "{:?}, {} threads: the text of the interpreter not printed", args, t);
+        }
+        checked_clean_bin(&bin, args, None);
+    }
+    valgrind_clean(src, "strings_joined", sets[0]);
+    valgrind_clean(src, "strings_joined", sets[3]);
+    let Some(runner) = wasi_runner() else {
+        eprintln!("no WASI engine (wasmtime): the WebAssembly program not run");
+        return;
+    };
+    let wasm = compile_wasm(src, "strings_joined_wasm");
+    let threads = compile_wasm_isa(src, "strings_joined_wasm_threads", isc_codegen::Isa::Wasm32Threads);
+    for k in [0, 1, 3, 4] {
+        let (args, want) = (sets[k], &wants[k]);
+        let r = run_wasm(&runner, &wasm, args);
+        assert_eq!(r.code, 0, "WebAssembly, {:?}: {}", args, r.stderr);
+        assert!(r.stdout == *want, "WebAssembly, {:?}: the text of the interpreter not printed", args);
+        let r = run_wasm_threads(&runner, &threads, args, Some(4));
+        assert_eq!(r.code, 0, "WebAssembly with threads, {:?}: {}", args, r.stderr);
+        assert!(r.stdout == *want, "WebAssembly with threads, {:?}: the text of the interpreter not printed", args);
+    }
+}

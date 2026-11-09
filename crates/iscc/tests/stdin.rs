@@ -637,7 +637,9 @@ fn a_join_read_by_a_map_is_never_made() {
     };
     let bin = compile(src, "join_map");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert_eq!(ll.matches("call i64 @isc_join_ranges").count(), 3, "a join made");
+    // (its ranges and its bytes by functions emitted with the program, D607)
+    assert_eq!(ll.matches("; join read by a map, never made").count(), 3, "a join made");
+    assert!(!ll.contains("; text join") && !ll.contains("declare i64 @isc_join_"), "a join made, or read by the runtime");
     for (n, big) in [(0usize, 0usize), (1, 0), (1, 5), (2, 1), (3000, 1234), (30000, 100000), (30000, 29999), (90000, 0)] {
         let w = want(n, big);
         for t in ["1", "2", "3", "4", "8"] {
