@@ -13608,3 +13608,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     20:00 (15 minutes of stall, the kernel killed the test `phase3` of the
     suite 406, the services kept running). An agent builds or tests only
     when no suite, memcheck, Miri or measurement runs.
+- **D587 — The state of a medium block read and written atomically: a
+  data race of the heap removed (2026-11-09).** Found by the inventory of
+  the runtime for SPEC section 17 (a read-only survey of the allocator):
+  a thread writes the state of its own medium block without the lock when
+  it caches it (`CACHED`, in `free`) or takes it back (`IN_USE`, in
+  `alloc`), while another thread, under the lock, reads the state of the
+  neighbours of the block it frees, to merge them (`free_medium`). Both
+  values written differ from `FREE`, so the decision was right on x86-64;
+  but a plain write and a plain read at once are a data race for Rust, so
+  undefined behaviour. Now the state byte of a medium block is read and
+  written by `state_of` and `set_state` (`AtomicU8::from_ptr`, order
+  `Relaxed`): at the cache, in `alloc_medium`, `free_medium`,
+  `grow_cached` and `whole_region` (a neighbour read). The state of a small
+  or large block is read by its owner alone (H1, H2): plain accesses there.
+  A first version made every access atomic: `isc_alloc` took 2
+  instructions more and `isc_free` 1 (LLVM no longer compares the byte in
+  memory nor writes the state and the contents in one store); the second
+  leaves `isc_alloc`, `isc_free` and `heap::free` the same instructions as
+  before (their disassembly compared line by line), `heap::alloc` one
+  instruction more on the path of a medium block taken from the cache
+  (`cmpb $0xc3` becomes a load and a compare) and `free_medium` three
+  (under the lock). The invariant H3 says so.

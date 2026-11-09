@@ -62,7 +62,10 @@
 //!   thread-local storage); the end of the thread gives them back once.
 //! - H3, the locks: the global lists of a small class only while its lock
 //!   is held (`lock_small`), the state of the medium and large blocks
-//!   (`State`) only while `LOCK` is held (`state`).
+//!   (`State`) only while `LOCK` is held (`state`). The state byte of a
+//!   medium block is read and written atomically (`state_of`, `set_state`,
+//!   D587): its owner caches or takes back its medium block without the
+//!   lock while a neighbour freed under the lock reads it.
 //! - H4, the memory: the chunks, regions and mappings are taken from the
 //!   system whole and never given back but by `trim_idle`, `trim_large` and
 //!   the free of a large block, which unmap or advise only the pages of
@@ -78,7 +81,7 @@
 
 use core::ffi::{c_int, c_uint, c_void};
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use isc_runtime_core::{alloc_class, alloc_class_size, Panic, ALLOC_CLASSES as CLASSES};
 
 #[cfg(windows)]
@@ -206,6 +209,35 @@ const _: () = {
         i += 1;
     }
 };
+
+/// The state of the medium block `h` (FREE, IN_USE, CACHED), read as an
+/// atomic of order `Relaxed` (D587): a thread writes the state of its own
+/// medium block without the lock when it caches or takes it back, while
+/// another, under the lock, reads it to merge the neighbours of the block
+/// it frees; plain accesses would be a data race. The state of a small or
+/// large block is read by its owner alone (H1, H2): plain accesses there,
+/// which LLVM merges with their neighbours (a compare of the byte in
+/// memory, one store of the state and the contents) on the paths of every
+/// allocation.
+///
+/// # Safety
+/// `h` the header of a block of this heap (H1).
+#[inline(always)]
+unsafe fn state_of(h: *const Header) -> u8 {
+    // SAFETY: the contract of this function: `h` valid, its `state` a byte
+    // that every thread reads and writes atomically
+    unsafe { AtomicU8::from_ptr(core::ptr::addr_of!((*h).state) as *mut u8).load(Ordering::Relaxed) }
+}
+
+/// Sets the state of the block `h`, atomically (`state_of`, D587).
+///
+/// # Safety
+/// `h` the header of a block of this heap (H1).
+#[inline(always)]
+unsafe fn set_state(h: *mut Header, s: u8) {
+    // SAFETY: as `state_of`
+    unsafe { AtomicU8::from_ptr(core::ptr::addr_of_mut!((*h).state)).store(s, Ordering::Relaxed) }
+}
 
 #[repr(C, align(64))]
 struct Header {
@@ -629,7 +661,7 @@ unsafe fn whole_region(h: *mut Header) -> *mut u8 {
             return null_mut();
         }
         let next = at(h, (*h).len);
-        if (*next).len == PAGE && (*next).state == IN_USE {
+        if (*next).len == PAGE && state_of(next) == IN_USE {
             (*next).next as *mut u8
         } else {
             null_mut()
@@ -1452,7 +1484,7 @@ unsafe fn alloc_medium(bytes: usize) -> *mut Header {
         trim_idle(st);
         // under the lock: the neighbours read the state of a medium block when
         // they are freed
-        (*h).state = IN_USE;
+        set_state(h, IN_USE);
         unlock();
         h
     }
@@ -1469,12 +1501,12 @@ unsafe fn free_medium(mut h: *mut Header) {
     unsafe {
         lock();
         let st = state();
-        (*h).state = FREE;
+        set_state(h, FREE);
         st.medium_in_use -= (*h).len;
         (*h).contents = DIRTY;
         (*h).dirty = ((*h).len / PAGE) as u32;
         let next = at(h, (*h).len);
-        if (*next).state == FREE {
+        if state_of(next) == FREE {
             medium_remove(st, next);
             (*h).contents = merged((*h).contents, (*next).contents);
             (*h).len += (*next).len;
@@ -1483,7 +1515,7 @@ unsafe fn free_medium(mut h: *mut Header) {
             core::ptr::write_bytes(next as *mut u8, 0, HEADER);
         }
         let prev = (*h).base;
-        if !prev.is_null() && (*prev).state == FREE {
+        if !prev.is_null() && state_of(prev) == FREE {
             medium_remove(st, prev);
             (*prev).contents = merged((*prev).contents, (*h).contents);
             (*prev).len += (*h).len;
@@ -1742,7 +1774,7 @@ unsafe fn grow_cached(st: &mut State, class: usize, size: usize) -> *mut Header 
         }
         let h = (dst + off) as *mut Header;
         (*h).class = class as u32;
-        (*h).state = FREE;
+        set_state(h, FREE);
         // under Windows its bytes past the header are those of new pages
         (*h).contents = if cfg!(windows) { ZERO } else { DIRTY };
         (*h).base = dst as *mut Header;
@@ -1956,10 +1988,10 @@ pub unsafe fn alloc(bytes: usize, zero: bool) -> *mut u8 {
                 let b = (*tc).medium[i];
                 if !b.is_null() && (*b).len >= need && (*b).len - need <= need / 4 {
                     (*tc).medium[i] = null_mut();
-                    if (*b).state != CACHED {
+                    if state_of(b) != CACHED {
                         invalid_free();
                     }
-                    (*b).state = IN_USE;
+                    set_state(b, IN_USE);
                     h = b;
                     break;
                 }
@@ -2056,7 +2088,7 @@ pub unsafe fn free(p: *mut u8) {
                 if (*tc).registered == 0 {
                     register(tc);
                 }
-                (*h).state = CACHED;
+                set_state(h, CACHED);
                 if (*tc).medium[1].is_null() {
                     (*tc).medium[1] = h;
                 } else {
