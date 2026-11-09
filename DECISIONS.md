@@ -13384,3 +13384,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `stdin` runs most of its programs itself (18 `Command::new`), and so
     do other files; the programs of large inputs are too large for
     Valgrind. Not in the suite: hours for every file.
+- **D579 — The first pure function of the runtime written in Isocron, a
+  pilot: `parseI64` (2026-11-09).** Step 7 of the plan (SPEC section 17),
+  its order of work taken from its item 2: the pure functions need no
+  primitive of the system, and a first one shows what the language must
+  give for principle 6 (D570: at least as fast as Rust) before the
+  primitives are designed further. `bench/primitives/parse_pilot.isc`:
+  the builtin `parseI64` (Rust, `digits8` of D539: two loads of 4 bytes
+  that overlap, the digits combined by SWAR in a word) against two
+  versions in Isocron on the same 4096 texts of 7 digits: a loop over the
+  bytes that checks each digit, and the same SWAR as Rust, its word built
+  by a `fold` over the bytes. The same sums (12457400320). One CPU at
+  fixed frequency, medians of 5 runs of 400 rounds: builtin 5.213 ns,
+  the loop 7.049 ns (+35 %), the SWAR 11.123 ns (+113 %).
+  - Why (the assembly of the SWAR task): its word is built in a loop of
+    one byte a turn, each turn a check of bounds (a compare and a branch
+    to `isc_panic_bounds`), a load of a byte, a shift and an `or`: 7 turns
+    for 7 digits, where Rust does 2 loads and no loop. LLVM neither
+    removes the checks (the index `a + i` below `k` follows from
+    `n = k - a` and `i < n`) nor merges the loads.
+  - So, before any function moves (principle 6): (1) a read of a word of
+    1 to 8 bytes of a `u8[k]` at an index, little-endian, checked once
+    (`i + n <= k`), compiled to one or two loads; (2) checks of bounds
+    the compiler proves needless removed in loops. Both added to the work
+    of step 7 ahead of the primitives of the system. `parseI64` stays in
+    Rust.

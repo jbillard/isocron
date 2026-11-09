@@ -1,0 +1,48 @@
+// The pilot of SPEC section 17, order 2 (D579): `parseI64` written in
+// Isocron against the builtin (Rust, D539), on 4096 texts of 7 digits.
+// usage: parse_pilot <rounds>
+
+// the value of 1 to 8 digits at `b[a .. a + n]`, -1 if a byte is not one:
+// the bytes in a word, then pairs, fours and eight (`digits8` of the runtime)
+function digits8(b: u8[k], a: i64, n: i64): i64 {
+    const zeros = u64(0x30303030) << u64(32) | u64(0x30303030);
+    const high = u64(0x80808080) << u64(32) | u64(0x80808080);
+    const add46 = u64(0x46464646) << u64(32) | u64(0x46464646);
+    const w0 = fold(iota(n), u64(0), (w, i) => w | u64(b[a + i]) << u64(8 * i));
+    const w = n == 8 ? w0 : (w0 << u64((8 - n) * 8)) | (zeros >> u64(n * 8));
+    const bad = ((w + add46) | (w - zeros)) & high;
+    const v1 = w - zeros;
+    const v2 = v1 * u64(10) + (v1 >> u64(8));
+    const m = u64(0xFF) << u64(32) | u64(0xFF);
+    const v3 = ((v2 & m) * (u64(100) + (u64(1000000) << u64(32))) + ((v2 >> u64(16)) & m) * (u64(1) + (u64(10000) << u64(32)))) >> u64(32);
+    return bad != u64(0) ? -1 : i64(v3);
+}
+
+function parseSwar(s: string): i64 {
+    const b = bytes(s);
+    const k = b.length;
+    const neg = k > 0 && b[0] == u8(45);
+    const sign = k > 0 && (b[0] == u8(45) || b[0] == u8(43)) ? 1 : 0;
+    const n = k - sign;
+    const v = n >= 1 && n <= 8 ? digits8(b, sign, n) : -1;
+    return neg ? -v : v;
+}
+
+function parseScalar(s: string): i64 {
+    const b = bytes(s);
+    return fold(b, 0, (acc, c) => acc < 0 || c < u8(48) || c > u8(57) ? -1 : acc * 10 + i64(c) - 48);
+}
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const r = parseI64(args[0]);
+    const nums = map(iota(n), (i) => toString(1000000 + i * 997));
+    const each = f64(r * n);
+    const [a1, t1] = bench(r, () => sum(map(nums, parseI64)));
+    print(`builtin ${(f64(t1) / each).toFixed(3)} ${a1}`);
+    const [a2, t2] = bench(r, () => sum(map(nums, parseScalar)));
+    print(`scalar ${(f64(t2) / each).toFixed(3)} ${a2}`);
+    const [a3, t3] = bench(r, () => sum(map(nums, parseSwar)));
+    print(`swar ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    return 0;
+}
