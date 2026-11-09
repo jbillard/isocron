@@ -84,14 +84,22 @@ struct Walk<'p> {
     others: std::collections::HashSet<*const Expr>,
 }
 
-/// The entries of the report, in the order of the program.
+/// The entries of the report, in the order of the program: not those inside
+/// the functions of the prelude that are called rather than inlined (their
+/// positions are of the prelude, not of the program; their calls are in
+/// the report, D582).
 pub fn entries(p: &Program) -> Vec<Entry> {
-    entries_of(p, true)
+    collect(p, true, false)
 }
 
 /// The entries of the body of the program, and of its recursive functions
-/// when `with_fns`.
+/// when `with_fns` (those of the prelude too: an allocation there breaks
+/// `requireNoAlloc`).
 pub fn entries_of(p: &Program, with_fns: bool) -> Vec<Entry> {
+    collect(p, with_fns, true)
+}
+
+fn collect(p: &Program, with_fns: bool, prelude: bool) -> Vec<Entry> {
     let mut copy_reasons: HashMap<(u32, u32), Vec<String>> = HashMap::new();
     for (sp, why) in p.copy_reasons.iter().rev() {
         copy_reasons.entry((sp.line, sp.col)).or_default().push(why.clone());
@@ -133,7 +141,7 @@ pub fn entries_of(p: &Program, with_fns: bool) -> Vec<Entry> {
         });
     }
     w.walk(&p.body, Ctx::Result);
-    for f in p.fns.iter().filter(|_| with_fns) {
+    for f in p.fns.iter().filter(|f| with_fns && (prelude || f.span.file != isc_types::PRELUDE_FILE)) {
         w.user = f.span;
         w.walk(&f.body, Ctx::Result);
     }
@@ -491,7 +499,7 @@ impl<'p> Walk<'p> {
                 } else if self.others.contains(&(e as *const Expr)) {
                     self.push(e, "tail", format!("`{}`", name), None, "a tail call: its frame replaces the frame of the caller".into(), None);
                 } else {
-                    self.push(e, "stack", format!("`{}`", name), None, "a call of a function that is not inlined (recursive, or too large, D336): it uses the stack".into(), None);
+                    self.push(e, "stack", format!("`{}`", name), None, "a call of a function that is not inlined (recursive, too large (D336) or `@cold` (D584)): it uses the stack".into(), None);
                 }
                 // a jump gives no result of its own
                 if e.ty.has_heap() && !tail {

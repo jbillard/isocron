@@ -234,7 +234,8 @@ pub enum StrOp {
     HashFind,
     /// `readWord(b, at, n)` (D580): the `n` bytes of `b` from `at` as a word.
     ReadWord,
-    /// `$panic(message)` (D582): a panic, of the type its place expects.
+    /// `$panic(a, b, c)` (D582): a panic, its message the three texts, of
+    /// the type its place expects.
     Panic,
     /// An operation of `bigint` (D156).
     Big(BigOp),

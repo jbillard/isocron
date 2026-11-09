@@ -2684,7 +2684,7 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::Panic => 1,
+            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString => 1,
             Prim::Concat => 2,
             Prim::ReadText | Prim::Lines | Prim::Trim | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
@@ -2693,7 +2693,7 @@ impl<'g> FnCx<'g> {
             Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
             Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
-            Prim::HashFind | Prim::ReadWord => 3,
+            Prim::HashFind | Prim::ReadWord | Prim::Panic => 3,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -3089,15 +3089,20 @@ impl<'g> FnCx<'g> {
                 self.syms.push(SymInfo { name: format!("s@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
                 Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
             }
-            // a panic (D582): its message, then the type of its place
+            // a panic (D582): its message in three texts, then the type of
+            // its place
             Prim::Panic => {
-                let m = self.check(&args[0], Some(&Ty::Str))?;
-                self.unify(&Ty::Str, &m.ty, m.span)?;
+                let mut parts = Vec::new();
+                for a in args {
+                    let m = self.check(a, Some(&Ty::Str))?;
+                    self.unify(&Ty::Str, &m.ty, m.span)?;
+                    parts.push(m);
+                }
                 let t = match expected {
                     Some(t) => t.clone(),
                     None => self.fresh(0, LitKind::None, span),
                 };
-                Ok(mk(vec![m], t, self))
+                Ok(mk(parts, t, self))
             }
             Prim::ReadWord => {
                 let (arr, _, _) = self.fresh_array(span);

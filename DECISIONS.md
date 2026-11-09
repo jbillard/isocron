@@ -13470,16 +13470,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `parseI64` is now a function of the prelude (it takes the place of the
   primitive: a function of the prelude comes before a primitive of the
   same name), faster than the Rust version on every measure.
-  - `$panic(message)`: a panic of the prelude, its message given, of the
-    type its place expects (`StrOp::Panic`, `isc_panic_text` of the
-    runtime, `panic_at` of the interpreter); only the prelude can name it
-    (the lexer reads `$` there alone: a program that writes it is refused
-    at compilation). It may panic for the passes (D581).
+  - `$panic(a, b, c)`: a panic of the prelude, its message the three
+    texts one after the other, written by the runtime (`isc_panic_text`;
+    `panic_at` of the interpreter), of the type its place expects
+    (`StrOp::Panic`); only the prelude can name it (the lexer reads `$`
+    there alone: a program that writes it is refused at compilation). It
+    may panic for the passes (D581). Three parts and not one message:
+    `"parseI64: `" + s + "`…"` built in Isocron was an allocation of every
+    call for the report, and `@requireNoAlloc` refused a function that
+    calls `parseI64`, which the runtime's version passed (the suite 405).
   - The function: a sign and 1 to 7 digits, or 1 to 8 digits, in one word
     (`readWord`, D580, then the SWAR of the runtime's `digits8`), 9 to 16
-    bytes in two words, more in `$parseRest` (`@cold`, D584), its message
-    built by `$parseI64Message` (`@cold`); the panic itself stays in
-    `parseI64`, so at the place of the call. The answers of Rust's
+    bytes in two words, more in `$parseRest` (`@cold`, D584); the panic
+    stays in `parseI64`, so at the place of the call. The answers of Rust's
     `str::parse::<i64>`: 1574 texts (signs, leading zeros, the bounds of
     `i64`, the bytes next to the digits, `١`), the old compiler and the new
     one, compiled and interpreted, the same values, codes, messages and
@@ -13509,14 +13512,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
       inline again, the sign of the first word made a `0` in the word.
   - The result (`bench/primitives` numbers, strings and io, and 4096 texts
     of each length; the median of 9 runs, Rust built by the compiler
-    before D580): numbers.parseI64 9.137 → 7.911 ns (−13.4 %),
-    strings.parseI64.7 5.488 → 5.006 (−8.8 %), io.readStdinLines 15.510 →
-    14.533 (−6.3 %); 1 digit −9.2 %, 3 −8.5 %, 7 −6.0 %, 8 −12.2 %, −7
-    −0.7 %, 12 −10.5 %, 16 −17.5 %, 19 +0.3 % (the cold path, equal),
-    mixed −11.5 %. The ten programs call `parseI64` on their arguments
+    before D580, the version committed): numbers.parseI64 8.848 → 7.934 ns
+    (−10.3 %), strings.parseI64.7 5.633 → 5.037 (−10.6 %),
+    io.readStdinLines 15.564 → 14.581 (−6.3 %); 1 digit −10.4 %, 3 −9.8 %,
+    7 −6.6 %, 8 −12.3 %, 12 −10.0 %, 16 −16.6 %, mixed −13.4 %; a negative
+    of 7 digits +0.5 % and 19 digits (the cold path) +0.5 %: equal, in the
+    noise (the run before: −0.7 % and +0.3 %; one binary measures 2 to 4 %
+    apart from one session to the next). The ten programs call `parseI64` on their arguments
     only. The primitive is now hidden by the function of the prelude:
     `isc_parse_i64` is no longer called; `tryParseI64` still reads by
     Rust (`isc_try_parse_i64`), next to move, then the primitive goes.
+  - The report: the inside of a function of the prelude called rather
+    than inlined (`$parseRest`) had positions of the prelude, shown as
+    lines of the program ("line 326"); the report leaves them out (their
+    calls are in it), `requireNoAlloc` still counts them. The test of D228
+    (no `len` left) reads its `n` by `parseF64`: `parseI64` inlined reads
+    the length of its text, a length not known before running.
   - Found on the way: a tuple literal first in a choice
     (`n == 0 ? [0u64, 1u64] : f()`) is typed as an array; the call first
     is accepted. A gap of the language, noted in TODO.

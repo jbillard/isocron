@@ -1039,7 +1039,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_panic_negexp(i64, i32, i32) noreturn",
     "declare void @isc_panic_bench(i64, i32, i32) noreturn",
     "declare void @isc_panic_word(i64, i32, i32) noreturn",
-    "declare void @isc_panic_text(ptr, i64, i32, i32) noreturn",
+    "declare void @isc_panic_text(ptr, i64, ptr, i64, ptr, i64, i32, i32) noreturn",
     "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)",
     "declare ptr @llvm.stacksave.p0()",
     "declare void @llvm.stackrestore.p0(ptr)",
@@ -12966,11 +12966,13 @@ impl<'p> Gen<'p> {
                 self.block(&ldone);
                 v(self.ins(format!("load i64, ptr {}", res)), "i64")
             }
-            // `$panic(message)` (D582): the call that does not return, then
+            // `$panic(a, b, c)` (D582): the call that does not return, then
             // a block no path reaches, where the value of its type is zero
             S::Panic => {
                 let (p, n) = self.str_parts(&vals[0]);
-                self.emit(format!("call void @isc_panic_text(ptr {}, i64 {}, {})", p, n, Self::pos(e.span)));
+                let (q, m) = self.str_parts(&vals[1]);
+                let (r, l) = self.str_parts(&vals[2]);
+                self.emit(format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, q, m, r, l, Self::pos(e.span)));
                 self.emit("unreachable");
                 let dead = self.label();
                 self.block(&dead);

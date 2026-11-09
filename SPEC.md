@@ -882,12 +882,12 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 | Mémoire partagée | `sharedMap(bytes) => Shared`, `atomicLoad`, `atomicStore`, `atomicAdd`, `atomicCas`, `wait(s, at, expected)`, `wake(s, at, count)` | une `Shared` n'a que des accès atomiques ; `wait` et `wake` sont le futex de Linux |
 | Threads | `spawn(stackBytes, task: action)`, `join(t)`, `threadLocal() => Region` | utilisés par `isocron:pool` seul ; la région locale d'un thread n'est lue que par lui |
 | Démarrage | `isc_start` (assembleur du compilateur) | les relocalisations, le stockage local du thread principal, puis le `main` du runtime en Isocron, qui appelle celui du programme |
-| Mots et pannes | `readWord(b, at, n)`, `$panic(message)` | `readWord` : les `n` octets (1 à 8) de `b` depuis `at` en un mot, le premier au poids faible, contrôlés une fois (D580) ; `$panic` : une panne, son message donné, à la position de l'appel de la fonction du prélude, du type que sa place attend ; seul le prélude peut la nommer (D582) |
+| Mots et pannes | `readWord(b, at, n)`, `$panic(a, b, c)` | `readWord` : les `n` octets (1 à 8) de `b` depuis `at` en un mot, le premier au poids faible, contrôlés une fois (D580) ; `$panic` : une panne dont le message est fait des trois textes, écrits par le runtime (aucune allocation dans le code qui panique), à la position de l'appel de la fonction du prélude, du type que sa place attend ; seul le prélude peut la nommer (D582) |
 
 ### Ordre de travail
 
 1. Les primitives dans le compilateur et l'interpréteur, avec leurs tests.
-2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher. Fait : `parseI64`, dans le prélude (D582) : de 6,3 à 13,4 % plus rapide que la version Rust sur ses trois microbenchmarks, de 0,7 à 17,5 % de 1 à 16 chiffres, égal à 19 chiffres (+0,3 %).
+2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher. Fait : `parseI64`, dans le prélude (D582) : de 6,3 à 10,6 % plus rapide que la version Rust sur ses trois microbenchmarks, de 6,6 à 16,6 % de 1 à 16 chiffres, égal pour un négatif de 7 chiffres et pour 19 chiffres (+0,5 %, dans le bruit des mesures).
 3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads.
 4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
 5. Les entrées et sorties (fichiers, entrée standard projetée).

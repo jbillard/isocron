@@ -37,7 +37,8 @@
   such a program panicked wrongly (D581).
 - `parseI64` is written in Isocron (the prelude), the first function of the
   runtime moved out of Rust: the same answers and panics, 6 to 17 % faster
-  than the Rust version on its micro-benchmarks and lengths (D582).
+  than the Rust version on its micro-benchmarks and up to 16 digits, equal
+  for 19 digits (D582).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

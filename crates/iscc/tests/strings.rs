@@ -1626,6 +1626,19 @@ fn parse_i64_written_in_isocron() {
     }
     let r = run_bin(&bin10, &["-9223372036854775808", "1"]);
     assert_eq!(r.stdout, "[-9223372036854775808, -9223372036854775807, -9223372036854775805, 2, 9223372036854775803, -4611686018427387904, 0, 1, -9223372036854775806, -9223372036854775799]\n", "{}", r.stderr);
-    let named = "action main(args: string[k]): i32 {\n    const x: i64 = $panic(\"boom\");\n    print(x);\n    return 0;\n}\n";
+    // its panic allocates nothing (the runtime writes its three parts):
+    // accepted by `requireNoAlloc`, as the runtime's was
+    let no_alloc = "@requireNoAlloc
+function total(xs: string[n]): i64 {
+    return sum(map(xs, parseI64));
+}
+
+action main(args: string[k]): i32 {
+    print(total(args));
+    return 0;
+}
+";
+    agree(no_alloc, "parse_i64_no_alloc", &["1", "22", "-3"], "20\n");
+    let named = "action main(args: string[k]): i32 {\n    const x: i64 = $panic(\"boom\", \"\", \"\");\n    print(x);\n    return 0;\n}\n";
     assert!(isc_types::check_source(named).is_err());
 }

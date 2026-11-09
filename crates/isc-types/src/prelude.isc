@@ -308,15 +308,7 @@ function parseI64(s: string): i64 {
         : k >= 2 && k <= 8 && (neg || c == 43u8) ? $digits8(b, 1, k - 1)
         : k > 8 && k <= 16 ? $digits16(b, k)
         : $parseRest(b, k, neg);
-    return bad == 0u64 ? i64(neg ? 0u64 - v : v) : $panic($parseI64Message(s));
-}
-
-// The message of the panic of `parseI64`, built out of the caller
-// (`@cold`): no frame there for a text it almost never makes. The panic
-// stays in `parseI64`, inlined, at the place of its call (D111).
-@cold
-function $parseI64Message(s: string): string {
-    return "parseI64: `" + s + "` is not a valid integer";
+    return bad == 0u64 ? i64(neg ? 0u64 - v : v) : $panic("parseI64: `", s, "` is not a valid integer");
 }
 
 // The texts of `parseI64` of more than 16 bytes (after their sign and

@@ -5896,15 +5896,18 @@ pub extern "C" fn isc_panic_bench(r: i64, line: i32, col: i32) -> ! {
     die(line, col, &Panic::BenchReps(r))
 }
 
-/// `$panic(message)` (D582): a panic of the prelude, its message given.
+/// `$panic(a, b, c)` (D582): a panic of the prelude, its message the three
+/// texts one after the other (the text of a value between two constants,
+/// written here: no allocation in the code that panics).
 ///
 /// # Safety
-/// `p` and `len` a text (C1).
+/// `a` and `na`, `b` and `nb`, `c` and `nc` texts (C1).
 #[no_mangle]
-pub unsafe extern "C" fn isc_panic_text(p: *const u8, len: i64, line: i32, col: i32) -> ! {
+pub unsafe extern "C" fn isc_panic_text(a: *const u8, na: i64, b: *const u8, nb: i64, c: *const u8, nc: i64, line: i32, col: i32) -> ! {
     // SAFETY: the contract of this function
-    let bytes = unsafe { bytes_of(p, len) };
-    die(line, col, &core::str::from_utf8(bytes).unwrap_or("?"))
+    let (a, b, c) = unsafe { (bytes_of(a, na), bytes_of(b, nb), bytes_of(c, nc)) };
+    let text = |x: &'static [u8]| core::str::from_utf8(x).unwrap_or("?");
+    die(line, col, &format_args!("{}{}{}", text(a), text(b), text(c)))
 }
 
 /// `readWord` with a size out of 1 ..= 8 (D580).
