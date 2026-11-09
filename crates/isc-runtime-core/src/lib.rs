@@ -5,6 +5,10 @@
 //! bytes. No standard library: `core`, and `alloc` for `bigint` (D156).
 
 #![no_std]
+// every unsafe operation in a block of its own, each block justified (the
+// trusted base, D564)
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 extern crate alloc;
 
@@ -1843,6 +1847,11 @@ mod limbs {
     /// carry out (D241). In assembly: with AVX-512 LLVM turned the loop of
     /// Rust into vector code that carries through masks, slower than the
     /// chain (pidigits 0.506 s -> 0.746 s).
+    ///
+    /// # Safety
+    /// `quads` at least 1; `x` and `y` readable and `dst` writable for
+    /// `32 * quads` bytes (`dst` may be `x` or `y`, written after they are
+    /// read at each step).
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     unsafe fn chain<const SUB: bool>(x: *const u8, y: *const u8, dst: *mut u8, quads: usize, c: bool) -> bool {
@@ -1850,7 +1859,10 @@ mod limbs {
         let (mut x, mut y, mut d, mut n) = (x, y, dst, quads);
         macro_rules! body {
             ($op:literal) => {
-                core::arch::asm!(
+                // SAFETY: the contract of `chain`: the loop reads and writes
+                // 32 bytes a step at `x`, `y` and `dst`, `quads` steps; no
+                // stack
+                unsafe { core::arch::asm!(
                     "bt {c:e}, 0",
                     "2:",
                     "mov {t0}, [{x}]",
@@ -1880,7 +1892,7 @@ mod limbs {
                     t1 = out(reg) _,
                     o = lateout(reg_byte) out,
                     options(nostack),
-                )
+                ) }
             };
         }
         if SUB {
@@ -2455,6 +2467,8 @@ mod limbs {
                 // of a chain, which leave CF and OF; the loop counted by
                 // `jrcxz`, which reads no flag
                 if !minus {
+                    // SAFETY: as written above: the words read and written
+                    // inside the slices, the flags kept along each chain
                     unsafe {
                         core::arch::asm!(
                             "xor {h1:e}, {h1:e}",
@@ -2492,6 +2506,7 @@ mod limbs {
                     }
                 } else if !p_larger {
                     // z + not(p) + 1: OF set first (the 1)
+                    // SAFETY: as for the sum above
                     unsafe {
                         core::arch::asm!(
                             "xor {h1:e}, {h1:e}",
@@ -2535,6 +2550,7 @@ mod limbs {
                     }
                 } else {
                     // p + not(z) + 1: OF set first (the 1)
+                    // SAFETY: as for the sum above
                     unsafe {
                         core::arch::asm!(
                             "xor {h1:e}, {h1:e}",
@@ -4216,13 +4232,18 @@ pub mod rx {
         /// The masks of the `ncl` classes over the 64 bytes at `p` (`valid`
         /// the bytes of the text): each byte's classes looked up in `t`,
         /// bytes of 128 and more in none, then one test per class (D278).
+        ///
+        /// # Safety
+        /// The 64 bytes at `p` readable; the processor has AVX-512 VBMI.
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512bw"))]
         #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
         unsafe fn class_masks_vbmi(t: &[u8; 128], ncl: usize, p: *const u8, valid: u64, cm: &mut [u64; CLASSES]) {
             use core::arch::x86_64::*;
-            let x = _mm512_loadu_si512(p as *const __m512i);
-            let lo = _mm512_loadu_si512(t.as_ptr() as *const __m512i);
-            let hi = _mm512_loadu_si512(t.as_ptr().add(64) as *const __m512i);
+            // SAFETY: the 64 bytes at `p` (the contract of this function);
+            // the 128 bytes of `t`, in two loads of 64
+            let (x, lo, hi) = unsafe {
+                (_mm512_loadu_si512(p as *const __m512i), _mm512_loadu_si512(t.as_ptr() as *const __m512i), _mm512_loadu_si512(t.as_ptr().add(64) as *const __m512i))
+            };
             let ascii = !_mm512_movepi8_mask(x) & valid;
             let cls = _mm512_maskz_permutex2var_epi8(ascii, lo, x, hi);
             for (c, m) in cm.iter_mut().enumerate().take(ncl) {
@@ -5369,6 +5390,8 @@ impl Scatter {
                 // SAFETY: the full pieces are written to their capacity, the
                 // last one up to the cursor
                 let used = if k + 1 < n { piece.capacity() } else { unsafe { cur.offset_from(piece.as_ptr()) as usize } };
+                // SAFETY: `used` is at most the capacity of `piece`, and its
+                // first `used` elements were written (as above)
                 unsafe { piece.set_len(used) };
                 for &e in piece.iter() {
                     let k = e >> bits;

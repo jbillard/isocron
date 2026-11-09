@@ -250,8 +250,11 @@ mod openssl {
             // SAFETY: just stored, never freed
             Ok(_) => Some(unsafe { &*b }),
             Err(other) => {
-                // SAFETY: `b` was not published; `other` was, never freed
+                // SAFETY: `b` was not published: made by `Box::into_raw`
+                // above, read by no one else
                 drop(unsafe { alloc::boxed::Box::from_raw(b) });
+                // SAFETY: `other` was published by the thread that won the
+                // exchange, from a `Box` never freed: valid for the program
                 Some(unsafe { &*other })
             }
         }

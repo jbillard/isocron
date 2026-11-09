@@ -12929,3 +12929,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     functions that read `k` and `j`, a lambda that reads `h` and a value of
     its own, `h` reading `g` reading `k`, inside a `map`; the interpreter
     and the code on 1 and 4 threads; the checked allocator).
+- **D564 — The unsafe of `isc-runtime-core` checked at compile time; that of
+  the runtime counted (2026-11-09).** TODO, the trusted base: the `unsafe`
+  of the runtime justified and checked at compile time, confined behind
+  safe interfaces. `isc-mem` already denied both lints (D288).
+  - `isc-runtime-core` now denies them too (`unsafe_op_in_unsafe_fn`,
+    checked by `rustc` at every build; `clippy::undocumented_unsafe_blocks`,
+    by clippy): its two blocks without their own justification (a second
+    block under the comment of the first: the `Box` of OpenSSL's table
+    published by another thread, the length of a piece of the scattered
+    columns) and the assembly of the chain of carries of `bigint` (D241: an
+    operation in an `unsafe fn` without a block; its contract now written,
+    `quads` at least 1, the bytes readable and writable) given theirs.
+  - Found on the way, left as an item: clippy's `uninit_vec` (denied by
+    default) on `bigint::unwritten` (D196): a `Vec<u8>` whose length covers
+    bytes not yet written breaks the invariant of `Vec` (Rust's rules: its
+    first `len` elements initialized), though every caller writes each byte
+    before reading it; the sound form writes through the spare capacity
+    before the length is set, every caller of `unwritten` rewritten, then
+    pidigits measured (the `memset` it avoids was 7 % of it). The suite
+    does not run clippy (its tests only): the clippy lints of `isc-mem` and
+    of `isc-runtime-core` hold where clippy is run.
+  - The runtime (`isc-runtime`, built apart from the workspace), counted by
+    clippy with both lints: 1150 operations in `unsafe fn`s without a block
+    of their own (527 in `lib.rs`, 425 in `heap.rs`, 114 in `net.rs`, 59 in
+    `system.rs`, 25 in `mapped.rs`), 55 blocks without a justification, 2
+    `unsafe impl` without one: each to be given its block and its reason
+    (not a comment of form), module by module, the smallest first.
