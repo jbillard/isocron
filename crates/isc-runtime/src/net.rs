@@ -30,21 +30,32 @@ pub struct AcceptOut {
 }
 
 /// `sysThreads()`: the threads of the pool (D373), 1 under WASI.
+///
+/// # Safety
+/// `out` the place of the result, the generated code's.
 #[no_mangle]
+#[deny(unsafe_op_in_unsafe_fn)]
 pub unsafe extern "C" fn isc_sys_threads(out: *mut i64) {
-    *out = crate::isc_thread_count();
+    // SAFETY: the contract of this function
+    unsafe { out.write(crate::isc_thread_count()) };
 }
 
 /// `sysPlatform()`: 0 Linux, 1 Windows, 2 WASI.
+///
+/// # Safety
+/// `out` the place of the result, the generated code's.
 #[no_mangle]
+#[deny(unsafe_op_in_unsafe_fn)]
 pub unsafe extern "C" fn isc_sys_platform(out: *mut i64) {
-    *out = if cfg!(target_os = "wasi") {
+    let r = if cfg!(target_os = "wasi") {
         2
     } else if cfg!(windows) {
         1
     } else {
         0
     };
+    // SAFETY: the contract of this function
+    unsafe { out.write(r) };
 }
 
 /// The numeric address `a` and the port: the bytes of its `sockaddr_in` or
@@ -87,13 +98,20 @@ fn address_text(b: &[u8; 28], inet6: u16) -> alloc::string::String {
 
 /// An array of bytes holding the first `n` bytes of `buf` (of `max`
 /// allocated): `buf` itself when they fill most of it, else a copy.
+///
+/// # Safety
+/// `buf` a block of the runtime of `max` bytes, its first `n` written,
+/// given to this function (freed or kept by the array).
 #[cfg(not(target_os = "wasi"))]
+#[deny(unsafe_op_in_unsafe_fn)]
 unsafe fn bytes_read(buf: *mut u8, n: usize, max: usize) -> IscArray {
     if n * 2 >= max {
         return IscArray { ptr: buf, len: n as i64 };
     }
     let q = isc_alloc(n.max(1) as i64);
-    core::ptr::copy_nonoverlapping(buf, q, n);
+    // SAFETY: `n` bytes written at `buf` (the contract), `q` a new block of
+    // at least `n`
+    unsafe { core::ptr::copy_nonoverlapping(buf, q, n) };
     isc_free(buf);
     IscArray { ptr: q, len: n as i64 }
 }
@@ -126,14 +144,14 @@ pub struct WaitOut {
 
 /// An array of the program holding a copy of `xs`.
 #[cfg(not(target_os = "wasi"))]
-unsafe fn array_of<T: Copy>(xs: &[T]) -> IscArray {
+fn array_of<T: Copy>(xs: &[T]) -> IscArray {
     if xs.is_empty() {
         return IscArray { ptr: empty_bytes(), len: 0 };
     }
     let bytes = core::mem::size_of_val(xs);
     let p = isc_alloc(bytes as i64);
-    // SAFETY: `p` holds `bytes` bytes, `xs` as many
-    core::ptr::copy_nonoverlapping(xs.as_ptr() as *const u8, p, bytes);
+    // SAFETY: `p` a new block of `bytes` bytes, `xs` as many, apart
+    unsafe { core::ptr::copy_nonoverlapping(xs.as_ptr() as *const u8, p, bytes) };
     IscArray { ptr: p, len: xs.len() as i64 }
 }
 
@@ -238,6 +256,7 @@ fn with_sessions<T>(f: impl FnOnce(&mut alloc::vec::Vec<(i64, isc_runtime_core::
     }
     // SAFETY: the lock is held
     let r = f(unsafe { &mut *SESSIONS.list.get() });
+    // SAFETY: the lock is still held
     SESSIONS.count.store(unsafe { (*SESSIONS.list.get()).len() }, core::sync::atomic::Ordering::Release);
     SESSIONS.lock.store(false, core::sync::atomic::Ordering::Release);
     r
@@ -263,6 +282,11 @@ fn take_session(fd: i64) -> Option<isc_runtime_core::tls::Session> {
 
 #[cfg(target_os = "linux")]
 mod imp {
+    // every unsafe operation in a block of its own, each justified (D566):
+    // the pointers of the generated code read once at each entry, the
+    // system's calls on sockets behind safe functions of slices
+    #![deny(unsafe_op_in_unsafe_fn)]
+    #![deny(clippy::undocumented_unsafe_blocks)]
     use super::*;
     use crate::linux::syscall6;
 
@@ -298,8 +322,46 @@ mod imp {
     }
 
     /// A socket of `kind` for the family `family`, or a negative code.
-    unsafe fn socket(family: u16, kind: usize) -> isize {
-        syscall6(SYS_SOCKET, family as usize, kind | SOCK_CLOEXEC, 0, 0, 0, 0)
+    fn socket(family: u16, kind: usize) -> isize {
+        // SAFETY: integers only
+        unsafe { syscall6(SYS_SOCKET, family as usize, kind | SOCK_CLOEXEC, 0, 0, 0, 0) }
+    }
+
+    /// `connect` of `fd` to the address `addr` (the bytes of a `sockaddr`).
+    fn connect(fd: isize, addr: &[u8]) -> isize {
+        // SAFETY: the address read by the kernel, its length given
+        unsafe { syscall6(SYS_CONNECT, fd as usize, addr.as_ptr() as usize, addr.len(), 0, 0, 0) }
+    }
+
+    /// `bind` of `fd` to the address `addr`.
+    fn bind(fd: isize, addr: &[u8]) -> isize {
+        // SAFETY: as `connect`
+        unsafe { syscall6(SYS_BIND, fd as usize, addr.as_ptr() as usize, addr.len(), 0, 0, 0) }
+    }
+
+    /// The option `opt` of the level `level` of `fd` set to `v`.
+    fn set_option(fd: isize, level: usize, opt: usize, v: c_int) -> isize {
+        // SAFETY: an integer of this frame, its 4 bytes read by the kernel
+        unsafe { syscall6(SYS_SETSOCKOPT, fd as usize, level, opt, &v as *const c_int as usize, 4, 0) }
+    }
+
+    /// A call of the system of integers only (`listen`, `shutdown`, ...).
+    fn call_ints(n: usize, a: usize, b: usize, c: usize) -> isize {
+        // SAFETY: the calls given here read and write no memory of the
+        // program (their arguments are numbers)
+        unsafe { syscall6(n, a, b, c, 0, 0, 0) }
+    }
+
+    /// `send` of the bytes `b` on `fd` (never `SIGPIPE`).
+    fn send(fd: i64, b: &[u8]) -> isize {
+        // SAFETY: the bytes read by the kernel, their length given
+        unsafe { syscall6(SYS_SENDTO, fd as usize, b.as_ptr() as usize, b.len(), MSG_NOSIGNAL, 0, 0) }
+    }
+
+    /// `read` of `fd` into `b`.
+    fn recv(fd: i64, b: &mut [u8]) -> isize {
+        // SAFETY: `b` writable for its length
+        unsafe { linux::read(fd as c_int, b.as_mut_ptr() as *mut c_void, b.len()) }
     }
 
     /// The call `f` again while a signal interrupts it.
@@ -313,38 +375,53 @@ mod imp {
     }
 
     /// The socket `h` closed (none: -1).
-    unsafe fn close_socket(h: i64) {
+    fn close_socket(h: i64) {
         if h >= 0 {
             linux::close(h as c_int);
         }
     }
 
     /// `sysConnect(address, port)`.
+    ///
+    /// # Safety
+    /// `out` the place of the result, `p` and `n` a string, the generated
+    /// code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_connect(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
-        let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
-            *out = HandleCode { h: -1, code: -22 };
-            return;
+        // SAFETY: the contract of this function
+        let a = unsafe { bytes_of(p, n) };
+        let r = connect_to(a, port);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn connect_to(a: &[u8], port: i64) -> HandleCode {
+        let Some((addr, len, family)) = sockaddr(a, port, AF_INET6) else {
+            return HandleCode { h: -1, code: -22 };
         };
         let fd = socket(family, SOCK_STREAM);
         if fd < 0 {
-            *out = HandleCode { h: -1, code: net_code(fd) };
-            return;
+            return HandleCode { h: -1, code: net_code(fd) };
         }
-        // SAFETY: the address of `len` bytes, read by the kernel
-        let r = again(|| unsafe { syscall6(SYS_CONNECT, fd as usize, addr.as_ptr() as usize, len, 0, 0, 0) });
+        let r = again(|| connect(fd, &addr[..len]));
         if r < 0 {
             linux::close(fd as c_int);
-            *out = HandleCode { h: -1, code: net_code(r) };
-            return;
+            return HandleCode { h: -1, code: net_code(r) };
         }
-        *out = HandleCode { h: fd as i64, code: 0 };
+        HandleCode { h: fd as i64, code: 0 }
     }
 
     /// `sysListen(address, port)`: the address reusable at once.
+    ///
+    /// # Safety
+    /// As `isc_sys_connect`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_listen(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
-        listen_on(out, p, n, port, false)
+        // SAFETY: the contract of this function
+        let a = unsafe { bytes_of(p, n) };
+        let r = listen_on(a, port, false);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysListenShared(address, port)` (D374): a listener whose port the
@@ -352,57 +429,71 @@ mod imp {
     /// (`SO_REUSEPORT`): the kernel shares the new connections out among
     /// them (`socket(7)`: the option set on each socket before `bind`, all
     /// of the same effective user).
+    ///
+    /// # Safety
+    /// As `isc_sys_connect`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_listenshared(out: *mut HandleCode, p: *const u8, n: i64, port: i64) {
-        listen_on(out, p, n, port, true)
+        // SAFETY: the contract of this function
+        let a = unsafe { bytes_of(p, n) };
+        let r = listen_on(a, port, true);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
-    unsafe fn listen_on(out: *mut HandleCode, p: *const u8, n: i64, port: i64, shared: bool) {
-        let Some((addr, len, family)) = sockaddr(bytes_of(p, n), port, AF_INET6) else {
-            *out = HandleCode { h: -1, code: -22 };
-            return;
+    fn listen_on(a: &[u8], port: i64, shared: bool) -> HandleCode {
+        let Some((addr, len, family)) = sockaddr(a, port, AF_INET6) else {
+            return HandleCode { h: -1, code: -22 };
         };
         let fd = socket(family, SOCK_STREAM);
         if fd < 0 {
-            *out = HandleCode { h: -1, code: net_code(fd) };
-            return;
+            return HandleCode { h: -1, code: net_code(fd) };
         }
-        let one: c_int = 1;
-        syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_REUSEADDR, &one as *const c_int as usize, 4, 0);
+        set_option(fd, SOL_SOCKET, SO_REUSEADDR, 1);
         if shared {
-            let r = syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_REUSEPORT, &one as *const c_int as usize, 4, 0);
+            let r = set_option(fd, SOL_SOCKET, SO_REUSEPORT, 1);
             if r < 0 {
                 linux::close(fd as c_int);
-                *out = HandleCode { h: -1, code: net_code(r) };
-                return;
+                return HandleCode { h: -1, code: net_code(r) };
             }
         }
-        let mut r = syscall6(SYS_BIND, fd as usize, addr.as_ptr() as usize, len, 0, 0, 0);
+        let mut r = bind(fd, &addr[..len]);
         if r >= 0 {
-            r = syscall6(SYS_LISTEN, fd as usize, 128, 0, 0, 0, 0);
+            r = call_ints(SYS_LISTEN, fd as usize, 128, 0);
         }
         if r < 0 {
             linux::close(fd as c_int);
-            *out = HandleCode { h: -1, code: net_code(r) };
-            return;
+            return HandleCode { h: -1, code: net_code(r) };
         }
-        *out = HandleCode { h: fd as i64, code: 0 };
+        HandleCode { h: fd as i64, code: 0 }
+    }
+
+    /// `accept` on the listener `l`: the connection (or a negative code) and
+    /// the bytes of the address of its peer.
+    fn accept(l: i64) -> (isize, [u8; 28]) {
+        let mut addr = [0u8; 28];
+        let mut len: u32 = 28;
+        // SAFETY: the kernel writes at most `len` bytes (28) at `addr`, and
+        // their length at `len`, both of this frame
+        let r = again(|| unsafe { syscall6(SYS_ACCEPT4, l as usize, addr.as_mut_ptr() as usize, &mut len as *mut u32 as usize, SOCK_CLOEXEC, 0, 0) });
+        (r, addr)
     }
 
     /// `sysAccept(listener)`: the connection and the address of its peer.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_accept(out: *mut AcceptOut, l: i64) {
-        let mut addr = [0u8; 28];
-        let mut len: u32 = 28;
-        // SAFETY: the kernel writes at most `len` bytes at `addr`, and its
-        // length at `len`
-        let r = again(|| unsafe { syscall6(SYS_ACCEPT4, l as usize, addr.as_mut_ptr() as usize, &mut len as *mut u32 as usize, SOCK_CLOEXEC, 0, 0) });
-        if r < 0 {
-            *out = AcceptOut { h: -1, peer: new_str(b""), code: net_code(r) };
-            return;
-        }
-        let peer = address_text(&addr, AF_INET6);
-        *out = AcceptOut { h: r as i64, peer: new_str(peer.as_bytes()), code: 0 };
+        let (r, addr) = accept(l);
+        let v = if r < 0 {
+            AcceptOut { h: -1, peer: new_str(b""), code: net_code(r) }
+        } else {
+            let peer = address_text(&addr, AF_INET6);
+            AcceptOut { h: r as i64, peer: new_str(peer.as_bytes()), code: 0 }
+        };
+        // SAFETY: the contract of this function
+        unsafe { out.write(v) };
     }
 
     // ----- TLS of the connections (D343) --------------------------------
@@ -418,10 +509,12 @@ mod imp {
     /// `SIGPIPE` ignored: OpenSSL writes to its sockets without
     /// `MSG_NOSIGNAL`, a peer gone is then an error, not the end of the
     /// program (the runtime's own writes never raised it).
-    unsafe fn ignore_sigpipe() {
+    fn ignore_sigpipe() {
         // struct sigaction of the kernel: handler SIG_IGN, flags, restorer, mask
         let act: [u64; 4] = [1, 0, 0, 0];
-        syscall6(13, 13, act.as_ptr() as usize, 0, 8, 0, 0);
+        // SAFETY: `rt_sigaction` reading the action of this frame (8 bytes
+        // of mask); no old action written; SIG_IGN installs no code
+        unsafe { syscall6(13, 13, act.as_ptr() as usize, 0, 8, 0, 0) };
     }
 
     fn text_of(t: &str) -> IscStr {
@@ -430,19 +523,30 @@ mod imp {
 
     /// `sysTlsStart(conn, host, ca)`: the client of TLS on `conn`, its
     /// reads and writes encrypted from now on.
+    ///
+    /// # Safety
+    /// `out` the place of the result, `hp` and `hn`, `cp` and `cn` two
+    /// strings, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_tlsstart(out: *mut TextCode, c: i64, hp: *const u8, hn: i64, cp: *const u8, cn: i64) {
+        // SAFETY: the contract of this function
+        let (host, ca) = unsafe { (bytes_of(hp, hn), bytes_of(cp, cn)) };
+        let r = tls_start(c, host, ca);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn tls_start(c: i64, host: &[u8], ca: &[u8]) -> TextCode {
         let Some(d) = dl() else {
-            *out = TextCode { text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
-            return;
+            return TextCode { text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
         };
         ignore_sigpipe();
-        match tls::connect(d, c, bytes_of(hp, hn), bytes_of(cp, cn)) {
+        match tls::connect(d, c, host, ca) {
             Ok(sess) => {
                 with_sessions(|v| v.push((c, sess)));
-                *out = TextCode { text: text_of(""), code: 0 };
+                TextCode { text: text_of(""), code: 0 }
             }
-            Err((code, t)) => *out = TextCode { text: text_of(&t), code },
+            Err((code, t)) => TextCode { text: text_of(&t), code },
         }
     }
 
@@ -455,88 +559,115 @@ mod imp {
     }
 
     /// `sysRecv(conn, max)`: the bytes of one read, none at the end.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_recv(out: *mut IscArrayCode, c: i64, max: i64) {
         let max = max.clamp(1, 1 << 24) as usize;
         let buf = isc_alloc(max as i64);
-        if let (Some(sess), Some(d)) = (session(c), dl()) {
-            // SAFETY: `buf` holds `max` bytes
-            let b = unsafe { core::slice::from_raw_parts_mut(buf, max) };
-            *out = match tls::read(d, sess, b) {
-                tls::Step::Done(n) => IscArrayCode { a: bytes_read(buf, n, max), code: 0 },
-                tls::Step::End => IscArrayCode { a: bytes_read(buf, 0, max), code: 0 },
-                st => {
-                    isc_free(buf);
-                    IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code: tls_code(st) }
+        // SAFETY: `buf` a new block of `max` bytes, alive and apart; its
+        // bytes not yet written, written by the read before any is read
+        // (the reference to bytes not yet written: the question of
+        // `uninit_vec`, D564, TODO)
+        let b = unsafe { core::slice::from_raw_parts_mut(buf, max) };
+        let read = match (session(c), dl()) {
+            (Some(sess), Some(d)) => match tls::read(d, sess, b) {
+                tls::Step::Done(n) => Ok(n),
+                tls::Step::End => Ok(0),
+                st => Err(tls_code(st)),
+            },
+            _ => {
+                let r = again(|| recv(c, b));
+                if r < 0 {
+                    Err(net_code(r))
+                } else {
+                    Ok(r as usize)
                 }
-            };
-            return;
-        }
-        // SAFETY: the kernel writes at most `max` bytes at `buf`
-        let r = again(|| unsafe { linux::read(c as c_int, buf as *mut c_void, max) });
-        if r < 0 {
-            isc_free(buf);
-            *out = IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code: net_code(r) };
-            return;
-        }
-        *out = IscArrayCode { a: bytes_read(buf, r as usize, max), code: 0 };
+            }
+        };
+        let v = match read {
+            // SAFETY: `buf` the block of `max` bytes made above, its first
+            // `n` written by the read, given to the array
+            Ok(n) => IscArrayCode { a: unsafe { bytes_read(buf, n, max) }, code: 0 },
+            Err(code) => {
+                isc_free(buf);
+                IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code }
+            }
+        };
+        // SAFETY: the contract of this function
+        unsafe { out.write(v) };
     }
 
     /// `sysSend(conn, bytes)`: every byte, or an error (never `SIGPIPE`).
+    ///
+    /// # Safety
+    /// `out` the place of the result, `p` and `n` an array of bytes, the
+    /// generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_send(out: *mut i64, c: i64, p: *const u8, n: i64) {
+        // SAFETY: the contract of this function
+        let all = unsafe { bytes_of(p, n) };
+        let r = send_all(c, all);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn send_all(c: i64, all: &[u8]) -> i64 {
         let mut at = 0usize;
-        let n = n.max(0) as usize;
         if let (Some(sess), Some(d)) = (session(c), dl()) {
-            // SAFETY: `p` holds `n` bytes
-            let all = unsafe { core::slice::from_raw_parts(p, n) };
-            while at < n {
+            while at < all.len() {
                 match tls::write(d, sess, &all[at..]) {
                     tls::Step::Done(k) => at += k,
-                    st => {
-                        *out = tls_code(st);
-                        return;
-                    }
+                    st => return tls_code(st),
                 }
             }
-            *out = 0;
-            return;
+            return 0;
         }
-        while at < n {
-            // SAFETY: the kernel reads `n - at` bytes from `p + at`
-            let r = again(|| unsafe { syscall6(SYS_SENDTO, c as usize, p.add(at) as usize, n - at, MSG_NOSIGNAL, 0, 0) });
+        while at < all.len() {
+            let r = again(|| send(c, &all[at..]));
             if r < 0 {
-                *out = net_code(r);
-                return;
+                return net_code(r);
             }
             at += r as usize;
         }
-        *out = 0;
+        0
     }
 
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_close(out: *mut i64, c: i64) {
         if let (Some(sess), Some(d)) = (take_session(c), dl()) {
             tls::close(d, sess);
         }
         close_socket(c);
-        *out = 0;
+        // SAFETY: the contract of this function
+        unsafe { out.write(0) };
     }
 
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_closelistener(out: *mut i64, l: i64) {
         close_socket(l);
-        *out = 0;
+        // SAFETY: the contract of this function
+        unsafe { out.write(0) };
     }
 
     /// `sysShutdown(conn)`: `shutdown(fd, SHUT_WR)` (after the end of the
     /// stream of TLS, `close_notify`, on a connection of TLS).
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_shutdown(out: *mut i64, c: i64) {
         if let (Some(sess), Some(d)) = (session(c), dl()) {
             tls::notify_close(d, sess);
         }
-        *out = net_code(syscall6(48, c as usize, 1, 0, 0, 0, 0).min(0));
+        let r = net_code(call_ints(48, c as usize, 1, 0).min(0));
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     // ----- servers (D342): `epoll`, level-triggered ----------------------
@@ -576,19 +707,37 @@ mod imp {
     }
 
     /// `fd` watched by the set `ep` for reading, with the number `data`.
-    unsafe fn watch(ep: c_int, fd: c_int, data: u64) -> isize {
+    fn watch(ep: c_int, fd: c_int, data: u64) -> isize {
         let ev = EpollEvent { events: EPOLLIN, data };
-        // SAFETY: the kernel reads the event of 12 bytes
-        syscall6(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, fd as usize, &ev as *const EpollEvent as usize, 0, 0)
+        // SAFETY: the kernel reads the event of 12 bytes of this frame
+        unsafe { syscall6(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, fd as usize, &ev as *const EpollEvent as usize, 0, 0) }
     }
 
-    /// `sysServerOpen(listener)`: the listener taken by a new server (closed
-    /// with it, or now when this fails).
-    #[no_mangle]
-    pub unsafe extern "C" fn isc_sys_serveropen(out: *mut HandleCode, l: i64) {
-        let ep = syscall6(SYS_EPOLL_CREATE1, SOCK_CLOEXEC, 0, 0, 0, 0, 0);
-        let flags = if ep >= 0 { syscall6(SYS_FCNTL, l as usize, F_GETFL, 0, 0, 0, 0) } else { ep };
-        let mut r = if flags >= 0 { syscall6(SYS_FCNTL, l as usize, F_SETFL, flags as usize | SOCK_NONBLOCK, 0, 0, 0) } else { flags };
+    /// `poll` of `fd` for `events`, SEND_WAIT_MS at most: 0 at the end of
+    /// the delay.
+    fn wait_for(fd: c_int, events: i16) -> isize {
+        let mut pfd = PollFd { fd, events, revents: 0 };
+        // SAFETY: one `struct pollfd` of this frame, written by the kernel
+        again(|| unsafe { syscall6(SYS_POLL, &mut pfd as *mut PollFd as usize, 1, SEND_WAIT_MS as usize, 0, 0, 0) })
+    }
+
+    /// The state behind the handle `s` of a server, for a primitive called
+    /// with it.
+    ///
+    /// # Safety
+    /// As `server`: `s` a handle of the program that `sysServerOpen` made and
+    /// `sysServerClose` has not freed (the linear check, D339).
+    unsafe fn state<'a>(s: i64) -> Option<&'a mut ServerState<c_int>> {
+        // SAFETY: the contract of this function
+        unsafe { server::<c_int>(s) }
+    }
+
+    /// A server taking the listener `l` (closed with it, or now when this
+    /// fails).
+    fn server_open(l: i64) -> HandleCode {
+        let ep = call_ints(SYS_EPOLL_CREATE1, SOCK_CLOEXEC, 0, 0);
+        let flags = if ep >= 0 { call_ints(SYS_FCNTL, l as usize, F_GETFL, 0) } else { ep };
+        let mut r = if flags >= 0 { call_ints(SYS_FCNTL, l as usize, F_SETFL, flags as usize | SOCK_NONBLOCK) } else { flags };
         if r >= 0 {
             r = watch(ep as c_int, l as c_int, LISTENER);
         }
@@ -597,42 +746,63 @@ mod imp {
                 linux::close(ep as c_int);
             }
             close_socket(l);
-            *out = HandleCode { h: -1, code: net_code(r) };
-            return;
+            return HandleCode { h: -1, code: net_code(r) };
         }
         let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default() });
-        *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
+        HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 }
+    }
+
+    /// `sysServerOpen(listener)`: the listener taken by a new server (closed
+    /// with it, or now when this fails).
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
+    #[no_mangle]
+    pub unsafe extern "C" fn isc_sys_serveropen(out: *mut HandleCode, l: i64) {
+        let r = server_open(l);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
     /// `sysServerOpenTls(listener, cert, key)`: a server whose connections
     /// speak TLS with the certificate and the key of the PEM texts (D343).
+    ///
+    /// # Safety
+    /// `out` the place of the result, `cp` and `cn`, `kp` and `kn` two
+    /// strings, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serveropentls(out: *mut HandleTextCode, l: i64, cp: *const u8, cn: i64, kp: *const u8, kn: i64) {
+        // SAFETY: the contract of this function
+        let (cert, key) = unsafe { (bytes_of(cp, cn), bytes_of(kp, kn)) };
+        let r = server_open_tls(l, cert, key);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn server_open_tls(l: i64, cert: &[u8], key: &[u8]) -> HandleTextCode {
         let Some(d) = dl() else {
             close_socket(l);
-            *out = HandleTextCode { h: -1, text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
-            return;
+            return HandleTextCode { h: -1, text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
         };
         ignore_sigpipe();
-        let ctx = match tls::server_ctx(d, bytes_of(cp, cn), bytes_of(kp, kn)) {
+        let ctx = match tls::server_ctx(d, cert, key) {
             Ok(c) => c,
             Err((code, t)) => {
                 close_socket(l);
-                *out = HandleTextCode { h: -1, text: text_of(&t), code };
-                return;
+                return HandleTextCode { h: -1, text: text_of(&t), code };
             }
         };
-        let mut plain = HandleCode { h: -1, code: 0 };
-        isc_sys_serveropen(&mut plain, l);
+        let plain = server_open(l);
         if plain.code != 0 {
             tls::free_server_ctx(d, ctx);
-            *out = HandleTextCode { h: -1, text: text_of("the server"), code: plain.code };
-            return;
+            return HandleTextCode { h: -1, text: text_of("the server"), code: plain.code };
         }
-        if let Some(st) = server::<c_int>(plain.h) {
+        // SAFETY: the state `server_open` just made, not yet given to the
+        // program
+        if let Some(st) = unsafe { state(plain.h) } {
             st.tls = ctx.0;
         }
-        *out = HandleTextCode { h: plain.h, text: text_of(""), code: 0 };
+        HandleTextCode { h: plain.h, text: text_of(""), code: 0 }
     }
 
     /// The session of TLS of the connection `id` of a server, and whether
@@ -644,13 +814,23 @@ mod imp {
     /// `sysServerWait(server, max, ms)`: the connections waiting accepted,
     /// then at most `max` bytes read from each connection that has some
     /// (or has ended), waiting at most `ms` milliseconds (-1: no limit).
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's; `s` as `state`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serverwait(out: *mut WaitOut, s: i64, max: i64, ms: i64) {
         let empty = || IscArray { ptr: empty_bytes(), len: 0 };
-        let Some(st) = server::<c_int>(s) else {
-            *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: -9 };
-            return;
+        // SAFETY: the contract of this function
+        let r = match unsafe { state(s) } {
+            None => WaitOut { ids: empty(), lens: empty(), data: empty(), code: -9 },
+            Some(st) => server_wait(st, max, ms),
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn server_wait(st: &mut ServerState<c_int>, max: i64, ms: i64) -> WaitOut {
+        let empty = || IscArray { ptr: empty_bytes(), len: 0 };
         let max = max.clamp(1, 1 << 24) as usize;
         let mut evs = [EpollEvent { events: 0, data: 0 }; 64];
         let (mut ids, mut lens, mut data) = st.take_scratch();
@@ -661,9 +841,9 @@ mod imp {
         if st.tls != 0 {
             read_pending(st, max, &mut ids, &mut lens, &mut data);
             if !ids.is_empty() {
-                *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+                let r = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
                 st.keep_scratch((ids, lens, data));
-                return;
+                return r;
             }
         }
         loop {
@@ -671,35 +851,36 @@ mod imp {
                 Some(d) => (d.saturating_sub(crate::isc_clock_ns()).div_ceil(1_000_000)).min(i32::MAX as u64) as isize,
                 None => -1,
             };
-            // SAFETY: the kernel writes at most 64 events at `evs`
+            // SAFETY: the kernel writes at most 64 events at `evs`, of this
+            // frame
             let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, 64, left as usize, 0, 0) });
             if n < 0 {
-                *out = WaitOut { ids: empty(), lens: empty(), data: empty(), code: net_code(n) };
                 st.keep_scratch((ids, lens, data));
-                return;
+                return WaitOut { ids: empty(), lens: empty(), data: empty(), code: net_code(n) };
             }
             read_ready(st, &evs[..n as usize], max, &mut ids, &mut lens, &mut data);
             if !ids.is_empty() || n == 0 || left == 0 {
                 break;
             }
         }
-        *out = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+        let r = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
         st.keep_scratch((ids, lens, data));
+        r
     }
 
     /// The events `evs` of a wait: the connections waiting accepted, the
     /// bytes of the others read.
-    unsafe fn read_ready(st: &mut ServerState<c_int>, evs: &[EpollEvent], max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+    fn read_ready(st: &mut ServerState<c_int>, evs: &[EpollEvent], max: usize, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
         for ev in evs {
             let tag = { ev.data };
             if tag == LISTENER {
                 loop {
+                    // SAFETY: no address asked (null pointers): integers only
                     let c = again(|| unsafe { syscall6(SYS_ACCEPT4, st.listener as usize, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC, 0, 0) });
                     if c < 0 {
                         break;
                     }
-                    let one: c_int = 1;
-                    syscall6(SYS_SETSOCKOPT, c as usize, IPPROTO_TCP, TCP_NODELAY, &one as *const c_int as usize, 4, 0);
+                    set_option(c, IPPROTO_TCP, TCP_NODELAY, 1);
                     let id = st.add(c as c_int);
                     if watch(st.ep, c as c_int, id as u64) < 0 {
                         st.take(id);
@@ -728,15 +909,15 @@ mod imp {
             }
             data.reserve(max);
             let at = data.len();
-            // SAFETY: the kernel writes at most `max` bytes at the room
+            // SAFETY: the kernel writes at most `max` bytes in the room
             // reserved after the `at` bytes of `data`
             let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, data.as_mut_ptr().add(at) as usize, max, 0, 0, 0) });
             if r == EAGAIN {
                 continue;
             }
             let got = r.max(0) as usize;
-            // SAFETY: the kernel wrote `got` bytes there
-            data.set_len(at + got);
+            // SAFETY: the kernel wrote `got` bytes (at most `max`) there
+            unsafe { data.set_len(at + got) };
             ids.push(id);
             lens.push(got as i64);
         }
@@ -791,93 +972,95 @@ mod imp {
 
     /// `sysServerSend(server, id, bytes)`: all of them, waiting for a peer
     /// that reads slowly (at most SEND_WAIT_MS without progress: `TimedOut`).
+    ///
+    /// # Safety
+    /// `out` the place of the result, `p` and `n` an array of bytes, the
+    /// generated code's; `s` as `state`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serversend(out: *mut i64, s: i64, id: i64, p: *const u8, n: i64) {
-        let Some(st) = server::<c_int>(s) else {
-            *out = -9;
-            return;
+        // SAFETY: the contract of this function
+        let (st, all) = unsafe { (state(s), bytes_of(p, n)) };
+        let r = match st {
+            None => -9,
+            Some(st) => server_send(st, id, all),
         };
-        let Some(fd) = st.fd(id) else {
-            *out = -9;
-            return;
-        };
-        let n = n.max(0) as usize;
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn server_send(st: &mut ServerState<c_int>, id: i64, all: &[u8]) -> i64 {
+        let Some(fd) = st.fd(id) else { return -9 };
+        let n = all.len();
         let mut at = 0usize;
         if st.tls != 0 {
-            let (Some((sess, _)), Some(d)) = (server_session(st, id), dl()) else {
-                *out = -9;
-                return;
-            };
-            // SAFETY: `p` holds `n` bytes
-            let all = unsafe { core::slice::from_raw_parts(p, n) };
+            let (Some((sess, _)), Some(d)) = (server_session(st, id), dl()) else { return -9 };
             while at < n {
                 match tls::write(d, sess, &all[at..]) {
                     tls::Step::Done(k) => at += k,
                     st @ (tls::Step::WantWrite | tls::Step::WantRead) => {
                         let events = if st == tls::Step::WantWrite { POLLOUT } else { 1 };
-                        let mut pfd = PollFd { fd, events, revents: 0 };
-                        // SAFETY: one `struct pollfd`, written by the kernel
-                        let w = again(|| unsafe { syscall6(SYS_POLL, &mut pfd as *mut PollFd as usize, 1, SEND_WAIT_MS as usize, 0, 0, 0) });
-                        if w == 0 {
-                            *out = 6;
-                            return;
+                        if wait_for(fd, events) == 0 {
+                            return 6;
                         }
                     }
-                    _ => {
-                        *out = tls::TLS_FAULT;
-                        return;
-                    }
+                    _ => return tls::TLS_FAULT,
                 }
             }
-            *out = 0;
-            return;
+            return 0;
         }
         while at < n {
-            // SAFETY: the kernel reads `n - at` bytes from `p + at`
-            let r = again(|| unsafe { syscall6(SYS_SENDTO, fd as usize, p.add(at) as usize, n - at, MSG_NOSIGNAL, 0, 0) });
+            let r = again(|| send(fd as i64, &all[at..]));
             if r == EAGAIN {
-                let mut pfd = PollFd { fd, events: POLLOUT, revents: 0 };
-                // SAFETY: one `struct pollfd`, written by the kernel
-                let w = again(|| unsafe { syscall6(SYS_POLL, &mut pfd as *mut PollFd as usize, 1, SEND_WAIT_MS as usize, 0, 0, 0) });
-                if w == 0 {
-                    *out = 6;
-                    return;
+                if wait_for(fd, POLLOUT) == 0 {
+                    return 6;
                 }
                 continue;
             }
             if r < 0 {
-                *out = net_code(r);
-                return;
+                return net_code(r);
             }
             at += r as usize;
         }
-        *out = 0;
+        0
     }
 
     /// `sysServerDrop(server, id)`: the connection closed.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's; `s` as `state`.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serverdrop(out: *mut i64, s: i64, id: i64) {
-        let Some(st) = server::<c_int>(s) else {
-            *out = -9;
-            return;
+        // SAFETY: the contract of this function
+        let r = match unsafe { state(s) } {
+            None => -9,
+            Some(st) => server_drop(st, id),
         };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn server_drop(st: &mut ServerState<c_int>, id: i64) -> i64 {
         if let Some(i) = st.sessions.iter().position(|x| x.0 == id) {
             let (_, sess, _) = st.sessions.remove(i);
             if let Some(d) = dl() {
                 tls::close(d, tls::Session(sess));
             }
         }
-        *out = match st.take(id) {
+        match st.take(id) {
             Some(fd) => {
                 linux::close(fd);
                 0
             }
             None => -9,
-        };
+        }
     }
 
     /// `sysServerClose(server)`: its connections, its listener and its set
     /// closed, its state freed.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's; `s` as `state`,
+    /// given up by the program (consumed: never used again, D339).
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_serverclose(out: *mut i64, s: i64) {
         if s > 0 {
@@ -898,81 +1081,111 @@ mod imp {
             linux::close(st.listener);
             linux::close(st.ep);
         }
-        *out = 0;
+        // SAFETY: the contract of this function
+        unsafe { out.write(0) };
     }
 
     /// The delay of `ms` milliseconds of each read (`SO_RCVTIMEO`) and write
     /// of the socket `fd`: 0 for none.
-    unsafe fn timeouts(fd: i64, ms: i64) -> isize {
+    fn timeouts(fd: i64, ms: i64) -> isize {
         let tv = [ms.max(0) / 1000, (ms.max(0) % 1000) * 1000];
-        let r = syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_RCVTIMEO, tv.as_ptr() as usize, 16, 0);
+        // SAFETY: a `struct timeval` of 16 bytes of this frame, read by the
+        // kernel
+        let r = unsafe { syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_RCVTIMEO, tv.as_ptr() as usize, 16, 0) };
         if r < 0 {
             return r;
         }
-        syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_SNDTIMEO, tv.as_ptr() as usize, 16, 0)
+        // SAFETY: as above
+        unsafe { syscall6(SYS_SETSOCKOPT, fd as usize, SOL_SOCKET, SO_SNDTIMEO, tv.as_ptr() as usize, 16, 0) }
     }
 
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_settimeout(out: *mut i64, c: i64, ms: i64) {
-        *out = net_code(timeouts(c, ms).min(0));
+        let r = net_code(timeouts(c, ms).min(0));
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_localport(out: *mut i64, l: i64) {
         let mut addr = [0u8; 28];
         let mut len: u32 = 28;
-        let r = syscall6(SYS_GETSOCKNAME, l as usize, addr.as_mut_ptr() as usize, &mut len as *mut u32 as usize, 0, 0, 0);
-        *out = if r < 0 { -1 } else { u16::from_be_bytes([addr[2], addr[3]]) as i64 };
+        // SAFETY: the kernel writes at most `len` bytes (28) at `addr`, and
+        // their length at `len`, both of this frame
+        let r = unsafe { syscall6(SYS_GETSOCKNAME, l as usize, addr.as_mut_ptr() as usize, &mut len as *mut u32 as usize, 0, 0, 0) };
+        let v = if r < 0 { -1 } else { u16::from_be_bytes([addr[2], addr[3]]) as i64 };
+        // SAFETY: the contract of this function
+        unsafe { out.write(v) };
     }
 
     /// `sysUdpQuery(address, port, packet, ms)`: the packet sent, the first
     /// datagram from that address within `ms` milliseconds.
+    ///
+    /// # Safety
+    /// `out` the place of the result, `a` and `an` a string, `p` and `n` an
+    /// array of bytes, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_udpquery(out: *mut IscArrayCode, a: *const u8, an: i64, port: i64, p: *const u8, n: i64, ms: i64) {
+        // SAFETY: the contract of this function
+        let (address, packet) = unsafe { (bytes_of(a, an), bytes_of(p, n)) };
+        let r = udp_query(address, port, packet, ms);
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
+    }
+
+    fn udp_query(address: &[u8], port: i64, packet: &[u8], ms: i64) -> IscArrayCode {
         let fail = |code: i64| IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code };
-        let Some((addr, len, family)) = sockaddr(bytes_of(a, an), port, AF_INET6) else {
-            *out = fail(-22);
-            return;
+        let Some((addr, len, family)) = sockaddr(address, port, AF_INET6) else {
+            return fail(-22);
         };
         let fd = socket(family, SOCK_DGRAM);
         if fd < 0 {
-            *out = fail(net_code(fd));
-            return;
+            return fail(net_code(fd));
         }
         let r = timeouts(fd as i64, ms.max(1));
-        let r = if r < 0 { r } else { syscall6(SYS_SENDTO, fd as usize, p as usize, n.max(0) as usize, 0, addr.as_ptr() as usize, len) };
+        // SAFETY: the packet and the address read by the kernel, their
+        // lengths given
+        let r = if r < 0 { r } else { unsafe { syscall6(SYS_SENDTO, fd as usize, packet.as_ptr() as usize, packet.len(), 0, addr.as_ptr() as usize, len) } };
         if r < 0 {
             linux::close(fd as c_int);
-            *out = fail(net_code(r));
-            return;
+            return fail(net_code(r));
         }
         let max = 65536usize;
         let buf = isc_alloc(max as i64);
         loop {
             let mut from = [0u8; 28];
             let mut flen: u32 = 28;
-            // SAFETY: the kernel writes at most `max` bytes at `buf` and its
-            // sender at `from`
+            // SAFETY: the kernel writes at most `max` bytes at `buf` (a new
+            // block of `max`) and its sender at `from` (28 bytes, `flen`)
             let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, buf as usize, max, 0, from.as_mut_ptr() as usize, &mut flen as *mut u32 as usize) });
             if r < 0 {
                 isc_free(buf);
                 linux::close(fd as c_int);
-                *out = fail(net_code(r));
-                return;
+                return fail(net_code(r));
             }
             // only the answer of the server asked
             if from[..len] == addr[..len] {
                 linux::close(fd as c_int);
-                *out = IscArrayCode { a: bytes_read(buf, r as usize, max), code: 0 };
-                return;
+                // SAFETY: `buf` the block of `max` bytes made above, its
+                // first `r` written by the kernel, given to the array
+                return IscArrayCode { a: unsafe { bytes_read(buf, r as usize, max) }, code: 0 };
             }
         }
     }
 
     /// `sysResolve(host)`: the module resolves the names under Linux.
+    ///
+    /// # Safety
+    /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_resolve(out: *mut IscArrayCode, _p: *const u8, _n: i64) {
-        *out = IscArrayCode { a: str_array(&mut core::iter::empty(), 0), code: 7 };
+        let r = IscArrayCode { a: str_array(&mut core::iter::empty(), 0), code: 7 };
+        // SAFETY: the contract of this function
+        unsafe { out.write(r) };
     }
 }
 

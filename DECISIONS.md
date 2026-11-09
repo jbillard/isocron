@@ -12989,3 +12989,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     commit.
   - Tests: `std_sys` (12) and `stdin` (14, the mapped input among them),
     then the suite.
+- **D566 — The unsafe of the network of Linux justified and denied
+  (2026-11-09).** The plan of D564: `net.rs`, its Linux part (114
+  operations without a block of their own).
+  - The system's calls on sockets behind safe functions of slices and
+    numbers (`socket`, `connect`, `bind`, `set_option`, `send`, `recv`,
+    `accept`, `watch`, `wait_for`, `timeouts`, `call_ints` for the calls of
+    numbers only), each with the reason of its pointers (the bytes read or
+    written by the kernel, their lengths given, the places of a frame); the
+    entries read the pointers of the generated code once and write their
+    result once, the work in safe functions (`connect_to`, `listen_on`,
+    `tls_start`, `send_all`, `server_open`, `server_open_tls`,
+    `server_wait`, `server_send`, `server_drop`, `udp_query`); the state of
+    a server behind its handle obtained once an entry (`state`: the handle
+    linear, D339). The logic, and so the code of the loop of the server, the
+    same; the two lints denied for the Linux part. `array_of` a safe
+    function.
+  - Written down, not changed: `sysRecv` and `sysUdpQuery` read into a new
+    block through a slice made before its bytes are written (as the TLS
+    path did): the question of `uninit_vec` (D564, TODO).
+  - What is left of the runtime under Linux (clippy, both lints): `heap.rs`
+    426, `lib.rs` 657 (the blocks without a justification counted too),
+    `linux.rs` 1; and the Windows and WASI parts of `system.rs` and
+    `net.rs`, checked on their targets.
+  - Tests: `std_net` (4), `std_http` (12), `std_https` (3, TLS of the client
+    and of the server), then the suite; the runtime still builds for
+    Windows (gnu, msvc) and WASI.
