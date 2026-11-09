@@ -25,9 +25,9 @@
 - A recursive function may receive a lambda that reads functions of its
   context which read values of their own (D563).
 - The `unsafe` code of the runtime is justified operation by operation and
-  checked by the compiler under Linux: every unsafe operation in a block with
-  its reason, every unsafe function with its contract, both lints denied
-  (D564 to D568); the modules of Windows and WASI follow.
+  checked by the compiler on every target (Linux, Windows, WASI): every unsafe
+  operation in a block with its reason, every unsafe function with its
+  contract, both lints denied (D564 to D569).
 
 ## 0.5.0 — 2026-11-09
 

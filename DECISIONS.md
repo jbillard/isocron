@@ -13100,3 +13100,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     modules of those systems are left (`windows.rs` 67, `system.rs` 64,
     `net.rs` 126 for Windows; `system.rs` 40 and `wasi.rs` 2 for WASI, by
     clippy on those targets), `lib.rs` and `par.rs` clean there too.
+- **D569 — The unsafe of the runtime for Windows and WASI justified, both
+  lints denied on every target (2026-11-09).** The rest of D564: the
+  modules of those systems, counted by clippy on their targets (D568:
+  `windows.rs` 67, `system.rs` 64 for Windows and 40 for WASI, `net.rs`
+  126 for Windows, `wasi.rs` 2; and two blocks of `lib.rs` compiled only
+  for WebAssembly with threads, `wait_gen` and `wake_all`, which no check
+  of D568 compiled: the threads runtime is built with
+  `--cfg=isc_wasm_threads` by `iscc/build.rs`, a flag a plain
+  `cargo check --target wasm32-wasip1-threads` does not give).
+  - `windows.rs`: each function that stands for one of Linux (`open`,
+    `read`, `pread`, `write`, `close`, `lseek`, `mmap`, `munmap`,
+    `madvise`, `mremap`, `pthread_*`, `monotonic`) has the contract of its
+    function of Linux as its `# Safety`, its body one block whose reason
+    says which bytes it reads or writes; the safe functions over the
+    system have their blocks justified. `wait_word` and `wake_word` took a
+    pointer while safe: they take the atomic word (`&AtomicU32`).
+  - `system.rs` (Windows and WASI) and `net.rs` (Windows): the entries of
+    the generated code under C1 of `lib.rs`; a server under the contract
+    of `server` (D339); a socket of the program that would not be one is
+    an error of Winsock, no memory touched. Three blocks of `net.rs` left
+    inside the block of their function lost their `unsafe` (their reason
+    kept as a comment).
+  - `wasi.rs`: the address of `__heap_base` taken without a block (it is
+    safe); the call of `fd_prestat_dir_name` given its reason.
+  - Both lints are now denied for the whole crate on every target (no
+    longer `cfg_attr` of Linux). Checked: `cargo check` and clippy (0
+    operation without its block, 0 block without its reason, 0 block
+    needless by `--force-warn unused_unsafe`) for x86-64 Linux (and v3,
+    v4), Windows gnu and msvc, `wasm32-wasip1`, and
+    `wasm32-wasip1-threads` with `--cfg=isc_wasm_threads`. A lint of
+    clippy outside this scope is left: `n >= WordGroups::MAX_INDEX` in
+    `group_words` is a comparison with `usize::MAX` on 32 bits (always
+    false but at the maximum), denied by default (`absurd_extreme_
+    comparisons`): for the task of clippy in the suite.

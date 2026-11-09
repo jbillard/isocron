@@ -443,6 +443,9 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    // every unsafe operation in a block with its reason (D569)
+    #![deny(unsafe_op_in_unsafe_fn)]
+    #![deny(clippy::undocumented_unsafe_blocks)]
     use super::*;
 
     type Handle = *mut c_void;
@@ -519,47 +522,74 @@ mod imp {
 
     /// The path of `n` bytes at `p` in UTF-16 with a zero after it; None when
     /// it holds a zero byte or is not UTF-8.
+    ///
+    /// # Safety
+    /// `p` and `n` the bytes of a string of the generated code (C1 of
+    /// `lib.rs`).
     unsafe fn wide(p: *const u8, n: i64) -> Option<alloc::vec::Vec<u16>> {
-        let b = bytes_of(p, n);
-        if b.contains(&0) || core::str::from_utf8(b).is_err() {
-            return None;
+        // SAFETY: the contract: the `n` bytes at `p` read; `w` of `wn + 1`
+        // units, the conversion writes `wn`
+        unsafe {
+            let b = bytes_of(p, n);
+            if b.contains(&0) || core::str::from_utf8(b).is_err() {
+                return None;
+            }
+            let wn = if b.is_empty() { 0 } else { MultiByteToWideChar(CP_UTF8, 0, b.as_ptr(), b.len() as i32, core::ptr::null_mut(), 0) };
+            let mut w = alloc::vec![0u16; wn as usize + 1];
+            if wn > 0 {
+                MultiByteToWideChar(CP_UTF8, 0, b.as_ptr(), b.len() as i32, w.as_mut_ptr(), wn);
+            }
+            Some(w)
+    
         }
-        let wn = if b.is_empty() { 0 } else { MultiByteToWideChar(CP_UTF8, 0, b.as_ptr(), b.len() as i32, core::ptr::null_mut(), 0) };
-        let mut w = alloc::vec![0u16; wn as usize + 1];
-        if wn > 0 {
-            MultiByteToWideChar(CP_UTF8, 0, b.as_ptr(), b.len() as i32, w.as_mut_ptr(), wn);
-        }
-        Some(w)
     }
 
     /// The UTF-8 of the `wn` units of UTF-16 at `w`.
+    ///
+    /// # Safety
+    /// `wn` units of UTF-16 readable at `w`.
     unsafe fn narrow(w: *const u16, wn: usize) -> alloc::vec::Vec<u8> {
-        if wn == 0 {
-            return alloc::vec::Vec::new();
+        // SAFETY: the contract: the `wn` units at `w` read; `b` of `n` bytes,
+        // the conversion writes `n`
+        unsafe {
+            if wn == 0 {
+                return alloc::vec::Vec::new();
+            }
+            let n = WideCharToMultiByte(CP_UTF8, 0, w, wn as i32, core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null_mut());
+            let mut b = alloc::vec![0u8; n.max(0) as usize];
+            WideCharToMultiByte(CP_UTF8, 0, w, wn as i32, b.as_mut_ptr(), n, core::ptr::null(), core::ptr::null_mut());
+            b
+    
         }
-        let n = WideCharToMultiByte(CP_UTF8, 0, w, wn as i32, core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null_mut());
-        let mut b = alloc::vec![0u8; n.max(0) as usize];
-        WideCharToMultiByte(CP_UTF8, 0, w, wn as i32, b.as_mut_ptr(), n, core::ptr::null(), core::ptr::null_mut());
-        b
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_environ(out: *mut IscArray) {
-        let mut all = alloc::vec::Vec::new();
-        let base = GetEnvironmentStringsW();
-        if !base.is_null() {
-            let mut e = base;
-            while *e != 0 {
-                let n = isc_runtime_core::winargs::wide_len(e);
-                // the entries of the drives (`=C:=C:\...`) are not variables
-                if *e != b'=' as u16 {
-                    all.push(narrow(e, n));
+        // SAFETY: the block of the environment that the system gives (strings of
+        // UTF-16 each ended by a zero, the last one empty), read entry by entry
+        // within it, then given back once; `out` the place of the result (C1 of
+        // `lib.rs`)
+        unsafe {
+            let mut all = alloc::vec::Vec::new();
+            let base = GetEnvironmentStringsW();
+            if !base.is_null() {
+                let mut e = base;
+                while *e != 0 {
+                    let n = isc_runtime_core::winargs::wide_len(e);
+                    // the entries of the drives (`=C:=C:\...`) are not variables
+                    if *e != b'=' as u16 {
+                        all.push(narrow(e, n));
+                    }
+                    e = e.add(n + 1);
                 }
-                e = e.add(n + 1);
+                FreeEnvironmentStringsW(base);
             }
-            FreeEnvironmentStringsW(base);
+            *out = sorted_entries(all);
+    
         }
-        *out = sorted_entries(all);
     }
 
     #[link(name = "kernel32")]
@@ -569,172 +599,261 @@ mod imp {
 
     /// `sysNow()`: 100 ns since 1601 -> ns since 1970.
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
-        let mut ft = [0u32; 2];
-        GetSystemTimePreciseAsFileTime(&mut ft);
-        let t = ((ft[1] as i64) << 32) | ft[0] as i64;
-        *out = (t - 116_444_736_000_000_000).wrapping_mul(100);
+        // SAFETY: a place for the time; `out` the place of the result (C1 of
+        // `lib.rs`)
+        unsafe {
+            let mut ft = [0u32; 2];
+            GetSystemTimePreciseAsFileTime(&mut ft);
+            let t = ((ft[1] as i64) << 32) | ft[0] as i64;
+            *out = (t - 116_444_736_000_000_000).wrapping_mul(100);
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
-        let Some(w) = wide(p, n) else {
-            *out = [0, 0, 0, -1];
-            return;
-        };
-        let mut d: AttributeData = core::mem::zeroed();
-        if GetFileAttributesExW(w.as_ptr(), 0, &mut d) == 0 {
-            *out = [0, 0, 0, last_code()];
-            return;
+        // SAFETY: the path of the generated code (C1 of `lib.rs`), `w` its
+        // NUL-terminated UTF-16; `d` a place of its size; `out` the place of the
+        // result
+        unsafe {
+            let Some(w) = wide(p, n) else {
+                *out = [0, 0, 0, -1];
+                return;
+            };
+            let mut d: AttributeData = core::mem::zeroed();
+            if GetFileAttributesExW(w.as_ptr(), 0, &mut d) == 0 {
+                *out = [0, 0, 0, last_code()];
+                return;
+            }
+            let kind = if d.attributes & 0x10 != 0 { 2 } else { 1 };
+            let size = ((d.size_high as i64) << 32) | d.size_low as i64;
+            // 100 ns since 1601 -> ns since 1970
+            let ft = ((d.written[1] as i64) << 32) | d.written[0] as i64;
+            *out = [kind, size, (ft - 116_444_736_000_000_000).wrapping_mul(100), 0];
+    
         }
-        let kind = if d.attributes & 0x10 != 0 { 2 } else { 1 };
-        let size = ((d.size_high as i64) << 32) | d.size_low as i64;
-        // 100 ns since 1601 -> ns since 1970
-        let ft = ((d.written[1] as i64) << 32) | d.written[0] as i64;
-        *out = [kind, size, (ft - 116_444_736_000_000_000).wrapping_mul(100), 0];
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
-        let Some(mut w) = wide(p, n) else {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
-            return;
-        };
-        w.pop();
-        w.extend_from_slice(&[b'\\' as u16, b'*' as u16, 0]);
-        let mut d: FindData = core::mem::zeroed();
-        let h = FindFirstFileW(w.as_ptr(), &mut d);
-        if h == INVALID {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: last_code() };
-            return;
-        }
-        let mut names = alloc::vec::Vec::new();
-        loop {
-            let len = d.name.iter().position(|&c| c == 0).unwrap_or(d.name.len());
-            let name = narrow(d.name.as_ptr(), len);
-            if name != b"." && name != b".." {
-                names.push(name);
+        // SAFETY: the path of the generated code (C1 of `lib.rs`), `w` its
+        // pattern in NUL-terminated UTF-16; `d` a place of its size, its name
+        // read up to its zero within it; the search closed once; `out` the place
+        // of the result
+        unsafe {
+            let Some(mut w) = wide(p, n) else {
+                *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
+                return;
+            };
+            w.pop();
+            w.extend_from_slice(&[b'\\' as u16, b'*' as u16, 0]);
+            let mut d: FindData = core::mem::zeroed();
+            let h = FindFirstFileW(w.as_ptr(), &mut d);
+            if h == INVALID {
+                *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: last_code() };
+                return;
             }
-            if FindNextFileW(h, &mut d) == 0 {
-                break;
+            let mut names = alloc::vec::Vec::new();
+            loop {
+                let len = d.name.iter().position(|&c| c == 0).unwrap_or(d.name.len());
+                let name = narrow(d.name.as_ptr(), len);
+                if name != b"." && name != b".." {
+                    names.push(name);
+                }
+                if FindNextFileW(h, &mut d) == 0 {
+                    break;
+                }
             }
+            FindClose(h);
+            *out = IscArrayCode { a: sorted_strings(names), code: 0 };
+    
         }
-        FindClose(h);
-        *out = IscArrayCode { a: sorted_strings(names), code: 0 };
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_mkdir(out: *mut i64, p: *const u8, n: i64) {
-        *out = match wide(p, n) {
-            None => -1,
-            Some(w) => code_if(CreateDirectoryW(w.as_ptr(), core::ptr::null_mut()) != 0),
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`) in
+        // NUL-terminated UTF-16 (`wide`); `out` the place of the result
+        unsafe {
+            *out = match wide(p, n) {
+                None => -1,
+                Some(w) => code_if(CreateDirectoryW(w.as_ptr(), core::ptr::null_mut()) != 0),
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_removefile(out: *mut i64, p: *const u8, n: i64) {
-        *out = match wide(p, n) {
-            None => -1,
-            Some(w) => code_if(DeleteFileW(w.as_ptr()) != 0),
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`) in
+        // NUL-terminated UTF-16 (`wide`); `out` the place of the result
+        unsafe {
+            *out = match wide(p, n) {
+                None => -1,
+                Some(w) => code_if(DeleteFileW(w.as_ptr()) != 0),
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_removedir(out: *mut i64, p: *const u8, n: i64) {
-        *out = match wide(p, n) {
-            None => -1,
-            Some(w) => code_if(RemoveDirectoryW(w.as_ptr()) != 0),
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`) in
+        // NUL-terminated UTF-16 (`wide`); `out` the place of the result
+        unsafe {
+            *out = match wide(p, n) {
+                None => -1,
+                Some(w) => code_if(RemoveDirectoryW(w.as_ptr()) != 0),
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_rename(out: *mut i64, p: *const u8, n: i64, q: *const u8, m: i64) {
-        *out = match (wide(p, n), wide(q, m)) {
-            // MOVEFILE_REPLACE_EXISTING, as the standard library of Rust
-            (Some(a), Some(b)) => code_if(MoveFileExW(a.as_ptr(), b.as_ptr(), 1) != 0),
-            _ => -1,
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`) in
+        // NUL-terminated UTF-16 (`wide`); `out` the place of the result
+        unsafe {
+            *out = match (wide(p, n), wide(q, m)) {
+                // MOVEFILE_REPLACE_EXISTING, as the standard library of Rust
+                (Some(a), Some(b)) => code_if(MoveFileExW(a.as_ptr(), b.as_ptr(), 1) != 0),
+                _ => -1,
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_cwd(out: *mut IscStrCode) {
-        let need = GetCurrentDirectoryW(0, core::ptr::null_mut());
-        let mut w = alloc::vec![0u16; need as usize + 1];
-        let got = GetCurrentDirectoryW(w.len() as u32, w.as_mut_ptr());
-        if got == 0 {
-            *out = IscStrCode { s: adopt(alloc::string::String::new()), code: last_code() };
-            return;
-        }
-        *out = IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&narrow(w.as_ptr(), got as usize)).into_owned()), code: 0 };
-    }
-
-    #[no_mangle]
-    pub unsafe extern "C" fn isc_sys_readfile(out: *mut IscArrayCode, p: *const u8, n: i64) {
-        let Some(w) = wide(p, n) else {
-            *out = IscArrayCode { a: byte_array(&[]), code: -1 };
-            return;
-        };
-        // GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
-        let h = CreateFileW(w.as_ptr(), 0x8000_0000, 3, core::ptr::null_mut(), 3, 0x80, core::ptr::null_mut());
-        if h == INVALID {
-            *out = IscArrayCode { a: byte_array(&[]), code: last_code() };
-            return;
-        }
-        let mut data = alloc::vec::Vec::new();
-        let mut buf = alloc::vec![0u8; 1 << 16];
-        let mut code = 0;
-        loop {
-            let mut got = 0u32;
-            if ReadFile(h, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut got, core::ptr::null_mut()) == 0 {
-                code = last_code();
-                break;
-            }
+        // SAFETY: `w` of `need + 1` units, the system writes at most its length;
+        // `out` the place of the result (C1 of `lib.rs`)
+        unsafe {
+            let need = GetCurrentDirectoryW(0, core::ptr::null_mut());
+            let mut w = alloc::vec![0u16; need as usize + 1];
+            let got = GetCurrentDirectoryW(w.len() as u32, w.as_mut_ptr());
             if got == 0 {
-                break;
+                *out = IscStrCode { s: adopt(alloc::string::String::new()), code: last_code() };
+                return;
             }
-            data.extend_from_slice(&buf[..got as usize]);
+            *out = IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&narrow(w.as_ptr(), got as usize)).into_owned()), code: 0 };
+    
         }
-        CloseHandle(h);
-        *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
     }
 
     #[no_mangle]
-    pub unsafe extern "C" fn isc_sys_writefile(out: *mut i64, p: *const u8, n: i64, d: *const u8, m: i64, append: i32) {
-        let Some(w) = wide(p, n) else {
-            *out = -1;
-            return;
-        };
-        // GENERIC_WRITE, FILE_SHARE_READ; OPEN_ALWAYS to append,
-        // CREATE_ALWAYS otherwise
-        let disposition = if append != 0 { 4 } else { 2 };
-        let h = CreateFileW(w.as_ptr(), 0x4000_0000, 1, core::ptr::null_mut(), disposition, 0x80, core::ptr::null_mut());
-        if h == INVALID {
-            *out = last_code();
-            return;
-        }
-        if append != 0 {
-            // FILE_END
-            SetFilePointerEx(h, 0, core::ptr::null_mut(), 2);
-        }
-        let data = bytes_of(d, m);
-        let mut at = 0;
-        let mut code = 0;
-        while at < data.len() {
-            let mut done = 0u32;
-            let chunk = (data.len() - at).min(1 << 30) as u32;
-            if WriteFile(h, data[at..].as_ptr() as *const c_void, chunk, &mut done, core::ptr::null_mut()) == 0 {
-                code = last_code();
-                break;
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
+    pub unsafe extern "C" fn isc_sys_readfile(out: *mut IscArrayCode, p: *const u8, n: i64) {
+        // SAFETY: the path of the generated code (C1 of `lib.rs`), `w` its
+        // NUL-terminated UTF-16; each read into `buf`, of its length; the handle
+        // closed once; `out` the place of the result
+        unsafe {
+            let Some(w) = wide(p, n) else {
+                *out = IscArrayCode { a: byte_array(&[]), code: -1 };
+                return;
+            };
+            // GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING
+            let h = CreateFileW(w.as_ptr(), 0x8000_0000, 3, core::ptr::null_mut(), 3, 0x80, core::ptr::null_mut());
+            if h == INVALID {
+                *out = IscArrayCode { a: byte_array(&[]), code: last_code() };
+                return;
             }
-            at += done as usize;
+            let mut data = alloc::vec::Vec::new();
+            let mut buf = alloc::vec![0u8; 1 << 16];
+            let mut code = 0;
+            loop {
+                let mut got = 0u32;
+                if ReadFile(h, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut got, core::ptr::null_mut()) == 0 {
+                    code = last_code();
+                    break;
+                }
+                if got == 0 {
+                    break;
+                }
+                data.extend_from_slice(&buf[..got as usize]);
+            }
+            CloseHandle(h);
+            *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
+    
         }
-        CloseHandle(h);
-        *out = code;
+    }
+
+    #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
+    pub unsafe extern "C" fn isc_sys_writefile(out: *mut i64, p: *const u8, n: i64, d: *const u8, m: i64, append: i32) {
+        // SAFETY: the path and the bytes of the generated code (C1 of `lib.rs`),
+        // `w` the path in NUL-terminated UTF-16; each write of at most the bytes
+        // of `data` from `at`; the handle closed once; `out` the place of the
+        // result
+        unsafe {
+            let Some(w) = wide(p, n) else {
+                *out = -1;
+                return;
+            };
+            // GENERIC_WRITE, FILE_SHARE_READ; OPEN_ALWAYS to append,
+            // CREATE_ALWAYS otherwise
+            let disposition = if append != 0 { 4 } else { 2 };
+            let h = CreateFileW(w.as_ptr(), 0x4000_0000, 1, core::ptr::null_mut(), disposition, 0x80, core::ptr::null_mut());
+            if h == INVALID {
+                *out = last_code();
+                return;
+            }
+            if append != 0 {
+                // FILE_END
+                SetFilePointerEx(h, 0, core::ptr::null_mut(), 2);
+            }
+            let data = bytes_of(d, m);
+            let mut at = 0;
+            let mut code = 0;
+            while at < data.len() {
+                let mut done = 0u32;
+                let chunk = (data.len() - at).min(1 << 30) as u32;
+                if WriteFile(h, data[at..].as_ptr() as *const c_void, chunk, &mut done, core::ptr::null_mut()) == 0 {
+                    code = last_code();
+                    break;
+                }
+                at += done as usize;
+            }
+            CloseHandle(h);
+            *out = code;
+    
+        }
     }
 }
 
 #[cfg(target_os = "wasi")]
 mod imp {
+    // every unsafe operation in a block with its reason (D569)
+    #![deny(unsafe_op_in_unsafe_fn)]
+    #![deny(clippy::undocumented_unsafe_blocks)]
     use super::*;
     use crate::wasi;
 
@@ -764,151 +883,240 @@ mod imp {
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_environ(out: *mut IscArray) {
-        let mut all = alloc::vec::Vec::new();
-        let mut e = wasi::environ();
-        while !(*e).is_null() {
-            let v = *e;
-            // the bytes of the entry, copied once into its string
-            all.push(core::slice::from_raw_parts(v, strlen(v as *const c_char)));
-            e = e.add(1);
+        // SAFETY: the environment of WASI (`environ`, a list of NUL-terminated
+        // strings ended by null), read once; `out` the place of the result (C1
+        // of `lib.rs`)
+        unsafe {
+            let mut all = alloc::vec::Vec::new();
+            let mut e = wasi::environ();
+            while !(*e).is_null() {
+                let v = *e;
+                // the bytes of the entry, copied once into its string
+                all.push(core::slice::from_raw_parts(v, strlen(v as *const c_char)));
+                e = e.add(1);
+            }
+            *out = sorted_entries(all);
+    
         }
-        *out = sorted_entries(all);
     }
 
     /// `sysNow()`: the real time in nanoseconds since 1970.
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
-        *out = wasi::clock(0) as i64;
+        // SAFETY: `out` the place of the result (C1 of `lib.rs`)
+        unsafe {
+            *out = wasi::clock(0) as i64;
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_stat(out: *mut [i64; 4], p: *const u8, n: i64) {
-        let Some(z) = zpath(p, n) else {
-            *out = [0, 0, 0, -1];
-            return;
-        };
-        match wasi::stat(bytes(&z)) {
-            Err(e) => *out = [0, 0, 0, kind(e)],
-            Ok(st) => {
-                // the types of WASI: 3 a directory, 4 a regular file
-                let k = match st.filetype {
-                    4 => 1,
-                    3 => 2,
-                    _ => 3,
-                };
-                *out = [k, st.size as i64, st.mtim as i64, 0];
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`), read
+        // by `zpath`; `out` the place of the result
+        unsafe {
+            let Some(z) = zpath(p, n) else {
+                *out = [0, 0, 0, -1];
+                return;
+            };
+            match wasi::stat(bytes(&z)) {
+                Err(e) => *out = [0, 0, 0, kind(e)],
+                Ok(st) => {
+                    // the types of WASI: 3 a directory, 4 a regular file
+                    let k = match st.filetype {
+                        4 => 1,
+                        3 => 2,
+                        _ => 3,
+                    };
+                    *out = [k, st.size as i64, st.mtim as i64, 0];
+                }
             }
+    
         }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_readdir(out: *mut IscArrayCode, p: *const u8, n: i64) {
-        let Some(z) = zpath(p, n) else {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
-            return;
-        };
-        match wasi::read_dir(bytes(&z)) {
-            Err(e) => *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: kind(e) },
-            Ok(all) => {
-                let names: alloc::vec::Vec<alloc::vec::Vec<u8>> = all.into_iter().filter(|b| b != b"." && b != b"..").collect();
-                *out = IscArrayCode { a: sorted_strings(names), code: 0 };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`), read
+        // by `zpath`; `out` the place of the result
+        unsafe {
+            let Some(z) = zpath(p, n) else {
+                *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
+                return;
+            };
+            match wasi::read_dir(bytes(&z)) {
+                Err(e) => *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: kind(e) },
+                Ok(all) => {
+                    let names: alloc::vec::Vec<alloc::vec::Vec<u8>> = all.into_iter().filter(|b| b != b"." && b != b"..").collect();
+                    *out = IscArrayCode { a: sorted_strings(names), code: 0 };
+                }
             }
+    
         }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_mkdir(out: *mut i64, p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
-            None => -1,
-            Some(z) => code_of(wasi::mkdir(bytes(&z))),
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`), read
+        // by `zpath`; `out` the place of the result
+        unsafe {
+            *out = match zpath(p, n) {
+                None => -1,
+                Some(z) => code_of(wasi::mkdir(bytes(&z))),
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_removefile(out: *mut i64, p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
-            None => -1,
-            Some(z) => code_of(wasi::unlink(bytes(&z))),
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`), read
+        // by `zpath`; `out` the place of the result
+        unsafe {
+            *out = match zpath(p, n) {
+                None => -1,
+                Some(z) => code_of(wasi::unlink(bytes(&z))),
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_removedir(out: *mut i64, p: *const u8, n: i64) {
-        *out = match zpath(p, n) {
-            None => -1,
-            Some(z) => code_of(wasi::rmdir(bytes(&z))),
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`), read
+        // by `zpath`; `out` the place of the result
+        unsafe {
+            *out = match zpath(p, n) {
+                None => -1,
+                Some(z) => code_of(wasi::rmdir(bytes(&z))),
+            };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_rename(out: *mut i64, p: *const u8, n: i64, q: *const u8, m: i64) {
-        *out = match (zpath(p, n), zpath(q, m)) {
-            (Some(a), Some(b)) => code_of(wasi::rename(bytes(&a), bytes(&b))),
-            _ => -1,
-        };
+        // SAFETY: the path or paths of the generated code (C1 of `lib.rs`), read
+        // by `zpath`; `out` the place of the result
+        unsafe {
+            *out = match (zpath(p, n), zpath(q, m)) {
+                (Some(a), Some(b)) => code_of(wasi::rename(bytes(&a), bytes(&b))),
+                _ => -1,
+            };
+    
+        }
     }
 
     /// The current directory: `/` under WASI (as wasi-libc: a program
     /// cannot change it, its relative paths are read from it).
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_cwd(out: *mut IscStrCode) {
-        *out = IscStrCode { s: adopt(alloc::string::String::from("/")), code: 0 };
+        // SAFETY: `out` the place of the result (C1 of `lib.rs`)
+        unsafe {
+            *out = IscStrCode { s: adopt(alloc::string::String::from("/")), code: 0 };
+    
+        }
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_readfile(out: *mut IscArrayCode, p: *const u8, n: i64) {
-        let Some(z) = zpath(p, n) else {
-            *out = IscArrayCode { a: byte_array(&[]), code: -1 };
-            return;
-        };
-        let fd = wasi::open(z.as_ptr() as *const c_char, wasi::O_RDONLY, 0);
-        if fd < 0 {
-            *out = IscArrayCode { a: byte_array(&[]), code: kind(-fd as u16) };
-            return;
-        }
-        let mut data = alloc::vec::Vec::new();
-        let mut buf = alloc::vec![0u8; 1 << 16];
-        let mut code = 0;
-        loop {
-            let r = wasi::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
-            if r < 0 {
-                code = kind(-r as u16);
-                break;
+        // SAFETY: the path of the generated code (C1 of `lib.rs`), `z` its
+        // NUL-terminated copy; each read into `buf`, of its length; the
+        // descriptor closed once; `out` the place of the result
+        unsafe {
+            let Some(z) = zpath(p, n) else {
+                *out = IscArrayCode { a: byte_array(&[]), code: -1 };
+                return;
+            };
+            let fd = wasi::open(z.as_ptr() as *const c_char, wasi::O_RDONLY, 0);
+            if fd < 0 {
+                *out = IscArrayCode { a: byte_array(&[]), code: kind(-fd as u16) };
+                return;
             }
-            if r == 0 {
-                break;
+            let mut data = alloc::vec::Vec::new();
+            let mut buf = alloc::vec![0u8; 1 << 16];
+            let mut code = 0;
+            loop {
+                let r = wasi::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+                if r < 0 {
+                    code = kind(-r as u16);
+                    break;
+                }
+                if r == 0 {
+                    break;
+                }
+                data.extend_from_slice(&buf[..r as usize]);
             }
-            data.extend_from_slice(&buf[..r as usize]);
+            wasi::close(fd);
+            *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
+    
         }
-        wasi::close(fd);
-        *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
     }
 
     #[no_mangle]
+    ///
+    /// # Safety
+    /// The pointers as the generated code gives them (C1 of `lib.rs`).
     pub unsafe extern "C" fn isc_sys_writefile(out: *mut i64, p: *const u8, n: i64, d: *const u8, m: i64, append: i32) {
-        let Some(z) = zpath(p, n) else {
-            *out = -1;
-            return;
-        };
-        let flags = wasi::O_WRONLY | wasi::O_CREAT | if append != 0 { wasi::O_APPEND } else { wasi::O_TRUNC };
-        let fd = wasi::open(z.as_ptr() as *const c_char, flags, 0o666);
-        if fd < 0 {
-            *out = kind(-fd as u16);
-            return;
-        }
-        let data = bytes_of(d, m);
-        let mut at = 0;
-        let mut code = 0;
-        while at < data.len() {
-            let r = wasi::write(fd, data[at..].as_ptr() as *const c_void, data.len() - at);
-            if r <= 0 {
-                code = if r < 0 { kind(-r as u16) } else { -29 };
-                break;
+        // SAFETY: the path and the bytes of the generated code (C1 of `lib.rs`),
+        // `z` its NUL-terminated copy; each write of the bytes of `data` from
+        // `at`; the descriptor closed once; `out` the place of the result
+        unsafe {
+            let Some(z) = zpath(p, n) else {
+                *out = -1;
+                return;
+            };
+            let flags = wasi::O_WRONLY | wasi::O_CREAT | if append != 0 { wasi::O_APPEND } else { wasi::O_TRUNC };
+            let fd = wasi::open(z.as_ptr() as *const c_char, flags, 0o666);
+            if fd < 0 {
+                *out = kind(-fd as u16);
+                return;
             }
-            at += r as usize;
+            let data = bytes_of(d, m);
+            let mut at = 0;
+            let mut code = 0;
+            while at < data.len() {
+                let r = wasi::write(fd, data[at..].as_ptr() as *const c_void, data.len() - at);
+                if r <= 0 {
+                    code = if r < 0 { kind(-r as u16) } else { -29 };
+                    break;
+                }
+                at += r as usize;
+            }
+            wasi::close(fd);
+            *out = code;
+    
         }
-        wasi::close(fd);
-        *out = code;
     }
 }

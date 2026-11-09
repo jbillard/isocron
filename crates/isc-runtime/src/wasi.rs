@@ -158,9 +158,9 @@ fn bump(n: usize) -> usize {
     let mut top = TOP.load(Ordering::Relaxed);
     let mut end = END.load(Ordering::Relaxed);
     if top == 0 && OWN_START.load(Ordering::Relaxed) {
-        // SAFETY: the address of the symbol that the linker puts after the
-        // data and the stack
-        top = unsafe { core::ptr::addr_of!(__heap_base) } as usize;
+        // the address of the symbol that the linker puts after the data and
+        // the stack (taking it is safe)
+        top = core::ptr::addr_of!(__heap_base) as usize;
         end = core::arch::wasm32::memory_size::<0>() * PAGE;
     }
     let mut start = top.next_multiple_of(64);
@@ -399,6 +399,7 @@ fn preopens() -> &'static [[usize; 3]] {
         if st.tag == 0 {
             // SAFETY: a block of the length WASI gave, then its name in it
             let name = unsafe { aligned_alloc(64, st.len.max(1)) } as *mut u8;
+            // SAFETY: `name` a block of `st.len` bytes at least, not null
             if !name.is_null() && unsafe { fd_prestat_dir_name(fd, name, st.len) } == 0 {
                 // SAFETY: the bytes just written
                 let full = unsafe { core::slice::from_raw_parts(name, st.len) };

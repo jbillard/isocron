@@ -38,11 +38,9 @@
 #![no_std]
 // every unsafe operation in a block of its own, each justified by the
 // conventions C1 to C3 above, the invariants of its module or the contract
-// of its function (D568); the modules of Windows and WASI (`windows`,
-// `wasi`, their parts of `system` and `net`) not yet (TODO.md): the whole
-// crate under Linux, `lib.rs` and `par.rs` on every target
-#![cfg_attr(target_os = "linux", deny(unsafe_op_in_unsafe_fn))]
-#![cfg_attr(target_os = "linux", deny(clippy::undocumented_unsafe_blocks))]
+// of its function (D568), on every target (D569)
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 // the functions of the system that are safe under Linux (D287) are unsafe
 // declarations of the C library elsewhere: their callers keep `unsafe`
 // blocks (until the unsafe of the runtime is confined, TODO.md)
@@ -4969,12 +4967,12 @@ fn start_worker(k: usize) {
 
 #[cfg(windows)]
 fn wait_gen(seen: u32) {
-    windows::wait_word(GEN.gen.as_ptr(), seen)
+    windows::wait_word(&GEN.gen, seen)
 }
 
 #[cfg(windows)]
 fn wake_all() {
-    windows::wake_word(GEN.gen.as_ptr())
+    windows::wake_word(&GEN.gen)
 }
 
 /// Sleeps while `GEN` is `seen` (spurious wake-ups are allowed).
@@ -5001,11 +4999,14 @@ extern "C" {
 
 #[cfg(all(target_os = "wasi", isc_wasm_threads))]
 fn wait_gen(seen: u32) {
+    // SAFETY: the address of `GEN.gen`, a static atomic word of 4 bytes,
+    // aligned (the intrinsic reads it atomically)
     unsafe { isc_wasm_wait32(GEN.gen.as_ptr() as *mut i32, seen as i32) };
 }
 
 #[cfg(all(target_os = "wasi", isc_wasm_threads))]
 fn wake_all() {
+    // SAFETY: as in `wait_gen`
     unsafe { isc_wasm_notify(GEN.gen.as_ptr() as *mut i32) };
 }
 

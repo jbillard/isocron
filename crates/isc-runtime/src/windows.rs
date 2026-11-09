@@ -13,6 +13,10 @@
 //! text of glibc for it, so that the messages are those of Linux.
 
 #![allow(non_snake_case, clippy::upper_case_acronyms)]
+// every unsafe operation in a block with its reason, each function of the
+// system with the contract of its function of Linux (D569)
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 use core::ffi::{c_char, c_int, c_uint, c_void};
 
@@ -115,6 +119,7 @@ extern "system" {
 
 /// The POSIX code of the last Win32 error of the thread (0 if none).
 pub fn errno() -> c_int {
+    // SAFETY: `GetLastError` asks nothing
     isc_runtime_core::oserr::from_win32(unsafe { GetLastError() })
 }
 
@@ -142,12 +147,14 @@ pub fn stdout_read_as_it_comes() -> bool {
     // SAFETY: a handle of the process and a place for its mode
     match unsafe { GetFileType(h) } {
         FILE_TYPE_DISK => false,
+        // SAFETY: as above
         FILE_TYPE_CHAR => unsafe { GetConsoleMode(h, &mut mode) != 0 },
         _ => true,
     }
 }
 
 fn handle(fd: c_int) -> HANDLE {
+    // SAFETY: `GetStdHandle` of a standard handle asks nothing
     unsafe {
         match fd {
             0 => GetStdHandle(STD_INPUT_HANDLE),
@@ -160,31 +167,38 @@ fn handle(fd: c_int) -> HANDLE {
 
 /// Opens the file named by the UTF-8 bytes `path` (NUL-terminated): to
 /// read, or to write (created or truncated); its handle, or -1.
+///
+/// # Safety
+/// `path` a NUL-terminated string of UTF-8, as for `open` of Linux.
 pub unsafe fn open(path: *const c_char, flags: c_int, _mode: c_int) -> c_int {
-    let n = super::strlen(path);
-    let wn = MultiByteToWideChar(CP_UTF8, 0, path as *const u8, n as i32, core::ptr::null_mut(), 0);
-    if n > 0 && wn <= 0 {
-        return -1;
+    // SAFETY: the path of the contract, its `n` bytes read; `w` a block of `wn +
+    // 1` units: the path in UTF-16 then its zero, freed once after `CreateFileW`
+    unsafe {
+        let n = super::strlen(path);
+        let wn = MultiByteToWideChar(CP_UTF8, 0, path as *const u8, n as i32, core::ptr::null_mut(), 0);
+        if n > 0 && wn <= 0 {
+            return -1;
+        }
+        let w = aligned_alloc(16, (wn as usize + 1) * 2) as *mut u16;
+        if w.is_null() {
+            return -1;
+        }
+        if n > 0 {
+            MultiByteToWideChar(CP_UTF8, 0, path as *const u8, n as i32, w, wn);
+        }
+        *w.add(wn.max(0) as usize) = 0;
+        let write = flags & O_WRONLY != 0;
+        let (access, disposition) = if write { (GENERIC_WRITE, CREATE_ALWAYS) } else { (GENERIC_READ, OPEN_EXISTING) };
+        // a directory opens too (as on Linux), its read then fails
+        let h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, core::ptr::null_mut(), disposition, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, core::ptr::null_mut());
+        let e = GetLastError();
+        free(w as *mut c_void);
+        if h == INVALID_HANDLE_VALUE {
+            SetLastError(e);
+            return -1;
+        }
+        h as usize as c_int
     }
-    let w = aligned_alloc(16, (wn as usize + 1) * 2) as *mut u16;
-    if w.is_null() {
-        return -1;
-    }
-    if n > 0 {
-        MultiByteToWideChar(CP_UTF8, 0, path as *const u8, n as i32, w, wn);
-    }
-    *w.add(wn.max(0) as usize) = 0;
-    let write = flags & O_WRONLY != 0;
-    let (access, disposition) = if write { (GENERIC_WRITE, CREATE_ALWAYS) } else { (GENERIC_READ, OPEN_EXISTING) };
-    // a directory opens too (as on Linux), its read then fails
-    let h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, core::ptr::null_mut(), disposition, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, core::ptr::null_mut());
-    let e = GetLastError();
-    free(w as *mut c_void);
-    if h == INVALID_HANDLE_VALUE {
-        SetLastError(e);
-        return -1;
-    }
-    h as usize as c_int
 }
 
 /// The bytes of UTF-8 read from a console that did not fit in the place of
@@ -200,89 +214,111 @@ static IN_HIGH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::n
 /// its code page (`é` as the byte 0x82 under the code page 437). Ctrl+Z
 /// first: the end, as `ReadFile` gives it; the first half of a surrogate
 /// pair at the end of a read held for the next; bytes beyond `n` held.
+///
+/// # Safety
+/// `n` bytes writable at `p`.
 unsafe fn read_console(p: *mut u8, n: usize) -> isize {
-    use core::sync::atomic::Ordering::Relaxed;
-    let held = IN_HELD.load(Relaxed);
-    let hn = (held >> 24) as usize;
-    if hn > 0 {
-        let k = hn.min(n);
-        for i in 0..k {
-            *p.add(i) = (held >> (8 * i)) as u8;
+    // SAFETY: the contract: at most `n` bytes written at `p` (`k`); the units
+    // read into `w` at most `want`, within its `units + 1` after `start`; the
+    // conversions into `b` of its length `bn`
+    unsafe {
+        use core::sync::atomic::Ordering::Relaxed;
+        let held = IN_HELD.load(Relaxed);
+        let hn = (held >> 24) as usize;
+        if hn > 0 {
+            let k = hn.min(n);
+            for i in 0..k {
+                *p.add(i) = (held >> (8 * i)) as u8;
+            }
+            let mut rest = ((hn - k) as u32) << 24;
+            for i in k..hn {
+                rest |= ((held >> (8 * i)) & 0xff) << (8 * (i - k));
+            }
+            IN_HELD.store(rest, Relaxed);
+            return k as isize;
         }
-        let mut rest = ((hn - k) as u32) << 24;
-        for i in k..hn {
-            rest |= ((held >> (8 * i)) & 0xff) << (8 * (i - k));
+        // at most 3 bytes a unit (4 a pair of 2): what is read fits in `n`
+        let units = (n / 3).clamp(1, 4096);
+        let mut w: alloc::vec::Vec<u16> = alloc::vec![0; units + 1];
+        loop {
+            let hi = IN_HIGH.swap(0, Relaxed);
+            let start = (hi != 0) as usize;
+            w[0] = hi as u16;
+            let want = if start == 1 { (units - 1).max(1) } else { units };
+            let mut done = 0u32;
+            if ReadConsoleW(handle(0), w.as_mut_ptr().add(start), want as u32, &mut done, core::ptr::null_mut()) == 0 {
+                return -1;
+            }
+            let mut len = start + done as usize;
+            if done == 0 && start == 0 {
+                return 0;
+            }
+            if start == 0 && w[0] == 0x1a {
+                return 0;
+            }
+            if done > 0 && (0xd800..0xdc00).contains(&w[len - 1]) {
+                IN_HIGH.store(w[len - 1] as u32, Relaxed);
+                len -= 1;
+            }
+            if len == 0 {
+                continue;
+            }
+            let bn = WideCharToMultiByte(CP_UTF8, 0, w.as_ptr(), len as i32, core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null_mut());
+            if bn <= 0 {
+                return -1;
+            }
+            let mut b: alloc::vec::Vec<u8> = alloc::vec![0; bn as usize];
+            WideCharToMultiByte(CP_UTF8, 0, w.as_ptr(), len as i32, b.as_mut_ptr(), bn, core::ptr::null(), core::ptr::null_mut());
+            let k = b.len().min(n);
+            core::ptr::copy_nonoverlapping(b.as_ptr(), p, k);
+            let mut rest = ((b.len() - k) as u32) << 24;
+            for (i, &c) in b[k..].iter().enumerate().take(3) {
+                rest |= (c as u32) << (8 * i);
+            }
+            IN_HELD.store(rest, Relaxed);
+            return k as isize;
         }
-        IN_HELD.store(rest, Relaxed);
-        return k as isize;
-    }
-    // at most 3 bytes a unit (4 a pair of 2): what is read fits in `n`
-    let units = (n / 3).clamp(1, 4096);
-    let mut w: alloc::vec::Vec<u16> = alloc::vec![0; units + 1];
-    loop {
-        let hi = IN_HIGH.swap(0, Relaxed);
-        let start = (hi != 0) as usize;
-        w[0] = hi as u16;
-        let want = if start == 1 { (units - 1).max(1) } else { units };
-        let mut done = 0u32;
-        if ReadConsoleW(handle(0), w.as_mut_ptr().add(start), want as u32, &mut done, core::ptr::null_mut()) == 0 {
-            return -1;
-        }
-        let mut len = start + done as usize;
-        if done == 0 && start == 0 {
-            return 0;
-        }
-        if start == 0 && w[0] == 0x1a {
-            return 0;
-        }
-        if done > 0 && (0xd800..0xdc00).contains(&w[len - 1]) {
-            IN_HIGH.store(w[len - 1] as u32, Relaxed);
-            len -= 1;
-        }
-        if len == 0 {
-            continue;
-        }
-        let bn = WideCharToMultiByte(CP_UTF8, 0, w.as_ptr(), len as i32, core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null_mut());
-        if bn <= 0 {
-            return -1;
-        }
-        let mut b: alloc::vec::Vec<u8> = alloc::vec![0; bn as usize];
-        WideCharToMultiByte(CP_UTF8, 0, w.as_ptr(), len as i32, b.as_mut_ptr(), bn, core::ptr::null(), core::ptr::null_mut());
-        let k = b.len().min(n);
-        core::ptr::copy_nonoverlapping(b.as_ptr(), p, k);
-        let mut rest = ((b.len() - k) as u32) << 24;
-        for (i, &c) in b[k..].iter().enumerate().take(3) {
-            rest |= (c as u32) << (8 * i);
-        }
-        IN_HELD.store(rest, Relaxed);
-        return k as isize;
     }
 }
 
 /// At most `n` bytes (`u32` at a time); 0 at the end, -1 on an error.
+///
+/// # Safety
+/// `n` bytes writable at `buf`, as for `read` of Linux.
 pub unsafe fn read(fd: c_int, buf: *mut c_void, n: usize) -> isize {
-    if fd == 0 && n > 0 && is_console(0) {
-        return read_console(buf as *mut u8, n);
+    // SAFETY: the contract: at most `n` bytes written at `buf` (`m`)
+    unsafe {
+        if fd == 0 && n > 0 && is_console(0) {
+            return read_console(buf as *mut u8, n);
+        }
+        let mut done = 0u32;
+        let m = n.min(1 << 30) as u32;
+        if ReadFile(handle(fd), buf, m, &mut done, core::ptr::null_mut()) == 0 {
+            // the end of a pipe whose writer is gone
+            return if GetLastError() == ERROR_BROKEN_PIPE { 0 } else { -1 };
+        }
+        done as isize
     }
-    let mut done = 0u32;
-    let m = n.min(1 << 30) as u32;
-    if ReadFile(handle(fd), buf, m, &mut done, core::ptr::null_mut()) == 0 {
-        // the end of a pipe whose writer is gone
-        return if GetLastError() == ERROR_BROKEN_PIPE { 0 } else { -1 };
-    }
-    done as isize
 }
 
 /// At most `n` bytes from the offset `off`, the position of the file
 /// unchanged for the other readers by offset.
+///
+/// # Safety
+/// `n` bytes writable at `buf`, as for `pread` of Linux.
 pub unsafe fn pread(fd: c_int, buf: *mut c_void, n: usize, off: i64) -> isize {
-    let mut done = 0u32;
-    let m = n.min(1 << 30) as u32;
-    let mut ov = Overlapped { internal: 0, internal_high: 0, offset: off as u32, offset_high: (off >> 32) as u32, event: core::ptr::null_mut() };
-    if ReadFile(handle(fd), buf, m, &mut done, &mut ov) == 0 {
-        return if GetLastError() == ERROR_HANDLE_EOF { 0 } else { -1 };
+    // SAFETY: the contract: at most `n` bytes written at `buf` (`m`); `ov` alive
+    // during the call (a read that waits: the handles of the runtime are not
+    // overlapped)
+    unsafe {
+        let mut done = 0u32;
+        let m = n.min(1 << 30) as u32;
+        let mut ov = Overlapped { internal: 0, internal_high: 0, offset: off as u32, offset_high: (off >> 32) as u32, event: core::ptr::null_mut() };
+        if ReadFile(handle(fd), buf, m, &mut done, &mut ov) == 0 {
+            return if GetLastError() == ERROR_HANDLE_EOF { 0 } else { -1 };
+        }
+        done as isize
     }
-    done as isize
 }
 
 /// Whether the standard input (0), output (1) and error (2) are consoles
@@ -321,79 +357,104 @@ fn is_console(fd: c_int) -> bool {
 /// 437). The bytes held from the last write first; those of a character
 /// cut at the end held for the next; all `n` counted as written. Bytes that
 /// are not UTF-8 shown as U+FFFD.
+///
+/// # Safety
+/// `n` bytes readable at `p`; `fd` a standard stream that is a console.
 unsafe fn write_console(fd: c_int, p: *const u8, n: usize) -> isize {
-    use core::sync::atomic::Ordering::Relaxed;
-    let held = HELD[fd as usize].load(Relaxed);
-    let hn = (held >> 24) as usize;
-    let mut b: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(hn + n);
-    for k in 0..hn {
-        b.push((held >> (8 * k)) as u8);
-    }
-    b.extend_from_slice(core::slice::from_raw_parts(p, n));
-    let cut = isc_runtime_core::utf8_whole(&b);
-    let mut h = ((b.len() - cut) as u32) << 24;
-    for (k, &c) in b[cut..].iter().enumerate() {
-        h |= (c as u32) << (8 * k);
-    }
-    HELD[fd as usize].store(h, Relaxed);
-    let body = &b[..cut];
-    if body.is_empty() {
-        return n as isize;
-    }
-    let wn = MultiByteToWideChar(CP_UTF8, 0, body.as_ptr(), body.len() as i32, core::ptr::null_mut(), 0);
-    if wn <= 0 {
-        return -1;
-    }
-    let mut w: alloc::vec::Vec<u16> = alloc::vec![0; wn as usize];
-    MultiByteToWideChar(CP_UTF8, 0, body.as_ptr(), body.len() as i32, w.as_mut_ptr(), wn);
-    let hd = handle(fd);
-    let mut at = 0usize;
-    while at < w.len() {
-        let mut done = 0u32;
-        let k = (w.len() - at).min(1 << 14) as u32;
-        if WriteConsoleW(hd, w.as_ptr().add(at), k, &mut done, core::ptr::null_mut()) == 0 || done == 0 {
+    // SAFETY: the contract: the `n` bytes at `p` read; `fd` 0 to 2
+    // (`is_console`); the units of `w` written, at most `w.len() - at` each time
+    unsafe {
+        use core::sync::atomic::Ordering::Relaxed;
+        let held = HELD[fd as usize].load(Relaxed);
+        let hn = (held >> 24) as usize;
+        let mut b: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(hn + n);
+        for k in 0..hn {
+            b.push((held >> (8 * k)) as u8);
+        }
+        b.extend_from_slice(core::slice::from_raw_parts(p, n));
+        let cut = isc_runtime_core::utf8_whole(&b);
+        let mut h = ((b.len() - cut) as u32) << 24;
+        for (k, &c) in b[cut..].iter().enumerate() {
+            h |= (c as u32) << (8 * k);
+        }
+        HELD[fd as usize].store(h, Relaxed);
+        let body = &b[..cut];
+        if body.is_empty() {
+            return n as isize;
+        }
+        let wn = MultiByteToWideChar(CP_UTF8, 0, body.as_ptr(), body.len() as i32, core::ptr::null_mut(), 0);
+        if wn <= 0 {
             return -1;
         }
-        at += done as usize;
+        let mut w: alloc::vec::Vec<u16> = alloc::vec![0; wn as usize];
+        MultiByteToWideChar(CP_UTF8, 0, body.as_ptr(), body.len() as i32, w.as_mut_ptr(), wn);
+        let hd = handle(fd);
+        let mut at = 0usize;
+        while at < w.len() {
+            let mut done = 0u32;
+            let k = (w.len() - at).min(1 << 14) as u32;
+            if WriteConsoleW(hd, w.as_ptr().add(at), k, &mut done, core::ptr::null_mut()) == 0 || done == 0 {
+                return -1;
+            }
+            at += done as usize;
+        }
+        n as isize
     }
-    n as isize
 }
 
+///
+/// # Safety
+/// `n` bytes readable at `buf`, as for `write` of Linux.
 pub unsafe fn write(fd: c_int, buf: *const c_void, n: usize) -> isize {
-    if n > 0 && is_console(fd) {
-        return write_console(fd, buf as *const u8, n);
+    // SAFETY: the contract: at most `n` bytes read at `buf` (`m`)
+    unsafe {
+        if n > 0 && is_console(fd) {
+            return write_console(fd, buf as *const u8, n);
+        }
+        let mut done = 0u32;
+        let m = n.min(1 << 30) as u32;
+        if WriteFile(handle(fd), buf, m, &mut done, core::ptr::null_mut()) == 0 {
+            return -1;
+        }
+        done as isize
     }
-    let mut done = 0u32;
-    let m = n.min(1 << 30) as u32;
-    if WriteFile(handle(fd), buf, m, &mut done, core::ptr::null_mut()) == 0 {
-        return -1;
-    }
-    done as isize
 }
 
+///
+/// # Safety
+/// `fd` a descriptor of `open`, closed once, as for `close` of Linux.
 pub unsafe fn close(fd: c_int) -> c_int {
-    if fd <= 2 {
-        return 0;
-    }
-    if CloseHandle(handle(fd)) == 0 {
-        -1
-    } else {
-        0
+    // SAFETY: the contract: a handle of `open`, closed once
+    unsafe {
+        if fd <= 2 {
+            return 0;
+        }
+        if CloseHandle(handle(fd)) == 0 {
+            -1
+        } else {
+            0
+        }
     }
 }
 
 /// The new position, or -1 (ESPIPE on a pipe or a console).
+///
+/// # Safety
+/// `fd` a descriptor of the program, as for `lseek` of Linux.
 pub unsafe fn lseek(fd: c_int, off: i64, whence: c_int) -> i64 {
-    let h = handle(fd);
-    if GetFileType(h) != FILE_TYPE_DISK {
-        SetLastError(87);
-        return -1;
+    // SAFETY: the handle of `fd` and a place for the position
+    unsafe {
+        let h = handle(fd);
+        if GetFileType(h) != FILE_TYPE_DISK {
+            SetLastError(87);
+            return -1;
+        }
+        let mut new = 0i64;
+        if SetFilePointerEx(h, off, &mut new, whence as u32) == 0 {
+            return -1;
+        }
+        new
     }
-    let mut new = 0i64;
-    if SetFilePointerEx(h, off, &mut new, whence as u32) == 0 {
-        return -1;
-    }
-    new
 }
 
 // ---------------------------------------------------------------------
@@ -429,89 +490,141 @@ pub unsafe fn free(p: *mut c_void) {
 /// `mmap` of anonymous memory: reserved and committed (Windows has no
 /// commit on first touch; the pages are still made only when touched).
 /// MAP_FAILED (-1) when refused.
+///
+/// # Safety
+/// As for `mmap` of Linux: anonymous memory, at an address of the system.
 pub unsafe fn mmap(_addr: *mut c_void, len: usize, _prot: c_int, _flags: c_int, _fd: c_int, _off: i64) -> *mut c_void {
-    let p = VirtualAlloc(core::ptr::null_mut(), len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if p.is_null() {
-        -1isize as *mut c_void
-    } else {
-        p
+    // SAFETY: new pages of the address space, asked for nothing else
+    unsafe {
+        let p = VirtualAlloc(core::ptr::null_mut(), len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if p.is_null() {
+            -1isize as *mut c_void
+        } else {
+            p
+        }
     }
 }
 
 /// `munmap` of any part of a mapping: its pages decommitted; the address
 /// space of the mapping released once none of its pages is committed.
+///
+/// # Safety
+/// `addr` and `len` a part of a mapping of `mmap` that is no longer read, as
+/// for `munmap` of Linux.
 pub unsafe fn munmap(addr: *mut c_void, len: usize) -> c_int {
-    if len == 0 {
-        return 0;
-    }
-    if VirtualFree(addr, len, MEM_DECOMMIT) == 0 {
-        return -1;
-    }
-    let mut info = core::mem::zeroed::<MemoryBasicInformation>();
-    if VirtualQuery(addr, &mut info, core::mem::size_of::<MemoryBasicInformation>()) == 0 {
-        return 0;
-    }
-    let base = info.allocation_base;
-    let mut p = base as usize;
-    loop {
-        if VirtualQuery(p as *const c_void, &mut info, core::mem::size_of::<MemoryBasicInformation>()) == 0 || info.allocation_base != base {
-            break;
-        }
-        if info.state == MEM_COMMIT {
+    // SAFETY: the contract: the pages of a mapping no longer used decommitted;
+    // `info` a place of its size for each query; the mapping released when none
+    // of its pages is committed
+    unsafe {
+        if len == 0 {
             return 0;
         }
-        p += info.region_size;
+        if VirtualFree(addr, len, MEM_DECOMMIT) == 0 {
+            return -1;
+        }
+        let mut info = core::mem::zeroed::<MemoryBasicInformation>();
+        if VirtualQuery(addr, &mut info, core::mem::size_of::<MemoryBasicInformation>()) == 0 {
+            return 0;
+        }
+        let base = info.allocation_base;
+        let mut p = base as usize;
+        loop {
+            if VirtualQuery(p as *const c_void, &mut info, core::mem::size_of::<MemoryBasicInformation>()) == 0 || info.allocation_base != base {
+                break;
+            }
+            if info.state == MEM_COMMIT {
+                return 0;
+            }
+            p += info.region_size;
+        }
+        VirtualFree(base, 0, MEM_RELEASE);
+        0
     }
-    VirtualFree(base, 0, MEM_RELEASE);
-    0
 }
 
 pub const MADV_DONTNEED: c_int = 4;
 
 /// MADV_DONTNEED: the pages decommitted and committed again, zeros when
 /// touched next (as on Linux); the advice on huge pages ignored.
+///
+/// # Safety
+/// `addr` and `len` pages of a mapping of `mmap`; their contents no longer
+/// needed for MADV_DONTNEED.
 pub unsafe fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int {
-    if advice == MADV_DONTNEED && len > 0 {
-        VirtualFree(addr, len, MEM_DECOMMIT);
-        VirtualAlloc(addr, len, MEM_COMMIT, PAGE_READWRITE);
+    // SAFETY: the contract: pages of a mapping whose contents are no longer
+    // needed, made again (zeros)
+    unsafe {
+        if advice == MADV_DONTNEED && len > 0 {
+            VirtualFree(addr, len, MEM_DECOMMIT);
+            VirtualAlloc(addr, len, MEM_COMMIT, PAGE_READWRITE);
+        }
+        0
     }
-    0
 }
 
 /// `mremap(old, old_len, new_len, MREMAP_MAYMOVE | MREMAP_FIXED, dst)`, `dst`
 /// inside a mapping of at least `new_len` bytes: the bytes copied there and
 /// the old mapping given back (Windows cannot move pages).
+///
+/// # Safety
+/// `old` and `old_len` a mapping of `mmap` given up; `dst` at least `old_len`
+/// bytes writable, apart from it.
 pub unsafe fn mremap(old: *mut c_void, old_len: usize, _new_len: usize, _flags: c_int, dst: *mut c_void) -> *mut c_void {
-    core::ptr::copy_nonoverlapping(old as *const u8, dst as *mut u8, old_len);
-    munmap(old, old_len);
-    dst
+    // SAFETY: the contract: the `old_len` bytes copied to `dst`, apart, then the
+    // old mapping given back
+    unsafe {
+        core::ptr::copy_nonoverlapping(old as *const u8, dst as *mut u8, old_len);
+        munmap(old, old_len);
+        dst
+    }
 }
 
 /// `pthread_key_create` with a destructor run at the end of each thread
 /// that set a value: a fiber local slot (`FlsAlloc`).
+///
+/// # Safety
+/// Called once (the destructor is kept in a static); `key` a place for the
+/// key.
 pub unsafe fn pthread_key_create(key: *mut c_uint, destructor: Option<unsafe extern "C" fn(*mut c_void)>) -> c_int {
     static mut DESTRUCTOR: Option<unsafe extern "C" fn(*mut c_void)> = None;
+    /// # Safety
+    /// Called by the system at the end of a thread, `p` the value it set.
     unsafe extern "system" fn run(p: *mut c_void) {
         if !p.is_null() {
-            if let Some(d) = *core::ptr::addr_of!(DESTRUCTOR) {
-                d(p)
+            // SAFETY: `DESTRUCTOR` written before `FlsAlloc` registered this
+            // function; `p` the value set by the thread, given to the
+            // destructor as at the end of a thread of Linux
+            unsafe {
+                if let Some(d) = *core::ptr::addr_of!(DESTRUCTOR) {
+                    d(p)
+                }
             }
         }
     }
-    *core::ptr::addr_of_mut!(DESTRUCTOR) = destructor;
-    let i = FlsAlloc(Some(run));
-    if i == u32::MAX {
-        return -1;
+    // SAFETY: the contract: called once, before any thread ends with a value
+    // (`DESTRUCTOR` written once, read after); `key` written once
+    unsafe {
+        *core::ptr::addr_of_mut!(DESTRUCTOR) = destructor;
+        let i = FlsAlloc(Some(run));
+        if i == u32::MAX {
+            return -1;
+        }
+        *key = i;
     }
-    *key = i;
     0
 }
 
+///
+/// # Safety
+/// `key` a key of `pthread_key_create`.
 pub unsafe fn pthread_setspecific(key: c_uint, value: *const c_void) -> c_int {
-    if FlsSetValue(key, value) == 0 {
-        -1
-    } else {
-        0
+    // SAFETY: the contract: a slot of `FlsAlloc`
+    unsafe {
+        if FlsSetValue(key, value) == 0 {
+            -1
+        } else {
+            0
+        }
     }
 }
 
@@ -519,13 +632,20 @@ pub unsafe fn pthread_setspecific(key: c_uint, value: *const c_void) -> c_int {
 // time and threads
 
 /// The monotonic clock, in seconds and nanoseconds.
+///
+/// # Safety
+/// `ts` a valid `Timespec`.
 pub unsafe fn monotonic(ts: *mut super::Timespec) {
-    let (mut t, mut f) = (0i64, 1i64);
-    QueryPerformanceCounter(&mut t);
-    QueryPerformanceFrequency(&mut f);
-    let f = f.max(1);
-    (*ts).tv_sec = t / f;
-    (*ts).tv_nsec = ((t % f) as i128 * 1_000_000_000 / f as i128) as core::ffi::c_long;
+    // SAFETY: the contract: `ts` written; the two counters asked into places of
+    // their own
+    unsafe {
+        let (mut t, mut f) = (0i64, 1i64);
+        QueryPerformanceCounter(&mut t);
+        QueryPerformanceFrequency(&mut f);
+        let f = f.max(1);
+        (*ts).tv_sec = t / f;
+        (*ts).tv_nsec = ((t % f) as i128 * 1_000_000_000 / f as i128) as core::ffi::c_long;
+    }
 }
 
 struct Start {
@@ -534,7 +654,10 @@ struct Start {
 }
 
 extern "system" fn trampoline(p: *mut c_void) -> u32 {
+    // SAFETY: `p` the `Start` that `spawn` wrote in a block of
+    // `aligned_alloc` for this thread alone, read once, freed once
     let s = unsafe { core::ptr::read(p as *mut Start) };
+    // SAFETY: as above
     unsafe { free(p) };
     (s.f)(s.arg);
     0
@@ -543,6 +666,9 @@ extern "system" fn trampoline(p: *mut c_void) -> u32 {
 /// A thread running `f(arg)` on a stack of `stack` bytes reserved (0: the
 /// default); its handle, or None.
 pub fn spawn(stack: usize, f: extern "C" fn(*mut c_void) -> *mut c_void, arg: *mut c_void) -> Option<HANDLE> {
+    // SAFETY: `p` a new block of the size of a `Start`, written, given to
+    // the thread (`trampoline` frees it), or freed here when no thread is
+    // made
     unsafe {
         let p = aligned_alloc(16, core::mem::size_of::<Start>()) as *mut Start;
         if p.is_null() {
@@ -561,6 +687,7 @@ pub fn spawn(stack: usize, f: extern "C" fn(*mut c_void) -> *mut c_void, arg: *m
 
 /// Waits for the end of the thread `h`.
 pub fn join(h: HANDLE) {
+    // SAFETY: a handle of `spawn` (the callers), closed once
     unsafe {
         WaitForSingleObject(h, INFINITE);
         CloseHandle(h);
@@ -569,22 +696,26 @@ pub fn join(h: HANDLE) {
 
 /// Lets the thread `h` run on its own (its handle closed).
 pub fn detach(h: HANDLE) {
+    // SAFETY: a handle of `spawn` (the callers), closed once
     unsafe { CloseHandle(h) };
 }
 
-/// Sleeps while the word at `p` is `seen` (spurious wake-ups allowed).
-pub fn wait_word(p: *const u32, seen: u32) {
-    unsafe { WaitOnAddress(p as *const c_void, &seen as *const u32 as *const c_void, 4, INFINITE) };
+/// Sleeps while the word `w` is `seen` (spurious wake-ups allowed).
+pub fn wait_word(w: &core::sync::atomic::AtomicU32, seen: u32) {
+    // SAFETY: the address of an atomic word of 4 bytes, alive, and of `seen`
+    unsafe { WaitOnAddress(w.as_ptr() as *const c_void, &seen as *const u32 as *const c_void, 4, INFINITE) };
 }
 
-/// Wakes every thread sleeping on the word at `p`.
-pub fn wake_word(p: *const u32) {
-    unsafe { WakeByAddressAll(p as *const c_void) };
+/// Wakes every thread sleeping on the word `w`.
+pub fn wake_word(w: &core::sync::atomic::AtomicU32) {
+    // SAFETY: the address of an atomic word, alive
+    unsafe { WakeByAddressAll(w.as_ptr() as *const c_void) };
 }
 
 /// The CPUs the process may run on (at most 64: one processor group).
 pub fn cpus() -> usize {
     let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: the pseudo-handle of the process and two places for the masks
     if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } != 0 && process != 0 {
         process.count_ones() as usize
     } else {
@@ -595,18 +726,21 @@ pub fn cpus() -> usize {
 /// A short pause of a thread that has nothing to do (the time slice given
 /// to another thread: Windows sleeps by milliseconds).
 pub fn pause_briefly() {
+    // SAFETY: `SwitchToThread` asks nothing
     unsafe { SwitchToThread() };
 }
 
 /// The lowest and highest addresses of the stack of the calling thread.
 pub fn stack_limits() -> (usize, usize) {
     let (mut low, mut high) = (0usize, 0usize);
+    // SAFETY: two places for the limits
     unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
     (low, high)
 }
 
 /// Ends the process at once with `code` (no end of thread run: see `die`).
 pub fn terminate(code: c_int) -> ! {
+    // SAFETY: the pseudo-handle of the process
     unsafe {
         TerminateProcess(GetCurrentProcess(), code as u32);
     }
