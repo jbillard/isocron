@@ -82,7 +82,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use isc_runtime_core::{alloc_class, alloc_class_size, Panic, ALLOC_CLASSES as CLASSES};
 
 #[cfg(windows)]
-use super::windows::{madvise, mmap, mremap, munmap, pthread_key_create, pthread_setspecific};
+use super::windows::{madvise, mmap, munmap, pthread_key_create, pthread_setspecific};
 
 #[cfg(not(windows))]
 use super::linux::{madvise, mmap, mremap, munmap};
@@ -1684,8 +1684,6 @@ unsafe fn grow_cached(st: &mut State, class: usize, size: usize) -> *mut Header 
     // block taken out of the cache, its mapping its own, moved whole by `mremap`
     // (H1, H4)
     unsafe {
-        const MREMAP_MAYMOVE: c_int = 1;
-        const MREMAP_FIXED: c_int = 2;
         let mut best: *mut Header = null_mut();
         let mut b = st.large_oldest;
         while !b.is_null() {
@@ -1712,8 +1710,23 @@ unsafe fn grow_cached(st: &mut State, class: usize, size: usize) -> *mut Header 
         let dst = if dst + new_len > res as usize + new_len + HUGE { dst - HUGE } else { dst };
         // one advice on the whole mapping: the kernel merges the areas that
         // `shape_large` made (`mremap` moves one area only, EFAULT otherwise)
-        madvise(base as *mut c_void, old_len, MADV_HUGEPAGE);
-        let moved = mremap(base as *mut c_void, old_len, new_len, MREMAP_MAYMOVE | MREMAP_FIXED, dst as *mut c_void);
+        #[cfg(not(windows))]
+        let moved = {
+            const MREMAP_MAYMOVE: c_int = 1;
+            const MREMAP_FIXED: c_int = 2;
+            madvise(base as *mut c_void, old_len, MADV_HUGEPAGE);
+            mremap(base as *mut c_void, old_len, new_len, MREMAP_MAYMOVE | MREMAP_FIXED, dst as *mut c_void)
+        };
+        // Windows moves no pages of `VirtualAlloc` (D577): the place before
+        // the block and its header copied, not its contents (a cached block,
+        // free: DIRTY), the old mapping given back; the pages of the new
+        // place are zeros until written
+        #[cfg(windows)]
+        let moved = {
+            core::ptr::copy_nonoverlapping(base as *const u8, dst as *mut u8, off + HEADER);
+            munmap(base as *mut c_void, old_len);
+            dst as *mut c_void
+        };
         if moved as isize == -1 {
             munmap(res as *mut c_void, new_len + HUGE);
             munmap(base as *mut c_void, old_len);
@@ -1730,7 +1743,8 @@ unsafe fn grow_cached(st: &mut State, class: usize, size: usize) -> *mut Header 
         let h = (dst + off) as *mut Header;
         (*h).class = class as u32;
         (*h).state = FREE;
-        (*h).contents = DIRTY;
+        // under Windows its bytes past the header are those of new pages
+        (*h).contents = if cfg!(windows) { ZERO } else { DIRTY };
         (*h).base = dst as *mut Header;
         (*h).len = new_len;
         // `shape_large` advises its parts again

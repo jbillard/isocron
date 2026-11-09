@@ -13331,3 +13331,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - From D375's list, D119 (AMD Zen) and a claim of D285 already carried
     `[a hypothesis: D375]`. The contradicted claims of D375 itself were
     marked then.
+- **D577 — Under Windows, a cached large block grown without the copy of
+  its contents (2026-11-09).** The item of D246 and D375: « Windows cannot
+  move pages » was true of `VirtualAlloc` only (`VirtualAlloc2`,
+  `MapViewOfFile3` and the placeholders map the pages of a section again
+  elsewhere). `grow_cached` (D211) takes the largest cached block smaller
+  than a request and grows its mapping: under Linux `mremap` moves its
+  pages; under Windows `mremap` copied its `old_len` bytes into the new
+  place, then gave the old one back. Those bytes are the contents of a
+  free block (DIRTY): not needed. Now under Windows the place before the
+  block and its header alone are copied, the old mapping given back, and
+  the block is ZERO (the pages of the new place, committed by
+  `VirtualAlloc`, are zeros until written: a request of zeros there
+  clears nothing). `windows::mremap`, no longer used, removed.
+  - Moving the pages themselves would need every large block to be a view
+    of a section from its start (`CreateFileMapping` and `MapViewOfFile3`
+    into placeholders), its decommits of parts (`madvise`, `trim`) and its
+    unmaps of parts done again for views: not done. What it would add over
+    this: the pages of the old block kept, not faulted again.
+  - Measured on the machine of Windows (the VM, 4 cores): a program that
+    makes arrays of 48 MB growing by a quarter six times (each read twice,
+    so made), its zeros after a growth summed: 7 alternated runs of the
+    old and new programs, the same output (607974594); a pass 320.8 ->
+    290.4 ms (median, -9.5 %), 297.4 -> 283.9 ms (min, -4.5 %), the new
+    faster in 7 of 7 pairs. Under Linux the program calls `mremap` 6
+    times in 3 passes (`strace`): the path taken.

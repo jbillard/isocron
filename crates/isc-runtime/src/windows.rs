@@ -562,23 +562,6 @@ pub unsafe fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int {
     }
 }
 
-/// `mremap(old, old_len, new_len, MREMAP_MAYMOVE | MREMAP_FIXED, dst)`, `dst`
-/// inside a mapping of at least `new_len` bytes: the bytes copied there and
-/// the old mapping given back (Windows cannot move pages).
-///
-/// # Safety
-/// `old` and `old_len` a mapping of `mmap` given up; `dst` at least `old_len`
-/// bytes writable, apart from it.
-pub unsafe fn mremap(old: *mut c_void, old_len: usize, _new_len: usize, _flags: c_int, dst: *mut c_void) -> *mut c_void {
-    // SAFETY: the contract: the `old_len` bytes copied to `dst`, apart, then the
-    // old mapping given back
-    unsafe {
-        core::ptr::copy_nonoverlapping(old as *const u8, dst as *mut u8, old_len);
-        munmap(old, old_len);
-        dst
-    }
-}
-
 /// `pthread_key_create` with a destructor run at the end of each thread
 /// that set a value: a fiber local slot (`FlsAlloc`).
 ///
