@@ -1195,10 +1195,12 @@ pub fn to_case(w: &mut dyn Write, s: &str, upper: bool) -> fmt::Result {
 /// copies of `fill`, the last one cut before a character that would pass
 /// `n`; `s` itself when it has `n` bytes or more or when `fill` is empty.
 pub fn pad(w: &mut dyn Write, s: &str, n: i64, fill: &str, start: bool) -> fmt::Result {
-    let missing = n - s.len() as i64;
-    if missing <= 0 || fill.is_empty() {
+    // (compared, not subtracted first: the difference of an `n` near the
+    // least `i64` is not an `i64`, D606)
+    if n <= s.len() as i64 || fill.is_empty() {
         return w.write_str(s);
     }
+    let missing = n - s.len() as i64;
     if !start {
         w.write_str(s)?;
     }

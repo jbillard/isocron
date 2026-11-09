@@ -975,7 +975,7 @@ action main(args: string[k]): i32 {
 }
 
 /// D348: `toString(x).padStart(n, c)` (or `padEnd`) of an integer and a
-/// fill of one byte written in one block (`isc_pad_int`), the text of `x`
+/// fill of one byte written in one block (`pad_int`, D606), the text of `x`
 /// never made; another fill by the text made, padded, then freed; a text
 /// read twice as before. Negative numbers padded as JavaScript does
 /// (`0000-7`), unsigned ones, a text already long enough, in templates.
@@ -1012,7 +1012,7 @@ action main(args: string[k]): i32 {
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     // the pads of the tuple in one block each; those of the template
     // written by the concatenation itself (D359)
-    assert!(ll.matches("call void @isc_pad_int(").count() >= 5, "integers padded in one block");
+    assert!(ll.matches("; int pad").count() >= 5, "integers padded in one block");
     assert!(ll.contains("call void @isc_put_int("), "the parts of the template not written in its block");
 }
 
@@ -1059,16 +1059,18 @@ fn integers_written_in_the_block_of_their_template() {
     // by the function of the prelude (D588: its count of digits by
     // `llvm.ctlz`), not the runtime
     assert!(!ll.contains("call void @isc_to_string_i64("), "a text of an integer made by the runtime");
+    // (the functions that give a text: the digits of a padded integer are
+    // lowered beside them, D606, and not called here)
     let texts: Vec<&str> = ll
         .lines()
-        // (the functions that return a text: the fast paths of the
-        // allocator, inlined too, return a word, D605)
-        .filter(|l| l.starts_with("define internal") && l.contains(" alwaysinline ") && l.contains("{ ptr, i64 } @"))
+        // (their type: the fast paths of the allocator, inlined too, return
+        // a word, D605)
+        .filter(|l| l.starts_with("define internal tailcc { ptr, i64 } ") && l.contains(" alwaysinline "))
         .filter_map(|l| l.split('@').nth(1).and_then(|r| r.split('(').next()))
         .collect();
     let calls: usize = texts.iter().map(|f| ll.matches(&format!("call tailcc {{ ptr, i64 }} @{}(", f)).count()).sum();
     assert_eq!((texts.len(), calls), (2, 1), "the text of `${{v}}` alone not made once by the prelude");
-    assert!(!ll.contains("call void @isc_pad_int("), "a padded text of an integer made");
+    assert!(!ll.contains("; int pad"), "a padded text of an integer made");
     // the accumulators give their left text to the concatenation
     assert!(ll.contains("call ptr @isc_str_reserve("), "the left text of an accumulator not given");
 }
@@ -2280,4 +2282,49 @@ fn index_of_and_includes_written_in_isocron() {
     let wasm = compile_wasm(src, "strings_search_wasm");
     let r = run_wasm(&runner, &wasm, &["400"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "WebAssembly: {}", r.stderr);
+}
+
+/// D606: `padStart`, `padEnd` and the padded text of an integer are made by
+/// the generated code (one block of the size of the padded text, the text
+/// copied, the fill stored or copied after itself; the digits of an integer
+/// from the words of the prelude's `$rtDigitWords`), no longer by functions
+/// of the runtime. Texts of 0 to 300 bytes and of several bytes a
+/// character, fills of 0, 1 and several bytes (the last copy cut at the
+/// start of a character), widths below, equal to and above the lengths,
+/// both sides of the moves of 4 to 64 bytes and of the buffer of a text on
+/// the stack, the least `i64`; integers of every width and sign; a megabyte
+/// of fill: the text of the interpreter, each block freed once (the checked
+/// allocator, Valgrind), on 1 and 4 threads; the same in WebAssembly.
+#[test]
+fn padded_texts_made_by_the_generated_code() {
+    let src = include_str!("data/strings_padded.isc");
+    let texts = ["x", "ab", "é", "€uro", "😀", "abc😀déf", "0123456789", ""];
+    let bin = compile(src, "strings_padded");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    for f in ["@isc_pad(", "@isc_pad_into(", "@isc_pad1_into(", "@isc_pad_int("] {
+        assert!(!ll.contains(f), "{} still called", f);
+    }
+    assert!(ll.contains("; text pad\n") && ll.contains("; text pad, on the stack when it fits\n") && ll.contains("; int pad\n"), "the padded texts not made here");
+    let sets: Vec<Vec<&str>> = ["kept", "read", "ints", "large"].iter().map(|m| std::iter::once(*m).chain(texts).collect()).collect();
+    for args in &sets {
+        let want = interp_ok(src, args);
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, args, Some(t));
+            assert_eq!(r.code, 0, "{}: {}", args[0], r.stderr);
+            assert!(r.stdout == want, "{}, {} threads: the text of the interpreter not printed", args[0], t);
+        }
+        checked_clean_bin(&bin, args, None);
+    }
+    valgrind_clean(src, "strings_padded", &sets[1]);
+    let Some(runner) = wasi_runner() else {
+        eprintln!("no WASI engine (wasmtime): the WebAssembly program not run");
+        return;
+    };
+    let wasm = compile_wasm(src, "strings_padded_wasm");
+    for args in &sets {
+        let want = interp_ok(src, args);
+        let r = run_wasm(&runner, &wasm, args);
+        assert_eq!(r.code, 0, "WebAssembly, {}: {}", args[0], r.stderr);
+        assert!(r.stdout == want, "WebAssembly, {}: the text of the interpreter not printed", args[0]);
+    }
 }

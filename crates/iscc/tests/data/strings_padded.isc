@@ -1,0 +1,77 @@
+// The padded texts made by the generated code (D606): `padStart` and
+// `padEnd` of texts of 0 to 300 bytes and of the arguments, by fills of 0,
+// 1 and several bytes, of one and several bytes a character, to widths
+// below, equal to and above their lengths (both sides of 4, 8, 16, 32, 64
+// and of the 128 bytes of a text on the stack, the least `i64`), kept
+// (printed) and only read in their scope (hashed), a fill known to the
+// compiler or not, an omitted fill; the padded texts of integers of every
+// width and sign.
+// usage: strings_padded <kept | read | ints | large> [texts...]
+
+function text(n: i64): string {
+    return stringOf(map(iota(n), (j) => u8(97 + (n + j * 7) % 26)));
+}
+
+function hash(t: string): i64 {
+    return fold(bytes(t), t.length, (h, b) => (h * 31 + i64(b)) % 1000000007);
+}
+
+// only read in their scope: on the stack when they fit
+function read(s: string, w: i64, f: string): i64 {
+    const a = s.padStart(w, f);
+    const b = s.padEnd(w, f);
+    return hash(a) * 3 + hash(b);
+}
+
+function readLiteral(s: string, w: i64): i64 {
+    const a = s.padStart(w, "0");
+    const b = s.padEnd(w, "*");
+    const c = s.padStart(w, "ab");
+    const d = s.padEnd(w, "é€");
+    const e = s.padEnd(w, "");
+    const g = s.padStart(w);
+    return hash(a) * 3 + hash(b) + hash(c) * 5 + hash(d) * 7 + hash(e) * 11 + hash(g) * 13;
+}
+
+function keptLiteral(s: string, w: i64): string {
+    return [s.padStart(w, "0"), s.padEnd(w, "*"), s.padStart(w, "ab"), s.padEnd(w, "é€"), s.padEnd(w, ""), s.padStart(w), s.padEnd(w)].join("|");
+}
+
+function ints(x: i64, w: i64, f: string): string {
+    const a = toString(x).padStart(w, "0");
+    const b = toString(x).padEnd(w, " ");
+    const c = toString(u64(x)).padStart(w, "*");
+    const d = toString(i32(x % 2000000000)).padEnd(w, "-");
+    const e = toString(u8(x & 255)).padStart(w, "0");
+    const g = toString(x).padStart(w, f);
+    const h = toString(u64(x)).padEnd(w, f);
+    const i = toString(i8(x % 100)).padStart(w, "ab");
+    return [a, b, c, d, e, g, h, i].join("|");
+}
+
+action main(args: string[k]): i32 {
+    const mode = args[0];
+    const given = map(iota(k - 1), (i) => args[i + 1]);
+    const words = concat(given, map([0, 1, 3, 7, 8, 15, 16, 17, 31, 33, 63, 64, 65, 127, 128, 129, 300], text));
+    const fills = ["", "0", "ab", "é", "😀", "aé", "é€😀x", "abcdefghij", text(70), text(200)];
+    const least = -9223372036854775807 - 1;
+    const widths = concat(map(iota(36), (i) => i - 2), [63, 64, 65, 66, 127, 128, 129, 130, 131, 193, 256, 257, 300, 301, 1000, -1000, least + 1, least]);
+    if (mode == "kept") {
+        print(map(words, (s) => map(fills, (f) => map(widths, (w) => s.padStart(w, f)).join("|") + "\n" + map(widths, (w) => s.padEnd(w, f)).join("|")).join("\n")).join("\n"));
+        print(map(words, (s) => map(widths, (w) => keptLiteral(s, w)).join("\n")).join("\n"));
+    } else if (mode == "read") {
+        print(map(words, (s) => map(fills, (f) => map(widths, (w) => toString(read(s, w, f))).join(",")).join("\n")).join("\n"));
+        print(map(words, (s) => map(widths, (w) => readLiteral(s, w))));
+    } else if (mode == "ints") {
+        const top = 9223372036854775807;
+        const powers = map(iota(57), (i) => fold(iota(i / 3), 1, (a, j) => a * 10) * (i % 3 == 0 ? 1 : i % 3 == 1 ? -1 : 9) - (i % 2));
+        const xs = concat(concat(map(iota(31), (i) => i - 15), powers), [top, -top, least, top - 1, 4294967295, 4294967296, -2147483648, 99999999, 100000000, 9999999999999999, 10000000000000000, 1234567890123456789]);
+        print(map(xs, (x) => map(concat(iota(24), [30, 64, 65, 129, -1, least]), (w) => map(["", "0", "ab", "é", "€😀"], (f) => ints(x, w, f)).join("\n")).join("\n")).join("\n"));
+    } else {
+        // large texts and widths: a megabyte of fill, a text of 70000 bytes
+        const big = text(70000);
+        print(map(fills, (f) => [hash(big.padStart(1000003, f)), hash(big.padEnd(70000 + 4097, f)), hash(given[0].padEnd(1048576, f)), hash(big.padStart(70000, f))]));
+        print(map([big.padStart(100000, "é€"), big.padEnd(70001, "é€"), given[0].padStart(3000000, "-")], (t) => [t.length, hash(t)] as const));
+    }
+    return 0;
+}

@@ -999,11 +999,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_rx_matches(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32, i32)",
     "declare void @isc_to_case(ptr, ptr, i64, i32)",
-    "declare void @isc_pad(ptr, ptr, i64, i64, ptr, i64, i32)",
-    "declare void @isc_pad_into(ptr, ptr, i64, ptr, i64, i64, ptr, i64, i32)",
-    "declare void @isc_pad1_into(ptr, ptr, ptr, i64, i64, i32)",
     "declare void @isc_to_case_into(ptr, ptr, i64, ptr, i64, i32)",
-    "declare void @isc_pad_int(ptr, i64, i32, i64, i32, i32)",
     "declare ptr @isc_str_reserve(ptr, i64, i64)",
     "declare void @isc_put_int(ptr, i64, i64, i64, i64, i64)",
     "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
@@ -1377,6 +1373,13 @@ struct IntText {
     x: String,
     signed: bool,
     pad: Option<(String, u8, bool)>,
+}
+
+/// The fill of a padded text (D606): one byte known to the compiler, or a
+/// text (its pointer and its length).
+enum Fill {
+    Byte(u8),
+    Text(String, String),
 }
 
 /// `v` is read once in `e`, as a part of a concatenation (a chain, a
@@ -2744,7 +2747,8 @@ impl<'p> Gen<'p> {
         }
         // the text of an integer (D588): a leaf of a frame of 24 bytes, no
         // test of the stack, copied into its callers
-        let int_text = self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
+        // (and the digits of a padded one, D606)
+        let int_text = self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) || self.p.digit_words == Some(i as u32);
         // the text of a float: a small frame too, its rare paths `@cold`
         // functions that test the stack themselves
         let float_text = self.p.float_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
@@ -2844,7 +2848,7 @@ impl<'p> Gen<'p> {
         // `@cold` (D584): never inlined back by LLVM, its calls unlikely
         let cold = if self.p.fns[i].cold {
             " cold noinline"
-        } else if self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) || self.p.kernel.is_some_and(|(_, a, b)| i as u32 == a || i as u32 == b) {
+        } else if int_text || kernel_entry {
             " alwaysinline"
         } else {
             ""
@@ -12579,82 +12583,9 @@ impl<'p> Gen<'p> {
                     n.to_string()
                 }
                 // a text of at most 64 bytes copied here by moves that overlap,
-                // as `copy_short` of the runtime (D478: the call of the copy,
-                // and the `vzeroupper` before it, a third of `json.quote` of a
-                // name; a masked store of AVX-512 instead could not forward
-                // its bytes to the loads that read them back, `parseUrl`
-                // +5.7 %); longer, `memcpy`
+                // longer, `memcpy` (`copy_short`, D478)
                 P::Text(p, n) => {
-                    let small = self.ins(format!("icmp ule i64 {}, 64", n));
-                    let (lsmall, l32, lrest16, l16, l8, l4, l1, lrest8, lrest4, lrest1, lcall, lj) = (
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                        self.label(),
-                    );
-                    self.cbr(&small, &lsmall, &lcall);
-                    // two moves of `w` bytes, at the start and at the end
-                    let pair = |g: &mut Self, ty: &str, w: i64| {
-                        let a = g.ins(format!("load {}, ptr {}, align 1", ty, p));
-                        let off = g.ins(format!("sub i64 {}, {}", n, w));
-                        let src2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, off));
-                        let b = g.ins(format!("load {}, ptr {}, align 1", ty, src2));
-                        g.emit(format!("store {} {}, ptr {}, align 1", ty, a, dst));
-                        let dst2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
-                        g.emit(format!("store {} {}, ptr {}, align 1", ty, b, dst2));
-                    };
-                    self.block(&lsmall);
-                    let ge32 = self.ins(format!("icmp uge i64 {}, 32", n));
-                    self.cbr(&ge32, &l32, &lrest16);
-                    self.block(&l32);
-                    pair(self, "<32 x i8>", 32);
-                    self.br(&lj);
-                    self.block(&lrest16);
-                    let ge16 = self.ins(format!("icmp uge i64 {}, 16", n));
-                    self.cbr(&ge16, &l16, &lrest8);
-                    self.block(&l16);
-                    pair(self, "i128", 16);
-                    self.br(&lj);
-                    self.block(&lrest8);
-                    let ge8 = self.ins(format!("icmp uge i64 {}, 8", n));
-                    self.cbr(&ge8, &l8, &lrest4);
-                    self.block(&l8);
-                    pair(self, "i64", 8);
-                    self.br(&lj);
-                    self.block(&lrest4);
-                    let ge4 = self.ins(format!("icmp uge i64 {}, 4", n));
-                    self.cbr(&ge4, &l4, &lrest1);
-                    self.block(&l4);
-                    pair(self, "i32", 4);
-                    self.br(&lj);
-                    self.block(&lrest1);
-                    let ge1 = self.ins(format!("icmp ne i64 {}, 0", n));
-                    self.cbr(&ge1, &l1, &lj);
-                    self.block(&l1);
-                    // 1 to 3 bytes: the first, the middle and the last
-                    let half = self.ins(format!("lshr i64 {}, 1", n));
-                    let last = self.ins(format!("sub i64 {}, 1", n));
-                    for k in ["0".to_string(), half.clone(), last.clone()] {
-                        let sp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, k));
-                        let c = self.ins(format!("load i8, ptr {}, align 1", sp));
-                        let dp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, k));
-                        self.emit(format!("store i8 {}, ptr {}, align 1", c, dp));
-                    }
-                    self.br(&lj);
-                    // longer: `memcpy` called here (D509: through `isc_put_text`,
-                    // which called it, two calls a part)
-                    self.block(&lcall);
-                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, p, n));
-                    self.br(&lj);
-                    self.block(&lj);
+                    self.copy_short(&dst, p, n);
                     n.clone()
                 }
                 P::Int { mag, neg, n, width, fs, zp } if *zp > 0 => {
@@ -12746,6 +12677,408 @@ impl<'p> Gen<'p> {
         }
         let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", base));
         Ok(v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, total)), "{ ptr, i64 }"))
+    }
+
+    /// The `n` bytes at `p` copied to `dst`, apart: at most 64 by moves that
+    /// overlap, as `copy_short` of the runtime (D478: the call of the copy,
+    /// and the `vzeroupper` before it, a third of `json.quote` of a name; a
+    /// masked store of AVX-512 instead could not forward its bytes to the
+    /// loads that read them back, `parseUrl` +5.7 %); longer, `memcpy`.
+    fn copy_short(&mut self, dst: &str, p: &str, n: &str) {
+        let small = self.ins(format!("icmp ule i64 {}, 64", n));
+        let (lsmall, l32, lrest16, l16, l8, l4, l1, lrest8, lrest4, lrest1, lcall, lj) = (
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+        );
+        self.cbr(&small, &lsmall, &lcall);
+        // two moves of `w` bytes, at the start and at the end
+        let pair = |g: &mut Self, ty: &str, w: i64| {
+            let a = g.ins(format!("load {}, ptr {}, align 1", ty, p));
+            let off = g.ins(format!("sub i64 {}, {}", n, w));
+            let src2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, off));
+            let b = g.ins(format!("load {}, ptr {}, align 1", ty, src2));
+            g.emit(format!("store {} {}, ptr {}, align 1", ty, a, dst));
+            let dst2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+            g.emit(format!("store {} {}, ptr {}, align 1", ty, b, dst2));
+        };
+        self.block(&lsmall);
+        let ge32 = self.ins(format!("icmp uge i64 {}, 32", n));
+        self.cbr(&ge32, &l32, &lrest16);
+        self.block(&l32);
+        pair(self, "<32 x i8>", 32);
+        self.br(&lj);
+        self.block(&lrest16);
+        let ge16 = self.ins(format!("icmp uge i64 {}, 16", n));
+        self.cbr(&ge16, &l16, &lrest8);
+        self.block(&l16);
+        pair(self, "i128", 16);
+        self.br(&lj);
+        self.block(&lrest8);
+        let ge8 = self.ins(format!("icmp uge i64 {}, 8", n));
+        self.cbr(&ge8, &l8, &lrest4);
+        self.block(&l8);
+        pair(self, "i64", 8);
+        self.br(&lj);
+        self.block(&lrest4);
+        let ge4 = self.ins(format!("icmp uge i64 {}, 4", n));
+        self.cbr(&ge4, &l4, &lrest1);
+        self.block(&l4);
+        pair(self, "i32", 4);
+        self.br(&lj);
+        self.block(&lrest1);
+        let ge1 = self.ins(format!("icmp ne i64 {}, 0", n));
+        self.cbr(&ge1, &l1, &lj);
+        self.block(&l1);
+        // 1 to 3 bytes: the first, the middle and the last
+        let half = self.ins(format!("lshr i64 {}, 1", n));
+        let last = self.ins(format!("sub i64 {}, 1", n));
+        for k in ["0".to_string(), half.clone(), last.clone()] {
+            let sp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, k));
+            let c = self.ins(format!("load i8, ptr {}, align 1", sp));
+            let dp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, k));
+            self.emit(format!("store i8 {}, ptr {}, align 1", c, dp));
+        }
+        self.br(&lj);
+        // longer: `memcpy` called here (D509: through `isc_put_text`,
+        // which called it, two calls a part)
+        self.block(&lcall);
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, p, n));
+        self.br(&lj);
+        self.block(&lj);
+    }
+
+    /// The last `n` bytes (1 to 24) of the three words `w0`, `w1`, `w2`
+    /// stored at `d` (D588, `$textTail`; the digits of a padded integer,
+    /// D606): the words whole (8 bytes), the first shifted, or two stores of
+    /// 4 or three of 1 that overlap; no byte written outside the `n`. `nm1`
+    /// is `n - 1`.
+    fn put_tail(&mut self, d: &str, w0: &str, w1: &str, w2: &str, n: &str, nm1: &str) {
+        // `x` stored (`width` bits) at byte `at` of the digits
+        let put = |g: &mut Self, at: &str, x: &str, width: u32| {
+            let p = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", d, at));
+            let y = if width == 64 { x.to_string() } else { g.ins(format!("trunc i64 {} to i{}", x, width)) };
+            g.emit(format!("store i{} {}, ptr {}, align 1", width, y, p));
+        };
+        // `w` shifted right by `bytes` bytes
+        let shr = |g: &mut Self, w: &str, bytes: &str| {
+            let b = g.ins(format!("shl i64 {}, 3", bytes));
+            g.ins(format!("lshr i64 {}, {}", w, b))
+        };
+        let (lbig, lsmall, l16, l9, lpair, l4, l1, ljoin) =
+            (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        let gt8 = self.ins(format!("icmp sgt i64 {}, 8", n));
+        self.cbr(&gt8, &lbig, &lsmall);
+        // 9 to 24 digits: the first part shifted, the words after it whole
+        self.block(&lbig);
+        let gt16 = self.ins(format!("icmp sgt i64 {}, 16", n));
+        self.cbr(&gt16, &l16, &l9);
+        self.block(&l16);
+        let s24 = self.ins(format!("sub i64 24, {}", n));
+        let h = shr(self, w0, &s24);
+        put(self, "0", &h, 64);
+        let at16 = self.ins(format!("sub i64 {}, 16", n));
+        put(self, &at16, w1, 64);
+        self.br(&lpair);
+        self.block(&l9);
+        let s16 = self.ins(format!("sub i64 16, {}", n));
+        let m = shr(self, w1, &s16);
+        put(self, "0", &m, 64);
+        self.br(&lpair);
+        self.block(&lpair);
+        let at8 = self.ins(format!("sub i64 {}, 8", n));
+        put(self, &at8, w2, 64);
+        self.br(&ljoin);
+        // 1 to 8 digits: the last word shifted, two stores of 4 or
+        // (below 4) the first, middle and last byte
+        self.block(&lsmall);
+        let s8 = self.ins(format!("sub i64 8, {}", n));
+        let t = shr(self, w2, &s8);
+        let ge4 = self.ins(format!("icmp sge i64 {}, 4", n));
+        self.cbr(&ge4, &l4, &l1);
+        self.block(&l4);
+        put(self, "0", &t, 32);
+        let at4 = self.ins(format!("sub i64 {}, 4", n));
+        let t4 = shr(self, &t, &at4);
+        put(self, &at4, &t4, 32);
+        self.br(&ljoin);
+        self.block(&l1);
+        put(self, "0", &t, 8);
+        let half = self.ins(format!("lshr i64 {}, 1", n));
+        let th = shr(self, &t, &half);
+        put(self, &half, &th, 8);
+        let tl = shr(self, &t, nm1);
+        put(self, nm1, &tl, 8);
+        self.br(&ljoin);
+        self.block(&ljoin);
+    }
+
+    /// `n` bytes `c` (an `i8`) from `dst` (D606), as `fill_short` of the
+    /// runtime: at most 64 by stores that overlap (two of 32, 16, 8 or 4
+    /// bytes, or the first, the middle and the last byte), `memset` beyond.
+    fn fill_short(&mut self, dst: &str, c: &str, n: &str) {
+        let small = self.ins(format!("icmp ule i64 {}, 64", n));
+        let (lsmall, l32, lrest16, l16, l8, l4, l1, lrest8, lrest4, lrest1, lcall, lj) = (
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+            self.label(),
+        );
+        self.cbr(&small, &lsmall, &lcall);
+        // two stores of `x`, `w` bytes, at the start and at the end
+        let pair = |g: &mut Self, ty: &str, x: &str, w: i64| {
+            g.emit(format!("store {} {}, ptr {}, align 1", ty, x, dst));
+            let off = g.ins(format!("sub i64 {}, {}", n, w));
+            let dst2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+            g.emit(format!("store {} {}, ptr {}, align 1", ty, x, dst2));
+        };
+        // the byte in each of the `w` bytes of a vector
+        let lanes = |g: &mut Self, w: i64| {
+            let x = g.ins(format!("insertelement <{} x i8> poison, i8 {}, i64 0", w, c));
+            g.ins(format!("shufflevector <{} x i8> {}, <{} x i8> poison, <{} x i32> zeroinitializer", w, x, w, w))
+        };
+        self.block(&lsmall);
+        let ge32 = self.ins(format!("icmp uge i64 {}, 32", n));
+        self.cbr(&ge32, &l32, &lrest16);
+        self.block(&l32);
+        let x = lanes(self, 32);
+        pair(self, "<32 x i8>", &x, 32);
+        self.br(&lj);
+        self.block(&lrest16);
+        let ge16 = self.ins(format!("icmp uge i64 {}, 16", n));
+        self.cbr(&ge16, &l16, &lrest8);
+        self.block(&l16);
+        let x = lanes(self, 16);
+        pair(self, "<16 x i8>", &x, 16);
+        self.br(&lj);
+        self.block(&lrest8);
+        // in each byte of a word
+        let c64 = self.ins(format!("zext i8 {} to i64", c));
+        let word = self.ins(format!("mul i64 {}, 72340172838076673", c64));
+        let ge8 = self.ins(format!("icmp uge i64 {}, 8", n));
+        self.cbr(&ge8, &l8, &lrest4);
+        self.block(&l8);
+        pair(self, "i64", &word, 8);
+        self.br(&lj);
+        self.block(&lrest4);
+        let ge4 = self.ins(format!("icmp uge i64 {}, 4", n));
+        self.cbr(&ge4, &l4, &lrest1);
+        self.block(&l4);
+        let half_word = self.ins(format!("trunc i64 {} to i32", word));
+        pair(self, "i32", &half_word, 4);
+        self.br(&lj);
+        self.block(&lrest1);
+        let ge1 = self.ins(format!("icmp ne i64 {}, 0", n));
+        self.cbr(&ge1, &l1, &lj);
+        self.block(&l1);
+        // 1 to 3 bytes: the first, the middle and the last
+        let half = self.ins(format!("lshr i64 {}, 1", n));
+        let last = self.ins(format!("sub i64 {}, 1", n));
+        for k in ["0".to_string(), half.clone(), last.clone()] {
+            let dp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, k));
+            self.emit(format!("store i8 {}, ptr {}, align 1", c, dp));
+        }
+        self.br(&lj);
+        self.block(&lcall);
+        self.decls.insert("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
+        self.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", dst, c, n));
+        self.br(&lj);
+        self.block(&lj);
+    }
+
+    /// The block of a new text of `total` bytes: the buffer `buf` on the
+    /// stack of the `let` that only reads the text when it fits there
+    /// (STACK_STR bytes, D404), a block of the heap otherwise.
+    fn text_block(&mut self, total: &str, buf: Option<&str>) -> String {
+        let Some(buf) = buf else {
+            return self.ins(format!("call noalias ptr @isc_alloc(i64 {})", total));
+        };
+        let fits = self.ins(format!("icmp ule i64 {}, {}", total, STACK_STR));
+        let (lheap, ljoin) = (self.label(), self.label());
+        let lfrom = self.current_label("entry");
+        self.cbr(&fits, &ljoin, &lheap);
+        self.block(&lheap);
+        let h = self.ins(format!("call ptr @isc_alloc(i64 {})", total));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        self.ins(format!("phi ptr [ {}, %{} ], [ {}, %{} ]", buf, lfrom, h, lheap))
+    }
+
+    /// `s.padStart(len, fill)` (`start`) or `s.padEnd(len, fill)` of the
+    /// text `p`, `n` (D606), made here as `pad` of the runtime core: the
+    /// text itself when it has `len` bytes or more or the fill is empty;
+    /// else copies of the fill before or after it up to `len` bytes, the
+    /// last one cut before the character that would pass `len` (so, for a
+    /// fill of several bytes, `len - n` bytes less those of its remainder by
+    /// the length of the fill that are past the start of a character). One
+    /// block of that size (the buffer `buf` of a text only read when it
+    /// fits, D458), the text copied (`copy_short`), then the fill: one
+    /// byte by stores (`fill_short`), several bytes once, then the bytes
+    /// written copied after themselves, twice as many each turn.
+    fn pad_text(&mut self, p: &str, n: &str, len: &str, fill: &Fill, start: bool, buf: Option<&str>) -> V {
+        // (a mark for the tests)
+        self.emit(if buf.is_some() { "; text pad, on the stack when it fits" } else { "; text pad" }.to_string());
+        // the bytes the text lacks, read only where it is shorter than `len`
+        // (compared, not subtracted first: the difference of a `len` near
+        // the least `i64` is not an `i64`)
+        let short = self.ins(format!("icmp sgt i64 {}, {}", len, n));
+        let missing = self.ins(format!("sub i64 {}, {}", len, n));
+        // the bytes of the fill
+        let gap = match fill {
+            Fill::Byte(_) => self.ins(format!("select i1 {}, i64 {}, i64 0", short, missing)),
+            Fill::Text(q, m) => {
+                let slot = self.alloca("i64");
+                let rest = self.alloca("i64");
+                self.emit(format!("store i64 0, ptr {}", slot));
+                let some = self.ins(format!("icmp ne i64 {}, 0", m));
+                let pads = self.ins(format!("and i1 {}, {}", short, some));
+                let (lpad, lmany, lwalk, lback, lstep, lset, ldone) =
+                    (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+                self.cbr(&pads, &lpad, &ldone);
+                self.block(&lpad);
+                self.emit(format!("store i64 {}, ptr {}", missing, slot));
+                let one = self.ins(format!("icmp eq i64 {}, 1", m));
+                self.cbr(&one, &ldone, &lmany);
+                // several bytes: the last copy cut at the start of a character
+                // (a byte `10xxxxxx` continues one)
+                self.block(&lmany);
+                let r0 = self.ins(format!("urem i64 {}, {}", missing, m));
+                self.emit(format!("store i64 {}, ptr {}", r0, rest));
+                self.br(&lwalk);
+                self.block(&lwalk);
+                let r = self.ins(format!("load i64, ptr {}", rest));
+                let inside = self.ins(format!("icmp sgt i64 {}, 0", r));
+                self.cbr(&inside, &lback, &lset);
+                self.block(&lback);
+                let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", q, r));
+                let b = self.ins(format!("load i8, ptr {}, align 1", at));
+                let top = self.ins(format!("and i8 {}, -64", b));
+                let cont = self.ins(format!("icmp eq i8 {}, -128", top));
+                self.cbr(&cont, &lstep, &lset);
+                self.block(&lstep);
+                let r1 = self.ins(format!("sub i64 {}, 1", r));
+                self.emit(format!("store i64 {}, ptr {}", r1, rest));
+                self.br(&lwalk);
+                self.block(&lset);
+                let cut = self.ins(format!("sub i64 {}, {}", r0, r));
+                let g = self.ins(format!("sub i64 {}, {}", missing, cut));
+                self.emit(format!("store i64 {}, ptr {}", g, slot));
+                self.br(&ldone);
+                self.block(&ldone);
+                self.ins(format!("load i64, ptr {}", slot))
+            }
+        };
+        let total = self.ins(format!("add i64 {}, {}", n, gap));
+        let dst = self.text_block(&total, buf);
+        // the text after the fill (`padStart`) or before it
+        let (tp, fp) = if start {
+            (self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, gap)), dst.clone())
+        } else {
+            (dst.clone(), self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, n)))
+        };
+        self.copy_short(&tp, p, n);
+        match fill {
+            Fill::Byte(c) => self.fill_short(&fp, &(*c as i8).to_string(), &gap),
+            Fill::Text(q, m) => {
+                let (lone, lmany, lfirst, lloop, lbody, lend) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+                let one = self.ins(format!("icmp eq i64 {}, 1", m));
+                self.cbr(&one, &lone, &lmany);
+                self.block(&lone);
+                let c = self.ins(format!("load i8, ptr {}, align 1", q));
+                self.fill_short(&fp, &c, &gap);
+                self.br(&lend);
+                // the fill once (its start when there is less to fill), then
+                // the bytes written copied after themselves
+                self.block(&lmany);
+                let some = self.ins(format!("icmp sgt i64 {}, 0", gap));
+                self.cbr(&some, &lfirst, &lend);
+                self.block(&lfirst);
+                let less = self.ins(format!("icmp slt i64 {}, {}", gap, m));
+                let first = self.ins(format!("select i1 {}, i64 {}, i64 {}", less, gap, m));
+                self.copy_short(&fp, q, &first);
+                let done = self.alloca("i64");
+                self.emit(format!("store i64 {}, ptr {}", first, done));
+                self.br(&lloop);
+                self.block(&lloop);
+                let filled = self.ins(format!("load i64, ptr {}", done));
+                let more = self.ins(format!("icmp slt i64 {}, {}", filled, gap));
+                self.cbr(&more, &lbody, &lend);
+                self.block(&lbody);
+                let left = self.ins(format!("sub i64 {}, {}", gap, filled));
+                let fewer = self.ins(format!("icmp slt i64 {}, {}", left, filled));
+                let k = self.ins(format!("select i1 {}, i64 {}, i64 {}", fewer, left, filled));
+                let to = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", fp, filled));
+                // (apart: at most as many bytes as are written before them)
+                self.copy_short(&to, &fp, &k);
+                let next = self.ins(format!("add i64 {}, {}", filled, k));
+                self.emit(format!("store i64 {}, ptr {}", next, done));
+                self.br(&lloop);
+                self.block(&lend);
+            }
+        }
+        self.arr(&dst, &total)
+    }
+
+    /// `toString(x).padStart(len, c)` (`start`) or `.padEnd(len, c)` of the
+    /// integer `x` (an `i64`, or a `u64` when not `signed`), `c` one byte,
+    /// in one block (D348), made here (D606): its digits in three words and
+    /// their number by the function of the prelude lowered for it
+    /// (`$rtDigitWords`), a block of `len` bytes (at least 25: its size does
+    /// not wait for the count of the digits when `len` is a constant), the
+    /// `-` and the digits stored from the registers (`put_tail`), `c` before
+    /// or after them; the text alone when it has `len` bytes or more.
+    fn pad_int(&mut self, x: &str, signed: bool, len: &str, c: u8, start: bool) -> R<V> {
+        let Some(words) = self.p.digit_words else {
+            return Err("codegen: the padded text of an integer, its function of the prelude not lowered".into());
+        };
+        // (a mark for the tests)
+        self.emit("; int pad".to_string());
+        let (neg, mag) = if signed {
+            let neg = self.ins(format!("icmp slt i64 {}, 0", x));
+            let m = self.ins(format!("sub i64 0, {}", x));
+            let mag = self.ins(format!("select i1 {}, i64 {}, i64 {}", neg, m, x));
+            (self.ins(format!("zext i1 {} to i64", neg)), mag)
+        } else {
+            ("0".to_string(), x.to_string())
+        };
+        let ws = self.ins(format!("call {}{{ i64, i64, i64, i64 }} @isc_fn_{}(i64 {})", self.fn_cc(), words, mag));
+        let part = |g: &mut Self, k: u32| g.ins(format!("extractvalue {{ i64, i64, i64, i64 }} {}, {}", ws, k));
+        let (w0, w1, w2, n) = (part(self, 0), part(self, 1), part(self, 2), part(self, 3));
+        self.decls.insert("declare i64 @llvm.smax.i64(i64, i64)".to_string());
+        let size = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 25)", len));
+        let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", size));
+        let tn = self.ins(format!("add i64 {}, {}", n, neg));
+        let total = self.ins(format!("call i64 @llvm.smax.i64(i64 {}, i64 {})", len, tn));
+        let gap = self.ins(format!("sub i64 {}, {}", total, tn));
+        let (tp, fp) = if start {
+            (self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, gap)), dst.clone())
+        } else {
+            (dst.clone(), self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, tn)))
+        };
+        // the `-` first, the digits over it when there is none
+        self.emit(format!("store i8 45, ptr {}, align 1", tp));
+        let d = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", tp, neg));
+        let nm1 = self.ins(format!("sub i64 {}, 1", n));
+        self.put_tail(&d, &w0, &w1, &w2, &n, &nm1);
+        self.fill_short(&fp, &(c as i8).to_string(), &gap);
+        Ok(self.arr(&dst, &total))
     }
 
     /// The string `p`, `n` starts (`start`) or ends with the bytes `t` (at
@@ -12932,7 +13265,7 @@ impl<'p> Gen<'p> {
             return self.ex(&call, 1);
         }
         // the text of an integer padded (`int_texts`, D348): with a fill of
-        // one byte, written in one block by the runtime; otherwise the text
+        // one byte, written in one block (`pad_int`); otherwise the text
         // made here, padded, then freed
         if let (S::PadStart | S::PadEnd, ExprKind::Var(t, _)) = (op, &es[0].kind) {
             if let Some(IntText { x, signed, .. }) = self.int_texts.get(t).cloned() {
@@ -12946,20 +13279,17 @@ impl<'p> Gen<'p> {
                         return Ok(v("zeroinitializer".to_string(), "{ ptr, i64 }"));
                     }
                 }
-                let out = self.alloca("{ ptr, i64 }");
-                match self.literal_of(&es[2]) {
-                    Some(f) if f.len() == 1 => {
-                        self.emit(format!("call void @isc_pad_int(ptr {}, i64 {}, i32 {}, i64 {}, i32 {}, i32 {})", out, x, signed as i32, len.r, f.as_bytes()[0], start));
-                    }
+                return match self.literal_of(&es[2]) {
+                    Some(f) if f.len() == 1 => self.pad_int(&x, signed, &len.r, f.as_bytes()[0], start == 1),
                     _ => {
                         let text = self.int_text(&x, signed)?;
                         let (p, n) = self.str_parts(&text);
                         let (q, m) = self.str_parts(&fill);
-                        self.emit(format!("call void @isc_pad(ptr {}, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", out, p, n, len.r, q, m, start));
+                        let r = self.pad_text(&p, &n, &len.r, &Fill::Text(q, m), start == 1, None);
                         self.drop_value(&text, &Type::Str);
+                        Ok(r)
                     }
-                }
-                return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"));
+                };
             }
         }
         // a concatenation with the text of an integer (D359) or a literal
@@ -13164,18 +13494,21 @@ impl<'p> Gen<'p> {
                     None => new_str(self, format!("call void @isc_to_case(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, up)),
                 }
             }
+            // made here (`pad_text`, D606)
             S::PadStart | S::PadEnd => {
                 let (p, n) = self.str_parts(&vals[0]);
-                let (q, m) = self.str_parts(&vals[2]);
-                let start = (op == S::PadStart) as i32;
+                // a fill of one byte known here, or a text
+                let fill = match self.literal_of(&es[2]).filter(|f| f.len() == 1) {
+                    Some(f) => Fill::Byte(f.as_bytes()[0]),
+                    None => {
+                        let (q, m) = self.str_parts(&vals[2]);
+                        Fill::Text(q, m)
+                    }
+                };
                 // a text only read in its scope: into its buffer on the stack
                 // when it fits (D458, as the concatenations of D404)
-                let one = self.literal_of(&es[2]).filter(|f| f.len() == 1).map(|f| f.as_bytes()[0]);
-                match self.stack_concats.get(&(e as *const Expr)).cloned() {
-                    Some(b) if STACK_STR == 128 && one.is_some() => new_str(self, format!("call void @isc_pad1_into(ptr OUT, ptr {}, ptr {}, i64 {}, i64 {}, i32 {})", b, p, n, vals[1].r, one.unwrap() as i32 + 256 * start)),
-                    Some(b) => new_str(self, format!("call void @isc_pad_into(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", b, STACK_STR, p, n, vals[1].r, q, m, start)),
-                    None => new_str(self, format!("call void @isc_pad(ptr OUT, ptr {}, i64 {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, vals[1].r, q, m, start)),
-                }
+                let buf = self.stack_concats.get(&(e as *const Expr)).cloned();
+                self.pad_text(&p, &n, &vals[1].r, &fill, op == S::PadStart, buf.as_deref())
             }
             // `s.repeat(count)` (D591), made here: a negative count a panic,
             // a block of `len * count` bytes (a product past `i64` asks for
@@ -13414,63 +13747,7 @@ impl<'p> Gen<'p> {
                 let dst = self.ins("call noalias ptr @isc_alloc(i64 25)".to_string());
                 self.emit(format!("store i8 45, ptr {}, align 1", dst));
                 let d = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
-                // `x` stored (`width` bits) at byte `at` of the digits
-                let put = |g: &mut Self, at: &str, x: &str, width: u32| {
-                    let p = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", d, at));
-                    let y = if width == 64 { x.to_string() } else { g.ins(format!("trunc i64 {} to i{}", x, width)) };
-                    g.emit(format!("store i{} {}, ptr {}, align 1", width, y, p));
-                };
-                // `w` shifted right by `bytes` bytes
-                let shr = |g: &mut Self, w: &str, bytes: &str| {
-                    let b = g.ins(format!("shl i64 {}, 3", bytes));
-                    g.ins(format!("lshr i64 {}, {}", w, b))
-                };
-                let (lbig, lsmall, l16, l9, lpair, l4, l1, ljoin) =
-                    (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
-                let gt8 = self.ins(format!("icmp sgt i64 {}, 8", n));
-                self.cbr(&gt8, &lbig, &lsmall);
-                // 9 to 24 digits: the first part shifted, the words after it whole
-                self.block(&lbig);
-                let gt16 = self.ins(format!("icmp sgt i64 {}, 16", n));
-                self.cbr(&gt16, &l16, &l9);
-                self.block(&l16);
-                let s24 = self.ins(format!("sub i64 24, {}", n));
-                let h = shr(self, &w0, &s24);
-                put(self, "0", &h, 64);
-                let at16 = self.ins(format!("sub i64 {}, 16", n));
-                put(self, &at16, &w1, 64);
-                self.br(&lpair);
-                self.block(&l9);
-                let s16 = self.ins(format!("sub i64 16, {}", n));
-                let m = shr(self, &w1, &s16);
-                put(self, "0", &m, 64);
-                self.br(&lpair);
-                self.block(&lpair);
-                let at8 = self.ins(format!("sub i64 {}, 8", n));
-                put(self, &at8, &w2, 64);
-                self.br(&ljoin);
-                // 1 to 8 digits: the last word shifted, two stores of 4 or
-                // (below 4) the first, middle and last byte
-                self.block(&lsmall);
-                let s8 = self.ins(format!("sub i64 8, {}", n));
-                let t = shr(self, &w2, &s8);
-                let ge4 = self.ins(format!("icmp sge i64 {}, 4", n));
-                self.cbr(&ge4, &l4, &l1);
-                self.block(&l4);
-                put(self, "0", &t, 32);
-                let at4 = self.ins(format!("sub i64 {}, 4", n));
-                let t4 = shr(self, &t, &at4);
-                put(self, &at4, &t4, 32);
-                self.br(&ljoin);
-                self.block(&l1);
-                put(self, "0", &t, 8);
-                let half = self.ins(format!("lshr i64 {}, 1", n));
-                let th = shr(self, &t, &half);
-                put(self, &half, &th, 8);
-                let tl = shr(self, &t, &nm1);
-                put(self, &nm1, &tl, 8);
-                self.br(&ljoin);
-                self.block(&ljoin);
+                self.put_tail(&d, &w0, &w1, &w2, &n, &nm1);
                 self.arr(&dst, &total)
             }
             // `$floatBits(x)`: the bits of the float, those of a `f32` in

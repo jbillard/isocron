@@ -1,0 +1,115 @@
+// The forms of `padStart` and `padEnd` (D606), each over 4096 texts in the
+// caches: texts only read in their scope (on the stack when they fit) and
+// texts kept (a block each), fills of one byte known to the compiler or
+// not, of several bytes, of several bytes a character and empty, widths
+// below and above the lengths, the padded texts of integers. Each line of
+// the output: a name, the nanoseconds of one call (the mean over `rounds`
+// rounds, `bench`) and a value of the result. One form at a time (to count
+// its cycles and instructions: `perf stat` of two numbers of rounds, their
+// difference over the calls between them), or all of them. No floor in C:
+// measured against the same program built by another compiler.
+// usage: pad_forms <form | all> <rounds> <fill of one byte> <empty fill>
+
+// the line i: 60 letters
+function line(i: i64): string {
+    return stringOf(map(iota(60), (j) => u8(65 + (i * 7 + j * 13 + j * j) % 26)));
+}
+
+// the first and the last byte of a text, read where they are
+function ends(t: string): i64 {
+    const b = bytes(t);
+    return b.length == 0 ? 0 : i64(b[0]) + i64(b[b.length - 1]);
+}
+
+function lens(a: string[n]): i64 {
+    return sum(map(a, (t) => t.length)) + ends(a[n - 1]);
+}
+
+action main(args: string[k]): i32 {
+    const n = 4096;
+    const form = args[0];
+    const r = parseI64(args[1]);
+    const f1 = args[2];
+    const f0 = args[3];
+    const all = form == "all";
+    const ls = map(iota(n), line);
+    const ws = map(iota(n), (i) => ls[i].slice(0, (i * 7) % 13));
+    const each = f64(r * n);
+    if (all || form == "padStart") {
+        const [a, t] = bench(r, () => sum(map(ls, (l) => l.slice(0, 10).padStart(20, "0").length)));
+        print(`padStart ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (all || form == "stack.read") {
+        const [a, t] = bench(r, () => sum(map(ws, (s) => ends(s.padStart(20, "0")))));
+        print(`stack.read ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (all || form == "stack.end.var") {
+        const [a, t] = bench(r, () => sum(map(iota(n), (i) => ends(ws[i].padEnd(8 + i % 24, " ")))));
+        print(`stack.end.var ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (all || form == "stack.long") {
+        const [a, t] = bench(r, () => sum(map(ws, (s) => ends(s.padEnd(100, ".")))));
+        print(`stack.long ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (all || form == "stack.fillvar") {
+        const [a, t] = bench(r, () => sum(map(ws, (s) => ends(s.padStart(20, f1)))));
+        print(`stack.fillvar ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (all || form == "keep.start") {
+        const [a, t] = bench(r, () => map(ws, (s) => s.padStart(20, "0")));
+        print(`keep.start ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.end.var") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => ws[i].padEnd(8 + i % 24, ".")));
+        print(`keep.end.var ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.fillvar") {
+        const [a, t] = bench(r, () => map(ws, (s) => s.padStart(20, f1)));
+        print(`keep.fillvar ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.empty") {
+        const [a, t] = bench(r, () => map(ws, (s) => s.padStart(20, f0)));
+        print(`keep.empty ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.two") {
+        const [a, t] = bench(r, () => map(ws, (s) => s.padStart(20, "ab")));
+        print(`keep.two ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.utf8") {
+        const [a, t] = bench(r, () => map(ws, (s) => s.padEnd(21, "é€")));
+        print(`keep.utf8 ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.whole") {
+        const [a, t] = bench(r, () => map(ls, (l) => l.padStart(10, "0")));
+        print(`keep.whole ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "keep.long") {
+        const [a, t] = bench(r, () => map(ws, (s) => s.padStart(200, "-")));
+        print(`keep.long ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "int.start") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => toString(i * 7919).padStart(10, "0")));
+        print(`int.start ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "int.end.neg") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => toString(1000 - i * 3).padEnd(6, " ")));
+        print(`int.end.neg ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "int.small") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => toString(i % 60).padStart(2, "0")));
+        print(`int.small ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "int.u8") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => toString(u8(i & 255)).padStart(3, "0")));
+        print(`int.u8 ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "int.big") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => toString(i * 2251799813685247 + 1).padStart(24, " ")));
+        print(`int.big ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    if (all || form == "int.two") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => toString(i * 7919).padStart(9, "ab")));
+        print(`int.two ${(f64(t) / each).toFixed(3)} ${lens(a)}`);
+    }
+    return 0;
+}

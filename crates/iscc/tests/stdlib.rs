@@ -1883,7 +1883,7 @@ action main(args: string[k]): i32 {
 /// D458: a padded text only read in its scope written into a buffer on the
 /// stack (as the concatenations of D404): `padStart` and `padEnd` to 0, 20,
 /// 127, 128 and 129 bytes and past them (the heap), a fill of one byte
-/// (literal: `isc_pad1_into`; a variable), of two bytes and empty, a text
+/// (literal; a variable), of two bytes and empty, a text
 /// longer than its width (the text itself), an empty text; a padded text
 /// given away (kept in an array, returned) on the heap; the interpreter's
 /// output, on 1 and 4 threads; Valgrind (no block of the stack freed,
@@ -1913,7 +1913,7 @@ action main(args: string[k]): i32 {
     let Outcome::Exit(0, want) = interp(src, &["300", "~"]) else { panic!("the interpreter failed") };
     let bin = compile(src, "padded_stack");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(ll.contains("call void @isc_pad1_into") && ll.contains("call void @isc_pad_into"), "padded texts on the stack");
+    assert!(ll.matches("; text pad, on the stack when it fits").count() >= 6, "padded texts on the stack");
     for t in [1, 4] {
         let r = run_bin_threads(&bin, &["300", "~"], Some(t));
         assert_eq!(r.code, 0, "{}", r.stderr);

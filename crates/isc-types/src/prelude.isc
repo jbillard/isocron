@@ -399,12 +399,21 @@ function $rtUintText(x: u64): string {
     return $digitsText(x, false);
 }
 
-// The digits of `v`, a `-` before them when `neg`: their number from the
-// bits of `v` (1233 / 4096 below log10 2) and one power of ten; the last 8
-// digits, the 8 before and the first 4 in three words, only those the
-// number has (a word of 4 for a part below 10^4), then the text of the
-// last bytes of the words, written into its block (`$textTail`).
+// The digits of `v`, a `-` before them when `neg`: the text of the last
+// bytes of the words of `$rtDigitWords`, written into its block
+// (`$textTail`).
 function $digitsText(v: u64, neg: boolean): string {
+    const [hi, mid, lo, n] = $rtDigitWords(v);
+    return $textTail(hi, mid, lo, n, neg);
+}
+
+// The digits of `v` in three words and their number: the number from the
+// bits of `v` (1233 / 4096 below log10 2) and one power of ten; the last 8
+// digits, the 8 before and the first 4, only those the number has (a word
+// of 4 for a part below 10^4). Lowered once too for the padded text of an
+// integer, which the code generator writes from these words into the block
+// of the padded text (`toString(x).padStart(n, "0")`, D348, D606).
+function $rtDigitWords(v: u64): [u64, u64, u64, i64] {
     const powers = [1u64, 10u64, 100u64, 1000u64, 10000u64, 100000u64, 1000000u64, 10000000u64,
         100000000u64, 1000000000u64, 10000000000u64, 100000000000u64, 1000000000000u64,
         10000000000000u64, 100000000000000u64, 1000000000000000u64, 10000000000000000u64,
@@ -415,7 +424,7 @@ function $digitsText(v: u64, neg: boolean): string {
     const h = v / 100000000u64;
     const mid = v < 100000000u64 ? 0u64 : h < 10000u64 ? $asciiWord4(h) : $asciiWord8(h % 100000000u64);
     const hi = v < 10000000000000000u64 ? 0u64 : $asciiWord4(v / 10000000000000000u64);
-    return $textTail(hi, mid, lo, n, neg);
+    return [hi, mid, lo, n];
 }
 
 // The 4 digits of `v` (below 10^4) at the end of a word of 8 (`0`s before

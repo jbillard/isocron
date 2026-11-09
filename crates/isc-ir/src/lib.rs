@@ -529,6 +529,12 @@ pub struct Program {
     /// a `f32` (`$rtF64Text`, `$rtF32Text`), lowered when the program
     /// writes one: the code generator calls them for `toString` of a float.
     pub float_text: Option<(u32, u32)>,
+    /// The function of the prelude that gives the digits of a `u64` in three
+    /// words and their number (`$rtDigitWords`, D606), lowered when the
+    /// program writes the text of an integer and pads a text: the code
+    /// generator writes the padded text of an integer from them, in one
+    /// block (D348).
+    pub digit_words: Option<u32>,
     /// The entries of the allocator written in Isocron (D605), lowered for
     /// every program: `$kStart`, `$kAlloc`, `$kFree`.
     pub kernel: Option<(u32, u32, u32)>,

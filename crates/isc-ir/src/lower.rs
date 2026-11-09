@@ -324,7 +324,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None , kernel: None })
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, digit_words: None, kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -376,6 +376,13 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
         _ => None,
     };
+    // the digits of an integer for its padded text (D606): lowered when the
+    // program pads a text too
+    let pads = pads_text(&body) || l.fns.iter().flatten().any(|f| pads_text(&f.body));
+    let digit_words = match (writes && pads, named("$rtDigitWords")) {
+        (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None], vec![None], sp)?),
+        _ => None,
+    };
     // the text of a float, the same way: `$rtF64Text` and `$rtF32Text`
     let writes = writes_float_text(&body) || l.fns.iter().flatten().any(|f| writes_float_text(&f.body));
     let float_text = match (writes, named("$rtF64Text"), named("$rtF32Text")) {
@@ -407,6 +414,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         views: Default::default(),
         int_text,
         float_text,
+        digit_words,
         kernel,
     })
 }
@@ -419,6 +427,11 @@ fn writes_int_text(e: &Expr) -> bool {
 /// `e` writes the text of a float (`toString`).
 fn writes_float_text(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::StrOp(StrOp::ToString, xs) if matches!(xs[0].ty, Type::F64 | Type::F32)) || e.children().into_iter().any(writes_float_text)
+}
+
+/// `e` pads a text (`padStart`, `padEnd`).
+fn pads_text(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::StrOp(StrOp::PadStart | StrOp::PadEnd, _)) || e.children().into_iter().any(pads_text)
 }
 
 /// The positions in the prelude replaced by `at`.

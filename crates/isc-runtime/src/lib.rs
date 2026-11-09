@@ -1920,34 +1920,6 @@ pub unsafe extern "C" fn isc_str_adopt_bytes(out: *mut IscStr, p: *const u8, n: 
     }
 }
 
-/// `toString(v).padStart(len, c)` (`start`) or `.padEnd`, `c` one byte,
-/// in one block of its size (D348): the text of `v` (signed or not), `c`
-/// before or after it up to `len` bytes; the text alone when it has `len`
-/// bytes or more, as `padStart` gives it.
-///
-/// # Safety
-/// `out` the place of the result (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_pad_int(out: *mut IscStr, v: i64, signed: i32, len: i64, c: i32, start: i32) {
-    // SAFETY: `out` the place of the result (C1); `r` a new block of `len`
-    // bytes: the text of `v` and the fill of `gap` bytes in it
-    unsafe {
-        let mut b = [0u8; 20];
-        let t = if signed != 0 { signed_decimal(v, &mut b) } else { decimal(v as u64, &mut b) };
-        if len <= t.len() as i64 {
-            *out = new_str(t);
-            return;
-        }
-        let (total, gap) = (len as usize, len as usize - t.len());
-        // by moves, as `isc_pad` (D369)
-        let r = isc_alloc(total as i64);
-        let (at, from) = if start != 0 { (gap, 0) } else { (0, t.len()) };
-        copy_short(t.as_ptr(), r.add(at), t.len());
-        fill_short(r.add(from), c as u8, gap);
-        *out = IscStr { ptr: r, len: total as i64 };
-    }
-}
-
 // ---------------------------------------------------------------------
 // text (D135)
 
@@ -3358,102 +3330,6 @@ pub unsafe extern "C" fn isc_to_case_into(out: *mut IscStr, buf: *mut u8, cap: i
             return;
         }
         isc_to_case(out, p, n, upper)
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_pad(out: *mut IscStr, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
-    // SAFETY: the pointers the generated code gives (C1); `r` a new block of
-    // `total` bytes: the text and the fill of `gap` bytes in it
-    unsafe {
-        let (s, fill) = (text(p, n), text(q, m));
-        // `s` itself when it has `len` bytes or more or the fill is empty
-        // (`sem::pad`): one copy of its exact size (D348: through the writer of
-        // `fmt`, its buffer grown, a third of `pad(2026, 4)`)
-        if len <= s.len() as i64 || fill.is_empty() {
-            *out = new_str(s.as_bytes());
-            return;
-        }
-        // a fill of one byte (D302): the string of `len` bytes, the fill then
-        // the text or the text then the fill (a character at a time through
-        // `fmt`, 67 ns for 20 bytes)
-        if fill.len() == 1 {
-            let (b, c, total) = (s.as_bytes(), fill.as_bytes()[0], len as usize);
-            let gap = total - b.len();
-            // the text and the fill by moves (`copy_short`, `fill_short`), not
-            // by the calls of `memcpy` and `memset` (D369)
-            let r = isc_alloc(total as i64);
-            let (t, f) = if start != 0 { (gap, 0) } else { (0, b.len()) };
-            copy_short(b.as_ptr(), r.add(t), b.len());
-            fill_short(r.add(f), c, gap);
-            *out = IscStr { ptr: r, len: total as i64 };
-            return;
-        }
-        *out = written(&|w| sem::pad(w, s, len, fill, start != 0));
-    }
-}
-
-/// `isc_pad` into the buffer `buf` of `cap` bytes on the stack of the
-/// caller when the text fits there and its fill is of one byte (or it is
-/// the text itself): no block of the heap, the text never freed (D458, as
-/// the concatenations of D404); otherwise `isc_pad`.
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1, C3).
-#[no_mangle]
-pub unsafe extern "C" fn isc_pad_into(out: *mut IscStr, buf: *mut u8, cap: i64, p: *const u8, n: i64, len: i64, q: *const u8, m: i64, start: i32) {
-    // SAFETY: the pointers the generated code gives: the texts (C1), `buf` of
-    // `cap` bytes (C3), written only when the result fits (`total <= cap`): the
-    // text and the fill of `gap` bytes in it
-    unsafe {
-        let whole = len <= n || m == 0;
-        let total = if whole { n } else { len };
-        if total <= cap && (whole || m == 1) {
-            if whole {
-                copy_short(p, buf, n as usize);
-            } else {
-                let gap = (len - n) as usize;
-                let (t, f) = if start != 0 { (gap, 0) } else { (0, n as usize) };
-                copy_short(p, buf.add(t), n as usize);
-                fill_short(buf.add(f), *q, gap);
-            }
-            *out = IscStr { ptr: if total == 0 { empty_ptr() } else { buf }, len: total };
-            return;
-        }
-        isc_pad(out, p, n, len, q, m, start)
-    }
-}
-
-/// `isc_pad_into` with a fill of one byte known to the compiler, `cs` its
-/// byte, plus 256 when the fill goes before the text, into a buffer of
-/// 128 bytes (`STACK_STR` of the code generator): six arguments, all in
-/// registers (D458).
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1, C3: `buf` 128 bytes).
-#[no_mangle]
-pub unsafe extern "C" fn isc_pad1_into(out: *mut IscStr, buf: *mut u8, p: *const u8, n: i64, len: i64, cs: i32) {
-    // SAFETY: the pointers the generated code gives: the text (C1), `buf` of 128
-    // bytes (C3), written only when the result fits (`len <= 128`): the text and
-    // the fill of `gap` bytes in it; `c` one byte of fill
-    unsafe {
-        let c = cs as u8;
-        if len <= n {
-            isc_pad_into(out, buf, 128, p, n, len, &c, 1, cs >> 8);
-            return;
-        }
-        if len <= 128 {
-            let gap = (len - n) as usize;
-            let (t, f) = if cs >> 8 != 0 { (gap, 0) } else { (0, n as usize) };
-            copy_short(p, buf.add(t), n as usize);
-            fill_short(buf.add(f), c, gap);
-            *out = IscStr { ptr: buf, len };
-            return;
-        }
-        isc_pad(out, p, n, len, &c, 1, cs >> 8)
     }
 }
 
