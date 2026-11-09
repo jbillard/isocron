@@ -844,7 +844,7 @@ Une question nouvelle est ajoutée ici et tranchée avant d'être implémentée 
 | Unicité du nom « Isocron » | Gardé : publié sous ce nom depuis la version 0.1.0. |
 | Valeurs linéaires | L'unicité de la section 8 est une garantie pour les types déclarés uniques (`Conn`, `Listener` de la bibliothèque, `Region`, `Shared` du runtime), vérifiée par le vérificateur de l'IR (D326). |
 | Moteur des expressions régulières et grands entiers | Gardés en Rust en v1 ; chacun remplacé par une version en Isocron seulement quand elle est aussi rapide (section 17). |
-| Instructions vectorielles explicites dans les modules | Hors de la v1 : SHA-256 en `u32` (section 18), la vectorisation automatique ailleurs ; plus tard une famille de primitives bornées, vérifiées comme les autres. |
+| Instructions vectorielles explicites dans les modules | Hors de la v1 pour les programmes : SHA-256 en `u32` (section 18), la vectorisation automatique ailleurs. Exigées pour les modules du runtime écrit en Isocron (section 17, principe 6, D570) : une famille de primitives bornées, vérifiées comme les autres, avant d'y déplacer les fonctions qui en ont besoin en Rust (expressions régulières, fonctions de texte). |
 | Fuseaux horaires nommés, heure locale | Hors de la v1 : UTC et décalages fixes (section 18). |
 
 ### Questions tranchées pour la v1 (D161)
@@ -868,6 +868,7 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 3. Une primitive ne reçoit jamais d'adresse : un tableau ou une région, dont le compilateur passe lui-même l'adresse et la taille. Le noyau ne peut donc ni lire ni écrire hors de ce qui lui est donné.
 4. La mémoire brute est une valeur **unique** (section 8) : consommée exactement une fois, le vérificateur de l'IR (D96) le contrôle. Une région rendue au système ne peut plus être lue.
 5. L'état partagé entre threads n'existe que dans une région partagée, dont chaque accès est atomique : aucune course de données n'est possible, même dans le runtime.
+6. Les performances d'abord (décision de l'auteur, 2026-11-09, D570) : une partie du runtime écrite en Isocron ne remplace sa version Rust que si elle est au moins aussi rapide, mesuré sur ses microbenchmarks et sur les dix programmes ; l'objectif reste le plafond de la machine (le plancher de son modèle de coût), pas la version Rust. Les primitives et le langage donnent donc aux modules du runtime ce dont la version Rust se sert : les contrôles de bornes des primitives retirés par le compilateur quand il les prouve inutiles (le chemin rapide de l'allocateur fait quelques instructions), des instructions vectorielles explicites bornées, la maîtrise du placement du code (D256).
 
 ### Primitives
 
@@ -883,7 +884,7 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 ### Ordre de travail
 
 1. Les primitives dans le compilateur et l'interpréteur, avec leurs tests.
-2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente, mesuré sur les dix programmes.
+2. Les fonctions pures du runtime (découpe en lignes, `split`, `replace`, tri, analyse et écriture des nombres) en modules Isocron, une à une. Chacune garde sa version Rust tant que la version Isocron est plus lente (principe 6), mesuré sur ses microbenchmarks et sur les dix programmes, contre la version Rust et contre son plancher.
 3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads.
 4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
 5. Les entrées et sorties (fichiers, entrée standard projetée).

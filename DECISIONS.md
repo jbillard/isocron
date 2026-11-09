@@ -13134,3 +13134,43 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `group_words` is a comparison with `usize::MAX` on 32 bits (always
     false but at the maximum), denied by default (`absurd_extreme_
     comparisons`): for the task of clippy in the suite.
+- **D570 — The runtime written in Isocron at least as fast as the one in
+  Rust, the ceiling its goal (decision of the author, 2026-11-09).** The
+  author: « les performances sont primordiales : il faudra que le runtime
+  écrit en Isocron soit au moins aussi performant que celui de Rust,
+  l'objectif restera le plafond ». SPEC section 17 gets its principle 6: a
+  part of the runtime written in Isocron replaces its version in Rust only
+  when at least as fast (its microbenchmarks and the ten programs), and
+  its goal is the floor of its model of cost, not the version in Rust. So
+  the primitives give the modules of the runtime what the version in Rust
+  uses: the checks of bounds of the primitives removed by the compiler
+  where it proves them needless, bounded explicit vector instructions (no
+  longer "later" in section 16: required before the functions that use
+  them in Rust move), the placement of code kept (D256). D265 bounds the
+  gain of a runtime compiled with its program at about 0.4 % (the calls
+  into it are rare): the speed of the Isocron runtime will come from its
+  code, not from being inlined.
+- **D571 — The results of the big integers written in the spare capacity
+  of their vectors, their length set once written (2026-11-09).** The item
+  of D564: `limbs::unwritten` made a `Vec<u8>` of `n` bytes never written
+  (`set_len` on a new capacity, clippy's `uninit_vec`): its bytes were
+  `u8`s of the vector before any was written, which Rust does not allow
+  (an unwritten byte is not a value of `u8`), even if each was written
+  before it was read. `add`, `sub`, `mul_word` and `muladd` now write
+  into `spare_capacity_mut()` (`MaybeUninit<u8>`: the sign, the words of
+  the loops in assembly through its pointer, each other word as
+  `bytes8(w)`) and set the length once every byte is written; `muladd`
+  reads its words again (its negation) only after that, its last word
+  pushed. No zeroing (the reason of D196 kept).
+  - A first form pushed each word (`extend_from_slice`): pidigits +1.9 %
+    native (370.1 -> 377.3 ms, medians of 21 alternated runs), +45.4 %
+    with `--isa avx` (632.3 -> 919.4 ms), where without BMI2 `mul_word`
+    makes all its words in the loop of Rust: a check of capacity and a
+    store of the length a word, in the loop that wrote by `chunks_exact`.
+    Not kept.
+  - The form kept, the same loops as before over the spare capacity:
+    native 373.5 -> 363.6 ms (-2.7 % median, -0.2 % min), `--isa avx`
+    639.8 -> 633.8 ms (-0.9 %, -0.7 %), the ranges overlapping: no loss.
+    The outputs the same (10000 digits). The unit tests of the big
+    integers (num-bigint, the two forms, `muladd` against two passes) in
+    debug, x86-64-v3 and v4.

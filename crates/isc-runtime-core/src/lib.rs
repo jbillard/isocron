@@ -1763,6 +1763,7 @@ fn mag_to_bytes(m: &num_bigint::BigUint) -> alloc::vec::Vec<u8> {
 mod limbs {
     use alloc::vec::Vec;
     use core::cmp::Ordering;
+    use core::mem::MaybeUninit;
 
     const MUL_LIMBS: usize = 48;
 
@@ -1908,8 +1909,10 @@ mod limbs {
         let (a, b) = if a.len() >= b.len() { (a, b) } else { (b, a) };
         let n = a.len().div_ceil(8);
         // every byte written below: not zeroed first (D196)
-        let mut v: Vec<u8> = unwritten(1 + 8 * (n + 1));
-        v[0] = if neg { b'-' } else { b'+' };
+        let total = 1 + 8 * (n + 1);
+        let mut v: Vec<u8> = Vec::with_capacity(total);
+        let out = &mut v.spare_capacity_mut()[..total];
+        out[0] = MaybeUninit::new(if neg { b'-' } else { b'+' });
         let mut carry = false;
         // the whole words of both, without a test of bounds (D171); by 4 in
         // assembly on x86-64 (D241)
@@ -1918,80 +1921,90 @@ mod limbs {
         let done = {
             let quads = both / 4;
             if quads > 0 {
-                // SAFETY: `a` and `b` have `both * 8` bytes, `v` as many from 1
-                carry = unsafe { chain::<false>(a.as_ptr(), b.as_ptr(), v[1..].as_mut_ptr(), quads, false) };
+                // SAFETY: `a` and `b` have `both * 8` bytes, `out` (the spare
+                // capacity of `v`) as many from 1
+                carry = unsafe { chain::<false>(a.as_ptr(), b.as_ptr(), out[1..].as_mut_ptr() as *mut u8, quads, false) };
             }
             quads * 4
         };
         #[cfg(not(target_arch = "x86_64"))]
         let done = 0;
         {
-            let dst = &mut v[1 + done * 8..1 + both * 8];
+            let dst = &mut out[1 + done * 8..1 + both * 8];
             for ((x, y), z) in a[done * 8..].chunks_exact(8).zip(b[done * 8..both * 8].chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
                 let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
                 let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
                 let (s, c1) = xa.overflowing_add(yb);
                 let (s, c2) = s.overflowing_add(carry as u64);
-                z.copy_from_slice(&s.to_le_bytes());
+                z.copy_from_slice(&bytes8(s));
                 carry = c1 | c2;
             }
         }
         for i in both..n {
             let (s, c1) = word(a, i).overflowing_add(word(b, i));
             let (s, c2) = s.overflowing_add(carry as u64);
-            v[1 + 8 * i..9 + 8 * i].copy_from_slice(&s.to_le_bytes());
+            out[1 + 8 * i..9 + 8 * i].copy_from_slice(&bytes8(s));
             carry = c1 | c2;
         }
-        v[1 + 8 * n..9 + 8 * n].copy_from_slice(&(carry as u64).to_le_bytes());
+        out[1 + 8 * n..9 + 8 * n].copy_from_slice(&bytes8(carry as u64));
+        // SAFETY: every byte of the `total` written above (the sign, the
+        // words of the loop in assembly, then each word after them)
+        unsafe { v.set_len(total) };
         Out(v).done()
     }
 
-    /// A buffer of `n` bytes for a result that writes each of them (not
-    /// zeroed: `memset` was 7 % of pidigits, D196).
-    fn unwritten(n: usize) -> Vec<u8> {
-        let mut v = Vec::with_capacity(n);
-        // SAFETY: u8 has no invalid value; the callers write every byte
-        // before reading any
-        unsafe { v.set_len(n) };
-        v
+    /// The bytes of a word of a result, to be written in the spare capacity
+    /// of its vector (D571: the result is written there, not zeroed first,
+    /// `memset` was 7 % of pidigits, D196; its length set once every byte is
+    /// written, so that no byte unwritten is ever a `u8` of the vector, as
+    /// the buffer of D196 had them).
+    #[inline(always)]
+    fn bytes8(w: u64) -> [MaybeUninit<u8>; 8] {
+        w.to_le_bytes().map(MaybeUninit::new)
     }
 
     /// a - b, |a| >= |b|
     fn sub(neg: bool, a: &[u8], b: &[u8]) -> Vec<u8> {
         let n = a.len().div_ceil(8);
         // every byte written below: not zeroed first (D196)
-        let mut v: Vec<u8> = unwritten(1 + 8 * n);
-        v[0] = if neg { b'-' } else { b'+' };
+        let total = 1 + 8 * n;
+        let mut v: Vec<u8> = Vec::with_capacity(total);
+        let out = &mut v.spare_capacity_mut()[..total];
+        out[0] = MaybeUninit::new(if neg { b'-' } else { b'+' });
         let mut borrow = false;
         let both = b.len() / 8;
         #[cfg(target_arch = "x86_64")]
         let done = {
             let quads = both / 4;
             if quads > 0 {
-                // SAFETY: `a` and `b` have `both * 8` bytes, `v` as many from 1
-                borrow = unsafe { chain::<true>(a.as_ptr(), b.as_ptr(), v[1..].as_mut_ptr(), quads, false) };
+                // SAFETY: `a` and `b` have `both * 8` bytes, `out` (the spare
+                // capacity of `v`) as many from 1
+                borrow = unsafe { chain::<true>(a.as_ptr(), b.as_ptr(), out[1..].as_mut_ptr() as *mut u8, quads, false) };
             }
             quads * 4
         };
         #[cfg(not(target_arch = "x86_64"))]
         let done = 0;
         {
-            let dst = &mut v[1 + done * 8..1 + both * 8];
+            let dst = &mut out[1 + done * 8..1 + both * 8];
             for ((x, y), z) in a[done * 8..].chunks_exact(8).zip(b[done * 8..both * 8].chunks_exact(8)).zip(dst.chunks_exact_mut(8)) {
                 let xa = u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]);
                 let yb = u64::from_le_bytes([y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]]);
                 let (d, b1) = xa.overflowing_sub(yb);
                 let (d, b2) = d.overflowing_sub(borrow as u64);
-                z.copy_from_slice(&d.to_le_bytes());
+                z.copy_from_slice(&bytes8(d));
                 borrow = b1 | b2;
             }
         }
         for i in both..n {
             let (d, b1) = word(a, i).overflowing_sub(word(b, i));
             let (d, b2) = d.overflowing_sub(borrow as u64);
-            v[1 + 8 * i..9 + 8 * i].copy_from_slice(&d.to_le_bytes());
+            out[1 + 8 * i..9 + 8 * i].copy_from_slice(&bytes8(d));
             borrow = b1 | b2;
         }
+        // SAFETY: every byte of the `total` written above (the sign, the
+        // words of the loop in assembly, then each word after them)
+        unsafe { v.set_len(total) };
         Out(v).done()
     }
 
@@ -2000,8 +2013,10 @@ mod limbs {
     fn mul_word(neg: bool, a: &[u8], w: u64) -> Vec<u8> {
         let n = a.len().div_ceil(8);
         // every byte written below: not zeroed first (D196)
-        let mut v: Vec<u8> = unwritten(1 + 8 * (n + 1));
-        v[0] = if neg { b'-' } else { b'+' };
+        let total = 1 + 8 * (n + 1);
+        let mut v: Vec<u8> = Vec::with_capacity(total);
+        let out = &mut v.spare_capacity_mut()[..total];
+        out[0] = MaybeUninit::new(if neg { b'-' } else { b'+' });
         let mut c: u128 = 0;
         let full = a.len() / 8;
         // the words by 4 in assembly where `mulx` is (D239): one chain of
@@ -2013,11 +2028,12 @@ mod limbs {
             let quads = full / 4;
             if quads > 0 {
                 let mut src = a.as_ptr();
-                let mut dst = v[1..].as_mut_ptr();
+                let mut dst = out[1..].as_mut_ptr() as *mut u8;
                 let mut n = quads;
                 let carry: u64;
-                // SAFETY: `a` has `full * 8` bytes from its start and `v` as
-                // many from its byte 1: `quads * 32` bytes read and written
+                // SAFETY: `a` has `full * 8` bytes from its start and `out`
+                // (the spare capacity of `v`) as many from its byte 1:
+                // `quads * 32` bytes read and written
                 unsafe {
                     core::arch::asm!(
                         "xor {c:e}, {c:e}",
@@ -2059,19 +2075,22 @@ mod limbs {
         #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
         let done = 0;
         {
-            let (src, dst) = (&a[done * 8..full * 8], &mut v[1 + done * 8..1 + full * 8]);
+            let (src, dst) = (&a[done * 8..full * 8], &mut out[1 + done * 8..1 + full * 8]);
             for (x, y) in src.chunks_exact(8).zip(dst.chunks_exact_mut(8)) {
                 let t = (u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]) as u128) * (w as u128) + c;
-                y.copy_from_slice(&(t as u64).to_le_bytes());
+                y.copy_from_slice(&bytes8(t as u64));
                 c = t >> 64;
             }
         }
         for i in full..n {
             let t = (word(a, i) as u128) * (w as u128) + c;
-            v[1 + 8 * i..9 + 8 * i].copy_from_slice(&(t as u64).to_le_bytes());
+            out[1 + 8 * i..9 + 8 * i].copy_from_slice(&bytes8(t as u64));
             c = t >> 64;
         }
-        v[1 + 8 * n..9 + 8 * n].copy_from_slice(&(c as u64).to_le_bytes());
+        out[1 + 8 * n..9 + 8 * n].copy_from_slice(&bytes8(c as u64));
+        // SAFETY: every byte of the `total` written above (the sign, the
+        // words of the loop in assembly, then each word after them)
+        unsafe { v.set_len(total) };
         Out(v).done()
     }
 
@@ -2453,16 +2472,21 @@ mod limbs {
                     zq < q0
                 }
             };
-            // every byte written below: not zeroed first (D196)
-            let mut v: Vec<u8> = unwritten(1 + 8 * (len + 1));
+            // every byte written below: not zeroed first (D196); the sign
+            // written last, the words read again only once all are written
+            let total = 1 + 8 * len;
+            let mut v: Vec<u8> = Vec::with_capacity(total + 8);
+            let out = &mut v.spare_capacity_mut()[..total];
+            out[0] = MaybeUninit::new(b'+');
             let quads = (mz.len() / 8).min(mx.len() / 8) / 4;
             let (mut c1, mut c2) = (0u64, minus as u64);
             if quads > 0 {
-                let (mut xs, mut zs, mut d, mut n) = (mx.as_ptr(), mz.as_ptr(), v[1..].as_mut_ptr(), quads);
+                let (mut xs, mut zs, mut d, mut n) = (mx.as_ptr(), mz.as_ptr(), out[1..].as_mut_ptr() as *mut u8, quads);
                 let (h, o): (u64, u8);
                 // SAFETY (each block): `quads * 32` bytes read from `mx` and
-                // `mz` (both hold as many whole words) and written to `v`
-                // from its byte 1 (it holds `len + 1` words); only `lea`,
+                // `mz` (both hold as many whole words) and written to `out`
+                // (the spare capacity of `v`) from its byte 1 (it holds `len`
+                // words, `quads * 4` at most); only `lea`,
                 // `mov`, `mulx` and `not` between the `adcx` and the `adox`
                 // of a chain, which leave CF and OF; the loop counted by
                 // `jrcxz`, which reads no flag
@@ -2611,8 +2635,11 @@ mod limbs {
                 };
                 let t = a as u128 + b as u128 + c2 as u128;
                 c2 = (t >> 64) as u64;
-                v[1 + 8 * i..9 + 8 * i].copy_from_slice(&(t as u64).to_le_bytes());
+                out[1 + 8 * i..9 + 8 * i].copy_from_slice(&bytes8(t as u64));
             }
+            // SAFETY: every byte of the `total` written above (the sign, the
+            // words of the loop in assembly, then each word after them)
+            unsafe { v.set_len(total) };
             let mut neg = if p_larger { pneg } else { nz };
             if minus && c2 == 0 {
                 // below zero (undecided by the top words): the difference is
@@ -2629,7 +2656,7 @@ mod limbs {
             }
             // the last carry of a sum (none for a difference)
             let top = if minus { 0 } else { c2 };
-            v[1 + 8 * len..9 + 8 * len].copy_from_slice(&top.to_le_bytes());
+            v.extend_from_slice(&top.to_le_bytes());
             v[0] = if neg { b'-' } else { b'+' };
             Some(Out(v).done())
         }

@@ -337,7 +337,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [ ] The `unsafe` of the runtime justified and checked at compile time (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`), confined to a few modules (`sys`, `heap`, `simd`) behind safe interfaces; the tests of `isc-runtime-core` under Miri
   - [x] (D564) `isc-runtime-core`: every unsafe operation in a block of its own, each justified, both lints denied
   - [x] `isc-runtime` (D564: 1150 operations in `unsafe fn`s without a block, 55 blocks without a justification, 2 `unsafe impl`): `mapped.rs` (25, done: D565), `system.rs` (59; its Linux part done, D565; Windows and WASI left, checked on their targets), `net.rs` (114; its Linux part done, D566), `heap.rs` (426, done: D567), `lib.rs` (657 with the blocks without a reason, done: D568: the whole crate denied under Linux), `linux.rs` (1, done: D567); the modules of Windows and WASI (`windows.rs` 67, `system.rs` 64 and 40, `net.rs` 126, `wasi.rs` 2, done: D569); both lints denied on every target (D569)
-  - [ ] `bigint::unwritten` (D196, D564): a `Vec<u8>` of bytes not yet written (clippy's `uninit_vec`); written through the spare capacity, pidigits measured
+  - [x] (Done, D571: pidigits -2.7 % native, -0.9 % `--isa avx`, no loss) `bigint::unwritten` (D196, D564): a `Vec<u8>` of bytes not yet written (clippy's `uninit_vec`); written through the spare capacity, pidigits measured
   - [ ] Clippy run by the suite on the crates that deny its lints
 - [x] (Every part done; WASI and Windows without their C libraries too, D541, D543, D544) Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread
   - [x] The system called directly: `linux.rs` (D287, B1)
@@ -356,7 +356,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] (Measured: D549, D550, D552, D553) The hypotheses behind choices measured: the reason of V = 32 (D55; measured, D549: 4 cycles of latency x 1 add of 512 bits or 2 of 256 bits a cycle = 32 doubles), the prefetchers of L2 and the 4K aliasing behind the places of large arrays (D77, D78, D81; measured, D552: no cost of the prefetcher of pairs between two cores, the aliasing worst at 32 to 64 bytes, +20 %), the windows of the decoders behind the alignment of the runtime (D256, its DSB and MITE counters; measured, D550: not the cause, the uop cache gives 99.4 to 99.8 % with and without it), the core whose sibling sleeps (D261) and the desktop session on cores 0 to 3 (D300)
   - [x] (D551: pages marked by the reclaim, `PG_reclaim` = `PG_readahead`, skipped by the mapping around a fault) The faults of a file in a tmpfs (D285: its pages always of 4 KiB here, the cause given contradicted)
   - [ ] The growth of large blocks under Windows by moving pages (`VirtualAlloc2`, placeholders) instead of a copy (D246, D375)
-- [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron
+- [ ] At the very end: `iscc` built by `iscc`, without Rust, the runtime written in Isocron (not started without a new discussion with the author: « tu t'arreteras avant de commencer la partie 8 », 2026-11-09)
 
 ## The standard library (the goal of 2026-11-05, part 2)
 
