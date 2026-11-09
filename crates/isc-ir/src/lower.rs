@@ -321,7 +321,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default() })
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -365,6 +365,14 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         }
     }
     crate::requirements::check(p, &required)?;
+    // the text of an integer written by the prelude (D588): its functions
+    // lowered when the program writes one
+    let writes = writes_int_text(&body) || l.fns.iter().flatten().any(|f| writes_int_text(&f.body));
+    let named = |name: &str| p.fns.iter().position(|f| f.name == name && f.from_prelude);
+    let int_text = match (writes, named("$rtIntText"), named("$rtUintText")) {
+        (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
+        _ => None,
+    };
     let fns = std::mem::take(&mut l.fns).into_iter().map(|f| f.expect("a recursive function lowered")).collect();
     let recs = std::mem::take(&mut *l.recs.borrow_mut()).into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     Ok(Program {
@@ -382,7 +390,13 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         sys_paths: isc_types::check::system_paths(p),
         sum_slots: sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow()),
         views: Default::default(),
+        int_text,
     })
+}
+
+/// `e` writes the text of an integer (`toString`, D588).
+fn writes_int_text(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::StrOp(StrOp::ToString, xs) if matches!(xs[0].ty, Type::Int(_))) || e.children().into_iter().any(writes_int_text)
 }
 
 /// The positions in the prelude replaced by `at`.
@@ -2536,6 +2550,8 @@ impl<'p> Lower<'p> {
             | Prim::HashFind
             | Prim::ReadWord
             | Prim::Panic
+            | Prim::LeadingZeros
+            | Prim::TextTail
             | Prim::ParseFloat
             | Prim::ParseInt
             | Prim::StrSlice => {
@@ -2547,6 +2563,8 @@ impl<'p> Lower<'p> {
                     Prim::HashFind => StrOp::HashFind,
                     Prim::ReadWord => StrOp::ReadWord,
                     Prim::Panic => StrOp::Panic,
+                    Prim::LeadingZeros => StrOp::LeadingZeros,
+                    Prim::TextTail => StrOp::TextTail,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),

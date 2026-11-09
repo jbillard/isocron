@@ -529,3 +529,37 @@ fn counts_with_a_masked_rest() {
         }
     }
 }
+
+/// D588: `leadingZeros(x)`, the zero bits above the highest one of an
+/// integer in the width of its type (the width for 0), an `i64`: every
+/// width, signed and not, interpreted and compiled as Rust's
+/// `leading_zeros`.
+#[test]
+fn leading_zeros_of_every_width() {
+    let src = "action main(args: string[k]): i32 {
+    const xs = [0, 1, 2, 3, 127, 128, 255, 256, 65535, 65536, -1, -128, 4294967295, 4294967296, 9223372036854775807, -9223372036854775807 - 1];
+    print(map(xs, (x) => leadingZeros(x)));
+    print(map(xs, (x) => leadingZeros(u64(x))));
+    print(map(xs, (x) => leadingZeros(i32(x & 2147483647))));
+    print(map(xs, (x) => leadingZeros(u32(x & 4294967295))));
+    print(map(xs, (x) => leadingZeros(u16(x & 65535))));
+    print(map(xs, (x) => leadingZeros(i8(x & 127))));
+    print(map(xs, (x) => leadingZeros(u8(x & 255))));
+    return 0;
+}
+";
+    let xs: [i64; 16] = [0, 1, 2, 3, 127, 128, 255, 256, 65535, 65536, -1, -128, 4294967295, 4294967296, i64::MAX, i64::MIN];
+    let line = |f: &dyn Fn(i64) -> u32| format!("[{}]", xs.iter().map(|&x| f(x).to_string()).collect::<Vec<_>>().join(", "));
+    let want = [
+        line(&|x| x.leading_zeros()),
+        line(&|x| (x as u64).leading_zeros()),
+        line(&|x| ((x & 2147483647) as i32).leading_zeros()),
+        line(&|x| ((x & 4294967295) as u32).leading_zeros()),
+        line(&|x| ((x & 65535) as u16).leading_zeros()),
+        line(&|x| ((x & 127) as i8).leading_zeros()),
+        line(&|x| ((x & 255) as u8).leading_zeros()),
+    ]
+    .join("\n")
+        + "\n";
+    agree(src, "leading_zeros", &[], &want);
+}

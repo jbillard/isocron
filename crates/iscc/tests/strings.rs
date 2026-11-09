@@ -1055,8 +1055,17 @@ fn integers_written_in_the_block_of_their_template() {
     assert!(!ll.contains("isc_str_build"), "a table of parts given to the runtime");
     assert!(ll.matches("call void @isc_put_int(").count() >= 18, "templates not written in their blocks");
     assert!(ll.matches(", i64 1, i1 false)").count() >= 17, "the literals of a template not stored as constants");
-    // one text of an integer made: that of `${v}` alone, not a concatenation
-    assert_eq!(ll.matches("call void @isc_to_string_i64(").count(), 1, "a text of an integer made");
+    // one text of an integer made: that of `${v}` alone, not a concatenation,
+    // by the function of the prelude (D588: its count of digits by
+    // `llvm.ctlz`), not the runtime
+    assert!(!ll.contains("call void @isc_to_string_i64("), "a text of an integer made by the runtime");
+    let texts: Vec<&str> = ll
+        .lines()
+        .filter(|l| l.starts_with("define internal") && l.contains(" alwaysinline "))
+        .filter_map(|l| l.split('@').nth(1).and_then(|r| r.split('(').next()))
+        .collect();
+    let calls: usize = texts.iter().map(|f| ll.matches(&format!("call tailcc {{ ptr, i64 }} @{}(", f)).count()).sum();
+    assert_eq!((texts.len(), calls), (2, 1), "the text of `${{v}}` alone not made once by the prelude");
     assert!(!ll.contains("call void @isc_pad_int("), "a padded text of an integer made");
     // the accumulators give their left text to the concatenation
     assert!(ll.contains("call ptr @isc_str_reserve("), "the left text of an accumulator not given");
@@ -1668,4 +1677,45 @@ fn try_parse_i64_written_in_isocron() {
         })
         .collect();
     agree(src, "try_parse_i64_isocron", &texts, &want);
+}
+
+/// D588: the text of an integer written in Isocron (`$rtIntText`,
+/// `$rtUintText` of the prelude, called by the code generator where no
+/// fusion writes it): the texts of Rust's `Display` for every width, the
+/// bounds, the powers of ten and their neighbours, a `-` before the
+/// negatives; interpreted (the runtime's text) and compiled the same.
+#[test]
+fn integer_text_written_in_isocron() {
+    let src = "action main(args: string[k]): i32 {
+    const p10 = map(iota(19), (i) => fold(iota(i), 1, (a, j) => a * 10));
+    const xs = concat(concat([0, 1, -1, 9, 10, -10, 99, 100, -100, -9223372036854775807 - 1, 9223372036854775807],
+        map(p10, (p) => p - 1)), concat(map(p10, (p) => p), map(p10, (p) => 1 - p)));
+    print(join(map(xs, toString), \" \"));
+    print(join(map(xs, (x) => toString(u64(x))), \" \"));
+    print(join(map(xs, (x) => toString(i32(x % 2147483647))), \" \"));
+    print(join(map(xs, (x) => toString(u32(x & 4294967295))), \" \"));
+    print(join(map(xs, (x) => toString(i16(x % 32767))), \" \"));
+    print(join(map(xs, (x) => toString(u8(x & 255))), \" \"));
+    print(join(map([18446744073709551615u64, 10000000000000000000u64, 9999999999999999999u64], toString), \" \"));
+    return 0;
+}
+";
+    let p10: Vec<i64> = (0..19).map(|i| 10i64.pow(i)).collect();
+    let mut xs: Vec<i64> = vec![0, 1, -1, 9, 10, -10, 99, 100, -100, i64::MIN, i64::MAX];
+    xs.extend(p10.iter().map(|p| p - 1));
+    xs.extend(p10.iter().copied());
+    xs.extend(p10.iter().map(|p| 1 - p));
+    let line = |f: &dyn Fn(i64) -> String| xs.iter().map(|&x| f(x)).collect::<Vec<_>>().join(" ");
+    let want = [
+        line(&|x| x.to_string()),
+        line(&|x| (x as u64).to_string()),
+        line(&|x| ((x % 2147483647) as i32).to_string()),
+        line(&|x| ((x & 4294967295) as u32).to_string()),
+        line(&|x| ((x % 32767) as i16).to_string()),
+        line(&|x| ((x & 255) as u8).to_string()),
+        "18446744073709551615 10000000000000000000 9999999999999999999".to_string(),
+    ]
+    .join("\n")
+        + "\n";
+    agree(src, "integer_text_isocron", &[], &want);
 }

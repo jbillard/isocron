@@ -5910,6 +5910,12 @@ pub unsafe extern "C" fn isc_panic_text(a: *const u8, na: i64, b: *const u8, nb:
     die(line, col, &format_args!("{}{}{}", text(a), text(b), text(c)))
 }
 
+/// `$textTail` with a size out of 1 ..= 24 or bytes not ASCII (D588).
+#[no_mangle]
+pub extern "C" fn isc_panic_tail(n: i64, line: i32, col: i32) -> ! {
+    die(line, col, &Panic::TextTail(n))
+}
+
 /// `readWord` with a size out of 1 ..= 8 (D580).
 #[no_mangle]
 pub extern "C" fn isc_panic_word(n: i64, line: i32, col: i32) -> ! {

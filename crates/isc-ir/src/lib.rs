@@ -237,6 +237,11 @@ pub enum StrOp {
     /// `$panic(a, b, c)` (D582): a panic, its message the three texts, of
     /// the type its place expects.
     Panic,
+    /// `leadingZeros(x)` (D588): the zero bits above the highest one.
+    LeadingZeros,
+    /// `$textTail(w0, w1, w2, n, minus)` (D588): the last `n` bytes of
+    /// three words, a `-` before them when `minus`.
+    TextTail,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.
@@ -270,6 +275,7 @@ impl StrOp {
                 | StrOp::ToFixed
                 | StrOp::ReadWord
                 | StrOp::Panic
+                | StrOp::TextTail
                 | StrOp::Big(BigOp::Div | BigOp::Rem | BigOp::Pow | BigOp::Parse)
                 | StrOp::Rx(RxOp::New | RxOp::Replace | RxOp::ReplaceAll)
         )
@@ -506,6 +512,11 @@ pub struct Program {
     /// or a text that lives longer (D555): each owns its block alone, freed
     /// without its texts, and is never moved (`passes::borrow_elements`).
     pub views: std::collections::BTreeSet<VarId>,
+    /// The functions of the prelude that write the text of an `i64` and of
+    /// a `u64` (`$rtIntText`, `$rtUintText`, D588), lowered when the program
+    /// writes one: the code generator calls them for `toString` of an
+    /// integer that none of its fusions writes in place.
+    pub int_text: Option<(u32, u32)>,
 }
 
 /// What `print` shows beyond the IR type of a value: the names of the

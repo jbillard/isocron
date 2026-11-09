@@ -13630,48 +13630,54 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   instruction more on the path of a medium block taken from the cache
   (`cmpb $0xc3` becomes a load and a compare) and `free_medium` three
   (under the lock). The invariant H3 says so.
-- **D588 — The text of an integer written in Isocron: a first attempt,
-  slower (2026-11-09).** The next pure function of SPEC section 17, order 2, after
-  `parseI64` (D582, D586). `toString` of an integer is not one call: the
-  code generator fuses it with `padStart` and `padEnd` (D348) and writes it
-  inside a concatenation (D359), on the node `StrOp::ToString`; a function
-  of the prelude in its place would lose those fusions. So the attempt
-  kept the node and had the code generator call, for a text that no fusion
-  writes, the functions `$rtIntText` and `$rtUintText` of the prelude,
-  lowered once when a program writes an integer (`lower_fn`, the indices in
-  `Program::int_text`), `alwaysinline`, with no test of the stack (a leaf
-  of 24 bytes): the number of digits by `leadingZeros` (a new builtin,
-  `llvm.ctlz`) and one power of ten, 8 digits a word by products (the
-  reverse of `digits8`, 4 digits by three products for the small numbers),
-  the `-` in place of a `0`, then `$asciiText(w0, w1, w2, at, n)` (a new
-  primitive of the prelude: `n` bytes of three words, one check, a block of
-  `n` bytes, stores that overlap). The same texts as the runtime: 84216
-  numbers of every width (three seeds, the bounds, the powers of ten and
-  their neighbours), compiled and interpreted; the fusions untouched
-  (`strings.template` −0.3 to +0.6 %, `strings.padStart` within the noise).
-  - Slower, every version (`bench/primitives/strings.isc` and
-    `text_pilot.isc`, the compiler before D580 for the Rust version, the
-    median of 7 runs): called (not inlined): `toString.i64` +18.5 %, 9
-    digits +27.3 %, 3 digits +49.9 %; inlined, 4 digits by three products:
-    +3.6 %, +19.6 %, +23.0 %; the words shifted in the registers and stored
-    whole into a block of 24 bytes (to spare a buffer read at a byte not a
-    multiple of 8): +16.1 %, +40.7 %, +31.5 %.
-  - The cause, counted (`perf stat` a number, one CPU at fixed frequency):
-    3 digits, Rust 31.0 cycles and 127.7 uops, the buffer version 37.8 and
-    150.2, the register version 40.2 and 158.1; 9 digits, Rust 40.7 and
-    175.4, 51.4 and 189.6, 58.2 and 201.8. Not the forwarding of stores to
-    loads (`ld_blocks.store_forward`: 0 and 0.9 a number for the buffer
-    version, 0.9 and 2.0 for Rust): 15 to 25 uops more a number — the
-    products of the SWAR where Rust's loop divides by 100 once or twice for
-    a small number and copies two digits from a table, the sign made by
-    selects, the checks of `$asciiText`, the branches of the copy.
-  - Principle 6: not adopted as it was; the attempt is kept on the local
-    branch `attempt-int-text` (commit `dcba9e1`), the pilot in
-    `bench/primitives/text_pilot.isc`. Continued (D589: slower is a step,
-    not a result): Rust's form (two digits a turn from a table), the sign
-    written by a branch, the digits written into their final block (their
-    number known first, where Rust writes into a buffer then copies), no
-    general checks left on the path.
+- **D588 — The text of an integer written in Isocron, faster than its Rust
+  version (2026-11-09).** The third function of the runtime moved (SPEC
+  section 17, order 2). `toString` of an integer is not one call: the code
+  generator fuses it with `padStart` and `padEnd` (D348) and writes it
+  inside a concatenation (D359, D363), on the node `StrOp::ToString`; a
+  function of the prelude in its place would lose those fusions. So the
+  node stays, and for a text that no fusion writes the code generator calls
+  `$rtIntText` or `$rtUintText` of the prelude: lowered once when a program
+  writes an integer (`lower_fn`, their indices in `Program::int_text`),
+  `alwaysinline`, no test of the stack (a leaf of a small frame).
+  - The function (`$digitsText`): the number of digits from `leadingZeros`
+    (a new builtin, any integer, `llvm.ctlz`; the guide) times 1233 / 4096
+    and one power of ten; the digits in up to three words, only those the
+    number has, each word from pairs of digits read from a table of 256
+    pairs by `readWord` (the index `(r & 255) * 2`: its check of bounds
+    proven at compilation), the quotients by 100, 10^4 and 10^6 made at
+    once; then `$textTail(w0, w1, w2, n, minus)` (a new primitive of the
+    prelude: the last `n` bytes of the words, a `-` before them when
+    `minus`, one check (`n` in 1 to 24, every byte ASCII), a block of 25
+    bytes allocated before the digits are counted (the class of a short text
+    as well), the `-` stored first, the digits from the registers: whole
+    words, the first shifted, or stores of 4 or 1 that overlap).
+  - The same texts as Rust's `Display`: 84216 numbers of every width (three
+    seeds, the bounds, the powers of ten and their neighbours) by the old
+    compiler, the new one, the interpreter and WebAssembly; the tests
+    `integer_text_written_in_isocron`, `leading_zeros_of_every_width`; the
+    template test of D363 now sees the text of `${v}` alone made by the
+    prelude (one call), none by the runtime.
+  - The way there, counted (`perf stat` a number, one CPU at fixed
+    frequency; Rust 31.0 cycles and 127.6 uops for 3 digits, 40.7 and
+    175.3 for 9): 8 digits a word by five products in a chain (the reverse
+    of `digits8`), called, a buffer of the stack: 37.8 and 51.4 cycles; the
+    words shifted in the registers: 40.2 and 58.2 (the forwarding of
+    stores was not the cause: `ld_blocks.store_forward` 0 to 0.9 a
+    number); the last bytes written into the final block, only the words a
+    number has: 33.5 and 43.7 (fewer uops than Rust for 9 digits, but
+    bound by latency: `topdown-be-bound` 33.4 slots a number against 3.3);
+    the block allocated before the count: 30.1 and 42.1; the pairs from a
+    table (the quotients at once, a short chain): 29.7 and 43.2, more
+    uops, the checks of bounds of the table; the index proven inside it:
+    26.9 and 37.4, 125.2 and 158.8 uops.
+  - The result (`bench/primitives`, the median of 9 runs, Rust built by
+    the compiler before D580): `strings.toString.i64` 11.507 → 9.123 ns
+    (−20.7 %), the pilot 9 digits 12.838 → 11.468 (−10.7 %), 3 digits
+    9.594 → 8.409 (−12.4 %); the fusions the same (`strings.template`
+    −0.6 %, `strings.padStart` −1.6 %). `isc_to_string_i64` and
+    `isc_to_string_u64` are no longer called; the first
+    attempt (slower) stays on the local branch `attempt-int-text`.
 - **D589 — No Rust at all: the end state of the runtime (the author,
   2026-11-09).** « je ne veux plus de Rust ! », after D588 was first
   recorded as "kept in Rust" and a Rust kernel (allocator, pool, start)

@@ -1040,6 +1040,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_panic_bench(i64, i32, i32) noreturn",
     "declare void @isc_panic_word(i64, i32, i32) noreturn",
     "declare void @isc_panic_text(ptr, i64, ptr, i64, ptr, i64, i32, i32) noreturn",
+    "declare void @isc_panic_tail(i64, i32, i32) noreturn",
     "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)",
     "declare ptr @llvm.stacksave.p0()",
     "declare void @llvm.stackrestore.p0(ptr)",
@@ -2630,7 +2631,10 @@ impl<'p> Gen<'p> {
             ps.push(format!("{} %a{}", t, k));
             self.env.insert(*var, v(format!("%a{}", k), t));
         }
-        if !self.opts.isa.is_wasm() {
+        // the text of an integer (D588): a leaf of a frame of 24 bytes, no
+        // test of the stack, copied into its callers
+        let int_text = self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
+        if !self.opts.isa.is_wasm() && !int_text {
             self.stack_check(&f.name, f.span);
         }
         // the state of a loop (D206): lent by the caller, copied once here;
@@ -2720,7 +2724,13 @@ impl<'p> Gen<'p> {
         // on 64 bytes (D213): a small function called at each node of a
         // tree stays whole in the cache of decoded instructions
         // `@cold` (D584): never inlined back by LLVM, its calls unlikely
-        let cold = if self.p.fns[i].cold { " cold noinline" } else { "" };
+        let cold = if self.p.fns[i].cold {
+            " cold noinline"
+        } else if self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) {
+            " alwaysinline"
+        } else {
+            ""
+        };
         let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}{} align 64", cc, ret, name, ps.join(", "), attrs, cold));
         self.region = saved_region;
         self.other_tails = saved_others;
@@ -12581,6 +12591,16 @@ impl<'p> Gen<'p> {
         if matches!(op, S::Group | S::GroupCounts) && group_stream_ok(&es[0]) {
             return self.group_stream(&es[0], op == S::GroupCounts);
         }
+        // the text of an integer that no fusion writes in place: the
+        // function of the prelude that writes it (D588), its argument made
+        // an `i64` or a `u64`
+        if let (S::ToString, Type::Int(k), Some((signed, unsigned))) = (op, &es[0].ty, self.p.int_text) {
+            let wide = Type::Int(if k.signed() { IntKind::I64 } else { IntKind::U64 });
+            let x = if k.bits() < 64 { Expr::new(ExprKind::Convert(Box::new(es[0].clone())), wide, es[0].span) } else { es[0].clone() };
+            let f = if k.signed() { signed } else { unsigned };
+            let call = Expr::new(ExprKind::Call(f, vec![x]), Type::Str, e.span);
+            return self.ex(&call, 1);
+        }
         // the text of an integer padded (`int_texts`, D348): with a fill of
         // one byte, written in one block by the runtime; otherwise the text
         // made here, padded, then freed
@@ -12965,6 +12985,97 @@ impl<'p> Gen<'p> {
                 self.br(&lloop);
                 self.block(&ldone);
                 v(self.ins(format!("load i64, ptr {}", res)), "i64")
+            }
+            // `leadingZeros(x)` (D588): `llvm.ctlz` of its width, 0 defined
+            S::LeadingZeros => {
+                let t = lt(&es[0].ty);
+                self.decls.insert(format!("declare {} @llvm.ctlz.{}({}, i1)", t, t, t));
+                let c = self.ins(format!("call {} @llvm.ctlz.{}({} {}, i1 false)", t, t, t, vals[0].r));
+                let r = if t == "i64" { c } else { self.ins(format!("zext {} {} to i64", t, c)) };
+                v(r, "i64")
+            }
+            // `$textTail(w0, w1, w2, n, minus)` (D588), as `text_tail` of the
+            // runtime core: one check (`n` in 1 to 24, every byte ASCII), a
+            // block of `n` bytes and the `-`, the `-` written first (the
+            // digits over it when there is none), then the digits from the
+            // registers: the words whole (8 bytes), the first shifted, or
+            // two stores of 4 or three of 1 that overlap
+            S::TextTail => {
+                let (w0, w1, w2) = (vals[0].r.clone(), vals[1].r.clone(), vals[2].r.clone());
+                let (n, minus) = (vals[3].r.clone(), vals[4].r.clone());
+                let o1 = self.ins(format!("or i64 {}, {}", w0, w1));
+                let o2 = self.ins(format!("or i64 {}, {}", o1, w2));
+                let hi = self.ins(format!("and i64 {}, -9187201950435737472", o2));
+                let ascii = self.ins(format!("icmp eq i64 {}, 0", hi));
+                let nm1 = self.ins(format!("sub i64 {}, 1", n));
+                let inside = self.ins(format!("icmp ult i64 {}, 24", nm1));
+                let ok = self.ins(format!("and i1 {}, {}", ascii, inside));
+                self.guard(&ok, format!("call void @isc_panic_tail(i64 {}, {})", n, Self::pos(e.span)));
+                let off = self.ins(format!("zext i1 {} to i64", minus));
+                let total = self.ins(format!("add i64 {}, {}", n, off));
+                // a block of 25 bytes whatever `n` (the class of 3 as well):
+                // the allocation does not wait for the count of the digits
+                let dst = self.ins("call noalias ptr @isc_alloc(i64 25)".to_string());
+                self.emit(format!("store i8 45, ptr {}, align 1", dst));
+                let d = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+                // `x` stored (`width` bits) at byte `at` of the digits
+                let put = |g: &mut Self, at: &str, x: &str, width: u32| {
+                    let p = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", d, at));
+                    let y = if width == 64 { x.to_string() } else { g.ins(format!("trunc i64 {} to i{}", x, width)) };
+                    g.emit(format!("store i{} {}, ptr {}, align 1", width, y, p));
+                };
+                // `w` shifted right by `bytes` bytes
+                let shr = |g: &mut Self, w: &str, bytes: &str| {
+                    let b = g.ins(format!("shl i64 {}, 3", bytes));
+                    g.ins(format!("lshr i64 {}, {}", w, b))
+                };
+                let (lbig, lsmall, l16, l9, lpair, l4, l1, ljoin) =
+                    (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+                let gt8 = self.ins(format!("icmp sgt i64 {}, 8", n));
+                self.cbr(&gt8, &lbig, &lsmall);
+                // 9 to 24 digits: the first part shifted, the words after it whole
+                self.block(&lbig);
+                let gt16 = self.ins(format!("icmp sgt i64 {}, 16", n));
+                self.cbr(&gt16, &l16, &l9);
+                self.block(&l16);
+                let s24 = self.ins(format!("sub i64 24, {}", n));
+                let h = shr(self, &w0, &s24);
+                put(self, "0", &h, 64);
+                let at16 = self.ins(format!("sub i64 {}, 16", n));
+                put(self, &at16, &w1, 64);
+                self.br(&lpair);
+                self.block(&l9);
+                let s16 = self.ins(format!("sub i64 16, {}", n));
+                let m = shr(self, &w1, &s16);
+                put(self, "0", &m, 64);
+                self.br(&lpair);
+                self.block(&lpair);
+                let at8 = self.ins(format!("sub i64 {}, 8", n));
+                put(self, &at8, &w2, 64);
+                self.br(&ljoin);
+                // 1 to 8 digits: the last word shifted, two stores of 4 or
+                // (below 4) the first, middle and last byte
+                self.block(&lsmall);
+                let s8 = self.ins(format!("sub i64 8, {}", n));
+                let t = shr(self, &w2, &s8);
+                let ge4 = self.ins(format!("icmp sge i64 {}, 4", n));
+                self.cbr(&ge4, &l4, &l1);
+                self.block(&l4);
+                put(self, "0", &t, 32);
+                let at4 = self.ins(format!("sub i64 {}, 4", n));
+                let t4 = shr(self, &t, &at4);
+                put(self, &at4, &t4, 32);
+                self.br(&ljoin);
+                self.block(&l1);
+                put(self, "0", &t, 8);
+                let half = self.ins(format!("lshr i64 {}, 1", n));
+                let th = shr(self, &t, &half);
+                put(self, &half, &th, 8);
+                let tl = shr(self, &t, &nm1);
+                put(self, &nm1, &tl, 8);
+                self.br(&ljoin);
+                self.block(&ljoin);
+                self.arr(&dst, &total)
             }
             // `$panic(a, b, c)` (D582): the call that does not return, then
             // a block no path reaches, where the value of its type is zero

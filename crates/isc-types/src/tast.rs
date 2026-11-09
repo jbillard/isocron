@@ -161,6 +161,14 @@ pub enum Prim {
     /// three texts, of any type (the one its place expects); the prelude
     /// alone can name it
     Panic,
+    /// `leadingZeros(x)` (D588): the zero bits above the highest one of an
+    /// integer, in the width of its type (the width for 0), as an `i64`
+    LeadingZeros,
+    /// `$textTail(w0, w1, w2, n, minus)` (D588): the last `n` bytes (1 to
+    /// 24) of the 24 bytes of three words (the first at the lowest place),
+    /// a `-` before them when `minus`, a string; every byte of the words
+    /// ASCII (a panic otherwise); the prelude alone can name it
+    TextTail,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// `argsort(x)`: the indices of the elements in their order, stable

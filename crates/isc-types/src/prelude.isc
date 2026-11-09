@@ -384,3 +384,62 @@ function $digitsHuge(b: u8[k], at: i64, n: i64, neg: boolean): [u64, u64] {
     const over = m > 19 || (m == 19 && v > limit) ? 1u64 : 0u64;
     return [v, bh | bm | bl | over];
 }
+
+// The text of an integer written in Isocron (D588, SPEC section 17, order
+// 2): `toString` of an `i64` or a `u64` that no fusion of the code
+// generator writes in place (`padStart`, a concatenation: D348, D359),
+// lowered once when a program writes one and called by the code generator
+// in place of the runtime's `isc_to_string_i64`.
+function $rtIntText(x: i64): string {
+    const neg = x < 0;
+    return $digitsText(neg ? 0u64 - u64(x) : u64(x), neg);
+}
+
+function $rtUintText(x: u64): string {
+    return $digitsText(x, false);
+}
+
+// The digits of `v`, a `-` before them when `neg`: their number from the
+// bits of `v` (1233 / 4096 below log10 2) and one power of ten; the last 8
+// digits, the 8 before and the first 4 in three words, only those the
+// number has (a word of 4 for a part below 10^4), then the text of the
+// last bytes of the words, written into its block (`$textTail`).
+function $digitsText(v: u64, neg: boolean): string {
+    const powers = [1u64, 10u64, 100u64, 1000u64, 10000u64, 100000u64, 1000000u64, 10000000u64,
+        100000000u64, 1000000000u64, 10000000000u64, 100000000000u64, 1000000000000u64,
+        10000000000000u64, 100000000000000u64, 1000000000000000u64, 10000000000000000u64,
+        100000000000000000u64, 1000000000000000000u64, 10000000000000000000u64];
+    const t = ((64 - leadingZeros(v | 1u64)) * 1233) >> 12;
+    const n = t + ((v | 1u64) >= powers[t] ? 1 : 0);
+    const lo = v < 10000u64 ? $asciiWord4(v) : v < 100000000u64 ? $asciiWord8(v) : $asciiWord8(v % 100000000u64);
+    const h = v / 100000000u64;
+    const mid = v < 100000000u64 ? 0u64 : h < 10000u64 ? $asciiWord4(h) : $asciiWord8(h % 100000000u64);
+    const hi = v < 10000000000000000u64 ? 0u64 : $asciiWord4(v / 10000000000000000u64);
+    return $textTail(hi, mid, lo, n, neg);
+}
+
+// The 4 digits of `v` (below 10^4) at the end of a word of 8 (`0`s before
+// them): its two pairs of digits from the table of `$pair`.
+function $asciiWord4(v: u64): u64 {
+    const q = v / 100u64;
+    return ((($pair(q) | ($pair(v - q * 100u64) << 16u64))) << 32u64) | 0x30303030u64;
+}
+
+// The 8 digits of `v` (below 10^8) in a word, the highest at the lowest
+// place, as ASCII: its four pairs of digits, their quotients by 100, 10^4
+// and 10^6 made at once (not one after the other: a short chain of
+// products), each pair read from a table (D588).
+function $asciiWord8(v: u64): u64 {
+    const q1 = v / 100u64;
+    const q2 = v / 10000u64;
+    const q3 = v / 1000000u64;
+    return $pair(q3) | ($pair(q2 - q3 * 100u64) << 16u64) | ($pair(q1 - q2 * 100u64) << 32u64) | ($pair(v - q1 * 100u64) << 48u64);
+}
+
+// The two ASCII digits of `r` (below 100), the tens at the lowest place:
+// a table of 256 pairs (those past 99 never read), so that its index,
+// `r & 255` twice, is inside it whatever `r` and its check of bounds goes
+// at compilation.
+function $pair(r: u64): u64 {
+    return readWord(bytes("00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"), i64(r & 255u64) * 2, 2);
+}

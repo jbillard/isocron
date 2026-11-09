@@ -130,6 +130,9 @@ pub enum Panic<'a> {
     BenchReps(i64),
     /// `readWord(b, at, n)` with `n` not in 1 ..= 8 (D580).
     WordBytes(i64),
+    /// `$textTail(w0, w1, w2, n, minus)` with `n` out of 1 ..= 24, or a byte
+    /// of its words not ASCII (D588): a fault of the prelude.
+    TextTail(i64),
     ParseI64(&'a str),
     /// An operating-system error: `detail` is the text of `strerror(code)`.
     Read { path: &'a str, detail: &'a str, code: i32 },
@@ -217,6 +220,7 @@ impl fmt::Display for Panic<'_> {
             Panic::NegativeSize(k) => write!(f, "negative size: {}", k),
             Panic::BenchReps(r) => write!(f, "bench: the number of repetitions must be at least 1, got {}", r),
             Panic::WordBytes(n) => write!(f, "readWord: a word has 1 to 8 bytes, got {}", n),
+            Panic::TextTail(n) => write!(f, "textTail: the last {} bytes of 24 bytes of ASCII", n),
             Panic::ParseI64(s) => write!(f, "parseI64: `{}` is not a valid integer", s),
             // same text as the `Display` of `std::io::Error` for OS errors
             Panic::Read { path, detail, code } => write!(f, "cannot read `{}`: {} (os error {})", path, detail, code),
@@ -2849,6 +2853,30 @@ mod read_word_tests {
 }
 
 #[cfg(test)]
+mod text_tail_tests {
+    /// `text_tail` (D588): every tail of 24 bytes of ASCII, with and
+    /// without its `-`; the panics of a size out of 1 to 24 and of a byte
+    /// not ASCII.
+    #[test]
+    fn tails_of_three_words() {
+        use super::{text_tail, Panic};
+        let text = b"0123456789abcdefghijklmn";
+        let w = [0, 8, 16].map(|k| u64::from_le_bytes(text[k..k + 8].try_into().unwrap()));
+        for n in 1..=24i64 {
+            let tail = &text[24 - n as usize..];
+            assert_eq!(text_tail(w, n, false).ok().as_deref(), Some(tail));
+            let mut minus = alloc::vec![b'-'];
+            minus.extend_from_slice(tail);
+            assert_eq!(text_tail(w, n, true).ok(), Some(minus));
+        }
+        for n in [0, 25, -1] {
+            assert!(matches!(text_tail(w, n, false), Err(Panic::TextTail(m)) if m == n));
+        }
+        assert!(text_tail([w[0], w[1] | 0x80, w[2]], 3, false).is_err());
+    }
+}
+
+#[cfg(test)]
 mod read_in_page_tests {
     /// The reads past the bytes of a text (D573): an empty text (at the
     /// address 1 of an empty slice, at the start, the middle and the end
@@ -3147,6 +3175,28 @@ pub fn read_word(b: &[u8], at: i64, n: i64) -> Result<u64, Panic<'static>> {
         return Err(Panic::Bounds { index: (at + n - 1) as i128, len });
     }
     Ok(b[at as usize..(at + n) as usize].iter().rev().fold(0u64, |w, &c| w << 8 | c as u64))
+}
+
+/// `$textTail(w0, w1, w2, n, minus)` (D588): the last `n` bytes (1 to 24)
+/// of the 24 bytes of `w`, the first word first, each word's first byte at
+/// its lowest place, a `-` before them when `minus`; every byte of the
+/// three words below 0x80 (a fault of the prelude otherwise: a panic). The
+/// code generator writes the same into a block of its size, from the
+/// registers.
+pub fn text_tail(w: [u64; 3], n: i64, minus: bool) -> Result<alloc::vec::Vec<u8>, Panic<'static>> {
+    if !(1..=24).contains(&n) || (w[0] | w[1] | w[2]) & 0x8080_8080_8080_8080 != 0 {
+        return Err(Panic::TextTail(n));
+    }
+    let mut b = [0u8; 24];
+    for (k, x) in w.iter().enumerate() {
+        b[8 * k..8 * k + 8].copy_from_slice(&x.to_le_bytes());
+    }
+    let mut out = alloc::vec::Vec::with_capacity(n as usize + 1);
+    if minus {
+        out.push(b'-');
+    }
+    out.extend_from_slice(&b[24 - n as usize..]);
+    Ok(out)
 }
 
 /// Whether a read of `width` bytes from `addr`, the address of `len` bytes

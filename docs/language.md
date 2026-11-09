@@ -581,6 +581,7 @@ tuples, records and sum types, compared with `==` and ordered by their bytes
 | `bytes(s)` | `(string) => u8[k]` | the bytes |
 | `stringOf(b)` | `(u8[n]) => string` | the text of these bytes; a panic if they are not UTF-8 |
 | `readWord(b, at, n)` | `(u8[k], i64, i64) => u64` | the `n` bytes (1 to 8) of `b` from `at` as one word, the first at its lowest place (little-endian); one check of the bytes `at .. at + n` (a panic past them), compiled to one or two loads |
+| `leadingZeros(x)` | `(integer) => i64` | the zero bits above the highest one bit of `x`, in the width of its type (`leadingZeros(1)` is 63, `leadingZeros(1u8)` is 7, `0` gives the width); compiled to one instruction |
 | `String(x)`, `x.toString()` | `(scalar) => string` | the text `print` writes (a string is itself) |
 | `parseI64(s)`, `parseF64(s)` | `(string) => i64`, `(string) => f64` | a decimal integer (`+5`, `-12`), a decimal number (`2.5`, `-1e-3`, `inf`, `NaN`); anything else is a panic (`tryParseI64`, `tryParseF64`: a `Result`) |
 | `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` | `(string) => f64` | as ECMAScript: `Number` of the whole text (`""` is 0, `"0x1F"` is 31), `parseFloat` and `parseInt` of its longest prefix; NaN when there is no number |

@@ -205,6 +205,8 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$hashFind" => Prim::HashFind,
         "readWord" => Prim::ReadWord,
         "$panic" => Prim::Panic,
+        "leadingZeros" => Prim::LeadingZeros,
+        "$textTail" => Prim::TextTail,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2711,7 +2713,7 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString => 1,
+            Prim::ParseI64 | Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros => 1,
             Prim::Concat => 2,
             Prim::ReadText | Prim::Lines | Prim::Trim | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
@@ -2721,6 +2723,7 @@ impl<'g> FnCx<'g> {
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
             Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
             Prim::HashFind | Prim::ReadWord | Prim::Panic => 3,
+            Prim::TextTail => 5,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -3115,6 +3118,29 @@ impl<'g> FnCx<'g> {
                 let s = self.syms.len() as SymId;
                 self.syms.push(SymInfo { name: format!("s@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
                 Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
+            }
+            // `leadingZeros(x)` (D588): an integer of any width, an `i64`
+            Prim::LeadingZeros => {
+                let x = self.check(&args[0], None)?;
+                let t = self.fresh(class::INTEGRAL, LitKind::None, x.span);
+                self.unify(&t, &x.ty, x.span)?;
+                Ok(mk(vec![x], Ty::Int(IntKind::I64), self))
+            }
+            // `$textTail(w0, w1, w2, n, minus)` (D588): three words, a count
+            // and a sign, a string
+            Prim::TextTail => {
+                let mut parts = Vec::new();
+                for (k, a) in args.iter().enumerate() {
+                    let t = match k {
+                        0..=2 => Ty::Int(IntKind::U64),
+                        3 => Ty::Int(IntKind::I64),
+                        _ => Ty::Bool,
+                    };
+                    let x = self.check(a, Some(&t))?;
+                    self.unify(&t, &x.ty, x.span)?;
+                    parts.push(x);
+                }
+                Ok(mk(parts, Ty::Str, self))
             }
             // a panic (D582): its message in three texts, then the type of
             // its place

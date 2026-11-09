@@ -407,6 +407,28 @@ impl Interp<'_> {
                 };
                 Value::Array(Rc::new(Array::Int(slots)))
             }
+            // `leadingZeros(x)` (D588): in the width of the type of `x`
+            S::LeadingZeros => {
+                let (bits, x) = match (&es[0].ty, &vs[0]) {
+                    (isc_ir::Type::Int(k), Value::Int(x)) => (k.bits(), *x as u64),
+                    v => panic!("an integer expected, got {:?}", v),
+                };
+                let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+                Value::Int(((x & mask).leading_zeros() - (64 - bits)) as i64)
+            }
+            // `$textTail(w0, w1, w2, n, minus)` (D588): the code of the runtime core
+            S::TextTail => {
+                let int = |v: &Value| match v {
+                    Value::Int(x) => *x,
+                    v => panic!("an integer expected, got {:?}", v),
+                };
+                let minus = matches!(vs[4], Value::Bool(true));
+                let w = [int(&vs[0]) as u64, int(&vs[1]) as u64, int(&vs[2]) as u64];
+                match isc_runtime_core::text_tail(w, int(&vs[3]), minus) {
+                    Ok(b) => Value::Str(Rc::from(String::from_utf8(b).expect("ASCII"))),
+                    Err(p) => return panic_at(e, std::format!("{}", p)),
+                }
+            }
             // `$panic(a, b, c)` (D582): the three texts one after the other
             S::Panic => return panic_at(e, std::format!("{}{}{}", s(&vs[0]), s(&vs[1]), s(&vs[2]))),
             // `readWord` (D580): the code of the runtime core
