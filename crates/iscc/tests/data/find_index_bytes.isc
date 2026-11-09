@@ -1,0 +1,26 @@
+// `findIndex` among bytes (D595): arrays of every length from 0 to 200, the
+// byte sought at every place, alone or with another after it, absent; from
+// the start, in a slice, from the end, and with a second byte two places
+// further (two reads at the index of the loop). The count of wrong answers.
+// the first place of `x` followed two places further by `y`, -1 if none
+function pairAt(b: u8[n], x: u8, y: u8): i64 {
+    return n < 3 ? -1 : findIndex(iota(n - 2), (j) => b[j] == x && b[j + 2] == y);
+}
+
+action main(args: string[k]): i32 {
+    const total = fold(iota(201), 0, (acc, n) => {
+        const base = map(iota(n), (j) => u8(65 + j % 20));
+        const none = findIndex(base, (c) => c == 90u8);
+        const hits = map(iota(n), (at) => {
+            const b = map(iota(n), (j) => j == at ? 90u8 : u8(65 + j % 20));
+            const two = map(iota(n), (j) => j == at || j == n - 1 ? 90u8 : u8(65 + j % 20));
+            return (findIndex(b, (c) => c == 90u8) == at ? 0 : 1) + (findIndex(two, (c) => c == 90u8) == at ? 0 : 1)
+                + (findIndex(b.slice(at, n), (c) => c == 90u8) == 0 ? 0 : 1)
+                + (findIndex(iota(n), (j) => b[n - 1 - j] == 90u8) == n - 1 - at ? 0 : 1)
+                + (pairAt(b, 90u8, u8(65 + (at + 2) % 20)) == (at + 2 < n ? at : -1) ? 0 : 1);
+        });
+        return acc + sum(hits) + (none == -1 ? 0 : 1);
+    });
+    print(total);
+    return 0;
+}

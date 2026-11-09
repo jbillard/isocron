@@ -1744,9 +1744,12 @@ index, so it may fail there (a division by zero, a read out of bounds)
 without stopping the program. The loop stops at the index (rule F of SPEC
 section 6): when `p` cannot fail (comparisons, arithmetic but division,
 reads of arrays in bounds), the elements are tested by vectors of 64 bytes
-at a time (32 without AVX-512), the first lane that holds the result. Over
-a part of an array, `findIndex(x.slice(a, z), p)` reads `x` where it is and
-gives the index from `a`.
+at a time (32 without AVX-512), the first lane that holds the result; among
+bytes, the last ones by vectors of 16 (an array of 16 bytes or more is never
+tested one byte at a time past its first 8). Over a part of an array,
+`findIndex(x.slice(a, z), p)` reads `x` where it is and gives the index from
+`a`; over indices, `findIndex(iota(n), (j) => b[j] == x && b[j + 2] == y)`
+reads `b` at the index of the loop, by vectors too.
 
 ```isc
 action main(args: string[k]): i32 {

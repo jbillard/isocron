@@ -1921,3 +1921,30 @@ fn text_blocks_made_by_the_generated_code() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "WebAssembly, {:?}: {}", &args[..1], r.stderr);
     }
 }
+
+/// D595: `findIndex` among bytes tests an array of 16 to 63 bytes, and the
+/// end of a longer one, by vectors of 16 (the last one over the end of the
+/// one before) where it tested one byte at a time; and
+/// `findIndex(iota(n), (j) => b[j] == x && b[j + 2] == y)` reads `b` at the
+/// index of its loop (the element `i` of `iota(n)` is `i`), so by vectors
+/// too. Arrays of every length from 0 to 200, the byte at every place:
+/// no wrong answer, compiled for each set of instructions and
+/// interpreted.
+#[test]
+fn find_index_among_bytes_by_narrow_vectors() {
+    let src = include_str!("data/find_index_bytes.isc");
+    assert_eq!(interp_ok(src, &[]), "0\n", "interpreted");
+    for (isa, name) in [
+        (isc_codegen::Isa::Native, "native"),
+        (isc_codegen::Isa::Sse, "sse"),
+        (isc_codegen::Isa::Avx2, "avx2"),
+    ] {
+        let opts = isc_codegen::Options { isa, ..isc_codegen::Options::default() };
+        let bin = compile_with(src, &format!("find_index_bytes_{}", name), opts);
+        let r = run_bin(&bin, &[]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, "0\n"), "{}: {}", name, r.stderr);
+        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        assert!(ll.contains("icmp eq <16 x i8>"), "{}: no vector of 16 bytes in a search", name);
+        checked_clean_bin(&bin, &[], None);
+    }
+}

@@ -13910,3 +13910,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     28 instructions where the runtime's entries have 27 and 36 (checks
     left out), so the gain against the real ones is not less; the cache of
     the thread stays in the thread-local storage in every form.
+- **D595 — `findIndex` among bytes by vectors of 16 where it tested one
+  byte at a time; the elements of an `iota` read at the index of its loop
+  (2026-11-10).** Found while writing `indexOf` in Isocron (D589): a byte
+  sought in a line of 60 by `findIndex(bytes(l), (c) => c == x)` cost 332
+  instructions and about 105 cycles a line, against 80 and about 20 for
+  `indexOf` of the runtime. (A first reading, 4.4 ns for both, was a time
+  on 16 idle threads: the search costs more than the call, so the `map`
+  around it was shared between the threads. Counted on one, as now.)
+  - A search of rule F (D505) tests 8 indices one at a time, then vectors
+    of 64 bytes (32 without masks of bytes) while one fits, then the rest
+    one at a time; and all of an array shorter than a vector one at a
+    time, 5 instructions a byte. Now, among bytes: after the whole vectors,
+    vectors of 16; then the indices still left, fewer than 16, by one
+    vector more over the end of the one before (its lanes already tested
+    hold no hit: its first lane set is the first index). An array of 16
+    bytes or more takes that path, a shorter one the path of before (the
+    searches of a few bytes of the keys of `json`, D512, unchanged, as the
+    elements that are not bytes). `fold_first_vector`, `fold_first_lane`.
+  - `findIndex(iota(n), (j) => b[j] == x && b[j + 2] == y)`: the prelude's
+    `findIndex` reads the element of its array, here `iota(n)[i]`, bound
+    to `j`: the code generator did not see in `b[j]` a read at the index
+    of the loop and tested one index at a time. The pass `iota_elements`:
+    in a `fold` over `iota(n)`, `iota(n)[i]` is `i` (in bounds by the
+    loop) and `length(iota(n))` is `n`, `n` a variable or an integer, the
+    same through the variables bound to it.
+  - Measured (a line of 60 bytes, cycles and instructions a line on one
+    thread, the difference of two round counts): a byte sought, 332.3
+    instructions and 101 to 108 cycles → 52.7 and 16.5 to 19.1 (the
+    runtime's `indexOf`: 79.6 and 18.7 to 20.6); a byte and another two
+    places further, 23.5 → 3.5 ns. Of the 50 forms of the groups strings,
+    json, arrays, control, maps and numbers of `bench/primitives` (the
+    median of 7 runs, before and after): `trim` 7.892 → 7.235 ns (−8.3 %),
+    `json.quote` of escaped texts 54.155 → 49.587 (−8.4 %), `json.parse`
+    −0.5 %, `json.decode` +0.1 %, no form slower but `arrays.scan`
+    (+5.9 %), whose program has the same assembly before and after: the
+    noise of that measure.
+  - Test `find_index_among_bytes_by_narrow_vectors` (`strings`): arrays of
+    every length from 0 to 200, the byte at every place, alone, with
+    another after it, absent, from the start, in a slice, from the end,
+    with a second byte two places further; no wrong answer, interpreted
+    and compiled for the native set of instructions, SSE and AVX2.

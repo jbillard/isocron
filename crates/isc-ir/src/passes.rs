@@ -442,6 +442,8 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     compose_zip_maps(body);
     // (after the fusion: the size checks around an `iota` floated out)
     iota_vars(body, vars);
+    // (the lengths of the `iota`s variables now)
+    iota_elements(body);
     bind_temporaries(body, vars);
     fuse_fixpoint(body);
     // (the source of a map a variable, the `let`s floated out of the value
@@ -457,6 +459,104 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     bind_projections(body, vars);
     let pending = place_streams(body, vars, Mode::Evaluated);
     debug_assert!(pending.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// the elements of an `iota` read at the index of the `fold` over it (D595)
+
+/// `fold(iota(n), init, (a, i) => .. iota(n)[i] ..)`: the element `i` of
+/// `iota(n)` is `i`, in bounds by the loop, and `length(iota(n))` is `n`.
+/// `findIndex(iota(n), (j) => b[j] == c)` of the prelude is such a `fold`:
+/// its `j` was bound to `iota(n)[i]`, so the code generator did not see in
+/// `b[j]` a read at the index of the loop (rule F, D505) and tested one
+/// index at a time; now `b[i]`, tested by vectors.
+fn iota_elements(e: &mut Expr) {
+    iota_elements_in(e, &mut HashMap::new());
+}
+
+/// A length as the same value wherever it is written: an integer, or a
+/// variable that is not bound to one nor to another variable.
+#[derive(Clone, Copy, PartialEq)]
+enum Length {
+    Int(i64),
+    Var(VarId),
+}
+
+/// `known`: the variables bound to an integer or to another variable (the
+/// length of an `iota` is written once as its value, once as the variable
+/// `iota_vars` bound to it).
+fn length_of(n: &Expr, known: &HashMap<VarId, Length>) -> Option<Length> {
+    match &n.kind {
+        ExprKind::Lit(Lit::Int(v)) => Some(Length::Int(*v)),
+        ExprKind::Var(v, _) => Some(known.get(v).copied().unwrap_or(Length::Var(*v))),
+        _ => None,
+    }
+}
+
+fn iota_elements_in(e: &mut Expr, known: &mut HashMap<VarId, Length>) {
+    if let ExprKind::Len(x) = &e.kind {
+        if let ExprKind::Iota(n) = &x.kind {
+            if length_of(n, known).is_some() {
+                *e = (**n).clone();
+                return;
+            }
+        }
+    }
+    if let ExprKind::Let { var, init, body, .. } = &mut e.kind {
+        iota_elements_in(init, known);
+        if init.ty == Type::Int(IntKind::I64) {
+            if let Some(l) = length_of(init, known) {
+                known.insert(*var, l);
+            }
+        }
+        iota_elements_in(body, known);
+        return;
+    }
+    for c in e.children_mut() {
+        iota_elements_in(c, known);
+    }
+    if let ExprKind::Fold(x, _, l) = &mut e.kind {
+        if let ExprKind::Iota(n) = &x.kind {
+            if let (Some(n), 2) = (length_of(n, known), l.params.len()) {
+                index_of_iota(&mut l.body, n, l.params[1], known);
+            }
+        }
+    }
+}
+
+/// Each `iota(n)[i]` of `e` replaced by `i`; a `let` of it renamed away.
+fn index_of_iota(e: &mut Expr, n: Length, i: VarId, known: &HashMap<VarId, Length>) {
+    fn is(x: &Expr, n: Length, i: VarId, known: &HashMap<VarId, Length>) -> bool {
+        matches!(&x.kind, ExprKind::Index(a, k)
+            if matches!(&a.kind, ExprKind::Iota(m) if length_of(m, known) == Some(n)) && matches!(k.kind, ExprKind::Var(v, _) if v == i))
+    }
+    fn rename(e: &mut Expr, from: VarId, to: VarId) {
+        if let ExprKind::Var(v, _) = &mut e.kind {
+            if *v == from {
+                *v = to;
+            }
+        }
+        for c in e.children_mut() {
+            rename(c, from, to);
+        }
+    }
+    if is(e, n, i, known) {
+        *e = Expr::var(i, e.ty.clone(), e.span);
+        return;
+    }
+    if let ExprKind::Let { var, init, body, .. } = &mut e.kind {
+        if is(init, n, i, known) {
+            let j = *var;
+            let mut b = take(body);
+            rename(&mut b, j, i);
+            *e = b;
+            index_of_iota(e, n, i, known);
+            return;
+        }
+    }
+    for c in e.children_mut() {
+        index_of_iota(c, n, i, known);
+    }
 }
 
 // ---------------------------------------------------------------------

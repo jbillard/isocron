@@ -64,6 +64,12 @@
   length panics at the same place compiled and interpreted. A `scan` of
   rows and a `filter` of rows kept as an array are refused by the compiler
   with their name instead of an internal error (D593).
+- `findIndex` among bytes tests an array of 16 to 63 bytes, and the end of
+  a longer one, by vectors of 16 bytes where it tested one byte at a time:
+  a byte sought in a line of 60 bytes 6 times faster, `trim` and
+  `json.quote` of escaped texts 8 % faster. A search over `iota(n)` whose
+  predicate reads an array at its index (`b[j] == x && b[j + 2] == y`) is
+  made by vectors too (D595).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

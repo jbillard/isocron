@@ -187,6 +187,9 @@ const HEAVY_FEW: i64 = 4;
 /// The indices a search of rule F tests one at a time before its vectors
 /// (D512).
 const FIRST_SCALAR: i64 = 8;
+/// The lanes of the vectors of a search of rule F among bytes after its
+/// whole vectors, and of an array too short for one (D595).
+const NARROW_SEARCH: u32 = 16;
 /// Chunks per thread of a `map` whose elements are loops (D121, D143).
 const HEAVY_CHUNKS: i64 = 8;
 
@@ -10361,6 +10364,35 @@ impl<'p> Gen<'p> {
         Ok(v(self.ins(format!("load i64, ptr {}", acc)), "i64"))
     }
 
+    /// `c` of a search of rule F on the `w` indices from `i`: whether it
+    /// holds at one of them, and the mask of those (`fold_first_lane` gives
+    /// the first).
+    fn fold_first_vector(&mut self, c: &Expr, (a, j): (VarId, VarId), iv: &V, reads: &[(&Expr, &Expr)], i: &str, w: u32) -> R<(String, String)> {
+        for (_, k) in reads {
+            self.prechecked.insert(*k as *const Expr);
+        }
+        self.bind(a, iv.clone());
+        let lanes = self.elem(&Src::Iota, i, w)?;
+        self.bind(j, lanes);
+        let cv = self.ex(c, w);
+        for (_, k) in reads {
+            self.prechecked.remove(&(*k as *const Expr));
+        }
+        let cv = self.widen(&cv?, w);
+        let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, cv.r, w));
+        let any = self.ins(format!("icmp ne i{} {}, 0", w, bits));
+        Ok((any, bits))
+    }
+
+    /// The index of the first lane set of `bits` (not 0), the mask of the
+    /// `w` indices from `i`.
+    fn fold_first_lane(&mut self, bits: &str, i: &str, w: u32) -> String {
+        self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+        let k = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {b}, i1 true)", w = w, b = bits));
+        let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
+        self.ins(format!("add i64 {}, {}", i, k64))
+    }
+
     /// A `fold` of rule F (`first_where`, D505): `c` from `i = 0` up, the
     /// first `i` where it holds the result, `init` when none does or when
     /// `init` is not negative; `c` evaluated only up to that `i`, as
@@ -10404,7 +10436,8 @@ impl<'p> Gen<'p> {
             // the checks of the reads at both ends (D512: the searches of a
             // backslash in the keys of a few bytes of `json.decode`)
             let lcheck = self.label();
-            let wide = self.ins(format!("icmp sge i64 {}, {}", n, w));
+            let least = if size == 1 { NARROW_SEARCH.min(w) } else { w };
+            let wide = self.ins(format!("icmp sge i64 {}, {}", n, least));
             self.cbr(&wide, &lcheck, &lscalar);
             self.block(&lcheck);
             let some = self.ins(format!("icmp sgt i64 {}, 0", n));
@@ -10414,7 +10447,7 @@ impl<'p> Gen<'p> {
                 let fine = self.fold_precheck(&reads, j, &n, 1)?;
                 self.ins(format!("and i1 {}, {}", some, fine))
             };
-            let (lvec, lhead, lbody, lhit, lnext, ltail) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+            let (lvec, lhead, ltail) = (self.label(), self.label(), self.label());
             self.cbr(&ok, &lvec, &lscalar);
             self.block(&lvec);
             // the first FIRST_SCALAR indices one at a time, in bounds (their
@@ -10427,7 +10460,6 @@ impl<'p> Gen<'p> {
             let first = if size == 1 { FIRST_SCALAR } else { 0 };
             let pre_end = self.ins(format!("call i64 @llvm.smin.i64(i64 {}, i64 {})", n, first));
             self.decls.insert("declare i64 @llvm.smin.i64(i64, i64)".to_string());
-            let last = self.ins(format!("sub i64 {}, {}", n, w));
             self.br(&lpre);
             self.block(&lpre);
             let pi = self.ins(format!("load i64, ptr {}", at));
@@ -10452,37 +10484,57 @@ impl<'p> Gen<'p> {
             let pn = self.ins(format!("add i64 {}, 1", pi));
             self.emit(format!("store i64 {}, ptr {}", pn, at));
             self.br(&lpre);
-            // then whole vectors from there, while one fits before `n`
+            // then whole vectors from there, while one fits before `n`; for
+            // bytes, vectors of 16 after them, and the indices still left
+            // (fewer than 16) by one vector more, over the end of the one
+            // before: its lanes already tested hold no `c`, so its first
+            // lane set is the first index (D595: an array of 16 to 63
+            // bytes, the end of a longer one, were tested one byte at a
+            // time, 5 instructions each)
+            let narrow: u32 = if size == 1 { NARROW_SEARCH } else { w };
             self.block(&lhead);
-            let i = self.ins(format!("load i64, ptr {}", at));
-            let more = self.ins(format!("icmp sle i64 {}, {}", i, last));
-            self.cbr(&more, &lbody, &ltail);
-            self.block(&lbody);
-            for (_, k) in &reads {
-                self.prechecked.insert(*k as *const Expr);
+            let mut widths = vec![w];
+            if narrow < w {
+                widths.push(narrow);
             }
-            self.bind(a, iv.clone());
-            let lanes = self.elem(&Src::Iota, &i, w)?;
-            self.bind(j, lanes);
-            let cv = self.ex(c, w);
-            for (_, k) in &reads {
-                self.prechecked.remove(&(*k as *const Expr));
+            for (t, &width) in widths.iter().enumerate() {
+                let (lloop, lbody, lhit, lnext, ldone) = (self.label(), self.label(), self.label(), self.label(), self.label());
+                let last = self.ins(format!("sub i64 {}, {}", n, width));
+                self.br(&lloop);
+                self.block(&lloop);
+                let i = self.ins(format!("load i64, ptr {}", at));
+                let more = self.ins(format!("icmp sle i64 {}, {}", i, last));
+                self.cbr(&more, &lbody, &ldone);
+                self.block(&lbody);
+                let (any, bits) = self.fold_first_vector(c, (a, j), &iv, &reads, &i, width)?;
+                self.cbr(&any, &lhit, &lnext);
+                self.block(&lhit);
+                let found = self.fold_first_lane(&bits, &i, width);
+                self.emit(format!("store i64 {}, ptr {}", found, acc));
+                self.br(&ljoin);
+                self.block(&lnext);
+                let next = self.ins(format!("add i64 {}, {}", i, width));
+                self.emit(format!("store i64 {}, ptr {}", next, at));
+                self.br(&lloop);
+                self.block(&ldone);
+                let _ = t;
             }
-            let cv = self.widen(&cv?, w);
-            let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, cv.r, w));
-            let any = self.ins(format!("icmp ne i{} {}, 0", w, bits));
-            self.cbr(&any, &lhit, &lnext);
-            self.block(&lhit);
-            self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
-            let k = self.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {b}, i1 true)", w = w, b = bits));
-            let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
-            let found = self.ins(format!("add i64 {}, {}", i, k64));
-            self.emit(format!("store i64 {}, ptr {}", found, acc));
-            self.br(&ljoin);
-            self.block(&lnext);
-            let next = self.ins(format!("add i64 {}, {}", i, w));
-            self.emit(format!("store i64 {}, ptr {}", next, at));
-            self.br(&lhead);
+            if size == 1 {
+                let (lover, lhit) = (self.label(), self.label());
+                let i = self.ins(format!("load i64, ptr {}", at));
+                let left = self.ins(format!("icmp slt i64 {}, {}", i, n));
+                self.cbr(&left, &lover, &ljoin);
+                self.block(&lover);
+                let from = self.ins(format!("sub i64 {}, {}", n, narrow));
+                let (any, bits) = self.fold_first_vector(c, (a, j), &iv, &reads, &from, narrow)?;
+                self.cbr(&any, &lhit, &ljoin);
+                self.block(&lhit);
+                let found = self.fold_first_lane(&bits, &from, narrow);
+                self.emit(format!("store i64 {}, ptr {}", found, acc));
+                self.br(&ljoin);
+            } else {
+                self.br(&ltail);
+            }
             self.block(&ltail);
             self.br(&lscalar);
         } else {
