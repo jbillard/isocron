@@ -232,6 +232,8 @@ pub enum StrOp {
     HashIndex,
     /// `$hashFind(keys, index, k)` (D492): the position of `k`, -1 if absent.
     HashFind,
+    /// `readWord(b, at, n)` (D580): the `n` bytes of `b` from `at` as a word.
+    ReadWord,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.

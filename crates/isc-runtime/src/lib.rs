@@ -5896,6 +5896,12 @@ pub extern "C" fn isc_panic_bench(r: i64, line: i32, col: i32) -> ! {
     die(line, col, &Panic::BenchReps(r))
 }
 
+/// `readWord` with a size out of 1 ..= 8 (D580).
+#[no_mangle]
+pub extern "C" fn isc_panic_word(n: i64, line: i32, col: i32) -> ! {
+    die(line, col, &Panic::WordBytes(n))
+}
+
 // ---------------------------------------------------------------------
 // mathematical functions (D108): those of `isc_runtime_core`, called by the
 // generated code

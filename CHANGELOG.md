@@ -28,6 +28,9 @@
   checked by the compiler on every target (Linux, Windows, WASI): every unsafe
   operation in a block with its reason, every unsafe function with its
   contract, both lints denied (D564 to D569).
+- `readWord(b, at, n)`: the `n` bytes (1 to 8) of an array of bytes from
+  `at` as one `u64`, little-endian, checked once and compiled to one or two
+  loads (D580).
 
 ## 0.5.0 — 2026-11-09
 

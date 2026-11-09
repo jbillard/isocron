@@ -203,6 +203,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$groupCounts" => Prim::GroupCounts,
         "$hashIndex" => Prim::HashIndex,
         "$hashFind" => Prim::HashFind,
+        "readWord" => Prim::ReadWord,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2691,7 +2692,7 @@ impl<'g> FnCx<'g> {
             Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
             Prim::ToUpper | Prim::ToLower | Prim::TrimStart | Prim::TrimEnd | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
-            Prim::HashFind => 3,
+            Prim::HashFind | Prim::ReadWord => 3,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -3086,6 +3087,19 @@ impl<'g> FnCx<'g> {
                 let s = self.syms.len() as SymId;
                 self.syms.push(SymInfo { name: format!("s@{}:{}", span.line, span.col), origin: SymOrigin::Existential(span) });
                 Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::sym(s)), Box::new(Ty::Int(IntKind::I64))), self))
+            }
+            Prim::ReadWord => {
+                let (arr, _, _) = self.fresh_array(span);
+                let b = self.check(&args[0], Some(&arr))?;
+                self.unify(&arr, &b.ty, b.span)?;
+                let Ty::Array(_, el) = self.shallow(&arr) else { unreachable!() };
+                self.unify(&Ty::Int(IntKind::U8), &el, b.span)?;
+                let i64t = Ty::Int(IntKind::I64);
+                let at = self.check(&args[1], Some(&i64t))?;
+                self.unify(&i64t, &at.ty, at.span)?;
+                let n = self.check(&args[2], Some(&i64t))?;
+                self.unify(&i64t, &n.ty, n.span)?;
+                Ok(mk(vec![b, at, n], Ty::Int(IntKind::U64), self))
             }
             Prim::HashFind => {
                 let ks = self.check(&args[0], None)?;

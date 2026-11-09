@@ -1038,6 +1038,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_panic_div0(i32, i32) noreturn",
     "declare void @isc_panic_negexp(i64, i32, i32) noreturn",
     "declare void @isc_panic_bench(i64, i32, i32) noreturn",
+    "declare void @isc_panic_word(i64, i32, i32) noreturn",
     "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)",
     "declare ptr @llvm.stacksave.p0()",
     "declare void @llvm.stackrestore.p0(ptr)",
@@ -12950,6 +12951,57 @@ impl<'p> Gen<'p> {
                 self.br(&lloop);
                 self.block(&ldone);
                 v(self.ins(format!("load i64, ptr {}", res)), "i64")
+            }
+            // `readWord(b, at, n)` (D580), as `read_word` of the runtime core:
+            // `n` in 1 ..= 8, then one check of the bytes `at .. at + n`, then
+            // two loads of 4 bytes that overlap (4 to 8 bytes) or the first,
+            // middle and last byte (1 to 3), as `digits8` reads its digits
+            S::ReadWord => {
+                let (p, len) = self.str_parts(&vals[0]);
+                let (at, n) = (vals[1].r.clone(), vals[2].r.clone());
+                let nm1 = self.ins(format!("sub i64 {}, 1", n));
+                let nok = self.ins(format!("icmp ult i64 {}, 8", nm1));
+                self.guard(&nok, format!("call void @isc_panic_word(i64 {}, {})", n, Self::pos(e.span)));
+                let last = self.ins(format!("add i64 {}, {}", at, nm1));
+                let c0 = self.ins(format!("icmp sge i64 {}, 0", at));
+                let c1 = self.ins(format!("icmp slt i64 {}, {}", last, len));
+                let ok = self.ins(format!("and i1 {}, {}", c0, c1));
+                let idx = self.ins(format!("select i1 {}, i64 {}, i64 {}", c0, last, at));
+                self.guard(&ok, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 0, {})", idx, len, Self::pos(e.span)));
+                let base = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, at));
+                let big = self.ins(format!("icmp uge i64 {}, 4", n));
+                let (lbig, lsmall, ljoin) = (self.label(), self.label(), self.label());
+                self.cbr(&big, &lbig, &lsmall);
+                self.block(&lbig);
+                let lo = self.ins(format!("load i32, ptr {}, align 1", base));
+                let off = self.ins(format!("sub i64 {}, 4", n));
+                let hp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, off));
+                let hi = self.ins(format!("load i32, ptr {}, align 1", hp));
+                let lo64 = self.ins(format!("zext i32 {} to i64", lo));
+                let hi64 = self.ins(format!("zext i32 {} to i64", hi));
+                let sh = self.ins(format!("shl i64 {}, 3", off));
+                let his = self.ins(format!("shl i64 {}, {}", hi64, sh));
+                let w1 = self.ins(format!("or i64 {}, {}", lo64, his));
+                self.br(&ljoin);
+                self.block(&lsmall);
+                let b0 = self.ins(format!("load i8, ptr {}, align 1", base));
+                let half = self.ins(format!("lshr i64 {}, 1", n));
+                let mp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, half));
+                let bm = self.ins(format!("load i8, ptr {}, align 1", mp));
+                let lp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, nm1));
+                let bl = self.ins(format!("load i8, ptr {}, align 1", lp));
+                let b064 = self.ins(format!("zext i8 {} to i64", b0));
+                let bm64 = self.ins(format!("zext i8 {} to i64", bm));
+                let bl64 = self.ins(format!("zext i8 {} to i64", bl));
+                let shm = self.ins(format!("shl i64 {}, 3", half));
+                let shl_ = self.ins(format!("shl i64 {}, 3", nm1));
+                let bms = self.ins(format!("shl i64 {}, {}", bm64, shm));
+                let bls = self.ins(format!("shl i64 {}, {}", bl64, shl_));
+                let w2a = self.ins(format!("or i64 {}, {}", b064, bms));
+                let w2 = self.ins(format!("or i64 {}, {}", w2a, bls));
+                self.br(&ljoin);
+                self.block(&ljoin);
+                v(self.ins(format!("phi i64 [ {}, %{} ], [ {}, %{} ]", w1, lbig, w2, lsmall)), "i64")
             }
             S::HashFind => {
                 let (p, n) = self.str_parts(&vals[0]);

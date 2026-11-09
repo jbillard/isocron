@@ -154,6 +154,9 @@ pub enum Prim {
     /// `$hashFind(keys, index, k)` (D492): the position of `k` among the
     /// keys, -1 if absent
     HashFind,
+    /// `readWord(b, at, n)` (D580): the `n` bytes (1 to 8) of `b` from
+    /// `at`, little-endian, as a `u64`, checked once
+    ReadWord,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// `argsort(x)`: the indices of the elements in their order, stable

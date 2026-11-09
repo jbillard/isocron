@@ -1497,3 +1497,49 @@ action main(args: string[k]): i32 {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
     }
 }
+
+/// `readWord(b, at, n)` (D580): every place and size of a text of 16 bytes,
+/// little-endian, interpreted and compiled the same (the word of the
+/// runtime core, `read_word`); a size out of 1 to 8 and bytes past the end
+/// or before the start: the same panics.
+#[test]
+fn words_read_from_bytes() {
+    let src = "action main(args: string[k]): i32 {
+    const b = bytes(\"0123456789abcdef\");
+    print(map(iota(8), (n) => sum(map(iota(17 - (n + 1)), (at) => readWord(b, at, n + 1) % u64(1000003)))));
+    print(map(iota(9), (at) => readWord(b, at, 8)));
+    print(map(iota(3), (n) => readWord(b, 16 - (n + 1), n + 1)));
+    return 0;
+}
+";
+    let mut want = String::new();
+    let b = b"0123456789abcdef";
+    let word = |at: usize, n: usize| (0..n).fold(0u64, |w, i| w | (b[at + i] as u64) << (8 * i));
+    let sums: Vec<String> = (1..=8).map(|n| (0..=16 - n).map(|at| word(at, n) % 1000003).sum::<u64>().to_string()).collect();
+    want.push_str(&format!("[{}]\n", sums.join(", ")));
+    let eights: Vec<String> = (0..9).map(|at| word(at, 8).to_string()).collect();
+    want.push_str(&format!("[{}]\n", eights.join(", ")));
+    let ends: Vec<String> = (1..=3).map(|n| word(16 - n, n).to_string()).collect();
+    want.push_str(&format!("[{}]\n", ends.join(", ")));
+    agree(src, "read_word", &[], &want);
+    let bad = "action main(args: string[k]): i32 {
+    const b = bytes(\"0123456789abcdef\");
+    print(readWord(b, parseI64(args[0]), parseI64(args[1])));
+    return 0;
+}
+";
+    let bin = compile(bad, "read_word_bad");
+    for (args, msg) in [
+        (["16", "1"], "index out of bounds: the index is 16 but the length is 16"),
+        (["9", "8"], "index out of bounds: the index is 16 but the length is 16"),
+        (["-1", "2"], "index out of bounds: the index is -1 but the length is 16"),
+        (["0", "0"], "readWord: a word has 1 to 8 bytes, got 0"),
+        (["0", "9"], "readWord: a word has 1 to 8 bytes, got 9"),
+    ] {
+        let m = interp_panic(bad, &args);
+        assert!(m.contains(msg), "{:?} interpreted: {}", args, m);
+        let r = run_bin(&bin, &args);
+        assert_ne!(r.code, 0);
+        assert!(r.stderr.contains(msg), "{:?} compiled: {}", args, r.stderr);
+    }
+}

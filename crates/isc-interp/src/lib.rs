@@ -407,6 +407,24 @@ impl Interp<'_> {
                 };
                 Value::Array(Rc::new(Array::Int(slots)))
             }
+            // `readWord` (D580): the code of the runtime core
+            S::ReadWord => {
+                let b: Vec<u8> = match &vs[0] {
+                    Value::Array(a) => match &**a {
+                        Array::Int(v) => v.iter().map(|&x| x as u8).collect(),
+                        a => panic!("an array of u8 expected, got {:?}", a),
+                    },
+                    v => panic!("an array expected, got {:?}", v),
+                };
+                let (at, n) = match (&vs[1], &vs[2]) {
+                    (Value::Int(at), Value::Int(n)) => (*at, *n),
+                    v => panic!("integers expected, got {:?}", v),
+                };
+                match isc_runtime_core::read_word(&b, at, n) {
+                    Ok(w) => Value::Int(w as i64),
+                    Err(p) => return panic_at(e, std::format!("{}", p)),
+                }
+            }
             S::HashFind => {
                 use isc_runtime_core::{hash_bytes, hash_find, hash_word};
                 let (a, ix) = match (&vs[0], &vs[1]) {

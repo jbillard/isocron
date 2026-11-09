@@ -13409,3 +13409,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the compiler proves needless removed in loops. Both added to the work
     of step 7 ahead of the primitives of the system. `parseI64` stays in
     Rust.
+- **D580 — `readWord(b, at, n)`: a word of 1 to 8 bytes read with one
+  check (2026-11-09).** The first need that D579 found: the SWAR of
+  `parseI64` in Isocron built its word one byte a turn, a check of bounds
+  each. `readWord(b: u8[k], at: i64, n: i64): u64`: the `n` bytes of `b`
+  from `at`, the first at the lowest place; `n` out of 1 ..= 8 a panic
+  (« readWord: a word has 1 to 8 bytes, got N »), bytes past the end or
+  before the start the panic of an index (the last byte asked, or `at`).
+  Its meaning is `isc_runtime_core::read_word` (its test of every place
+  and size), which the interpreter calls; the code generator emits in
+  place one check of the size, one of the bytes, then two loads of 4 bytes
+  that overlap (4 to 8 bytes) or the first, middle and last byte (1 to 3),
+  as `digits8` of the runtime reads its digits. An operation of strings
+  and bytes of the IR (`StrOp::ReadWord`), the array borrowed. The test
+  `words_read_from_bytes`: every place and size of a text of 16 bytes,
+  interpreted and compiled the same (and under Valgrind), the five panics
+  the same.
+  - The pilot again (`bench/primitives/parse_pilot.isc`, its `word` form:
+    the SWAR with `readWord`): one CPU at fixed frequency, 7 runs of 400
+    rounds: builtin 5.234 ns, the loop 7.079 (+35.3 %), the SWAR by a
+    `fold` 11.212 (+114.2 %), the SWAR by `readWord` 5.585 (+6.7 %). Its
+    assembly: the two loads of Rust, the check of the size folded into the
+    test of the caller (`n >= 1 && n <= 8`), the check of the bytes into
+    one compare.
+  - The rest of the gap, counted (`perf stat`, a program of each form,
+    20 and 2020 rounds, their difference over 8192000 texts): the builtin
+    71.1 instructions, 10.0 branches and 17.14 cycles a text, the `word`
+    form 63.1 instructions, 7.0 branches, 17.67 cycles: fewer of both,
+    no branch missed in either. A form without the select of validity
+    (`bad != 0 ? -1 : v`, 3 instructions on the chain of each text):
+    60.1 instructions, 16.91 cycles, the same sum: that select is the
+    gap. The builtin panics on a text that is no number (a branch never
+    taken); the language has no panic a program can raise, so a
+    `parseI64` in Isocron needs one: a primitive of panic for the modules
+    of the runtime only, the next need of step 7.

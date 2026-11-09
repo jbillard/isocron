@@ -18,6 +18,31 @@ function digits8(b: u8[k], a: i64, n: i64): i64 {
     return bad != u64(0) ? -1 : i64(v3);
 }
 
+// `digits8` with its word read by `readWord` (D580): one check, two loads
+function digits8w(b: u8[k], a: i64, n: i64): i64 {
+    const zeros = u64(0x30303030) << u64(32) | u64(0x30303030);
+    const high = u64(0x80808080) << u64(32) | u64(0x80808080);
+    const add46 = u64(0x46464646) << u64(32) | u64(0x46464646);
+    const w0 = readWord(b, a, n);
+    const w = n == 8 ? w0 : (w0 << u64((8 - n) * 8)) | (zeros >> u64(n * 8));
+    const bad = ((w + add46) | (w - zeros)) & high;
+    const v1 = w - zeros;
+    const v2 = v1 * u64(10) + (v1 >> u64(8));
+    const m = u64(0xFF) << u64(32) | u64(0xFF);
+    const v3 = ((v2 & m) * (u64(100) + (u64(1000000) << u64(32))) + ((v2 >> u64(16)) & m) * (u64(1) + (u64(10000) << u64(32)))) >> u64(32);
+    return bad != u64(0) ? -1 : i64(v3);
+}
+
+function parseWord(s: string): i64 {
+    const b = bytes(s);
+    const k = b.length;
+    const neg = k > 0 && b[0] == u8(45);
+    const sign = k > 0 && (b[0] == u8(45) || b[0] == u8(43)) ? 1 : 0;
+    const n = k - sign;
+    const v = n >= 1 && n <= 8 ? digits8w(b, sign, n) : -1;
+    return neg ? -v : v;
+}
+
 function parseSwar(s: string): i64 {
     const b = bytes(s);
     const k = b.length;
@@ -44,5 +69,7 @@ action main(args: string[k]): i32 {
     print(`scalar ${(f64(t2) / each).toFixed(3)} ${a2}`);
     const [a3, t3] = bench(r, () => sum(map(nums, parseSwar)));
     print(`swar ${(f64(t3) / each).toFixed(3)} ${a3}`);
+    const [a4, t4] = bench(r, () => sum(map(nums, parseWord)));
+    print(`word ${(f64(t4) / each).toFixed(3)} ${a4}`);
     return 0;
 }

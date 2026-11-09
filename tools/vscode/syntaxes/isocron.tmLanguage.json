@@ -321,7 +321,7 @@
         },
         {
           "name": "support.function.builtin.isocron",
-          "match": "\\b(?:BigInt|Number|String|argsort|bench|bytes|clock|concat|count|countBy|countMatches|delete|doneOr|dot|endsWith|entries|fill|filter|fold|get|has|includes|indexOf|iota|lastIndexOf|join|keys|len|lines|map|matches|max|mean|min|padEnd|padStart|parseF64|parseFloat|parseI64|parseInt|print|printBytes|product|random|randomInt|readBytes|readStdin|readStdinLines|readStdinText|readText|reduce|repeat|replace|replaceAll|resultOf|scan|scatter|search|set|slice|sort|sortBy|split|splitMix|startsWith|stringOf|sum|test|toFixed|toLowerCase|toReversed|toString|toUpperCase|trim|trimEnd|trimStart|tryParseF64|tryParseI64|values|window|writeBytes|writeText|zeros|zip)\\b(?=\\s*[(<])"
+          "match": "\\b(?:BigInt|Number|String|argsort|bench|bytes|clock|concat|count|countBy|countMatches|delete|doneOr|dot|endsWith|entries|fill|filter|fold|get|has|includes|indexOf|iota|lastIndexOf|join|keys|len|lines|map|matches|max|mean|min|padEnd|padStart|parseF64|parseFloat|parseI64|parseInt|print|printBytes|readWord|product|random|randomInt|readBytes|readStdin|readStdinLines|readStdinText|readText|reduce|repeat|replace|replaceAll|resultOf|scan|scatter|search|set|slice|sort|sortBy|split|splitMix|startsWith|stringOf|sum|test|toFixed|toLowerCase|toReversed|toString|toUpperCase|trim|trimEnd|trimStart|tryParseF64|tryParseI64|values|window|writeBytes|writeText|zeros|zip)\\b(?=\\s*[(<])"
         },
         {
           "name": "support.variable.property.isocron",

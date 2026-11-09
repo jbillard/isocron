@@ -128,6 +128,8 @@ pub enum Panic<'a> {
     /// A `size` argument (SPEC section 4: a size is positive or zero).
     NegativeSize(i64),
     BenchReps(i64),
+    /// `readWord(b, at, n)` with `n` not in 1 ..= 8 (D580).
+    WordBytes(i64),
     ParseI64(&'a str),
     /// An operating-system error: `detail` is the text of `strerror(code)`.
     Read { path: &'a str, detail: &'a str, code: i32 },
@@ -214,6 +216,7 @@ impl fmt::Display for Panic<'_> {
             Panic::NegativeExponent(k) => write!(f, "negative integer exponent: {}", k),
             Panic::NegativeSize(k) => write!(f, "negative size: {}", k),
             Panic::BenchReps(r) => write!(f, "bench: the number of repetitions must be at least 1, got {}", r),
+            Panic::WordBytes(n) => write!(f, "readWord: a word has 1 to 8 bytes, got {}", n),
             Panic::ParseI64(s) => write!(f, "parseI64: `{}` is not a valid integer", s),
             // same text as the `Display` of `std::io::Error` for OS errors
             Panic::Read { path, detail, code } => write!(f, "cannot read `{}`: {} (os error {})", path, detail, code),
@@ -2822,6 +2825,30 @@ pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
 }
 
 #[cfg(test)]
+mod read_word_tests {
+    /// `read_word` (D580): every place and size of a text of 12 bytes, its
+    /// value against the bytes; the panics of a size out of 1 ..= 8 and of
+    /// bytes past the end or before the start.
+    #[test]
+    fn words_of_every_place_and_size() {
+        use super::{read_word, Panic};
+        let b: [u8; 12] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76];
+        for n in 1..=8i64 {
+            for at in 0..=(12 - n) {
+                let want = (0..n).fold(0u64, |w, i| w | (b[(at + i) as usize] as u64) << (8 * i));
+                assert_eq!(read_word(&b, at, n).ok(), Some(want), "{} bytes at {}", n, at);
+            }
+            assert!(matches!(read_word(&b, 13 - n, n), Err(Panic::Bounds { index: 12, len: 12 })), "{} bytes past the end", n);
+            assert!(matches!(read_word(&b, -1, n), Err(Panic::Bounds { index: -1, len: 12 })));
+        }
+        for n in [0i64, 9, -1] {
+            assert!(matches!(read_word(&b, 0, n), Err(Panic::WordBytes(m)) if m == n));
+        }
+        assert_eq!(read_word(&b, 0, 8).ok(), Some(0xefcdab8967452301));
+    }
+}
+
+#[cfg(test)]
 mod read_in_page_tests {
     /// The reads past the bytes of a text (D573): an empty text (at the
     /// address 1 of an empty slice, at the start, the middle and the end
@@ -3100,6 +3127,26 @@ mod utf8_check_tests {
             }
         }
     }
+}
+
+/// `readWord(b, at, n)` (D580): the `n` bytes of `b` from `at`, the first
+/// at the lowest place (little-endian), as a word; `n` in 1 ..= 8, the
+/// bytes `at .. at + n` inside `b` (the panic of an index past them: the
+/// last byte asked, or `at` when it is below 0). The code generator does
+/// the same in place (two loads of 4 bytes that overlap for 4 to 8, the
+/// first, middle and last byte for 1 to 3).
+pub fn read_word(b: &[u8], at: i64, n: i64) -> Result<u64, Panic<'static>> {
+    if !(1..=8).contains(&n) {
+        return Err(Panic::WordBytes(n));
+    }
+    let len = b.len() as i64;
+    if at < 0 {
+        return Err(Panic::Bounds { index: at as i128, len });
+    }
+    if at + n > len {
+        return Err(Panic::Bounds { index: (at + n - 1) as i128, len });
+    }
+    Ok(b[at as usize..(at + n) as usize].iter().rev().fold(0u64, |w, &c| w << 8 | c as u64))
 }
 
 /// Whether a read of `width` bytes from `addr`, the address of `len` bytes
