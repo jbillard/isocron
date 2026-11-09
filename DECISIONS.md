@@ -12457,3 +12457,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     one copy left in the code, the last one's, in its two paths; Valgrind
     and the allocator checked); `literals_kept_without_a_copy` now counts
     1 copy (its `sort` moves).
+- **D549 — The reason of V = 32 measured (2026-11-09).** TODO, the
+  hypotheses behind choices (D375: D55 wrote that V = 16 leaves the
+  reductions latency-bound, « fewer chains than the latency of an addition
+  times the number of adders », without counting them). Counted on this
+  core (`bench/floor/fadd_chains.c`: 1e8 `vaddpd` in K chains of
+  independent registers, `perf stat -e cycles:u`, one CPU at fixed
+  frequency): 512 bits 4.235 cycles an add in 1 chain (the latency, about
+  4, with the loop), 2.504 in 2, 1.254 in 4, 1.003 in 8 and 12 (one add of
+  512 bits a cycle); 256 bits 5.004, 2.503, 1.252, 0.643, 0.502 in 1, 2,
+  4, 8 and 12 chains (two adds of 256 bits a cycle). The independent
+  doubles that keep the adders busy: 4 cycles x 1 add x 8 doubles = 32
+  with AVX-512, 4 x 2 x 4 = 32 with AVX2 (8 chains of 4 doubles: 0.643,
+  the latency of 5 cycles in 1 chain leaving a little); V = 16 is 2 chains
+  of `zmm` (2.504 cycles an add, 2.5 times the throughput) or 4 of `ymm`
+  (1.252, 2.5 times). V = 32 is that product on both instruction sets of
+  this machine, as D55 measured on the kernels (up to 36 % less time than
+  V = 16 in L1, nothing more from V = 64). The hypothesis is a fact here;
+  the other cores (SSE2, ARM64 set aside, D540) not measured.
