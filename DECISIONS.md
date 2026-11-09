@@ -13261,3 +13261,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     Miri adds its code twice (its text of the system already holds it):
     compared with the text and the code, and with the display outside
     Miri.
+- **D575 — Every program of the tests on the checked allocator, in the
+  suite (2026-11-09).** The item of the trusted base: the generated code
+  checked as the IR is (D96 checks the ownership of the IR; LLVM verifies
+  the module, `LLVMVerifyModule`; nothing checked what the code does with
+  the memory). The mode `ISC_ALLOC=check` (D546) sees a block freed twice
+  or that is no block, written past its end, written after its free, and
+  the blocks left at the end of `main`; the programs that the tests build
+  and run take it from the environment (two tests of `std_sys` clear it on
+  purpose). One pass of the 52 binaries of the tests with it: `CHECK OK`,
+  52 binaries, 0 failed, 4.5 minutes. So `tools/suite.py` runs every test
+  binary a third time with it, after Isocron's allocator and glibc's: a
+  fault of the code generator or of the runtime on the memory of the heap
+  is then a message and a failed test, not a fault of segmentation at
+  some later run. Not seen by it: the reads of a block freed (Valgrind
+  sees them, D546) and the memory outside the heap (the stack, the
+  mapped input); a check of the LLVM code itself (each access against its
+  block) is left in TODO.

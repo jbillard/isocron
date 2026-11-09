@@ -1,11 +1,15 @@
 """The complete suite (`cargo test`, then `ISC_ALLOC=glibc cargo test`, then
+`ISC_ALLOC=check cargo test` (every program of the tests on the allocator
+checked, D546: a block freed twice, written past its end or after its free,
+left at the end of `main`, D575), then
 the tests of isc-mem in its variants of x86-64, and clippy on the crates that
 deny its lints for each target and level of x86-64, D572) in
 a few minutes instead of a quarter of an hour (D223): one build, then every
-test binary run twice (Isocron's allocator, then glibc's), JOBS at a time,
+test binary run three times (Isocron's allocator, glibc's, the checked one),
+JOBS at a time,
 the longest first (their times of the previous run, in LOG.times), each
 allocator with its own directory of temporary files (ISC_TEST_TMP); the doc
-tests once per allocator. One line per binary in LOG, then a summary line
+tests once for Isocron's allocator and once for glibc's. One line per binary in LOG, then a summary line
 `SUITE OK` or `SUITE FAILED` with the failed binaries; exit code 1 on a
 failure.
     python3 tools/suite.py WORKTREE TARGET LOG JOBS
@@ -59,7 +63,7 @@ try:
         n, s = l.split(); prev[n] = float(s)
 except OSError:
     pass
-runs = [(bn, cwd, alloc) for alloc in ("", "glibc") for bn, cwd in bins]
+runs = [(bn, cwd, alloc) for alloc in ("", "glibc", "check") for bn, cwd in bins]
 runs.sort(key=lambda r: -prev.get(os.path.basename(r[0]).rsplit("-", 1)[0], 1000))
 def run(r):
     bn, cwd, alloc = r
