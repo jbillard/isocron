@@ -1970,21 +1970,23 @@ action main(args: string[k]): i32 {
 }
 "#;
     let hash = |t: &str| t.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
-    let mut many64: Vec<f64> = (0..100_000u64).map(f64::from_bits).collect();
+    // a twentieth of them under Valgrind (`ISC_TEST_MEMCHECK`, D578)
+    let scale = if memcheck() { 20 } else { 1 };
+    let mut many64: Vec<f64> = (0..100_000u64 / scale).map(f64::from_bits).collect();
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
-    for _ in 0..2_000_000 {
+    for _ in 0..2_000_000 / scale {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
         many64.push(f64::from_bits(x));
     }
-    for _ in 0..1_000_000 {
+    for _ in 0..1_000_000 / scale {
         let m = r.next();
         many64.push(f64::from_bits((953 + m % 141) << 52 | (m >> 12) | (m & 1) << 63));
     }
     many64.truncate(many64.len() / 4096 * 4096);
-    let mut many32: Vec<f32> = (0..100_000u32).map(f32::from_bits).collect();
-    for _ in 0..2_000_000 {
+    let mut many32: Vec<f32> = (0..100_000u32 / scale as u32).map(f32::from_bits).collect();
+    for _ in 0..2_000_000 / scale {
         many32.push(f32::from_bits(r.next() as u32));
     }
     many32.truncate(many32.len() / 4096 * 4096);
