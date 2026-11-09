@@ -12351,3 +12351,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Tests: the files that run WebAssembly, whole (`codegen` with its
     histogram on 4 threads, `std_sys`, `tuples`, `phase5`, `std_net`,
     `std_https`, `docs`).
+- **D545 — The relocations of a static program checked at its build
+  (2026-11-09).** Step 4 of D540, its first part (TODO, the trusted base:
+  `isc_start` skips any relocation but `R_X86_64_RELATIVE` without a word,
+  D289). After LLD, iscc reads the program as its start reads it
+  (`check_static_relocations`): the program headers, the dynamic segment,
+  the table `DT_RELA` (its address read through the segments loaded),
+  each entry of type 8; a table `DT_RELR`, `DT_REL` or `DT_JMPREL`, or a
+  `DT_NEEDED`, refused too. A fault there stops the build with its type
+  and its place (a fault of iscc, never of the program). regex-redux:
+  6101 relocations, all of type 8, the dynamic tags 4 to 11, 21, 30 and
+  three of GNU (hash, `RELACOUNT`, `FLAGS_1`); its build 56 to 63 ms with
+  the check. Test `static_programs_have_only_relative_relocations`
+  (`static_programs.rs`): a static program checked, then its first
+  relocation made `R_X86_64_64` and synthetic files with each tag refused,
+  each named by the check.

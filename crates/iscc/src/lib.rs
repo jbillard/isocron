@@ -713,7 +713,65 @@ fn link_linux_static(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(
     if !debug {
         a.push("-s".into());
     }
-    run_linker("ld.lld", "gnu", a, &rust_lld)
+    run_linker("ld.lld", "gnu", a, &rust_lld)?;
+    let bytes = std::fs::read(out).map_err(|e| format!("cannot read `{}`: {}", out.display(), e))?;
+    check_static_relocations(&bytes).map(|_| ()).map_err(|e| format!("`{}`: {} (a fault of iscc)", out.display(), e))
+}
+
+/// The relocations of a static program for Linux, read as its start
+/// (`isc_start`) reads them (D545): the table `DT_RELA` of its dynamic
+/// segment, each entry `R_X86_64_RELATIVE` (8), the only kind it applies;
+/// no table of another kind (`DT_RELR`, `DT_REL`, `DT_JMPREL`) and no
+/// library needed (`DT_NEEDED`), which it would skip without a word. The
+/// count of relocations and the place of their table in the file, or what
+/// is wrong.
+pub fn check_static_relocations(elf: &[u8]) -> Result<(usize, usize), String> {
+    let u16_at = |at: usize| elf.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize).ok_or("a truncated ELF file");
+    let u32_at = |at: usize| elf.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as u64).ok_or("a truncated ELF file");
+    let u64_at = |at: usize| elf.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).ok_or("a truncated ELF file");
+    if elf.get(..4) != Some(b"\x7fELF") || elf.get(4) != Some(&2) {
+        return Err("not an ELF file of 64 bits".into());
+    }
+    let (phoff, phentsize, phnum) = (u64_at(0x20)? as usize, u16_at(0x36)?, u16_at(0x38)?);
+    // the segments: those loaded (to read addresses), the dynamic one
+    let mut loads = Vec::new();
+    let mut dynamic = None;
+    for i in 0..phnum {
+        let h = phoff + i * phentsize;
+        let (kind, offset, vaddr, filesz) = (u32_at(h)?, u64_at(h + 8)?, u64_at(h + 16)?, u64_at(h + 32)?);
+        match kind {
+            1 => loads.push((vaddr, offset, filesz)),
+            2 => dynamic = Some((offset as usize, filesz as usize)),
+            _ => {}
+        }
+    }
+    let Some((dyn_at, dyn_size)) = dynamic else { return Ok((0, 0)) };
+    let (mut rela, mut relasz) = (None, 0u64);
+    for k in 0..dyn_size / 16 {
+        let (tag, val) = (u64_at(dyn_at + 16 * k)?, u64_at(dyn_at + 16 * k + 8)?);
+        match tag {
+            0 => break,
+            7 => rela = Some(val),
+            8 => relasz = val,
+            1 => return Err("the static program needs a library (DT_NEEDED)".into()),
+            17 | 23 | 36 => return Err(format!("the static program has a table of relocations its start does not read (dynamic tag {})", tag)),
+            _ => {}
+        }
+    }
+    let Some(rela) = rela else { return Ok((0, 0)) };
+    let at = loads
+        .iter()
+        .find(|(vaddr, _, filesz)| rela >= *vaddr && rela + relasz <= vaddr + filesz)
+        .map(|(vaddr, offset, _)| (rela - vaddr + offset) as usize)
+        .ok_or("the table of relocations is outside the segments loaded")?;
+    let n = relasz as usize / 24;
+    for i in 0..n {
+        let (offset, info) = (u64_at(at + 24 * i)?, u64_at(at + 24 * i + 8)?);
+        if info & 0xffff_ffff != 8 {
+            return Err(format!("the static program has a relocation of type {} at {:#x}, which its start (`isc_start`) does not apply", info & 0xffff_ffff, offset));
+        }
+    }
+    Ok((n, at))
 }
 
 /// Links the program with the runtime (which needs only the C library, and
