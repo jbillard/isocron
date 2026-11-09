@@ -13760,3 +13760,115 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     of digits with a byte changed) is now that of the prelude's:
     `parse_i64_of_the_prelude_answers_as_str_parse`, on the same texts
     (a part interpreted and compiled, all of them compiled).
+- **D592 — The blocks of texts made by the generated code: copy,
+  concatenation, equality, order, `startsWith`, `endsWith`
+  (2026-11-09).** Four functions of the runtime less (D589).
+  - A copy of a text (a text taken by an owner, a literal made a value,
+    the bytes of a text copied): `isc_alloc` of its length (the empty block
+    of the runtime for none, D379) and `memcpy`, where `isc_str_new` was
+    called through a place of result on the stack.
+  - `a + b`, `a + b + c`, a template without a literal (with one: D368,
+    unchanged): the lengths added, one block, each text copied after the
+    other. `isc_str_concat_n` read the texts from a table written on the
+    stack for it. A left text given at its last use still grows in place
+    by the runtime (`isc_str_append`, D351).
+  - `a == b`: the same length, then `memcmp` of the bytes; `a < b`:
+    `memcmp` of the bytes both have, then the lengths (after the first
+    bytes compared in place, D532, unchanged); `a.startsWith(b)`,
+    `a.endsWith(b)` of a text that is not a literal: its length at most
+    that of `a`, then `memcmp` at the start or at the end.
+    `isc_str_cmp` and a part of `isc_str_test` did it. LLVM calls `bcmp`
+    where only the equality is read. In WebAssembly `memcmp` takes its
+    count in 32 bits: declared so there (declared with 64, the linker only
+    warns and the call is a trap).
+  - Measured (4096 values a round, the median of 7 runs, Rust by the
+    compiler before D580): concatenation of 2 texts 10.521 → 9.227 ns
+    (−12.3 %), of 3: 18.740 → 11.490 (−38.7 %), of 5: 29.436 → 15.981
+    (−45.7 %); equal texts of 4 bytes 5.711 → 3.695 (−35.3 %);
+    `startsWith` of a text of 9 bytes 5.271 → 4.325 (−17.9 %), `endsWith`
+    4.745 → 4.046 (−14.7 %); two texts of 60 bytes copied into an array
+    35.620 → 27.143 (−23.8 %), of 4 bytes 35.658 → 28.159 (−21.0 %), a
+    literal of 24 bytes and a text 26.910 → 22.418 (−16.7 %). Texts of 60
+    bytes that differ by their first bytes are decided before these calls
+    (D532), by the same loop instruction for instruction: equality 2.187 →
+    2.228 (+1.9 %; −10.2 % and +4.2 % in two other sessions: the noise of
+    this measure), order 2.666 → 2.666.
+  - Found by this measure, a fault older than it: the buffer on the stack
+    of a text its scope only reads (D404, 128 bytes) was aligned on 16. In
+    the program measured it lay 16 bytes before the end of a page
+    (0x…ff0, read with a debugger): the first of the two stores of 32
+    bytes that copy a text of 60 bytes into it was over two pages, each
+    time. 34.6 cycles an element where the same code (87.1 instructions
+    in both) took 23.6: 70 % of the samples on that store. The program
+    compiled before D580 runs `main` on the stack of the system, whose
+    place changes at each run: it met the same fault in 2 runs of 16 (35.0
+    cycles). The buffer is now aligned on its size, never across two
+    pages: 24.1 to 24.3 cycles in that program, 23.6 to 24.0 alone, the
+    concatenation with literals 7.419 → 7.489 ns (+0.9 %).
+  - The tests that counted the calls of `isc_str_new` and
+    `isc_str_concat` in the code read the marks of the generator instead
+    (`; text copy`, `; text concat`). New test:
+    `text_blocks_made_by_the_generated_code` (every pair of texts of 0 to
+    300 bytes; the interpreter's text, the checked allocator, Valgrind,
+    WebAssembly). The programs link for both targets of Windows.
+  - Removed: `isc_str_new`, `isc_str_concat`, `isc_str_concat_n`,
+    `isc_str_cmp` (74 lines of Rust).
+- **D593 — The rows of a `map` of rows: a borrowed row freed twice, a
+  computed row lost (2026-11-09).** Found while measuring D592: a bench
+  that kept `map(iota(n), (i) => bytes(ls[i]))` ended on `invalid free`,
+  with the compiler before D580 too.
+  - The fault. `row_into` writes each row of a `map` of rows into the one
+    block of the array (D126). It read where they are a variable, a row of
+    an array of arrays, a slice and data of the program, and took every
+    other row for a new one: copied, then freed. But `ownership` says
+    borrowed of more forms than those: an `if` between two arrays (so a
+    `match`, and a function inlined that gives back a parameter), the bytes
+    of a text read where it is (D303). Their block was freed after the
+    first copy, and again by its owner. Compiled programs that the
+    interpreter runs well; nothing at compilation, the verification of the
+    IR (D96) does not see the code generator's own choice.
+  - The fix: one definition for both, `passes::row_view`. A borrowed row
+    that is not one of its forms is made new by `ownership` (`make_fresh`:
+    a copy, or a move of a variable at its last use, each branch of an `if`
+    on its own, D138); `row_into` writes the copy `ownership` asked for
+    straight into the rows (no block between), each branch of an `if` at
+    its place, the bytes of a text from where they are.
+  - A second fault beside it, a leak: a `map` of rows computed
+    (`map(iota(n), (i) => map(a, …))`) read by its consumer without being
+    made (`sum(map(that, (r) => r[1]))`, a `fold`, a `count`, a slice of
+    it) gave each row to the consumer, which frees nothing: every row lost,
+    as much memory as the array. `owns_elems` kept the producers of texts
+    and nodes out of the fusion for that reason and said « not rows ». Now
+    `passes::computes_rows`: such a producer is evaluated, its rows written
+    into one block (in place, D126: no block a row), and the consumer reads
+    views of it. A producer whose rows are views of memory that lives
+    longer (`map(order, (i) => m[i])`) has nothing to free and stays
+    fused. A `map` of one input that makes rows is no longer a stream
+    (`map(filter(ls, p), (s) => bytes(s))` did not compile: LLVM refused
+    the code).
+  - The place of the panic of a row of another length (D154): that of the
+    whole row, through its `let`s and the branches of its `if`s, as the
+    interpreter (a row ending a block gave the place of its last
+    expression, before this entry too).
+  - A `scan` whose elements are arrays and a `filter` of rows kept as an
+    array are refused by the code generator with their name (it gave code
+    that LLVM refused); the interpreter runs both as before; counted or
+    read by a consumer, a `filter` of rows makes no array and compiles. To
+    make: TODO.
+  - Left as it was, seen here: a `reduce` whose elements are arrays and
+    whose operator makes a new row gives the right result in the fixed
+    order of section 10 and loses every row made; with a borrowed neutral
+    element it is refused as « a defect of the compiler ». A first fix
+    made it a `fold`: the result of an operator that is not associative
+    changed (`[0, 0, 0]` became `[-7800, -7840, -7880]` for 40 rows and
+    `-`), against section 10; taken back. Accumulators that own their
+    rows: TODO.
+  - No program of the repository changes: the IR of the 59 programs of
+    `examples` and `bench` is the same before and after (two differ by the
+    numbers of their variables alone, which differ from one run of the
+    same compiler to the next: TODO).
+  - Tests (`memory`): `rows_of_a_map_borrowed_computed_or_moved` (34 lines
+    of output, each form above; the interpreter's output, the checked
+    allocator for three arguments, Valgrind),
+    `a_row_of_another_length_panics_at_the_place_of_the_row` (7 forms),
+    `scan_and_kept_filter_of_rows_refused`.

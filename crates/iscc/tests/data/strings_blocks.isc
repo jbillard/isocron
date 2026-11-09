@@ -1,0 +1,25 @@
+// The blocks of texts made by the generated code (D592): a copy, the
+// concatenation of 2, 3 and 5 texts, the equality, the order, the start and
+// the end of a text, of every pair of the arguments.
+action main(args: string[k]): i32 {
+    const xs = args;
+    const n = xs.length;
+    // copies: a text put in a literal of an array, a literal with it
+    print(map(iota(n), (i) => [xs[i], xs[(i + 1) % n]][i % 2]));
+    print(map(iota(n), (i) => ["a literal of 24 bytes!!!", xs[i]][i % 2]));
+    // concatenations of variables
+    print(map(iota(n), (i) => xs[i] + xs[(i + 1) % n]));
+    print(map(iota(n), (i) => xs[i] + xs[(i + 1) % n] + xs[(i + 2) % n]));
+    print(map(iota(n), (i) => xs[i] + xs[(i + 1) % n] + xs[(i + 2) % n] + xs[(i + 3) % n] + xs[i]));
+    print(map(iota(n), (i) => xs[i] + "|" + xs[(i + 1) % n] + "|" + xs[(i + 2) % n]));
+    // a text its scope only reads: written on the stack
+    print(sum(map(iota(n), (i) => (xs[i] + "-" + xs[(i + 1) % n]).length)));
+    // equality, order, start and end
+    print(map(iota(n), (i) => map(iota(n), (j) => xs[i] == xs[j] ? 1 : 0)));
+    print(map(iota(n), (i) => map(iota(n), (j) => xs[i] != xs[j] ? 1 : 0)));
+    print(map(iota(n), (i) => map(iota(n), (j) => xs[i] < xs[j] ? 1 : xs[i] > xs[j] ? 2 : 0)));
+    print(map(iota(n), (i) => map(iota(n), (j) => xs[i] <= xs[j] ? 1 : 0)));
+    print(map(iota(n), (i) => map(iota(n), (j) => (xs[i].startsWith(xs[j]) ? 1 : 0) + (xs[i].endsWith(xs[j]) ? 2 : 0))));
+    print(sort(xs));
+    return 0;
+}

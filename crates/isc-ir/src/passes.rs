@@ -95,7 +95,8 @@ pub fn is_producer(e: &Expr) -> bool {
 pub fn is_stream(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Filter(..) => true,
-        ExprKind::Map(ins, _) => ins.len() == 1 && is_stream(&ins[0]) && !owns_elems(e),
+        // (rows are written into one block, their count known first, D593)
+        ExprKind::Map(ins, _) => ins.len() == 1 && is_stream(&ins[0]) && !owns_elems(e) && !e.ty.elem().is_array(),
         _ => false,
     }
 }
@@ -110,6 +111,21 @@ pub fn owns_elems(e: &Expr) -> bool {
     }
 }
 
+/// A producer of rows that computes them (D593): each row a new block, or
+/// one `ownership` makes new. Fused into its consumer, which reads its
+/// elements without freeing them, every row was lost (a leak as large as
+/// the array): it is evaluated, its rows written into one block, and its
+/// consumer reads views of that block. A producer whose rows are views of
+/// memory that lives longer (`row_view`, borrowed from outside its `let`s)
+/// has nothing to free: still fused.
+pub fn computes_rows(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Map(_, l) => l.body.ty.is_array() && !(row_view(&l.body) && borrowed_from(&l.body, &|v| vec![v]).is_some()),
+        ExprKind::Slice(x, _, _) => computes_rows(x),
+        _ => false,
+    }
+}
+
 /// Slot `i` of `e` reads a stream in order: the array of a `reduce` or a
 /// `fold`, the input of a `map` of one input (itself evaluated, or read in
 /// order by its consumer).
@@ -117,7 +133,7 @@ pub fn is_stream_slot(e: &Expr, i: usize) -> bool {
     i == 0
         && match &e.kind {
             ExprKind::Reduce(..) | ExprKind::Fold(..) => true,
-            ExprKind::Map(ins, _) => ins.len() == 1 && !owns_elems(e),
+            ExprKind::Map(ins, _) => ins.len() == 1 && !owns_elems(e) && !e.ty.elem().is_array(),
             _ => false,
         }
 }
@@ -1965,7 +1981,7 @@ fn fuse(e: &mut Expr, counts: &HashMap<VarId, usize>) -> bool {
     // let v = <producer or filter> in body, single use in a fusable slot (a
     // filter read by index there is bound again by `place_streams`)
     if let ExprKind::Let { var, init, body, stmt: false, .. } = &mut e.kind {
-        let movable = (is_producer(init) && !owns_elems(init)) || matches!(init.kind, ExprKind::Filter(..));
+        let movable = (is_producer(init) && !owns_elems(init) && !computes_rows(init)) || matches!(init.kind, ExprKind::Filter(..));
         if movable && counts.get(var).copied().unwrap_or(0) == 1 && use_in_slot(body, *var) {
             let v = *var;
             let mut with = Some(take(init));
@@ -2056,6 +2072,22 @@ pub fn str_view(op: crate::StrOp, es: &[Expr], ty: &Type) -> bool {
     }
 }
 
+/// The row of a `map` of rows read where it is (D593): a variable, a row of
+/// an array of arrays, a slice, data of the program, the bytes of a text,
+/// after the `let`s around it. The generated code copies such a row into
+/// the block of the rows and frees nothing; any other borrowed row is made
+/// new by `ownership` first, and a new row is moved into the block, then
+/// freed. One definition for both: a form known to one and not to the other
+/// was a block freed twice.
+pub fn row_view(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Let { body, .. } => row_view(body),
+        ExprKind::Var(..) | ExprKind::Index(..) | ExprKind::Slice(..) | ExprKind::ConstArray(_) | ExprKind::ConstStrs(_) => true,
+        ExprKind::StrOp(op, es) => str_view(*op, es, &e.ty),
+        _ => false,
+    }
+}
+
 /// Indices (in `children_mut` order) of the slots that only read their
 /// argument.
 fn borrowing_slots(e: &Expr) -> Vec<usize> {
@@ -2080,7 +2112,7 @@ fn bind_temporaries(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         if !slots.contains(&i) || !c.ty.has_heap() || is_borrowed_expr(c) {
             continue;
         }
-        if fusable.contains(&i) && ((is_producer(c) && !owns_elems(c)) || matches!(c.kind, ExprKind::Filter(..))) {
+        if fusable.contains(&i) && ((is_producer(c) && !owns_elems(c) && !computes_rows(c)) || matches!(c.kind, ExprKind::Filter(..))) {
             continue;
         }
         vars.push(VarInfo { name: "tmp".into(), ty: c.ty.clone() });
@@ -2606,6 +2638,21 @@ impl<'a> Rewriter<'a> {
                 }
                 let o = self.walk(&mut l.body)?;
                 if matches!(o, Own::Borrowed(..)) {
+                    self.make_fresh(&mut l.body, o, false)?;
+                }
+                return Ok(Own::Fresh);
+            }
+            // the rows of a `map` of rows (D126) are copied into one block: a
+            // borrowed row the generated code does not read where it is
+            // (`row_view`: an `if` between two arrays, a component) made new
+            // first, as any other row computed (D593: taken for a new one, it
+            // was freed after its copy, its block freed twice)
+            ExprKind::Map(ins, l) if e.ty.elem().is_array() => {
+                for i in ins.iter_mut() {
+                    self.walk(i)?;
+                }
+                let o = self.walk(&mut l.body)?;
+                if matches!(o, Own::Borrowed(..)) && !row_view(&l.body) {
                     self.make_fresh(&mut l.body, o, false)?;
                 }
                 return Ok(Own::Fresh);

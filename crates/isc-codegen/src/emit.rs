@@ -961,10 +961,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_try_write_bytes(ptr, ptr, i64, ptr, i64)",
     "declare i64 @isc_clock_ns()",
     "declare double @isc_parse_f64(ptr, i64, i32, i32)",
-    "declare void @isc_str_new(ptr, ptr, i64)",
-    "declare void @isc_str_concat(ptr, ptr, i64, ptr, i64)",
-    "declare void @isc_str_concat_n(ptr, ptr, i64)",
-    "declare i32 @isc_str_cmp(ptr, i64, ptr, i64)",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_str_adopt_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_to_string_f64(ptr, double)",
@@ -3385,9 +3381,7 @@ impl<'p> Gen<'p> {
             // a string: a new one (D134)
             Type::Str | Type::Big => {
                 let (p, n) = self.str_parts(x);
-                let out = self.alloca("{ ptr, i64 }");
-                self.emit(format!("call void @isc_str_new(ptr {}, ptr {}, i64 {})", out, p, n));
-                v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }")
+                self.text_copy(&p, &n)
             }
             Type::Tuple(ts) => {
                 let mut acc = "poison".to_string();
@@ -3821,8 +3815,11 @@ impl<'p> Gen<'p> {
             Type::Str | Type::Big => {
                 let (p, n) = self.str_parts(a);
                 let (q, m) = self.str_parts(b);
-                let c = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
-                self.ins(format!("icmp eq i32 {}, 0", c))
+                // the same length and the same bytes (D592)
+                let len = self.ins(format!("icmp eq i64 {}, {}", n, m));
+                let k = self.ins(format!("select i1 {}, i64 {}, i64 0", len, n));
+                let same = self.text_same(&p, &q, &k);
+                self.ins(format!("and i1 {}, {}", len, same))
             }
             Type::Rec(j) => {
                 self.rec_eqs.insert(*j);
@@ -3986,9 +3983,7 @@ impl<'p> Gen<'p> {
                 // a `bigint`: its bytes in the form of the compiled code
                 // (base 256, D168), from the form of the IR (base 128)
                 let (g, n) = if e.ty == Type::Big { self.bytes_const(&isc_runtime_core::big_to_256(s.as_bytes())) } else { self.str_const(s) };
-                let out = self.alloca("{ ptr, i64 }");
-                self.emit(format!("call void @isc_str_new(ptr {}, ptr {}, i64 {})", out, g, n));
-                Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }"))
+                Ok(self.text_copy(&g, &n.to_string()))
             }
             StrOp(op, es) => self.str_op(e, *op, es),
             Lit(l) => Ok(match l {
@@ -4178,7 +4173,11 @@ impl<'p> Gen<'p> {
                 let buf = if leaves.is_empty() {
                     None
                 } else {
-                    let b = self.alloca(&format!("[{} x i8], align 16", STACK_STR));
+                    // (aligned on its size, D592: never across two pages.
+                    // Aligned on 16, it was 16 bytes before the end of a
+                    // page in one program measured, and each text copied
+                    // into it by a store over two pages: 11 cycles more)
+                    let b = self.alloca(&format!("[{} x i8], align {}", STACK_STR, STACK_STR));
                     for l in &leaves {
                         self.stack_concats.insert(*l, b.clone());
                     }
@@ -7464,8 +7463,14 @@ impl<'p> Gen<'p> {
     /// the rows (D154: an array of arrays is regular). With no `dest`, only
     /// the length (computed without writing the elements when it can be).
     fn row_into(&mut self, body: &Expr, dest: Option<&str>, et: &Type, expect: Option<&str>) -> R<String> {
+        self.row_into_at(body, dest, et, expect, body.span)
+    }
+
+    /// `row_into` whose panic of a row of another length is at `span`: the
+    /// place of the whole row, the same through its `let`s and the branches
+    /// of its `if`s (D593: the place the interpreter gives).
+    fn row_into_at(&mut self, body: &Expr, dest: Option<&str>, et: &Type, expect: Option<&str>, span: Span) -> R<String> {
         use ExprKind::*;
-        let span = body.span;
         let check = |g: &mut Self, n: &str| {
             if let (Some(m), Some(_)) = (expect, dest) {
                 let same = g.ins(format!("icmp eq i64 {}, {}", n, m));
@@ -7477,7 +7482,7 @@ impl<'p> Gen<'p> {
             Let { var, init, body: b, drop, .. } => {
                 let iv = self.ex(init, 1)?;
                 self.bind(*var, iv.clone());
-                let len = self.row_into(b, dest, et, expect)?;
+                let len = self.row_into_at(b, dest, et, expect, span)?;
                 if *drop {
                     self.drop_var(*var, &iv);
                 }
@@ -7503,11 +7508,35 @@ impl<'p> Gen<'p> {
                 }
                 Ok(n)
             }
+            // a row chosen by a test: each branch written at its place
+            // (D593)
+            If(c, t, f) => {
+                let cv = self.ex(c, 1)?;
+                let lthen = self.label();
+                let lelse = self.label();
+                let ljoin = self.label();
+                self.cbr(&cv.r, &lthen, &lelse);
+                self.block(&lthen);
+                let tn = self.row_into_at(t, dest, et, expect, span)?;
+                let tend = self.current_label(&lthen);
+                self.br(&ljoin);
+                self.block(&lelse);
+                let en = self.row_into_at(f, dest, et, expect, span)?;
+                let eend = self.current_label(&lelse);
+                self.br(&ljoin);
+                self.block(&ljoin);
+                Ok(self.ins(format!("phi i64 [ {}, %{} ], [ {}, %{} ]", tn, tend, en, eend)))
+            }
             // (an array of constants, data of the program, borrowed: copied,
-            // never freed, D173, D193)
-            Var(..) | Index(..) | Slice(..) | ConstArray(_) | ConstStrs(_) => {
+            // never freed, D173, D193; the bytes of a text read where it is,
+            // D303; the copy `ownership` asked for of a borrowed row made
+            // here, into the rows, D593)
+            Var(..) | Index(..) | Slice(..) | ConstArray(_) | ConstStrs(_) | Copy(_) | StrOp(..)
+                if !matches!(&body.kind, StrOp(..)) || isc_ir::passes::row_view(body) =>
+            {
                 let moved = matches!(&body.kind, Var(_, Use::Move));
-                let xv = self.ex(body, 1)?;
+                let read = if let Copy(x) = &body.kind { &**x } else { body };
+                let xv = self.ex(read, 1)?;
                 let (p, n) = self.str_parts(&xv);
                 check(self, &n);
                 if let Some(d) = dest {
@@ -8969,6 +8998,10 @@ impl<'p> Gen<'p> {
 
     fn scan(&mut self, e: &Expr, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
         let elem_ty = x.ty.elem().clone();
+        // (the interpreter runs it; no code for its rows yet, D593)
+        if elem_ty.is_array() {
+            return Err(format!("{}:{}: a `scan` whose elements are arrays is not supported in the POC (SPEC section 15)", e.span.line, e.span.col));
+        }
         let (src, n) = self.prepare_src(x)?;
         let zv = self.ex(z, 1)?;
         let out = self.alloc_elems(&n, &elem_ty);
@@ -9129,6 +9162,12 @@ impl<'p> Gen<'p> {
 
     fn filter(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
         let elem_ty = x.ty.elem().clone();
+        // (counted or read in order by its consumer, a `filter` of rows
+        // makes no array: only the one kept as an array is refused, D593;
+        // the interpreter runs it)
+        if elem_ty.is_array() {
+            return Err(format!("{}:{}: a `filter` of rows kept as an array is not supported in the POC (SPEC section 15)", e.span.line, e.span.col));
+        }
         let (src, n) = self.prepare_src(x)?;
         let w = self.filter_width(x, l, &elem_ty);
         if self.in_task {
@@ -12580,6 +12619,74 @@ impl<'p> Gen<'p> {
         v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", s0, len)), "{ ptr, i64 }")
     }
 
+    /// A new block holding the `n` bytes at `p`, the copy of a text (D592):
+    /// `isc_alloc` (the empty block of the runtime for none), then the
+    /// bytes copied.
+    fn text_copy(&mut self, p: &str, n: &str) -> V {
+        // (a mark for the tests that count the copies of texts)
+        self.emit("; text copy".to_string());
+        let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", n));
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, p, n));
+        self.arr(&dst, n)
+    }
+
+    /// The texts `parts` (pointer, length) one after the other in a new
+    /// block of the sum of their lengths (D592).
+    fn text_concat(&mut self, parts: &[(String, String)]) -> V {
+        // (a mark for the tests: the texts of a literal are written
+        // otherwise, D368)
+        self.emit("; text concat".to_string());
+        let mut total = parts[0].1.clone();
+        for (_, n) in &parts[1..] {
+            total = self.ins(format!("add i64 {}, {}", total, n));
+        }
+        let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", total));
+        let mut at = dst.clone();
+        for (k, (p, n)) in parts.iter().enumerate() {
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at, p, n));
+            if k + 1 < parts.len() {
+                at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", at, n));
+            }
+        }
+        self.arr(&dst, &total)
+    }
+
+    /// The `memcmp` of the `k` bytes at `p` and at `q` (D592): its count
+    /// in the word of the machine (32 bits in WebAssembly, where a call of
+    /// another signature than the function's is a trap).
+    fn memcmp(&mut self, p: &str, q: &str, k: &str) -> String {
+        if self.opts.isa.is_wasm() {
+            self.decls.insert("declare i32 @memcmp(ptr, ptr, i32)".into());
+            let k32 = self.ins(format!("trunc i64 {} to i32", k));
+            self.ins(format!("call i32 @memcmp(ptr {}, ptr {}, i32 {})", p, q, k32))
+        } else {
+            self.decls.insert("declare i32 @memcmp(ptr, ptr, i64)".into());
+            self.ins(format!("call i32 @memcmp(ptr {}, ptr {}, i64 {})", p, q, k))
+        }
+    }
+
+    /// -1, 0 or 1: the order of the bytes of two texts (D592): `memcmp` of
+    /// the bytes both have, then the lengths.
+    fn text_order(&mut self, p: &str, n: &str, q: &str, m: &str) -> String {
+        let shorter = self.ins(format!("icmp slt i64 {}, {}", n, m));
+        let k = self.ins(format!("select i1 {}, i64 {}, i64 {}", shorter, n, m));
+        let c = self.memcmp(p, q, &k);
+        let neg = self.ins(format!("icmp slt i32 {}, 0", c));
+        let pos = self.ins(format!("icmp sgt i32 {}, 0", c));
+        let longer = self.ins(format!("icmp sgt i64 {}, {}", n, m));
+        // by the lengths when the common bytes are the same
+        let l1 = self.ins(format!("select i1 {}, i32 1, i32 0", longer));
+        let by_len = self.ins(format!("select i1 {}, i32 -1, i32 {}", shorter, l1));
+        let s1 = self.ins(format!("select i1 {}, i32 1, i32 {}", pos, by_len));
+        self.ins(format!("select i1 {}, i32 -1, i32 {}", neg, s1))
+    }
+
+    /// An `i1`: the `m` bytes at `q` are those at `p` (D592).
+    fn text_same(&mut self, p: &str, q: &str, m: &str) -> String {
+        let c = self.memcmp(p, q, m);
+        self.ins(format!("icmp eq i32 {}, 0", c))
+    }
+
     /// The text of the integer `x` (an `i64`, or a `u64` when not `signed`)
     /// by the function of the prelude lowered for it (D588).
     fn int_text(&mut self, x: &str, signed: bool) -> R<V> {
@@ -12676,11 +12783,20 @@ impl<'p> Gen<'p> {
                 let (q, m) = self.str_parts(&vals[1]);
                 // the left text given (its last use, D351): the rest written
                 // after it in its block when it has room
-                let f = if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) { "isc_str_append" } else { "isc_str_concat" };
-                new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", f, p, n, q, m))
+                if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) {
+                    new_str(self, format!("call void @isc_str_append(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m))
+                } else {
+                    self.text_concat(&[(p, n), (q, m)])
+                }
             }
             // the parts of `a + b + c`, of a template literal: their texts
             // in a table on the stack, one block made for all (D342)
+            // (not its last use: the texts copied one after the other into a
+            // block of their lengths, here, D592)
+            S::Concat if !matches!(es[0].kind, ExprKind::Var(_, Use::Move)) => {
+                let parts: Vec<(String, String)> = vals.iter().map(|x| self.str_parts(x)).collect();
+                self.text_concat(&parts)
+            }
             S::Concat => {
                 let k = vals.len();
                 let table = self.alloca(&format!("[{} x {{ ptr, i64 }}]", k));
@@ -12688,8 +12804,7 @@ impl<'p> Gen<'p> {
                     let slot = self.ins(format!("getelementptr inbounds [{} x {{ ptr, i64 }}], ptr {}, i64 0, i64 {}", k, table, i));
                     self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", x.r, slot));
                 }
-                let f = if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) { "isc_str_append_n" } else { "isc_str_concat_n" };
-                new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {})", f, table, k))
+                new_str(self, format!("call void @isc_str_append_n(ptr OUT, ptr {}, i64 {})", table, k))
             }
             S::Len => {
                 let (_, n) = self.str_parts(&vals[0]);
@@ -12701,7 +12816,7 @@ impl<'p> Gen<'p> {
             S::Bytes if isc_ir::passes::str_view(op, es, &e.ty) => v(vals[0].r.clone(), "{ ptr, i64 }"),
             S::Bytes => {
                 let (p, n) = self.str_parts(&vals[0]);
-                new_str(self, format!("call void @isc_str_new(ptr OUT, ptr {}, i64 {})", p, n))
+                self.text_copy(&p, &n)
             }
             // bytes at their last use all below 0x80 (D450): their block is
             // the text, ASCII and so UTF-8, nothing to check
@@ -12767,15 +12882,26 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 self.literal_affix(&p, &n, t.as_bytes(), op == S::StartsWith, false)
             }
-            S::Includes | S::StartsWith | S::EndsWith => {
+            // the start or the end of the text has the bytes of the other
+            // (D592): its length at most that of the text, then `memcmp`
+            S::StartsWith | S::EndsWith => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
-                let which = match op {
-                    S::Includes => 0,
-                    S::StartsWith => 1,
-                    _ => 2,
+                let fits = self.ins(format!("icmp sle i64 {}, {}", m, n));
+                let k = self.ins(format!("select i1 {}, i64 {}, i64 0", fits, m));
+                let at = if op == S::StartsWith {
+                    p
+                } else {
+                    let off = self.ins(format!("sub i64 {}, {}", n, k));
+                    self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, off))
                 };
-                let r = self.ins(format!("call i32 @isc_str_test(ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, q, m, which));
+                let same = self.text_same(&at, &q, &k);
+                v(self.ins(format!("and i1 {}, {}", fits, same)), "i1")
+            }
+            S::Includes => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let r = self.ins(format!("call i32 @isc_str_test(ptr {}, i64 {}, ptr {}, i64 {}, i32 0)", p, n, q, m));
                 v(self.ins(format!("icmp ne i32 {}, 0", r)), "i1")
             }
             S::ReplaceAll | S::ReplaceFirst => {
@@ -13294,7 +13420,7 @@ impl<'p> Gen<'p> {
                 ins.push((cd, ldiff.clone()));
                 self.br(&ljoin);
                 self.block(&lcall);
-                let cc = self.ins(format!("call i32 @isc_str_cmp(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m));
+                let cc = self.text_order(&p, &n, &q, &m);
                 ins.push((cc, self.current_label(&lcall)));
                 self.br(&ljoin);
                 self.block(&ljoin);

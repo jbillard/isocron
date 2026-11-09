@@ -1617,19 +1617,6 @@ pub unsafe extern "C" fn isc_args(out: *mut IscArray, argc: i32, argv: *const *c
 // strings (D134): a string is `{ptr, len}` of UTF-8 bytes, owned as an
 // array; each operation returns a new one
 
-/// A copy of a string (or of an array of `u8`: the same layout).
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_str_new(out: *mut IscStr, p: *const u8, n: i64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        *out = new_str(bytes_of(p, n));
-    }
-}
-
 /// The bytes of every empty string made by `new_str`: none owned, read
 /// only, never freed (D337: the empty strings of the faults of the readers
 /// of JSON were an allocation each).
@@ -1895,67 +1882,6 @@ unsafe fn bytes_of<'a>(p: *const u8, n: i64) -> &'a [u8] {
     } else {
         // SAFETY: the contract of this function
         unsafe { core::slice::from_raw_parts(p, n as usize) }
-    }
-}
-
-/// `a + b + c`, a template literal (D342): the `n` texts at `parts` in one
-/// block.
-///
-/// # Safety
-/// `parts` and `n` an array of texts, `out` the place of the result (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_str_concat_n(out: *mut IscStr, parts: *const IscStr, n: i64) {
-    // SAFETY: the pointers the generated code gives (C1): `n` texts at `parts`;
-    // `r` a new block of their total length, each text copied at its place in it
-    unsafe {
-        // SAFETY: the code generator gives `n` texts at `parts`
-        let parts = core::slice::from_raw_parts(parts, n.max(0) as usize);
-        let total: i64 = parts.iter().map(|s| s.len.max(0)).sum();
-        if total == 0 {
-            *out = new_str(b"");
-            return;
-        }
-        let r = isc_alloc(total);
-        let mut at = 0usize;
-        for s in parts {
-            let len = s.len.max(0) as usize;
-            // SAFETY: each text holds `len` bytes, `r` the sum of them
-            core::ptr::copy_nonoverlapping(s.ptr, r.add(at), len);
-            at += len;
-        }
-        *out = IscStr { ptr: r, len: total };
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_str_concat(out: *mut IscStr, p: *const u8, n: i64, q: *const u8, m: i64) {
-    // SAFETY: the pointers the generated code gives (C1); `r` a new block of `n
-    // + m` bytes, the two texts copied in it one after the other
-    unsafe {
-        let r = isc_alloc(n.max(0) + m.max(0));
-        core::ptr::copy_nonoverlapping(p, r, n.max(0) as usize);
-        core::ptr::copy_nonoverlapping(q, r.add(n.max(0) as usize), m.max(0) as usize);
-        *out = IscStr { ptr: r, len: n.max(0) + m.max(0) };
-    }
-}
-
-/// -1, 0 or 1: the order of the bytes (lexicographic).
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_str_cmp(p: *const u8, n: i64, q: *const u8, m: i64) -> i32 {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        match bytes_of(p, n).cmp(bytes_of(q, m)) {
-            core::cmp::Ordering::Less => -1,
-            core::cmp::Ordering::Equal => 0,
-            core::cmp::Ordering::Greater => 1,
-        }
     }
 }
 

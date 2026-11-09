@@ -49,6 +49,21 @@
 - `repeat` is made by the generated code in a block of its final size (63
   to 93 % faster; a size past memory is a panic at once), as the text of a
   boolean; the Rust functions that the prelude replaced are removed (D591).
+- The copy of a text, the concatenation of texts, their equality, their
+  order, `startsWith` and `endsWith` are made by the generated code:
+  concatenations 12 to 46 % faster, equal short texts 35 % faster,
+  `startsWith` and `endsWith` of a text that is not a literal 15 to 18 %
+  faster, copies 17 to 24 % faster. The buffer on the stack of a text only
+  read is never across two pages (a text copied into it could take 11
+  cycles more, by the place of the stack) (D592).
+- Fixed: a `map` whose rows are borrowed by an `if` or a `match` between two
+  arrays, or are the bytes of a text (`map(xs, (s) => bytes(s))`), freed
+  their memory twice (a panic of the allocator at the end of the program,
+  or corrupted memory); a `map` of rows computed, read by another `map`, a
+  `fold` or a `count` without being named, lost every row. A row of another
+  length panics at the same place compiled and interpreted. A `scan` of
+  rows and a `filter` of rows kept as an array are refused by the compiler
+  with their name instead of an internal error (D593).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

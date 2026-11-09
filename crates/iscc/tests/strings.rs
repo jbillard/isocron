@@ -969,7 +969,7 @@ action main(args: string[k]): i32 {
     let short = "function kinds(s: string): i64[4] {\n    return [s == \"\" ? 1 : 0, \"ab\" == s ? 1 : 0, s != \"abcdefgh\" ? 1 : 0, s == \"abcdefghijklmnop\" ? 1 : 0];\n}\n\naction main(args: string[k]): i32 {\n    print(map(args, (w) => kinds(w)));\n    return 0;\n}\n";
     let bin = compile(short, "short_literal_equality_ir");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(!ll.contains("call i32 @isc_str_cmp("), "a comparison with a short literal left to the runtime");
+    assert!(!ll.contains("call i32 @memcmp("), "a comparison with a short literal left to `memcmp`");
     let r = run_bin(&bin, &["ab", "", "abcdefghijklmnop"]);
     assert_eq!(r.stdout, "[[0, 1, 1, 0], [1, 0, 1, 0], [0, 0, 1, 1]]\n");
 }
@@ -1093,7 +1093,7 @@ fn literals_kept_without_a_copy() {
     // the copy left is not of a literal: the accumulator of `grow` at its
     // entry (rule A, D351); the elements `sort` puts in its array are moved
     // from its source, read for the last time (D548)
-    assert_eq!(ll.matches("call void @isc_str_new(").count(), 1, "a literal copied");
+    assert_eq!(ll.matches("; text copy").count(), 1, "a literal copied");
     // the literals of at most 12 bytes are values, their bytes in them
     // (D530); the one longer kept in the program's data
     assert!(ll.matches("@.olit.").count() >= 1, "the literals not kept where they are");
@@ -1101,7 +1101,7 @@ fn literals_kept_without_a_copy() {
 
 /// D368: a concatenation with a literal is written by the compiled code
 /// (the literals stored as constants, the texts by moves or `memcpy`), not
-/// by `isc_str_concat`; the copies of 33 to 64 bytes by two moves that
+/// by the general concatenation (D592); the copies of 33 to 64 bytes by two moves that
 /// overlap: texts of 0 to 80 bytes around literals, an accumulator grown by
 /// literals, replacements whose matches are 0 to 80 bytes apart; the text
 /// of the interpreter with 1 and 4 threads, Valgrind clean.
@@ -1118,7 +1118,7 @@ fn concatenations_with_literals_written_by_the_code() {
     }
     valgrind_clean(src, "concat_literals", &["1"]);
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(!ll.contains("call void @isc_str_concat"), "a concatenation with a literal given to the runtime");
+    assert!(!ll.contains("; text concat"), "a concatenation with a literal made by the general one");
     // each text by moves here, a long one by `memcpy` of its length (D509)
     let copies = ll.lines().filter(|l| l.contains("call void @llvm.memcpy.p0.p0.i64(") && l.trim_end().ends_with("i1 false)") && l.contains(", i64 %")).count();
     assert!(copies >= 5, "the texts not written by the compiled code");
@@ -1875,4 +1875,49 @@ fn repeat_and_boolean_text_made_by_the_generated_code() {
     assert!(r.stderr.contains("panic at line 2, column 25: repeat: the count is negative: -3"), "{}", r.stderr);
     let r = run_bin(&bin, &["ab", "1000000"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "2000000\n"), "{}", r.stderr);
+}
+
+/// D592: the copy of a text, the concatenation of texts that are not
+/// literals, the equality, the order, `startsWith` and `endsWith` of two
+/// texts are made by the generated code (a block of the allocator and
+/// `memcpy`; `memcmp` of the bytes both have, then the lengths), no longer
+/// by functions of the runtime. Every pair of texts of 0 to 300 bytes,
+/// some equal, some a start or an end of another, some of several bytes a
+/// character: the text of the interpreter, each block freed once; the same
+/// in WebAssembly, where `memcmp` takes its count in 32 bits. The buffer on
+/// the stack of a text only read (D404) is aligned on its size: never
+/// across two pages.
+#[test]
+fn text_blocks_made_by_the_generated_code() {
+    let src = include_str!("data/strings_blocks.isc");
+    let long: Vec<String> = [7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 300].iter().map(|k| "q".repeat(*k)).collect();
+    let mut sets: Vec<Vec<&str>> = vec![
+        vec!["ab", "", "abc", "b", "é", "ab€", "abcabc", "é"],
+        vec!["x"],
+        vec!["aa", "a", "aaa", "", "aa", "aaaaaaaa", "aaaaaaaab", "aaaaaaaa"],
+    ];
+    sets.push(long.iter().map(|s| s.as_str()).collect());
+    let bin = compile(src, "strings_blocks");
+    for args in &sets {
+        let want = interp_ok(src, args);
+        let r = run_bin(&bin, args);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", &args[..1], r.stderr);
+        checked_clean_bin(&bin, args, None);
+    }
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    for f in ["@isc_str_new(", "@isc_str_concat(", "@isc_str_concat_n(", "@isc_str_cmp("] {
+        assert!(!ll.contains(f), "{} still called", f);
+    }
+    assert!(ll.contains("alloca [128 x i8], align 128"), "the buffer of a text on the stack not aligned on its size");
+    valgrind_clean(src, "strings_blocks", &sets[0]);
+    let Some(runner) = wasi_runner() else {
+        eprintln!("no WASI engine (wasmtime): the WebAssembly program not run");
+        return;
+    };
+    let wasm = compile_wasm(src, "strings_blocks_wasm");
+    for args in &sets {
+        let want = interp_ok(src, args);
+        let r = run_wasm(&runner, &wasm, args);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "WebAssembly, {:?}: {}", &args[..1], r.stderr);
+    }
 }

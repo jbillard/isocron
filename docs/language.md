@@ -3443,7 +3443,11 @@ available yet (the compiler reports `... is not supported in the POC`):
   read functions of its context, and those may read values of theirs
   (D387, D563);
 * arrays of arrays whose rows have different lengths, and arrays of arrays
-  of arrays (D154).
+  of arrays (D154);
+* in a compiled program (the interpreter runs them): a `scan` whose
+  elements are arrays, and a `filter` of the rows of an array of arrays
+  kept as an array (counted, or read by a `map` or a `fold`, it is
+  accepted) (D593).
 
 `@requireVectorized` is outside the scope of the specification.
 

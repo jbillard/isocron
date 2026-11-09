@@ -1056,7 +1056,7 @@ action main(args: string[k]): i32 {
 
 /// D548: the gather of a permutation of an owned array read for the last
 /// time (`sort`, `sortBy` of texts, of tuples holding texts) moves its
-/// elements: no copy of a text in the code (`isc_str_new`), the source
+/// elements: no copy of a text in the code (its mark, D592), the source
 /// freed alone; the results as the interpreter's; no leak and no fault
 /// under Valgrind and with the allocator checked. A source read again after
 /// the sort keeps its texts (copies in the result).
@@ -1093,7 +1093,7 @@ fn sorting_an_array_read_for_the_last_time_moves_its_elements() {
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     // no text copied: the sorts of `xs` and `ps` move their elements, that
     // of `zs`, read again after it, makes views of its texts (D555)
-    assert_eq!(ll.matches("call void @isc_str_new(").count(), 0, "the elements of the sorts copied");
+    assert_eq!(ll.matches("; text copy").count(), 0, "the elements of the sorts copied");
     clean(src, "sort_moves_vg", &["700"]);
 }
 
@@ -1196,4 +1196,86 @@ fn arrays_whose_texts_are_views_of_texts_that_live_longer() {
     copies.dedup();
     assert_eq!(copies, vec![29, 32, 38, 43, 71], "the lines whose texts are copied");
     clean(src, "views_of_texts_vg", &["700"]);
+}
+
+/// The rows of a `map` of rows (D593). A borrowed row the generated code
+/// did not read where it is (an `if` or a `match` between two arrays, the
+/// bytes of a text, the parameter a function gives back) was taken for a
+/// new one and freed after its copy: its block freed twice. A `map` of
+/// rows computed, read by its consumer without being made, lost every row.
+/// Now: the same output as the interpreter, each block freed once (the
+/// checked allocator, valgrind).
+#[test]
+fn rows_of_a_map_borrowed_computed_or_moved() {
+    let src = include_str!("data/rows_of_maps.isc");
+    let bin = compile(src, "rows_of_maps");
+    for a in ["1", "3", "7"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+        checked_clean_bin(&bin, &[a], None);
+    }
+    clean(src, "rows_of_maps_vg", &["7"]);
+}
+
+/// A row of another length than the first (D154): the panic of the
+/// compiled program at the place the interpreter gives, the one of the
+/// whole row, through its `let`s and the branches of its `if`s (D593).
+#[test]
+fn a_row_of_another_length_panics_at_the_place_of_the_row() {
+    let rows = [
+        "i % 2 == 0 ? a : a.slice(0, 2)",
+        "{ const z = i % 2 == 0 ? a : a.slice(0, 2); return z; }",
+        "{ const q = i + 1; return q % 2 == 1 ? a : a.slice(0, 2); }",
+        "i == 0 ? a : i == 1 ? a.slice(0, 2) : a",
+        "a.slice(0, 3 - i % 2)",
+        "map(iota(3 - i % 2), (j) => j)",
+        "{ const w = 3 - i % 2; return map(iota(w), (j) => j + w); }",
+    ];
+    for (k, row) in rows.iter().enumerate() {
+        let src = format!(
+            "action main(args: string[k]): i32 {{\n    const a = map(iota(3), (i) => i + k);\n    print(map(iota(4), (i) => {}));\n    return 0;\n}}\n",
+            row
+        );
+        let want = interp_panic(&src, &["x"]);
+        assert!(want.contains("size mismatch: 2 != 3"), "{}: {}", row, want);
+        let bin = compile(&src, &format!("row_length_{}", k));
+        let r = run_bin(&bin, &["x"]);
+        assert_eq!(r.code, 101, "{}: {}", row, r.stderr);
+        assert_eq!(r.stderr.trim(), want.trim(), "{}", row);
+    }
+}
+
+/// What the code generator has no code for yet is refused by it with its
+/// name (D593), where it gave code that LLVM refused: a `scan` of rows, a
+/// `filter` of rows kept as an array. The interpreter runs both; counted
+/// or read by a consumer, a `filter` of rows makes no array and compiles.
+#[test]
+fn scan_and_kept_filter_of_rows_refused() {
+    let head = "action main(args: string[k]): i32 {\n    const a = map(iota(3), (i) => i + k);\n    const m = [a, a, a];\n";
+    let scan = format!("{}    print(scan(m, (x, y) => map(iota(3), (j) => x[j] + y[j]), map(iota(3), (j) => 0)));\n    return 0;\n}}\n", head);
+    let kept = format!("{}    print(filter(m, (r) => r[1] > 0));\n    return 0;\n}}\n", head);
+    let cases = [
+        (&scan, "a `scan` whose elements are arrays is not supported in the POC", "[[1, 2, 3], [2, 4, 6], [3, 6, 9]]\n"),
+        (&kept, "a `filter` of rows kept as an array is not supported in the POC", "[[1, 2, 3], [1, 2, 3], [1, 2, 3]]\n"),
+    ];
+    for (k, (src, message, want)) in cases.iter().enumerate() {
+        assert_eq!(interp_ok(src, &["x"]), *want, "interpreted");
+        let p = iscc::frontend("t.isc", src).unwrap();
+        let opts = iscc::BuildOptions {
+            output: tmp(&format!("rows_refused_{}", k)),
+            emit_llvm: None,
+            emit_asm: None,
+            debug: false,
+            codegen: isc_codegen::Options::default(),
+            link: Vec::new(),
+            glibc: false,
+        };
+        let e = iscc::build(&p, &opts).unwrap_err();
+        assert!(e.to_string().contains(message), "{}", e);
+    }
+    let counted = format!("{}    print(count(m, (r) => r[1] > 0));\n    return 0;\n}}\n", head);
+    let bin = compile(&counted, "rows_filter_counted");
+    let r = run_bin(&bin, &["x"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "3\n"), "{}", r.stderr);
 }
