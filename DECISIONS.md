@@ -17,7 +17,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   Scripts find tools through `PATH` first, then these locations.
 - **D2 — Clang is `zig cc`.** No clang binary is installed; Zig 0.14.1 ships
   clang 19.1.7, used through `zig cc` as the "Clang" C compiler of the
-  benchmark protocol (section 14). Its default target is musl; the benchmark
+  benchmark protocol (section 14). Its default target is musl; the benchmark [contradicted: D576]
   scripts pass `-target x86_64-linux-gnu` so it links against the same glibc as
   GCC.
 - **D3 — LLVM back-end through the LLVM C API, not inkwell.** inkwell needs
@@ -254,11 +254,11 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   algorithm as `std`) and direct calls to the C library (`open`, `read`,
   `write`, `aligned_alloc`, `clock_gettime`, `strerror`). Standard output is
   buffered and flushed at each newline and before a panic. Because a `no_std`
-  static library must use `panic = "abort"`, which cannot be set for one crate
+  static library must use `panic = "abort"`, which cannot be set for one crate [checked: D576]
   of a workspace, the runtime is its own workspace; `crates/iscc/build.rs`
   builds it and `iscc` embeds it, so `iscc` needs no file at run time
   (`$ISC_RUNTIME` may still name another archive). The precompiled `core` is
-  built for unwinding and its unwind tables refer to `rust_eh_personality`:
+  built for unwinding and its unwind tables refer to `rust_eh_personality`: [checked: D576]
   the runtime defines it empty, since nothing ever unwinds. The texts shared
   with the interpreter (panic messages, OS errors in the form of
   `std::io::Error`, printing of floats) live in the `no_std` crate
@@ -280,11 +280,11 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   Isocron program. `avx2` removes
   every AVX-512 feature of the host; `avx512` adds the function attributes
   `min-legal-vector-width=512` and `prefer-vector-width=512`, so that explicit
-  512-bit vectors stay in `zmm` registers. The element-wise loops keep 16
+  512-bit vectors stay in `zmm` registers. The element-wise loops keep 16 [the attribute read: checked, D576]
   elements per iteration whatever V (speed only). The hand-optimized C, Rust
   and Zig references take V at compile time (`-DLANES`, `ISC_LANES`,
   `lanes.zig`); `bench/build_lanes.sh` and `bench/lanes.py` build and measure
-  the matrix; Go has no SIMD and is left out.
+  the matrix; Go has no SIMD and is left out. [checked: D576]
 - **D49 — Block parallelism (stage 2, phase 6).** The first level of every
   `reduce` and every materialized element-wise loop are cut into blocks of B
   elements computed by the tasks of `isc_parallel_for`, a pool of POSIX
@@ -506,11 +506,11 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   reproduced in a C program: each task allocated its four copies with
   separate `aligned_alloc` calls; glibc recycles the chunks between threads
   (the copy freed by the main thread goes to its cache), and the main thread
-  received copies that were at the same offset in heaps aligned on 64 MiB,
+  received copies that were at the same offset in heaps aligned on 64 MiB, [the arenas on 64 MiB: checked, D576]
   so three of its four copies had the same address modulo 4096 (2304, 2304,
   2304). The same hot counter of two copies then has the same 12 low address
   bits: every load waits for the store to the other copy, and the four
-  independent chains become one; the other threads wait for the main one.
+  independent chains become one; the other threads wait for the main one. [a hypothesis: D576]
   Now each task allocates one block, with the copies `stride` bytes apart:
   the size of a copy rounded up to an odd multiple of 4096 / K bytes, so that
   the same counter of two copies is at least 1024 bytes apart modulo 4096.
@@ -521,9 +521,9 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
 - **D65 — The large dot product is bound by the memory bandwidth.** With 8
   threads, Isocron (and every *opt* variant: C 3.727 ms, Rust 3.757 ms,
   Zig 3.834 ms) is a little slower than with 4. The server has two DDR4-3200
-  modules in dual channel, 51.2 GB/s in theory; the large sum already reads
+  modules in dual channel, 51.2 GB/s in theory; the large sum already reads [checked: D576]
   80 MB in 1.582 ms with 4 threads, about 50.6 GB/s, so 4 threads saturate the
-  memory and more threads only add contention. Distributing contiguous ranges
+  memory and more threads only add contention. Distributing contiguous ranges [a hypothesis: D576]
   of blocks instead of `k, k + T, ...` does not help (dot with 8 threads:
   3.644 ms instead of 3.593 ms), so the distribution is unchanged. No change
   to the language or the compiler.
@@ -549,7 +549,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   `sign-ext` (WebAssembly 2.0), static relocation model. The runtime is the
   same crate built for the Rust target `wasm32-wasip1` (embedded in `iscc`
   next to the native one), linked with wasi-libc (by `zig cc` at first, by `rust-lld` since D68); it differs only by the constants of the C library (`O_*`,
-  `clockid_t` is a pointer in wasi-libc, `long` is 32 bits) and by the thread
+  `clockid_t` is a pointer in wasi-libc, `long` is 32 bits) and by the thread [checked: D576]
   pool: WASI preview 1 has no threads, so `isc_parallel_for` runs its tasks
   in order, which gives the same result (section 10). The generated code
   does not use inline assembly there: the barriers of `bench` are volatile
@@ -558,7 +558,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   target, so that the generated code and the C ABI of the target cannot
   disagree on how a structure is returned. The reductions use the register
   model of SSE (16 registers of 16 bytes: the engine maps `v128` to `xmm`
-  registers). Main stack 8 MiB (wasm-ld's default is 64 KiB). The tests
+  registers). Main stack 8 MiB (wasm-ld's default is 64 KiB). The tests [v128: a hypothesis; 64 KiB: checked; D576]
   compile every POC kernel and every example of the guide for WebAssembly and,
   when a WASI engine is installed (`wasmtime`, or `$ISC_WASI_RUNNER`), run
   them and compare them bit for bit with the interpreter. On xeon:
@@ -576,21 +576,21 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   threads=y`, marked experimental). The runtime keeps its thread pool there:
   threads of wasi-libc (`pthread_create`, which imports `wasi
   thread-spawn`), and the futex replaced by `memory.atomic.wait32` /
-  `memory.atomic.notify`; these instructions are unstable in Rust, so the
+  `memory.atomic.notify`; these instructions are unstable in Rust, so the [checked: D576]
   generated module defines `isc_wasm_wait32` and `isc_wasm_notify` with the
   LLVM intrinsics, and the runtime calls them. rustc gives `wasm32-wasip1`
-  and `wasm32-wasip1-threads` the same `cfg` (`atomics` is an unstable
+  and `wasm32-wasip1-threads` the same `cfg` (`atomics` is an unstable [checked: D576]
   feature, absent from `cfg` on stable), so `crates/iscc/build.rs` builds
   the threads runtime with `--cfg isc_wasm_threads`. The number of threads
   is `ISC_THREADS`, 4 by default (WASI has no way to know the number of
-  CPUs). Both WebAssembly targets are now linked by `rust-lld` (wasm-ld)
+  CPUs). Both WebAssembly targets are now linked by `rust-lld` (wasm-ld) [checked: D576]
   with the wasi-libc shipped by the Rust targets (`crt1-command.o`,
   `libc.a`), found through `rustc --print sysroot` (`$ISC_RUST_SYSROOT`):
-  the wasi-libc of Zig has no threads, and one toolchain for both targets
+  the wasi-libc of Zig has no threads, and one toolchain for both targets [contradicted: D576]
   avoids two versions of the C library; Zig is no longer needed for
-  WebAssembly. `main` is named `__main_argc_argv` there, as clang names it.
+  WebAssembly. `main` is named `__main_argc_argv` there, as clang names it. [checked: D576]
   OS errors are shown with their Linux number and text on WASI too
-  (`ENOENT` is 44 in WASI, 2 on Linux; a directory, which WASI engines open
+  (`ENOENT` is 44 in WASI, 2 on Linux; a directory, which WASI engines open [checked: D576]
   and then refuse to read with `EBADF`, is reported `EISDIR`), so a
   program panics with the same message natively, as WebAssembly and in the
   interpreter. Tests: sum, dot product and standard deviation on 9 blocks
@@ -689,16 +689,16 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   one contiguous chunk per thread, nothing from Isocron) shows the same
   curve, so the slowdown is a property of the machine, not of Isocron's
   code or thread pool: the DRAM itself delivers less (45 GB/s with 5
-  threads, 41 GB/s with 8, out of 51.2 GB/s in theory for two DDR4-3200
+  threads, 41 GB/s with 8, out of 51.2 GB/s in theory for two DDR4-3200 [checked: D576]
   channels) when more threads stream at once. The core frequency stays at
   3.195 GHz for every count of threads (no power limit), and the services
   on the sibling threads used under 3 % of their CPUs during the runs. The
   effect grows with the number of concurrent streams: the sum (one array,
   8 streams with 8 threads) loses 4 % from 5 to 8 threads (1.570 ms ->
   1.635 ms), the dot product (two arrays, 16 streams) 11 %. This matches
-  DRAM bank and row-buffer contention: more interleaved streams than the
+  DRAM bank and row-buffer contention: more interleaved streams than the [a hypothesis: D576]
   banks can keep open. The idiomatic OpenMP version loses less because its
-  scalar loop issues its loads more slowly (it is twice as slow with few
+  scalar loop issues its loads more slowly (it is twice as slow with few [a hypothesis: D576]
   threads). Nothing changes in the compiler: capping the number of threads
   of memory-bound loops would need a rule that depends on the machine and
   would slow down compute-bound loops (the histogram scales up to 7.7x with
@@ -909,7 +909,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     lock per class; a thread that ends gives its cache back (pthread key).
     Arrays (16 KiB and more) and smaller blocks come from different chunks:
     after the end of an array, the cells a call allocates and its tasks
-    write were fetched by the prefetcher of the core reading that end
+    write were fetched by the prefetcher of the core reading that end [a hypothesis: D576]
     (`dot`, small, 8 threads: 1118.6 against 1098.8 ns once separated, glibc
     1091.8 ns).
   - Medium blocks (up to 32 MiB) cut by a two-level segregated fit (TLSF)
@@ -965,7 +965,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     reads job and context in one aligned pair of lines, and the caller no
     longer takes back the line of its stack the workers read.
   - The job is published by a plain write of `gen` and a fence, instead of a
-    locked add, which asked for the line of `gen` only once every earlier
+    locked add, which asked for the line of `gen` only once every earlier [a hypothesis: D576]
     write was done.
   - The variables of the pool are in three exported lines of 128 bytes
     (`isc_pool_gen`, `isc_pool_job`, `isc_pool_sleep`), never shared with
@@ -1060,7 +1060,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   the samples of `perf`). `compile_with` called the `LLVMInitialize*`
   functions at each compilation, and LLVM's registration of a target is not
   safe from two threads at once: both can link the target into the list of
-  targets, which then loops. The command `iscc` compiles once per process
+  targets, which then loops. The command `iscc` compiles once per process [checked: D576]
   and never met it. The targets (and `ISC_LLVM_ARGS`) are now registered
   once, behind a `std::sync::Once`.
 - **D86 — The scratch arrays of a `reduce` on the stack, its last elements
@@ -1214,7 +1214,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   Every other lambda, and every operator on floats, is sequential (section
   10). Measured on 10^7 `i64` on xeon: sequential 7934832 ns, parallel
   7685866 to 8819979 ns with 2 to 8 threads: the parallel form reads the
-  input twice, and the cumulation is bound by memory; it is to be improved
+  input twice, and the cumulation is bound by memory; it is to be improved [a hypothesis: D576]
   with the benchmark of phase 7 (cumulation of `i64`). `tests/phase5.rs`
   compares integers that overflow, `min`, `max`, a non-neutral `e`,
   booleans and floats with the interpreter, with 1, 3 and 8 threads.
@@ -1262,7 +1262,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   the update of arrays of arrays. The interpreter keeps the rows as
   separate arrays (`Array::Rows`), which cannot be told from views since
   values are never mutated. `tests/memory.rs` (new) runs programs compiled
-  for AVX2 under Valgrind with glibc's allocator (Valgrind does not decode
+  for AVX2 under Valgrind with glibc's allocator (Valgrind does not decode [checked: D576]
   AVX-512) and finds no leak and no invalid access; it found the arguments
   of `main` never freed (now freed at the end of `main`) and the rows of
   temporaries freed before their copy (fixed as above).
@@ -1749,8 +1749,8 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   level 2d: one store per position instead of two, the operands of the tree
   unchanged); (3) the task of the cascade prefers 512-bit vectors when the
   host has AVX-512 (attribute group `#1`; the rest of the program keeps
-  LLVM's default tuning, 256-bit vectors): its passes over buffers in the
-  L1 cache execute half as many instructions. Per call, 32 768 `f64`:
+  LLVM's default tuning, 256-bit vectors): its passes over buffers in the [checked: D576]
+  L1 cache execute half as many instructions. Per call, 32 768 `f64`: [a hypothesis: D576]
   39 493 ns before, 28 035 ns with (1) and (2), 19 752 ns with (3); GCC's
   `opt` (the same algorithm): 30 015 ns. 10^7 `f64`: 17 241 407 ns,
   13 647 649 ns, 11 693 611 ns; GCC's `opt`: 14 495 452 ns.
@@ -1764,24 +1764,24 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   op(carry, x); the carry of the next vector is op(carry, last lane of x),
   so that the permutation is off the chain from one vector to the next (as
   the Rust and Zig `opt` kernels do; the first version permuted the result,
-  3 cycles more per vector on the chain). The same values as the scalar
+  3 cycles more per vector on the chain). The same values as the scalar [a hypothesis: D576]
   loop (`integer_scans_in_vectors`: every width, the four operators,
   wrapping, lengths around the multiples of the lanes). Sequential path and
   the blocks of the parallel scan. Measured on the tuned machine, one core,
   32 768 `i64` (minimum of 7 rounds): 11 313.6 ns before, 6 596.0 ns after;
   Zig's `opt` 7 652.0 ns, GCC's 8 232.7 ns. 10^7 `i64` (30 calls in one
-  process, D117): 7 968 733 ns, Zig 7 862 239 ns: limited by memory.
+  process, D117): 7 968 733 ns, Zig 7 862 239 ns: limited by memory. [a hypothesis: D576]
 - **D117 — The output pages touched before the timer, in every language.**
   With one call per process, the large `prefix_sum` took 15 910 530 ns in
   Isocron, 16 027 793 ns in C and 16 251 261 ns in Go, but 7 903 327 ns in
   Zig and 8 091 754 ns in Rust: Rust and Zig write their output buffer
-  before starting the timer, the others paid the first touch of 80 MB of
+  before starting the timer, the others paid the first touch of 80 MB of [a hypothesis: D576]
   new pages in the first timed call (the protocol of section 14 starts one
   process per measurement, so this cost stays in every measurement,
   divided by the repetitions). The rule is now the same for all: only the
   kernel is timed (section 14), the pages of the output are touched
   before. C writes its buffer with `memset` (not zeros, which GCC may turn
-  into `calloc`), Go clears it with a loop; Isocron's programs make one
+  into `calloc`), Go clears it with a loop; Isocron's programs make one [checked: D576]
   call before the timed one, `let (_, _) = bench(1, f)` (the language is
   unchanged: `bench` calls `f` r times). For the block of that call to be
   given again to the timed calls, two changes of the compiler: a `_` of a
@@ -1864,10 +1864,10 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   6 348 626, 3 536 056, 2 768 299 and 2 790 869 ns (the best of the others:
   6 659 424 Zig, 3 636 641 Zig, 2 773 980 Rust, 2 828 320 Rust).
 - **D122 — Non-temporal stores for results larger than the caches.** An
-  output of more than STREAM_BYTES (32 MiB, twice the L3 cache) is not read
+  output of more than STREAM_BYTES (32 MiB, twice the L3 cache) is not read [checked: D576]
   again before the end of its loop: its lines are written with
   non-temporal stores (`!nontemporal`, 64-byte aligned vectors, then
-  `sfence` before the end of the task), which do not read each line from
+  `sfence` before the end of the task), which do not read each line from [a hypothesis: D576]
   memory before writing it. For now the vector `scan` of integers (D116)
   and the last pass of the window cascade (D115, now by explicit vectors;
   the `reduce` given counts as a vector in `vec_ok_given`). Not on
@@ -1920,7 +1920,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   fewer misses and page faults, its huge pages); not the unrolled loop
   of the arrays read from memory (3 277 318 ns). The 8 chunks of one
   thread each started exactly 16 MiB apart, so that the 8 streams read
-  addresses a power of two apart at the same time; rayon's threads do
+  addresses a power of two apart at the same time; rayon's threads do [a hypothesis: D576]
   not. Each chunk of a `map` of loops now starts at row 37 i of its range
   (then wraps), the order of the elements of a `map` being free. Measured
   in two sessions: 2 824 692 against 2 904 950 ns (Rust 2 891 300 ns), and
@@ -2266,7 +2266,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
     machine, N = 4000, MAP_WIDTH = 16 lanes).
   - `--isa avx2` (the target of the Valgrind runs) also removes GFNI,
     VAES and VPCLMULQDQ, which Valgrind does not decode and LLVM uses for
-    the masks.
+    the masks. [Valgrind: checked; the instructions LLVM uses: a hypothesis; D576]
   - Tests: `crates/iscc/tests/spmd.rs` (Collatz, Newton, a call under a
     condition, `fold`s nested, Euclid and a non-tail recursion left
     scalar; the vector loop present in the code of mandelbrot).
@@ -2852,7 +2852,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
 - **D170 — fannkuch-redux by chunks, without divisions (2026-11-03).** Its
   profile was the generated code alone (no allocation): the model of cost
   gave two divisions of 64 bits per level to rebuild each permutation from
-  its rank (22 for N = 12, tens of cycles each), `factorial(n - 1)`
+  its rank (22 for N = 12, tens of cycles each), `factorial(n - 1)` [a hypothesis: D576]
   recomputed for each permutation inside the lambda, and two passes over
   the 479 001 600 permutations (the checksum, then the maximum). The
   program (no change of the compiler) now cuts the permutations into
@@ -2906,7 +2906,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
 - **D174 — Regular expressions: the bounds of the matches, ECMAScript's
   empty matches, the searches shared out (2026-11-03).** regex-redux:
   removing the 830 000 newlines of its input cost about 0.56 µs per match,
-  each found by `search_captures`, which resolves the groups with a slower
+  each found by `search_captures`, which resolves the groups with a slower [checked: D576]
   engine, while most replacements name no group. A replacement whose text
   has no `$1` to `$99` now takes the bounds of the matches from the fast
   engines (`find`), built in one buffer. The comparison of the two paths
@@ -2922,7 +2922,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   Open: 44 % of its instructions are the prefilter of literals of the
   crate (Aho-Corasick), which for the 256 cases of a pattern with `i` on
   DNA finds many false candidates (the 9 counts take 592 ms without it,
-  1398 ms with it), while it makes a rare word 5 to 10 times faster to
+  1398 ms with it), while it makes a rare word 5 to 10 times faster to [a hypothesis: D576]
   find; choosing by the data without timing is later work.
 - **D175 — Atomic counts only for the nodes a task may share (2026-11-03).**
   In a task every increment and drop of a count was atomic, since another
@@ -3214,7 +3214,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (2026-11-04).** After D188 regex-redux used 1.45 CPUs: its 5
   replacements, one after the other, are dense (3.5 million matches of
   `a[NSt]|BY` and of `<[^>]*>` in 50 MB) and the engine (`meta::Regex`)
-  costs 120 to 420 ns per match (its start state, its prefilter, the
+  costs 120 to 420 ns per match (its start state, its prefilter, the [a hypothesis: D576]
   forward then the reverse lazy DFA: `^>.*\n|\n` reads each line back to
   its start), on one core. And `isc_rx_replace` wrote its result through
   `written`, which calls its function twice (to count the bytes, then to
@@ -3229,7 +3229,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   next match is the next one of that part, and otherwise one true search,
   until such a place is met: the matches of one search, whatever the cuts.
   Inside a task (the 9 counts of regex-redux, D174), one search: its parts
-  would run one after the other, each filling a new cache of the lazy DFA
+  would run one after the other, each filling a new cache of the lazy DFA [a hypothesis: D576]
   (the counts took 1.45 s instead of 0.58 s with 32 parts). The result of
   a replacement is built once, its buffer (a block of the runtime's heap,
   the global allocator) is the string (`adopt`). regex-redux at fixed
@@ -3404,7 +3404,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   (`perf annotate`): at every vector of 16 bytes, the 8 masked loads of
   32 bytes of its table of complements, their masks computed again, then
   the permutations (D185): LLVM does not move them out of the loop, not
-  knowing that the stores into the result miss the table. `fill_range`,
+  knowing that the stores into the result miss the table. `fill_range`, [a hypothesis: D576]
   which tests the size of each table before its vector loop, now loads
   their parts there, once (`table_registers`, `Func::table_parts`), and
   the permutations take them (`permute_bytes`). reverse-complement at
@@ -3417,7 +3417,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   register of results. A `map` whose elements are bytes now takes 32
   lanes. At fixed frequency, 4 threads: reverse-complement 0.254 s ->
   0.242 s, fasta 0.207 s -> 0.174 s, mandelbrot unchanged; 64 lanes were
-  worse (0.436 s and 0.249 s: registers spilled, the permutations of
+  worse (0.436 s and 0.249 s: registers spilled, the permutations of [a hypothesis: D576]
   bytes made for 32 lanes at most). The same outputs.
 - **D200 — Regions for the trees that die whole (2026-11-04).** binary-
   trees allocated each node from the allocator of nodes (D166) and freed
@@ -3541,8 +3541,8 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   division).
 - **D205 — Short loops unrolled whole (2026-11-04).** After D204, the 10
   pairs of a step of n-body were still a loop: LLVM's threshold of size
-  for a full unrolling is smaller than 10 bodies of a pair, so the root
-  and the division of each pair waited for those of the pair before, the
+  for a full unrolling is smaller than 10 bodies of a pair, so the root [a hypothesis: D576]
+  and the division of each pair waited for those of the pair before, the [a hypothesis: D576]
   10 being independent of each other (they read the positions only). A
   loop whose bounds are constants of the generated code and whose count
   is at most UNROLL_FULL = 16 now gets `llvm.loop.unroll.full`; the
@@ -3693,7 +3693,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
 - **Rejected after measurement (2026-11-04): the product of a big integer
   by a word in assembly.** pidigits spends 54 % of its cycles in
   `limbs::mul_word`, whose loop (LLVM) reloaded its pointers and the
-  multiplier at each word (`mulx` writes into `rdx`, the register of the
+  multiplier at each word (`mulx` writes into `rdx`, the register of the [contradicted: D576]
   multiplier). Written in assembly for the CPUs with BMI2 (groups of 4
   words: 4 `mulx`, then `add` and 4 `adc` in one chain): the same output,
   21 % fewer instructions for the program (8.68e9 -> 6.83e9), but 2.6 %
@@ -3831,7 +3831,7 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
   limited by my own code and were rewritten before use: fasta 1.945 ->
   1.029 ns per number (IUB), 1.641 -> 0.557 (homo sapiens), one chain of
   lanes made 4; the literals 0.157 -> 0.074 ns per byte, the masks out of
-  the one port of mask operations; the flips 0.766 -> 0.692 ns, 8 vectors
+  the one port of mask operations; the flips 0.766 -> 0.692 ns, 8 vectors [a hypothesis: D576]
   instead of 4. `floors.py` flags a floor below a measured time; none is.
   Floors (Isocron at D219 / floor, the fastest other / floor):
   binary-trees 0.396 s (1.7 / 2.1), fannkuch-redux 0.883 s (1.9 / 2.8),
@@ -3844,8 +3844,8 @@ specification itself must settle are also mirrored in SPEC.md section 16 terms
 - **D223 — Valgrind with 2 threads in every suite (2026-11-04).** The
   complete suite (`cargo test`, then with `ISC_ALLOC=glibc`) took 13.3
   minutes; three suites took 100, 50 and 48 s each (bitwise, text,
-  result). Under valgrind the threads run one at a time, and each idle
-  worker of the pool spins (SPIN = 65536 pauses, about 3 ms on the
+  result). Under valgrind the threads run one at a time, and each idle [checked: D576]
+  worker of the pool spins (SPIN = 65536 pauses, about 3 ms on the [a hypothesis: D576]
   machine) before it sleeps: the program of the test of `concat`, 0.00 s
   alone, took 47.4 s under valgrind with the 16 threads of the machine,
   0.31 s with one. Six of the nine helpers already gave valgrind
@@ -4038,7 +4038,7 @@ floor in the tables of the benchmarks, colors in every Markdown file, a
 better look on GitHub. GitHub keeps no color of HTML or CSS (it removes
 `style`), but renders the colors of math (`$\color{green}{...}$`, also in
 tables), emoji, its alerts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`,
-`[!WARNING]`, `[!CAUTION]`), Mermaid charts and `<details>`. `bench/mdstyle.py`
+`[!WARNING]`, `[!CAUTION]`), Mermaid charts and `<details>`. `bench/mdstyle.py` [a hypothesis: D576]
 holds the look: the readable names of the programs, Isocron over the
 fastest in green below 0.95, orange to 1.05, red beyond, with a mark (🟢
 🟡 🔴), a time over its floor in green up to 1.5, orange up to 3, red
@@ -4108,7 +4108,7 @@ again), compares of 32 bytes where AVX-512 gives a mask of 64 at once.
   (2026-11-04).** pidigits: `limbs::mul_word` 53 % of the time, `big256::op`
   38 % (its additions, already one chain of `adc`), 8.7e9 instructions at
   3 a cycle. The loop of `mul_word` (Rust, `u128`) used `mulx` but chained
-  an addition and an `adc` per word: the carry waited two cycles a word.
+  an addition and an `adc` per word: the carry waited two cycles a word. [a hypothesis: D576]
   An earlier try in assembly (before D222) was dropped because the loop
   was then at the floor of the time, 0.74 ns a word, which was the cost of
   a loop written in C; the primitive of D222 in assembly costs 0.33 ns.
@@ -4143,11 +4143,11 @@ the engine of shapes (D224) needed two comparisons of 32 bytes, two
 `vpcmpeqb` into a mask register gives. `build.rs` now builds a third
 runtime for x86-64-v4, which `iscc` links for `native` and `avx512` on a
 host with AVX-512 F, BW, CD, DQ and VL (`--isa avx2`, asked by the tests
-under valgrind, which has no AVX-512, keeps the one for v3); the engine
+under valgrind, which has no AVX-512, keeps the one for v3); the engine [checked: D576]
 has a version of its comparisons for it. First measure: pidigits 0.506 s
 -> 0.746 s: with AVX-512 LLVM turned the loop of the additions of big
 integers (Rust, a carry per word) into vector code that carries through
-masks, much slower than one chain of `adc`. The additions and
+masks, much slower than one chain of `adc`. The additions and [a hypothesis: D576]
 subtractions of words are now in assembly on every x86-64 (by 4 words,
 one chain of `adc` or `sbb` through the flags), whatever LLVM chooses. At
 fixed frequency, 4 threads but pidigits: regex-redux 0.305 s -> 0.294 s,
@@ -4806,7 +4806,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   instructions of its CPU, is already there: `iscc` links a runtime built
   for x86-64-v4 (AVX-512) or v3 when the CPU has them. Linking the runtime
   as bitcode would also need the LLVM of rustc (23.1.1) read by that of
-  `iscc` (21.1.8), which reads only older bitcode. Not done; to do again if
+  `iscc` (21.1.8), which reads only older bitcode. Not done; to do again if [checked: D576]
   a program calls the runtime per element.
 - **D266 — A release published by one command (2026-11-04).** Asked for:
   `tools/release/publish.sh VERSION DIR [--dry-run]` pushes main, tags the
@@ -4867,13 +4867,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   archives of 0.2.0, a first program, where to read on), the documents of
   the project, and in `<details>` the build from source, the tests, the
   benchmarks and the layout. Its programs are fenced as `ts`: GitHub knows
-  no `isc` and would show them without colors.
+  no `isc` and would show them without colors. [a hypothesis: D576]
   - The chart of the README is an image, `docs/media/benchmarks.svg`,
     written by `report.py` beside the table from the same rows
     (`mdstyle.ratio_svg`): one row a program, the value in its bar, the
     colors of the marks of the table, a dashed line at 1. A Mermaid chart
     is drawn by each viewer: its ten names under vertical bars overlapped,
-    and an option of orientation is not taken by all. The Mermaid charts
+    and an option of orientation is not taken by all. The Mermaid charts [a hypothesis: D576]
     of `results/benchmarks_game.md` and `results/floors.md` are
     horizontal (a row a name), their titles shortened (one was cut at
     700 px).
@@ -4948,7 +4948,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     0.2.1 built under the number 0.2.0 give the 22 files of 0.2.0, to the
     byte. Rust writes in the names of the symbols of the runtime a hash of
     its crate that counts the version (`Cs8quoeD7URSa_` /
-    `CsdlsRN8XvvpF_`), and the linker places the functions by them.
+    `CsdlsRN8XvvpF_`), and the linker places the functions by them. [a hypothesis: D576]
   - Tried: the archive for Linux on Debian 12 slim without network
     (`iscc --version`, nbody built and run, `isc-lsp` answering), its
     `isc-lsp` in Neovim (8 steps); the archive for Windows in VS Code (the
@@ -5172,10 +5172,10 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   KiB (a tmpfs, here after the memory of the machine was short [contradicted: D375; the cause, D551: pages marked by the reclaim, `PG_reclaim` being `PG_readahead`, which the mapping around a fault skips]), each page
   is a fault, 63629 for the 254 MB of reverse-complement, 29 % of its CPU
   in their handling. Each thread now asks the kernel for the pages of its
-  part in one call (`madvise(MADV_POPULATE_READ)`, Linux 5.14), touching
+  part in one call (`madvise(MADV_POPULATE_READ)`, Linux 5.14), touching [checked: D576]
   them one by one only where the system refuses it. Input in a tmpfs, in
   alternation, best of 9, 4 threads: reverse-complement 75.1 ms -> 65.3
-  ms, 63629 -> 1552 faults; input on ext4 (large pages of the page cache,
+  ms, 63629 -> 1552 faults; input on ext4 (large pages of the page cache, [a hypothesis: D576]
   5459 faults): 58.6 ms either way. The same output. Measured on the way:
   the inputs of the measurements are now on the disk (`target`), as the
   inputs of the publication are, not in the tmpfs, where their pages
@@ -5235,7 +5235,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   safe code on slices (2026-11-04).** Without a C library (D287), the
   functions LLVM and `core` call (`memcpy`, `memmove`, `memset`, `memcmp`,
   `bcmp`, `strlen`) are the runtime's (under Linux; a program linked with
-  glibc takes them too: the definitions of an executable come first). The
+  glibc takes them too: the definitions of an executable come first). The [a hypothesis: D576]
   author's demand: the code as clean and safe as can be, and no loss.
   - The way of glibc on this processor, read in its code
     (`__memmove_evex_unaligned_erms`, `__memcmp_evex_movbe`,
@@ -5244,12 +5244,12 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     last-level cache, here 0x800000): from both ends without a loop up to 8
     vectors, the loop of 4 vectors to aligned places, `rep movsb` aligned
     on 64 bytes, 4 pages at a time past the caches (their 16 vectors read
-    before any is written: otherwise a load waits for the store of the
+    before any is written: otherwise a load waits for the store of the [a hypothesis: D576]
     same 12 low bits of address; the stores on lines of 64 bytes: a line
-    half written goes to memory in parts when 3 others come between, 1.23
+    half written goes to memory in parts when 3 others come between, 1.23 [a hypothesis: D576]
     ms against 0.70 for 16 MiB before), `memcmp` by masked loads up to 32
     bytes, its loop of 4 vectors by 2 ternary operations (LLVM made the
-    form of AVX2 4 comparisons into masks, on one port of this processor).
+    form of AVX2 4 comparisons into masks, on one port of this processor). [a hypothesis: D576]
     The threshold past the caches read by CPUID (half the L3), not fixed.
   - Safety: the pointers LLVM gives become slices once, at the entry of
     each symbol (`symbols.rs`) and of each long path (`raw`), by the
@@ -5507,7 +5507,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   83 % of them in the wait for the lock of the chunks (`pause` 32.13 %,
   `lock cmpxchg` 50.75 %), the clearing of new pages 11.36 %: `carve_many`
   wrote the headers of its blocks under the lock, and with them the first
-  writes into the new huge pages, cleared by the kernel 2 MiB at a time,
+  writes into the new huge pages, cleared by the kernel 2 MiB at a time, [a hypothesis: D576]
   while the other threads waited. The headers written after the lock
   (only the range reserved under it) made it slower: 262219 -> 281571 µs
   (+7.25 % [+6.81 %, +7.74 %]), the wait gone (`refill` 6.42 %) but the
@@ -5521,7 +5521,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   each huge page is written first by one thread; the first chunk of the
   process, in pages of 4 KiB (D289), is still carved by all the threads
   one block after the other under the lock (a page touched by two threads
-  at once is cleared twice at most 4 KiB), then an atomic flag sends every
+  at once is cleared twice at most 4 KiB), then an atomic flag sends every [a hypothesis: D576]
   later carving to the spans without the lock. Two steps were measured on
   the way: the spans alone (each one from the start of its huge page)
   made binary-trees 3.58 % slower ([+3.32 %, +4.67 %]): the same
@@ -5531,7 +5531,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   trees, with 4 threads only (on one thread the same cycles) and no line
   shared between the cores (6 and 9 loads hitting a line modified by
   another core in `perf c2c`): the blocks the threads carve in the same
-  order were at the same places of their huge pages. Spans starting at
+  order were at the same places of their huge pages. Spans starting at [a hypothesis: D576]
   colors (8, by steps of 8 KiB and 192 bytes) took the clears back to 1.68
   and 1.42 million, binary-trees +0.50 % [-0.43 %, +1.29 %] then +1.22 %
   [+0.09 %, +2.21 %]; with the first chunk shared as before, none left.
@@ -5628,7 +5628,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   in one block: before each line the address of the block (8 bytes),
   then its bytes, to the next multiple of 16, 80 bytes for a line of 60;
   each line starts 8 bytes past a multiple of 16, where no block of the
-  heap (64), of glibc (16) or of the system starts, so that `isc_free`
+  heap (64), of glibc (16) or of the system starts, so that `isc_free` [glibc: checked (max_align_t of 16); WASI: a hypothesis; D576]
   knows it before reading any header; the first 8 bytes of the block
   count the lines alive, the block freed with the last of them (an atomic
   count). The place of each part in the block is bounded in the first
@@ -5795,7 +5795,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   in C, `split` of a line of 6 parts of 5 bytes 170.23 ns against 32.09.
   Each part was a block of the heap of its own (an allocation, then its
   free), the text was split twice (to count, then to make) by `str::split`
-  (a character: 29 ns a line; a text: the general search, prepared at each
+  (a character: 29 ns a line; a text: the general search, prepared at each [checked: D576]
   call), and an array of strings was freed by a call for each. Now the
   parts of `lines` and `split` are strings of one block, as the lines of a
   large text (D298), whatever its size: one allocation, each part freed
@@ -5803,7 +5803,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   found 32 bytes at a time, compared into the bits of a mask (written so
   that LLVM makes it one vector comparison, no unsafe code), the last
   bytes of the text read again in its last 32 (copied into 32 bytes on the
-  stack, they were read before their stores were done: 37 % of a `split`),
+  stack, they were read before their stores were done: 37 % of a `split`), [a hypothesis: D576]
   a longer one by `find_bytes`; the parts are found in a generic function
   compiled with their writer, a short one copied by 16 bytes. The block
   holds its size: an array of strings is freed by the runtime
@@ -7119,7 +7119,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     empty); the interpreter's too, ended when the connection closes or its
     value goes, so that a socket reusing the number never meets an old
     session. `SIGPIPE` is ignored at the first use of TLS: OpenSSL writes
-    without `MSG_NOSIGNAL`.
+    without `MSG_NOSIGNAL`. [checked in part: D576]
   - The client: TLS 1.2 at least, the certificate checked against the
     authorities of the system (`SSL_CTX_set_default_verify_paths`) or of
     the PEM text `ca`, the name by `SSL_set1_host` (an address checked as
@@ -7141,7 +7141,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     KiB. The first measure: `get.small` 1648637.35 ns against 1217073.34
     (1.4), `get.64k` 1482847.70 against 1234608.61 (1.2). The client made
     an `SSL_CTX` and read its authorities for each request; OpenSSL 3
-    takes a part of a millisecond for it: the contexts are now kept by the
+    takes a part of a millisecond for it: the contexts are now kept by the [a hypothesis: D576]
     authorities they trust (at most 8, for the life of the program):
     1436143.30 and 1253703.00 (1.2, 1.0). With 200 requests of each kind
     (the runs of 20 were the noise of `s_server`): 1236193.255 ns against
@@ -7169,7 +7169,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     refused them, `0x8009030d`, and the log of the system said why (event
     36870, "a fatal error occurred when attempting to access the TLS server
     credential private key ... the internal error state is 10001"):
-    SChannel uses the key in the process of the system, `lsass`. Measured
+    SChannel uses the key in the process of the system, `lsass`. Measured [a hypothesis: D576]
     one by one: this process opens the key, reaches it from the
     certificate (`CryptAcquireCertificatePrivateKey`) and signs with it
     (`NCryptSignHash`); RSA and EC alike; as a key of the machine; the
@@ -7578,7 +7578,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     Isocron) 177463 and 194181: Isocron 89 % and 104 % of it; the threads
     no longer cost (1 thread 153792, 4 threads 156128 at 1024). nginx
     still 3.5 to 4.5 times above with more connections: its 4 processes,
-    each with its loop and its connections; a loop of events for each
+    each with its loop and its connections; a loop of events for each [the 4 processes: checked; the cause: a hypothesis; D576]
     core, open in TODO. `serve.pipelined` (8 connections) 1474.56 ->
     1480.00 ns, the same.
   - Tests: the HTTP and HTTPS test files (their server against clients of
@@ -7736,7 +7736,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     its block at 0x100 in its page, the head of its class in the cache of
     the thread at 0x100 in its own (the TLS segment of the same 0x510
     bytes in both binaries: the place the loader gives the block of the
-    main thread moved, and the block by the history of the heap; at D357
+    main thread moved, and the block by the history of the heap; at D357 [a hypothesis: D576]
     0x180 and 0xf80). Each write of one followed by a
     read of the other waited for the write. `free` now reads the head of
     the list before it writes the header of the block (no instruction
@@ -7746,7 +7746,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     can share its place): tried, 5 instructions and 2.5 cycles more for
     each `alloc` and `free` (the address of the slot computed), for a
     coincidence of about one position of a block in 64, in 2 classes of 8:
-    not kept. The gap is that coincidence of this binary.
+    not kept. The gap is that coincidence of this binary. [a hypothesis: D576]
   - The other forms of the run outside 3 % against D357 (`startsWith.1`
     +5.7 %, `endsWith.2` +4.4, `bytes` +4.2, `parse` of `json` +4.0,
     `stringify` +3.1): in an A/B of the binaries of D357 and D359,
@@ -7778,7 +7778,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     vector after the environment noted by `isc_args` (`AT_SYSINFO_EHDR`,
     the ELF image of the vDSO), its first `PT_LOAD` (where it was linked)
     and its `PT_DYNAMIC` (its symbols, counted by `DT_HASH` or
-    `DT_GNU_HASH`), as the runtime of Go does without a C library. It is
+    `DT_GNU_HASH`), as the runtime of Go does without a C library. It is [checked: D576]
     the kernel's interface for its clocks, not a library: the program
     still links no C library. Without a vDSO (`vdso=0`, Valgrind) or
     without that function, the system call as before.
@@ -7786,7 +7786,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     -> 1.2 times its floor); in an A/B of the group `time` at fixed
     frequency 149.30 -> 20.82, the other forms -0.0 to +1.0 %. `concat` of
     `strings` 10.00 -> 9.38 ns: its code moved again, the coincidence of
-    addresses of D359 gone. `env` of `sys` +3.7 % in the run: in an A/B
+    addresses of D359 gone. `env` of `sys` +3.7 % in the run: in an A/B [a hypothesis: D576]
     of the binaries of D359 and D360, +2.5 % then -1.0 %, their nine
     times each overlapping (45.4 to 59.3 ns, 46.7 to 49.9): noise.
   - The ten programs read no clock: eight binaries the same bytes as at
@@ -7810,7 +7810,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     of the program 4 bytes past a multiple of 16 (`owned_literal`: a
     pad of 4 bytes, align 16), a place where no block starts: the blocks of
     the heap are aligned on 64 bytes, the lines of `lines` 8 bytes past a
-    multiple of 16 (D298), those of `malloc` and `HeapAlloc` on 16. The
+    multiple of 16 (D298), those of `malloc` and `HeapAlloc` on 16. The [HeapAlloc: checked; WASI: a hypothesis; D576]
     runtime never frees it (`is_literal` in `isc_free`, after the fast path
     and before the cold one), never writes it (`writable`, the replacement
     in place of D315) and gives it no room (`room`: only a block of the
@@ -13278,3 +13278,56 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   sees them, D546) and the memory outside the heap (the stack, the
   mapped input); a check of the LLVM code itself (each access against its
   block) is left in TODO.
+- **D576 — The claims D375 left unchecked, each checked or marked a
+  hypothesis where it stands (2026-11-09).** The item of the trusted base:
+  D375 named 44 entries holding claims about the system, a library, a
+  toolchain or a cause with nothing to show them. Each was located (85
+  claims, a reading of the log), then each one that a file, a header, a
+  manual, the source on this machine or a small run can decide was
+  checked; every claim now carries its mark at the end of its line:
+  `[checked: D576]` (23), `[contradicted: D576]` (3), `[a hypothesis:
+  D576]` (43), and 8 marks of two parts (a part checked, a part not). The
+  hypotheses are those that need a measurement (counters of the core or
+  of the memory, a cause of a time), or cannot be checked here (AMD,
+  Windows, GitHub).
+  - Contradicted:
+    - D2: « Its default target is musl » (`zig cc`): Zig 0.14.1 here,
+      `zig targets` gives the native triple `x86_64-linux...-gnu.2.41` and
+      `zig cc -###` passes `-triple x86_64-unknown-linux6.12.115-gnu2.41.0`:
+      glibc. The scripts' `-target x86_64-linux-gnu` stays right.
+    - D68: « the wasi-libc of Zig has no threads »: its sources define
+      `__wasi_thread_spawn` under `_REENTRANT`
+      (`libc-bottom-half/sources/__wasilibc_real.c`); whether Zig builds
+      that form was not checked. The choice it supported (one toolchain,
+      rust-lld and the wasi-libc of Rust) stands for its other reason.
+    - The entry after D214: « `mulx` writes into `rdx` »: LLVM's `MULX64`
+      (`X86InstrArithmetic.td`) has `Uses = [RDX]` and no `Defs` of it:
+      `mulx` reads `rdx` and writes its two results into the registers it
+      names. Why the loop of LLVM reloaded its multiplier is not shown.
+  - Checked, with what shows them: D46 (Cargo refuses « `panic` may not be
+    specified in a `package` profile »; `libcore` refers to
+    `rust_eh_personality`), D48 (no package of SIMD in Go 1.24.4; the
+    attribute `prefer-vector-width` read by `X86TargetMachine.cpp`), D64
+    (the heap of a thread of glibc at a boundary of 64 MiB, a run), D65 and
+    D74 (`dmidecode`: two modules DDR4 at 3200 MT/s on the channels A and
+    B: 51.2 GB/s in theory), D67 (`clockid_t` a pointer, `_Addr long` on
+    wasm32, the default stack of wasm-ld `WasmDefaultPageSize`), D68 (the
+    wait of wasm `#[unstable]` in `core_arch`; `rustc --print cfg` the same
+    for both targets; WASI preview 1 has CPU-time clocks only; clang names
+    `__main_argc_argv`; `__WASI_ERRNO_NOENT` 44), D85 (the comments of
+    `TargetRegistry.h`), D95 and D241 (Valgrind 3.24.0 stops on an
+    AVX-512 program with SIGILL), D115 (`ICLTuning`, Rocket Lake's,
+    prefers 256 bits), D117 (`gcc -O2` turns `malloc` and `memset(0)`
+    into `calloc`), D122 (L3 16384 KiB), D174 (the doc of regex-automata:
+    a slower engine, the PikeVM, for the groups), D223 (the manual of
+    Valgrind: threads serialised), D265 (rustc's LLVM 23.1.1; the policy
+    of LLVM: backwards compatibility of IR only), D285 (`madvise(2)`:
+    `MADV_POPULATE_READ` since Linux 5.14), D298 and D361
+    (`_Alignof(max_align_t)` 16; `MEMORY_ALLOCATION_ALIGNMENT` 16 for 64
+    bits in `winnt.h`), D305 (`StrSearcher::new` at each call), D343
+    (`libcrypto.so.3` imports `write` and `sendmsg`, not `send`: no flags
+    on a write), D354 (`worker_processes 4`), D360 (`runtime/vdso_linux.go`
+    of Go).
+  - From D375's list, D119 (AMD Zen) and a claim of D285 already carried
+    `[a hypothesis: D375]`. The contradicted claims of D375 itself were
+    marked then.
