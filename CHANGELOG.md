@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `sort` and `sortBy` of an array read for the last time move its elements instead of copying them: `sortBy` of 4096 texts 31 % faster (D548).
+
 * `ISC_ALLOC=check`: the allocator checks the blocks of a program (freed twice, written past their end or after their free, not freed at the end of `main`); the tests of the allocator without C (D546).
 * Static programs for Linux: their relocations checked at their build (D545).
 

@@ -174,6 +174,8 @@ Method: every optimization from a profile and a model of cost of the primitive, 
   - [x] (Closed by measure, D531: built and measured, 40 to 55 % faster for comparisons and sorts, 15 to 80 % slower to make and slice texts; not kept) Texts of 16 bytes with their first 4 bytes, short texts inline (D530)
   - [x] (Done, D532: `equal` -54.6 %, `less` -44.7 %, `get.string` -29.0 %, `sort.string` -27.9 %) Comparisons of texts decided by their first bytes without a call (D531): a word of each text loaded and compared before `isc_str_cmp`, in the code and in `argsort` of texts
   - [ ] Arrays whose texts are views of the texts of an array that lives longer (`sort`, `sortBy`: their copies 63 % of `sortBy` of texts, D488) or of a text kept (`lines`: k-nucleotide's base, D524)
+    - [x] (D548) The elements of a permutation of an array read for the last time moved, not copied (`sort`, `sortBy` of an owned source)
+  - [ ] The lists of the heap give the blocks in the reverse order of their frees: blocks freed scattered (the texts of an array sorted by moves, D548) make the next ones scattered (`LLC-load-misses` +40 % on a sort of 300000 texts made again ten times); free lists by page (mimalloc) would keep them near
   - [x] Maps: an index of hashes for the bisection of D158, `get` of an integer 56.08 -> 4.13 ns, 2.17 times its floor (D492)
   - [x] `countBy` 3.11 times its floor (D492): the keys below the number of keys counted by their value, 1.48 (D494)
   - [x] The costs of the machine measured, the floor of each program (`results/floors.md`, D182): Isocron over its floor fasta 57.8, regexredux 10.1, knucleotide 8.1, revcomp 5.4, nbody 4.9, pidigits 3.7, binarytrees 3.0, fannkuchredux 2.9, mandelbrot 1.5, spectralnorm 1.0

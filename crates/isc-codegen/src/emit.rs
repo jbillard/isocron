@@ -508,6 +508,9 @@ pub struct Gen<'p> {
     /// The variables whose block a `concat` may take (D533): read by it
     /// alone, then freed.
     taking: HashSet<VarId>,
+    /// The owned arrays whose elements the gather of a permutation takes
+    /// (D548): read without a copy, the array freed alone.
+    moving: HashSet<VarId>,
     /// The texts taken out of tuples (their registers): tested as literals
     /// wherever they are freed (D518).
     part_values: HashSet<String>,
@@ -667,6 +670,35 @@ fn concat_parts(e: &Expr) -> Option<(&Expr, &Expr, &Expr, &Expr)> {
 /// `concat(x, b)` of arrays of scalars is the only read of `x` in `e`, on its
 /// straight path (`let`s and `free`s, no loop, no branch): its block may be
 /// taken by the `concat` and grown (D533).
+/// The body of the binding of the owned array `x` reads it only in the
+/// gather of a permutation of its indices (D548): `let t = argsort(x)` (or
+/// the `argsort` of a `map` of `x`, `sortBy`), then `let y = map(t, (i) =>
+/// copy(x[i]))`, then nothing more of `x`. Each element is taken once (a
+/// permutation): moved rather than copied, and `x` gives back its block
+/// alone.
+fn permute_alone(e: &Expr, x: VarId) -> bool {
+    let is_x = |e: &Expr| matches!(e.kind, ExprKind::Var(v, _) if v == x);
+    let map_of_x = |e: &Expr| matches!(&e.kind, ExprKind::Map(ins, _) if ins.len() == 1 && is_x(&ins[0]));
+    let ExprKind::Let { var: t, init, body, .. } = &e.kind else { return false };
+    let perm = match &init.kind {
+        ExprKind::StrOp(StrOp::ArgSort, a) => a.len() == 1 && (is_x(&a[0]) || map_of_x(&a[0])),
+        ExprKind::Let { var: k, init: keys, body: sorted, .. } => {
+            map_of_x(keys) && matches!(&sorted.kind, ExprKind::StrOp(StrOp::ArgSort, a) if a.len() == 1 && matches!(a[0].kind, ExprKind::Var(v, _) if v == *k))
+        }
+        _ => false,
+    };
+    if !perm {
+        return false;
+    }
+    let ExprKind::Let { init: gather, body: rest, .. } = &body.kind else { return false };
+    let ExprKind::Map(ins, l) = &gather.kind else { return false };
+    let takes = ins.len() == 1
+        && matches!(ins[0].kind, ExprKind::Var(v, _) if v == *t)
+        && l.params.len() == 1
+        && matches!(&l.body.kind, ExprKind::Copy(c) if matches!(&c.kind, ExprKind::Index(a, i) if is_x(a) && matches!(i.kind, ExprKind::Var(v, _) if v == l.params[0])));
+    takes && !mentions(rest, &HashSet::from([x])) && !frees(rest, x)
+}
+
 fn concat_alone(e: &Expr, x: VarId) -> bool {
     let only = HashSet::from([x]);
     match &e.kind {
@@ -1087,6 +1119,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         vec_fail: None,
         literal_test: false,
         taking: HashSet::new(),
+        moving: HashSet::new(),
         part_values: HashSet::new(),
         split_vars: HashMap::new(),
         split_fail: None,
@@ -4167,7 +4200,14 @@ impl<'p> Gen<'p> {
                 if takes {
                     self.taking.insert(*var);
                 }
+                // its elements to the gather of a permutation of it, which
+                // moves them (D548): its block alone freed after
+                let moves = *drop && !early && w == 1 && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e)) && permute_alone(body, *var);
+                if moves {
+                    self.moving.insert(*var);
+                }
                 let r = self.ex(body, w);
+                self.moving.remove(var);
                 let iv = if takes {
                     self.taking.remove(var);
                     self.env.get(var).cloned().unwrap_or(iv)
@@ -4178,7 +4218,12 @@ impl<'p> Gen<'p> {
                     self.counts.remove(a);
                     self.emit(format!("call void @isc_free(ptr {})", block));
                 }
-                if *drop && !early {
+                if *drop && !early && moves {
+                    if let Ok(_) = &r {
+                        let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", iv.r));
+                        self.emit(format!("call void @isc_free(ptr {})", p));
+                    }
+                } else if *drop && !early {
                     if let Ok(_) = &r {
                         let t = self.var_ty(*var).clone();
                         // a part taken out of a tuple (D518)
@@ -4689,6 +4734,9 @@ impl<'p> Gen<'p> {
                 let r0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", g));
                 Ok(v(self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", r0, n)), "{ ptr, i64 }"))
             }
+            // an element of an array whose elements a permutation takes
+            // (D548): moved
+            Copy(x) if matches!(&x.kind, Index(a, _) if matches!(a.kind, Var(v, _) if self.moving.contains(&v))) => self.ex(x, 1),
             Copy(x) => {
                 let xv = self.ex(x, 1)?;
                 Ok(self.copy_value(&xv, &x.ty))

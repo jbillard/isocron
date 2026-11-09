@@ -12419,3 +12419,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   machine just started; the same kind as D542 and the release 0.4.9).
   `tools/windows/run.py` now closes the shared session and tries that
   first command once more before it gives up.
+- **D548 — The elements of a permutation of an array read for the last
+  time moved, not copied (2026-11-09).** TODO, the texts: the copies of
+  `sortBy` of texts (63 % of it, D488). `sort(x)` and `sortBy(x, k)` are
+  `map(argsort(x), (i) => x[i])` and `map(argsort(map(x, k)), (i) =>
+  x[i])` (the prelude): each element of the result a copy of one of `x`
+  (`copy index x i`: a block and a copy for a text, for each text of a
+  tuple). The indices of `argsort` are a permutation: each element is read
+  once. When `x` is owned and read nowhere after that `map`
+  (`permute_alone`, in the code generator: the binding of `x`, then `let t
+  = argsort(x)` or of a `map` of `x`, then `let y = map(t, (i) =>
+  copy(x[i]))`, then no read and no free of `x`), each element is moved
+  (its bits, no copy) and `x` gives back its block alone (not its texts).
+  A source read again after the sort keeps the copies.
+  - Measured (one thread, fixed frequency, 7 alternated runs, texts of 1
+    to 5 bytes made then sorted, the nanoseconds of one text, the making
+    included): 4096 texts, `sort` 105.16 -> 90.78 (-13.7 %), `sortBy` by
+    the length 40.14 -> 27.57 (-31.3 %); 300000 texts, one round a process,
+    `sort` 363.29 -> 316.14 (-13.0 %). Ten rounds of 300000 in a process:
+    `sort` 306.31 -> 342.95 (+12.0 %), `sortBy` 66.83 -> 65.42 (-2.1 %):
+    the texts of the sorted array, moved, are where they were made, freed
+    in the order of the sort, and the lists of the heap give the blocks in
+    the reverse order of their frees: the next round's texts are made
+    scattered, its `argsort` reads them so (`LLC-load-misses` 4.0 -> 5.6 a
+    text, cycles 1025.8 -> 1181.1; the misses of L1 28.4 against 33.8,
+    without the copies). The copies laid the sorted texts side by side.
+    Kept for the cases measured faster (a sort of an array in the caches,
+    a large one sorted once); the order of the lists of the heap a new
+    item of TODO.
+  - The ten programs: k-nucleotide alone sorts, its code without a copy of
+    a text before and after (`isc_str_new` 0, `isc_free_strs` 5); the
+    microbenchmark of the sorts reads its source again at each round: its
+    code the same.
+  - Tested by `sorting_an_array_read_for_the_last_time_moves_its_elements`
+    (`memory.rs`: `sort` of texts, `sortBy` of tuples holding texts, a
+    `sortBy` whose source is read again; the results as the interpreter's;
+    one copy left in the code, the last one's, in its two paths; Valgrind
+    and the allocator checked); `literals_kept_without_a_copy` now counts
+    1 copy (its `sort` moves).

@@ -1053,3 +1053,46 @@ action main(args: string[k]): i32 {
     assert!(ll.matches("call ptr @isc_str_reserve(").count() >= 2, "the blocks of the accumulators not grown");
     clean(src, "concat_grows_vg", &["700"]);
 }
+
+/// D548: the gather of a permutation of an owned array read for the last
+/// time (`sort`, `sortBy` of texts, of tuples holding texts) moves its
+/// elements: no copy of a text in the code (`isc_str_new`), the source
+/// freed alone; the results as the interpreter's; no leak and no fault
+/// under Valgrind and with the allocator checked. A source read again after
+/// the sort keeps its texts (copies in the result).
+#[test]
+fn sorting_an_array_read_for_the_last_time_moves_its_elements() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => toString((i * 7919) % 1000));
+    const ys = sort(xs);
+    print(ys[0]);
+    print(ys[n / 2]);
+    print(ys[n - 1]);
+    const ps = map(iota(n), (i) => [toString(i % 97), i] as const);
+    const qs = sortBy(ps, (p) => {
+        const [t, k] = p;
+        return t.length;
+    });
+    print(qs[n - 1]);
+    const zs = map(iota(n), (i) => toString(i * 31 % 101));
+    const ws = sortBy(zs, (s) => s.length);
+    print(ws[0]);
+    print(zs[0]);
+    print(ws[n - 1]);
+    print(zs[n - 1]);
+    return 0;
+}
+";
+    let bin = compile(src, "sort_moves");
+    for a in ["1", "10", "700"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    // only the sort of `zs`, read again after it, copies its texts (its
+    // gather in its two paths: in a loop, and in the task of the pool)
+    assert_eq!(ll.matches("call void @isc_str_new(").count(), 2, "the elements of the sources read for the last time copied");
+    clean(src, "sort_moves_vg", &["700"]);
+}

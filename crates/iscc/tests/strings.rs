@@ -1081,9 +1081,10 @@ fn literals_kept_without_a_copy() {
     }
     valgrind_clean(src, "literals_kept", &["1"]);
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    // the copies left are not of literals: the accumulator of `grow` at its
-    // entry (rule A, D351) and the elements `sort` puts in its array (twice)
-    assert_eq!(ll.matches("call void @isc_str_new(").count(), 3, "a literal copied");
+    // the copy left is not of a literal: the accumulator of `grow` at its
+    // entry (rule A, D351); the elements `sort` puts in its array are moved
+    // from its source, read for the last time (D548)
+    assert_eq!(ll.matches("call void @isc_str_new(").count(), 1, "a literal copied");
     // the literals of at most 12 bytes are values, their bytes in them
     // (D530); the one longer kept in the program's data
     assert!(ll.matches("@.olit.").count() >= 1, "the literals not kept where they are");
