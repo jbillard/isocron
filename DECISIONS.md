@@ -13630,8 +13630,8 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   instruction more on the path of a medium block taken from the cache
   (`cmpb $0xc3` becomes a load and a compare) and `free_medium` three
   (under the lock). The invariant H3 says so.
-- **D588 — The text of an integer written in Isocron: tried, kept in Rust
-  (2026-11-09).** The next pure function of SPEC section 17, order 2, after
+- **D588 — The text of an integer written in Isocron: a first attempt,
+  slower (2026-11-09).** The next pure function of SPEC section 17, order 2, after
   `parseI64` (D582, D586). `toString` of an integer is not one call: the
   code generator fuses it with `padStart` and `padEnd` (D348) and writes it
   inside a concatenation (D359), on the node `StrOp::ToString`; a function
@@ -13665,9 +13665,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     products of the SWAR where Rust's loop divides by 100 once or twice for
     a small number and copies two digits from a table, the sign made by
     selects, the checks of `$asciiText`, the branches of the copy.
-  - Principle 6: the text of an integer stays in Rust. The attempt is kept
-    on the local branch `attempt-int-text` (commit `dcba9e1`); the pilot
-    in `bench/primitives/text_pilot.isc`. To try again: Rust's form (two
-    digits a turn from a table of 200 bytes, read by `readWord`), the sign
-    written by a branch, and a text built without the checks of a general
-    primitive.
+  - Principle 6: not adopted as it was; the attempt is kept on the local
+    branch `attempt-int-text` (commit `dcba9e1`), the pilot in
+    `bench/primitives/text_pilot.isc`. Continued (D589: slower is a step,
+    not a result): Rust's form (two digits a turn from a table), the sign
+    written by a branch, the digits written into their final block (their
+    number known first, where Rust writes into a buffer then copies), no
+    general checks left on the path.
+- **D589 — No Rust at all: the end state of the runtime (the author,
+  2026-11-09).** « je ne veux plus de Rust ! », after D588 was first
+  recorded as "kept in Rust" and a Rust kernel (allocator, pool, start)
+  was proposed for step 7. The end state: no Rust in the runtime, the
+  allocator, the pool, the start, the input and output, and in the end the
+  engine of regular expressions and the big integers too (SPEC section 17,
+  order 6, which kept them in Rust for v1, now a later step, not an
+  exception). Principle 6 is unchanged: each part replaces its Rust version
+  only when at least as fast; a slower version is a step: its cause found
+  and worked on (an algorithm, a primitive the language lacks) until it is.
+  The allocator and the pool need primitives the table of section 17 does
+  not have (the inventory of 2026-11-09: addresses and alignments,
+  intrusive lists, shared data under locks, ordered atomics, per-thread
+  state and its end, the inline paths of the generated code): safe
+  primitives to design, fast enough, not a dialect without checks.
