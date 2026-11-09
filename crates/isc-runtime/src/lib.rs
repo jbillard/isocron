@@ -61,25 +61,11 @@ struct Timespec {
     tv_nsec: core::ffi::c_long,
 }
 
+// WASI (D543): its own functions called directly, no C library
 #[cfg(target_os = "wasi")]
-extern "C" {
-    fn strlen(s: *const c_char) -> usize;
-    fn exit(code: c_int) -> !;
-    fn abort() -> !;
-}
-
+mod wasi;
 #[cfg(target_os = "wasi")]
-extern "C" {
-    fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
-    fn free(p: *mut c_void);
-    fn strerror(code: c_int) -> *const c_char;
-    fn __errno_location() -> *mut c_int;
-    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
-    fn read(fd: c_int, buf: *mut c_void, n: usize) -> isize;
-    fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
-    fn close(fd: c_int) -> c_int;
-    fn lseek(fd: c_int, off: i64, whence: c_int) -> i64;
-}
+use wasi::{abort, aligned_alloc, close, exit, free, getenv, lseek, open, read, strerror, strlen, write};
 
 // Linux (D287): the system called directly, no C library
 #[cfg(target_os = "linux")]
@@ -156,20 +142,7 @@ mod sys {
 
 #[cfg(target_os = "wasi")]
 mod sys {
-    use core::ffi::c_int;
-    pub const O_RDONLY: c_int = 0x0400_0000;
-    pub const O_WRONLY: c_int = 0x1000_0000;
-    pub const O_CREAT: c_int = 1 << 12;
-    pub const O_TRUNC: c_int = 8 << 12;
-    pub const O_CLOEXEC: c_int = 0;
-    // `clockid_t` is a pointer in wasi-libc: `CLOCK_MONOTONIC` is `&_CLOCK_MONOTONIC`
-    extern "C" {
-        static _CLOCK_MONOTONIC: u8;
-        fn clock_gettime(clk: *const u8, ts: *mut super::Timespec) -> c_int;
-    }
-    pub unsafe fn monotonic(ts: *mut super::Timespec) {
-        clock_gettime(&_CLOCK_MONOTONIC, ts);
-    }
+    pub use super::wasi::{monotonic, O_CLOEXEC, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 }
 
 use sys::{O_CLOEXEC, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
@@ -464,8 +437,8 @@ fn fail(r: isize) -> c_int {
 }
 
 #[cfg(target_os = "wasi")]
-fn fail(_r: isize) -> c_int {
-    unsafe { *__errno_location() }
+fn fail(r: isize) -> c_int {
+    (-r) as c_int
 }
 
 #[cfg(windows)]
@@ -745,33 +718,10 @@ unsafe fn c_path(path: &str) -> *mut c_char {
 fn os_error<'a>(code: c_int) -> (&'a str, c_int) {
     #[cfg(target_os = "wasi")]
     {
-        // WASI preview 1 numbering -> Linux numbering, for the errors a read
-        // or a write can give; `ENOTCAPABLE` (76, a path outside the
-        // directories given to the engine) is shown as `EACCES`
-        let linux = match code {
-            2 | 76 => 13,
-            8 => 9,
-            20 => 17,
-            22 => 27,
-            27 => 4,
-            28 => 22,
-            29 => 5,
-            31 => 21,
-            32 => 40,
-            33 => 24,
-            37 => 36,
-            41 => 23,
-            44 => 2,
-            48 => 12,
-            51 => 28,
-            54 => 20,
-            63 => 1,
-            69 => 30,
-            70 => 29,
-            c => c,
-        };
-        let text = if code == 76 { unsafe { c_str(strerror(2)) } } else { unsafe { c_str(strerror(code)) } };
-        (text, linux)
+        // WASI preview 1 numbering -> Linux numbering; `ENOTCAPABLE` (76, a
+        // path outside the directories given to the engine) is shown as
+        // `EACCES`
+        (unsafe { c_str(strerror(code)) }, wasi::linux_code(code))
     }
     #[cfg(not(target_os = "wasi"))]
     (unsafe { c_str(strerror(code)) }, code)
@@ -3868,11 +3818,6 @@ pub unsafe extern "C" fn isc_parse_f64(p: *const u8, len: i64, line: i32, col: i
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 type Task = extern "C" fn(ctx: *mut c_void, i: i64);
-
-#[cfg(target_os = "wasi")]
-extern "C" {
-    fn getenv(name: *const c_char) -> *const c_char;
-}
 
 /// The environment of the process (D287): the strings after the arguments
 /// on the stack the kernel made (`argv[argc + 1 ..]`, until a null),

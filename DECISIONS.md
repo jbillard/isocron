@@ -12280,3 +12280,48 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     refused by peer", `sys_on_windows` failed once so). Two tests of the
     same program (a variant for Microsoft's ABI) built the same Linux
     binary at once: their names now differ.
+- **D543 — WASI without wasi-libc, the programs without threads
+  (2026-11-09).** Step 3 of D540, its first half. A program for
+  `wasm32-wasi` that declares no C function starts at the runtime's
+  `isc_wasi_start` (the `_start` of the command, from `WASI_START_IR` of
+  iscc): the constructors the linker gathers, the arguments
+  (`args_get`), the generated `main`, `proc_exit`. The runtime calls the
+  functions of WASI preview 1 itself (`wasi.rs`: the imports of
+  `wasi_snapshot_preview1`), with the conventions of its module of Linux:
+  a failed call gives the negative of its code (numbered as WASI does;
+  their texts those of glibc through the numbers of Linux, `os_error`).
+  - Paths: by the rules of wasi-libc: the current directory `/`, the
+    preopens read once (`fd_prestat_get`, their names without their
+    leading `/` and `./`), the longest one that starts the path at a
+    boundary of its parts, the rest relative to it (`.` when empty). The
+    rights asked by `path_open` as wasi-libc asks them: all those of
+    WASI preview 1 (30 bits; an engine refuses others) but those that
+    contradict the mode (reading or writing), within those the directory
+    passes on (`fd_fdstat_get`): wasmtime refused a folder opened with
+    the rights of writing (`EISDIR`, `sys_under_wasi`).
+  - `sys`: `path_filestat_get`, `fd_readdir` (its entries cut by the end
+    of the buffer read again from their cookie), `path_create_directory`,
+    `path_remove_directory`, `path_unlink_file`, `path_rename`,
+    `clock_time_get`, the environment (`environ_get`, read once), the
+    current directory `/`.
+  - The heap: the classes of sizes of the runtime (`alloc_class`), each
+    block 64 bytes into its cell (its class before it), from the end of
+    the memory, which grows by pages (from the new ones when another
+    allocator made it grow in between; after `__heap_base` only when the
+    program started at `isc_wasi_start`, wasi-libc's allocator having it
+    otherwise); a freed block kept for its class; a lock for the threads.
+    `strlen` (volatile reads), `memcmp` and `bcmp` of the runtime; the
+    copies are instructions (`bulk-memory`).
+  - Still with wasi-libc: `wasm32-wasi-threads` (its pthread starts the
+    threads: the second half of the step) and the programs that declare C
+    functions; there the runtime's functions are its own all the same, the
+    runtime linked before `libc.a` so that its `strlen`, `memcmp` and
+    `bcmp` are the only ones.
+  - Measured (wasmtime, one CPU at fixed frequency, 5 alternated runs,
+    the start of the engine included): binary-trees 17 923 -> 513 ms
+    (medians, -44.4 %: the heap of the runtime against wasi-libc's
+    dlmalloc), fasta 2500000 233 -> 230 ms; the same outputs. A hello
+    35494 -> 24910 bytes.
+  - Tests: the files that run WebAssembly, whole (`std_sys`, `codegen`,
+    `tuples`, `phase5`, `std_net`, `std_https`, `docs`) green after the
+    two faults of rights above.

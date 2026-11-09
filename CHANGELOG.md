@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* `wasm32-wasi`: programs without wasi-libc, the functions of WASI called by the runtime, its own heap: binary-trees 44 % faster under wasmtime (D543).
+
 * `--target x86_64-windows-msvc`: Windows programs with Microsoft's ABI, linked by LLD as `link`; static libraries of Visual Studio linked with Microsoft's C runtime, static, found in `LIB` (D542).
 
 * Windows: programs without a C library, importing only `kernel32` (132 functions of 7 DLLs before); their arguments read in UTF-16, any character; the DLLs of the network and of TLS loaded at their first use; a start about 35 % faster (D541).

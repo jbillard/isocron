@@ -3389,7 +3389,9 @@ action main(args: string[k]): i32 {
   program no longer uses goes back to the system. A program that declares C
   functions runs with glibc's allocator under `ISC_ALLOC=glibc ./prog`
   (one built with `ISC_ALLOC=glibc` in the environment of `iscc` is linked
-  with glibc for that); WebAssembly always uses wasi-libc's.
+  with glibc for that). WebAssembly uses a heap of the runtime over the
+  pages of its memory (`wasm32-wasi`, and `wasm32-wasi-threads` for the
+  runtime's own blocks).
 
 ## Not implemented yet
 
@@ -3481,9 +3483,12 @@ iscc completions bash|zsh|fish              the completion of the shell
   Windows and WebAssembly; `cc`, or `$ISC_CC`, for the programs with C).
 * Native (Linux and Windows), WebAssembly with or without threads, and the
   interpreter give the same results to the bit, and the same panic
-  messages. Linking WebAssembly
-  uses `rust-lld` and the WASI C library of the Rust targets `wasm32-wasip1`
-  and `wasm32-wasip1-threads` (`rustup target add ...`).
+  messages. A program for `wasm32-wasi` has no C library: it calls the
+  functions of WASI itself, and reads its paths from the directories the
+  engine gives it (`--dir`), as wasi-libc does. Linking WebAssembly uses
+  `rust-lld`, with the WASI C library of the Rust targets `wasm32-wasip1`
+  and `wasm32-wasip1-threads` (`rustup target add ...`) for the threads of
+  `wasm32-wasi-threads` and for the programs that declare C functions.
 * The interpreter is the reference: a compiled program prints the same output,
   writes the same files and panics with the same message.
 * Experiment options, not part of the language: `--lanes V` (another number of

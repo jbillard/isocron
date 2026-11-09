@@ -598,31 +598,11 @@ mod imp {
 #[cfg(target_os = "wasi")]
 mod imp {
     use super::*;
+    use crate::wasi;
 
-    // `struct stat` of wasi-libc for wasm32 (measured with `offsetof`): 144
-    // bytes, the mode at 24, the size at 48, the time of the last change at
-    // 88 (seconds, 64 bits) and 96 (nanoseconds, 32 bits); a `dirent` its
-    // name at 9
-    const STAT_BYTES: usize = 144;
-    const O_APPEND: c_int = 1;
-
-    extern "C" {
-        fn stat(path: *const c_char, st: *mut u8) -> c_int;
-        fn opendir(path: *const c_char) -> *mut c_void;
-        fn readdir(d: *mut c_void) -> *const u8;
-        fn closedir(d: *mut c_void) -> c_int;
-        fn mkdir(path: *const c_char, mode: u32) -> c_int;
-        fn unlink(path: *const c_char) -> c_int;
-        fn rmdir(path: *const c_char) -> c_int;
-        fn rename(from: *const c_char, to: *const c_char) -> c_int;
-        fn getcwd(buf: *mut c_char, n: usize) -> *mut c_char;
-        static environ: *const *const u8;
-    }
-
-    /// The code of the `errno` of WASI.
-    fn last_code() -> i64 {
-        // SAFETY: the `errno` of this thread
-        match unsafe { *__errno_location() } {
+    /// The code of `sys` of a code of WASI.
+    fn kind(e: u16) -> i64 {
+        match e {
             44 => 1,
             2 | 63 => 2,
             20 => 3,
@@ -633,45 +613,35 @@ mod imp {
         }
     }
 
-    fn code_if(r: c_int) -> i64 {
-        if r == 0 {
-            0
-        } else {
-            last_code()
+    fn code_of(r: Result<(), u16>) -> i64 {
+        match r {
+            Ok(()) => 0,
+            Err(e) => kind(e),
         }
+    }
+
+    /// The bytes of a path of `zpath` without its zero byte.
+    fn bytes(z: &[u8]) -> &[u8] {
+        &z[..z.len() - 1]
     }
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_environ(out: *mut IscArray) {
         let mut all = alloc::vec::Vec::new();
-        let mut e = environ;
-        if !e.is_null() {
-            while !(*e).is_null() {
-                let v = *e;
-                let mut n = 0;
-                while *v.add(n) != 0 {
-                    n += 1;
-                }
-                // the bytes of the entry, copied once into its string
-                all.push(core::slice::from_raw_parts(v, n));
-                e = e.add(1);
-            }
+        let mut e = wasi::environ();
+        while !(*e).is_null() {
+            let v = *e;
+            // the bytes of the entry, copied once into its string
+            all.push(core::slice::from_raw_parts(v, strlen(v as *const c_char)));
+            e = e.add(1);
         }
         *out = sorted_entries(all);
     }
 
-    extern "C" {
-        // `clockid_t` is a pointer in wasi-libc
-        static _CLOCK_REALTIME: u8;
-        fn clock_gettime(clk: *const u8, ts: *mut Timespec) -> c_int;
-    }
-
-    /// `sysNow()`: CLOCK_REALTIME in nanoseconds since 1970.
+    /// `sysNow()`: the real time in nanoseconds since 1970.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_now(out: *mut i64) {
-        let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
-        clock_gettime(&_CLOCK_REALTIME, &mut ts);
-        *out = ts.tv_sec.wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as i64);
+        *out = wasi::clock(0) as i64;
     }
 
     #[no_mangle]
@@ -680,20 +650,18 @@ mod imp {
             *out = [0, 0, 0, -1];
             return;
         };
-        let mut st = [0u8; STAT_BYTES];
-        if stat(z.as_ptr() as *const c_char, st.as_mut_ptr()) != 0 {
-            *out = [0, 0, 0, last_code()];
-            return;
+        match wasi::stat(bytes(&z)) {
+            Err(e) => *out = [0, 0, 0, kind(e)],
+            Ok(st) => {
+                // the types of WASI: 3 a directory, 4 a regular file
+                let k = match st.filetype {
+                    4 => 1,
+                    3 => 2,
+                    _ => 3,
+                };
+                *out = [k, st.size as i64, st.mtim as i64, 0];
+            }
         }
-        let word = |at: usize| i64::from_le_bytes(st[at..at + 8].try_into().unwrap());
-        let mode = u32::from_le_bytes(st[24..28].try_into().unwrap());
-        let kind = match mode & 0xF000 {
-            0x8000 => 1,
-            0x4000 => 2,
-            _ => 3,
-        };
-        let nsec = i32::from_le_bytes(st[96..100].try_into().unwrap()) as i64;
-        *out = [kind, word(48), word(88).wrapping_mul(1_000_000_000).wrapping_add(nsec), 0];
     }
 
     #[no_mangle]
@@ -702,36 +670,20 @@ mod imp {
             *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: -1 };
             return;
         };
-        let d = opendir(z.as_ptr() as *const c_char);
-        if d.is_null() {
-            *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: last_code() };
-            return;
-        }
-        let mut names = alloc::vec::Vec::new();
-        loop {
-            let e = readdir(d);
-            if e.is_null() {
-                break;
-            }
-            let name = e.add(9);
-            let mut len = 0;
-            while *name.add(len) != 0 {
-                len += 1;
-            }
-            let b = core::slice::from_raw_parts(name, len);
-            if b != b"." && b != b".." {
-                names.push(b.to_vec());
+        match wasi::read_dir(bytes(&z)) {
+            Err(e) => *out = IscArrayCode { a: sorted_strings(alloc::vec::Vec::<&[u8]>::new()), code: kind(e) },
+            Ok(all) => {
+                let names: alloc::vec::Vec<alloc::vec::Vec<u8>> = all.into_iter().filter(|b| b != b"." && b != b"..").collect();
+                *out = IscArrayCode { a: sorted_strings(names), code: 0 };
             }
         }
-        closedir(d);
-        *out = IscArrayCode { a: sorted_strings(names), code: 0 };
     }
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_mkdir(out: *mut i64, p: *const u8, n: i64) {
         *out = match zpath(p, n) {
             None => -1,
-            Some(z) => code_if(mkdir(z.as_ptr() as *const c_char, 0o777)),
+            Some(z) => code_of(wasi::mkdir(bytes(&z))),
         };
     }
 
@@ -739,7 +691,7 @@ mod imp {
     pub unsafe extern "C" fn isc_sys_removefile(out: *mut i64, p: *const u8, n: i64) {
         *out = match zpath(p, n) {
             None => -1,
-            Some(z) => code_if(unlink(z.as_ptr() as *const c_char)),
+            Some(z) => code_of(wasi::unlink(bytes(&z))),
         };
     }
 
@@ -747,27 +699,23 @@ mod imp {
     pub unsafe extern "C" fn isc_sys_removedir(out: *mut i64, p: *const u8, n: i64) {
         *out = match zpath(p, n) {
             None => -1,
-            Some(z) => code_if(rmdir(z.as_ptr() as *const c_char)),
+            Some(z) => code_of(wasi::rmdir(bytes(&z))),
         };
     }
 
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_rename(out: *mut i64, p: *const u8, n: i64, q: *const u8, m: i64) {
         *out = match (zpath(p, n), zpath(q, m)) {
-            (Some(a), Some(b)) => code_if(rename(a.as_ptr() as *const c_char, b.as_ptr() as *const c_char)),
+            (Some(a), Some(b)) => code_of(wasi::rename(bytes(&a), bytes(&b))),
             _ => -1,
         };
     }
 
+    /// The current directory: `/` under WASI (as wasi-libc: a program
+    /// cannot change it, its relative paths are read from it).
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_cwd(out: *mut IscStrCode) {
-        let mut buf = alloc::vec![0u8; 4096];
-        if getcwd(buf.as_mut_ptr() as *mut c_char, buf.len()).is_null() {
-            *out = IscStrCode { s: adopt(alloc::string::String::new()), code: last_code() };
-            return;
-        }
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        *out = IscStrCode { s: adopt(alloc::string::String::from_utf8_lossy(&buf[..len]).into_owned()), code: 0 };
+        *out = IscStrCode { s: adopt(alloc::string::String::from("/")), code: 0 };
     }
 
     #[no_mangle]
@@ -776,18 +724,18 @@ mod imp {
             *out = IscArrayCode { a: byte_array(&[]), code: -1 };
             return;
         };
-        let fd = open(z.as_ptr() as *const c_char, O_RDONLY);
+        let fd = wasi::open(z.as_ptr() as *const c_char, wasi::O_RDONLY, 0);
         if fd < 0 {
-            *out = IscArrayCode { a: byte_array(&[]), code: last_code() };
+            *out = IscArrayCode { a: byte_array(&[]), code: kind(-fd as u16) };
             return;
         }
         let mut data = alloc::vec::Vec::new();
         let mut buf = alloc::vec![0u8; 1 << 16];
         let mut code = 0;
         loop {
-            let r = read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+            let r = wasi::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
             if r < 0 {
-                code = last_code();
+                code = kind(-r as u16);
                 break;
             }
             if r == 0 {
@@ -795,7 +743,7 @@ mod imp {
             }
             data.extend_from_slice(&buf[..r as usize]);
         }
-        close(fd);
+        wasi::close(fd);
         *out = IscArrayCode { a: byte_array(if code == 0 { &data } else { &[] }), code };
     }
 
@@ -805,24 +753,24 @@ mod imp {
             *out = -1;
             return;
         };
-        let flags = O_WRONLY | O_CREAT | if append != 0 { O_APPEND } else { O_TRUNC };
-        let fd = open(z.as_ptr() as *const c_char, flags, 0o666 as c_int);
+        let flags = wasi::O_WRONLY | wasi::O_CREAT | if append != 0 { wasi::O_APPEND } else { wasi::O_TRUNC };
+        let fd = wasi::open(z.as_ptr() as *const c_char, flags, 0o666);
         if fd < 0 {
-            *out = last_code();
+            *out = kind(-fd as u16);
             return;
         }
         let data = bytes_of(d, m);
         let mut at = 0;
         let mut code = 0;
         while at < data.len() {
-            let r = write(fd, data[at..].as_ptr() as *const c_void, data.len() - at);
+            let r = wasi::write(fd, data[at..].as_ptr() as *const c_void, data.len() - at);
             if r <= 0 {
-                code = if r < 0 { last_code() } else { -29 };
+                code = if r < 0 { kind(-r as u16) } else { -29 };
                 break;
             }
             at += r as usize;
         }
-        close(fd);
+        wasi::close(fd);
         *out = code;
     }
 }

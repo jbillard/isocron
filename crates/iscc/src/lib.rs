@@ -121,6 +121,16 @@ module asm "  pop %rcx"
 module asm "  ret"
 "#;
 
+/// The start of a program for WASI without wasi-libc (D543): the command's
+/// `_start` calls that of the runtime, which ends the process.
+const WASI_START_IR: &str = r#"
+declare void @isc_wasi_start()
+define void @_start() {
+  call void @isc_wasi_start()
+  unreachable
+}
+"#;
+
 /// Compiles the IR to a native executable.
 pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     // a primitive of the system that the target lacks (D324)
@@ -142,6 +152,12 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     let msvc = opts.codegen.windows && opts.codegen.msvc && !opts.codegen.isa.is_wasm();
     if own_start {
         ir.push_str(if msvc { WINDOWS_MSVC_START_IR } else { WINDOWS_START_IR });
+    }
+    // and a program for WASI without wasi-libc unless it calls C (D543)
+    // (the threads of wasi-threads still by wasi-libc's pthread)
+    let wasi_alone = opts.codegen.isa == isc_codegen::Isa::Wasm32 && p.externs.is_empty() && opts.link.is_empty();
+    if wasi_alone {
+        ir.push_str(WASI_START_IR);
     }
     if let Some(f) = &opts.emit_llvm {
         std::fs::write(f, &ir).map_err(|e| format!("cannot write `{}`: {}", f.display(), e))?;
@@ -192,7 +208,7 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
     } else if windows {
         link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link, own_start)
     } else if wasm {
-        link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link)
+        link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
     } else if !with_glibc(p, opts) {
         link_linux_static(&obj, &rt, &opts.output, opts.debug)
     } else {
@@ -514,7 +530,18 @@ fn rust_sysroot() -> Result<PathBuf, String> {
 /// the Rust sysroot): the result is a WASI command module, run by any WASI
 /// engine. With threads (wasi-threads), the memory is shared and imported,
 /// and `wasi_thread_start` is exported, as the proposal requires.
-fn link_wasm(obj: &Path, rt: &Path, out: &Path, debug: bool, triple: &str, threads: bool, libs: &[String]) -> Result<(), String> {
+fn link_wasm(obj: &Path, rt: &Path, out: &Path, debug: bool, triple: &str, threads: bool, libs: &[String], alone: bool) -> Result<(), String> {
+    if alone {
+        let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), obj.into(), rt.into()];
+        a.extend(["--gc-sections", "-z", "stack-size=8388608"].iter().map(|x| x.into()));
+        if threads {
+            a.extend(["--shared-memory", "--import-memory", "--export-memory", "--max-memory=4294967296", "--export=wasi_thread_start"].iter().map(|x| x.into()));
+        }
+        if !debug {
+            a.push("--strip-all".into());
+        }
+        return run_linker("wasm-ld", "wasm", a, &rust_lld);
+    }
     let tag = if threads { "threads-" } else { "" };
     let embedded: Vec<(&str, &[u8])> = WASI_FILES.iter().filter(|(n, _)| n.strip_prefix(tag).map(|r| !r.starts_with("threads-") && (r == "libc.a" || r == "crt1-command.o")).unwrap_or(false)).map(|(n, b)| (n.strip_prefix(tag).unwrap(), *b)).collect();
     let tmp = out.with_extension("wasi");
@@ -529,10 +556,11 @@ fn link_wasm(obj: &Path, rt: &Path, out: &Path, debug: bool, triple: &str, threa
         d
     };
     let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), libc_dir.join("crt1-command.o").into(), obj.into()];
-    // the libraries of the `extern` functions and the C library before the
-    // runtime, as natively (D125)
+    // the libraries of the `extern` functions, then the runtime before the C
+    // library: its functions of memory (`strlen`, `memcmp`, `bcmp`, D543)
+    // are the only ones, as glibc's are not under Linux (D289)
     a.extend(libs.iter().map(|l| lib_arg(l)));
-    a.extend([libc_dir.join("libc.a").into(), rt.into(), libc_dir.join("libc.a").into()]);
+    a.extend([rt.into(), libc_dir.join("libc.a").into()]);
     // the stack of the main thread: 8 MiB, as on Linux (wasm-ld gives 64 KiB)
     a.extend(["--gc-sections", "-z", "stack-size=8388608"].iter().map(|x| x.into()));
     if threads {
