@@ -12780,3 +12780,60 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     its run 36.5 million instructions more, the path taken, and 18 % fewer
     cycles); `places_down_sorts_from_the_highest` (`isc-runtime-core`:
     places of every spread, 0 to 300 and 5000, against a sort).
+- **D558 — io_uring set aside (2026-11-09).** For the item of TODO "far
+  above nginx" (the server bound by the kernel, 70 % of its cycles, D534),
+  io_uring (two rings shared with the kernel, operations submitted and
+  completed in batches, one call of the system for many) was weighed with
+  the author, who found it more constraints than gain; set aside:
+  - its constraints are sure: `unsafe` in the runtime for the rings (the
+    author's wish: no new `unsafe` when avoidable); a loop of events kept on
+    epoll beside it (io_uring refused by the default seccomp profiles of
+    recent Docker, by Android and ChromeOS, by `kernel.io_uring_disabled`),
+    so two loops to keep and test; Linux alone;
+  - its gain is bounded and not measured: it removes the passages into the
+    kernel and the work of each operation, not the TCP stack, which does
+    most of the 70 %; the part of those passages was not measured. Taken up
+    again only after that measure (`perf` on the functions of the kernel of
+    the server: the entries and exits of its calls against `tcp_*`).
+- **D559 — The server left for the rest of TODO, by its profile
+  (2026-11-09).** The author's order (D555): the server, unless it takes too
+  long. Its program profiled after D555 to D557 (`http_serve`, the server on
+  the CPU of the measurements, 10000 rounds of the client of
+  `http_client.c`, `perf record` of its user cycles, 5 thousand samples):
+  its function of service 39.6 %, `isc_alloc` 12.4 % and `isc_free` 10.8 %,
+  `isc_sys_serverwait` 4.3 %, `thread_count` 3.0 %, `memcpy` 2.7 %, the
+  rest under 2 % each. With 70 % of its cycles in the kernel (D534), the
+  user part is about 30 %: no block made at all would give about 7 % more
+  requests, `thread_count` about 1 %; nothing of the program brings it far
+  above nginx a core, which needs the kernel's part (io_uring, set aside:
+  D558). The items of the server stay in TODO, after the rest. (A first
+  profile of 200 rounds had 108 samples only: its 5 % of `thread_count`
+  were 5 samples.)
+- **D560 — `sha256`: the schedule made first, the rounds eight a step
+  (2026-11-09).** TODO: `sha256` 1.5 times the same loop in C (D338: the
+  window of the schedule in the state of the `fold` of the rounds, 24 words
+  for 16 registers, 32 accesses to the stack a round). The floor
+  (`sha256.c`) makes the 64 words of the schedule into an array, then its
+  64 rounds over 8 words. Now the module does the same: `schedule` (one
+  `fold` of 64 steps that writes its array in place: the 16 words read,
+  then the 48 made from them; written first as a `map` of the 16 words, the
+  reads of their bytes were vectorized into gathers of single bytes,
+  `vpinsrb`, and the whole was slower than before: 26552 against 19842 ns
+  for 4 KiB, without the protocol), then a `fold` of 8 steps of 8 rounds
+  each, the words of the state renamed from one round to the next (`step`
+  gives the new first and fifth words): a `fold` of one round moved the 8
+  words at each round (8 `mov`s at the head of the loop, the loop not
+  unrolled).
+  - Measured (`sha256` group, the binaries of 4b198f0 and of this, 7
+    alternated runs, fixed frequency): `digest.4k` 26066.415 -> 21603.695
+    ns (-17.1 %; 1.49 -> 1.24 times its floor), `digestText.55` 428.300 ->
+    362.240 (-15.4 %), `digest.55` 378.425 -> 366.045 (-3.3 %; 1.28 times
+    its floor), `hex.32` +2.1 % (its code the same, the spreads
+    overlapping). The same hashes as before for every length from 0 to 299
+    bytes (a program against the module of before), and the vectors of the
+    NIST (`sha256_of_the_vectors_of_the_nist`).
+  - Left: the array of the schedule is a block of the heap at each block of
+    the message (256 bytes made and freed; D191 puts on the stack only the
+    array literals that their scope reads), most of what one block costs
+    more than its floor; the instructions SHA of the processor stay out of
+    v1 (D338).

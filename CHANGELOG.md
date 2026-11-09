@@ -14,6 +14,8 @@
   a sorted array) frees them in that order, so that the texts made after it
   lie in order: after a sort of 300000 texts, making texts 2 to 3 times
   faster (D557).
+- `sha256.digest` 17 % faster on large messages: its schedule made first, its
+  rounds eight at a time (D560).
 
 ## 0.5.0 — 2026-11-09
 

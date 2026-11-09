@@ -1,9 +1,9 @@
 // The module `sha256` of the standard library (SPEC section 18, D338): the
 // hash of FIPS 180-4, in Isocron on `u32` (rotations, additions modulo
 // 2^32). The message is padded as it is read (its bytes, 0x80, zeros, its
-// length in bits), never copied; each block of 64 bytes is compressed by a
-// `fold` of its 64 rounds, whose state is the 8 words of the hash and the
-// window of the 16 words of the schedule; the blocks by a `fold` too.
+// length in bits), never copied; each block of 64 bytes has its schedule of
+// 64 words made, then is compressed by a `fold` of its 64 rounds, eight a
+// step, whose state is the 8 words of the hash; the blocks by a `fold` too.
 
 const K = [
     0x428a2f98u32, 0x71374491u32, 0xb5c0fbcfu32, 0xe9b5dba5u32, 0x3956c25bu32, 0x59f111f1u32, 0x923f82a4u32, 0xab1c5ed5u32,
@@ -45,19 +45,42 @@ function word(m: u8[n], at: i64, p: i64): u32 {
     return (paddedByte(m, at, p) << 24u32) | (paddedByte(m, at + 1, p) << 16u32) | (paddedByte(m, at + 2, p) << 8u32) | paddedByte(m, at + 3, p);
 }
 
-// the state after the block at the byte `at` of the padded message
+// one round of the compression: the new first and fifth words of the state
+// (the others are those before, shifted by one)
+function step(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, hh: u32, kw: u32): [u32, u32] {
+    const t1 = hh + (rotr(e, 6u32) ^ rotr(e, 11u32) ^ rotr(e, 25u32)) + ((e & f) ^ ((e ^ 0xFFFFFFFFu32) & g)) + kw;
+    const t2 = (rotr(a, 2u32) ^ rotr(a, 13u32) ^ rotr(a, 22u32)) + ((a & b) ^ (a & c) ^ (b & c));
+    return [t1 + t2, d + t1] as const;
+}
+
+// the schedule of the block at the byte `at` of the padded message: its 16
+// words read, the 48 next made from them, one by one (D560)
+function schedule(m: u8[n], p: i64, at: i64): u32[64] {
+    return fold(iota(64), map(iota(64), (t) => 0u32), (v, t) => v.with(t, t < 16 ? word(m, at + 4 * t, p) : (rotr(v[t - 2], 17u32) ^ rotr(v[t - 2], 19u32) ^ (v[t - 2] >> 10u32)) + v[t - 7] + (rotr(v[t - 15], 7u32) ^ rotr(v[t - 15], 18u32) ^ (v[t - 15] >> 3u32)) + v[t - 16]));
+}
+
+// the state after the block at the byte `at` of the padded message: its
+// schedule made first, then its 64 rounds over the 8 words of the state
+// alone, eight a step, the words renamed from one round to the next rather
+// than moved (D560: the window of the schedule in the state of the rounds,
+// 24 words for 16 registers, made 32 accesses to the stack a round, D338)
 function block(m: u8[n], p: i64, at: i64, h: State): State {
+    const w = schedule(m, p, at);
     const [h0, h1, h2, h3, h4, h5, h6, h7] = h;
-    const first = [h0, h1, h2, h3, h4, h5, h6, h7, word(m, at, p), word(m, at + 4, p), word(m, at + 8, p), word(m, at + 12, p), word(m, at + 16, p), word(m, at + 20, p), word(m, at + 24, p), word(m, at + 28, p), word(m, at + 32, p), word(m, at + 36, p), word(m, at + 40, p), word(m, at + 44, p), word(m, at + 48, p), word(m, at + 52, p), word(m, at + 56, p), word(m, at + 60, p)] as const;
-    // round `t`: the window holds the words `t` to `t + 15` of the schedule
-    const last = fold(iota(64), first, (s, t) => {
-        const [a, b, c, d, e, f, g, hh, x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15] = s;
-        const t1 = hh + (rotr(e, 6u32) ^ rotr(e, 11u32) ^ rotr(e, 25u32)) + ((e & f) ^ ((e ^ 0xFFFFFFFFu32) & g)) + K[t] + x0;
-        const t2 = (rotr(a, 2u32) ^ rotr(a, 13u32) ^ rotr(a, 22u32)) + ((a & b) ^ (a & c) ^ (b & c));
-        const next = (rotr(x14, 17u32) ^ rotr(x14, 19u32) ^ (x14 >> 10u32)) + x9 + (rotr(x1, 7u32) ^ rotr(x1, 18u32) ^ (x1 >> 3u32)) + x0;
-        return [t1 + t2, a, b, c, d + t1, e, f, g, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, next] as const;
+    const last = fold(iota(8), h, (s, k) => {
+        const [a, b, c, d, e, f, g, hh] = s;
+        const i = 8 * k;
+        const [a1, e1] = step(a, b, c, d, e, f, g, hh, K[i] + w[i]);
+        const [a2, e2] = step(a1, a, b, c, e1, e, f, g, K[i + 1] + w[i + 1]);
+        const [a3, e3] = step(a2, a1, a, b, e2, e1, e, f, K[i + 2] + w[i + 2]);
+        const [a4, e4] = step(a3, a2, a1, a, e3, e2, e1, e, K[i + 3] + w[i + 3]);
+        const [a5, e5] = step(a4, a3, a2, a1, e4, e3, e2, e1, K[i + 4] + w[i + 4]);
+        const [a6, e6] = step(a5, a4, a3, a2, e5, e4, e3, e2, K[i + 5] + w[i + 5]);
+        const [a7, e7] = step(a6, a5, a4, a3, e6, e5, e4, e3, K[i + 6] + w[i + 6]);
+        const [a8, e8] = step(a7, a6, a5, a4, e7, e6, e5, e4, K[i + 7] + w[i + 7]);
+        return [a8, a7, a6, a5, e8, e7, e6, e5] as const;
     });
-    const [a, b, c, d, e, f, g, hh, y0, y1, y2, y3, y4, y5, y6, y7, y8, y9, y10, y11, y12, y13, y14, y15] = last;
+    const [a, b, c, d, e, f, g, hh] = last;
     return [h0 + a, h1 + b, h2 + c, h3 + d, h4 + e, h5 + f, h6 + g, h7 + hh] as const;
 }
 
