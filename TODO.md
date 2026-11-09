@@ -336,7 +336,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 
 - [ ] The `unsafe` of the runtime justified and checked at compile time (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`), confined to a few modules (`sys`, `heap`, `simd`) behind safe interfaces; the tests of `isc-runtime-core` under Miri
   - [x] (D564) `isc-runtime-core`: every unsafe operation in a block of its own, each justified, both lints denied
-  - [ ] `isc-runtime` (D564: 1150 operations in `unsafe fn`s without a block, 55 blocks without a justification, 2 `unsafe impl`): `mapped.rs` (25, done: D565), `system.rs` (59; its Linux part done, D565; Windows and WASI left, checked on their targets), `net.rs` (114; its Linux part done, D566), `heap.rs` (426), `lib.rs` (657 with the blocks without a reason), `linux.rs` (1)
+  - [ ] `isc-runtime` (D564: 1150 operations in `unsafe fn`s without a block, 55 blocks without a justification, 2 `unsafe impl`): `mapped.rs` (25, done: D565), `system.rs` (59; its Linux part done, D565; Windows and WASI left, checked on their targets), `net.rs` (114; its Linux part done, D566), `heap.rs` (426, done: D567), `lib.rs` (657 with the blocks without a reason), `linux.rs` (1, done: D567)
   - [ ] `bigint::unwritten` (D196, D564): a `Vec<u8>` of bytes not yet written (clippy's `uninit_vec`); written through the spare capacity, pidigits measured
   - [ ] Clippy run by the suite on the crates that deny its lints
 - [x] (Every part done; WASI and Windows without their C libraries too, D541, D543, D544) Programs for Linux without glibc: the system called directly (a module `sys`), static programs with their own `_start`, threads without pthread

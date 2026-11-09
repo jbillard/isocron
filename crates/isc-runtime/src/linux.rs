@@ -9,6 +9,10 @@
 //! The only instruction that enters the kernel is in `syscall6`; every
 //! function here is a call of it with the numbers of the system call.
 
+// every unsafe operation in a block of its own, each justified (D564)
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(clippy::undocumented_unsafe_blocks)]
+
 use core::arch::{asm, global_asm};
 use core::ffi::{c_char, c_int, c_void};
 
@@ -263,7 +267,11 @@ unsafe fn vdso_symbol(name: &[u8]) -> Option<usize> {
     const DT_SYMTAB: i64 = 6;
     const DT_GNU_HASH: i64 = 0x6fff_fef5;
     const STT_FUNC: u8 = 2;
+    /// # Safety
+    /// `size_of::<T>()` bytes readable at `p`, a value of `T`.
     unsafe fn rd<T: Copy>(p: usize) -> T {
+        // SAFETY: the contract of this function (unaligned: the tables of
+        // the image are read where they are)
         unsafe { core::ptr::read_unaligned(p as *const T) }
     }
     // SAFETY: the words of the first stack after the environment (its null,

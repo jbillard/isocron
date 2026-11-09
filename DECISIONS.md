@@ -13015,3 +13015,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Tests: `std_net` (4), `std_http` (12), `std_https` (3, TLS of the client
     and of the server), then the suite; the runtime still builds for
     Windows (gnu, msvc) and WASI.
+- **D567 — The unsafe of the allocator justified by its invariants and
+  denied (2026-11-09).** The plan of D564: `heap.rs` (426 operations
+  without a block of their own in 41 functions) and the one block of
+  `linux.rs` without its reason.
+  - The module states the invariants its unsafe code relies on: H1 the
+    headers (a pointer of a list of the module is the header of a block of
+    this heap, in the state the list says; a pointer given to `free` is one
+    of `alloc`, checked by its state), H2 the thread (its cache and the
+    cache of its nodes read and written by it alone), H3 the locks (the
+    global lists of a class under its lock, the state of the medium and
+    large blocks under `LOCK`), H4 the memory (regions and mappings given
+    back only for free blocks), H5 the chunks (their bumps under
+    `CHUNK_LOCK`, the bytes past a bump or in a span of a thread belong to
+    no block).
+  - Each function whose body is the manipulation of headers under those
+    invariants has one block, its reason naming the invariants and its
+    contract (`# Safety`: the lock held, the cache of the calling thread, a
+    block of `alloc` freed once): a block for each line of pointers would
+    only repeat them. `map`, `carve` and `take_span`, which take their lock
+    themselves and ask nothing of their callers, are safe functions; the
+    reads of the thread pointer in assembly have their blocks; `state`,
+    `at` and the cells of the nodes their contracts. The code the same.
+  - `linux.rs` (its reader of the vDSO, `rd`) given its contract; both
+    lints denied for `heap.rs` and `linux.rs`. The runtime builds for
+    x86-64-v3 and v4, Windows (gnu, msvc; clippy for Windows clean on
+    these modules) and WASI.
+  - Left: `lib.rs` (657, with its exported functions that read pointers
+    without being `unsafe`, `not_unsafe_ptr_arg_deref` of clippy), and the
+    Windows and WASI parts of `system.rs` and `net.rs`.
