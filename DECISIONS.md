@@ -13558,6 +13558,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   The guide (section on performance requirements), SPEC section 9; the
   test `cold_functions_called_not_inlined` (results interpreted and
   compiled, 1 and 4 threads, the calls in the report, the refusal).
+- **D585 — A bracket literal first in a choice takes the form of the other
+  branch (2026-11-09).** Found by D582:
+  `const r = n == 0 ? [0u64, 1u64] : f();`, `f` returning `[u64, u64]`,
+  was refused ("type mismatch: expected `u64[2]`, found `[u64, u64]`"),
+  and `n != 0 ? f() : [0u64, 1u64]` accepted. The cause: a choice checked
+  its first branch with the form its place expects, then gave the form of
+  that branch to the second (D337). Where the place expects nothing (a
+  `const` without a type, a destructuring, the `return` of a lambda), the
+  literal first had no tuple expected, so it was an array (D148), and an
+  array and a tuple do not join; the call first gave its tuple to the
+  literal. A `return` in a function of a declared result was never
+  concerned: the result reaches both branches. Now: a first branch made of
+  bracket literals only (`[a, b]`, a choice of them, a body ending with
+  one: `bracket_form`), where the form expected is neither an array nor a
+  tuple, has the second branch checked first and its form given to the
+  literals; only the order of checking changes, not the order of
+  evaluation. Arrays stay arrays where an array is expected or the other
+  branch is one; branches that disagree are refused as before ("type
+  mismatch: expected `u8[2]`, found `f64`"). The test
+  `a_bracket_literal_first_in_a_choice_takes_the_other_form` (both orders,
+  a nested choice, a choice of literals, a destructuring, the early
+  `return` of a lambda, arrays; interpreted and compiled, 1, 3 and 8
+  threads; three refusals); its program is refused without the change.
+  Left: the arms of a `match` have the same order (the form of the first
+  arm given to the next ones), so
+  `match (o) { None => [0u64, 1u64], Some(v) => f(v) }` without a type
+  expected is still refused.
 - **D586 — `tryParseI64` written in Isocron (2026-11-09).** The second
   function of the runtime moved (SPEC section 17, order 2): `parseI64` and
   `tryParseI64` share `$parseI64Value` (the value and a word not 0 for a

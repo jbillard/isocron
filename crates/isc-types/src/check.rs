@@ -315,6 +315,17 @@ fn payload_sized(def: &SumDef, variant: usize, args: &[Ty], sizes: &[Size]) -> V
     def.variants[variant].payload.iter().map(|t| subst_value(t, args, sizes)).collect()
 }
 
+/// Is `e` made of bracket literals only (`[a, b]`, a choice of them, a body
+/// ending with one), an array or a tuple as its place says (D148, D585)?
+fn bracket_form(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Array(_) => true,
+        ExprKind::If(_, t, f) => bracket_form(t) && bracket_form(f),
+        ExprKind::Block(_, r) => bracket_form(r),
+        _ => false,
+    }
+}
+
 /// The module of a declaration named `m.x` (D139).
 fn module_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(m, _)| m)
@@ -1518,20 +1529,36 @@ impl<'g> FnCx<'g> {
                 // each branch given the form expected, not its sizes: arrays
                 // of two sizes have a size fixed at run time (D337)
                 let hint = expected.map(|e| self.loosen(e));
+                // a first branch made of bracket literals, where the place
+                // says neither array nor tuple: the second branch checked
+                // first, its form given to the literals, so that
+                // `c ? [0u64, 1u64] : g()` is a tuple where `g` returns one,
+                // as `c ? g() : [0u64, 1u64]` is (D148, D585)
+                let set = matches!(hint.as_ref().map(|h| self.shallow(h)), Some(Ty::Array(..) | Ty::Tuple(_)));
+                let early = if !set && bracket_form(t) { Some(self.check(f, hint.as_ref())?) } else { None };
+                let t_hint = match &early {
+                    Some(f) => Some(self.loosen(&f.ty)),
+                    None => hint.clone(),
+                };
                 let saved = narrowed.map(|(id, pure)| (id, std::mem::replace(&mut self.locals[id as usize].ty, pure)));
-                let t = self.check(t, hint.as_ref());
+                let t = self.check(t, t_hint.as_ref());
                 if let Some((id, ty)) = saved {
                     self.locals[id as usize].ty = ty;
                 }
                 let t = t?;
-                // the form of the first branch, or the form expected when it
-                // holds arrays of their own size (D341), which the first
-                // branch may have of a size
-                let hint = match hint {
-                    Some(h) if self.holds_own(&h) => h,
-                    _ => self.loosen(&t.ty),
+                let f = match early {
+                    Some(f) => f,
+                    None => {
+                        // the form of the first branch, or the form expected
+                        // when it holds arrays of their own size (D341),
+                        // which the first branch may have of a size
+                        let hint = match hint {
+                            Some(h) if self.holds_own(&h) => h,
+                            _ => self.loosen(&t.ty),
+                        };
+                        self.check(f, Some(&hint))?
+                    }
                 };
-                let f = self.check(f, Some(&hint))?;
                 let ty = self.join(&t.ty, &f.ty, f.span)?;
                 Ok(self.mk(TExprKind::If(Box::new(c), Box::new(t), Box::new(f)), ty, span))
             }

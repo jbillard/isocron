@@ -45,6 +45,9 @@
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling
   `__tls_get_addr` nor setting a frame pointer (D583).
+- `[a, b]` first in a choice is a tuple where the other branch is one, as it
+  is second: `const r = c ? [0u64, 1u64] : f();` with `f` returning a tuple
+  is no longer refused (D585).
 
 ## 0.5.0 — 2026-11-09
 

@@ -227,3 +227,82 @@ action main(args: string[k]): i32 {
         assert_eq!(out.status.code(), Some(0), "under valgrind:\n{}", String::from_utf8_lossy(&out.stderr));
     }
 }
+
+/// D585: a bracket literal first in a choice whose place says neither
+/// array nor tuple (a `const` without a type, a destructuring, the
+/// `return` of a lambda) takes the form of the other branch, as it does
+/// second: a tuple where the call is first and where it is second, in a
+/// nested choice, in a choice of literals, destructured, in the early
+/// `return` of a lambda; arrays where the other branch is an array; the
+/// interpreter's output on 1, 3 and 8 threads; branches that disagree
+/// refused.
+#[test]
+fn a_bracket_literal_first_in_a_choice_takes_the_other_form() {
+    let src = "function g(n: i64): [u64, u64] {
+    return [u64(n) * 3u64, u64(n) + 7u64] as const;
+}
+
+function h(n: i64): [u64, u64] {
+    return [u64(n) + 100u64, 5u64] as const;
+}
+
+function g2(n: i64): [i64, u8] {
+    return [n * 10, u8(n % 200)] as const;
+}
+
+function show(p: [u64, u64]): string {
+    const [a, b] = p;
+    return `${a}:${b}`;
+}
+
+function row(i: i64): string {
+    const t1 = i == 0 ? [0u64, 1u64] : g(i);
+    const t2 = i != 0 ? g(i) : [0u64, 1u64];
+    const t3 = i == 0 ? [0u64, 1u64] : i % 2 == 0 ? g(i) : h(i);
+    const t4 = i < 2 ? (i == 0 ? [0u64, 1u64] : [1u64, 1u64]) : h(i);
+    const [p, q] = i % 3 == 0 ? [1, 2u8] : g2(i);
+    const early = (j: i64) => {
+        if (j % 4 == 1) {
+            const z = u64(j);
+            return [z, z];
+        }
+        return h(j);
+    };
+    const xs = i == 0 ? [1, 2, 3] : iota(i);
+    const ys = i > 1 ? [i, 2 * i] : [7];
+    return `${show(t1)} ${show(t2)} ${show(t3)} ${show(t4)} ${p}:${q} ${show(early(i))} ${sum(xs)} ${sum(ys)}`;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(join(map(iota(n), (i) => row(i)), \"\\n\"));
+    return 0;
+}
+";
+    let want = interp_ok(src, &["6"]);
+    let first = want.lines().next().unwrap_or("");
+    assert_eq!(first, "0:1 0:1 0:1 0:1 1:2 100:5 6 7", "{}", want);
+    assert_eq!(want.lines().count(), 6, "{}", want);
+    let bin = compile(src, "choice_literal_first");
+    for n in ["0", "1", "6", "40"] {
+        let want = interp_ok(src, &[n]);
+        for t in [1, 3, 8] {
+            let r = run_bin_threads(&bin, &[n], Some(t));
+            assert_eq!(r.code, 0, "n {} T={}: {}", n, t, r.stderr);
+            assert_eq!(r.stdout, want, "n {} T={}", n, t);
+        }
+    }
+    // branches that disagree: refused, the literal first or the call first
+    for (choice, want) in [
+        ("n == 3 ? [1, 2u8] : x", "type mismatch: expected `u8[2]`, found `f64`"),
+        ("n == 3 ? g2(n) : x", "type mismatch: expected `[i64, u8]`, found `f64`"),
+        ("n == 3 ? [1, 2u8, 3] : g2(n)", "type mismatch: expected `u8[3]`, found `[i64, u8]`"),
+    ] {
+        let bad = format!(
+            "function g2(n: i64): [i64, u8] {{\n    return [n * 10, u8(n % 200)] as const;\n}}\n\naction main(args: string[k]): i32 {{\n    const n = parseI64(args[0]);\n    const x = parseF64(args[0]);\n    const v = {};\n    return 0;\n}}\n",
+            choice
+        );
+        let e = iscc::frontend("bad.isc", &bad).unwrap_err();
+        assert!(e.contains(want), "wanted `{}` in:\n{}", want, e);
+    }
+}
