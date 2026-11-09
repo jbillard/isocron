@@ -331,3 +331,84 @@ action main(args: string[k]): i32 {
     assert!(done, "no free in the program");
     rejected(&p, "in one branch of this `if` only");
 }
+
+/// A sort of texts whose source is read after it: its result holds views of
+/// the texts of `xs` (D555).
+const VIEWS: &str = "action main(args: string[k]): i32 {
+    const xs = map(iota(10), (i) => toString(i * 7 % 10));
+    const s = sort(xs);
+    print(xs[1]);
+    print(s[0]);
+    return 0;
+}
+";
+
+/// The variable named `name` (the first one).
+fn var_named(p: &Program, name: &str) -> VarId {
+    p.vars.iter().position(|v| v.name == name).unwrap_or_else(|| panic!("no variable `{}`", name)) as VarId
+}
+
+#[test]
+fn an_array_of_views_of_texts_passes() {
+    let p = ir(VIEWS);
+    assert!(p.views.contains(&var_named(&p, "s")), "`s` holds copies of its texts");
+    isc_ir::verify::verify(&p).unwrap();
+}
+
+#[test]
+fn an_array_of_views_of_texts_moved_is_rejected() {
+    // a read of `s` made a move: its texts would be given to an owner
+    let mut p = ir(VIEWS);
+    let s = var_named(&p, "s");
+    let done = mutate_first(&mut p.body, &mut |e| match &mut e.kind {
+        ExprKind::Var(v, u) if *v == s => {
+            *u = Use::Move;
+            true
+        }
+        _ => false,
+    });
+    assert!(done, "`s` is never read");
+    rejected(&p, "holds views of texts and is moved");
+}
+
+#[test]
+fn an_array_of_views_of_texts_freed_as_their_owner_is_rejected() {
+    // `s` no longer known as views: its texts, borrowed, would be freed with it
+    let mut p = ir(VIEWS);
+    let s = var_named(&p, "s");
+    p.views.remove(&s);
+    rejected(&p, "is given away, so that it would be freed twice");
+}
+
+#[test]
+fn an_array_of_views_read_after_its_texts_are_freed_is_rejected() {
+    // `xs` freed after `print(xs[1])`, before `print(s[0])` reads its texts
+    let mut p = ir(VIEWS);
+    let xs = var_named(&p, "xs");
+    let sv = var_named(&p, "s");
+    let undropped = mutate_first(&mut p.body, &mut |e| match &mut e.kind {
+        ExprKind::Let { var, drop, .. } if *var == xs => {
+            *drop = false;
+            true
+        }
+        _ => false,
+    });
+    assert!(undropped, "no binding of `xs`");
+    let reads_xs = |e: &Expr| {
+        fn has(e: &Expr, x: VarId) -> bool {
+            matches!(e.kind, ExprKind::Var(v, _) if v == x) || e.children().into_iter().any(|c| has(c, x))
+        }
+        has(e, xs)
+    };
+    let freed = mutate_first(&mut p.body, &mut |e| match &mut e.kind {
+        ExprKind::Let { var, init, stmt: true, .. } if *var != sv && reads_xs(init) => {
+            let inner = std::mem::replace(&mut **init, Expr::new(ExprKind::Zero, isc_ir::Type::Unit, e.span));
+            let (ty, sp) = (inner.ty.clone(), inner.span);
+            **init = Expr::new(ExprKind::Free(xs, Box::new(inner)), ty, sp);
+            true
+        }
+        _ => false,
+    });
+    assert!(freed, "no statement reads `xs`");
+    rejected(&p, "holds views of the texts of `xs`, moved or freed");
+}

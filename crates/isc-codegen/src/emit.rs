@@ -670,35 +670,6 @@ fn concat_parts(e: &Expr) -> Option<(&Expr, &Expr, &Expr, &Expr)> {
 /// `concat(x, b)` of arrays of scalars is the only read of `x` in `e`, on its
 /// straight path (`let`s and `free`s, no loop, no branch): its block may be
 /// taken by the `concat` and grown (D533).
-/// The body of the binding of the owned array `x` reads it only in the
-/// gather of a permutation of its indices (D548): `let t = argsort(x)` (or
-/// the `argsort` of a `map` of `x`, `sortBy`), then `let y = map(t, (i) =>
-/// copy(x[i]))`, then nothing more of `x`. Each element is taken once (a
-/// permutation): moved rather than copied, and `x` gives back its block
-/// alone.
-fn permute_alone(e: &Expr, x: VarId) -> bool {
-    let is_x = |e: &Expr| matches!(e.kind, ExprKind::Var(v, _) if v == x);
-    let map_of_x = |e: &Expr| matches!(&e.kind, ExprKind::Map(ins, _) if ins.len() == 1 && is_x(&ins[0]));
-    let ExprKind::Let { var: t, init, body, .. } = &e.kind else { return false };
-    let perm = match &init.kind {
-        ExprKind::StrOp(StrOp::ArgSort, a) => a.len() == 1 && (is_x(&a[0]) || map_of_x(&a[0])),
-        ExprKind::Let { var: k, init: keys, body: sorted, .. } => {
-            map_of_x(keys) && matches!(&sorted.kind, ExprKind::StrOp(StrOp::ArgSort, a) if a.len() == 1 && matches!(a[0].kind, ExprKind::Var(v, _) if v == *k))
-        }
-        _ => false,
-    };
-    if !perm {
-        return false;
-    }
-    let ExprKind::Let { init: gather, body: rest, .. } = &body.kind else { return false };
-    let ExprKind::Map(ins, l) = &gather.kind else { return false };
-    let takes = ins.len() == 1
-        && matches!(ins[0].kind, ExprKind::Var(v, _) if v == *t)
-        && l.params.len() == 1
-        && matches!(&l.body.kind, ExprKind::Copy(c) if matches!(&c.kind, ExprKind::Index(a, i) if is_x(a) && matches!(i.kind, ExprKind::Var(v, _) if v == l.params[0])));
-    takes && !mentions(rest, &HashSet::from([x])) && !frees(rest, x)
-}
-
 fn concat_alone(e: &Expr, x: VarId) -> bool {
     let only = HashSet::from([x]);
     match &e.kind {
@@ -2751,9 +2722,8 @@ impl<'p> Gen<'p> {
                 self.emit(format!("call void @isc_region_free(ptr {})", rg));
                 continue;
             }
-            let ty = self.p.vars[*var as usize].ty.clone();
             let x = self.env[var].clone();
-            self.drop_value(&x, &ty);
+            self.drop_var(*var, &x);
         }
         for (k, x) in vals.iter().enumerate() {
             let (s, owned, ty) = &tl.slots[k];
@@ -3888,6 +3858,18 @@ impl<'p> Gen<'p> {
         &self.p.vars[v as usize].ty
     }
 
+    /// Frees `x`, the value of `var`; an array whose texts are views of the
+    /// texts of another value (D555) gives back its block alone.
+    fn drop_var(&mut self, var: VarId, x: &V) {
+        if self.p.views.contains(&var) {
+            let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
+            self.emit(format!("call void @isc_free(ptr {})", p));
+            return;
+        }
+        let t = self.var_ty(var).clone();
+        self.drop_value(x, &t);
+    }
+
     fn bind(&mut self, var: VarId, x: V) {
         self.env.insert(var, x);
     }
@@ -4054,8 +4036,7 @@ impl<'p> Gen<'p> {
                 let r = v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", out)), "{ ptr, i64 }");
                 for (q, iv, drop) in bound.iter().rev() {
                     if *drop {
-                        let t = self.var_ty(*q).clone();
-                        self.drop_value(iv, &t);
+                        self.drop_var(*q, iv);
                     }
                 }
                 Ok(r)
@@ -4134,8 +4115,7 @@ impl<'p> Gen<'p> {
                         self.bind(*var, iv.clone());
                         let r = self.ex(body, w)?;
                         if *drop {
-                            let t = self.var_ty(*var).clone();
-                            self.drop_value(&iv, &t);
+                            self.drop_var(*var, &iv);
                         }
                         return Ok(r);
                     }
@@ -4188,8 +4168,7 @@ impl<'p> Gen<'p> {
                 // call, DECISIONS D117)
                 let early = *drop && w == 1 && !mentions(body, &HashSet::from([*var])) && !frees(body, *var);
                 if early {
-                    let t = self.var_ty(*var).clone();
-                    self.drop_value(&iv, &t);
+                    self.drop_var(*var, &iv);
                 }
                 if let Some((a, block)) = &made {
                     self.counts.insert(*a, block.clone());
@@ -4202,7 +4181,12 @@ impl<'p> Gen<'p> {
                 }
                 // its elements to the gather of a permutation of it, which
                 // moves them (D548): its block alone freed after
-                let moves = *drop && !early && w == 1 && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e)) && permute_alone(body, *var);
+                let moves = *drop
+                    && !early
+                    && w == 1
+                    && !self.p.views.contains(var)
+                    && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e))
+                    && isc_ir::passes::permutation_gather(body, *var).is_some();
                 if moves {
                     self.moving.insert(*var);
                 }
@@ -4225,10 +4209,9 @@ impl<'p> Gen<'p> {
                     }
                 } else if *drop && !early {
                     if let Ok(_) = &r {
-                        let t = self.var_ty(*var).clone();
                         // a part taken out of a tuple (D518)
                         let saved = std::mem::replace(&mut self.literal_test, matches!(init.kind, ExprKind::Take(..)));
-                        self.drop_value(&iv, &t);
+                        self.drop_var(*var, &iv);
                         self.literal_test = saved;
                     }
                 }
@@ -4754,11 +4737,10 @@ impl<'p> Gen<'p> {
                 self.taking.remove(var);
                 let r = r?;
                 let x = self.env[var].clone();
-                let ty = self.p.vars[*var as usize].ty.clone();
                 // (a text freed on the paths that do not move it: often a
                 // message of a fault, D518)
                 let saved = std::mem::replace(&mut self.literal_test, true);
-                self.drop_value(&x, &ty);
+                self.drop_var(*var, &x);
                 self.literal_test = saved;
                 Ok(r)
             }
@@ -4825,9 +4807,8 @@ impl<'p> Gen<'p> {
                             self.emit(format!("call void @isc_region_free(ptr {})", rg));
                             continue;
                         }
-                        let ty = self.p.vars[*var as usize].ty.clone();
                         let x = self.env[var].clone();
-                        self.drop_value(&x, &ty);
+                        self.drop_var(*var, &x);
                     }
                     let r = self.ins(format!("tail call tailcc {} @isc_fn_{}({})", ret, f, vals.join(", ")));
                     self.emit(format!("ret {} {}", ret, r));
@@ -6086,8 +6067,7 @@ impl<'p> Gen<'p> {
                 self.bind(*var, iv.clone());
                 self.print_stream_any(body)?;
                 if *drop {
-                    let t = self.var_ty(*var).clone();
-                    self.drop_value(&iv, &t);
+                    self.drop_var(*var, &iv);
                 }
                 Ok(())
             }
@@ -6671,8 +6651,7 @@ impl<'p> Gen<'p> {
         }
         let r = self.ex(rest, 1)?;
         if drop {
-            let t = self.var_ty(c).clone();
-            self.drop_value(&cv, &t);
+            self.drop_var(c, &cv);
         }
         Ok(r)
     }
@@ -7452,8 +7431,7 @@ impl<'p> Gen<'p> {
                 self.bind(*var, iv.clone());
                 let len = self.row_into(b, dest, et, expect)?;
                 if *drop {
-                    let t = self.var_ty(*var).clone();
-                    self.drop_value(&iv, &t);
+                    self.drop_var(*var, &iv);
                 }
                 Ok(len)
             }

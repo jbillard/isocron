@@ -12590,3 +12590,81 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   changed by the end of `main` only (D546) and the moves of `sort` (D548),
   k-nucleotide alone sorting, its code without a copy of a text before and
   after.
+- **D555 — Arrays whose texts are views of texts that live longer
+  (2026-11-09).** The author's order of work after 0.5.0: the arrays of
+  texts as views first (TODO, item (6)), then the lists of the heap, the
+  server (left for the rest if it takes too long), `sha256` and the client,
+  the gaps of the language, the trusted base, the runtime in Isocron. `sort`
+  and `sortBy` gather the texts of their source by a permutation, `let y =
+  map(t, (i) => copy(x[i]))`: a block and a copy of each text, freed with
+  `y`, 63 % of the cycles of `sortBy` of texts (D488). D548 moves them when
+  `x` is read for the last time; when `x` is read after, each was copied.
+  - A pass after the ownership pass, `borrow_elements` (`passes.rs`): a
+    `map` of texts each a `copy` of a text borrowed from variables (an
+    element of an array, the element a parameter of a `map` stands for, a
+    projection, a slice) bound to a variable `y` that the pass then leaves
+    without the copy, when nothing can free, move or take apart those texts
+    while `y` lives: `y` is never moved nor taken apart (so never given to
+    an owner: a branch that gives it back, a tuple, a result keep their
+    copies), and the variables whose memory the texts borrow (their aliases
+    followed) are bound outside `y`'s `let` and neither moved, freed (`Free`)
+    nor taken apart (`Take`) inside it, so their own `let`s end after it. The
+    gather of a permutation that moves (D548, `permutation_gather`, now in
+    `isc-ir` for both) keeps its moves. The variable goes into
+    `Program::views`; the copies left out leave the memory report.
+  - The generated code frees such a variable by its block alone
+    (`drop_var`: at the end of its `let`, by a `Free`, before the jump of a
+    tail call, in the streams of `print`, in the rows of an array), never
+    lets the gather of D548 move its texts, and makes it as before (the
+    `map` stores the 16 bytes of each text). The memory check (D96) knows
+    it: a `map` whose texts are borrowed is allowed only for a variable of
+    `views`, which owns its block, is never moved, and is read only while
+    the owners of its texts are neither moved nor freed (each read of it
+    checks them); a view whose texts would be freed as its own fails as a
+    value given away. Not a mark in the block (a flag of its header read by
+    `isc_free_strs`): the blocks of glibc, of Windows and of WebAssembly have
+    no such header.
+  - Measured (the old and new binaries of `sorts`, 7 alternated runs, fixed
+    frequency): `sortBy.length` 22.086 -> 8.537 ns (-61.3 %, 6.2 -> 2.4
+    times its floor), `sort.string` 87.953 -> 73.227 ns (-16.7 %), the
+    sorts of numbers and `toReversed` within 0.8 %, the same checksums.
+  - Changed elsewhere: the building of a `Map` with texts as keys (the
+    prelude: the keys taken out of the entries, then gathered by their
+    groups, then the table's own copy) copies each key twice instead of four
+    times (`maps`, setup only); a `map` of a literal (`http`, setup only)
+    keeps its literals as views. `http`: every form within -1.4 to +0.2 %,
+    the spreads overlapping. `maps`: `get.i64` -17.1 to -20.0 %,
+    `Map.build.i64` -2.7 to -3.2 %, with the same code (each function the
+    same instructions but `main`, `isc_start` and the task of the setup
+    whose copies went, 48 bytes shorter, which moved all the code after it
+    by 48 bytes). Measured on `get.i64` alone in 10 programs that move its
+    loop (a pad before it, one compiler): the same 38.17 instructions an
+    element; the head of its outer loop (the target of a taken jump at each
+    element) 48 bytes into a line of 64 in 3 of them, 10.38 to 10.57 cycles
+    an element, at 0, 16 or 32 bytes in the 7 others, 9.35 to 9.65: the
+    bubble after a taken branch late in its line (D539); the old `maps` had
+    it at 48, the new at 0. The exit of its probe loop also mispredicted
+    56 thousand times a run of 400 rounds in the old binary against 12
+    thousand in the new (`br_misp_retired.all_branches`, sampled precisely,
+    the same instruction): the predictor indexed by addresses. Not a gain
+    of this decision. (`ISC_LLVM_ARGS=-align-loops=64` did not move that
+    loop: both binaries the same addresses.)
+  - The ten programs of the Benchmarks Game: the same LLVM code before and
+    after (k-nucleotide sorts entries of numbers, not texts).
+  - Not done here: the lines of a text kept as views of it (`lines`,
+    `split`, `readStdinLines`: k-nucleotide's base, D524), which needs the
+    runtime to make them so; next.
+  - Tests: `arrays_whose_texts_are_views_of_texts_that_live_longer`
+    (`memory.rs`, `data/views_of_texts.isc`: the sorts of an array read
+    again, of such a view, of the lines of a text kept, of a parameter of a
+    recursive function, in a loop, in a branch, read by the pool, printed
+    whole, of a function inlined; and those that must own their texts: an
+    array given back by a branch, kept in a tuple, made while its source
+    changes, the texts a loop keeps, a source read for the last time; 3, 10
+    and 700 elements against the interpreter, the checked allocator,
+    valgrind; the copies of the memory report only on the lines whose texts
+    must be owned); `sorting_an_array_read_for_the_last_time_moves_its_elements`
+    now finds no copy (its sort of `zs`, read again after it, makes views);
+    `verify.rs`: such an array passes, and is rejected when moved, when
+    freed as the owner of its texts, and when read after the array of its
+    texts is freed.

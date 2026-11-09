@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `sort` and `sortBy` of texts whose source is read again after them, and the
+  other arrays of texts made of texts that live longer, no longer copy their
+  texts: `sortBy` of short texts 2.6 times faster, `sort` of texts 17 %
+  faster; the building of a `Map` with texts as keys copies each key twice
+  instead of four times (D555).
+
 ## 0.5.0 — 2026-11-09
 
 The targets without a C library: a program for Windows imports only

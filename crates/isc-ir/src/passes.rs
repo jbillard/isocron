@@ -22,7 +22,7 @@
 //!    `requireUnique` fails when a copy would be needed. Owned variables that
 //!    are not moved are freed at the end of their scope.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::*;
 use isc_syntax::{Diagnostic, Span};
@@ -36,6 +36,7 @@ pub fn optimize(p: &mut Program) -> R<()> {
         optimize_body(&mut f.body, &mut p.vars);
     }
     ownership(p)?;
+    borrow_elements(p);
     check_require_tail(p)?;
     // every memory decision checked, independently of the passes (D96)
     crate::verify::verify(p)
@@ -2105,38 +2106,44 @@ impl Info {
 
     /// The variables an expression may alias (None: fresh or scalar).
     fn borrows(&self, e: &Expr) -> Option<Vec<VarId>> {
-        if !e.ty.has_heap() {
-            return None;
-        }
-        match &e.kind {
-            ExprKind::Var(v, _) => Some(self.base(*v)),
-            // data of the program (D173): borrowed from no variable; a
-            // string literal too (D301)
-            ExprKind::ConstArray(_) | ExprKind::ConstStrs(_) => Some(Vec::new()),
-            ExprKind::StrLit(_) if e.ty == Type::Str => Some(Vec::new()),
-            ExprKind::Proj(x, _) | ExprKind::Unbox(x) => self.borrows(x),
-            // views of an array of arrays: its windows, its rows (D95);
-            // slices (rule F4, D97)
-            ExprKind::Window(x, _) | ExprKind::Index(x, _) => self.borrows(x),
-            ExprKind::Slice(x, _, _) if e.ty.slice_is_view() => self.borrows(x),
-            // a slice or the bytes of a string (D303)
-            ExprKind::StrOp(op, es) if str_view(*op, es, &e.ty) => self.borrows(&es[0]),
-            ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => self.borrows(b),
-            ExprKind::Let { var, body, .. } => match self.borrows(body) {
-                Some(s) if s.contains(var) => None,
-                other => other,
-            },
-            ExprKind::If(_, t, f) => match (self.borrows(t), self.borrows(f)) {
-                (Some(mut a), Some(b)) => {
-                    a.extend(b);
-                    a.sort();
-                    a.dedup();
-                    Some(a)
-                }
-                _ => None,
-            },
+        borrowed_from(e, &|v| self.base(v))
+    }
+}
+
+/// The variables whose memory `e` borrows, `base` giving those of a
+/// variable (None: new memory or a scalar).
+fn borrowed_from(e: &Expr, base: &dyn Fn(VarId) -> Vec<VarId>) -> Option<Vec<VarId>> {
+    if !e.ty.has_heap() {
+        return None;
+    }
+    match &e.kind {
+        ExprKind::Var(v, _) => Some(base(*v)),
+        // data of the program (D173): borrowed from no variable; a string
+        // literal too (D301)
+        ExprKind::ConstArray(_) | ExprKind::ConstStrs(_) => Some(Vec::new()),
+        ExprKind::StrLit(_) if e.ty == Type::Str => Some(Vec::new()),
+        ExprKind::Proj(x, _) | ExprKind::Unbox(x) => borrowed_from(x, base),
+        // views of an array of arrays: its windows, its rows (D95); slices
+        // (rule F4, D97)
+        ExprKind::Window(x, _) | ExprKind::Index(x, _) => borrowed_from(x, base),
+        ExprKind::Slice(x, _, _) if e.ty.slice_is_view() => borrowed_from(x, base),
+        // a slice or the bytes of a string (D303)
+        ExprKind::StrOp(op, es) if str_view(*op, es, &e.ty) => borrowed_from(&es[0], base),
+        ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) | ExprKind::Free(_, b) => borrowed_from(b, base),
+        ExprKind::Let { var, body, .. } => match borrowed_from(body, base) {
+            Some(s) if s.contains(var) => None,
+            other => other,
+        },
+        ExprKind::If(_, t, f) => match (borrowed_from(t, base), borrowed_from(f, base)) {
+            (Some(mut a), Some(b)) => {
+                a.extend(b);
+                a.sort();
+                a.dedup();
+                Some(a)
+            }
             _ => None,
-        }
+        },
+        _ => None,
     }
 }
 
@@ -3062,6 +3069,159 @@ pub fn ownership(p: &mut Program) -> R<()> {
     }
     take_payloads(p);
     Ok(())
+}
+
+/// Arrays whose texts are views (D555). `let y = map(t, (i) => copy(x[i]))`
+/// (the gather of `sort` and `sortBy`, D488, or any `map` whose texts are
+/// those of an array or a text that lives longer) made a block and a copy
+/// of each text, freed with `y`. The copy is left out when nothing can free
+/// or move the texts while `y` lives: `y` is never moved (so never given to
+/// an owner, never taken apart) and the variables whose memory the texts
+/// borrow are bound outside `y`'s `let` and neither moved, freed nor taken
+/// apart inside it (their own `let`s end after it). `y` then owns its block
+/// alone (`Program::views`): the generated code frees it without its texts.
+/// The gather of a permutation of an array read for the last time keeps its
+/// moves instead (D548: the elements taken, its block freed early).
+pub fn borrow_elements(p: &mut Program) {
+    let mut st = Elements::default();
+    st.walk(&mut p.body);
+    for f in p.fns.iter_mut() {
+        st.walk(&mut f.body);
+    }
+    // the copies left out are not in the memory report
+    for sp in st.removed {
+        if let Some(k) = p.copy_reasons.iter().position(|(s, _)| *s == sp) {
+            p.copy_reasons.remove(k);
+        }
+    }
+    p.views = st.views;
+}
+
+#[derive(Default)]
+struct Elements {
+    /// The variables whose memory each variable borrows (a variable absent:
+    /// its own).
+    alias: HashMap<VarId, Vec<VarId>>,
+    views: BTreeSet<VarId>,
+    /// The places of the copies left out.
+    removed: Vec<Span>,
+    /// The arrays made by the gather of a permutation that moves (D548).
+    keep: HashSet<VarId>,
+}
+
+impl Elements {
+    fn base(&self, v: VarId) -> Vec<VarId> {
+        self.alias.get(&v).cloned().unwrap_or_else(|| vec![v])
+    }
+
+    fn walk(&mut self, e: &mut Expr) {
+        if let ExprKind::Let { var, init, body, drop, .. } = &mut e.kind {
+            let y = *var;
+            if init.ty.has_heap() {
+                if let Some(b) = borrowed_from(init, &|v| self.base(v)) {
+                    self.alias.insert(y, b);
+                }
+            }
+            // its elements moved by the gather of a permutation (D548)
+            if *drop && !self.views.contains(&y) && matches!(&init.ty, Type::Array(t, _) if !t.is_array() && t.has_heap()) {
+                if let Some(g) = permutation_gather(body, y) {
+                    self.keep.insert(g);
+                }
+            }
+            if *drop && !self.keep.contains(&y) {
+                self.try_view(y, init, body);
+            }
+        }
+        // the parameters of a lambda that are elements of a borrowed input
+        // borrow what it borrows
+        let inputs: Vec<(VarId, Option<Vec<VarId>>)> = match &e.kind {
+            ExprKind::Map(ins, l) => ins.iter().zip(&l.params).map(|(i, p)| (*p, borrowed_from(i, &|v| self.base(v)))).collect(),
+            ExprKind::Filter(x, l) | ExprKind::Tasks(x, l) => vec![(l.params[0], borrowed_from(x, &|v| self.base(v)))],
+            ExprKind::Fold(x, _, l) => vec![(l.params[1], borrowed_from(x, &|v| self.base(v)))],
+            _ => Vec::new(),
+        };
+        for (p, b) in inputs {
+            if let Some(b) = b {
+                self.alias.insert(p, b);
+            }
+        }
+        for c in e.children_mut() {
+            self.walk(c);
+        }
+    }
+
+    /// `let y = init in body`: `init` a `map` of texts each copied from
+    /// memory that lives longer than `y`; the copies left out.
+    fn try_view(&mut self, y: VarId, init: &mut Expr, body: &Expr) {
+        let ExprKind::Map(ins, l) = &init.kind else { return };
+        if *init.ty.elem() != Type::Str {
+            return;
+        }
+        let ExprKind::Copy(inner) = &l.body.kind else { return };
+        // the parameters of the `map` borrow what its inputs borrow
+        let mut params = HashMap::new();
+        for (i, p) in ins.iter().zip(&l.params) {
+            if let Some(b) = borrowed_from(i, &|v| self.base(v)) {
+                params.insert(*p, b);
+            }
+        }
+        let Some(roots) = borrowed_from(inner, &|v| params.get(&v).cloned().unwrap_or_else(|| self.base(v))) else { return };
+        let mut inside = HashSet::new();
+        bound_in(init, &mut inside);
+        let consumed = |v: VarId| moves_var(body, v) || frees_var(body, v) || takes_var(body, v) || moves_var(init, v) || frees_var(init, v) || takes_var(init, v);
+        if moves_var(body, y) || takes_var(body, y) || roots.iter().any(|r| inside.contains(r) || consumed(*r)) {
+            return;
+        }
+        let ExprKind::Map(_, l) = &mut init.kind else { unreachable!() };
+        let ExprKind::Copy(inner) = std::mem::replace(&mut l.body.kind, ExprKind::Zero) else { unreachable!() };
+        self.removed.push(l.body.span);
+        l.body.kind = inner.kind;
+        self.views.insert(y);
+    }
+}
+
+/// `v` is moved somewhere in `e`, lambdas included.
+fn moves_var(e: &Expr, v: VarId) -> bool {
+    matches!(e.kind, ExprKind::Var(w, Use::Move) if w == v) || e.children().into_iter().any(|c| moves_var(c, v))
+}
+
+/// `e` frees `v` somewhere (`Free`, D105).
+fn frees_var(e: &Expr, v: VarId) -> bool {
+    matches!(e.kind, ExprKind::Free(w, _) if w == v) || e.children().into_iter().any(|c| frees_var(c, v))
+}
+
+/// A part of `v` is taken somewhere in `e` (`Take`, D138).
+fn takes_var(e: &Expr, v: VarId) -> bool {
+    matches!(&e.kind, ExprKind::Take(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == v)) || e.children().into_iter().any(|c| takes_var(c, v))
+}
+
+/// The body of the binding of the owned array `x` reads it only in the
+/// gather of a permutation of its indices (D548): `let t = argsort(x)` (or
+/// the `argsort` of a `map` of `x`, `sortBy`), then `let y = map(t, (i) =>
+/// copy(x[i]))`, then nothing more of `x`. Each element is taken once (a
+/// permutation): moved rather than copied, and `x` gives back its block
+/// alone. The variable `y`.
+pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
+    let is_x = |e: &Expr| matches!(e.kind, ExprKind::Var(v, _) if v == x);
+    let map_of_x = |e: &Expr| matches!(&e.kind, ExprKind::Map(ins, _) if ins.len() == 1 && is_x(&ins[0]));
+    let ExprKind::Let { var: t, init, body, .. } = &e.kind else { return None };
+    let perm = match &init.kind {
+        ExprKind::StrOp(StrOp::ArgSort, a) => a.len() == 1 && (is_x(&a[0]) || map_of_x(&a[0])),
+        ExprKind::Let { var: k, init: keys, body: sorted, .. } => {
+            map_of_x(keys) && matches!(&sorted.kind, ExprKind::StrOp(StrOp::ArgSort, a) if a.len() == 1 && matches!(a[0].kind, ExprKind::Var(v, _) if v == *k))
+        }
+        _ => false,
+    };
+    if !perm {
+        return None;
+    }
+    let ExprKind::Let { var: y, init: gather, body: rest, .. } = &body.kind else { return None };
+    let ExprKind::Map(ins, l) = &gather.kind else { return None };
+    let takes = ins.len() == 1
+        && matches!(ins[0].kind, ExprKind::Var(v, _) if v == *t)
+        && l.params.len() == 1
+        && matches!(&l.body.kind, ExprKind::Copy(c) if matches!(&c.kind, ExprKind::Index(a, i) if is_x(a) && matches!(i.kind, ExprKind::Var(v, _) if v == l.params[0])));
+    (takes && !crate::blocks::mentions(rest, &HashSet::from([x])) && !frees_var(rest, x)).then_some(*y)
 }
 
 /// The payload of a `match` on a temporary taken out of it (D367): `let

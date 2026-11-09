@@ -468,6 +468,10 @@ pub struct Program {
     /// slots of each variant (D448): a value of one frees the fields of its
     /// variant only.
     pub sum_slots: Vec<(Type, Vec<Vec<u32>>)>,
+    /// The arrays of texts whose texts are views of the texts of an array
+    /// or a text that lives longer (D555): each owns its block alone, freed
+    /// without its texts, and is never moved (`passes::borrow_elements`).
+    pub views: std::collections::BTreeSet<VarId>,
 }
 
 /// What `print` shows beyond the IR type of a value: the names of the

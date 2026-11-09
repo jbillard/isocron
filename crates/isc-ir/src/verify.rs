@@ -44,6 +44,9 @@ struct Checker<'p> {
     next_region: u32,
     /// The components taken out of each tuple variable (`Take`, D138).
     taken: std::collections::HashMap<VarId, Vec<u32>>,
+    /// The arrays whose texts are views (D555): the owned variables whose
+    /// memory their texts borrow. Each owns its block alone.
+    spines: std::collections::HashMap<VarId, Vec<VarId>>,
 }
 
 fn fail<T>(span: Span, msg: String) -> R<T> {
@@ -54,7 +57,7 @@ fn fail<T>(span: Span, msg: String) -> R<T> {
 /// borrowed (the state of a loop is owned, its copy made on entry, D206),
 /// its result is new memory or a scalar (D102).
 pub(crate) fn verify_fn(p: &Program, f: &Function) -> R<()> {
-    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default() };
+    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default() };
     for (k, v) in f.params.iter().enumerate() {
         c.st[*v as usize] = if f.consumed.get(k).copied().unwrap_or(false) {
             State::Owned { moved: None, region: 0 }
@@ -84,7 +87,7 @@ pub fn verify(p: &Program) -> R<()> {
     for f in &p.fns {
         verify_fn(p, f)?;
     }
-    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default() };
+    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default() };
     // `main` owns `args`: it frees it at the end, or gives it away
     c.st[p.args as usize] = State::Owned { moved: None, region: 0 };
     let r = c.eval(&p.body)?;
@@ -158,6 +161,29 @@ impl<'p> Checker<'p> {
             }
             State::Owned { moved: Some(at), .. } => {
                 fail(span, format!("`{}` is used after it was moved at line {}", self.name(v), at.line))
+            }
+            // an array whose texts are views: never moved, read while the
+            // memory of its texts lives (D555)
+            State::Owned { moved: None, .. } if self.spines.contains_key(&v) => {
+                if u == Use::Move {
+                    return fail(span, format!("`{}` holds views of texts and is moved", self.name(v)));
+                }
+                let owners = self.spines[&v].clone();
+                for w in &owners {
+                    match &self.st[*w as usize] {
+                        State::Owned { moved: Some(at), .. } => {
+                            return fail(
+                                span,
+                                format!("`{}` holds views of the texts of `{}`, moved or freed at line {}", self.name(v), self.name(*w), at.line),
+                            );
+                        }
+                        State::Unbound => {
+                            return fail(span, format!("`{}` holds views of the texts of `{}`, out of its scope", self.name(v), self.name(*w)));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Val::View(union(owners, vec![v])))
             }
             State::Owned { moved: None, region } => {
                 if u == Use::Move {
@@ -260,6 +286,32 @@ impl<'p> Checker<'p> {
         })
     }
 
+    /// The value of an array whose texts are views (D555): a `map` of texts
+    /// each borrowed; the owned variables whose memory they borrow.
+    fn view_init(&mut self, e: &Expr) -> R<Vec<VarId>> {
+        let ExprKind::Map(ins, l) = &e.kind else {
+            return fail(e.span, "an array of views of texts that no `map` makes".into());
+        };
+        if *e.ty.elem() != Type::Str {
+            return fail(e.span, "an array of views of something else than texts".into());
+        }
+        let mut elems = Vec::new();
+        let one = ins.len() == 1;
+        for i in ins {
+            let v = self.eval_src(i, one)?;
+            elems.push(self.elem_of(&v, i));
+        }
+        let mut owners = Vec::new();
+        self.lambda(l, &elems, |_, v, b| match v {
+            Val::View(o) => {
+                owners = o;
+                Ok(())
+            }
+            _ => fail(b.span, "a new text in an array of views of texts, which nothing frees".into()),
+        })?;
+        Ok(owners)
+    }
+
     fn eval(&mut self, e: &Expr) -> R<Val> {
         use ExprKind::*;
         let heap = e.ty.has_heap();
@@ -305,9 +357,16 @@ impl<'p> Checker<'p> {
             Zero => Ok(fresh(heap)),
             Var(v, u) => self.use_var(*v, *u, e.span),
             Let { var, init, body, drop, .. } => {
-                let iv = self.eval(init)?;
-                let t = self.p.vars[*var as usize].ty.clone();
-                self.st[*var as usize] = self.state_of(&iv, &t);
+                if self.p.views.contains(var) {
+                    // an array whose texts are views (D555): its block owned
+                    let owners = self.view_init(init)?;
+                    self.spines.insert(*var, owners);
+                    self.st[*var as usize] = State::Owned { moved: None, region: self.region };
+                } else {
+                    let iv = self.eval(init)?;
+                    let t = self.p.vars[*var as usize].ty.clone();
+                    self.st[*var as usize] = self.state_of(&iv, &t);
+                }
                 let bv = self.eval(body)?;
                 let name = self.name(*var);
                 if self.taken.contains_key(var) && matches!(self.st[*var as usize], State::Owned { moved: None, .. }) {

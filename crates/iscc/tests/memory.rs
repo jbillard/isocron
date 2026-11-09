@@ -1091,8 +1091,35 @@ fn sorting_an_array_read_for_the_last_time_moves_its_elements() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
     }
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    // only the sort of `zs`, read again after it, copies its texts (its
-    // gather in its two paths: in a loop, and in the task of the pool)
-    assert_eq!(ll.matches("call void @isc_str_new(").count(), 2, "the elements of the sources read for the last time copied");
+    // no text copied: the sorts of `xs` and `ps` move their elements, that
+    // of `zs`, read again after it, makes views of its texts (D555)
+    assert_eq!(ll.matches("call void @isc_str_new(").count(), 0, "the elements of the sorts copied");
     clean(src, "sort_moves_vg", &["700"]);
+}
+
+/// Arrays whose texts are views of the texts of a value that lives longer
+/// (D555): the sorts of an array read again after them, of such a view, of
+/// the lines of a text kept, of a parameter of a recursive function (the
+/// view freed before the jump of its tail call), in a loop, in a branch,
+/// read by the threads of the pool, printed whole, of a function inlined;
+/// and those that must own their texts: an array given back by a branch,
+/// kept in a tuple, the text a loop keeps, a source read for the last time
+/// (the moves of D548). The same output as the interpreter, each block
+/// freed once (the checked allocator, valgrind), a copy in the memory
+/// report only where a text must be owned (lines 29, 32, 38, 43 and 71).
+#[test]
+fn arrays_whose_texts_are_views_of_texts_that_live_longer() {
+    let src = include_str!("data/views_of_texts.isc");
+    let bin = compile(src, "views_of_texts");
+    for a in ["3", "10", "700"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("views_of_texts.isc", src).unwrap();
+    let mut copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    copies.sort();
+    copies.dedup();
+    assert_eq!(copies, vec![29, 32, 38, 43, 71], "the lines whose texts are copied");
+    clean(src, "views_of_texts_vg", &["700"]);
 }

@@ -1,0 +1,74 @@
+// arrays whose texts are views (D555): the cases around their lifetimes
+function longest(xs: string[n], i: i64, best: string): string {
+    if (i == 3) {
+        return best;
+    }
+    // a view of the texts of a parameter, freed before the jump of the tail call
+    const s = sortBy(xs, (w) => -w.length);
+    return longest(xs, i + 1, s[0].length > best.length ? s[0] : best);
+}
+
+function sorted(xs: string[n]): string[n] {
+    // returned: its texts owned (moved or copied)
+    return sort(xs);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => `w${(i * 7919) % 1000}-${i % 13}`);
+    // A: a view, then the source and the view read
+    const a = sort(xs);
+    print(a[0]);
+    print(xs[0]);
+    print(a[n - 1]);
+    // C: a view of a view, the first read after it
+    const c = sortBy(a, (w) => w.length);
+    print(c[0]);
+    print(a[n / 2]);
+    // B: a view in the branch of an `if` that gives it back
+    const b = n > 5 ? sort(xs) : xs;
+    print(b[n - 1]);
+    // D: a sorted array kept in a tuple
+    const d = [sort(xs), n] as const;
+    const [dd, dn] = d;
+    print(dd[0]);
+    print(dn);
+    // E: the source changed while the sorted array lives
+    const e = sort(xs);
+    const x2 = xs.with(0, "zzz");
+    print(e[0]);
+    print(x2[0]);
+    print(e[n - 1]);
+    // F: views made in a loop over a source outside it
+    const f = map(iota(3), (k) => sortBy(xs, (w) => (w.length * (k + 1)) % 5)[0]);
+    print(f.join(","));
+    // G: in a branch
+    if (n > 2) {
+        const g = sortBy(xs, (w) => w.length);
+        print(g[1]);
+    }
+    // H: read by the threads of the pool
+    const h = sortBy(xs, (w) => w.length);
+    print(map(h, (w) => w.length * 3).sum());
+    print(h.join("").length);
+    // I: printed whole
+    const i9 = sort(xs);
+    print(i9.slice(0, 3));
+    // J: of the lines of a text kept
+    const t = xs.join("\n");
+    const ls = lines(t);
+    const j = sort(ls);
+    print(j[0]);
+    print(ls[n - 1]);
+    print(t.length);
+    // K: in a recursive function
+    print(longest(xs, 0, ""));
+    // L: returned by a function
+    const l = sorted(xs);
+    print(l[n - 1]);
+    // M: a source read for the last time (the moves of D548)
+    const m0 = map(iota(n), (i) => toString(i * 31 % 101));
+    const m = sort(m0);
+    print(m[n - 1]);
+    return 0;
+}
