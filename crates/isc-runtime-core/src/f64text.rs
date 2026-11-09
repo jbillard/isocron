@@ -252,17 +252,20 @@ mod tests {
     /// 2^53, the largest and smallest values, and two million values of
     /// random bits (a tenth of these without the optimizations).
     #[test]
+    // no unsafe code in what it tests: under Miri, nothing more to find
+    // than the test itself finds (D574)
+    #[cfg_attr(miri, ignore)]
     fn shortest_as_display() {
         let mut edges: Vec<f64> = alloc::vec![0.0, -0.0, f64::MIN_POSITIVE, f64::MAX, f64::MIN, f64::EPSILON, 0.1, 0.2, 0.3, 1.0 / 3.0, 5e-324, 1e-323, 1.5e-323, 2.2250738585072009e-308, 9007199254740992.0, 9007199254740993.0, 123456789012345680.0, 1e21, 1e22, 1e23, 0.5, 1.5, 100.0, 1234.5678];
-        for e in -1074..1024 {
+        for e in (-1074..1024).step_by(if cfg!(miri) { 41 } else { 1 }) {
             edges.push(2f64.powi(e));
             edges.push(-(2f64.powi(e)));
         }
-        for e in -323..309 {
+        for e in (-323..309).step_by(if cfg!(miri) { 23 } else { 1 }) {
             edges.push(format!("1e{}", e).parse().unwrap());
             edges.push(format!("9.999999999999999e{}", e).parse().unwrap_or(1.0));
         }
-        for i in 0..2000u64 {
+        for i in 0..if cfg!(miri) { 40u64 } else { 2000 } {
             edges.push(f64::from_bits(i));
             edges.push((9007199254740992u64 - 1000 + i) as f64);
             edges.push(i as f64 * 0.5);

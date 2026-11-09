@@ -1747,10 +1747,18 @@ unsafe fn append_parts(p: *mut u8, n: usize, parts: &[IscStr]) -> IscStr {
         let mut at = n;
         for s in parts {
             let len = s.len as usize;
-            if len <= 16 && at + 16 <= cap && (s.ptr as usize) & 4095 <= 4096 - 16 {
-                // SAFETY: 16 bytes in the page of the part (mapped), written
-                // inside the block of the result (`cap` its usable bytes)
-                let v = core::ptr::read_unaligned(s.ptr as *const u128);
+            // an empty part reads the empty block of the runtime instead of
+            // its address, which says nothing of the memory there (the
+            // address 1 of an empty slice of Rust, D573): the same move,
+            // chosen without a branch (a test of the length instead cost
+            // `json.stringify` 1 %, its many empty parts)
+            let src = if len == 0 { empty_ptr() as *const u8 } else { s.ptr };
+            if sem::read_in_page(src as usize, len.max(1), 16) && at + 16 <= cap {
+                // SAFETY: 16 bytes in a page that holds a byte of the part,
+                // or inside the 64 bytes of the empty block (aligned on 64)
+                // for an empty part, written inside the block of the result
+                // (`cap` its usable bytes)
+                let v = core::ptr::read_unaligned(src as *const u128);
                 core::ptr::write_unaligned(q.add(at) as *mut u128, v);
             } else {
                 copy_short(s.ptr, q.add(at), len);

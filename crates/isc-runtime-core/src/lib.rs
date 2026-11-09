@@ -440,9 +440,10 @@ mod replacements {
         let texts = ["aaa", "abc", "", "a\nb\n\nc", "xaxbxx", "héllo wörld", ">h\nab\ncd\n"];
         let patterns = ["g/a*", "g/x*", "g/", "g/\\b", "gm/^", "gm/$", "g/a|", "gm/^>.*\n|\n", "g/[^x]*", "/a*", "g/ö|é", "gi/A"];
         let tos = ["-", "[$&]", "$$", "<$`|$'>", ""];
+        // a sample under Miri (each call compiles its expression)
         for v in patterns {
-            for t in texts {
-                for to in tos {
+            for t in texts.iter().take(if cfg!(miri) { 3 } else { usize::MAX }) {
+                for to in tos.iter().take(if cfg!(miri) { 2 } else { usize::MAX }) {
                     let mut fast = String::new();
                     super::rx::SLOW_PATH.store(false, core::sync::atomic::Ordering::Relaxed);
                     super::rx::replace(&mut fast, v, t, to, false).ok().unwrap();
@@ -472,6 +473,9 @@ mod split_searches {
     /// across the cuts, look-arounds at the cuts, characters of several
     /// bytes, cuts anywhere.
     #[test]
+    // no unsafe code in what it tests (`rx::bounds_from`, `merge_bounds`
+    // over `regex-automata`): under Miri, nothing more to find (D574)
+    #[cfg_attr(miri, ignore)]
     fn merged_parts_find_the_matches_of_one_search() {
         let mut seed: u64 = 7;
         let mut rnd = |n: u64| {
@@ -480,8 +484,8 @@ mod split_searches {
         };
         let alphabet: Vec<char> = "aNtBY<>|\n>éx".chars().collect();
         let mut texts: Vec<String> = std::vec!["".into(), "aaa".into(), ">h\nab\ncd\n".into()];
-        for len in [7u64, 40, 300, 2000] {
-            for _ in 0..3 {
+        for len in [7u64, 40, 300, if cfg!(miri) { 300 } else { 2000 }] {
+            for _ in 0..if cfg!(miri) { 1 } else { 3 } {
                 texts.push((0..len).map(|_| alphabet[rnd(alphabet.len() as u64) as usize]).collect());
             }
         }
@@ -493,7 +497,7 @@ mod split_searches {
             for t in &texts {
                 let whole = super::rx::bounds_from(&re, t, 0, usize::MAX);
                 for parts in 1..6 {
-                    for _ in 0..8 {
+                    for _ in 0..if cfg!(miri) { 2 } else { 8 } {
                         let mut starts: Vec<usize> = (1..parts).map(|_| rnd(t.len() as u64 + 1) as usize).filter(|&c| t.is_char_boundary(c) && c > 0).collect();
                         starts.push(0);
                         starts.sort();
@@ -640,7 +644,8 @@ mod big_divisions {
             4 => 1,
             _ => r.rotate_left(17),
         };
-        for case in 0..20000 {
+        // fewer cases under Miri (its interpreter about a thousand times slower)
+        for case in 0..if cfg!(miri) { 200 } else { 20000 } {
             let la = 1 + (next() % 9) as usize;
             let lb = 1 + (next() % 6) as usize;
             let a: std::vec::Vec<u64> = (0..la).map(|_| if case % 2 == 0 { next() } else { pick(next()) }).collect();
@@ -673,7 +678,10 @@ mod big_forms {
             s
         };
         let mut values: std::vec::Vec<BigInt> = std::vec![BigInt::from(0), BigInt::from(1), BigInt::from(-1), BigInt::from(255), BigInt::from(256), BigInt::from(u64::MAX), -BigInt::from(u64::MAX)];
-        for len in (0..40).chain([60, 120]) {
+        // fewer and shorter values under Miri (its interpreter about a
+        // thousand times slower)
+        let lens: std::vec::Vec<usize> = if cfg!(miri) { (0..6).chain([20]).collect() } else { (0..40).chain([60, 120]).collect() };
+        for len in lens {
             let mut v = BigInt::from(next() % 1000);
             for _ in 0..len {
                 v = v * BigInt::from(next()) + BigInt::from(next() >> (next() % 64));
@@ -751,7 +759,7 @@ mod tests {
             check(&std::format!("{}1", "0".repeat(n)));
         }
         let mut r: u64 = 1;
-        for _ in 0..200_000 {
+        for _ in 0..if cfg!(miri) { 2000 } else { 200_000 } {
             r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let n = 1 + (r >> 59) as usize % 20;
             let mut b: std::vec::Vec<u8> = (0..n).map(|i| b'0' + ((r >> (i * 3 % 60)) % 10) as u8).collect();
@@ -768,7 +776,7 @@ mod tests {
     #[test]
     fn alloc_classes_are_contiguous_and_tight() {
         let mut last = 0;
-        for s in 1..(1usize << 22) {
+        for s in 1..(1usize << if cfg!(miri) { 12 } else { 22 }) {
             let (i, size) = alloc_class(s).unwrap();
             assert!(size >= s && size - s < (s / 8).max(64), "{} -> {}", s, size);
             assert_eq!(size % ARRAY_ALIGN, 0);
@@ -817,6 +825,10 @@ mod tests {
         let detail = std::format!("{}", e);
         let detail = detail.split(" (os error").next().unwrap();
         let ours = std::format!("{}", Panic::Read { path: "x", detail, code: 2 });
+        assert_eq!(ours, std::format!("cannot read `x`: {} (os error 2)", detail));
+        // as the standard library shows it (under Miri its text of the
+        // system already ends with the code, which it adds again)
+        #[cfg(not(miri))]
         assert_eq!(ours, std::format!("cannot read `x`: {}", e));
     }
 }
@@ -1853,7 +1865,7 @@ mod limbs {
     /// `quads` at least 1; `x` and `y` readable and `dst` writable for
     /// `32 * quads` bytes (`dst` may be `x` or `y`, written after they are
     /// read at each step).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(miri)))]
     #[inline(always)]
     unsafe fn chain<const SUB: bool>(x: *const u8, y: *const u8, dst: *mut u8, quads: usize, c: bool) -> bool {
         let out: u8;
@@ -1917,7 +1929,7 @@ mod limbs {
         // the whole words of both, without a test of bounds (D171); by 4 in
         // assembly on x86-64 (D241)
         let both = b.len() / 8;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
         let done = {
             let quads = both / 4;
             if quads > 0 {
@@ -1927,7 +1939,7 @@ mod limbs {
             }
             quads * 4
         };
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(any(not(target_arch = "x86_64"), miri))]
         let done = 0;
         {
             let dst = &mut out[1 + done * 8..1 + both * 8];
@@ -1973,7 +1985,7 @@ mod limbs {
         out[0] = MaybeUninit::new(if neg { b'-' } else { b'+' });
         let mut borrow = false;
         let both = b.len() / 8;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
         let done = {
             let quads = both / 4;
             if quads > 0 {
@@ -1983,7 +1995,7 @@ mod limbs {
             }
             quads * 4
         };
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(any(not(target_arch = "x86_64"), miri))]
         let done = 0;
         {
             let dst = &mut out[1 + done * 8..1 + both * 8];
@@ -2747,7 +2759,7 @@ mod limbs {
         };
         let mut fused = 0;
         let mut k = 0u64;
-        for case in 0..30000u64 {
+        for case in 0..if cfg!(miri) { 300u64 } else { 30000 } {
             k = k.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407 + case);
             let zb = (k >> 8) as usize % 331;
             let xb = (k >> 20) as usize % 331;
@@ -2810,6 +2822,45 @@ pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
 }
 
 #[cfg(test)]
+mod read_in_page_tests {
+    /// The reads past the bytes of a text (D573): an empty text (at the
+    /// address 1 of an empty slice, at the start, the middle and the end
+    /// of a page), texts that end at the end of a page, texts that would
+    /// cross into the next one, texts longer than the read.
+    #[test]
+    fn reads_stay_in_a_page_of_the_text() {
+        use super::read_in_page;
+        for addr in [1usize, 4096, 4096 + 2000, 8191, 8192 - 16] {
+            assert!(!read_in_page(addr, 0, 16), "an empty text at {}", addr);
+        }
+        // a text of `len` bytes that ends at the end of its page: the read
+        // of 16 from its start in that page only when it starts 16 or more
+        // bytes before the end
+        for len in 1..=16usize {
+            let addr = 2 * 4096 - len;
+            assert_eq!(read_in_page(addr, len, 16), len == 16, "{} bytes at the end of a page", len);
+        }
+        // the first byte of a page: any text of 1 to 16 bytes
+        for len in 1..=16usize {
+            assert!(read_in_page(4096, len, 16));
+            assert!(read_in_page(4096 + 4080, len, 16));
+            assert!(!read_in_page(4096 + 4081, len, 16));
+        }
+        // longer than the read: never (moved as a whole elsewhere)
+        assert!(!read_in_page(4096, 17, 16));
+        // each case the definition: the 16 bytes read in the page of the
+        // first byte, which the text holds
+        for addr in 4096 - 40..4096 + 40 {
+            for len in 0..20usize {
+                let page = addr & !4095;
+                let want = len >= 1 && len <= 16 && addr + 16 <= page + 4096;
+                assert_eq!(read_in_page(addr, len, 16), want, "{} bytes at {}", len, addr);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod find_bytes_tests {
     use super::find_bytes;
     extern crate alloc;
@@ -2822,8 +2873,8 @@ mod find_bytes_tests {
     #[test]
     fn hash_index_finds_each_key() {
         use super::{hash_bytes, hash_find, hash_index, hash_word};
-        let mut sizes: alloc::vec::Vec<usize> = (0..=300).collect();
-        sizes.push(5000);
+        let mut sizes: alloc::vec::Vec<usize> = (0..=300).step_by(if cfg!(miri) { 37 } else { 1 }).collect();
+        sizes.push(if cfg!(miri) { 500 } else { 5000 });
         for &n in &sizes {
             for step in [1i64, 7, 1024, 1 << 40] {
                 let keys: alloc::vec::Vec<i64> = (0..n as i64).map(|i| i * step - 3).collect();
@@ -2862,7 +2913,7 @@ mod find_bytes_tests {
             x
         };
         for spread in [0u64, 16 << 4, 1 << 20, 1 << 32, 1 << 48] {
-            for n in (0..300).chain([5000]) {
+            for n in (0..300).step_by(if cfg!(miri) { 37 } else { 1 }).chain([if cfg!(miri) { 500 } else { 5000 }]) {
                 let hi = 1u64 << 52;
                 let mut at: Vec<u64> = (0..n).map(|_| hi - (next() % (spread + 1)) / 16 * 16).collect();
                 let mut want = at.clone();
@@ -2889,7 +2940,7 @@ mod find_bytes_tests {
             z
         };
         let masks = [0u64, 3, 0xff, 0xff00, 0xffff_0000_0000, u64::MAX];
-        let mut sizes: alloc::vec::Vec<usize> = (0..=300).collect();
+        let mut sizes: alloc::vec::Vec<usize> = (0..=300).step_by(if cfg!(miri) { 37 } else { 1 }).collect();
         sizes.push(5000);
         for &n in &sizes {
             for &m in &masks {
@@ -2925,15 +2976,18 @@ mod find_bytes_tests {
     /// `-0`, the subnormals, `1e20`, the powers of two), each with `d` from 0
     /// to 18.
     #[test]
+    // no unsafe code in what it tests: under Miri, nothing more to find
+    // than the test itself finds (D574)
+    #[cfg_attr(miri, ignore)]
     fn fixed_short_is_fixed_exact() {
         use super::{fixed_exact, fixed_short};
         let mut xs = alloc::vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1.005, 9.995, 0.045, 1e20, 9.99e20, -9.99e20, 999999999999999.9, 0.000001, 5e-324, -5e-324, 2.2250738585072014e-308, 123456789.987654321];
-        for k in -60..70 {
+        for k in (-60..70).step_by(if cfg!(miri) { 13 } else { 1 }) {
             xs.push(libm_pow2(k));
             xs.push(-libm_pow2(k) * 1.5);
         }
         let mut z = 0x9e3779b97f4a7c15u64;
-        for _ in 0..200000 {
+        for _ in 0..if cfg!(miri) { 2000 } else { 200000 } {
             z ^= z << 13;
             z ^= z >> 7;
             z ^= z << 17;
@@ -2972,7 +3026,7 @@ mod find_bytes_tests {
     #[test]
     fn last_index_of_is_a_search_from_the_end() {
         use super::last_index_of;
-        for n in 0..=70usize {
+        for n in (0..=70usize).step_by(if cfg!(miri) { 9 } else { 1 }) {
             for at in 0..=n {
                 for twice in [false, true] {
                     let mut s: Vec<u8> = (0..n).map(|i| b'a' + (i % 7) as u8).collect();
@@ -2998,8 +3052,8 @@ mod find_bytes_tests {
     #[test]
     fn find_bytes_is_a_search_byte_by_byte() {
         let naive = |s: &[u8], t: &[u8]| (0..=s.len().saturating_sub(t.len())).find(|&i| i + t.len() <= s.len() && &s[i..i + t.len()] == t);
-        for n in 0..=70usize {
-            for m in 1..=17usize {
+        for n in (0..=70usize).step_by(if cfg!(miri) { 9 } else { 1 }) {
+            for m in (1..=17usize).step_by(if cfg!(miri) { 4 } else { 1 }) {
                 for at in 0..=n {
                     let mut s: Vec<u8> = (0..n).map(|i| b'a' + (i % 7) as u8).collect();
                     let t: Vec<u8> = (0..m).map(|i| b'P' + (i % 5) as u8).collect();
@@ -3046,6 +3100,16 @@ mod utf8_check_tests {
             }
         }
     }
+}
+
+/// Whether a read of `width` bytes from `addr`, the address of `len` bytes
+/// of a text, stays in a page that holds one of them (D573): a read past
+/// the bytes of a text (a short text moved by one load, D508) touches only
+/// memory of a page the text is in, which is mapped. An empty text has no
+/// byte in any page: its address (the address 1 of an empty slice of Rust,
+/// D530) says nothing of the memory there, so never.
+pub fn read_in_page(addr: usize, len: usize, width: usize) -> bool {
+    len >= 1 && len <= width && (addr & 4095) + width <= 4096
 }
 
 /// The end of the last whole character of the UTF-8 bytes `b` (D408): before
@@ -4711,7 +4775,7 @@ pub mod rx {
             #[test]
             fn stops_found_in_the_masks_of_the_blocks() {
                 let mut text = alloc::string::String::new();
-                for d in 0..300usize {
+                for d in (0..300usize).step_by(if cfg!(miri) { 23 } else { 1 }) {
                     text.push('<');
                     text.push_str(&"a|".repeat(d / 2));
                     text.push_str(if d % 2 == 0 { "" } else { "|" });
@@ -4722,7 +4786,8 @@ pub mod rx {
                 for v in ["g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/<[^>]+>", "g/<[^>]*>|a"] {
                     let sm = of(v).unwrap();
                     let re = super::super::of(v);
-                    for from in [0usize, 1, 63, 64, 100, 5000] {
+                    // (its middle under Miri, where the text is shorter)
+                    for from in [0usize, 1, 63, 64, 100, if cfg!(miri) { text.len() / 2 } else { 5000 }] {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
                     }
                 }
@@ -4735,7 +4800,7 @@ pub mod rx {
             #[test]
             fn merged_parts_are_one_search() {
                 let mut h = 0x2545f4914f6cdd1du64;
-                let text: alloc::string::String = (0..30000)
+                let text: alloc::string::String = (0..if cfg!(miri) { 600 } else { 30000 })
                     .map(|_| {
                         h ^= h << 13;
                         h ^= h >> 7;
@@ -4794,8 +4859,8 @@ pub mod rx {
                     h % k
                 };
                 // matches in the first half only, then none
-                let head: alloc::string::String = (0..20000).map(|_| b"aaacgt<x>|tHaNaND"[rnd(17) as usize] as char).collect();
-                let tail: alloc::string::String = (0..20000).map(|_| b"cgcgtc"[rnd(6) as usize] as char).collect();
+                let head: alloc::string::String = (0..if cfg!(miri) { 400 } else { 20000 }).map(|_| b"aaacgt<x>|tHaNaND"[rnd(17) as usize] as char).collect();
+                let tail: alloc::string::String = (0..if cfg!(miri) { 400 } else { 20000 }).map(|_| b"cgcgtc"[rnd(6) as usize] as char).collect();
                 for text in [head.clone() + &tail, tail.clone() + &head, head.clone()] {
                     for v in ["g/aa", "g/a[NSt]|BY|aa", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/tHa[Nt]", "ig/acg|tHa"] {
                         let sm = of(v).unwrap();
@@ -4827,7 +4892,7 @@ pub mod rx {
             #[test]
             fn fixed_alternatives_find_the_matches_of_the_automaton() {
                 let mut h = 0x9e3779b97f4a7c15u64;
-                let text: alloc::string::String = (0..20000)
+                let text: alloc::string::String = (0..if cfg!(miri) { 400 } else { 20000 })
                     .map(|_| {
                         h ^= h << 13;
                         h ^= h >> 7;
@@ -4850,7 +4915,7 @@ pub mod rx {
                     // the search by lanes where it has GFNI (D306)
                     assert_eq!(fx.lanes, fx.table.is_some() && gfni() && sm.alts.iter().all(|a| a.seq.len() <= 16), "{}", v);
                     let re = super::super::of(v);
-                    for from in [0usize, 1, 62, 63, 64, 65, 127, 4097] {
+                    for from in [0usize, 1, 62, 63, 64, 65, 127, if cfg!(miri) { text.len() / 2 } else { 4097 }] {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
                     }
                     for until in [0usize, 64, 1000, 19999] {
@@ -4909,11 +4974,11 @@ pub mod rx {
             /// The matches of the masks are those of the automaton.
             #[test]
             fn masks_find_the_matches_of_the_automaton() {
-                let text: alloc::string::String = ">head one\naaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNHaSWaSBY|q<<k>tail <open|\nab\n>x\n".repeat(37);
+                let text: alloc::string::String = ">head one\naaXbbaaaa-AAxagggtaaaTTTACCCT<2>at||a|bc|tHaNaND<x>caNHaSWaSBY|q<<k>tail <open|\nab\n>x\n".repeat(if cfg!(miri) { 3 } else { 37 });
                 for v in ["ig/agggtaaa|tttaccct", "g/aa", "g/a{3}", "g/a[NSt]|BY", "g/<[^>]*>", "g/\\|[^|][^|]*\\|", "g/<[^>]+>", "ig/tHa[Nt]", "g/ab|c", "g/a|ab", "g/aB|a", "mg/^>.*\\n|\\n", "mg/^a|t", "g/<[^>]*>|a", "g/x[^y]*y|q|<[^>]+>"] {
                     let sm = of(v).unwrap();
                     let re = super::super::of(v);
-                    for from in [0usize, 1, 63, 64, 65, 500] {
+                    for from in [0usize, 1, 63, 64, 65, if cfg!(miri) { text.len() / 2 } else { 500 }] {
                         assert_eq!(sm.bounds_from(&text, from, usize::MAX), super::super::bounds_from(&re, &text, from, usize::MAX), "{} from {}", v, from);
                     }
                     assert_eq!(sm.bounds_from(&text, 0, 700), up_to(super::super::bounds_from(&re, &text, 0, usize::MAX), 700), "{} until 700", v);

@@ -13194,3 +13194,70 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     on WebAssembly, `n >= WordGroups::MAX_INDEX` in `group_words`, a
     comparison with the largest `usize` there, which clippy denies by
     default (`absurd_extreme_comparisons`): compared in 64 bits.
+- **D573 — A read past the bytes of a text only in a page that holds one of
+  them (2026-11-09).** The item of the trusted base: the reads past the
+  bytes of a text kept in its page listed, each tested with an empty text
+  and a text at the end of a page. The list (the runtime, `isc-mem`, the
+  code generator, read again): one such read, in `append_parts` (a part of
+  at most 16 bytes moved by one load of 16 when they stay in its page,
+  D508); the others are masked loads of AVX-512 (nothing read past the
+  end), the words of `isc-mem` in their aligned word (tested at the end of
+  a page, D288), and the loads of the code generator inside the arrays
+  (the windows of the tasks clamped to `0 .. n`).
+  - Its test was `(p & 4095) <= 4096 - 16` with `len <= 16`: an empty part
+    passed it, though no byte of it is in that page, so nothing says the
+    page is mapped (the address 1 of an empty slice of Rust is in the page
+    0, never mapped: the fault of D530). Now `isc_runtime_core::
+    read_in_page(addr, len, width)`: `1 <= len <= width` and the read in
+    the page of `addr`; an empty part reads its 16 bytes in the empty
+    block of the runtime (a static of 64 bytes aligned on 64: inside it),
+    its address chosen without a branch. Measured (the binaries of
+    `bench/primitives` before and after, alternated runs, fixed
+    frequency): an empty part sent to `copy_short` by the test of its
+    length cost `json.stringify` +1.0 %, +0.8 %, +1.1 % (three runs of 21;
+    with the old condition and the rest of the change +0.1 %: the
+    condition, not the placement of the code; its many empty parts, a
+    branch that depends on them, a hypothesis); the form kept: `json`
+    -0.5 to +0.5 % (`stringify` +0.2 %), `strings` -0.3 % (`concat`) to
+    +0.8 % (`equal`), `template` +0.3 %. Its test
+    `reads_stay_in_a_page_of_the_text`: empty texts at the address 1 and
+    at the start, middle and end of pages, texts of 1 to 16 bytes ending
+    at the end of a page (only 16 bytes from 16 before the end), at the
+    first byte of a page, each case against the definition.
+  - A text at the end of a page that faults past it cannot be made from a
+    program: the input mapped from a file has a page of its own after it
+    (`map_stdin`, readable), the blocks of the heap are inside its
+    regions. So the test is of the condition, in `isc-runtime-core`, and
+    `empty_texts_of_every_form` (D531) keeps the programs.
+- **D574 — The tests of `isc-runtime-core` under Miri (2026-11-09).** The
+  last part of the item of the trusted base (its unsafe code checked by
+  Miri, which runs a program and stops at its undefined behaviour: a read
+  of memory not written or out of its block, a reference that aliases, a
+  value invalid for its type), on the toolchain nightly (`rustup toolchain
+  install nightly --component miri,rust-src`; Miri needs it).
+  - `tools/miri.py [JOBS] [TIMEOUT]`: the tests list themselves, each its
+    own process, shared out among groups each with its own target
+    directory; `MIRI OK` or `MIRI FAILED`. Not in the suite: 7.7 minutes
+    with 8 groups, about a thousand times slower than the tests; run when
+    the unsafe code of `isc-runtime-core` changes and before a release.
+  - What Miri cannot run is compiled out under `cfg(miri)`: the chain of
+    `adc` in assembly of `add` and `sub` (`chain`), whose loop of Rust
+    then runs; the paths of BMI2, ADX, AVX2 and AVX-512 are not compiled
+    for the target of base anyway. So Miri checks the code of base and its
+    SSE2 (the masks of the regular expressions read 64 bytes through a
+    pointer, the searches of bytes), the big integers written into spare
+    capacity (D571), the radix sorts, the tables of groups.
+  - The tests take smaller sizes under `cfg(miri)` (`if cfg!(miri)`:
+    fewer cases, sampled sizes, shorter texts, their places taken in the
+    middle of the shorter texts), the same tests otherwise. Three tests
+    whose code has no unsafe at all are ignored under Miri, the reason
+    written at each (`f64text::shortest_as_display`, `fixed_short_is_
+    fixed_exact`, `split_searches::merged_parts_find_the_matches_of_one_
+    search` over `regex-automata`); the timed test of `muladd` is ignored
+    everywhere.
+  - Result: `MIRI OK`, 36 tests, 32 run, 4 ignored, no undefined
+    behaviour. One test changed on the way: `messages` compared the
+    message of a read with the display of `std::io::Error`, which under
+    Miri adds its code twice (its text of the system already holds it):
+    compared with the text and the code, and with the display outside
+    Miri.
