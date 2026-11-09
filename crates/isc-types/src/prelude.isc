@@ -443,3 +443,86 @@ function $asciiWord8(v: u64): u64 {
 function $pair(r: u64): u64 {
     return readWord(bytes("00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"), i64(r & 255u64) * 2, 2);
 }
+
+// `trim(s)`, `trimStart(s)` and `trimEnd(s)` written in Isocron (D590): the
+// white space of Unicode at the ends removed, as Rust's
+// `char::is_whitespace` (that the runtime used): U+0009 to U+000D, U+0020,
+// U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F
+// and U+3000. The bytes of ASCII first (`findIndex`: it stops at the first
+// that is not white space); a byte above 0x7F there, the start or the end
+// of a character of several bytes, goes to the rarer path that reads the
+// characters (`@cold`). The text kept, copied by `slice`.
+function trim(s: string): string {
+    const b = bytes(s);
+    const a = $spacesFrom(b);
+    return s.slice(a, $spacesBack(b, a));
+}
+
+function trimStart(s: string): string {
+    const b = bytes(s);
+    return s.slice($spacesFrom(b), b.length);
+}
+
+function trimEnd(s: string): string {
+    const b = bytes(s);
+    return s.slice(0, $spacesBack(b, 0));
+}
+
+// The byte of ASCII `c` is white space.
+function $asciiSpace(c: u8): boolean {
+    return c == 32u8 || (c >= 9u8 && c <= 13u8);
+}
+
+// The index of the first character of `b` that is not white space (its
+// length if none).
+function $spacesFrom(b: u8[k]): i64 {
+    const i = findIndex(b, (c) => !$asciiSpace(c));
+    return i < 0 ? k : b[i] < 128u8 ? i : $spacesFromSlow(b, i);
+}
+
+// From `p`, the first character that is not white space, character by
+// character.
+@cold
+function $spacesFromSlow(b: u8[k], p: i64): i64 {
+    const w = $spaceWidth(b, p);
+    return w == 0 ? p : $spacesFromSlow(b, p + w);
+}
+
+// One past the last character of `b` that is not white space, not below
+// `low` (`low` if none from there).
+function $spacesBack(b: u8[k], low: i64): i64 {
+    const d = findIndex(iota(k - low), (j) => !$asciiSpace(b[k - 1 - j]));
+    const q = k - 1 - d;
+    return d < 0 ? low : b[q] < 128u8 ? q + 1 : $spacesBackSlow(b, low, q + 1);
+}
+
+// Below `end`, one past the last character that is not white space, not
+// below `low`, character by character from the end.
+@cold
+function $spacesBackSlow(b: u8[k], low: i64, end: i64): i64 {
+    const start = $charStart(b, end - 1, low);
+    return end <= low ? low : $spaceWidth(b, start) == end - start ? $spacesBackSlow(b, low, start) : end;
+}
+
+// The first byte of the character whose byte `p` is, not below `low` (the
+// bytes `10xxxxxx` continue a character).
+function $charStart(b: u8[k], p: i64, low: i64): i64 {
+    const c1 = p > low && (b[p] & 192u8) == 128u8;
+    const c2 = c1 && p - 1 > low && (b[p - 1] & 192u8) == 128u8;
+    const c3 = c2 && p - 2 > low && (b[p - 2] & 192u8) == 128u8;
+    return p - (c3 ? 3 : c2 ? 2 : c1 ? 1 : 0);
+}
+
+// The bytes of the character of white space at `p` (0 if it is not one, or
+// if `p` is the end).
+function $spaceWidth(b: u8[k], p: i64): i64 {
+    const c = p < k ? b[p] : 0u8;
+    const x = p + 1 < k ? b[p + 1] : 0u8;
+    const y = p + 2 < k ? b[p + 2] : 0u8;
+    return $asciiSpace(c) ? 1
+        : c == 0xC2u8 ? (x == 0x85u8 || x == 0xA0u8 ? 2 : 0)
+        : c == 0xE1u8 ? (x == 0x9Au8 && y == 0x80u8 ? 3 : 0)
+        : c == 0xE2u8 ? ((x == 0x80u8 && ((y >= 0x80u8 && y <= 0x8Au8) || y == 0xA8u8 || y == 0xA9u8 || y == 0xAFu8)) || (x == 0x81u8 && y == 0x9Fu8) ? 3 : 0)
+        : c == 0xE3u8 ? (x == 0x80u8 && y == 0x80u8 ? 3 : 0)
+        : 0;
+}

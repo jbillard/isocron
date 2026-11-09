@@ -3723,18 +3723,18 @@ pub unsafe extern "C" fn isc_trim_side(out: *mut IscStr, p: *const u8, n: i64, e
     }
 }
 
+/// `s.slice(a, b)` that fails, made by the generated code (D590): the
+/// panic of `slice_str` for those bounds.
 ///
 /// # Safety
-/// The pointers as the generated code gives them (C1).
+/// `p` and `n` a text (C1).
 #[no_mangle]
-pub unsafe extern "C" fn isc_str_slice(out: *mut IscStr, p: *const u8, n: i64, a: i64, b: i64, line: i32, col: i32) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        match sem::slice_str(text(p, n), a, b) {
-            Ok(x) => *out = new_str(x.as_bytes()),
-            Err(e) => die(line, col, &e),
-        }
+pub unsafe extern "C" fn isc_panic_text_slice(p: *const u8, n: i64, a: i64, b: i64, line: i32, col: i32) -> ! {
+    // SAFETY: the contract of this function
+    let s = unsafe { text(p, n) };
+    match sem::slice_str(s, a, b) {
+        Err(e) => die(line, col, &e),
+        Ok(_) => die(line, col, &Panic::StrSlice { a, b, len: n }),
     }
 }
 
@@ -5908,6 +5908,19 @@ pub unsafe extern "C" fn isc_panic_text(a: *const u8, na: i64, b: *const u8, nb:
     let (a, b, c) = unsafe { (bytes_of(a, na), bytes_of(b, nb), bytes_of(c, nc)) };
     let text = |x: &'static [u8]| core::str::from_utf8(x).unwrap_or("?");
     die(line, col, &format_args!("{}{}{}", text(a), text(b), text(c)))
+}
+
+/// `s.slice(a, b)` out of the bytes of `s` (D590): the slice is made by the
+/// generated code.
+#[no_mangle]
+pub extern "C" fn isc_panic_str_slice(a: i64, b: i64, len: i64, line: i32, col: i32) -> ! {
+    die(line, col, &Panic::StrSlice { a, b, len })
+}
+
+/// `s.slice(a, b)` with `a` or `b` inside a character of UTF-8 (D590).
+#[no_mangle]
+pub extern "C" fn isc_panic_boundary(i: i64, line: i32, col: i32) -> ! {
+    die(line, col, &Panic::NotCharBoundary(i))
 }
 
 /// `$textTail` with a size out of 1 ..= 24 or bytes not ASCII (D588).

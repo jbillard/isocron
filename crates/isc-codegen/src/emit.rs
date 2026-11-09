@@ -1001,7 +1001,9 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_str_append_n(ptr, ptr, i64)",
     "declare void @isc_repeat(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_trim_side(ptr, ptr, i64, i32)",
-    "declare void @isc_str_slice(ptr, ptr, i64, i64, i64, i32, i32)",
+    "declare void @isc_panic_str_slice(i64, i64, i64, i32, i32) noreturn",
+    "declare void @isc_panic_boundary(i64, i32, i32) noreturn",
+    "declare void @isc_panic_text_slice(ptr, i64, i64, i64, i32, i32) noreturn",
     "declare i64 @isc_last_index_of(ptr, i64, ptr, i64)",
     "declare void @isc_hash_index(ptr, ptr, i64, i32)",
     "declare i64 @isc_hash_find(ptr, i64, ptr, i64, i32, i64, ptr, i64)",
@@ -12576,8 +12578,7 @@ impl<'p> Gen<'p> {
             self.cbr(&starts, next, &lbad);
         }
         self.block(&lbad);
-        let out = self.alloca("{ ptr, i64 }");
-        self.emit(format!("call void @isc_str_slice(ptr {}, ptr {}, i64 {}, i64 {}, i64 {}, {})", out, p, n, a, b, Self::pos(span)));
+        self.emit(format!("call void @isc_panic_text_slice(ptr {}, i64 {}, i64 {}, i64 {}, {})", p, n, a, b, Self::pos(span)));
         self.emit("unreachable");
         self.block(&lview);
         let q = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, a));
@@ -12857,10 +12858,39 @@ impl<'p> Gen<'p> {
                 let (p, n) = self.str_parts(&vals[0]);
                 self.str_slice_view(&p, &n, &vals[1].r, &vals[2].r, e.span)
             }
+            // `s.slice(a, b)` (D590), as `slice_str` of the runtime core, made
+            // here: the bounds (`0 <= a <= b <= len`), then `a` and `b` each at
+            // the start of a character (its byte not `10xxxxxx`, or the end),
+            // then the bytes copied into a new block (the empty block of the
+            // runtime for none)
             S::Slice => {
-                let (p, n) = self.str_parts(&vals[0]);
+                let (p, len) = self.str_parts(&vals[0]);
+                let (a, b) = (vals[1].r.clone(), vals[2].r.clone());
                 let pos = Self::pos(e.span);
-                new_str(self, format!("call void @isc_str_slice(ptr OUT, ptr {}, i64 {}, i64 {}, i64 {}, {})", p, n, vals[1].r, vals[2].r, pos))
+                let c0 = self.ins(format!("icmp sge i64 {}, 0", a));
+                let c1 = self.ins(format!("icmp sle i64 {}, {}", a, b));
+                let c2 = self.ins(format!("icmp sle i64 {}, {}", b, len));
+                let c01 = self.ins(format!("and i1 {}, {}", c0, c1));
+                let ok = self.ins(format!("and i1 {}, {}", c01, c2));
+                self.guard(&ok, format!("call void @isc_panic_str_slice(i64 {}, i64 {}, i64 {}, {})", a, b, len, pos));
+                for i in [&a, &b] {
+                    let inside = self.ins(format!("icmp slt i64 {}, {}", i, len));
+                    let (lin, lout) = (self.label(), self.label());
+                    self.cbr(&inside, &lin, &lout);
+                    self.block(&lin);
+                    let q = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, i));
+                    let c = self.ins(format!("load i8, ptr {}, align 1", q));
+                    let top = self.ins(format!("and i8 {}, -64", c));
+                    let start = self.ins(format!("icmp ne i8 {}, -128", top));
+                    self.guard(&start, format!("call void @isc_panic_boundary(i64 {}, {})", i, pos));
+                    self.br(&lout);
+                    self.block(&lout);
+                }
+                let n = self.ins(format!("sub i64 {}, {}", b, a));
+                let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", n));
+                let src = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, a));
+                self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, src, n));
+                self.arr(&dst, &n)
             }
             // `bigint` (D156): the code of the runtime
             S::Big(b) => {

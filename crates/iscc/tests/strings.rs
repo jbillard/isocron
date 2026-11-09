@@ -1719,3 +1719,55 @@ fn integer_text_written_in_isocron() {
         + "\n";
     agree(src, "integer_text_isocron", &[], &want);
 }
+
+/// D590: `trim`, `trimStart` and `trimEnd` written in Isocron (the
+/// prelude), the white space of Rust's `char::is_whitespace` at the ends
+/// (every character of it, and characters of several bytes that are not
+/// white space: U+200B, U+FEFF, U+180E, U+00A1), and `slice` made by the
+/// code generator: the same texts as Rust, interpreted and compiled; the
+/// panics of a slice out of the text and inside a character the same.
+#[test]
+fn trim_and_slice_written_in_isocron() {
+    let spaces: Vec<char> = [9u32, 10, 11, 12, 13, 32, 0x85, 0xA0, 0x1680, 0x2000, 0x2005, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
+        .iter()
+        .map(|&c| char::from_u32(c).unwrap())
+        .collect();
+    let others: Vec<char> = [0x200Bu32, 0xFEFF, 0x180E, 0xA1, 0x84, 0x2027, 0x3001].iter().map(|&c| char::from_u32(c).unwrap()).collect();
+    let mut texts: Vec<String> = vec![String::new(), " ".into(), "a".into(), " a b ".into()];
+    for (i, &w) in spaces.iter().enumerate() {
+        let o = others[i % others.len()];
+        texts.push(format!("{w}{w}x{o}y{w}"));
+        texts.push(format!("{o}{w}é{w}{o}"));
+        texts.push(format!("{w}{w}"));
+    }
+    let src = "action main(args: string[k]): i32 {
+    forEach(args, (s) => {
+        print(`<${trim(s)}|${s.trimStart()}|${trimEnd(s)}>`);
+    });
+    return 0;
+}
+";
+    let args: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let want: String = texts.iter().map(|s| format!("<{}|{}|{}>\n", s.trim(), s.trim_start(), s.trim_end())).collect();
+    agree(src, "trim_isocron", &args, &want);
+    let one = "action main(args: string[k]): i32 {\n    print(args[0].slice(parseI64(args[1]), parseI64(args[2])));\n    return 0;\n}\n";
+    let bin = compile(one, "slice_made_here");
+    for (s, a, b, want) in [("aé€b", 0, 1, "a\n"), ("aé€b", 1, 3, "é\n"), ("aé€b", 3, 7, "€b\n"), ("aé€b", 7, 7, "\n"), ("", 0, 0, "\n")] {
+        let r = run_bin(&bin, &[s, &a.to_string(), &b.to_string()]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want), "{} {} {}: {}", s, a, b, r.stderr);
+    }
+    for (s, a, b, msg) in [
+        ("aé€b", 2, 3, "slice: the index 2 is inside a character of UTF-8"),
+        ("aé€b", 1, 4, "slice: the index 4 is inside a character of UTF-8"),
+        ("abc", -1, 2, "slice out of bounds: [-1..2] of a string of 3 bytes"),
+        ("abc", 2, 1, "slice out of bounds: [2..1] of a string of 3 bytes"),
+        ("abc", 0, 4, "slice out of bounds: [0..4] of a string of 3 bytes"),
+    ] {
+        let args = [s, &a.to_string(), &b.to_string()];
+        let m = interp_panic(one, &args);
+        assert!(m.contains(msg), "{:?} interpreted: {}", args, m);
+        let r = run_bin(&bin, &args);
+        assert_eq!(r.code, 101, "{:?}: {}", args, r.stderr);
+        assert!(r.stderr.contains(msg), "{:?} compiled: {}", args, r.stderr);
+    }
+}

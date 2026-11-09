@@ -13693,3 +13693,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   intrusive lists, shared data under locks, ordered atomics, per-thread
   state and its end, the inline paths of the generated code): safe
   primitives to design, fast enough, not a dialect without checks.
+- **D590 — `trim`, `trimStart`, `trimEnd` written in Isocron, `slice` made
+  by the code generator (2026-11-09).** The next functions of the runtime
+  moved (SPEC section 17, order 2, D589).
+  - `s.slice(a, b)`: made in place by the code generator, as `slice_str`
+    of the runtime core: the bounds (`0 <= a <= b <= len`), `a` then `b`
+    at the start of a character (its byte not `10xxxxxx`, or the end), the
+    bytes copied into a new block (`isc_alloc`, the empty block for none,
+    `llvm.memcpy`); its panics by `isc_panic_str_slice` and
+    `isc_panic_boundary`, the view of D555 by `isc_panic_text_slice` (the
+    name `isc_panic_slice` is that of the slices of arrays). `isc_str_slice`
+    removed from the runtime.
+  - `trim`, `trimStart`, `trimEnd`: functions of the prelude in place of the
+    primitives; the white space of Rust's `char::is_whitespace`, as the
+    runtime: the bytes of ASCII by `findIndex` (it stops at the first that
+    is not white space, from the start, and over `iota` from the end); a
+    byte above 0x7F there goes to a path `@cold` that reads the characters
+    (`$spaceWidth`: U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028,
+    U+2029, U+202F, U+205F, U+3000; `$charStart` from the end); the text
+    kept copied by `slice`.
+  - The same as Rust: 1055 texts made of white space and of characters of
+    several bytes that are not (U+200B, U+FEFF, U+180E, U+00A1 and
+    others), at the ends and inside, the three functions, compiled and
+    interpreted; `slice`: 347 cases (every pair of bounds around 5 texts of
+    1 to 4 bytes a character), the same values, panics and codes. The test
+    `trim_and_slice_written_in_isocron`.
+  - Measured (`bench/primitives/strings.isc`, the median of 9 runs, Rust
+    by the compiler before D580): `strings.trim` 14.153 → 7.748 ns
+    (−45.3 %), `strings.slice` 2.050 → 1.973 (−3.8 %); the other forms
+    within the noise.

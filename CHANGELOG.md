@@ -44,6 +44,8 @@
 - The text of an integer (`toString`) is written in Isocron: 10 to 21 %
   faster than its Rust version; `leadingZeros(x)` for every integer type
   (D588).
+- `trim`, `trimStart` and `trimEnd` are written in Isocron (45 % faster), and
+  `slice` of a string is made by the generated code (D590).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling
