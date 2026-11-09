@@ -13044,3 +13044,59 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Left: `lib.rs` (657, with its exported functions that read pointers
     without being `unsafe`, `not_unsafe_ptr_arg_deref` of clippy), and the
     Windows and WASI parts of `system.rs` and `net.rs`.
+- **D568 — The unsafe of `lib.rs` justified, its contracts written, the
+  lints denied for the whole runtime under Linux (2026-11-09).** The plan
+  of D564, its last file under Linux: `lib.rs`, 657 operations without a
+  block of their own or blocks without their reason, and the 7 exported
+  functions that read a pointer without being `unsafe` (clippy's
+  `not_unsafe_ptr_arg_deref`, an error by default).
+  - The conventions the exported functions rely on, written at the top of
+    the crate: C1 (a place of a result writable; a pointer and its length
+    a string or an array of the program, alive during the call, its bytes
+    UTF-8 for a string), C2 (a block given: the caller gives it up; a
+    block of the heap, a literal or the empty string, told apart by
+    `isc_free`), C3 (a buffer of the caller of `cap` bytes, or the 128 of
+    `STACK_STR`; a result there a view kept within its scope). Each
+    exported function has its `# Safety` (C1, or its own contract), its
+    body one block whose reason names them.
+  - P1, the contract of a task of a parallel loop: `Task` is now an
+    `unsafe extern "C" fn` (each task called with its context, each `i`
+    once, at the same time on several threads; the context alive until
+    the loop returns; each task writing only what its `i` owns). The entry
+    points of the pool (`isc_parallel_for` and its forms, `parallel_for`,
+    `parallel_job`, `nested_for`, `run_share`) are `unsafe` with P1; the
+    eight tasks of the runtime itself say which part of their context they
+    write; `par::run`, the safe loop of the runtime over closures, is the
+    one place where a closure becomes a task (`F: Sync + Copy`).
+  - Made `unsafe`, their contracts written: `isc_free`, `isc_node_free`,
+    `free_cold` (C2: a block freed once), `isc_parallel_for_site` (its
+    four words), `isc_panic_stack`, `isc_cstr` (C1). Made safe, having no
+    precondition: `write_all` (a slice, no longer a pointer and a length),
+    `message`, `read_fd`, `read_stdin_all`, `try_read_file`, `read_file`,
+    `try_write_file`, `write_file`, `try_read_f64s`, `try_read_text`,
+    `try_csv`; their blocks inside. `rx_for` reads the counter through
+    `stamp` (no block); the scattered lists of `isc_group` borrowed
+    without a cast.
+  - Three reads that nothing bounded are now checked: `try_write_file`
+    writes a slice of its chunk (a `fill` that would give more than the
+    chunk: a panic, no longer a read past it); the values of a CSV
+    (`isc_parse_csv_f64`, `try_csv`) written through a slice of the block
+    (`new_f64s`), an index out of it a panic; `isc_groups_add` checks its
+    part against the count of parts. The tables of the parts of a group
+    reached through pointers taken once at its creation (`table_at`,
+    `count_at`), no longer through `as_mut_ptr` of a vector that other
+    tasks write at the same time (a `&mut` of the vector each time).
+  - Found on the way: `heap::alloc` had lost its doc and its `#[inline]`
+    to `alloc_cached` (an `#[inline]` before an `#[inline(always)]`,
+    unused): the doc moved back, the attribute that had no effect removed
+    (the code the same). `utf8_text`, unused, removed. `abort` and `exit`
+    are safe on every target: their blocks removed. Four functions given
+    an outer block over their own justified blocks were unwrapped (an
+    unused block found by `--force-warn unused_unsafe`).
+  - Checked: `cargo check` and clippy for x86-64 Linux (0 operation
+    without its block, 0 block without its reason in the whole crate),
+    x86-64-v3 and v4, Windows (gnu, msvc) and WASI. Both lints denied for
+    the whole crate under Linux (`cfg_attr`); under Windows and WASI the
+    modules of those systems are left (`windows.rs` 67, `system.rs` 64,
+    `net.rs` 126 for Windows; `system.rs` 40 and `wasi.rs` 2 for WASI, by
+    clippy on those targets), `lib.rs` and `par.rs` clean there too.

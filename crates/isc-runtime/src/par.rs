@@ -27,14 +27,19 @@ pub enum Order {
 
 /// `f(k)` for each `k` of `0..n` on the pool; returns when all are done.
 pub fn run<F: Fn(usize) + Sync + Copy>(n: usize, order: Order, f: F) {
-    extern "C" fn task<F: Fn(usize) + Sync + Copy>(ctx: *mut c_void, k: i64) {
+    /// # Safety
+    /// `ctx` the closure that `run` gives (P1).
+    unsafe extern "C" fn task<F: Fn(usize) + Sync + Copy>(ctx: *mut c_void, k: i64) {
         // SAFETY: `ctx` is the closure `run` gave (or its copy in the job
         // line, as good: `F: Copy`), alive until `parallel_for` returns
         let f = unsafe { &*(ctx as *const F) };
         f(k as usize)
     }
     let t: Task = task::<F>;
-    parallel_for(n as i64, t, &f as *const F as *mut c_void, core::mem::size_of::<F>() as i64, false, matches!(order, Order::Contiguous));
+    // SAFETY: P1: the task reads its closure, `F: Sync` (shared by the
+    // threads), `F: Copy` (its bytes may be copied: `size_of::<F>()`), alive
+    // until the loop returns; each `k` once
+    unsafe { parallel_for(n as i64, t, &f as *const F as *mut c_void, core::mem::size_of::<F>() as i64, false, matches!(order, Order::Contiguous)) };
 }
 
 /// A slice cut at `bounds` (increasing, its first 0 and its last the

@@ -1823,9 +1823,6 @@ unsafe fn free_large(h: *mut Header) {
 // ---------------------------------------------------------------------
 // entry points
 
-/// `bytes` bytes (>= 1) aligned on 64 bytes, zeroed if `zero`; null if the
-/// size is too large or the system has no memory left.
-#[inline]
 /// The common case (D165): a block of `bytes` (a multiple of 64, at most
 /// 1 KiB), not cleared, found in the cache of the thread; null otherwise
 /// (the caller then takes the complete path, which also checks the block).
@@ -1911,6 +1908,8 @@ pub unsafe fn usable(p: *mut u8) -> usize {
     }
 }
 
+/// `bytes` bytes (>= 1) aligned on 64 bytes, zeroed if `zero`; null if the
+/// size is too large or the system has no memory left.
 ///
 /// # Safety
 /// Called by a thread of the program (H2).

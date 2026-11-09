@@ -112,7 +112,8 @@ unsafe fn bytes_read(buf: *mut u8, n: usize, max: usize) -> IscArray {
     // SAFETY: `n` bytes written at `buf` (the contract), `q` a new block of
     // at least `n`
     unsafe { core::ptr::copy_nonoverlapping(buf, q, n) };
-    isc_free(buf);
+    // SAFETY: `buf` a block of the runtime given (the contract), copied
+    unsafe { isc_free(buf) };
     IscArray { ptr: q, len: n as i64 }
 }
 
@@ -591,7 +592,8 @@ mod imp {
             // `n` written by the read, given to the array
             Ok(n) => IscArrayCode { a: unsafe { bytes_read(buf, n, max) }, code: 0 },
             Err(code) => {
-                isc_free(buf);
+                // SAFETY: `buf` the block made above, not given to anything
+                unsafe { isc_free(buf) };
                 IscArrayCode { a: IscArray { ptr: empty_bytes(), len: 0 }, code }
             }
         };
@@ -1163,7 +1165,8 @@ mod imp {
             // block of `max`) and its sender at `from` (28 bytes, `flen`)
             let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, buf as usize, max, 0, from.as_mut_ptr() as usize, &mut flen as *mut u32 as usize) });
             if r < 0 {
-                isc_free(buf);
+                // SAFETY: `buf` the block made above, not given to anything
+                unsafe { isc_free(buf) };
                 linux::close(fd as c_int);
                 return fail(net_code(r));
             }
