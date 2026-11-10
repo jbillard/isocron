@@ -12,38 +12,57 @@
 #
 # A place is a file `target/heavy.lock` or `target/heavy.lock.2`, taken in
 # one step (`noclobber`: the write fails if another took it), given back at
-# the end only if its line is still the job's. `all` takes the first place,
-# then waits for the second and for no build of another (`rustc`, `cargo`)
-# outside its own; `one` takes either place. Nothing runs that did not get
-# its place. Waits print nothing.
+# the end only if its line is still the job's. `all` writes its wish first
+# (`target/heavy.want`, one at a time), takes the first place, then waits
+# for the second and for no build of another (`rustc`, `cargo`) outside its
+# own; `one` takes either place, but none while an `all` waits (its wish
+# there, its process alive): two `one` jobs of agents in turn would keep the
+# second place from it for ever. Nothing runs that did not get its place.
+# Waits print nothing.
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 places=("$root/target/heavy.lock" "$root/target/heavy.lock.2")
+want="$root/target/heavy.want"
 kind=${1:-}
 label=${2:-}
 [ "$kind" = one ] || [ "$kind" = all ] || { echo "usage: heavy.sh one|all LABEL COMMAND..." >&2; exit 2; }
 [ -n "$label" ] && [ $# -ge 3 ] || { echo "usage: heavy.sh one|all LABEL COMMAND..." >&2; exit 2; }
 shift 2
-line="$label (pid $$) since $(date +%H:%M)"
+line="$label [$kind] (pid $$) since $(date +%H:%M)"
 take() { ( set -o noclobber; echo "$line" > "$1" ) 2>/dev/null; }
 mine() { [ "$(cat "$1" 2>/dev/null)" = "$line" ]; }
 give() { mine "$1" && rm -f "$1"; }
+# an `all` that waits: its wish there and its process alive
+waiting_all() {
+    local pid
+    pid=$(sed -n 's/.*(pid \([0-9]*\)).*/\1/p' "$want" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ! mine "$want"
+}
 held=()
 trap 'for p in "${held[@]}"; do give "$p"; done' EXIT
 if [ "$kind" = one ]; then
     while true; do
-        for p in "${places[@]}"; do
-            if take "$p"; then held=("$p"); break 2; fi
-        done
+        if ! waiting_all; then
+            for p in "${places[@]}"; do
+                if take "$p"; then held=("$p"); break 2; fi
+            done
+        fi
         sleep 5
     done
     systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 "$@"
     exit $?
 fi
+# (a wish of a process gone: removed)
+until take "$want"; do
+    waiting_all || rm -f "$want"
+    sleep 5
+done
+held=("$want")
 until take "${places[0]}"; do sleep 5; done
-held=("${places[0]}")
+held+=("${places[0]}")
 until take "${places[1]}"; do sleep 5; done
 held+=("${places[1]}")
+give "$want"
 # (a build begun before the places were taken: let it end)
 while [ "$(ps -eo comm | grep -cE '^(rustc|cargo)$')" != 0 ]; do sleep 5; done
 "$@"

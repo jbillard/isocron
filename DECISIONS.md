@@ -15130,3 +15130,11 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   +20 % of D609 is gone), `json.decode` +1.9 %, `maps.get.string` +2.3 %,
   `maps.Map.build.i64` +1.3 %; `json.stringify` −15.7 %, `json.encode`
   −8.1 %, `json.parse` −3.1 %. The two left in TODO.
+- **D624 — The places of the machine: a job of both waits no longer for
+  ever (2026-11-10).** With two agents, a job of both places (the suite, a
+  measure of cycles) took the first and waited 13 minutes for the second:
+  the jobs of one place of the agents took it in turn as soon as it was
+  free. `tools/heavy.sh all` now writes its wish first
+  (`target/heavy.want`, one at a time, removed when its process is gone),
+  and no job of one place starts while it is there. The script replaced
+  by a rename: the jobs running kept the file they had opened.
