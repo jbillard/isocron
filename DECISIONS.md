@@ -14240,3 +14240,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the orders of the atomic operations weaker than sequentially
     consistent where they may be, the generated code calling the
     allocator (D600), the measure.
+- **D604 — The measures of D596 and D597 again on a quiet machine: the
+  same (2026-11-10).** Those of D596 were taken beside a transcoder of
+  the machine, those of D597 too. At 02:04, no transcoder, no build, the
+  median of 7 runs.
+  - The guard is in the scripts now: a measure waits for the end of a
+    transcoder, takes the lock that holds the builds of the agents back,
+    waits for the builds under way, and says if a transcoder started
+    while it ran.
+  - Against Rust (the compiler before D580). The searches: a line of 60
+    bytes, a byte −10.1 % (−11.7 % beside the transcoder), 3 bytes
+    −34.4 % (−33.6), 8 bytes −32.6 % (−32.1), 16 bytes −21.4 % (−22.0),
+    30 bytes −75.3 % (−75.5), `includes` −41.9 % and −30.5 %; the long
+    text, −23.8 % to −83.3 % (−24.5 to −83.3); one byte repeated −70.4 %
+    (−70.6). No ratio moved by more than 2 points. The text of a `f64`:
+    58.570 → 32.505 ns (−44.5 %; the agent, beside the transcoder: 41.04 →
+    22.63, −45 %).
+  - Before the searches and the text of floats (the compiler of D593) and
+    after, 50 forms of the groups json, maps, numbers, control, arrays
+    and strings: `json.stringify` −21.4 %, `json.encode` −26.3 %,
+    `json.decode` −3.2 %, `json.quote` of escaped texts −4.8 %, `trim`
+    −8.4 %; slower by more than 2 %: `json.message` (+4.3 %) and
+    `strings.less` (+2.2 %). `json.message` alone in a program has the
+    same assembly before and after (0 line of 1362 differs), 114.06
+    instructions a call both, 25.29 and 25.17 cycles: its place in the
+    program of the bench, not its code. `less` is not touched by these
+    changes.
