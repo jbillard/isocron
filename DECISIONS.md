@@ -15010,3 +15010,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - To be done at each function that moves to the prelude as a function:
     its time under `iscc run` before and after, and its native form if it
     is needed.
+- **D618 — The Benchmarks Game measured again at 7e6645c (2026-11-10).**
+  After D605 to D616 (the allocator of the small blocks in Isocron, the
+  texts, the readings and writings of floats, the roundings, the module
+  compiled once): the image built with the `iscc` of 7e6645c, the programs
+  linked with the module of the prelude as a user's are (`ISC_CACHE_DIR`
+  given to the container, `run.sh`), 102 checks against the references
+  (the same outputs), measured in Docker on a quiet machine (no `Plex
+  Transcoder`; 4 threads, 12 runs, the lowest). The fastest on 10 of 10.
+  Against D521: k-nucleotide 607 → 571 ms (−5.9 %), reverse-complement 24
+  → 23, binary-trees 662 → 660, fannkuch-redux 1655 → 1651; n-body 1882 →
+  1903 ms (+1.1 %, against C 1945), regex-redux 81 → 82, mandelbrot 637 →
+  638, pidigits 298 → 299, fasta and spectral-norm the same.
+  `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
+  `floors.tsv`, `floors_isocron.tsv`, the table of the README and its
+  figure made again from these lines.

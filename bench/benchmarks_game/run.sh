@@ -10,7 +10,9 @@ root="$(dirname "$(dirname "$here")")"
 mkdir -p "$here/isocron"
 cp "$root"/examples/benchmarks_game/*.isc "$here/isocron/"
 in_image() {
-    docker run --rm --network none --user "$(id -u):$(id -g)" -v "$here:/work" isocron-bg "$@"
+    # (the module of the prelude compiled once, D611, kept with the builds:
+    # the programs linked as those of a user are)
+    docker run --rm --network none --user "$(id -u):$(id -g)" -e ISC_CACHE_DIR=/work/build/isc-cache -v "$here:/work" isocron-bg "$@"
 }
 case "${1:-}" in
     build) in_image bash /work/build_programs.sh ;;
@@ -28,6 +30,6 @@ case "${1:-}" in
         . "$envf"
         cpus="$(echo "$BENCH_CPUS" | tr ',' '\n' | head -n "$t" | paste -sd, -)"
         docker run --rm --network none --cgroup-parent=isc-bench.slice --cpuset-cpus="$cpus" \
-            --user "$(id -u):$(id -g)" -v "$here:/work" isocron-bg bash /work/measure.sh "$t" "$reps" "$modes" ;;
+            --user "$(id -u):$(id -g)" -e ISC_CACHE_DIR=/work/build/isc-cache -v "$here:/work" isocron-bg bash /work/measure.sh "$t" "$reps" "$modes" ;;
     *) echo "usage: run.sh build|check|measure [T R MODES]" >&2; exit 2 ;;
 esac
