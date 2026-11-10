@@ -14947,3 +14947,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
       with a third of its texts refused under the three allocators.
   - Left in Rust around it: the floats of the CSV readers
     (`isc_parse_csv_f64`, `isc_read_csv_f64`, `isc_try_read_csv_f64`).
+- **D615 — A test that bounds the memory of each family of loops
+  (2026-11-10).** The leak of the first wiring of the allocator (D605: a
+  block of the arena freed by the runtime never came back) passed the
+  suite; one test held two patterns since. `crates/iscc/tests/bounded.rs`
+  holds ten: the pads, `join`, the cases, `toFixed`, the texts of floats,
+  the reading of floats with a third of the texts refused, arrays of
+  floats kept, `split` with `lines` and `replace`, a sort of 5000 texts, a
+  text grown; each makes its values, reads them and frees them a round, on
+  4 threads; the program prints its own `VmHWM`, and the test asks that
+  600 rounds take no more than 60 (a seventh and 256 KiB allowed for the
+  caches of the threads), linked with the module of D611 and built whole.
+  - Today: 3116 to 3964 KiB for the ten, the same at 60, 600 and 3000
+    rounds. Built by the compiler of the first wiring (d8d0dbb), five grow
+    tenfold: `join` 19 108 → 154 356 KiB, the texts of floats 35 544 →
+    312 124, the reading of floats 15 092 → 105 252, `split` 7124 →
+    42 140, the sort 41 784 → 379 772: the bound refuses each.
+  - Not under `ISC_ALLOC=check`: that allocator keeps the freed blocks in
+    a quarantine of 64 MiB by design (arrays of 32 KiB: 5 MiB after 60
+    rounds, 26 after 600, 81 after 3000 and after 12 000), and has no
+    second allocator beside it.
+  - For the steps of the kernel to come (the larger blocks, the pool, the
+    files): each changes who makes and who frees a block.

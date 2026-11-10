@@ -372,7 +372,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
       - [ ] The blocks of the list of a thread that ends (lost today: the threads of the pool live as long as the program)
       - [ ] The arena under Windows and in WebAssembly (the entries are not emitted there)
       - [ ] The thread of the large stack only for a program whose functions can nest (today: any function lowered, the text of an integer among them)
-      - [ ] A test of the suite that bounds the memory of each family of loops (the leak of the first wiring passed 159 runs; one test holds two patterns now)
+      - [x] A test of the suite that bounds the memory of each family of loops (D615: ten loops, 60 and 600 rounds, with the module and whole; built by the compiler of the first wiring, five of them grow tenfold)
     - [ ] 4. The slow paths one at a time (lists refilled, medium blocks, large blocks, memory given back, the end of a thread); then the pool, files and `print`, the start and the panics, the copies of blocks, Windows and WebAssembly, regular expressions and big integers
 - [x] A tuple literal first in a choice (`c ? [0u64, 1u64] : f()`) is typed as an array (D582): type it from the other branch, or say so in the message (D585; `match` arms still in the order of the arms)
 - [ ] Step 7, next pure functions in Isocron (SPEC section 17, order 2): `split`, lines, `replace`, sort, the writing of numbers; each at least as fast as its Rust version (principle 6), and the checks of bounds proven needless removed in loops
