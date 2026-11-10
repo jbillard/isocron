@@ -132,13 +132,20 @@ pub fn compile_with(src: &str, name: &str, codegen: isc_codegen::Options) -> Pat
 
 /// `compile_with` and the libraries of the `extern` functions (`--link`).
 pub fn compile_linked(src: &str, name: &str, codegen: isc_codegen::Options, link: &[&str]) -> PathBuf {
-    compile_built(src, name, codegen, link, false)
+    compile_built(src, name, codegen, link, false, false)
+}
+
+/// `compile`, every function the program reaches compiled in it, none
+/// taken from the module of the prelude compiled once (D611): for the
+/// tests that read the IR of a whole program.
+pub fn compile_whole(src: &str, name: &str) -> PathBuf {
+    compile_built(src, name, isc_codegen::Options::default(), &[], false, true)
 }
 
 /// `compile_with`, the program linked with glibc (D289): for Valgrind,
 /// which sees the blocks of glibc's allocator (`ISC_ALLOC=glibc`).
 pub fn compile_glibc(src: &str, name: &str, codegen: isc_codegen::Options) -> PathBuf {
-    compile_built(src, name, codegen, &[], true)
+    compile_built(src, name, codegen, &[], true, false)
 }
 
 /// The memory of every program checked (D578): with `ISC_TEST_MEMCHECK` set,
@@ -155,7 +162,7 @@ pub fn memcheck() -> bool {
 /// instructions, which Valgrind may not decode).
 static MEMCHECKED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
-fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link: &[&str], mut glibc: bool) -> PathBuf {
+fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link: &[&str], mut glibc: bool, whole: bool) -> PathBuf {
     let checked = memcheck() && !codegen.windows;
     if checked {
         if matches!(codegen.isa, isc_codegen::Isa::Native | isc_codegen::Isa::Avx512) {
@@ -174,7 +181,8 @@ fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link:
         link: link.iter().map(|s| s.to_string()).collect(),
         glibc,
     };
-    iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
+    let cache = if whole { None } else { iscc::pre_dir() };
+    iscc::build_in(&p, &opts, cache.as_deref()).unwrap_or_else(|e| panic!("{}: {}", name, e));
     if checked {
         MEMCHECKED.lock().unwrap().push(out.clone());
     }

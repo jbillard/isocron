@@ -14780,4 +14780,10 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     text that holds a name; no place to write; a list that is not one; a
     function that differs; four builds at once; WebAssembly), and the
     test of the wiring of the kernel under the three settings of
-    `ISC_ALLOC`, with and without the module.
+    `ISC_ALLOC`, with and without the module. Three tests read in the IR
+    of a program the functions of the prelude it reaches (the texts of
+    integers in their blocks, the floats printed, the functions emitted
+    when reached): they failed in the first suite of this step (6 runs of
+    162), for these functions are no longer all in the program; they
+    build the program whole (`compile_whole`), which is what they read,
+    and two of them run it linked with the module as well.

@@ -188,7 +188,13 @@ fn floats_printed_by_the_prelude() {
         lines.sort();
         lines
     };
-    let bin = compile(FLOATS, "output_floats");
+    // (linked with the module of the prelude compiled once, D611: the same
+    // floats on one thread)
+    let shared = compile(FLOATS, "output_floats_shared");
+    let (code, out, err) = run_to_threads(&shared, &[], "file", "1");
+    assert_eq!((code, out.as_str()), (Some(0), want.as_str()), "with the module: {}", err);
+    // (the whole program: the functions of the prelude are read in its IR)
+    let bin = compile_whole(FLOATS, "output_floats");
     for threads in ["1", "4"] {
         for to in ["file", "pipe"] {
             let (code, out, err) = run_to_threads(&bin, &[], to, threads);
@@ -243,7 +249,12 @@ fn text_functions_emitted_when_reached() {
     let main = |body: &str| format!("action main(args: string[k]): i32 {{\n    {}\n    return 0;\n}}\n", body);
     let ir = |body: &str, name: &str| -> String {
         let src = main(body);
-        let bin = compile(&src, name);
+        // (the whole program, then linked with the module of the prelude
+        // compiled once, D611: the same output)
+        let shared = compile(&src, &format!("{}_shared", name));
+        let run = run_bin(&shared, &[]);
+        assert_eq!((run.code, run.stdout.as_str()), (0, interp_ok(&src, &[]).as_str()), "{} with the module: {}", body, run.stderr);
+        let bin = compile_whole(&src, name);
         let run = run_bin(&bin, &[]);
         assert_eq!((run.code, run.stdout.as_str()), (0, interp_ok(&src, &[]).as_str()), "{}: {}", body, run.stderr);
         std::fs::read_to_string(bin.with_extension("ll")).unwrap()

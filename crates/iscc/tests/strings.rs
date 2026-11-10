@@ -1041,7 +1041,8 @@ fn strings_grown_in_place() {
 #[test]
 fn integers_written_in_the_block_of_their_template() {
     let src = include_str!("data/strings_template_parts.isc");
-    let bin = compile(src, "template_parts");
+    // (the whole program: the functions of the texts are read in its IR)
+    let bin = compile_whole(src, "template_parts");
     for a in ["7", "-42", "0", "-9223372036854775807"] {
         let want = interp_ok(src, &[a]);
         let r = run_bin(&bin, &[a]);
