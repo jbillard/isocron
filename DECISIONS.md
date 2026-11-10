@@ -13980,8 +13980,12 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     load of 64 bytes was across two lines of the cache. A byte absent of a
     text of 250 kB: 0.0101 → 0.0054 ns a byte passed (`memchr` of the
     runtime: 0.0077).
-  - Measured (the median of 7 runs, Rust by the compiler before D580). A
-    line of 60 bytes, ns a search: a byte 6.027 → 5.322 (−11.7 %), 3 bytes
+  - Measured (the median of 7 runs, Rust by the compiler before D580;
+    taken from 00:32 to 00:40 while a transcoder of the machine used
+    another core at 100 %, against the rule of the measures: both versions
+    in turn on the reserved core, so the ratios should hold, but they are
+    to be measured again on a quiet machine, TODO). A line of 60 bytes, ns
+    a search: a byte 6.027 → 5.322 (−11.7 %), 3 bytes
     20.131 → 13.366 (−33.6 %), 8 bytes 17.423 → 11.836 (−32.1 %), 16 bytes
     15.581 → 12.153 (−22.0 %), 30 bytes 44.990 → 11.005 (−75.5 %);
     `includes` of 2 bytes 20.534 → 11.902 (−42.0 %), of 8 bytes 17.554 →
