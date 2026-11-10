@@ -14499,3 +14499,101 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     check` of three lines 58.65 → 64.45 million instructions (the same
     time, 10.9 ms); a program that changes case carries the tables of
     both directions (about 24 KiB).
+- **D609 — The times of D605 to D608 on a quiet machine (2026-11-10,
+  05:05 to 05:27).** No transcoder, the lock held, the settings of the
+  measures (3.2 GHz fixed, one CPU, median of 7 or 9 runs in turn); before
+  is the commit before the step (270baa9), after is cfe07fa.
+  - One block taken and given back: 39.16 → 33.83 cycles a round
+    (−13.6 %; 182.01 → 164.01 instructions).
+  - The forms, cycles a text, the runtime in Rust → the generated code on
+    the allocator in Rust → on the allocator of D605. Paddings: read in
+    its scope 17.52 → 6.54 → 6.53; kept 52.02 → 36.48 → 34.51; to 200
+    bytes 78.26 → 69.68 → 65.54; a fill of two bytes 208.18 → 62.65 →
+    59.61; an empty fill 48.57 → 35.20 → 32.44; a padded integer 67.92 →
+    40.97 → 36.16, a `u8` 55.52 → 32.03 → 27.89. Joins: a line 17.19 →
+    12.41 → 12.31; numbers 17.94 → 8.52 → 8.32; texts of 300 bytes 29.78
+    → 29.40 → 29.14; two texts 53.58 → 30.61 → 27.48; six 129.75 → 72.58
+    → 70.25. Cases: a line read in its scope 44.93 → 11.44 → 11.90, kept
+    64.97 → 38.26 → 36.03; a word kept 46.68 → 37.89 → 36.02; one accent
+    727.98 → 109.10 → 102.09; Greek 2290.27 → 619.86 → 611.39; characters
+    that change length 1240.91 → 691.42 → 694.12. Every form below the
+    runtime's; on the new allocator, every form that allocates below the
+    same code on the old one, but one:
+  - a join read by a `map`, 42.64 → 29.82 → 36.14 cycles with the same
+    125.80 instructions. Shown: the stalls of a load behind a store at
+    the same place of its page of 4 KiB (the counter of the processor,
+    sampled) are at two instructions of the loop of the program itself,
+    which reads the buffer of a text on the stack and writes the block of
+    its result, 12 416 and 11 030 samples against 7 046 and 6 626 with the
+    allocator in Rust: the one block this loop takes again and again
+    falls in step with that buffer. The place of a block, not the work of
+    the allocator.
+  - The groups of `bench/primitives`, 50 forms, median of 7 then 9:
+    `toUpperCase` −73.9 %, `padStart` −63.1 %, `join` −28.7 %, the text
+    of an integer −19.4 %, a template −10.7 %, `json.stringify` −14.8 %,
+    `json.encode` −8.8 %, `json.quote` of escaped texts −6.4 %, `trim`
+    −6.2 %; above by more than 2 %, two:
+    - `maps.get.i64` +19.3 and +20.4 % (2.955 → 3.557 ns), with the same
+      instructions (38.06 and 38.05 an element). Alone in a program:
+      9.89 → 9.84 cycles. The whole group program: 706.7 and 706.4
+      million cycles for 2000 rounds. The form spends its time in a
+      function of the runtime that this step did not touch
+      (`isc_hash_find`: 42.8 % of the cycles of the program before, 46.5
+      after), at the same alignment on 64 bytes in both programs. The
+      gap shrinks with the rounds (median of 5, +0.54 ns an element for
+      20 rounds, +0.47 for 200, +0.055 for 2000: 2.050 against 1.995 ns),
+      and the program mispredicts more branches for the same branches
+      (164 397 → 192 490 for 200 rounds, 581 243 → 713 118 for 2000; the
+      same misses of the caches and of the TLB): the lookups repeat the
+      same 4096 keys each round, a sequence the predictor of branches
+      learns, more slowly in the program of after, whose code is at
+      other addresses. Not more work, not the memory: the place of the
+      code in the predictor. Which branches, **not shown yet** (the
+      profile by samples of that event gave 10 samples) (TODO).
+    - `json.decode` +3.4 and +3.1 % (245.5 → 253.0 ns); alone, 782.49 →
+      801.92 cycles a record (+2.5 %) with fewer instructions (3530.55 →
+      3518.05). **Not shown yet** either (TODO); a count of the stalls
+      above by the difference of two runs is not a measure (it moves
+      from a run to the next: 3135 and 7359 a round for the maps where
+      one run sampled gives 35 637 and 36 032 samples).
+  - Tried for `json.decode`, whose time lost at the entry of the
+    processor goes from 12.5 to 14.9 % of its slots (the rest the same:
+    larger code in its loops): the free of a block called, not inlined
+    at each site. Not kept: `json.decode` 813.34 cycles a record against
+    800.17 inlined and 794.44 before (the three ranges overlap: 781 to
+    889, 704 to 810, 806 to 875), a block taken and given back 34.50
+    against 34.03, two texts joined 28.76 against 27.69; and six forms of
+    texts that free nothing (`startsWith`, `endsWith`, `slice`, ...)
+    moved by 4 to 7 % with it: the forms of 2 to 3 ns of these groups
+    move that much by the place of their code alone.
+  - The ten programs, cycles of the program on one thread, median of 9,
+    larger arguments: binary-trees −0.01 %, fannkuch-redux −0.45 %,
+    n-body +0.71 % (2.80 % fewer instructions; +0.17 % in a first
+    series), spectral-norm −0.04 %, mandelbrot +0.05 %, pidigits +0.19 %,
+    fasta +0.11 %, reverse-complement +0.39 %, k-nucleotide +0.08 %,
+    regex-redux −0.10 %.
+  - The start of a hello: 18.7 → 19.9 thousand cycles of the program,
+    162.7 → 186.7 thousand of the system, 20 → 21 page faults: +14 %.
+  - A cost not measured at D605: the time of a compilation. The module of
+    a hello goes from 248 to 1803 lines of IR (the functions of the
+    allocator, optimized by LLVM in every program), its build from 140.4
+    to 446.8 million instructions of the compiler (55 to 62 ms → 97 to 102
+    ms with the compiler built for development; the check alone 70.0 →
+    97.0 million, the prelude being larger), and the suite from 15.5 to
+    18.9 minutes. Tried: the rare paths of the allocator not optimized
+    (`optnone`): 314.9 million, and 1.4 instruction more a block where
+    blocks are taken and freed by many (95.00 → 96.39): not kept. What
+    is to be done is to compile these functions once and to keep in each
+    program its fast paths alone (TODO); the same holds for the functions
+    of texts that the prelude gained (a program that prints a float: 20.6
+    → 99.2 ms, measured by the agent of that work).
+  - Two errors of measure, found and redone. (a) A first series had the
+    programs of "after" written an hour before those of "before": a file
+    of `/tmp` (kept in memory) written long ago is mapped page by page (a
+    hello, the same bytes: 30 page faults and 27.9 thousand cycles
+    against 21 and 19.7 when just written), which made four of the ten
+    programs 1 % slower than they are. The two sets are written at the
+    same moment now. (b) Under the settings of the measures an ordinary
+    process cannot be pinned on a CPU of the benchmarks (`taskset`
+    refused): the forms run in a scope of the slice of the benchmarks,
+    as the groups do.
