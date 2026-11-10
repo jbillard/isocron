@@ -470,11 +470,11 @@ action main(args: string[k]): i32 {
 /// a constant. The interpreter's results; no `len` of them left in the IR.
 #[test]
 fn lengths_known_before_running() {
-    // (`n` read by `parseF64`: `parseI64` is a function of the prelude
-    // since D582, inlined, and reads the length of its text)
+    // (`n` read by `Number`: `parseI64` and `parseF64` are functions of
+    // the prelude, inlined, and read the length of their text)
     let src = "const ALU = \"GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGG\";
 action main(args: string[k]): i32 {
-    const n = i64(parseF64(args[0]));
+    const n = i64(Number(args[0]));
     const alu = bytes(ALU);
     const lit = [3, 1, 4, 1, 5];
     const ids = iota(7);

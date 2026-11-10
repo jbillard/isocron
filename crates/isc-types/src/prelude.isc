@@ -62,8 +62,11 @@ function tryParseI64(s: string): Result<i64, string> {
     return bad == 0u64 ? Ok(v) : Err($parseI64Message(s));
 }
 
+// `tryParseF64(s)` written in Isocron, as `tryParseI64`: the reading of
+// `parseF64`, its message in `Err` where `parseF64` panics.
 function tryParseF64(s: string): Result<f64, string> {
-    return resultOf(parseF64OrError(s));
+    const [v, bad] = $parseF64Value(s);
+    return bad == 0u64 ? Ok(v) : Err($parseF64Message(s));
 }
 
 action tryReadBytes(path: string): Result<u8[k], string> {
@@ -383,6 +386,947 @@ function $digitsHuge(b: u8[k], at: i64, n: i64, neg: boolean): [u64, u64] {
     const limit = (1u64 << 63u64) - (neg ? 0u64 : 1u64);
     const over = m > 19 || (m == 19 && v > limit) ? 1u64 : 0u64;
     return [v, bh | bm | bl | over];
+}
+
+// `parseF64(s)` written in Isocron (SPEC section 17, order 2): a decimal
+// number as Rust's `str::parse::<f64>` reads it (a sign; digits, at least
+// one, with at most one point; an exponent, `e` or `E`, its sign and its
+// digits; or `inf`, `infinity`, `nan` in any case after the sign), its
+// value the nearest float, a half to the even one; for any other text the
+// panic of the runtime's. From the shortest texts:
+// - a sign and 1 to 8 bytes, digits and a point, in one word (`$float8`,
+//   copied into its callers): the point found among all the bytes at once
+//   and taken out, the digits those of an integer (`$digitsWord`, as
+//   `parseI64`), divided by the power of ten of the digits after the
+//   point: both are exact floats, so their quotient is rounded once
+//   (W. Clinger); with an exponent, or a name: `$floatShort` (called),
+//   which reads so short a text a byte at a time from its word;
+// - a sign and 9 to 16 bytes, digits and a point, in two words
+//   (`$float16`, copied into its callers too);
+// - a sign and 17 to 20 bytes, the 16 or 17 digits of a float written in
+//   full, in three words (`$float20`, called): an integer `w` of up to 19
+//   digits, the number `w` 10^`q`; where they are not both exact floats,
+//   the 128 bits of the product by the power of ten (Eisel and Lemire,
+//   `$lemire`);
+// - 9 to 40 bytes with an exponent among the last 8 (`$expo8`, `$expo16`,
+//   `$expo20`: its last three bytes read where they are, `$exponentTop`),
+//   or 19 digits at most after zeros (`$scale40`);
+// - any other text, and those that are no number (`$floatAny`): the
+//   reading of Rust's library step by step, and for more than 19 digits
+//   that the product cannot round, the digits themselves compared with
+//   the middle of two floats (`$midOrder`).
+// One shape of text a function: a function that reads several keeps more
+// values at once than the registers hold, and each of its paths pays for
+// the others; a function calls another only as its last act. A word is
+// read at a place known before the `e` of the exponent is found wherever
+// there is one, so that its digits do not wait for it: the time of a
+// text is that of its longest chain of operations more than their
+// number. Each gives the texts it does not read to the next one; none
+// allocates.
+function parseF64(s: string): f64 {
+    const [v, bad] = $parseF64Value(s);
+    return bad == 0u64 ? v : $panic("parseF64: `", s, "` is not a valid number");
+}
+
+// The value of `s` and a word not 0 if it is no number (`parseF64`,
+// `tryParseF64`). The place of the word a constant on each path, as for
+// `parseI64`: a branch on the first byte, foreseen. The tests of the short
+// texts are inside one of the length: a longer text passes one test.
+function $parseF64Value(s: string): [f64, u64] {
+    const b = bytes(s);
+    const k = b.length;
+    const c = k > 0 ? b[0] : 0u8;
+    const neg = c == 45u8;
+    const signed = neg || c == 43u8;
+    if (k <= 9) {
+        if (k <= 8 && c >= 48u8 && c <= 57u8) {
+            return $float8(b, readWord(b, 0, k), k, false);
+        }
+        if (signed && k >= 2) {
+            return $float8(b, readWord(b, 1, k - 1), k - 1, neg);
+        }
+    }
+    const at = signed ? 1 : 0;
+    const n = k - at;
+    if (n <= 16) {
+        return n >= 9 ? $float16(b, at, n, neg) : !signed && n >= 1 ? $floatFirst(b) : $floatAny(b);
+    }
+    return $float20(b);
+}
+
+// The message of `tryParseF64`, made where a text is no number only
+// (`@cold`): the panic of `parseF64` writes the same in three parts.
+@cold
+function $parseF64Message(s: string): string {
+    return "parseF64: `" + s + "` is not a valid number";
+}
+
+// The bytes of `w` equal to the byte repeated in `cs`, their highest bit
+// set: the lowest of them exactly; above it, a byte that differs from
+// `cs` by its lowest bit alone may be set too (the borrow of the
+// subtraction), which the readers below then leave among the digits, where
+// it is no digit.
+function $bytesEqual(w: u64, cs: u64): u64 {
+    const d = w ^ cs;
+    return (d - 0x0101010101010101u64) & (d ^ 0xFFFFFFFFFFFFFFFFu64) & 0x8080808080808080u64;
+}
+
+// The place (0 to 7) of the highest byte set in `z` (not 0).
+function $topByte(z: u64): i64 {
+    return 7 - (leadingZeros(z) >> 3);
+}
+
+// `w` without its byte `p` (0 to 7): the bytes above it one place lower.
+function $dropByte(w: u64, p: i64): u64 {
+    const low = (1u64 << u64(p * 8)) - 1u64;
+    return (w & low) | ((w >> 8u64) & (low ^ 0xFFFFFFFFFFFFFFFFu64));
+}
+
+// `v` with the sign `neg`, by its bits: `-0` keeps its sign.
+function $signed(v: f64, neg: boolean): f64 {
+    return $bitsFloat($floatBits(v) ^ (neg ? 0x8000000000000000u64 : 0u64));
+}
+
+// 10^`i` as a float, `i` from 0 to 22: the powers of ten that are floats
+// without error (a table of 32: its index is inside whatever `i`).
+function $pow10F(i: i64): f64 {
+    const p = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+        1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    return p[i & 31];
+}
+
+// 10^`i` as an integer, `i` from 0 to 15 (a table of 16, as `$pow10F`).
+function $pow10W(i: i64): u64 {
+    const p = [1u64, 10u64, 100u64, 1000u64, 10000u64, 100000u64, 1000000u64, 10000000u64,
+        100000000u64, 1000000000u64, 10000000000u64, 100000000000u64, 1000000000000u64,
+        10000000000000u64, 100000000000000u64, 1000000000000000u64];
+    return p[i & 15];
+}
+
+// The float of the `n` bytes (1 to 8) of `w0`, the bytes of `b` after its
+// sign `neg`: digits and at most one point. The highest byte set by
+// `$bytesEqual` is the point (a second point, or a `/` set after one, stays
+// among the digits: no digits); without it the digits are an integer below
+// 10^8, and the float is that integer divided by the power of ten of the
+// digits after the point. Any other bytes: `$floatShort` reads them.
+// The division is written inside `$floatBits`: this function is copied
+// into its callers, and one that lets the operations of floats be
+// reordered (`@allowReassoc`) does not reorder what gives the bits of a
+// float; the sign is put on the bits (`-0`).
+function $float8(b: u8[k], w0: u64, n: i64, neg: boolean): [f64, u64] {
+    const sign = neg ? 0x8000000000000000u64 : 0u64;
+    const z = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    if (z == 0u64) {
+        const [m, bad] = $digitsWord(w0, n);
+        return bad == 0u64 ? [$bitsFloat($floatBits(f64(i64(m))) ^ sign), 0u64] : $floatShort(b, w0);
+    }
+    const p = $topByte(z);
+    const [m, bad] = $digitsWord($dropByte(w0, p), n - 1);
+    return bad == 0u64 && n > 1 ? [$bitsFloat($floatBits(f64(i64(m)) / $pow10F(n - 1 - p)) ^ sign), 0u64] : $floatShort(b, w0);
+}
+
+// The bytes (1 to 8) of `w0`, those of `b` after its sign, that `$float8`
+// did not read: digits, a point and an exponent, read a byte at a time
+// from the word (`$shortInt`), or a name (`$shortName`). So few digits
+// are sooner read one after the other than all at once: the eight of a
+// word wait for the place of the `e`, then for three products, where each
+// of these waits for the one before it alone; and a text of this kind is
+// short.
+@cold
+function $floatShort(b: u8[k], w0: u64): [f64, u64] {
+    return $shortInt(b, w0, 0u64, 0u64, w0);
+}
+
+// A text of 8 bytes at most, its bytes not yet read in `w` (the next one
+// the lowest; zeros after the last): the digits before the point, added
+// to `m`. What was read is counted in `st`: its lowest byte the bytes, the
+// next one the digits after the point, then the digits of the mantissa,
+// then those of the exponent; its bit 32 says an exponent below zero.
+// Each function calls itself for a digit (a loop) and hands the rest to
+// the next one; `w0` is the whole word, for a name.
+function $shortInt(b: u8[k], w: u64, m: u64, st: u64, w0: u64): [f64, u64] {
+    const d = (w & 0xFFu64) - 48u64;
+    if (d <= 9u64) {
+        return $shortInt(b, w >> 8u64, m * 10u64 + d, st + 0x10001u64, w0);
+    }
+    return (w & 0xFFu64) == 46u64 ? $shortFrac(b, w >> 8u64, m, st + 1u64, w0) : $shortE(b, w, m, st, w0);
+}
+
+// The digits after the point.
+function $shortFrac(b: u8[k], w: u64, m: u64, st: u64, w0: u64): [f64, u64] {
+    const d = (w & 0xFFu64) - 48u64;
+    return d <= 9u64 ? $shortFrac(b, w >> 8u64, m * 10u64 + d, st + 0x10101u64, w0) : $shortE(b, w, m, st, w0);
+}
+
+// The `e` and the sign of the exponent; any other byte here: a name, or
+// no number.
+function $shortE(b: u8[k], w: u64, m: u64, st: u64, w0: u64): [f64, u64] {
+    if (((w & 0xFFu64) | 0x20u64) != 0x65u64) {
+        return $shortName(b, w0);
+    }
+    const s = (w >> 8u64) & 0xFFu64;
+    const signed = s == 45u64 || s == 43u64;
+    return $shortExp(b, signed ? w >> 16u64 : w >> 8u64, m, st + (signed ? 2u64 : 1u64) + (s == 45u64 ? 0x100000000u64 : 0u64), 0u64);
+}
+
+// The float that the bytes of `w0` name, those of `b` after its sign
+// (`$named`).
+function $shortName(b: u8[k], w0: u64): [f64, u64] {
+    const c = k > 0 ? b[0] : 0u8;
+    const neg = c == 45u8;
+    return $named(w0, k - (neg || c == 43u8 ? 1 : 0), neg);
+}
+
+// The digits of the exponent, added to `ex`.
+function $shortExp(b: u8[k], w: u64, m: u64, st: u64, ex: u64): [f64, u64] {
+    const d = (w & 0xFFu64) - 48u64;
+    return d <= 9u64 ? $shortExp(b, w >> 8u64, m, st + 0x1000001u64, ex * 10u64 + d) : $shortEnd(b, w, m, st, ex);
+}
+
+// The end: every byte of the text read (none left in `w`, as many read
+// as the text has after its sign), a digit at least in the mantissa and
+// in the exponent; then the float of `m` and of the exponent
+// (`$floatScaled`), with the sign of the text.
+function $shortEnd(b: u8[k], w: u64, m: u64, st: u64, ex: u64): [f64, u64] {
+    const c = k > 0 ? b[0] : 0u8;
+    const neg = c == 45u8;
+    const n = k - (neg || c == 43u8 ? 1 : 0);
+    const e = (st >> 32u64) != 0u64 ? 0 - i64(ex) : i64(ex);
+    const whole = w == 0u64 && i64(st & 0xFFu64) == n && ((st >> 16u64) & 0xFFu64) != 0u64 && ((st >> 24u64) & 0xFFu64) != 0u64;
+    return whole ? $floatScaled(b, m, e - i64((st >> 8u64) & 0xFFu64), neg) : $floatAny(b);
+}
+
+// The float that the `n` bytes of `w` (zeros above them) name, with the
+// sign `neg`: `inf`, `infinity` or `nan` in any case (the two cases of a
+// letter differ by one bit, cleared); a word not 0 for any other bytes.
+function $named(w: u64, n: i64, neg: boolean): [f64, u64] {
+    const u = w & 0xDFDFDFDFDFDFDFDFu64;
+    const bits = (n == 3 && u == 0x464E49u64) || (n == 8 && u == 0x5954494E49464E49u64) ? 0x7FF0000000000000u64
+        : n == 3 && u == 0x4E414Eu64 ? 0x7FF8000000000000u64
+        : 0u64;
+    return [$bitsFloat(bits | (neg ? 0x8000000000000000u64 : 0u64)), bits == 0u64 ? 1u64 : 0u64];
+}
+
+function $noFloat(): [f64, u64] {
+    return [0.0, 1u64];
+}
+
+// A text of 1 to 8 bytes without a sign whose first byte is no digit
+// (`$float8` was not given it): a letter first, a name or no number
+// (`$named`); else a point first, read as the others (`$float8`).
+@cold
+function $floatFirst(b: u8[k]): [f64, u64] {
+    const w0 = readWord(b, 0, k);
+    return b[0] > 57u8 ? $named(w0, k, false) : $float8(b, w0, k, false);
+}
+
+// The float of the `n` bytes (9 to 16) of `b` from `at`, after its sign
+// `neg`: its first 8 bytes and its last 8 in two words, which overlap.
+// Digits without a point: an integer below 10^16, its first digits times
+// 10^8 and its last 8, the float the nearest to it (a conversion rounds
+// once). With a point (`$digitsPoint`), at most 15 digits: an integer and
+// a power of ten that are exact floats, divided. An `e` among the last 8
+// bytes: an exponent, the bytes before it in one word or two (`$expo8`,
+// `$expo16`, called). Any other text: `$floatAny`. Copied into its
+// callers, as `$float8`: its division inside `$floatBits`.
+function $float16(b: u8[k], at: i64, n: i64, neg: boolean): [f64, u64] {
+    const sign = neg ? 0x8000000000000000u64 : 0u64;
+    const w0 = readWord(b, at, 8);
+    const t = readWord(b, at + n - 8, 8);
+    const ez = $bytesEqual(t | 0x2020202020202020u64, 0x6565656565656565u64);
+    if (ez != 0u64) {
+        const j = $topByte(ez);
+        return n + j <= 16 ? $expo8(b, at, n - 8 + j, j) : $expo16(b, at, n - 8 + j, j);
+    }
+    const w1 = t >> u64((16 - n) * 8);
+    const dots = 0x2E2E2E2E2E2E2E2Eu64;
+    const z0 = $bytesEqual(w0, dots);
+    const z1 = $bytesEqual(w1, dots);
+    if ((z0 | z1) == 0u64) {
+        const [h, bh] = $digitsWord(w0, n - 8);
+        const [l, bl] = $digitsWord(t, 8);
+        return (bh | bl) == 0u64 ? [$bitsFloat($floatBits(f64(i64(h * 100000000u64 + l))) ^ sign), 0u64] : $floatAny(b);
+    }
+    const [w, frac, bad] = $digitsPoint(w0, w1, z0, z1, n);
+    return bad == 0u64 ? [$bitsFloat($floatBits(f64(i64(w)) / $pow10F(frac)) ^ sign), 0u64] : $floatAny(b);
+}
+
+// The digits of `n` bytes (9 to 16) in two words, one of which has a
+// point (`z0`, `z1`: the bytes set of each): the point taken out, the
+// first 8 digits in a word and the others (0 to 7) in the next; [their
+// integer, the number of digits after the point, a word not 0 if a byte
+// left is no digit].
+function $digitsPoint(w0: u64, w1: u64, z0: u64, z1: u64, n: i64): [u64, i64, u64] {
+    const first = z0 != 0u64;
+    const p = $topByte(first ? z0 : z1);
+    const y0 = first ? $dropByte(w0, p) | (w1 << 56u64) : w0;
+    const y1 = first ? w1 >> 8u64 : $dropByte(w1, p);
+    const [h, bh] = $digitsWord(y0, 8);
+    const [l, bl] = $digitsWord(y1, n - 9);
+    return [h * $pow10W(n - 9) + l, n - (first ? 1 : 9) - p, bh | bl];
+}
+
+// A text of 17 bytes or more after its sign. An `e` among its last 8
+// bytes is sought first, whatever its length (a test of the length would
+// often be foreseen wrong where the exponents of the texts differ in their
+// number of digits): with one, an exponent, the bytes before it the digits
+// and the point, up to 20 bytes in one, two or three words (`$expo8`,
+// `$expo16Far`, `$expo20`, or `$expo20Later`). Without, 17 to 20 bytes are
+// digits and at most one point (the 16 or 17 digits that tell a float
+// from the others): three words (`$mantissa20`), at most 19 digits, an
+// integer `w`. Without a digit after the point, the float nearest to `w`
+// is its conversion, which rounds once; up to 2^53, `w` is an exact float,
+// divided by the power of ten of the digits after the point; above, the
+// product of `$lemire`. 21 to 40 bytes: 19 digits at most after zeros
+// (`$scale40`). Any other text: `$floatAny`.
+@cold
+function $float20(b: u8[k]): [f64, u64] {
+    const c = k > 0 ? b[0] : 0u8;
+    const neg = c == 45u8;
+    const at = neg || c == 43u8 ? 1 : 0;
+    const n = k - at;
+    if (n < 17 || n > 40) {
+        return $floatAny(b);
+    }
+    const ez = $bytesEqual(readWord(b, at + n - 8, 8) | 0x2020202020202020u64, 0x6565656565656565u64);
+    if (ez != 0u64) {
+        const j = $topByte(ez);
+        const mr = n - 8 + j;
+        return mr <= 16 ? $expo16Far(b, at, mr, j) : mr <= 20 ? (n <= 24 ? $expo20(b, at, mr, j) : $expo20Later(b, at, mr, j)) : $floatAny(b);
+    }
+    if (n > 20) {
+        return $scale40(b, at == 1);
+    }
+    const [w, frac, bad] = $mantissa20(b, at, readWord(b, at, 8), n);
+    if (bad != 0u64) {
+        return $floatAny(b);
+    }
+    if (frac == 0) {
+        return [$signed(f64(w), neg), 0u64];
+    }
+    if (w <= 9007199254740992u64) {
+        return [$signed(f64(i64(w)) / $pow10F(frac), neg), 0u64];
+    }
+    const r = $lemire(w, 0 - frac, true);
+    return r == 0xFFFFFFFFFFFFFFFFu64 ? $floatAny(b) : [$bitsFloat(r | (neg ? 0x8000000000000000u64 : 0u64)), 0u64];
+}
+
+// The exponent of a text of 8 bytes or more whose `e` is the byte `j` of
+// its last 8 bytes (`$exponentTop`).
+function $exponentAt(b: u8[k], j: i64): [i64, u64] {
+    return $exponentTop(readWord(b, k - 8, 8), j);
+}
+
+// The exponent that ends the word `t`, after its `e` at the byte `j`: a
+// sign, then one to three digits up to the last byte. The last three
+// bytes are read where they are, whatever `j`: the value waits for `j`
+// only to choose among one, two or three of them, so that it is known
+// early (the division that follows waits for it). That the bytes are
+// digits is tested apart, at once: those before them made `0`s. [Its
+// value, a word not 0 if the bytes are not that: no exponent, or one of
+// more digits, which `$floatAny` reads]. The amount of a shift is taken
+// modulo 64: for no digit, the tests of `width` answer.
+function $exponentTop(t: u64, j: i64): [i64, u64] {
+    const zeros = 0x3030303030303030u64;
+    const first = (t >> u64((j + 1) * 8)) & 0xFFu64;
+    const eneg = first == 45u64;
+    const width = 7 - j - (eneg || first == 43u64 ? 1 : 0);
+    const d3 = (t >> 56u64) - 48u64;
+    const d2 = ((t >> 48u64) & 0xFFu64) - 48u64;
+    const d1 = ((t >> 40u64) & 0xFFu64) - 48u64;
+    const v = width == 1 ? d3 : width == 2 ? d2 * 10u64 + d3 : (d1 * 10u64 + d2) * 10u64 + d3;
+    const low = u64((8 - width) * 8);
+    const a = ((t >> low) << low) | (zeros >> u64(width * 8));
+    const bad = ((a + 0x4646464646464646u64) | (a - zeros)) & 0x8080808080808080u64;
+    return [eneg ? 0 - i64(v) : i64(v), width < 1 || width > 3 ? 1u64 : bad];
+}
+
+// The float of a text with an exponent: the `mr` bytes (1 to 8) of `b`
+// from `at` are its digits and its point, the `e` of its exponent the byte
+// `j` of its last 8 bytes; 9 bytes or more follow `at` (8 at least are
+// asked here, once, for the reading of the last 8). The digits first,
+// then the exponent and the sign: each needs few values at once.
+@cold
+function $expo8(b: u8[k], at: i64, mr: i64, j: i64): [f64, u64] {
+    const [w, frac, bad] = $mantissa8($lowBytes(readWord(b, at, 8), mr), mr);
+    const [ex, ebad] = $exponentAt(b, j);
+    return (bad | ebad) != 0u64 ? $floatAny(b) : $floatScaled(b, w, ex - frac, b[0] == 45u8);
+}
+
+// The same for 9 to 16 bytes of digits in a text of 16 bytes at most
+// after its sign, with the point among the first 8, where most numbers
+// have it: taken out, the first 8 digits in a word and the others (`c`, 0
+// to 7) in the next. Both words are read at places that do not wait for
+// `j`, the second in the last 8 bytes of the text: the first 8 digits are
+// known before the `e` is found, and the others need `j` only for the
+// bytes made `0`s before them. The point elsewhere: `$expo16Later`.
+// Compiled once, the function knows nothing of its callers (D611): what
+// they knew of the place after the sign (0 or 1) and of the length is
+// tested here, once, and the three tests where the words are read go.
+@cold
+function $expo16(b: u8[k], at: i64, mr: i64, j: i64): [f64, u64] {
+    if (at < 0 || at > 1 || k < 9) {
+        return $floatAny(b);
+    }
+    const w0 = readWord(b, at, 8);
+    const z0 = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    if (z0 == 0u64) {
+        return $expo16Later(b, at, mr, j);
+    }
+    return $expoPoint(b, w0, $topByte(z0), readWord(b, k - 8, 8) >> u64((16 - (k - at)) * 8), mr, j);
+}
+
+// The same in a longer text (17 bytes or more after its sign): the second
+// word is the 8 bytes after the first.
+@cold
+function $expo16Far(b: u8[k], at: i64, mr: i64, j: i64): [f64, u64] {
+    const w0 = readWord(b, at, 8);
+    const z0 = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    if (z0 == 0u64) {
+        return $expo16Later(b, at, mr, j);
+    }
+    return $expoPoint(b, w0, $topByte(z0), readWord(b, at + 8, 8), mr, j);
+}
+
+// The float of the two words of `$expo16`: `w0`, the point at its byte
+// `p`, and `tm`, the 8 bytes after it, whose first `mr - 8` end the digits.
+function $expoPoint(b: u8[k], w0: u64, p: i64, tm: u64, mr: i64, j: i64): [f64, u64] {
+    const c = mr - 9;
+    const [h, bh] = $digitsWord($dropByte(w0, p) | (tm << 56u64), 8);
+    const [l, bl] = $digitsWord(((tm & 0xFFFFFFFFFFFFFF00u64) << u64((7 - c) * 8)) | (0x3030303030303030u64 >> u64(c * 8)), 8);
+    const [ex, ebad] = $exponentAt(b, j);
+    return (bh | bl | ebad) != 0u64 ? $floatAny(b) : $floatScaled(b, h * $pow10W(c) + l, ex - (mr - 1 - p), b[0] == 45u8);
+}
+
+// The same for 9 to 16 bytes of digits wherever the point is, or without.
+@cold
+function $expo16Later(b: u8[k], at: i64, mr: i64, j: i64): [f64, u64] {
+    const [w, frac, bad] = $mantissa16(b, at, readWord(b, at, 8), mr);
+    const [ex, ebad] = $exponentAt(b, j);
+    return (bad | ebad) != 0u64 ? $floatAny(b) : $floatScaled(b, w, ex - frac, b[0] == 45u8);
+}
+
+// The same for 17 to 20 bytes of digits (16 digits or more, seldom an
+// exact float) in a text of 24 bytes at most after its sign, with the
+// point among the first 8: three words, the third in the last 8 bytes of
+// the text; as `$expo16`, none read at a place that waits for `j`. The
+// digits after the first 16 (`c`, 0 to 3) are three bytes, those that are
+// no digit of the mantissa made zeros: read as three digits, the integer
+// is then 10^(3 - `c`) times that of the text, and its power of ten that
+// much lower (19 digits: a word holds it). The point elsewhere:
+// `$expo20Later`.
+@cold
+function $expo20(b: u8[k], at: i64, mr: i64, j: i64): [f64, u64] {
+    const w0 = readWord(b, at, 8);
+    const z0 = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    if (z0 == 0u64) {
+        return $expo20Later(b, at, mr, j);
+    }
+    const p = $topByte(z0);
+    const w1 = readWord(b, at + 8, 8);
+    const tm = readWord(b, k - 8, 8) >> u64((24 - (k - at)) * 8);
+    const c = mr - 17;
+    const [h, bh] = $digitsWord($dropByte(w0, p) | (w1 << 56u64), 8);
+    const [m, bm] = $digitsWord((w1 >> 8u64) | (tm << 56u64), 8);
+    const y = ((tm >> 8u64) ^ 0x303030u64) & ((1u64 << u64(c * 8)) - 1u64);
+    const bl = (((y & 0x7F7F7Fu64) + 0x767676u64) | y) & 0x808080u64;
+    const l = ((y & 0xFFu64) * 10u64 + ((y >> 8u64) & 0xFFu64)) * 10u64 + (y >> 16u64);
+    const [ex, ebad] = $exponentAt(b, j);
+    return (bh | bm | bl | ebad) != 0u64 ? $floatAny(b) : $decimalFloat(b, h * 100000000000u64 + (m * 1000u64 + l), ex - (mr - 1 - p) - (3 - c), b[0] == 45u8);
+}
+
+// The same for 17 to 20 bytes of digits wherever the point is, or without,
+// in a text of any length.
+@cold
+function $expo20Later(b: u8[k], at: i64, mr: i64, j: i64): [f64, u64] {
+    const [w, frac, bad] = $mantissa20(b, at, readWord(b, at, 8), mr);
+    const [ex, ebad] = $exponentAt(b, j);
+    return (bad | ebad) != 0u64 ? $floatAny(b) : $decimalFloat(b, w, ex - frac, b[0] == 45u8);
+}
+
+// The float of the 21 to 40 bytes of `b` after its sign (`signed`: it has
+// one), digits and a point, 19 digits at most after zeros. Compiled once,
+// it knows nothing of its callers (D611): the length is tested once, here.
+@cold
+function $scale40(b: u8[k], signed: boolean): [f64, u64] {
+    const at = signed ? 1 : 0;
+    const n = k - at;
+    if (n < 21 || n > 40) {
+        return $floatAny(b);
+    }
+    const [w, frac, bad] = $mantissa40(b, at, n);
+    return bad != 0u64 ? $floatAny(b) : $decimalFloat(b, w, 0 - frac, b[0] == 45u8);
+}
+
+// The digits and the point of `mr` bytes (up to 8, in the word `w0`,
+// zeros above them): [their integer, the number of digits after the point,
+// a word not 0 if they are not digits and at most one point, or no digit].
+function $mantissa8(w0: u64, mr: i64): [u64, i64, u64] {
+    const z = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    if (z == 0u64) {
+        const [m, bad] = $digitsWord(w0, mr);
+        return [m, 0, mr < 1 ? 1u64 : bad];
+    }
+    const p = $topByte(z);
+    const [m, bad] = $digitsWord($dropByte(w0, p), mr - 1);
+    return [m, mr - 1 - p, mr < 2 ? 1u64 : bad];
+}
+
+// The same for 9 to 16 bytes of `b` from `at`, `w0` the first 8.
+function $mantissa16(b: u8[k], at: i64, w0: u64, mr: i64): [u64, i64, u64] {
+    const t = readWord(b, at + mr - 8, 8);
+    const w1 = t >> u64((16 - mr) * 8);
+    const dots = 0x2E2E2E2E2E2E2E2Eu64;
+    const z0 = $bytesEqual(w0, dots);
+    const z1 = $bytesEqual(w1, dots);
+    if ((z0 | z1) != 0u64) {
+        return $digitsPoint(w0, w1, z0, z1, mr);
+    }
+    const [h, bh] = $digitsWord(w0, mr - 8);
+    const [l, bl] = $digitsWord(t, 8);
+    return [h * 100000000u64 + l, 0, bh | bl];
+}
+
+// The same for 17 to 20 bytes, at most 19 digits (20 digits are more than
+// a word holds: no integer here): three words, the point taken out of the
+// one that has it, the first 16 digits in two words, the others (0 to 3)
+// in the third.
+function $mantissa20(b: u8[k], at: i64, w0: u64, mr: i64): [u64, i64, u64] {
+    const w1 = readWord(b, at + 8, 8);
+    const w2 = readWord(b, at + mr - 8, 8) >> u64((24 - mr) * 8);
+    const z0 = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    const [y0, y1, y2, nd, frac] = z0 != 0u64 ? $pointOut0(w0, w1, w2, $topByte(z0), mr) : $pointLater(w0, w1, w2, mr);
+    const [h, bh] = $digitsWord(y0, 8);
+    const [m, bm] = $digitsWord(y1, 8);
+    const [l, bl] = $digitsWord(y2, nd - 16);
+    return [h * $pow10W(nd - 8) + (m * $pow10W(nd - 16) + l), frac, nd > 19 ? 1u64 : bh | bm | bl];
+}
+
+// The point at the byte `p` of the first, the second or the third of three
+// words of `mr` bytes taken out: [the digits in three words, their number,
+// the number of those after the point]; and the same without a point.
+function $pointOut0(w0: u64, w1: u64, w2: u64, p: i64, mr: i64): [u64, u64, u64, i64, i64] {
+    return [$dropByte(w0, p) | (w1 << 56u64), (w1 >> 8u64) | (w2 << 56u64), w2 >> 8u64, mr - 1, mr - 1 - p];
+}
+
+function $pointOut1(w0: u64, w1: u64, w2: u64, p: i64, mr: i64): [u64, u64, u64, i64, i64] {
+    return [w0, $dropByte(w1, p) | (w2 << 56u64), w2 >> 8u64, mr - 1, mr - 9 - p];
+}
+
+function $pointOut2(w0: u64, w1: u64, w2: u64, p: i64, mr: i64): [u64, u64, u64, i64, i64] {
+    return [w0, w1, $dropByte(w2, p), mr - 1, mr - 17 - p];
+}
+
+function $pointOutNone(w0: u64, w1: u64, w2: u64, mr: i64): [u64, u64, u64, i64, i64] {
+    return [w0, w1, w2, mr, 0];
+}
+
+// The same where the first word has no point: sought in the second, then
+// in the third (the first is where most numbers have it).
+function $pointLater(w0: u64, w1: u64, w2: u64, mr: i64): [u64, u64, u64, i64, i64] {
+    const dots = 0x2E2E2E2E2E2E2E2Eu64;
+    const z1 = $bytesEqual(w1, dots);
+    if (z1 != 0u64) {
+        return $pointOut1(w0, w1, w2, $topByte(z1), mr);
+    }
+    const z2 = $bytesEqual(w2, dots);
+    return z2 != 0u64 ? $pointOut2(w0, w1, w2, $topByte(z2), mr) : $pointOutNone(w0, w1, w2, mr);
+}
+
+// The first `c` bytes of `w`: all of them from 8 on, none below 1.
+function $lowBytes(w: u64, c: i64): u64 {
+    return c >= 8 ? w : c <= 0 ? 0u64 : w & ((1u64 << u64(c * 8)) - 1u64);
+}
+
+function $noDigits(): [u64, i64, u64] {
+    return [0u64, 0, 1u64];
+}
+
+// The digits and the point of 21 to 40 bytes of `b` from `at`: a number
+// written without exponent after zeros (`0.000…`): the point in its first
+// 8 bytes and before its last 19 bytes, every other byte before those 19
+// a `0`. Its integer is that of its last 19 bytes, digits (`$digitsRun`);
+// the bytes before them: the first word without its point, then up to two
+// words more (the second reaches the last 19 bytes when there are fewer
+// than 16 bytes after the first word: only its bytes before them count).
+function $mantissa40(b: u8[k], at: i64, mr: i64): [u64, i64, u64] {
+    const zeros = 0x3030303030303030u64;
+    const before = mr - 19;
+    const w0 = readWord(b, at, 8);
+    const z0 = $bytesEqual(w0, 0x2E2E2E2E2E2E2E2Eu64);
+    const p = $topByte(z0);
+    // the first word: its point taken out, then zeros, 7 of them or those
+    // before the last 19 bytes
+    const first = $lowBytes($dropByte(w0, p) ^ (zeros >> 8u64), before - 1);
+    if (z0 == 0u64 || p >= before || first != 0u64) {
+        return $noDigits();
+    }
+    const second = before > 8 ? $lowBytes(readWord(b, at + 8, 8) ^ zeros, before - 8) : 0u64;
+    const third = before > 16 ? $lowBytes(readWord(b, at + 16, 8) ^ zeros, before - 16) : 0u64;
+    const [h, bh] = $digits8(b, at + before, 3);
+    const [m, bm] = $digits8(b, at + before + 3, 8);
+    const [l, bl] = $digits8(b, at + before + 11, 8);
+    return [(h * 100000000u64 + m) * 100000000u64 + l, mr - 1 - p, second | third | bh | bm | bl];
+}
+
+// The float nearest to `w` 10^`q`, with the sign `neg`: where `w` (up to
+// 2^53) and the power of ten (up to 10^22) are floats without error, their
+// quotient or their product, rounded once; else `$floatOf` (called).
+function $floatScaled(b: u8[k], w: u64, q: i64, neg: boolean): [f64, u64] {
+    if (w <= 9007199254740992u64 && q >= -22 && q <= 22) {
+        const x = f64(i64(w));
+        return [$signed(q < 0 ? x / $pow10F(0 - q) : x * $pow10F(q), neg), 0u64];
+    }
+    return $floatOf(b, w, q, neg);
+}
+
+// The same, the product of `$lemire` here too where it is needed; where
+// it cannot tell, `$floatAny` reads the text `b` again.
+function $decimalFloat(b: u8[k], w: u64, q: i64, neg: boolean): [f64, u64] {
+    if (w <= 9007199254740992u64 && q >= -22 && q <= 22) {
+        const x = f64(i64(w));
+        return [$signed(q < 0 ? x / $pow10F(0 - q) : x * $pow10F(q), neg), 0u64];
+    }
+    return $productFloat(b, w, q, neg);
+}
+
+// The float nearest to `w` 10^`q` by the product of `$lemire`; where it
+// cannot tell, `$floatAny` reads the text `b` again.
+function $productFloat(b: u8[k], w: u64, q: i64, neg: boolean): [f64, u64] {
+    const r = $decimalBits(w, q, true);
+    return r == 0xFFFFFFFFFFFFFFFFu64 ? $floatAny(b) : [$bitsFloat(r | (neg ? 0x8000000000000000u64 : 0u64)), 0u64];
+}
+
+// The same, called: for the numbers that seldom need the product.
+@cold
+function $floatOf(b: u8[k], w: u64, q: i64, neg: boolean): [f64, u64] {
+    return $productFloat(b, w, q, neg);
+}
+
+// The float that the bytes of `b` from `at` name, with the sign `neg`
+// (`$named`); a word not 0 if they name none.
+function $floatNamed(b: u8[k], at: i64, neg: boolean): [f64, u64] {
+    const n = k - at;
+    return n == 3 || n == 8 ? $named(readWord(b, at, n), n, neg) : $noFloat();
+}
+
+// The bits of the float nearest to `w` 10^`q`: zero and the infinity
+// decided by `q` alone, as Rust's `compute_float`, else `$lemire`.
+function $decimalBits(w: u64, q: i64, strict: boolean): u64 {
+    return w == 0u64 || q < -342 ? 0u64 : q > 308 ? 0x7FF0000000000000u64 : $lemire(w, q, strict);
+}
+
+// The same, called: for `$floatAny`, which asks it up to three times. One
+// function for each value of `strict`: compiled once, a function knows
+// nothing of its callers (D611), and LLVM made one for the callers that
+// give `true` when it saw them (17 instructions a text of 25 digits).
+@cold
+function $decimalBitsOf(w: u64, q: i64): u64 {
+    return $decimalBits(w, q, true);
+}
+
+@cold
+function $decimalBitsLoose(w: u64, q: i64): u64 {
+    return $decimalBits(w, q, false);
+}
+
+// The bits of the float nearest to `w` 10^`q` (`w` not 0, `q` from -342
+// to 308) by the algorithm of Eisel and Lemire (D. Lemire, "Number Parsing
+// at a Gigabyte per Second"), as Rust's library has it (`compute_float`):
+// `w` from its highest bit times the high 64 bits of the 128 of 5^`q`
+// (`$pow5T`), times the low 64 too when the 9 bits after the 55 kept are
+// all ones; the bits kept rounded to 53 (fewer for a subnormal float), a
+// half to the even float where the product is exact. All ones (the bits of
+// no number that this function gives) where 128 bits cannot tell and
+// `strict`; else the float they give, which may then be the one next to
+// the nearest.
+function $lemire(w: u64, q: i64, strict: boolean): u64 {
+    const lz = leadingZeros(w);
+    const wn = w << u64(lz);
+    const [t1, t0] = $pow5T(q);
+    const hi1 = $mulHigh(wn, t1);
+    const lo1 = wn * t1;
+    const second = (hi1 & 0x1FFu64) == 0x1FFu64 ? $mulHigh(wn, t0) : 0u64;
+    const lo = lo1 + second;
+    const hi = hi1 + (second > lo ? 1u64 : 0u64);
+    if (strict && lo == 0xFFFFFFFFFFFFFFFFu64 && (q < -27 || q > 55)) {
+        return 0xFFFFFFFFFFFFFFFFu64;
+    }
+    const upper = i64(hi >> 63u64);
+    const shift = u64(upper + 9);
+    const m = hi >> shift;
+    const p2 = ((q * 217706) >> 16) + 1086 + upper - lz;
+    if (p2 <= 0) {
+        // a subnormal float; zero from 64 bits below the least exponent
+        const s = m >> u64(1 - p2);
+        return p2 <= -63 ? 0u64 : (s + (s & 1u64)) >> 1u64;
+    }
+    // a half exactly (the product has no bit below those kept): not up
+    const tie = lo <= 1u64 && q >= -4 && q <= 23 && (m & 3u64) == 1u64 && (m << shift) == hi;
+    const m1 = tie ? m - 1u64 : m;
+    const m2 = (m1 + (m1 & 1u64)) >> 1u64;
+    // the 53 bits all ones rounded up: the next power of two
+    const carry = m2 >= 0x20000000000000u64;
+    const p3 = p2 + (carry ? 1 : 0);
+    return p3 >= 2047 ? 0x7FF0000000000000u64 : (carry ? 0u64 : m2 & 0xFFFFFFFFFFFFFu64) | (u64(p3) << 52u64);
+}
+
+// The index of the first byte of `b` from `at` that is no digit (its
+// length if none).
+function $digitsEnd(b: u8[k], at: i64): i64 {
+    const d = findIndex(b.slice(at, k), (c) => c < 48u8 || c > 57u8);
+    return d < 0 ? k : at + d;
+}
+
+// The number of `0` at the start of the bytes `a` to `z` of `b`.
+function $zerosFrom(b: u8[k], a: i64, z: i64): i64 {
+    const d = findIndex(b.slice(a, z), (c) => c != 48u8);
+    return d < 0 ? z - a : d;
+}
+
+// The integer of the `n` digits (0 to 19) of `b` from `o`, 8 a word.
+function $digitsRun(b: u8[k], o: i64, n: i64): u64 {
+    if (n <= 8) {
+        const [v, x] = n >= 1 ? $digits8(b, o, n) : $noDigit();
+        return v;
+    }
+    const [h, bh] = $digits8(b, o, 8);
+    if (n <= 16) {
+        const [l, bl] = $digits8(b, o + 8, n - 8);
+        return h * $pow10W(n - 8) + l;
+    }
+    const [m, bm] = $digits8(b, o + 8, 8);
+    const [l, bl] = $digits8(b, o + 16, n - 16);
+    return (h * 100000000u64 + m) * $pow10W(n - 16) + l;
+}
+
+function $noDigit(): [u64, u64] {
+    return [0u64, 0u64];
+}
+
+// The index in the text of its digit `i` (from 0), the digits starting at
+// `at` and the point, if any, at `i1`.
+function $digitAt(at: i64, i1: i64, i: i64): i64 {
+    return at + i >= i1 ? at + i + 1 : at + i;
+}
+
+// Any text, as Rust's library reads it (`dec2flt`): a sign; digits, a
+// point, digits (one digit at least); `e` or `E`, a sign, digits (one at
+// least) up to the end; without a digit before the exponent, a name. The
+// exponent stops growing from 65536 on, as Rust's (the digits after are
+// read and not counted). The number is then `w` 10^`q`, `w` the digits
+// from the first that is not zero, the first 19 of them when there are
+// more: in that case the float is that of `w` if `w + 1` has the same one,
+// since the number is between them; else it is that of `w` or the one
+// after (the two are less than a float apart), and the digits themselves
+// are compared with their middle (`$midOrder`). Where `$lemire` cannot
+// tell, the float is sought from the one it gives (`$settle`).
+@cold
+function $floatAny(b: u8[k]): [f64, u64] {
+    const c = k > 0 ? b[0] : 0u8;
+    const neg = c == 45u8;
+    const at = neg || c == 43u8 ? 1 : 0;
+    const sign = neg ? 0x8000000000000000u64 : 0u64;
+    const i1 = $digitsEnd(b, at);
+    const dot = i1 < k && b[i1] == 46u8;
+    const i2 = dot ? $digitsEnd(b, i1 + 1) : i1;
+    const l1 = i1 - at;
+    const nd = i2 - at - (dot ? 1 : 0);
+    if (nd == 0) {
+        return $floatNamed(b, at, neg);
+    }
+    const hasE = i2 < k && (b[i2] | 32u8) == 101u8;
+    const c2 = hasE && i2 + 1 < k ? b[i2 + 1] : 0u8;
+    const eneg = c2 == 45u8;
+    const j = i2 + (hasE ? 1 : 0) + (eneg || c2 == 43u8 ? 1 : 0);
+    const j2 = hasE ? $digitsEnd(b, j) : i2;
+    if (j2 != k || (hasE && j2 == j)) {
+        return $noFloat();
+    }
+    const ev = fold(b.slice(j, j2), 0, (e, d) => e < 65536 ? e * 10 + i64(d) - 48 : e);
+    const ex = eneg ? 0 - ev : ev;
+    // the zeros before the first other digit are not counted: those before
+    // the point, and those after it when there is nothing else before
+    const z1 = $zerosFrom(b, at, i1);
+    const lead = z1 == l1 && dot ? l1 + $zerosFrom(b, i1 + 1, i2) : z1;
+    const sig = nd - lead;
+    const many = sig > 19;
+    // the digits read (19 at most): those before the point, those after it
+    const count = many ? 19 : sig;
+    const n1 = lead >= l1 ? 0 : l1 - lead < count ? l1 - lead : count;
+    const n2 = count - n1;
+    const w = $digitsRun(b, at + lead, n1) * $pow10(n2) + $digitsRun(b, i1 + 1 + (lead > l1 ? lead - l1 : 0), n2);
+    const q = l1 - (many ? lead + 19 : nd) + ex;
+    const r = $decimalBitsOf(w, q);
+    const r1 = many ? $decimalBitsOf(w + 1u64, q) : r;
+    if (r == 0xFFFFFFFFFFFFFFFFu64) {
+        return [$bitsFloat($settle(b, at, i1, i2, nd, lead, l1 + ex, $decimalBitsLoose(w, q)) | sign), 0u64];
+    }
+    if (r == r1 || r >= 0x7FF0000000000000u64) {
+        return [$bitsFloat(r | sign), 0u64];
+    }
+    const o = $midOrder(b, at, i1, i2, nd, lead, l1 + ex, r);
+    return [$bitsFloat((o > 0 || (o == 0 && (r & 1u64) == 1u64) ? r + 1u64 : r) | sign), 0u64];
+}
+
+// The exact comparison of a decimal with the middle of two floats, where
+// the product of 128 bits cannot round: in scalars, without memory. The
+// decimal is the `nd` digits of `b` (`$digitAt`: from `at`, the point at
+// `i1`, their end at `i2`), the first `lead` of them zeros, `p` of them
+// before the point once the exponent is counted (`p` below 0, or above
+// `nd`: zeros there). The integers of the comparison are registers of
+// 1088 bits, 17 words, the lowest first.
+type $Wide = [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64];
+
+// One word of a product: `w` times `m` plus `c`; [its low word, the carry].
+function $wideStep(w: u64, m: u64, c: u64): [u64, u64] {
+    const lo = w * m;
+    const s = lo + c;
+    return [s, $mulHigh(w, m) + (s < lo ? 1u64 : 0u64)];
+}
+
+// `x` times `m` plus `c`: [its 17 low words, the word above them].
+function $wideMul(x: $Wide, m: u64, c: u64): [$Wide, u64] {
+    const [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16] = x;
+    const [a0, c0] = $wideStep(x0, m, c);
+    const [a1, c1] = $wideStep(x1, m, c0);
+    const [a2, c2] = $wideStep(x2, m, c1);
+    const [a3, c3] = $wideStep(x3, m, c2);
+    const [a4, c4] = $wideStep(x4, m, c3);
+    const [a5, c5] = $wideStep(x5, m, c4);
+    const [a6, c6] = $wideStep(x6, m, c5);
+    const [a7, c7] = $wideStep(x7, m, c6);
+    const [a8, c8] = $wideStep(x8, m, c7);
+    const [a9, c9] = $wideStep(x9, m, c8);
+    const [a10, c10] = $wideStep(x10, m, c9);
+    const [a11, c11] = $wideStep(x11, m, c10);
+    const [a12, c12] = $wideStep(x12, m, c11);
+    const [a13, c13] = $wideStep(x13, m, c12);
+    const [a14, c14] = $wideStep(x14, m, c13);
+    const [a15, c15] = $wideStep(x15, m, c14);
+    const [a16, c16] = $wideStep(x16, m, c15);
+    return [[a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16] as const, c16];
+}
+
+// The word `i` of `n` times 2^`s` (`s` not negative).
+function $wideWord(n: u64, s: i64, i: i64): u64 {
+    const d = s - 64 * i;
+    return d >= 64 || d <= -64 ? 0u64 : d >= 0 ? n << u64(d) : n >> u64(0 - d);
+}
+
+// The 1088 low bits of `n` times 2^`s`.
+function $wideOf(n: u64, s: i64): $Wide {
+    return [$wideWord(n, s, 0), $wideWord(n, s, 1), $wideWord(n, s, 2), $wideWord(n, s, 3), $wideWord(n, s, 4),
+        $wideWord(n, s, 5), $wideWord(n, s, 6), $wideWord(n, s, 7), $wideWord(n, s, 8), $wideWord(n, s, 9),
+        $wideWord(n, s, 10), $wideWord(n, s, 11), $wideWord(n, s, 12), $wideWord(n, s, 13), $wideWord(n, s, 14),
+        $wideWord(n, s, 15), $wideWord(n, s, 16)];
+}
+
+function $wideZero(x: $Wide): boolean {
+    const [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16] = x;
+    return (x0 | x1 | x2 | x3 | x4 | x5 | x6 | x7 | x8 | x9 | x10 | x11 | x12 | x13 | x14 | x15 | x16) == 0u64;
+}
+
+// The order of two words, then of the words below them (`rest`).
+function $wordOrder(a: u64, b: u64, rest: i64): i64 {
+    return a < b ? -1 : a > b ? 1 : rest;
+}
+
+// The order of two registers: -1, 0 or 1.
+function $wideOrder(x: $Wide, y: $Wide): i64 {
+    const [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16] = x;
+    const [y0, y1, y2, y3, y4, y5, y6, y7, y8, y9, y10, y11, y12, y13, y14, y15, y16] = y;
+    const low = $wordOrder(x7, y7, $wordOrder(x6, y6, $wordOrder(x5, y5, $wordOrder(x4, y4,
+        $wordOrder(x3, y3, $wordOrder(x2, y2, $wordOrder(x1, y1, $wordOrder(x0, y0, 0))))))));
+    return $wordOrder(x16, y16, $wordOrder(x15, y15, $wordOrder(x14, y14, $wordOrder(x13, y13, $wordOrder(x12, y12,
+        $wordOrder(x11, y11, $wordOrder(x10, y10, $wordOrder(x9, y9, $wordOrder(x8, y8, low)))))))));
+}
+
+// The integer of the `c` digits (19 at most) from the digit `i`; a digit
+// before the first or after the last is a zero.
+function $digitsAround(b: u8[k], at: i64, i1: i64, nd: i64, i: i64, c: i64): u64 {
+    return fold(iota(c), 0u64, (a, t) => a * 10u64 + (i + t >= 0 && i + t < nd ? u64(b[$digitAt(at, i1, i + t)] - 48u8) : 0u64));
+}
+
+// A digit from the digit `i` on is not zero.
+function $digitsLeft(b: u8[k], at: i64, i1: i64, i2: i64, nd: i64, i: i64): boolean {
+    const from = i > 0 ? i : 0;
+    const a = $digitAt(at, i1, from);
+    return from >= nd ? false
+        : a < i1 ? $zerosFrom(b, a, i1) < i1 - a || (i2 > i1 && $zerosFrom(b, i1 + 1, i2) < i2 - i1 - 1)
+        : $zerosFrom(b, a, i2) < i2 - a;
+}
+
+// The digits `i` to `end` (not included) put after those of `x`: `x`
+// times a power of ten plus up to 19 digits, each turn.
+function $wideDigits(b: u8[k], at: i64, i1: i64, nd: i64, x: $Wide, i: i64, end: i64): $Wide {
+    if (i >= end) {
+        return x;
+    }
+    const c = end - i < 19 ? end - i : 19;
+    const [y, over] = $wideMul(x, $pow10(c), $digitsAround(b, at, i1, nd, i, c));
+    return $wideDigits(b, at, i1, nd, y, i + c, end);
+}
+
+// The order of the digits after the point, from the digit `i`, and of a
+// fraction `r` (of 2^1088): 19 digits of each a turn, those of the
+// fraction the word above the register times 10^19; at the end of the
+// digits, or of the fraction (a fraction of a power of two ends), what is
+// left of the other decides.
+function $fractionOrder(b: u8[k], at: i64, i1: i64, i2: i64, nd: i64, r: $Wide, i: i64): i64 {
+    if (i >= nd) {
+        return $wideZero(r) ? 0 : -1;
+    }
+    if ($wideZero(r)) {
+        return $digitsLeft(b, at, i1, i2, nd, i) ? 1 : 0;
+    }
+    const [y, m] = $wideMul(r, 10000000000000000000u64, 0u64);
+    const v = $digitsAround(b, at, i1, nd, i, 19);
+    return v < m ? -1 : v > m ? 1 : $fractionOrder(b, at, i1, i2, nd, y, i + 19);
+}
+
+// The order (-1, 0, 1) of the decimal and of the middle of the float of
+// the bits `c` (not negative, below the infinity) and of the float after
+// it: with `m` 2^`e` that float, the middle is `n` 2^(`e` - 1), `n` = 2
+// `m` + 1. An integer (`e` - 1 not negative): the digits before the point
+// made an integer (below 10^327: they are not compared for more than the
+// floats hold) and compared with it, then the digits after the point.
+// Else the digits before the point (19 at most: the middle is below 2^54)
+// against its integer part, then those after the point against its
+// fraction.
+function $midOrder(b: u8[k], at: i64, i1: i64, i2: i64, nd: i64, lead: i64, p: i64, c: u64): i64 {
+    const be = i64(c >> 52u64);
+    const f = c & 0xFFFFFFFFFFFFFu64;
+    const n = 2u64 * (be == 0 ? f : f | 0x10000000000000u64) + 1u64;
+    const e = (be == 0 ? -1074 : be - 1075) - 1;
+    if (e >= 0) {
+        if (p - lead > 327) {
+            return 1;
+        }
+        const o = $wideOrder($wideDigits(b, at, i1, nd, $wideOf(0u64, 0), lead, p), $wideOf(n, e));
+        return o != 0 ? o : $digitsLeft(b, at, i1, i2, nd, p) ? 1 : 0;
+    }
+    if (p - lead > 19) {
+        return 1;
+    }
+    const whole = e > -64 ? n >> u64(0 - e) : 0u64;
+    const v = p > lead ? $digitsAround(b, at, i1, nd, lead, p - lead) : 0u64;
+    return v < whole ? -1 : v > whole ? 1 : $fractionOrder(b, at, i1, i2, nd, $wideOf(n, 1088 + e), p);
+}
+
+// From the float of the bits `c`, the float nearest to the decimal: the
+// one after while the decimal is above their middle, the one before while
+// it is below; on a middle, the float whose bits are even.
+function $settle(b: u8[k], at: i64, i1: i64, i2: i64, nd: i64, lead: i64, p: i64, c: u64): u64 {
+    const up = c < 0x7FF0000000000000u64 ? $midOrder(b, at, i1, i2, nd, lead, p, c) : -1;
+    if (up > 0 || (up == 0 && (c & 1u64) == 1u64)) {
+        return $settle(b, at, i1, i2, nd, lead, p, c + 1u64);
+    }
+    const down = c > 0u64 ? $midOrder(b, at, i1, i2, nd, lead, p, c - 1u64) : 1;
+    if (down < 0 || (down == 0 && (c & 1u64) == 1u64)) {
+        return $settle(b, at, i1, i2, nd, lead, p, c - 1u64);
+    }
+    return c;
 }
 
 // The text of an integer written in Isocron (D588, SPEC section 17, order
@@ -1709,6 +2653,670 @@ function $pow10G(k: i64): [u64, u64] {
     return [g[i], g[i + 1]];
 }
 // End of the generated table.
+
+// The powers of five of Eisel and Lemire (`$lemire`, the reading of a
+// float): for `q` from -342 to 308, the 128 bits of 5^`q` from its highest
+// one, its high 64 bits then its low 64 (the table of Rust's
+// `core::num::dec2flt`).
+// Generated by tools/gen_pow10_rs.py --isc-pow5: do not edit.
+function $pow5T(q: i64): [u64, u64] {
+    const t = [
+        0xeef453d6923bd65au64, 0x113faa2906a13b3fu64,
+        0x9558b4661b6565f8u64, 0x4ac7ca59a424c507u64,
+        0xbaaee17fa23ebf76u64, 0x5d79bcf00d2df649u64,
+        0xe95a99df8ace6f53u64, 0xf4d82c2c107973dcu64,
+        0x91d8a02bb6c10594u64, 0x79071b9b8a4be869u64,
+        0xb64ec836a47146f9u64, 0x9748e2826cdee284u64,
+        0xe3e27a444d8d98b7u64, 0xfd1b1b2308169b25u64,
+        0x8e6d8c6ab0787f72u64, 0xfe30f0f5e50e20f7u64,
+        0xb208ef855c969f4fu64, 0xbdbd2d335e51a935u64,
+        0xde8b2b66b3bc4723u64, 0xad2c788035e61382u64,
+        0x8b16fb203055ac76u64, 0x4c3bcb5021afcc31u64,
+        0xaddcb9e83c6b1793u64, 0xdf4abe242a1bbf3du64,
+        0xd953e8624b85dd78u64, 0xd71d6dad34a2af0du64,
+        0x87d4713d6f33aa6bu64, 0x8672648c40e5ad68u64,
+        0xa9c98d8ccb009506u64, 0x680efdaf511f18c2u64,
+        0xd43bf0effdc0ba48u64, 0x0212bd1b2566def2u64,
+        0x84a57695fe98746du64, 0x014bb630f7604b57u64,
+        0xa5ced43b7e3e9188u64, 0x419ea3bd35385e2du64,
+        0xcf42894a5dce35eau64, 0x52064cac828675b9u64,
+        0x818995ce7aa0e1b2u64, 0x7343efebd1940993u64,
+        0xa1ebfb4219491a1fu64, 0x1014ebe6c5f90bf8u64,
+        0xca66fa129f9b60a6u64, 0xd41a26e077774ef6u64,
+        0xfd00b897478238d0u64, 0x8920b098955522b4u64,
+        0x9e20735e8cb16382u64, 0x55b46e5f5d5535b0u64,
+        0xc5a890362fddbc62u64, 0xeb2189f734aa831du64,
+        0xf712b443bbd52b7bu64, 0xa5e9ec7501d523e4u64,
+        0x9a6bb0aa55653b2du64, 0x47b233c92125366eu64,
+        0xc1069cd4eabe89f8u64, 0x999ec0bb696e840au64,
+        0xf148440a256e2c76u64, 0xc00670ea43ca250du64,
+        0x96cd2a865764dbcau64, 0x380406926a5e5728u64,
+        0xbc807527ed3e12bcu64, 0xc605083704f5ecf2u64,
+        0xeba09271e88d976bu64, 0xf7864a44c633682eu64,
+        0x93445b8731587ea3u64, 0x7ab3ee6afbe0211du64,
+        0xb8157268fdae9e4cu64, 0x5960ea05bad82964u64,
+        0xe61acf033d1a45dfu64, 0x6fb92487298e33bdu64,
+        0x8fd0c16206306babu64, 0xa5d3b6d479f8e056u64,
+        0xb3c4f1ba87bc8696u64, 0x8f48a4899877186cu64,
+        0xe0b62e2929aba83cu64, 0x331acdabfe94de87u64,
+        0x8c71dcd9ba0b4925u64, 0x9ff0c08b7f1d0b14u64,
+        0xaf8e5410288e1b6fu64, 0x07ecf0ae5ee44dd9u64,
+        0xdb71e91432b1a24au64, 0xc9e82cd9f69d6150u64,
+        0x892731ac9faf056eu64, 0xbe311c083a225cd2u64,
+        0xab70fe17c79ac6cau64, 0x6dbd630a48aaf406u64,
+        0xd64d3d9db981787du64, 0x092cbbccdad5b108u64,
+        0x85f0468293f0eb4eu64, 0x25bbf56008c58ea5u64,
+        0xa76c582338ed2621u64, 0xaf2af2b80af6f24eu64,
+        0xd1476e2c07286faau64, 0x1af5af660db4aee1u64,
+        0x82cca4db847945cau64, 0x50d98d9fc890ed4du64,
+        0xa37fce126597973cu64, 0xe50ff107bab528a0u64,
+        0xcc5fc196fefd7d0cu64, 0x1e53ed49a96272c8u64,
+        0xff77b1fcbebcdc4fu64, 0x25e8e89c13bb0f7au64,
+        0x9faacf3df73609b1u64, 0x77b191618c54e9acu64,
+        0xc795830d75038c1du64, 0xd59df5b9ef6a2417u64,
+        0xf97ae3d0d2446f25u64, 0x4b0573286b44ad1du64,
+        0x9becce62836ac577u64, 0x4ee367f9430aec32u64,
+        0xc2e801fb244576d5u64, 0x229c41f793cda73fu64,
+        0xf3a20279ed56d48au64, 0x6b43527578c1110fu64,
+        0x9845418c345644d6u64, 0x830a13896b78aaa9u64,
+        0xbe5691ef416bd60cu64, 0x23cc986bc656d553u64,
+        0xedec366b11c6cb8fu64, 0x2cbfbe86b7ec8aa8u64,
+        0x94b3a202eb1c3f39u64, 0x7bf7d71432f3d6a9u64,
+        0xb9e08a83a5e34f07u64, 0xdaf5ccd93fb0cc53u64,
+        0xe858ad248f5c22c9u64, 0xd1b3400f8f9cff68u64,
+        0x91376c36d99995beu64, 0x23100809b9c21fa1u64,
+        0xb58547448ffffb2du64, 0xabd40a0c2832a78au64,
+        0xe2e69915b3fff9f9u64, 0x16c90c8f323f516cu64,
+        0x8dd01fad907ffc3bu64, 0xae3da7d97f6792e3u64,
+        0xb1442798f49ffb4au64, 0x99cd11cfdf41779cu64,
+        0xdd95317f31c7fa1du64, 0x40405643d711d583u64,
+        0x8a7d3eef7f1cfc52u64, 0x482835ea666b2572u64,
+        0xad1c8eab5ee43b66u64, 0xda3243650005eecfu64,
+        0xd863b256369d4a40u64, 0x90bed43e40076a82u64,
+        0x873e4f75e2224e68u64, 0x5a7744a6e804a291u64,
+        0xa90de3535aaae202u64, 0x711515d0a205cb36u64,
+        0xd3515c2831559a83u64, 0x0d5a5b44ca873e03u64,
+        0x8412d9991ed58091u64, 0xe858790afe9486c2u64,
+        0xa5178fff668ae0b6u64, 0x626e974dbe39a872u64,
+        0xce5d73ff402d98e3u64, 0xfb0a3d212dc8128fu64,
+        0x80fa687f881c7f8eu64, 0x7ce66634bc9d0b99u64,
+        0xa139029f6a239f72u64, 0x1c1fffc1ebc44e80u64,
+        0xc987434744ac874eu64, 0xa327ffb266b56220u64,
+        0xfbe9141915d7a922u64, 0x4bf1ff9f0062baa8u64,
+        0x9d71ac8fada6c9b5u64, 0x6f773fc3603db4a9u64,
+        0xc4ce17b399107c22u64, 0xcb550fb4384d21d3u64,
+        0xf6019da07f549b2bu64, 0x7e2a53a146606a48u64,
+        0x99c102844f94e0fbu64, 0x2eda7444cbfc426du64,
+        0xc0314325637a1939u64, 0xfa911155fefb5308u64,
+        0xf03d93eebc589f88u64, 0x793555ab7eba27cau64,
+        0x96267c7535b763b5u64, 0x4bc1558b2f3458deu64,
+        0xbbb01b9283253ca2u64, 0x9eb1aaedfb016f16u64,
+        0xea9c227723ee8bcbu64, 0x465e15a979c1cadcu64,
+        0x92a1958a7675175fu64, 0x0bfacd89ec191ec9u64,
+        0xb749faed14125d36u64, 0xcef980ec671f667bu64,
+        0xe51c79a85916f484u64, 0x82b7e12780e7401au64,
+        0x8f31cc0937ae58d2u64, 0xd1b2ecb8b0908810u64,
+        0xb2fe3f0b8599ef07u64, 0x861fa7e6dcb4aa15u64,
+        0xdfbdcece67006ac9u64, 0x67a791e093e1d49au64,
+        0x8bd6a141006042bdu64, 0xe0c8bb2c5c6d24e0u64,
+        0xaecc49914078536du64, 0x58fae9f773886e18u64,
+        0xda7f5bf590966848u64, 0xaf39a475506a899eu64,
+        0x888f99797a5e012du64, 0x6d8406c952429603u64,
+        0xaab37fd7d8f58178u64, 0xc8e5087ba6d33b83u64,
+        0xd5605fcdcf32e1d6u64, 0xfb1e4a9a90880a64u64,
+        0x855c3be0a17fcd26u64, 0x5cf2eea09a55067fu64,
+        0xa6b34ad8c9dfc06fu64, 0xf42faa48c0ea481eu64,
+        0xd0601d8efc57b08bu64, 0xf13b94daf124da26u64,
+        0x823c12795db6ce57u64, 0x76c53d08d6b70858u64,
+        0xa2cb1717b52481edu64, 0x54768c4b0c64ca6eu64,
+        0xcb7ddcdda26da268u64, 0xa9942f5dcf7dfd09u64,
+        0xfe5d54150b090b02u64, 0xd3f93b35435d7c4cu64,
+        0x9efa548d26e5a6e1u64, 0xc47bc5014a1a6dafu64,
+        0xc6b8e9b0709f109au64, 0x359ab6419ca1091bu64,
+        0xf867241c8cc6d4c0u64, 0xc30163d203c94b62u64,
+        0x9b407691d7fc44f8u64, 0x79e0de63425dcf1du64,
+        0xc21094364dfb5636u64, 0x985915fc12f542e4u64,
+        0xf294b943e17a2bc4u64, 0x3e6f5b7b17b2939du64,
+        0x979cf3ca6cec5b5au64, 0xa705992ceecf9c42u64,
+        0xbd8430bd08277231u64, 0x50c6ff782a838353u64,
+        0xece53cec4a314ebdu64, 0xa4f8bf5635246428u64,
+        0x940f4613ae5ed136u64, 0x871b7795e136be99u64,
+        0xb913179899f68584u64, 0x28e2557b59846e3fu64,
+        0xe757dd7ec07426e5u64, 0x331aeada2fe589cfu64,
+        0x9096ea6f3848984fu64, 0x3ff0d2c85def7621u64,
+        0xb4bca50b065abe63u64, 0x0fed077a756b53a9u64,
+        0xe1ebce4dc7f16dfbu64, 0xd3e8495912c62894u64,
+        0x8d3360f09cf6e4bdu64, 0x64712dd7abbbd95cu64,
+        0xb080392cc4349decu64, 0xbd8d794d96aacfb3u64,
+        0xdca04777f541c567u64, 0xecf0d7a0fc5583a0u64,
+        0x89e42caaf9491b60u64, 0xf41686c49db57244u64,
+        0xac5d37d5b79b6239u64, 0x311c2875c522ced5u64,
+        0xd77485cb25823ac7u64, 0x7d633293366b828bu64,
+        0x86a8d39ef77164bcu64, 0xae5dff9c02033197u64,
+        0xa8530886b54dbdebu64, 0xd9f57f830283fdfcu64,
+        0xd267caa862a12d66u64, 0xd072df63c324fd7bu64,
+        0x8380dea93da4bc60u64, 0x4247cb9e59f71e6du64,
+        0xa46116538d0deb78u64, 0x52d9be85f074e608u64,
+        0xcd795be870516656u64, 0x67902e276c921f8bu64,
+        0x806bd9714632dff6u64, 0x00ba1cd8a3db53b6u64,
+        0xa086cfcd97bf97f3u64, 0x80e8a40eccd228a4u64,
+        0xc8a883c0fdaf7df0u64, 0x6122cd128006b2cdu64,
+        0xfad2a4b13d1b5d6cu64, 0x796b805720085f81u64,
+        0x9cc3a6eec6311a63u64, 0xcbe3303674053bb0u64,
+        0xc3f490aa77bd60fcu64, 0xbedbfc4411068a9cu64,
+        0xf4f1b4d515acb93bu64, 0xee92fb5515482d44u64,
+        0x991711052d8bf3c5u64, 0x751bdd152d4d1c4au64,
+        0xbf5cd54678eef0b6u64, 0xd262d45a78a0635du64,
+        0xef340a98172aace4u64, 0x86fb897116c87c34u64,
+        0x9580869f0e7aac0eu64, 0xd45d35e6ae3d4da0u64,
+        0xbae0a846d2195712u64, 0x8974836059cca109u64,
+        0xe998d258869facd7u64, 0x2bd1a438703fc94bu64,
+        0x91ff83775423cc06u64, 0x7b6306a34627ddcfu64,
+        0xb67f6455292cbf08u64, 0x1a3bc84c17b1d542u64,
+        0xe41f3d6a7377eecau64, 0x20caba5f1d9e4a93u64,
+        0x8e938662882af53eu64, 0x547eb47b7282ee9cu64,
+        0xb23867fb2a35b28du64, 0xe99e619a4f23aa43u64,
+        0xdec681f9f4c31f31u64, 0x6405fa00e2ec94d4u64,
+        0x8b3c113c38f9f37eu64, 0xde83bc408dd3dd04u64,
+        0xae0b158b4738705eu64, 0x9624ab50b148d445u64,
+        0xd98ddaee19068c76u64, 0x3badd624dd9b0957u64,
+        0x87f8a8d4cfa417c9u64, 0xe54ca5d70a80e5d6u64,
+        0xa9f6d30a038d1dbcu64, 0x5e9fcf4ccd211f4cu64,
+        0xd47487cc8470652bu64, 0x7647c3200069671fu64,
+        0x84c8d4dfd2c63f3bu64, 0x29ecd9f40041e073u64,
+        0xa5fb0a17c777cf09u64, 0xf468107100525890u64,
+        0xcf79cc9db955c2ccu64, 0x7182148d4066eeb4u64,
+        0x81ac1fe293d599bfu64, 0xc6f14cd848405530u64,
+        0xa21727db38cb002fu64, 0xb8ada00e5a506a7cu64,
+        0xca9cf1d206fdc03bu64, 0xa6d90811f0e4851cu64,
+        0xfd442e4688bd304au64, 0x908f4a166d1da663u64,
+        0x9e4a9cec15763e2eu64, 0x9a598e4e043287feu64,
+        0xc5dd44271ad3cdbau64, 0x40eff1e1853f29fdu64,
+        0xf7549530e188c128u64, 0xd12bee59e68ef47cu64,
+        0x9a94dd3e8cf578b9u64, 0x82bb74f8301958ceu64,
+        0xc13a148e3032d6e7u64, 0xe36a52363c1faf01u64,
+        0xf18899b1bc3f8ca1u64, 0xdc44e6c3cb279ac1u64,
+        0x96f5600f15a7b7e5u64, 0x29ab103a5ef8c0b9u64,
+        0xbcb2b812db11a5deu64, 0x7415d448f6b6f0e7u64,
+        0xebdf661791d60f56u64, 0x111b495b3464ad21u64,
+        0x936b9fcebb25c995u64, 0xcab10dd900beec34u64,
+        0xb84687c269ef3bfbu64, 0x3d5d514f40eea742u64,
+        0xe65829b3046b0afau64, 0x0cb4a5a3112a5112u64,
+        0x8ff71a0fe2c2e6dcu64, 0x47f0e785eaba72abu64,
+        0xb3f4e093db73a093u64, 0x59ed216765690f56u64,
+        0xe0f218b8d25088b8u64, 0x306869c13ec3532cu64,
+        0x8c974f7383725573u64, 0x1e414218c73a13fbu64,
+        0xafbd2350644eeacfu64, 0xe5d1929ef90898fau64,
+        0xdbac6c247d62a583u64, 0xdf45f746b74abf39u64,
+        0x894bc396ce5da772u64, 0x6b8bba8c328eb783u64,
+        0xab9eb47c81f5114fu64, 0x066ea92f3f326564u64,
+        0xd686619ba27255a2u64, 0xc80a537b0efefebdu64,
+        0x8613fd0145877585u64, 0xbd06742ce95f5f36u64,
+        0xa798fc4196e952e7u64, 0x2c48113823b73704u64,
+        0xd17f3b51fca3a7a0u64, 0xf75a15862ca504c5u64,
+        0x82ef85133de648c4u64, 0x9a984d73dbe722fbu64,
+        0xa3ab66580d5fdaf5u64, 0xc13e60d0d2e0ebbau64,
+        0xcc963fee10b7d1b3u64, 0x318df905079926a8u64,
+        0xffbbcfe994e5c61fu64, 0xfdf17746497f7052u64,
+        0x9fd561f1fd0f9bd3u64, 0xfeb6ea8bedefa633u64,
+        0xc7caba6e7c5382c8u64, 0xfe64a52ee96b8fc0u64,
+        0xf9bd690a1b68637bu64, 0x3dfdce7aa3c673b0u64,
+        0x9c1661a651213e2du64, 0x06bea10ca65c084eu64,
+        0xc31bfa0fe5698db8u64, 0x486e494fcff30a62u64,
+        0xf3e2f893dec3f126u64, 0x5a89dba3c3efccfau64,
+        0x986ddb5c6b3a76b7u64, 0xf89629465a75e01cu64,
+        0xbe89523386091465u64, 0xf6bbb397f1135823u64,
+        0xee2ba6c0678b597fu64, 0x746aa07ded582e2cu64,
+        0x94db483840b717efu64, 0xa8c2a44eb4571cdcu64,
+        0xba121a4650e4ddebu64, 0x92f34d62616ce413u64,
+        0xe896a0d7e51e1566u64, 0x77b020baf9c81d17u64,
+        0x915e2486ef32cd60u64, 0x0ace1474dc1d122eu64,
+        0xb5b5ada8aaff80b8u64, 0x0d819992132456bau64,
+        0xe3231912d5bf60e6u64, 0x10e1fff697ed6c69u64,
+        0x8df5efabc5979c8fu64, 0xca8d3ffa1ef463c1u64,
+        0xb1736b96b6fd83b3u64, 0xbd308ff8a6b17cb2u64,
+        0xddd0467c64bce4a0u64, 0xac7cb3f6d05ddbdeu64,
+        0x8aa22c0dbef60ee4u64, 0x6bcdf07a423aa96bu64,
+        0xad4ab7112eb3929du64, 0x86c16c98d2c953c6u64,
+        0xd89d64d57a607744u64, 0xe871c7bf077ba8b7u64,
+        0x87625f056c7c4a8bu64, 0x11471cd764ad4972u64,
+        0xa93af6c6c79b5d2du64, 0xd598e40d3dd89bcfu64,
+        0xd389b47879823479u64, 0x4aff1d108d4ec2c3u64,
+        0x843610cb4bf160cbu64, 0xcedf722a585139bau64,
+        0xa54394fe1eedb8feu64, 0xc2974eb4ee658828u64,
+        0xce947a3da6a9273eu64, 0x733d226229feea32u64,
+        0x811ccc668829b887u64, 0x0806357d5a3f525fu64,
+        0xa163ff802a3426a8u64, 0xca07c2dcb0cf26f7u64,
+        0xc9bcff6034c13052u64, 0xfc89b393dd02f0b5u64,
+        0xfc2c3f3841f17c67u64, 0xbbac2078d443ace2u64,
+        0x9d9ba7832936edc0u64, 0xd54b944b84aa4c0du64,
+        0xc5029163f384a931u64, 0x0a9e795e65d4df11u64,
+        0xf64335bcf065d37du64, 0x4d4617b5ff4a16d5u64,
+        0x99ea0196163fa42eu64, 0x504bced1bf8e4e45u64,
+        0xc06481fb9bcf8d39u64, 0xe45ec2862f71e1d6u64,
+        0xf07da27a82c37088u64, 0x5d767327bb4e5a4cu64,
+        0x964e858c91ba2655u64, 0x3a6a07f8d510f86fu64,
+        0xbbe226efb628afeau64, 0x890489f70a55368bu64,
+        0xeadab0aba3b2dbe5u64, 0x2b45ac74ccea842eu64,
+        0x92c8ae6b464fc96fu64, 0x3b0b8bc90012929du64,
+        0xb77ada0617e3bbcbu64, 0x09ce6ebb40173744u64,
+        0xe55990879ddcaabdu64, 0xcc420a6a101d0515u64,
+        0x8f57fa54c2a9eab6u64, 0x9fa946824a12232du64,
+        0xb32df8e9f3546564u64, 0x47939822dc96abf9u64,
+        0xdff9772470297ebdu64, 0x59787e2b93bc56f7u64,
+        0x8bfbea76c619ef36u64, 0x57eb4edb3c55b65au64,
+        0xaefae51477a06b03u64, 0xede622920b6b23f1u64,
+        0xdab99e59958885c4u64, 0xe95fab368e45ecedu64,
+        0x88b402f7fd75539bu64, 0x11dbcb0218ebb414u64,
+        0xaae103b5fcd2a881u64, 0xd652bdc29f26a119u64,
+        0xd59944a37c0752a2u64, 0x4be76d3346f0495fu64,
+        0x857fcae62d8493a5u64, 0x6f70a4400c562ddbu64,
+        0xa6dfbd9fb8e5b88eu64, 0xcb4ccd500f6bb952u64,
+        0xd097ad07a71f26b2u64, 0x7e2000a41346a7a7u64,
+        0x825ecc24c873782fu64, 0x8ed400668c0c28c8u64,
+        0xa2f67f2dfa90563bu64, 0x728900802f0f32fau64,
+        0xcbb41ef979346bcau64, 0x4f2b40a03ad2ffb9u64,
+        0xfea126b7d78186bcu64, 0xe2f610c84987bfa8u64,
+        0x9f24b832e6b0f436u64, 0x0dd9ca7d2df4d7c9u64,
+        0xc6ede63fa05d3143u64, 0x91503d1c79720dbbu64,
+        0xf8a95fcf88747d94u64, 0x75a44c6397ce912au64,
+        0x9b69dbe1b548ce7cu64, 0xc986afbe3ee11abau64,
+        0xc24452da229b021bu64, 0xfbe85badce996168u64,
+        0xf2d56790ab41c2a2u64, 0xfae27299423fb9c3u64,
+        0x97c560ba6b0919a5u64, 0xdccd879fc967d41au64,
+        0xbdb6b8e905cb600fu64, 0x5400e987bbc1c920u64,
+        0xed246723473e3813u64, 0x290123e9aab23b68u64,
+        0x9436c0760c86e30bu64, 0xf9a0b6720aaf6521u64,
+        0xb94470938fa89bceu64, 0xf808e40e8d5b3e69u64,
+        0xe7958cb87392c2c2u64, 0xb60b1d1230b20e04u64,
+        0x90bd77f3483bb9b9u64, 0xb1c6f22b5e6f48c2u64,
+        0xb4ecd5f01a4aa828u64, 0x1e38aeb6360b1af3u64,
+        0xe2280b6c20dd5232u64, 0x25c6da63c38de1b0u64,
+        0x8d590723948a535fu64, 0x579c487e5a38ad0eu64,
+        0xb0af48ec79ace837u64, 0x2d835a9df0c6d851u64,
+        0xdcdb1b2798182244u64, 0xf8e431456cf88e65u64,
+        0x8a08f0f8bf0f156bu64, 0x1b8e9ecb641b58ffu64,
+        0xac8b2d36eed2dac5u64, 0xe272467e3d222f3fu64,
+        0xd7adf884aa879177u64, 0x5b0ed81dcc6abb0fu64,
+        0x86ccbb52ea94baeau64, 0x98e947129fc2b4e9u64,
+        0xa87fea27a539e9a5u64, 0x3f2398d747b36224u64,
+        0xd29fe4b18e88640eu64, 0x8eec7f0d19a03aadu64,
+        0x83a3eeeef9153e89u64, 0x1953cf68300424acu64,
+        0xa48ceaaab75a8e2bu64, 0x5fa8c3423c052dd7u64,
+        0xcdb02555653131b6u64, 0x3792f412cb06794du64,
+        0x808e17555f3ebf11u64, 0xe2bbd88bbee40bd0u64,
+        0xa0b19d2ab70e6ed6u64, 0x5b6aceaeae9d0ec4u64,
+        0xc8de047564d20a8bu64, 0xf245825a5a445275u64,
+        0xfb158592be068d2eu64, 0xeed6e2f0f0d56712u64,
+        0x9ced737bb6c4183du64, 0x55464dd69685606bu64,
+        0xc428d05aa4751e4cu64, 0xaa97e14c3c26b886u64,
+        0xf53304714d9265dfu64, 0xd53dd99f4b3066a8u64,
+        0x993fe2c6d07b7fabu64, 0xe546a8038efe4029u64,
+        0xbf8fdb78849a5f96u64, 0xde98520472bdd033u64,
+        0xef73d256a5c0f77cu64, 0x963e66858f6d4440u64,
+        0x95a8637627989aadu64, 0xdde7001379a44aa8u64,
+        0xbb127c53b17ec159u64, 0x5560c018580d5d52u64,
+        0xe9d71b689dde71afu64, 0xaab8f01e6e10b4a6u64,
+        0x9226712162ab070du64, 0xcab3961304ca70e8u64,
+        0xb6b00d69bb55c8d1u64, 0x3d607b97c5fd0d22u64,
+        0xe45c10c42a2b3b05u64, 0x8cb89a7db77c506au64,
+        0x8eb98a7a9a5b04e3u64, 0x77f3608e92adb242u64,
+        0xb267ed1940f1c61cu64, 0x55f038b237591ed3u64,
+        0xdf01e85f912e37a3u64, 0x6b6c46dec52f6688u64,
+        0x8b61313bbabce2c6u64, 0x2323ac4b3b3da015u64,
+        0xae397d8aa96c1b77u64, 0xabec975e0a0d081au64,
+        0xd9c7dced53c72255u64, 0x96e7bd358c904a21u64,
+        0x881cea14545c7575u64, 0x7e50d64177da2e54u64,
+        0xaa242499697392d2u64, 0xdde50bd1d5d0b9e9u64,
+        0xd4ad2dbfc3d07787u64, 0x955e4ec64b44e864u64,
+        0x84ec3c97da624ab4u64, 0xbd5af13bef0b113eu64,
+        0xa6274bbdd0fadd61u64, 0xecb1ad8aeacdd58eu64,
+        0xcfb11ead453994bau64, 0x67de18eda5814af2u64,
+        0x81ceb32c4b43fcf4u64, 0x80eacf948770ced7u64,
+        0xa2425ff75e14fc31u64, 0xa1258379a94d028du64,
+        0xcad2f7f5359a3b3eu64, 0x096ee45813a04330u64,
+        0xfd87b5f28300ca0du64, 0x8bca9d6e188853fcu64,
+        0x9e74d1b791e07e48u64, 0x775ea264cf55347eu64,
+        0xc612062576589ddau64, 0x95364afe032a819eu64,
+        0xf79687aed3eec551u64, 0x3a83ddbd83f52205u64,
+        0x9abe14cd44753b52u64, 0xc4926a9672793543u64,
+        0xc16d9a0095928a27u64, 0x75b7053c0f178294u64,
+        0xf1c90080baf72cb1u64, 0x5324c68b12dd6339u64,
+        0x971da05074da7beeu64, 0xd3f6fc16ebca5e04u64,
+        0xbce5086492111aeau64, 0x88f4bb1ca6bcf585u64,
+        0xec1e4a7db69561a5u64, 0x2b31e9e3d06c32e6u64,
+        0x9392ee8e921d5d07u64, 0x3aff322e62439fd0u64,
+        0xb877aa3236a4b449u64, 0x09befeb9fad487c3u64,
+        0xe69594bec44de15bu64, 0x4c2ebe687989a9b4u64,
+        0x901d7cf73ab0acd9u64, 0x0f9d37014bf60a11u64,
+        0xb424dc35095cd80fu64, 0x538484c19ef38c95u64,
+        0xe12e13424bb40e13u64, 0x2865a5f206b06fbau64,
+        0x8cbccc096f5088cbu64, 0xf93f87b7442e45d4u64,
+        0xafebff0bcb24aafeu64, 0xf78f69a51539d749u64,
+        0xdbe6fecebdedd5beu64, 0xb573440e5a884d1cu64,
+        0x89705f4136b4a597u64, 0x31680a88f8953031u64,
+        0xabcc77118461cefcu64, 0xfdc20d2b36ba7c3eu64,
+        0xd6bf94d5e57a42bcu64, 0x3d32907604691b4du64,
+        0x8637bd05af6c69b5u64, 0xa63f9a49c2c1b110u64,
+        0xa7c5ac471b478423u64, 0x0fcf80dc33721d54u64,
+        0xd1b71758e219652bu64, 0xd3c36113404ea4a9u64,
+        0x83126e978d4fdf3bu64, 0x645a1cac083126eau64,
+        0xa3d70a3d70a3d70au64, 0x3d70a3d70a3d70a4u64,
+        0xccccccccccccccccu64, 0xcccccccccccccccdu64,
+        0x8000000000000000u64, 0x0000000000000000u64,
+        0xa000000000000000u64, 0x0000000000000000u64,
+        0xc800000000000000u64, 0x0000000000000000u64,
+        0xfa00000000000000u64, 0x0000000000000000u64,
+        0x9c40000000000000u64, 0x0000000000000000u64,
+        0xc350000000000000u64, 0x0000000000000000u64,
+        0xf424000000000000u64, 0x0000000000000000u64,
+        0x9896800000000000u64, 0x0000000000000000u64,
+        0xbebc200000000000u64, 0x0000000000000000u64,
+        0xee6b280000000000u64, 0x0000000000000000u64,
+        0x9502f90000000000u64, 0x0000000000000000u64,
+        0xba43b74000000000u64, 0x0000000000000000u64,
+        0xe8d4a51000000000u64, 0x0000000000000000u64,
+        0x9184e72a00000000u64, 0x0000000000000000u64,
+        0xb5e620f480000000u64, 0x0000000000000000u64,
+        0xe35fa931a0000000u64, 0x0000000000000000u64,
+        0x8e1bc9bf04000000u64, 0x0000000000000000u64,
+        0xb1a2bc2ec5000000u64, 0x0000000000000000u64,
+        0xde0b6b3a76400000u64, 0x0000000000000000u64,
+        0x8ac7230489e80000u64, 0x0000000000000000u64,
+        0xad78ebc5ac620000u64, 0x0000000000000000u64,
+        0xd8d726b7177a8000u64, 0x0000000000000000u64,
+        0x878678326eac9000u64, 0x0000000000000000u64,
+        0xa968163f0a57b400u64, 0x0000000000000000u64,
+        0xd3c21bcecceda100u64, 0x0000000000000000u64,
+        0x84595161401484a0u64, 0x0000000000000000u64,
+        0xa56fa5b99019a5c8u64, 0x0000000000000000u64,
+        0xcecb8f27f4200f3au64, 0x0000000000000000u64,
+        0x813f3978f8940984u64, 0x4000000000000000u64,
+        0xa18f07d736b90be5u64, 0x5000000000000000u64,
+        0xc9f2c9cd04674edeu64, 0xa400000000000000u64,
+        0xfc6f7c4045812296u64, 0x4d00000000000000u64,
+        0x9dc5ada82b70b59du64, 0xf020000000000000u64,
+        0xc5371912364ce305u64, 0x6c28000000000000u64,
+        0xf684df56c3e01bc6u64, 0xc732000000000000u64,
+        0x9a130b963a6c115cu64, 0x3c7f400000000000u64,
+        0xc097ce7bc90715b3u64, 0x4b9f100000000000u64,
+        0xf0bdc21abb48db20u64, 0x1e86d40000000000u64,
+        0x96769950b50d88f4u64, 0x1314448000000000u64,
+        0xbc143fa4e250eb31u64, 0x17d955a000000000u64,
+        0xeb194f8e1ae525fdu64, 0x5dcfab0800000000u64,
+        0x92efd1b8d0cf37beu64, 0x5aa1cae500000000u64,
+        0xb7abc627050305adu64, 0xf14a3d9e40000000u64,
+        0xe596b7b0c643c719u64, 0x6d9ccd05d0000000u64,
+        0x8f7e32ce7bea5c6fu64, 0xe4820023a2000000u64,
+        0xb35dbf821ae4f38bu64, 0xdda2802c8a800000u64,
+        0xe0352f62a19e306eu64, 0xd50b2037ad200000u64,
+        0x8c213d9da502de45u64, 0x4526f422cc340000u64,
+        0xaf298d050e4395d6u64, 0x9670b12b7f410000u64,
+        0xdaf3f04651d47b4cu64, 0x3c0cdd765f114000u64,
+        0x88d8762bf324cd0fu64, 0xa5880a69fb6ac800u64,
+        0xab0e93b6efee0053u64, 0x8eea0d047a457a00u64,
+        0xd5d238a4abe98068u64, 0x72a4904598d6d880u64,
+        0x85a36366eb71f041u64, 0x47a6da2b7f864750u64,
+        0xa70c3c40a64e6c51u64, 0x999090b65f67d924u64,
+        0xd0cf4b50cfe20765u64, 0xfff4b4e3f741cf6du64,
+        0x82818f1281ed449fu64, 0xbff8f10e7a8921a4u64,
+        0xa321f2d7226895c7u64, 0xaff72d52192b6a0du64,
+        0xcbea6f8ceb02bb39u64, 0x9bf4f8a69f764490u64,
+        0xfee50b7025c36a08u64, 0x02f236d04753d5b4u64,
+        0x9f4f2726179a2245u64, 0x01d762422c946590u64,
+        0xc722f0ef9d80aad6u64, 0x424d3ad2b7b97ef5u64,
+        0xf8ebad2b84e0d58bu64, 0xd2e0898765a7deb2u64,
+        0x9b934c3b330c8577u64, 0x63cc55f49f88eb2fu64,
+        0xc2781f49ffcfa6d5u64, 0x3cbf6b71c76b25fbu64,
+        0xf316271c7fc3908au64, 0x8bef464e3945ef7au64,
+        0x97edd871cfda3a56u64, 0x97758bf0e3cbb5acu64,
+        0xbde94e8e43d0c8ecu64, 0x3d52eeed1cbea317u64,
+        0xed63a231d4c4fb27u64, 0x4ca7aaa863ee4bddu64,
+        0x945e455f24fb1cf8u64, 0x8fe8caa93e74ef6au64,
+        0xb975d6b6ee39e436u64, 0xb3e2fd538e122b44u64,
+        0xe7d34c64a9c85d44u64, 0x60dbbca87196b616u64,
+        0x90e40fbeea1d3a4au64, 0xbc8955e946fe31cdu64,
+        0xb51d13aea4a488ddu64, 0x6babab6398bdbe41u64,
+        0xe264589a4dcdab14u64, 0xc696963c7eed2dd1u64,
+        0x8d7eb76070a08aecu64, 0xfc1e1de5cf543ca2u64,
+        0xb0de65388cc8ada8u64, 0x3b25a55f43294bcbu64,
+        0xdd15fe86affad912u64, 0x49ef0eb713f39ebeu64,
+        0x8a2dbf142dfcc7abu64, 0x6e3569326c784337u64,
+        0xacb92ed9397bf996u64, 0x49c2c37f07965404u64,
+        0xd7e77a8f87daf7fbu64, 0xdc33745ec97be906u64,
+        0x86f0ac99b4e8dafdu64, 0x69a028bb3ded71a3u64,
+        0xa8acd7c0222311bcu64, 0xc40832ea0d68ce0cu64,
+        0xd2d80db02aabd62bu64, 0xf50a3fa490c30190u64,
+        0x83c7088e1aab65dbu64, 0x792667c6da79e0fau64,
+        0xa4b8cab1a1563f52u64, 0x577001b891185938u64,
+        0xcde6fd5e09abcf26u64, 0xed4c0226b55e6f86u64,
+        0x80b05e5ac60b6178u64, 0x544f8158315b05b4u64,
+        0xa0dc75f1778e39d6u64, 0x696361ae3db1c721u64,
+        0xc913936dd571c84cu64, 0x03bc3a19cd1e38e9u64,
+        0xfb5878494ace3a5fu64, 0x04ab48a04065c723u64,
+        0x9d174b2dcec0e47bu64, 0x62eb0d64283f9c76u64,
+        0xc45d1df942711d9au64, 0x3ba5d0bd324f8394u64,
+        0xf5746577930d6500u64, 0xca8f44ec7ee36479u64,
+        0x9968bf6abbe85f20u64, 0x7e998b13cf4e1ecbu64,
+        0xbfc2ef456ae276e8u64, 0x9e3fedd8c321a67eu64,
+        0xefb3ab16c59b14a2u64, 0xc5cfe94ef3ea101eu64,
+        0x95d04aee3b80ece5u64, 0xbba1f1d158724a12u64,
+        0xbb445da9ca61281fu64, 0x2a8a6e45ae8edc97u64,
+        0xea1575143cf97226u64, 0xf52d09d71a3293bdu64,
+        0x924d692ca61be758u64, 0x593c2626705f9c56u64,
+        0xb6e0c377cfa2e12eu64, 0x6f8b2fb00c77836cu64,
+        0xe498f455c38b997au64, 0x0b6dfb9c0f956447u64,
+        0x8edf98b59a373fecu64, 0x4724bd4189bd5eacu64,
+        0xb2977ee300c50fe7u64, 0x58edec91ec2cb657u64,
+        0xdf3d5e9bc0f653e1u64, 0x2f2967b66737e3edu64,
+        0x8b865b215899f46cu64, 0xbd79e0d20082ee74u64,
+        0xae67f1e9aec07187u64, 0xecd8590680a3aa11u64,
+        0xda01ee641a708de9u64, 0xe80e6f4820cc9495u64,
+        0x884134fe908658b2u64, 0x3109058d147fdcddu64,
+        0xaa51823e34a7eedeu64, 0xbd4b46f0599fd415u64,
+        0xd4e5e2cdc1d1ea96u64, 0x6c9e18ac7007c91au64,
+        0x850fadc09923329eu64, 0x03e2cf6bc604ddb0u64,
+        0xa6539930bf6bff45u64, 0x84db8346b786151cu64,
+        0xcfe87f7cef46ff16u64, 0xe612641865679a63u64,
+        0x81f14fae158c5f6eu64, 0x4fcb7e8f3f60c07eu64,
+        0xa26da3999aef7749u64, 0xe3be5e330f38f09du64,
+        0xcb090c8001ab551cu64, 0x5cadf5bfd3072cc5u64,
+        0xfdcb4fa002162a63u64, 0x73d9732fc7c8f7f6u64,
+        0x9e9f11c4014dda7eu64, 0x2867e7fddcdd9afau64,
+        0xc646d63501a1511du64, 0xb281e1fd541501b8u64,
+        0xf7d88bc24209a565u64, 0x1f225a7ca91a4226u64,
+        0x9ae757596946075fu64, 0x3375788de9b06958u64,
+        0xc1a12d2fc3978937u64, 0x0052d6b1641c83aeu64,
+        0xf209787bb47d6b84u64, 0xc0678c5dbd23a49au64,
+        0x9745eb4d50ce6332u64, 0xf840b7ba963646e0u64,
+        0xbd176620a501fbffu64, 0xb650e5a93bc3d898u64,
+        0xec5d3fa8ce427affu64, 0xa3e51f138ab4cebeu64,
+        0x93ba47c980e98cdfu64, 0xc66f336c36b10137u64,
+        0xb8a8d9bbe123f017u64, 0xb80b0047445d4184u64,
+        0xe6d3102ad96cec1du64, 0xa60dc059157491e5u64,
+        0x9043ea1ac7e41392u64, 0x87c89837ad68db2fu64,
+        0xb454e4a179dd1877u64, 0x29babe4598c311fbu64,
+        0xe16a1dc9d8545e94u64, 0xf4296dd6fef3d67au64,
+        0x8ce2529e2734bb1du64, 0x1899e4a65f58660cu64,
+        0xb01ae745b101e9e4u64, 0x5ec05dcff72e7f8fu64,
+        0xdc21a1171d42645du64, 0x76707543f4fa1f73u64,
+        0x899504ae72497ebau64, 0x6a06494a791c53a8u64,
+        0xabfa45da0edbde69u64, 0x0487db9d17636892u64,
+        0xd6f8d7509292d603u64, 0x45a9d2845d3c42b6u64,
+        0x865b86925b9bc5c2u64, 0x0b8a2392ba45a9b2u64,
+        0xa7f26836f282b732u64, 0x8e6cac7768d7141eu64,
+        0xd1ef0244af2364ffu64, 0x3207d795430cd926u64,
+        0x8335616aed761f1fu64, 0x7f44e6bd49e807b8u64,
+        0xa402b9c5a8d3a6e7u64, 0x5f16206c9c6209a6u64,
+        0xcd036837130890a1u64, 0x36dba887c37a8c0fu64,
+        0x802221226be55a64u64, 0xc2494954da2c9789u64,
+        0xa02aa96b06deb0fdu64, 0xf2db9baa10b7bd6cu64,
+        0xc83553c5c8965d3du64, 0x6f92829494e5acc7u64,
+        0xfa42a8b73abbf48cu64, 0xcb772339ba1f17f9u64,
+        0x9c69a97284b578d7u64, 0xff2a760414536efbu64,
+        0xc38413cf25e2d70du64, 0xfef5138519684abau64,
+        0xf46518c2ef5b8cd1u64, 0x7eb258665fc25d69u64,
+        0x98bf2f79d5993802u64, 0xef2f773ffbd97a61u64,
+        0xbeeefb584aff8603u64, 0xaafb550ffacfd8fau64,
+        0xeeaaba2e5dbf6784u64, 0x95ba2a53f983cf38u64,
+        0x952ab45cfa97a0b2u64, 0xdd945a747bf26183u64,
+        0xba756174393d88dfu64, 0x94f971119aeef9e4u64,
+        0xe912b9d1478ceb17u64, 0x7a37cd5601aab85du64,
+        0x91abb422ccb812eeu64, 0xac62e055c10ab33au64,
+        0xb616a12b7fe617aau64, 0x577b986b314d6009u64,
+        0xe39c49765fdf9d94u64, 0xed5a7e85fda0b80bu64,
+        0x8e41ade9fbebc27du64, 0x14588f13be847307u64,
+        0xb1d219647ae6b31cu64, 0x596eb2d8ae258fc8u64,
+        0xde469fbd99a05fe3u64, 0x6fca5f8ed9aef3bbu64,
+        0x8aec23d680043beeu64, 0x25de7bb9480d5854u64,
+        0xada72ccc20054ae9u64, 0xaf561aa79a10ae6au64,
+        0xd910f7ff28069da4u64, 0x1b2ba1518094da04u64,
+        0x87aa9aff79042286u64, 0x90fb44d2f05d0842u64,
+        0xa99541bf57452b28u64, 0x353a1607ac744a53u64,
+        0xd3fa922f2d1675f2u64, 0x42889b8997915ce8u64,
+        0x847c9b5d7c2e09b7u64, 0x69956135febada11u64,
+        0xa59bc234db398c25u64, 0x43fab9837e699095u64,
+        0xcf02b2c21207ef2eu64, 0x94f967e45e03f4bbu64,
+        0x8161afb94b44f57du64, 0x1d1be0eebac278f5u64,
+        0xa1ba1ba79e1632dcu64, 0x6462d92a69731732u64,
+        0xca28a291859bbf93u64, 0x7d7b8f7503cfdcfeu64,
+        0xfcb2cb35e702af78u64, 0x5cda735244c3d43eu64,
+        0x9defbf01b061adabu64, 0x3a0888136afa64a7u64,
+        0xc56baec21c7a1916u64, 0x088aaa1845b8fdd0u64,
+        0xf6c69a72a3989f5bu64, 0x8aad549e57273d45u64,
+        0x9a3c2087a63f6399u64, 0x36ac54e2f678864bu64,
+        0xc0cb28a98fcf3c7fu64, 0x84576a1bb416a7ddu64,
+        0xf0fdf2d3f3c30b9fu64, 0x656d44a2a11c51d5u64,
+        0x969eb7c47859e743u64, 0x9f644ae5a4b1b325u64,
+        0xbc4665b596706114u64, 0x873d5d9f0dde1feeu64,
+        0xeb57ff22fc0c7959u64, 0xa90cb506d155a7eau64,
+        0x9316ff75dd87cbd8u64, 0x09a7f12442d588f2u64,
+        0xb7dcbf5354e9beceu64, 0x0c11ed6d538aeb2fu64,
+        0xe5d3ef282a242e81u64, 0x8f1668c8a86da5fau64,
+        0x8fa475791a569d10u64, 0xf96e017d694487bcu64,
+        0xb38d92d760ec4455u64, 0x37c981dcc395a9acu64,
+        0xe070f78d3927556au64, 0x85bbe253f47b1417u64,
+        0x8c469ab843b89562u64, 0x93956d7478ccec8eu64,
+        0xaf58416654a6babbu64, 0x387ac8d1970027b2u64,
+        0xdb2e51bfe9d0696au64, 0x06997b05fcc0319eu64,
+        0x88fcf317f22241e2u64, 0x441fece3bdf81f03u64,
+        0xab3c2fddeeaad25au64, 0xd527e81cad7626c3u64,
+        0xd60b3bd56a5586f1u64, 0x8a71e223d8d3b074u64,
+        0x85c7056562757456u64, 0xf6872d5667844e49u64,
+        0xa738c6bebb12d16cu64, 0xb428f8ac016561dbu64,
+        0xd106f86e69d785c7u64, 0xe13336d701beba52u64,
+        0x82a45b450226b39cu64, 0xecc0024661173473u64,
+        0xa34d721642b06084u64, 0x27f002d7f95d0190u64,
+        0xcc20ce9bd35c78a5u64, 0x31ec038df7b441f4u64,
+        0xff290242c83396ceu64, 0x7e67047175a15271u64,
+        0x9f79a169bd203e41u64, 0x0f0062c6e984d386u64,
+        0xc75809c42c684dd1u64, 0x52c07b78a3e60868u64,
+        0xf92e0c3537826145u64, 0xa7709a56ccdf8a82u64,
+        0x9bbcc7a142b17ccbu64, 0x88a66076400bb691u64,
+        0xc2abf989935ddbfeu64, 0x6acff893d00ea435u64,
+        0xf356f7ebf83552feu64, 0x0583f6b8c4124d43u64,
+        0x98165af37b2153deu64, 0xc3727a337a8b704au64,
+        0xbe1bf1b059e9a8d6u64, 0x744f18c0592e4c5cu64,
+        0xeda2ee1c7064130cu64, 0x1162def06f79df73u64,
+        0x9485d4d1c63e8be7u64, 0x8addcb5645ac2ba8u64,
+        0xb9a74a0637ce2ee1u64, 0x6d953e2bd7173692u64,
+        0xe8111c87c5c1ba99u64, 0xc8fa8db6ccdd0437u64,
+        0x910ab1d4db9914a0u64, 0x1d9c9892400a22a2u64,
+        0xb54d5e4a127f59c8u64, 0x2503beb6d00cab4bu64,
+        0xe2a0b5dc971f303au64, 0x2e44ae64840fd61du64,
+        0x8da471a9de737e24u64, 0x5ceaecfed289e5d2u64,
+        0xb10d8e1456105dadu64, 0x7425a83e872c5f47u64,
+        0xdd50f1996b947518u64, 0xd12f124e28f77719u64,
+        0x8a5296ffe33cc92fu64, 0x82bd6b70d99aaa6fu64,
+        0xace73cbfdc0bfb7bu64, 0x636cc64d1001550bu64,
+        0xd8210befd30efa5au64, 0x3c47f7e05401aa4eu64,
+        0x8714a775e3e95c78u64, 0x65acfaec34810a71u64,
+        0xa8d9d1535ce3b396u64, 0x7f1839a741a14d0du64,
+        0xd31045a8341ca07cu64, 0x1ede48111209a050u64,
+        0x83ea2b892091e44du64, 0x934aed0aab460432u64,
+        0xa4e4b66b68b65d60u64, 0xf81da84d5617853fu64,
+        0xce1de40642e3f4b9u64, 0x36251260ab9d668eu64,
+        0x80d2ae83e9ce78f3u64, 0xc1d72b7c6b426019u64,
+        0xa1075a24e4421730u64, 0xb24cf65b8612f81fu64,
+        0xc94930ae1d529cfcu64, 0xdee033f26797b627u64,
+        0xfb9b7cd9a4a7443cu64, 0x169840ef017da3b1u64,
+        0x9d412e0806e88aa5u64, 0x8e1f289560ee864eu64,
+        0xc491798a08a2ad4eu64, 0xf1a6f2bab92a27e2u64,
+        0xf5b5d7ec8acb58a2u64, 0xae10af696774b1dbu64,
+        0x9991a6f3d6bf1765u64, 0xacca6da1e0a8ef29u64,
+        0xbff610b0cc6edd3fu64, 0x17fd090a58d32af3u64,
+        0xeff394dcff8a948eu64, 0xddfc4b4cef07f5b0u64,
+        0x95f83d0a1fb69cd9u64, 0x4abdaf101564f98eu64,
+        0xbb764c4ca7a4440fu64, 0x9d6d1ad41abe37f1u64,
+        0xea53df5fd18d5513u64, 0x84c86189216dc5edu64,
+        0x92746b9be2f8552cu64, 0x32fd3cf5b4e49bb4u64,
+        0xb7118682dbb66a77u64, 0x3fbc8c33221dc2a1u64,
+        0xe4d5e82392a40515u64, 0x0fabaf3feaa5334au64,
+        0x8f05b1163ba6832du64, 0x29cb4d87f2a7400eu64,
+        0xb2c71d5bca9023f8u64, 0x743e20e9ef511012u64,
+        0xdf78e4b2bd342cf6u64, 0x914da9246b255416u64,
+        0x8bab8eefb6409c1au64, 0x1ad089b6c2f7548eu64,
+        0xae9672aba3d0c320u64, 0xa184ac2473b529b1u64,
+        0xda3c0f568cc4f3e8u64, 0xc9e5d72d90a2741eu64,
+        0x8865899617fb1871u64, 0x7e2fa67c7a658892u64,
+        0xaa7eebfb9df9de8du64, 0xddbb901b98feeab7u64,
+        0xd51ea6fa85785631u64, 0x552a74227f3ea565u64,
+        0x8533285c936b35deu64, 0xd53a88958f87275fu64,
+        0xa67ff273b8460356u64, 0x8a892abaf368f137u64,
+        0xd01fef10a657842cu64, 0x2d2b7569b0432d85u64,
+        0x8213f56a67f6b29bu64, 0x9c3b29620e29fc73u64,
+        0xa298f2c501f45f42u64, 0x8349f3ba91b47b8fu64,
+        0xcb3f2f7642717713u64, 0x241c70a936219a73u64,
+        0xfe0efb53d30dd4d7u64, 0xed238cd383aa0110u64,
+        0x9ec95d1463e8a506u64, 0xf4363804324a40aau64,
+        0xc67bb4597ce2ce48u64, 0xb143c6053edcd0d5u64,
+        0xf81aa16fdc1b81dau64, 0xdd94b7868e94050au64,
+        0x9b10a4e5e9913128u64, 0xca7cf2b4191c8326u64,
+        0xc1d4ce1f63f57d72u64, 0xfd1c2f611f63a3f0u64,
+        0xf24a01a73cf2dccfu64, 0xbc633b39673c8cecu64,
+        0x976e41088617ca01u64, 0xd5be0503e085d813u64,
+        0xbd49d14aa79dbc82u64, 0x4b2d8644d8a74e18u64,
+        0xec9c459d51852ba2u64, 0xddf8e7d60ed1219eu64,
+        0x93e1ab8252f33b45u64, 0xcabb90e5c942b503u64,
+        0xb8da1662e7b00a17u64, 0x3d6a751f3b936243u64,
+        0xe7109bfba19c0c9du64, 0x0cc512670a783ad4u64,
+        0x906a617d450187e2u64, 0x27fb2b80668b24c5u64,
+        0xb484f9dc9641e9dau64, 0xb1f9f660802dedf6u64,
+        0xe1a63853bbd26451u64, 0x5e7873f8a0396973u64,
+        0x8d07e33455637eb2u64, 0xdb0b487b6423e1e8u64,
+        0xb049dc016abc5e5fu64, 0x91ce1a9a3d2cda62u64,
+        0xdc5c5301c56b75f7u64, 0x7641a140cc7810fbu64,
+        0x89b9b3e11b6329bau64, 0xa9e904c87fcb0a9du64,
+        0xac2820d9623bf429u64, 0x546345fa9fbdcd44u64,
+        0xd732290fbacaf133u64, 0xa97c177947ad4095u64,
+        0x867f59a9d4bed6c0u64, 0x49ed8eabcccc485du64,
+        0xa81f301449ee8c70u64, 0x5c68f256bfff5a74u64,
+        0xd226fc195c6a2f8cu64, 0x73832eec6fff3111u64,
+        0x83585d8fd9c25db7u64, 0xc831fd53c5ff7eabu64,
+        0xa42e74f3d032f525u64, 0xba3e7ca8b77f5e55u64,
+        0xcd3a1230c43fb26fu64, 0x28ce1bd2e55f35ebu64,
+        0x80444b5e7aa7cf85u64, 0x7980d163cf5b81b3u64,
+        0xa0555e361951c366u64, 0xd7e105bcc332621fu64,
+        0xc86ab5c39fa63440u64, 0x8dd9472bf3fefaa7u64,
+        0xfa856334878fc150u64, 0xb14f98f6f0feb951u64,
+        0x9c935e00d4b9d8d2u64, 0x6ed1bf9a569f33d3u64,
+        0xc3b8358109e84f07u64, 0x0a862f80ec4700c8u64,
+        0xf4a642e14c6262c8u64, 0xcd27bb612758c0fau64,
+        0x98e7e9cccfbd7dbdu64, 0x8038d51cb897789cu64,
+        0xbf21e44003acdd2cu64, 0xe0470a63e6bd56c3u64,
+        0xeeea5d5004981478u64, 0x1858ccfce06cac74u64,
+        0x95527a5202df0ccbu64, 0x0f37801e0c43ebc8u64,
+        0xbaa718e68396cffdu64, 0xd30560258f54e6bau64,
+        0xe950df20247c83fdu64, 0x47c6b82ef32a2069u64,
+        0x91d28b7416cdd27eu64, 0x4cdc331d57fa5441u64,
+        0xb6472e511c81471du64, 0xe0133fe4adf8e952u64,
+        0xe3d8f9e563a198e5u64, 0x58180fddd97723a6u64,
+        0x8e679c2f5e44ff8fu64, 0x570f09eaa7ea7648u64
+    ];
+    const i = (q + 342) * 2;
+    return [t[i], t[i + 1]];
+}
+// End of the generated table of the powers of five.
 
 // ---------------------------------------------------------------------
 // `toUpperCase` and `toLowerCase` (SPEC section 17, order 2): the case

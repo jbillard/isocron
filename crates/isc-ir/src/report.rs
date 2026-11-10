@@ -526,8 +526,11 @@ impl<'p> Walk<'p> {
                 } else {
                     self.push(e, "stack", format!("`{}`", name), None, "a call of a function that is not inlined (recursive, too large (D336) or `@cold` (D584)): it uses the stack".into(), None);
                 }
-                // a jump gives no result of its own
-                if e.ty.has_heap() && !tail {
+                // a jump gives no result of its own; nor is the result of a
+                // function that only the prelude can name listed (D598: the
+                // message of `tryParseI64` or of `tryParseF64`, which the
+                // runtime made before them without a line here)
+                if e.ty.has_heap() && !tail && !internal {
                     let (what, bytes) = self.size(e);
                     self.push(e, "alloc", what, bytes, format!("the result of the function `{}`, called (rule M2)", name), Some("M2"));
                 }

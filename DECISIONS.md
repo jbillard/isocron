@@ -14863,3 +14863,87 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the test `roundings_are_instructions` (native, SSE4.2, AVX, AVX2, 1
     and 4 threads, WebAssembly, the functions as values); linked for the
     two Windows targets.
+- **D614 — `parseF64` and `tryParseF64` written in Isocron (2026-11-10).**
+  The reading of a float out of the runtime: `isc_parse_f64` and
+  `isc_try_parse_f64` (Rust's `str::parse`, two `unsafe` functions) are
+  gone; `parseF64` and `tryParseF64` are functions of the prelude over
+  `$parseF64Value`, which gives the value and a word that says "no
+  number", as `parseI64` (D598). Written by an agent in its own branch
+  (five commits, squashed here), each claim below measured again by me.
+  - The method: no text is read a byte at a time. The words of a text (8
+    bytes) are tested at once for digits, a point and an `e`
+    (`$bytesEqual`), their digits made a number by three multiplications;
+    a text of 8 bytes or less takes one path (`$float8`), up to 16
+    another (`$float16`), longer ones `$float20`; 19 digits or fewer and a
+    small exponent are one multiplication or division of floats, exact;
+    otherwise the product by a power of five in 128 bits (the table of the
+    writing of floats, D604, the same) and, when that cannot tell, the
+    whole decimal (`$floatAny`: any length, exact). `$bitsFloat(w)`, the
+    float of a pattern of bits, is the one primitive added (the prelude's
+    alone).
+  - **The same values as the version in Rust, bit for bit**: my own corpus
+    (300 135 texts: random floats written sixteen ways, their exact
+    decimals up to 767 digits, the exact middles of two neighbours and the
+    texts just below and above, subnormals, the ends of the range, forms
+    of exponents, 50 texts that are no number) gives the same outputs with
+    the module of D611, built whole and from the compiler of before the
+    step 7; the interpreter the same on 2135 of them. (The agent's: 18.27
+    million texts on an earlier state of the code, 612 000 on this one,
+    and a test of 700 000 against `str::parse` in the suite.)
+  - Instructions a text, one thread, 4096 texts, Rust → Isocron linked
+    with the module (built whole when it differs), counted by me:
+    decimals 198.7 → 103.3; short 188.5 → 97.1; integers of 6 digits
+    169.9 → 78.2; integers 155.0 → 105.3; of 17 digits 276.4 → 202.2;
+    money 205.6 → 147.1; thirds 315.6 → 254.8; with an exponent 235.4 →
+    224.4; scientific 282.5 → 256.6 (254.1); with three digits of
+    exponent 389.7 → 353.5 (347.8); 17 digits and an exponent 388.9 →
+    354.3 (343.5); small 430.5 → 298.5; large 718.8 → 628.4; huge 1332.3
+    → 599.2; tiny 3467.6 → 603.0; long 754.1 → 707.8; ties 3693.1 →
+    1111.2; names 113.1 → 106.0; mixed 227.9 → 173.2; random 227.8 →
+    173.1. Twenty kinds: 4.7 to 82.6 % fewer.
+  - Cycles a text, the pinned core, the median of 9, Rust → with the
+    module, measured by me on the ten kinds whose margins are the
+    thinnest: long 155.63 → 154.25 (−0.9 %); money 45.02 → 44.36 (−1.5
+    %); scientific 64.70 → 63.05 (−2.6 %); thirds 67.74 → 65.70 (−3.0 %);
+    with an exponent 53.23 → 51.59 (−3.1 %); three digits of exponent
+    86.40 → 81.58 (−5.6 %); 17 digits and an exponent 92.00 → 85.28 (−7.3
+    %); names 25.77 → 23.49 (−8.8 %); integers 34.55 → 29.09 (−15.8 %);
+    decimals 44.11 → 31.26 (−29.1 %). The ten others, by the agent's
+    measure (least cycles of quiet pairs): −20 to −82 %. `long` is within
+    the spread of the runs (155.27 to 159.22 against 153.68 to 157.13):
+    as fast, not faster.
+  - **The module (D611) and the functions compiled apart.** The rare
+    paths are `@cold` (fifteen functions) and go into the module; the
+    module takes each function that only the prelude can name and that no
+    program inlines, whatever lowered it (it took those lowered for the
+    code generator alone), and `PRE_SOURCE` calls `parseF64` and
+    `tryParseF64`. Linked with the module, two kinds were above Rust (+0.8
+    and +0.7 % of cycles) for what the functions had lost of their
+    callers, as D611's: a constant argument (`$decimalBitsOf(w, q,
+    strict)`: two functions now, 165.8 → 148.9 instructions a long text),
+    a range (`$expo16`: `at` 0 or 1 and 9 bytes or more, tested once at
+    the top: 232 instructions and two bounds panics → 213 and none;
+    `$scale40`: the length from the text, tested once). Two other tests at
+    the top cost more than they gave and were removed.
+  - **What it costs**, measured by me:
+    - The time of a compilation, instructions of the compiler (ac788ee →
+      this): `iscc check` of a hello 102.9 → 150.1 million and its build
+      218.8 → 266.1 (1609 lines more in the prelude, parsed and typed at
+      each compilation); a program that reads one float 187.9 → 1091.8
+      (0.047 → 0.137 s; 5464.3 built whole); binary-trees 1309.1 → 1350.4.
+      The first build of a compiler: 3846 → 8978 million; the object of
+      the module 61 048 → 127 984 bytes.
+    - The executable of a program that reads a float: 86 488 → 129 176
+      bytes (`$floatAny`, 25 KB, and its table). A program that reads
+      none: the same or less (a hello 70 808 → 70 488).
+    - **The interpreter**: it called Rust's `str::parse`; it now runs the
+      functions of the prelude, node by node, as for `parseI64` since
+      D598: 211 → 3514 ns a decimal text, 215 → 16 226 a third, 419 →
+      73 008 a tie (17 to 174 times). Kept so: the same code interpreted
+      and compiled, and no function of Rust back; `iscc run` of a program
+      that reads many floats is slow (TODO).
+    - Memory (the agent's measure, VmHWM): the same at 3000 and 30 000
+      rounds for four kinds (2864 KiB), and for a loop of `tryParseF64`
+      with a third of its texts refused under the three allocators.
+  - Left in Rust around it: the floats of the CSV readers
+    (`isc_parse_csv_f64`, `isc_read_csv_f64`, `isc_try_read_csv_f64`).

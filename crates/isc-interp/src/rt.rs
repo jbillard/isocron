@@ -130,10 +130,6 @@ pub fn msg_bench(r: i64) -> String {
     text(&Panic::BenchReps(r))
 }
 
-pub fn parse_f64(s: &str) -> Result<f64, String> {
-    sem::parse_f64(s).ok_or_else(|| text(&Panic::ParseF64(s)))
-}
-
 pub fn msg_not_utf8(i: i64) -> String {
     text(&Panic::NotUtf8(i))
 }

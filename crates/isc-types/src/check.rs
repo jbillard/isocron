@@ -162,7 +162,6 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "print" => Prim::Print,
         "clock" => Prim::Clock,
         "bench" => Prim::Bench,
-        "parseF64" => Prim::ParseF64,
         "concat" | "++" => Prim::Concat,
         "len" | "$length" => Prim::StrLen,
         "bytes" => Prim::Bytes,
@@ -207,6 +206,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "leadingZeros" => Prim::LeadingZeros,
         "$textTail" => Prim::TextTail,
         "$floatBits" => Prim::FloatBits,
+        "$bitsFloat" => Prim::BitsFloat,
         "$mulHigh" => Prim::MulHigh,
         "$decimalText" => Prim::DecimalText,
         "$withText" => Prim::WithText,
@@ -1948,7 +1948,7 @@ impl<'g> FnCx<'g> {
                 Prim::ToUpper | Prim::ToLower => {
                     Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Str), false), span))
                 }
-                Prim::ParseF64 | Prim::ParseFloat | Prim::JsNumber => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::F64), false), span)),
+                Prim::ParseFloat | Prim::JsNumber => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::F64), false), span)),
                 Prim::StrLen => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str], Box::new(Ty::Int(IntKind::I64)), false), span)),
                 Prim::Concat => Ok(self.mk(TExprKind::PrimRef(p), Ty::Fn(vec![Ty::Str, Ty::Str], Box::new(Ty::Str), false), span)),
                 Prim::ToString => {
@@ -2750,7 +2750,7 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits | Prim::Words => 1,
+            Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits | Prim::BitsFloat | Prim::Words => 1,
             Prim::Concat | Prim::MulHigh => 2,
             Prim::ReadText | Prim::Lines | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
@@ -3057,11 +3057,6 @@ impl<'g> FnCx<'g> {
                 }
                 Ok(mk(vec![f], Ty::Bool, self))
             }
-            Prim::ParseF64 => {
-                let x = self.check(&args[0], None)?;
-                self.unify(&Ty::Str, &x.ty, x.span)?;
-                Ok(mk(vec![x], Ty::F64, self))
-            }
             Prim::Concat => {
                 let a = self.check(&args[0], None)?;
                 // two arrays: `[n]T ++ [m]T -> [n + m]T` (D136)
@@ -3098,7 +3093,6 @@ impl<'g> FnCx<'g> {
                     Size::Poly(Poly::sym(s))
                 };
                 let value = match f {
-                    Fallible::ParseF64 => Ty::F64,
                     Fallible::ReadBytes => Ty::Array(exist(self, "k"), Box::new(Ty::Int(IntKind::U8))),
                     Fallible::ReadF64 => Ty::Array(exist(self, "k"), Box::new(Ty::F64)),
                     Fallible::ReadText => Ty::Str,
@@ -3180,6 +3174,13 @@ impl<'g> FnCx<'g> {
                 let x = self.check(&args[0], None)?;
                 self.require(&x.ty, class::FLOAT | class::SCALAR, x.span)?;
                 Ok(mk(vec![x], Ty::Int(IntKind::U64), self))
+            }
+            // `$bitsFloat(w)`: a `u64`, a `f64`
+            Prim::BitsFloat => {
+                let t = Ty::Int(IntKind::U64);
+                let x = self.check(&args[0], Some(&t))?;
+                self.unify(&t, &x.ty, x.span)?;
+                Ok(mk(vec![x], Ty::F64, self))
             }
             // `$mulHigh(a, b)`: two `u64`, a `u64`
             Prim::MulHigh => {
@@ -4222,7 +4223,7 @@ fn check_extern_sig(e: &ast::ExternDecl, sig: &Sig) -> Result<()> {
 /// everywhere, then removed: an alias is not a new type, as in TypeScript.
 /// The names in the body of an alias are first resolved in its own module;
 /// a size variable in it becomes one of the signature that uses it.
-fn expand_aliases(p: &mut ast::Program, imports: &Imports) -> Result<()> {
+pub(crate) fn expand_aliases(p: &mut ast::Program, imports: &Imports) -> Result<()> {
     use ast::{TypeExpr, TypeKind as K, Visit};
     struct Alias {
         name: String,

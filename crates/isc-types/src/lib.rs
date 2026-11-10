@@ -47,6 +47,8 @@ pub fn check_parsed(user: &isc_syntax::ast::Program) -> Result<tast::TProgram, D
             alias: None,
         }),
     );
+    // the type aliases of the prelude replaced, as those of a program (D159)
+    check::expand_aliases(&mut prelude, &Default::default())?;
     check::check_program(user, &prelude)
 }
 

@@ -1061,14 +1061,12 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_print_bytes(ptr, i64)",
     "declare void @isc_flush()",
     "declare i32 @isc_main_end(i32)",
-    "declare void @isc_try_parse_f64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_bytes(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_f64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_text(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_csv_f64(ptr, ptr, ptr, i64, i64)",
     "declare void @isc_try_write_bytes(ptr, ptr, i64, ptr, i64)",
     "declare i64 @isc_clock_ns()",
-    "declare double @isc_parse_f64(ptr, i64, i32, i32)",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_str_adopt_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_read_text(ptr, ptr, i64, i32, i32)",
@@ -1670,14 +1668,17 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
     if !matches!(mode, Pre::Inline) {
         let wired = !(opts.isa.is_wasm() || opts.windows) && p.kernel.is_some();
         let kernel = p.kernel_fns();
+        // (and each function that only the prelude can name, lowered for a
+        // call of the program: the rare paths of the reading of a float,
+        // `@cold`, are the same in every program that reads one)
         let mut named: HashMap<&str, usize> = HashMap::new();
-        for f in p.fns.iter().skip(p.text_fns as usize) {
+        for f in p.fns.iter() {
             *named.entry(f.name.as_str()).or_default() += 1;
         }
         // the name of the function `i` that every program gives it
         let stable = |i: usize| -> Option<String> {
             let f = p.fns.get(i)?;
-            let ours = i as u32 >= p.text_fns && f.name.starts_with('$') && named.get(f.name.as_str()) == Some(&1);
+            let ours = f.name.starts_with('$') && named.get(f.name.as_str()) == Some(&1);
             ours.then(|| format!("isc.pre.{}", &f.name[1..]))
         };
         let canon = |name: &str| -> String { lowered_name(name).and_then(|(i, variant)| stable(i).map(|n| format!("{}{}", n, variant))).unwrap_or_else(|| name.to_string()) };
@@ -3465,7 +3466,21 @@ impl<'p> Gen<'p> {
         // entries of the generated code; their rare paths are `@cold`
         // functions that test the stack themselves
         let kernel_entry = self.p.kernel.is_some_and(|(_, a, b)| i as u32 == a || i as u32 == b);
-        if !self.opts.isa.is_wasm() && !int_text && !float_text && !kernel_entry {
+        // a function that only the prelude can name and that calls no
+        // other but in tail position, its frame then given to the callee
+        // (the reading of a float hands its text from one function to the
+        // next): never below another frame of its kind, so one small frame
+        // at most above the last function that tested the stack, which the
+        // margin of the floor holds as it holds the frames of the runtime
+        let hands_over = f.name.starts_with('$') && !self.opts.isa.is_wasm() && {
+            fn calls_in(e: &Expr) -> usize {
+                matches!(e.kind, ExprKind::Call(..)) as usize + e.children().into_iter().map(calls_in).sum::<usize>()
+            }
+            let own = isc_ir::passes::tail_calls(i as u32, f);
+            let others = if own.values().any(|c| !c.moved.is_empty()) { 0 } else { isc_ir::passes::other_tail_calls(i as u32, f).len() };
+            calls_in(&f.body) == own.len() + others
+        };
+        if !self.opts.isa.is_wasm() && !int_text && !float_text && !kernel_entry && !hands_over {
             self.stack_check(&f.name, f.span);
         }
         // the state of a loop (D206): lent by the caller, copied once here;
@@ -15156,6 +15171,8 @@ impl<'p> Gen<'p> {
                 };
                 v(r, "i64")
             }
+            // `$bitsFloat(w)`: the float of these bits
+            S::BitsFloat => v(self.ins(format!("bitcast i64 {} to double", vals[0].r)), "double"),
             // `$mulHigh(a, b)`: the high half of the product of 128 bits,
             // one instruction of x86-64; WebAssembly has no such product
             // (LLVM would call a function of a C library there): the four
@@ -15478,6 +15495,11 @@ impl<'p> Gen<'p> {
                 let idx = self.ins(format!("select i1 {}, i64 {}, i64 {}", c0, last, at));
                 self.guard(&ok, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 0, {})", idx, len, Self::pos(e.span)));
                 let base = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, at));
+                // a whole word asked by a literal: one load (two loads of 4
+                // bytes are not always made one again)
+                if n == "8" {
+                    return Ok(v(self.ins(format!("load i64, ptr {}, align 1", base)), "i64"));
+                }
                 let big = self.ins(format!("icmp uge i64 {}, 4", n));
                 let (lbig, lsmall, ljoin) = (self.label(), self.label(), self.label());
                 self.cbr(&big, &lbig, &lsmall);
@@ -16040,10 +16062,6 @@ impl<'p> Gen<'p> {
                 v("false", "i1")
             }
             ActionOp::Clock => v(self.ins("call i64 @isc_clock_ns()".into()), "i64"),
-            ActionOp::ParseF64 => {
-                let (p, n) = self.str_parts(&vals[0]);
-                v(self.ins(format!("call double @isc_parse_f64(ptr {}, i64 {}, {})", p, n, pos)), "double")
-            }
             ActionOp::PrintBytes => {
                 let (p, n) = self.str_parts(&vals[0]);
                 self.emit(format!("call void @isc_print_bytes(ptr {}, i64 {})", p, n));
@@ -16092,7 +16110,6 @@ impl<'p> Gen<'p> {
                     return Ok(v(self.ins(format!("load {{ ptr, i64 }}, ptr {}", err)), "{ ptr, i64 }"));
                 }
                 let (vt, name) = match f {
-                    F::ParseF64 => ("double".to_string(), "isc_try_parse_f64"),
                     F::ReadBytes => ("{ ptr, i64 }".to_string(), "isc_try_read_bytes"),
                     F::ReadF64 => ("{ ptr, i64 }".to_string(), "isc_try_read_f64"),
                     F::ReadText => ("{ ptr, i64 }".to_string(), "isc_try_read_text"),

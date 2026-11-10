@@ -123,8 +123,6 @@ pub enum Panic<'a> {
     /// A `string` given to an `extern` function contains a NUL byte: it
     /// cannot be passed as a C string (D125).
     ExternNul(&'a str),
-    /// `parseF64` of a text that is not a number (D134).
-    ParseF64(&'a str),
     /// `stringOf` of bytes that are not UTF-8: the index of the first
     /// invalid byte (D134).
     NotUtf8(i64),
@@ -170,7 +168,6 @@ impl fmt::Display for Panic<'_> {
             Panic::Window { k, len } => write!(f, "window of {} elements over an array of length {}", k, len),
             Panic::StackOverflow(name) => write!(f, "stack overflow: too many nested calls of `{}`", name),
             Panic::ExternNul(name) => write!(f, "a string passed to the extern function `{}` contains a NUL byte", name),
-            Panic::ParseF64(s) => write!(f, "parseF64: `{}` is not a valid number", s),
             Panic::NotUtf8(i) => write!(f, "stringOf: the bytes are not UTF-8 (invalid from byte {})", i),
             Panic::TextNotUtf8 { path, at } => write!(f, "readText: `{}` is not UTF-8 text (invalid from byte {})", path, at),
             Panic::SplitEmpty => write!(f, "split: the separator is empty"),
@@ -207,9 +204,10 @@ impl fmt::Display for Panic<'_> {
     }
 }
 
-/// `parseF64` (D134): the decimal forms of Rust's `f64::from_str`
+/// A number of a CSV text, as `parseF64` reads one (itself written in
+/// Isocron, in the prelude): the decimal forms of Rust's `f64::from_str`
 /// (`1.5`, `-2e-3`, `inf`, `NaN`), correctly rounded.
-pub fn parse_f64(s: &str) -> Option<f64> {
+fn parse_f64(s: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 

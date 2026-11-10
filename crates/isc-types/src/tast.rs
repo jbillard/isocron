@@ -30,7 +30,6 @@ impl ScalarTy {
 /// and an error message, `""` when the action succeeds, instead of a panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fallible {
-    ParseF64,
     ReadBytes,
     ReadF64,
     ReadText,
@@ -42,7 +41,6 @@ pub enum Fallible {
 impl Fallible {
     pub fn from_name(name: &str) -> Option<Fallible> {
         Some(match name.strip_suffix("OrError")? {
-            "parseF64" => Fallible::ParseF64,
             "readBytes" => Fallible::ReadBytes,
             "readF64" => Fallible::ReadF64,
             "readText" => Fallible::ReadText,
@@ -96,13 +94,12 @@ pub enum Prim {
     Bench,
     /// Strings (D134): `concat(a, b)` (also `a ++ b`), `len(s)` (bytes),
     /// `bytes(s)`, `stringOf(b)` (UTF-8 checked), `toString(v)` of a
-    /// scalar, and the action `parseF64(s)`.
+    /// scalar (`parseF64` is of the prelude).
     Concat,
     StrLen,
     Bytes,
     StringOf,
     ToString,
-    ParseF64,
     /// Text (D135): the actions `readText`, `writeText`,
     /// `parseCsvF64(text, skip)`, `readCsvF64(path, skip)`; the
     /// functions `lines`, `split`, `join` (`trim` is of the prelude, D590).
@@ -167,6 +164,9 @@ pub enum Prim {
     /// prelude alone can name it (the text of a float reads no bit of a
     /// NaN but that it is one)
     FloatBits,
+    /// `$bitsFloat(w)`: the `f64` whose bits are those of the `u64` `w`
+    /// (the reverse of `$floatBits`); the prelude alone can name it
+    BitsFloat,
     /// `$mulHigh(a, b)`: the high 64 bits of the product of two `u64` (128
     /// bits); the prelude alone can name it
     MulHigh,
@@ -634,15 +634,7 @@ impl Prim {
                 | Prim::ParseCsvF64
                 | Prim::ReadCsvF64
                 | Prim::PrintBytes
-                // parsing a text has no effect: a function (D156)
-                | Prim::OrError(
-                    Fallible::ReadBytes
-                        | Fallible::ReadF64
-                        | Fallible::ReadText
-                        | Fallible::ReadCsvF64
-                        | Fallible::WriteBytes
-                        | Fallible::WriteText
-                )
+                | Prim::OrError(_)
         )
     }
 }

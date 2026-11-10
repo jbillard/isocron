@@ -434,6 +434,11 @@ impl Interp<'_> {
                 Value::F32(f) => Value::Int(f.to_bits() as i64),
                 v => panic!("a float expected, got {:?}", v),
             },
+            // `$bitsFloat(w)`: the float of these bits
+            S::BitsFloat => match &vs[0] {
+                Value::Int(w) => Value::F64(f64::from_bits(*w as u64)),
+                v => panic!("an integer expected, got {:?}", v),
+            },
             // `$mulHigh(a, b)`: the high half of the product of 128 bits
             S::MulHigh => match (&vs[0], &vs[1]) {
                 (Value::Int(a), Value::Int(b)) => Value::Int(((*a as u64 as u128 * *b as u64 as u128) >> 64) as i64),
@@ -1473,10 +1478,6 @@ impl<'a> Interp<'a> {
                 };
                 let a = self.string(&args[0])?;
                 match f {
-                    F::ParseF64 => match rt::parse_f64(&a) {
-                        Ok(v) => pair(Value::F64(v), Ok(())),
-                        Err(m) => pair(Value::F64(0.0), Err(m)),
-                    },
                     F::ReadBytes => match rt::read_bytes_file(&a) {
                         Ok(v) => pair(Value::Array(Rc::new(Array::Int(v.into_iter().map(|b| b as i64).collect()))), Ok(())),
                         Err(m) => pair(empty(&vt), Err(m)),
@@ -1533,13 +1534,6 @@ impl<'a> Interp<'a> {
             ActionOp::Clock => {
                 thread_local! { static T0: std::time::Instant = std::time::Instant::now(); }
                 Value::Int(T0.with(|t| t.elapsed().as_nanos() as i64))
-            }
-            ActionOp::ParseF64 => {
-                let s = self.string(&args[0])?;
-                match rt::parse_f64(&s) {
-                    Ok(v) => Value::F64(v),
-                    Err(m) => return panic_at(e, m),
-                }
             }
             // text (D135)
             ActionOp::ReadText => {

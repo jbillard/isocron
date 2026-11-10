@@ -412,3 +412,23 @@ action main(args: string[k]): i32 {
     let stack: Vec<(u32, &str)> = es.iter().filter(|e| e.kind == "stack").map(|e| (e.line, e.what.as_str())).collect();
     assert_eq!(stack, vec![(2, "`depth`"), (6, "`depth`")], "{}", d);
 }
+
+/// D598: the message of `tryParseF64` and of `tryParseI64` is the result of
+/// a function that only the prelude can name: it has no line in the report
+/// of a program, as when the runtime made it.
+#[test]
+fn the_result_of_a_function_of_the_prelude_is_not_listed() {
+    let es = report(
+        "action main(args: string[k]): i32 {
+    print(match (tryParseF64(args[0])) { Ok(v) => v, Err(e) => 0.0 });
+    print(match (tryParseI64(args[0])) { Ok(v) => v, Err(e) => 0 });
+    print(parseF64(args[0]));
+    return 0;
+}
+",
+    );
+    let d = dump(&es);
+    assert!(!d.contains('$'), "a name of the prelude: {}", d);
+    assert!(es.iter().all(|e| e.kind != "alloc" && e.line <= 4), "{}", d);
+    assert_eq!(find(&es, "bounds", 2).len(), 1, "{}", d);
+}

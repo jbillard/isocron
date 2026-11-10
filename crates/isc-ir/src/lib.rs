@@ -159,7 +159,6 @@ pub enum ActionOp {
     /// `print`, with the index of its shape in `Program::shapes`.
     Print(u32),
     Clock,
-    ParseF64,
     /// Text (D135).
     ReadText,
     WriteText,
@@ -241,6 +240,8 @@ pub enum StrOp {
     TextTail,
     /// `$floatBits(x)`: the bits of a float as a `u64`.
     FloatBits,
+    /// `$bitsFloat(w)`: the `f64` of the bits of a `u64`.
+    BitsFloat,
     /// `$mulHigh(a, b)`: the high half of the product of two `u64`.
     MulHigh,
     /// `$decimalText(d, w1, w2, n, point, minus)`: a decimal number of 17
@@ -642,9 +643,15 @@ impl Expr {
         Expr { kind, ty, span, reassoc: false }
     }
 
-    /// Marks this expression and all inside it `reassoc`.
+    /// Marks this expression and all inside it `reassoc`, but for a float
+    /// whose bits are read or made (`$floatBits`, `$bitsFloat`): the
+    /// operations that compute it stay as the prelude writes them (the
+    /// reading of a float gives the same bits wherever it is called).
     pub fn mark_reassoc(&mut self) {
         self.reassoc = true;
+        if matches!(self.kind, ExprKind::StrOp(StrOp::FloatBits | StrOp::BitsFloat, _)) {
+            return;
+        }
         for c in self.children_mut() {
             c.mark_reassoc();
         }

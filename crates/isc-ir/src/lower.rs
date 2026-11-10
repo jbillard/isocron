@@ -2228,8 +2228,6 @@ impl<'p> Lower<'p> {
                         Ok(Expr::new(ExprKind::Sqrt(Box::new(x)), t, span))
                     }
                     Prim::Convert(_) => Ok(Expr::new(ExprKind::Convert(Box::new(x)), ret.clone(), span)),
-                    // parsing as a function (D156): `lines(t).map(parseF64)`
-                    Prim::ParseF64 => Ok(Expr::new(ExprKind::Action(ActionOp::ParseF64, vec![x]), ret.clone(), span)),
                     Prim::ParseFloat => Ok(Expr::new(ExprKind::StrOp(StrOp::JsParseFloat, vec![x]), ret.clone(), span)),
                     Prim::JsNumber => Ok(Expr::new(ExprKind::StrOp(StrOp::JsNumber, vec![x]), ret.clone(), span)),
                     _ => internal(span, "primitive used as a value"),
@@ -2650,6 +2648,7 @@ impl<'p> Lower<'p> {
             | Prim::LeadingZeros
             | Prim::TextTail
             | Prim::FloatBits
+            | Prim::BitsFloat
             | Prim::MulHigh
             | Prim::DecimalText
             | Prim::WithText
@@ -2668,6 +2667,7 @@ impl<'p> Lower<'p> {
                     Prim::LeadingZeros => StrOp::LeadingZeros,
                     Prim::TextTail => StrOp::TextTail,
                     Prim::FloatBits => StrOp::FloatBits,
+                    Prim::BitsFloat => StrOp::BitsFloat,
                     Prim::MulHigh => StrOp::MulHigh,
                     Prim::DecimalText => StrOp::DecimalText,
                     Prim::WithText => StrOp::WithText,
@@ -2742,10 +2742,9 @@ impl<'p> Lower<'p> {
                     ExprKind::StrOp(op, out)
                 }
             }
-            Prim::ParseF64 | Prim::ReadText | Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::PrintBytes | Prim::OrError(_) => {
+            Prim::ReadText | Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::PrintBytes | Prim::OrError(_) => {
                 let op = match p {
                     Prim::OrError(f) => ActionOp::OrError(f),
-                    Prim::ParseF64 => ActionOp::ParseF64,
                     Prim::PrintBytes => ActionOp::PrintBytes,
                     Prim::ReadText => ActionOp::ReadText,
                     Prim::WriteText => ActionOp::WriteText,

@@ -3166,3 +3166,437 @@ fn with_text_replaces_whole_characters() {
         }
     }
 }
+
+/// The program of the tests of the reading of a float: each line of the
+/// file `args[0]` read by `tryParseF64`; the values written as doubles to
+/// `args[1]` (0 for a text that is no number), a byte for each text to
+/// `args[2]`: 1 for a number, 0 for the message of `parseF64`, 2 for any
+/// other message.
+const READ_FLOATS: &str = r#"action main(args: string[k]): i32 {
+    const ls = lines(readText(args[0]));
+    writeF64(args[1], map(ls, (s) => match (tryParseF64(s)) { Ok(v) => v, Err(e) => 0.0 }));
+    writeBytes(args[2], map(ls, (s) => match (tryParseF64(s)) { Ok(v) => 1u8, Err(e) => e == "parseF64: `" + s + "` is not a valid number" ? 0u8 : 2u8 }));
+    return 0;
+}
+"#;
+
+/// What `READ_FLOATS` writes for `texts` if it reads them as Rust's
+/// `str::parse::<f64>` does: the bits of the values (those `writeF64` gives
+/// what is not a number: the sign of a NaN is not seen) and the bytes.
+fn floats_expected(texts: &[String]) -> (Vec<u8>, Vec<u8>) {
+    let mut values = Vec::with_capacity(texts.len() * 8);
+    let mut flags = Vec::with_capacity(texts.len());
+    for t in texts {
+        let v = t.parse::<f64>().ok();
+        values.extend_from_slice(&isc_interp::rt::f64_to_le_canonical(&[v.unwrap_or(0.0)]));
+        flags.push(v.is_some() as u8);
+    }
+    (values, flags)
+}
+
+/// `texts` (none empty at the end, none with a line break) written as the
+/// lines of a file, read by `run` (given the file, and the files of the
+/// values and of the bytes to write): every value and every refusal is
+/// Rust's, bit for bit.
+fn floats_read_as_str_parse(texts: &[String], name: &str, how: &str, run: &dyn Fn(&[&str])) {
+    let file = |ext: &str| tmp(&format!("{}.{}", name, ext)).to_string_lossy().to_string();
+    let (input, values, flags) = (file("txt"), file("f64"), file("ok"));
+    std::fs::write(&input, texts.join("\n")).unwrap();
+    let _ = (std::fs::remove_file(&values), std::fs::remove_file(&flags));
+    run(&[&input, &values, &flags]);
+    let (got_v, got_f) = (std::fs::read(&values).unwrap(), std::fs::read(&flags).unwrap());
+    let (want_v, want_f) = floats_expected(texts);
+    assert_eq!((got_v.len(), got_f.len()), (want_v.len(), want_f.len()), "{}: {} texts", how, texts.len());
+    if let Some(i) = (0..texts.len()).find(|&i| got_f[i] != want_f[i] || got_v[i * 8..i * 8 + 8] != want_v[i * 8..i * 8 + 8]) {
+        let bits = |v: &[u8]| u64::from_le_bytes(v[i * 8..i * 8 + 8].try_into().unwrap());
+        panic!("{}: text {} `{}`: {} {:016x}, by Rust {} {:016x}", how, i, texts[i], got_f[i], bits(&got_v), want_f[i], bits(&want_v));
+    }
+}
+
+/// The exact decimal text of `n` 2^`e`: digits, a point when `e` is
+/// negative, no exponent (limbs of 9 digits, times 2 or 5 as many times).
+fn exact_decimal(n: u64, e: i32) -> String {
+    const B: u64 = 1_000_000_000;
+    let mut limbs: Vec<u64> = vec![n % B, n / B % B, n / B / B];
+    let (m, mut left) = if e >= 0 { (2u64, e) } else { (5u64, -e) };
+    while left > 0 {
+        let step = left.min(13);
+        let by = m.pow(step as u32);
+        let mut carry = 0;
+        for l in limbs.iter_mut() {
+            let v = *l * by + carry;
+            *l = v % B;
+            carry = v / B;
+        }
+        while carry > 0 {
+            limbs.push(carry % B);
+            carry /= B;
+        }
+        left -= step;
+    }
+    while limbs.len() > 1 && limbs[limbs.len() - 1] == 0 {
+        limbs.pop();
+    }
+    let mut digits = limbs[limbs.len() - 1].to_string();
+    for l in limbs.iter().rev().skip(1) {
+        digits.push_str(&format!("{:09}", l));
+    }
+    if e >= 0 {
+        return digits;
+    }
+    let k = (-e) as usize;
+    if digits.len() <= k {
+        digits = format!("{}{}", "0".repeat(k + 1 - digits.len()), digits);
+    }
+    format!("{}.{}", &digits[..digits.len() - k], &digits[digits.len() - k..])
+}
+
+/// The middle of the float of the bits `b` (not negative, finite) and of
+/// the float after it, exactly, as a decimal text.
+fn middle_after(b: u64) -> String {
+    let (be, f) = ((b >> 52) as i32, b & ((1 << 52) - 1));
+    let (m, e) = if be == 0 { (f, -1074) } else { (f | 1 << 52, be - 1075) };
+    exact_decimal(2 * m + 1, e - 1)
+}
+
+/// A decimal text `ddd.ddd` with the point after its first digit that is
+/// not zero and an exponent.
+fn with_exponent(t: &str) -> String {
+    let (a, b) = t.split_once('.').unwrap_or((t, ""));
+    let digits = format!("{}{}", a, b);
+    let Some(first) = digits.find(|c| c != '0') else { return t.to_string() };
+    let e = a.len() as i64 - 1 - first as i64;
+    let d = digits[first..].trim_end_matches('0');
+    let d = if d.is_empty() { "0" } else { d };
+    format!("{}.{}e{}", &d[..1], if d.len() > 1 { &d[1..] } else { "0" }, e)
+}
+
+/// Texts around the middle of the float of the bits `b` and of the next
+/// one: the middle itself (a half: to the even float), a digit more, its
+/// last digit one less or one more, the middle cut after several numbers
+/// of digits (below it) and with a digit more there (below or above it);
+/// each also with an exponent.
+fn around_middle(b: u64, r: &mut Rng, out: &mut Vec<String>) {
+    let mid = middle_after(b);
+    let digit = |r: &mut Rng| char::from(b'0' + (r.next() % 10) as u8);
+    let mut forms = vec![mid.clone(), format!("{}{}", mid, if mid.contains('.') { "" } else { "." })];
+    forms.push(format!("{}{}", forms[1], digit(r)));
+    forms.push(format!("{}{}{}", forms[1], "0".repeat((r.next() % 30) as usize), 1 + r.next() % 9));
+    let last = mid.trim_end_matches('.').len() - 1;
+    for d in ["4", "6"] {
+        forms.push(format!("{}{}", &mid[..last], d));
+    }
+    let significant = mid.bytes().filter(|c| c.is_ascii_digit()).skip_while(|&c| c == b'0').count();
+    for cut in [15usize, 16, 17, 18, 19, 20, 21, 22, 24, 25, 31, 50, 100, 300, 766, 767, 768, 769, 800] {
+        if cut >= significant {
+            continue;
+        }
+        let (mut seen, mut started, mut point) = (0, false, false);
+        let mut t = String::new();
+        for c in mid.chars() {
+            if c == '.' {
+                point = true;
+                t.push(c);
+                continue;
+            }
+            started |= c != '0';
+            seen += started as usize;
+            if seen <= cut {
+                t.push(c);
+            } else if point {
+                break;
+            } else {
+                t.push('0');
+            }
+        }
+        forms.push(format!("{}{}", t, if point { digit(r).to_string() } else { String::new() }));
+        forms.push(t);
+    }
+    for f in forms {
+        out.push(with_exponent(&f));
+        out.push(f);
+    }
+}
+
+/// `parseF64` and `tryParseF64` written in Isocron (the prelude, in place
+/// of the runtime's `isc_parse_f64` and `isc_try_parse_f64`, removed): the
+/// values of Rust's `str::parse::<f64>` bit for bit, and its refusals.
+/// - The texts of each way of the reader, compiled, interpreted, in
+///   WebAssembly and with the allocator checked: zeros and signs, the names
+///   in every case, every number of digits from 1 to 40 with the point at
+///   every place and exponents around the limits of each way, the ends of
+///   the range (the least subnormal float and its half, the greatest float
+///   and the middle above it), integers around 2^53, the halves, exponents
+///   that saturate, leading and trailing zeros, the middles of floats of
+///   every kind and the texts around them (`around_middle`), every power of
+///   ten, what is no number (a sign alone, a point alone, an exponent
+///   without digits, two points, spaces, letters, characters of UTF-8).
+/// - The panic of `parseF64`: its message and its place, that of the call,
+///   interpreted and compiled; `requireNoAlloc` accepts a function that
+///   reads floats (no way of the reader allocates), `allowReassoc` changes
+///   no bit (the sign of `-0`); no call of the runtime left; a program
+///   cannot name `$bitsFloat`.
+#[test]
+fn parse_f64_written_in_isocron() {
+    let mut texts: Vec<String> = [
+        "0", "-0", "+0", "0.0", "-0.0", "00", "0e0", "-0e-5", "0.000", ".0", "0.", "-.0", "1", "-1", "+1", "1.", ".5", "-.5", "+.5", "1.5",
+        "inf", "-inf", "+inf", "Inf", "INF", "iNf", "infinity", "-infinity", "+Infinity", "INFINITY", "InFiNiTy", "nan", "NaN", "-nan",
+        "+NAN", "nAn", "infinit", "infinityy", "in", "na", "nan0", "0nan", "inf0", "-", "+", "", ".", "+.", "-.", "e", "e5", ".e5", "1e",
+        "1e+", "1e-", "1E5", "1e5", "1e+5", "1e-5", "1.e5", "1.5e5", "15e-1", "1e5.", "1e5e5", "1e+-5", "1e 5", "1ee5", "1..", "..1", "1.2.3",
+        "++1", "--1", "+-1", "1+", "1-", "0x10", "0x1p3", "1f", "1d", "1_0", "1,5", " 1", "1 ", "\t1", "1\0", "1/2", "1:2", "./", "1./", "é",
+        "1é", "é1", "١", "1١", "1e١", "12345678", "123456789", "1234567.8", "12345678.", ".12345678", "123456789012345678",
+        "1234567890123456789", "12345678901234567890", "123456789012345678901", "9007199254740991", "9007199254740992",
+        "9007199254740993", "9007199254740994", "9007199254740995", "9007199254740993.0000000000000000000001", "9007199254740992.5",
+        "9007199254740993.5", "18446744073709551615", "18446744073709551616", "9223372036854775807", "9223372036854775808",
+        "4.9e-324", "5e-324", "2.4703282292062327e-324", "2.4703282292062328e-324", "2.47032822920623272e-324", "2.4703282292062327208e-324",
+        "2.4703282292062327209e-324", "1e-323", "2.2250738585072014e-308", "2.2250738585072011e-308", "2.2250738585072009e-308",
+        "1.7976931348623157e308", "1.7976931348623158e308", "1.797693134862315807e308", "1.797693134862315808e308", "1.7976931348623159e308",
+        "1e308", "1e309", "-1e309", "1e-400", "1e400", "0e400", "0e-400", "0.0e99999999999999999999", "1e99999999999999999999",
+        "1e-99999999999999999999", "1e65535", "1e65536", "1e-65536", "1e655359", "1e0000000000000000000000005", "1e-0000000000000000000000005",
+        "1e22", "1e23", "9e22", "123456789012345e7", "12345678901234567e-17", "8.5e15", "0.1", "0.2", "0.3", "0.30000000000000004",
+        "3.141592653589793", "2.718281828459045e0", "6.02214076e23", "6.62607015e-34", "1.602176634e-19", "299792458", "-273.15",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut r = Rng(0x5eed_f10a_7);
+    // every number of digits, the point at every place, exponents around
+    // those where the way of reading changes
+    for n in 1..=40usize {
+        let digits: String = (0..n).map(|_| char::from(b'0' + (r.next() % 10) as u8)).collect();
+        for p in 0..=n {
+            let m = format!("{}.{}", &digits[..p], &digits[p..]);
+            texts.push(m.clone());
+            texts.push(format!("-{}", m));
+            for e in [-345i64, -343, -342, -341, -324, -308, -292, -28, -27, -23, -22, -5, -4, -1, 0, 1, 22, 23, 24, 37, 55, 56, 291, 308, 309, 310] {
+                texts.push(format!("{}e{}", m, e - (p as i64 - 1) * (r.next() % 2) as i64));
+            }
+        }
+        texts.push(digits.clone());
+        texts.push(format!("{}e-{}", digits, n));
+        texts.push(format!("0.{}{}", "0".repeat(n), digits));
+        texts.push(format!("{}{}", digits, "0".repeat(n)));
+        texts.push(format!("{}{}.{}", "0".repeat(n), digits, "0".repeat(n)));
+        texts.push("9".repeat(n));
+        texts.push(format!("0.{}", "9".repeat(n)));
+        texts.push(format!("1{}1", "0".repeat(n)));
+        texts.push(format!("1.{}1", "0".repeat(n)));
+    }
+    for e in -345..=310 {
+        texts.extend([format!("1e{}", e), format!("9.999999999999999e{}", e), format!("-17976931348623157e{}", e), format!("1234567890123456789e{}", e)]);
+    }
+    // exponents that stop growing, and the digits that make up for them
+    for (zeros, e) in [(400usize, "400"), (400, "401"), (65535, "65536"), (65536, "65537"), (70000, "70001"), (99999, "100000"), (123455, "123456")] {
+        texts.push(format!("0.{}1e{}", "0".repeat(zeros), e));
+        texts.push(format!("1{}e-{}", "0".repeat(zeros), e));
+    }
+    // the middles of floats and the texts around them
+    let mut floats: Vec<u64> = vec![0, 1, 2, 3, (1 << 52) - 1, 1 << 52, (1 << 52) + 1, 0x7FEF_FFFF_FFFF_FFFF, 0x7FEF_FFFF_FFFF_FFFE];
+    floats.extend([1.0f64, 2.0, 0.1, 0.5, 1e22, 1e23, 9007199254740992.0, 9007199254740994.0, 1e-5, 1e300, 1e-300, 123456.789].map(f64::to_bits));
+    for be in (0..2047u64).step_by(41) {
+        floats.push(be << 52 | (r.next() & ((1 << 52) - 1)));
+    }
+    for _ in 0..40 {
+        floats.push(r.next() & 0x7FEF_FFFF_FFFF_FFFF);
+        floats.push(r.next() % (1 << 53));
+    }
+    for &b in &floats {
+        around_middle(b, &mut r, &mut texts);
+        let x = f64::from_bits(b);
+        texts.extend([format!("{}", x), format!("{:e}", x), format!("{:.17e}", x), format!("{:.25e}", x), format!("-{:.19e}", x)]);
+    }
+    texts.push("7".to_string());
+    assert!(texts.len() > 9000 && texts.iter().filter(|t| t.parse::<f64>().is_err()).count() >= 50);
+    let bin = compile(READ_FLOATS, "parse_f64_isocron");
+    floats_read_as_str_parse(&texts, "parse_f64_isocron", "compiled", &|args| {
+        let run = run_bin(&bin, args);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+    });
+    checked_clean_bin(&bin, &[tmp("parse_f64_isocron.txt").to_str().unwrap(), tmp("parse_f64_chk.f64").to_str().unwrap(), tmp("parse_f64_chk.ok").to_str().unwrap()], None);
+    floats_read_as_str_parse(&texts, "parse_f64_isocron_interp", "interpreted", &|args| {
+        assert_eq!(interp_ok(READ_FLOATS, args), "");
+    });
+    match wasi_runner() {
+        Some(runner) => {
+            let wasm = compile_wasm(READ_FLOATS, "parse_f64_isocron");
+            floats_read_as_str_parse(&texts, "parse_f64_isocron_wasm", "WebAssembly", &|args| {
+                let run = run_wasm(&runner, &wasm, args);
+                assert_eq!(run.code, 0, "{}", run.stderr);
+            });
+        }
+        None => eprintln!("wasmtime not installed: the reading of floats in WebAssembly skipped"),
+    }
+    // no call of the runtime left
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    for f in ["@isc_parse_f64(", "@isc_try_parse_f64("] {
+        assert!(!ll.contains(f), "{} still called", f);
+    }
+    // the panic of `parseF64`: the message of the runtime's, at the call
+    let one = "action main(args: string[k]): i32 {\n    print(parseF64(args[0]));\n    return 0;\n}\n";
+    let bin = compile(one, "parse_f64_isocron_bad");
+    for s in ["", "+", "-", ".", "1e", "e5", "1.2.3", "1,5", " 1", "1 ", "0x10", "infinit", "1.5é", "12345678901234567890x", "0.30000000000000004 ", "1e5e5"] {
+        assert!(s.parse::<f64>().is_err(), "{}", s);
+        let msg = format!("panic at line 2, column 19: parseF64: `{}` is not a valid number", s);
+        let m = interp_panic(one, &[s]);
+        assert!(m.contains(&msg), "{:?} interpreted: {}", s, m);
+        let run = run_bin(&bin, &[s]);
+        assert_eq!(run.code, 101, "{:?}: {}", s, run.stderr);
+        assert!(run.stderr.contains(&msg), "{:?} compiled: {}", s, run.stderr);
+    }
+    for (s, want) in [("-0", "-0\n"), ("1e400", "inf\n"), ("-Infinity", "-inf\n"), ("nan", "NaN\n"), ("0.1", "0.1\n"), ("123456789.125", "123456789.125\n")] {
+        assert_eq!(interp_ok(one, &[s]), want, "{} interpreted", s);
+        assert_eq!(run_bin(&bin, &[s]).stdout, want, "{} compiled", s);
+    }
+    // several calls, each its place; as a value given to `map`
+    let calls = "action main(args: string[k]): i32 {
+    const a = parseF64(args[0]);
+    const b = map(args, parseF64);
+    const c = map(args, (s) => parseF64(s) + 1.0);
+    const d = map(args, (s) => parseF64(s) * 2.0);
+    print([a, sum(b), sum(c), sum(d)]);
+    return 0;
+}
+";
+    let bin = compile(calls, "parse_f64_calls");
+    for (args, msg) in [
+        (["1.5", "x"], "panic at line 3, column 18: parseF64: `x` is not a valid number"),
+        (["x", "1"], "panic at line 2, column 23: parseF64: `x` is not a valid number"),
+        (["2.5e-1", "1e"], "panic at line 3, column 18: parseF64: `1e` is not a valid number"),
+    ] {
+        let m = interp_panic(calls, &args);
+        assert!(m.contains(msg), "{:?} interpreted: {}", args, m);
+        let run = run_bin(&bin, &args);
+        assert_eq!(run.code, 101, "{:?}: {}", args, run.stderr);
+        assert!(run.stderr.contains(msg), "{:?} compiled: {}", args, run.stderr);
+    }
+    agree(calls, "parse_f64_calls_ok", &["0.25", "1e3"], "[0.25, 1000.25, 1002.25, 2000.5]\n");
+    // no way of the reader allocates: accepted by `requireNoAlloc`, as the
+    // runtime's was; where the operations of floats may be reordered, the
+    // division of the reader is not (the product of the program is)
+    let strict = "@requireNoAlloc
+function total(xs: string[n]): f64 {
+    return sum(map(xs, parseF64));
+}
+
+@allowReassoc
+function twice(s: string): f64 {
+    return parseF64(s) * 2.0;
+}
+
+action main(args: string[k]): i32 {
+    print(total(args));
+    print(map(args, (s) => 1.0 / twice(s)));
+    return 0;
+}
+";
+    // (every sum and product exact, whatever their order)
+    let exact = ["-0", "0.0", "-0.000", "8", "0.5", "-4", "25e-2", "0.0000152587890625", "1048576.5", "-.125"];
+    let values: Vec<f64> = exact.iter().map(|t| t.parse().unwrap()).collect();
+    let inverses: Vec<String> = values.iter().map(|v| display64(1.0 / (v * 2.0))).collect();
+    agree(strict, "parse_f64_no_alloc", &exact, &format!("{}\n[{}]\n", display64(values.iter().sum()), inverses.join(", ")));
+    let ll = std::fs::read_to_string(tmp("parse_f64_no_alloc.ll")).unwrap();
+    assert!(ll.contains("fmul reassoc") && !ll.contains("fdiv reassoc"), "the division of the reader marked `reassoc`, or the product of the program not marked");
+    let named = "action main(args: string[k]): i32 {\n    print($bitsFloat(0u64));\n    return 0;\n}\n";
+    assert!(isc_types::check_source(named).is_err());
+}
+
+/// The answers of `str::parse::<f64>` for the reading of floats of the
+/// prelude, on many texts, compiled (a twentieth of them under Valgrind,
+/// `ISC_TEST_MEMCHECK`): every text of up to 4 characters of an alphabet of
+/// digits, signs, points, exponents, letters of the names and others;
+/// random decimals of 1 to 25 digits with a point, zeros around them and
+/// exponents of every size, a byte of a part of them changed; random
+/// doubles (random bits, subnormal ones, few bits set) written in several
+/// ways, from their shortest text to 30 digits; the middles of random
+/// floats and the texts around them.
+#[test]
+fn parse_f64_of_the_prelude_answers_as_str_parse() {
+    let scale = if memcheck() { 20 } else { 1 };
+    let alpha = ["0", "1", "5", "9", ".", "e", "E", "+", "-", "i", "n", "a", "f", " ", "é"];
+    let mut texts: Vec<String> = Vec::new();
+    let mut level = vec![String::new()];
+    for _ in 0..4 {
+        let mut next = Vec::new();
+        for t in &level {
+            for c in alpha {
+                next.push(format!("{}{}", t, c));
+            }
+        }
+        texts.extend(next.iter().cloned());
+        level = next;
+    }
+    // the empty text, a line between the others
+    texts.insert(7, String::new());
+    let mut r = Rng(0xf10a_7_5eed);
+    let digits = |r: &mut Rng, n: usize| -> String {
+        let kind = r.next() % 8;
+        (0..n).map(|_| if kind == 0 { ['0', '9'][(r.next() % 2) as usize] } else if kind == 1 && r.next() % 8 != 0 { '0' } else { char::from(b'0' + (r.next() % 10) as u8) }).collect()
+    };
+    for _ in 0..400_000 / scale {
+        let n = 1 + (r.next() % 25) as usize;
+        let d = digits(&mut r, n);
+        let p = (r.next() % (n as u64 + 2)) as usize;
+        let mut m = if p > n { d.clone() } else { format!("{}.{}", &d[..p], &d[p..]) };
+        match r.next() % 12 {
+            0 => m = format!("{}{}", "0".repeat((r.next() % 30) as usize), m),
+            1 if p <= n => m = format!("{}{}", m, "0".repeat((r.next() % 30) as usize)),
+            2 if p > n => m = format!("{}{}", m, "0".repeat((r.next() % 320) as usize)),
+            3 => m = format!("0.{}{}", "0".repeat((r.next() % 330) as usize), d),
+            _ => {}
+        }
+        let sign = ["", "", "", "-", "-", "+"][(r.next() % 6) as usize];
+        let e = match r.next() % 9 {
+            0..=3 => String::new(),
+            4 => format!("e{}", r.next() as i64 % 31),
+            5 => format!("E{}", r.next() as i64 % 401),
+            6 => format!("e{}{}", ["", "+", "-"][(r.next() % 3) as usize], r.next() % 100_000),
+            7 => format!("e{}", r.next() as i64 % 26 - n as i64),
+            _ => format!("e-{}{}", "0".repeat((r.next() % 4) as usize), 290 + r.next() % 40),
+        };
+        let mut t = format!("{}{}{}", sign, m, e).into_bytes();
+        if r.next() % 5 == 0 {
+            let i = (r.next() % t.len() as u64) as usize;
+            t[i] = [b'/', b':', b' ', b'a', b'+', b'-', b'.', b'e', b'0', 0x7f, 0, b','][(r.next() % 12) as usize];
+        }
+        texts.push(String::from_utf8(t).unwrap());
+    }
+    for i in 0..300_000 / scale {
+        let x = match i % 4 {
+            0 => f64::from_bits(r.next() & 0x7FFF_FFFF_FFFF_FFFF),
+            1 => f64::from_bits(r.next() % (1 << 54)),
+            2 => f64::from_bits((r.next() % 2047) << 52 | 1 << (r.next() % 52) | 1 << (r.next() % 52)),
+            _ => (r.next() >> 2) as f64 / 10f64.powi((r.next() % 30) as i32),
+        };
+        if !x.is_finite() {
+            continue;
+        }
+        texts.push(match r.next() % 8 {
+            0 => format!("{}", x),
+            1 => format!("{:e}", x),
+            2 => format!("{:.16e}", x),
+            3 => format!("{:.17e}", x),
+            4 => format!("-{:.18e}", x),
+            5 => format!("{:.*e}", (r.next() % 31) as usize, x),
+            6 => format!("{:E}", x),
+            _ => format!("{:.*}", (r.next() % 25) as usize, x),
+        });
+    }
+    for i in 0..6_000 / scale {
+        let b = match i % 3 {
+            0 => r.next() & 0x7FEF_FFFF_FFFF_FFFF,
+            1 => r.next() % (1 << 54),
+            _ => (r.next() % 2047) << 52 | (r.next() & ((1 << 52) - 1)),
+        };
+        if b < 0x7FF0_0000_0000_0000 {
+            around_middle(b, &mut r, &mut texts);
+        }
+    }
+    // an empty text cannot be the last line (`lines` gives none for it)
+    texts.push("7".to_string());
+    texts.retain(|t| !t.contains('\n') && !t.contains('\r'));
+    let bin = compile(READ_FLOATS, "parse_f64_answers");
+    floats_read_as_str_parse(&texts, "parse_f64_answers", "compiled", &|args| {
+        let run = run_bin_threads(&bin, args, Some(4));
+        assert_eq!(run.code, 0, "{}", run.stderr);
+    });
+}

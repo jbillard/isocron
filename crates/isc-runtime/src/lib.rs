@@ -4139,22 +4139,6 @@ fn try_csv(s: &str, skip: i64) -> Result<IscNested, Panic<'_>> {
 /// # Safety
 /// The pointers as the generated code gives them (C1).
 #[no_mangle]
-pub unsafe extern "C" fn isc_try_parse_f64(v: *mut f64, e: *mut IscStr, p: *const u8, n: i64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // (the value, the message) and its strings and arrays
-    unsafe {
-        let s = str_of(p, n);
-        match sem::parse_f64(s) {
-            Some(x) => (*v, *e) = (x, no_error()),
-            None => (*v, *e) = (0.0, message(&Panic::ParseF64(s))),
-        }
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
 pub unsafe extern "C" fn isc_try_read_bytes(out: *mut IscArray, e: *mut IscStr, path: *const u8, plen: i64) {
     // SAFETY: the pointers the generated code gives (C1): its places of results
     // (the value, the message) and its strings and arrays
@@ -4236,22 +4220,6 @@ pub unsafe extern "C" fn isc_try_write_bytes(e: *mut IscStr, path: *const u8, pl
             Ok(()) => no_error(),
             Err(p) => message(&p),
         };
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_parse_f64(p: *const u8, len: i64, line: i32, col: i32) -> f64 {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let s = str_of(p, len);
-        match sem::parse_f64(s) {
-            Some(v) => v,
-            None => die(line, col, &Panic::ParseF64(s)),
-        }
     }
 }
 

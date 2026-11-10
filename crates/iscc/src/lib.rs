@@ -32,8 +32,11 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
 /// The program that reaches every function of the prelude the code
 /// generator calls itself (D611): the texts of the integers, padded or not,
 /// and of the floats, `toFixed`, the cases, the `print` of a float, and the
-/// allocator, which every program has. The module compiled once is made
-/// from it; a function it does not reach stays in the programs that do.
+/// allocator, which every program has; and the reading of a float
+/// (`parseF64`, `tryParseF64`), whose rare paths, `@cold` functions that
+/// only the prelude can name, are the same in every program that calls it.
+/// The module compiled once is made from it; a function it does not reach
+/// stays in the programs that do.
 const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
     const n = args.length;
     const x = f64(n) * 1.5;
@@ -41,6 +44,8 @@ const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
     print(toString(n).padStart(8, \"0\") + toString(u64(n)) + toString(x) + toString(y) + x.toFixed(2) + args[0].toUpperCase() + args[0].toLowerCase());
     print(x);
     print(y);
+    print(parseF64(args[0]));
+    print(match (tryParseF64(args[0])) { Ok(v) => v, Err(e) => 0.0 });
     return 0;
 }
 ";
