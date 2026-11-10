@@ -513,6 +513,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.4.9: the functions too large to be inlined decided one at a time, no literal given to `isc_free`, the maps of a few heavy elements made where they are; `json.parse` and `json.decode` below 3 times their floors (D515 to D521, D522)
 - [x] Release 0.5.0: the targets without a C library (Windows, WebAssembly), the target `x86_64-windows-msvc`, the allocator checked, the relocations of static programs checked; texts compared by their first bytes, `concat` and `sort` taking what they read last (D523 to D553, D554)
 - [x] Release 0.6.0: the runtime starts to be written in Isocron (the allocator of the small blocks, the texts and readings of numbers, the pads, `join`, the cases, `trim`, `indexOf`, `includes`), the roundings as instructions, the module of the prelude compiled once; the Benchmarks Game the fastest on 10 of 10 (D621)
+- [x] Release 0.7.0: v1, every part of the runtime where Isocron is at least as fast as Rust in Isocron (the texts of D626, the mathematical functions of D628), the frontier of 135 functions; the prelude a program reaches parsed and checked (D629) (D630)
 
 ## The targets first (the author's decision, 2026-11-08, D540)
 
@@ -539,7 +540,7 @@ v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest
 - [ ] `a_program_carries_what_it_reaches` (`pre.rs`) failed once in the pass of glibc of suite 429: a hello linked with the module 182 600 bytes against 112 968 without; not again in 16 runs; its message now gives the state of the module
 - [x] The time of a compilation after v1: the prelude (5989 lines) read and checked whole at each compilation (a hello 241.5 → 308.3 million instructions of the compiler since 0.6.0, +28 %); one call of `sin` 341 → 604, of `Number` 322 → 1384: D629, the places of the declarations of the prelude found when iscc is built, the headers parsed, the bodies of the functions a program reaches parsed and checked (a hello 273.6 → 139.7, `sin` 603.7 → 496.7, `Number` 1432.9 → 1347.8; `iscc check` of an empty program 183.0 → 49.2)
 - [ ] The time of a compilation, what is left after D629: the programs of `json` and `http` (26 to 73 G instructions each; `std_json_decode.isc` 9.1 s, O3 4.1 s and code generation 4.3 s of a module of 196 492 lines, 55 368 of them `main`), the volume of code LLVM is given; one `sin` or `Number`, the code of their common path compiled in each program (the price of their speed); D611 (d)
-- [ ] Release 1.0? (to propose to the author when the items above are done)
+- [x] Release 0.7.0, v1 (D630): 0.7.0 rather than 1.0, at the author's word
 
 ### v2: the runtime without Rust
 

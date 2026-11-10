@@ -15327,3 +15327,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   instructions each (`std_json_decode.isc` 9.1 s: O3 4.1 s, code
   generation 4.3 s, a module of 196 492 lines; 0.6.0: 8.8 s), the volume
   of the code LLVM is given.
+- **D630 — Release 0.7.0 (2026-11-10).** After 0.6.0: D621 to D629. v1 of
+  the plan of D622: every part of the runtime where Isocron is at least as
+  fast as Rust is Isocron code (the texts of D626, the mathematical
+  functions of D628, after those of 0.6.0); the 135 functions still in
+  Rust are the frontier of v1 (`crates/isc-runtime/frontier.txt`, held by
+  `tests/frontier.rs`); the prelude a program reaches parsed and checked
+  (D629). The Benchmarks Game is not measured again for it (its programs
+  call none of the functions moved since D618). The language the same; no
+  name removed: 0.7.0, not 1.0, at the user's word. The steps of 0.4.3
+  (D449), the commit of the release the last of `main` (D486).

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-10
+
+The first step of the runtime written in Isocron is complete: every part of
+it that Isocron runs at least as fast as Rust is Isocron code; the 135
+functions still written in Rust are listed in
+`crates/isc-runtime/frontier.txt`, a list a test lets only shrink.
+Compilations are faster: a program reads and checks the part of the
+prelude it reaches. The language is the same; no name removed.
+
 - `lastIndexOf`, `replace` and `replaceAll` of texts, `Number` of a text
   and the readers of CSV (`parseCsvF64`, `readCsvF64`, `tryReadCsvF64`)
   are written in Isocron: the same values and messages; `lastIndexOf` 13
@@ -25,8 +34,14 @@
   inline where they are called, no longer a call of the runtime: 2 to
   58 % fewer instructions a call, up to 73 % fewer cycles; a chain of
   calls of `exp` or `log`, each on the result of the one before, 0.6 to
-  1.8 % slower (D628). A program that uses them takes longer to compile,
-  and the prelude makes every compilation about 20 % longer (D628).
+  1.8 % slower (D628). A program that uses them takes longer to compile
+  (the code of their common path compiled in it).
+- Faster compilations: the places of the declarations of the prelude are
+  found when iscc is built, and a compilation parses and checks the
+  functions of the prelude its program reaches, not the 5989 lines of it:
+  an empty program checked in 1.8 ms instead of 12.1, a hello compiled
+  with 49 % fewer instructions of the compiler (139.7 million against
+  273.6), the same executables (D629).
 
 ## 0.6.0 — 2026-11-10
 
