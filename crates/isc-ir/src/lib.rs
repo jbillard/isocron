@@ -11,7 +11,7 @@
 //! results (`Use::Move`, `drop` flags, `Copy` nodes) drive the code
 //! generator. The interpreter ignores them.
 
-pub use isc_types::tast::{Fallible, MathFn, SysOp};
+pub use isc_types::tast::{Fallible, KernelOp, MathFn, SysOp, KERNEL_ZONE};
 
 pub mod blocks;
 pub mod lower;
@@ -178,6 +178,9 @@ pub enum ActionOp {
     /// A primitive of the system (D322): its value and the code of its
     /// error, a tuple.
     Sys(SysOp),
+    /// A primitive of the kernel of the runtime (D601): the raw memory of
+    /// the arena and the zone of the thread.
+    Kernel(KernelOp),
 }
 
 /// The operations on strings (D134).

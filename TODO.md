@@ -357,8 +357,9 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] (D594) The first step of the proposal measured: the fast paths of the small blocks with handles confined to the arena, inlined, against today's (−19 % and −12 % with the address checked; handles of 32 bits slower than today on chained allocations)
   - [ ] The kernel in Isocron, begun at the author's word (D599), each step measured against the runtime of today:
     - [x] 0. (D600: `nbody` +72 % of instructions, the nine other programs none; so the fast paths are inlined after the optimization of the module, by a second run of passes) What the generated code loses without `noalias` on the result of an allocation
-    - [ ] 1. Every block of the heap inside one reserved range of addresses (the allocator of today)
-    - [ ] 2. The primitives of the kernel in the prelude: loads and stores tested to be in the arena, the zone of the thread
+    - [x] 1. (D601: not done, the plan changed: the allocator in Isocron takes the arena kind of block by kind, beside the allocator of today; an address inside the arena is a block of the new one) Every block of the heap inside one reserved range of addresses
+    - [x] 2. (D601: `$arenaReserve`, `$arenaCommit`, `$load8` to `$store64`, `$zoneLoad16` to `$zoneStore64`, interpreted and compiled; not under Windows yet) The primitives of the kernel in the prelude: loads and stores tested to be in the arena, the zone of the thread
+    - [ ] 2b. The base and the size of the arena read once, not at each access; atomic operations and locks; the calls of the system (reserve, commit) made by the compiler itself; the arena under Windows and in WebAssembly
     - [ ] 3. The fast paths of `alloc` and `free` in Isocron, inlined; the slow paths still in Rust
     - [ ] 4. The slow paths one at a time (lists refilled, medium blocks, large blocks, memory given back, the end of a thread); then the pool, files and `print`, the start and the panics, the copies of blocks, Windows and WebAssembly, regular expressions and big integers
 - [x] A tuple literal first in a choice (`c ? [0u64, 1u64] : f()`) is typed as an array (D582): type it from the other branch, or say so in the message (D585; `match` arms still in the order of the arms)

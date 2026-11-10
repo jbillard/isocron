@@ -14143,3 +14143,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the backend alone. To measure when the fast paths exist: that this
     late inlining keeps the gain of D594 (12 to 19 %) and the instructions
     of `nbody`.
+- **D601 — The kernel, its first primitives: the arena reserved and its
+  words, the zone of the thread (2026-11-10).** Step 2 of D599, made
+  before its step 1, whose plan changes.
+  - The plan of D599 put every block of the allocator of today (Rust)
+    inside the arena first. Not done: that allocator maps and unmaps its
+    chunks, its regions and its large blocks at many places, and would be
+    changed to be thrown away. Instead the allocator written in Isocron
+    takes the arena, kind of block by kind (the small ones first), beside
+    the allocator of today: an address inside the arena is a block of the
+    new one, any other a block of the old one. One test, the one that
+    confines the kernel.
+  - `KernelOp`, actions that only the prelude can name: `$arenaReserve`,
+    `$arenaCommit`, `$arenaBase`, `$arenaSize`; `$load8/16/32/64(a)`,
+    `$store8/16/32/64(a, v)`: the address `a` tested inside the arena
+    before its bytes are read or written (`a - base` and the width below
+    the size, one comparison, false while nothing is reserved), a panic
+    otherwise; `$zoneLoad16/32/64(at)`, `$zoneStore16/32/64(at, v)`: 4096
+    bytes of the thread-local storage of each thread, an offset past them
+    a panic.
+  - In the generated code: the base and the size of the arena are two
+    words of the program, written by `$arenaReserve`; the zone a
+    thread-local array of the program. The two calls of the system
+    (reserve addresses without access; make pages usable at a fixed place
+    inside the arena, checked there again) are `isc_arena_reserve` and
+    `isc_arena_commit` of the runtime for now, the last Rust under these
+    primitives; not under Windows yet, whose `mmap` of the runtime
+    reserves and commits at once.
+  - In the interpreter: an arena and a zone of its own (the pages
+    committed, in a table), the same words and the same panics; a page
+    not committed is a panic there, a fault of the processor in the
+    compiled code. The allocator written over these primitives can so be
+    run and tested interpreted.
+  - Not yet: the base and the size are read again at each access (LLVM
+    cannot know that a store into the arena leaves them unchanged): to
+    settle when the fast paths are measured. The atomic operations, the
+    locks, the calls of the system made by the compiler itself.
+  - SPEC section 17: its principles 3 and 5 reworded as the proposal
+    said, the row of these primitives. `iscc::frontend_as_prelude` reads a
+    source as a part of the prelude, for the tests. Tests (`kernel`):
+    `arena_and_zone_words`, `outside_the_arena_is_a_panic` (8 ways out),
+    `only_the_prelude_and_only_actions`.

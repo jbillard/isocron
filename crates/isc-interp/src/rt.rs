@@ -711,3 +711,100 @@ fn net(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
         _ => unreachable!(),
     }
 }
+
+/// The messages of the panics of the kernel's primitives, the same in the
+/// compiled code.
+pub const KERNEL_ARENA: &str = "the kernel reached outside its arena";
+pub const KERNEL_ZONE: &str = "the kernel reached outside the zone of its thread";
+
+/// The arena of the interpreter (D601): a base that no address of the
+/// interpreter is, a size once reserved, the pages committed (zeros when
+/// they are), and the zone of the thread.
+struct Kernel {
+    size: u64,
+    pages: std::collections::HashMap<u64, Box<[u8; 4096]>>,
+    zone: Box<[u8; isc_ir::KERNEL_ZONE as usize]>,
+}
+
+const ARENA_BASE: u64 = 1 << 44;
+
+thread_local! {
+    static KERNEL: std::cell::RefCell<Kernel> = std::cell::RefCell::new(Kernel {
+        size: 0,
+        pages: std::collections::HashMap::new(),
+        zone: Box::new([0; isc_ir::KERNEL_ZONE as usize]),
+    });
+}
+
+/// A primitive of the kernel: its word (none for a store), or the message
+/// of its panic.
+pub fn kernel(op: isc_ir::KernelOp, a: &[u64]) -> Result<Option<u64>, &'static str> {
+    use isc_ir::KernelOp as K;
+    KERNEL.with(|k| {
+        let mut k = k.borrow_mut();
+        // the `w` bytes at `at` inside the arena: their offset
+        let inside = |size: u64, at: u64, w: u64| -> Option<u64> {
+            let o = at.wrapping_sub(ARENA_BASE);
+            (size >= w && o <= size - w).then_some(o)
+        };
+        Ok(match op {
+            K::ArenaReserve => {
+                if k.size == 0 {
+                    k.size = a[0];
+                }
+                Some(if k.size == 0 { 0 } else { ARENA_BASE })
+            }
+            K::ArenaBase => Some(if k.size == 0 { 0 } else { ARENA_BASE }),
+            K::ArenaSize => Some(k.size),
+            K::ArenaCommit => match inside(k.size, a[0], a[1]) {
+                Some(o) if a[1] > 0 => {
+                    for page in o / 4096..=(o + a[1] - 1) / 4096 {
+                        k.pages.entry(page).or_insert_with(|| Box::new([0; 4096]));
+                    }
+                    Some(0)
+                }
+                Some(_) => Some(0),
+                // (EINVAL of the system, negated)
+                None => Some(-22i64 as u64),
+            },
+            K::Load(w) => {
+                let o = inside(k.size, a[0], w as u64).ok_or(KERNEL_ARENA)?;
+                let mut x = 0u64;
+                for i in 0..w as u64 {
+                    let page = k.pages.get(&((o + i) / 4096)).ok_or("a page of the arena that is not committed")?;
+                    x |= (page[((o + i) % 4096) as usize] as u64) << (8 * i);
+                }
+                Some(x)
+            }
+            K::Store(w) => {
+                let o = inside(k.size, a[0], w as u64).ok_or(KERNEL_ARENA)?;
+                for i in 0..w as u64 {
+                    let page = k.pages.get_mut(&((o + i) / 4096)).ok_or("a page of the arena that is not committed")?;
+                    page[((o + i) % 4096) as usize] = (a[1] >> (8 * i)) as u8;
+                }
+                None
+            }
+            K::ZoneLoad(w) => {
+                let (at, w) = (a[0], w as u64);
+                if at > isc_ir::KERNEL_ZONE - w {
+                    return Err(KERNEL_ZONE);
+                }
+                let mut x = 0u64;
+                for i in 0..w {
+                    x |= (k.zone[(at + i) as usize] as u64) << (8 * i);
+                }
+                Some(x)
+            }
+            K::ZoneStore(w) => {
+                let (at, w) = (a[0], w as u64);
+                if at > isc_ir::KERNEL_ZONE - w {
+                    return Err(KERNEL_ZONE);
+                }
+                for i in 0..w {
+                    k.zone[(at + i) as usize] = (a[1] >> (8 * i)) as u8;
+                }
+                None
+            }
+        })
+    })
+}

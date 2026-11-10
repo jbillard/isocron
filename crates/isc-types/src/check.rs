@@ -111,6 +111,10 @@ fn prim_by_name(name: &str) -> Option<Prim> {
     if let Some(op) = SysOp::ALL.iter().find(|o| o.name() == name) {
         return Some(Prim::Sys(*op));
     }
+    // (their names start with `$`: of the prelude alone, by the lexer)
+    if let Some(op) = KernelOp::named(name) {
+        return Some(Prim::Kernel(op));
+    }
     let name = match name.strip_prefix("Math.") {
         Some(f) if MATH.contains(&f) => f,
         Some(_) => return None,
@@ -2690,6 +2694,33 @@ impl<'g> FnCx<'g> {
             self.note_effect();
             return self.check_sys(op, name, args, span);
         }
+        // the primitives of the kernel (D601): words of 64 bits, an action
+        if let Prim::Kernel(op) = p {
+            if !self.can_act() {
+                return err(span, format!("the action `{}` cannot be called here (SPEC section 12)", name));
+            }
+            self.note_effect();
+            let (u64t, i64t) = (Ty::Int(IntKind::U64), Ty::Int(IntKind::I64));
+            let (params, result): (Vec<Ty>, Ty) = match op {
+                KernelOp::ArenaReserve => (vec![u64t.clone()], u64t.clone()),
+                KernelOp::ArenaCommit => (vec![u64t.clone(), u64t.clone()], i64t.clone()),
+                KernelOp::ArenaBase | KernelOp::ArenaSize => (vec![], u64t.clone()),
+                KernelOp::Load(_) => (vec![u64t.clone()], u64t.clone()),
+                KernelOp::Store(_) => (vec![u64t.clone(), u64t.clone()], Ty::Unit),
+                KernelOp::ZoneLoad(_) => (vec![i64t.clone()], u64t.clone()),
+                KernelOp::ZoneStore(_) => (vec![i64t.clone(), u64t.clone()], Ty::Unit),
+            };
+            if args.len() != params.len() {
+                return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));
+            }
+            let mut out = Vec::new();
+            for (a, t) in args.iter().zip(&params) {
+                let x = self.check(a, Some(t))?;
+                self.unify(t, &x.ty, x.span)?;
+                out.push(x);
+            }
+            return Ok(self.mk(TExprKind::Call { callee: Callee::Prim(Prim::Kernel(op)), args: out, size_checks: Vec::new() }, result, span));
+        }
         if p.is_action() && !self.can_act() {
             return err(
                 span,
@@ -2705,7 +2736,7 @@ impl<'g> FnCx<'g> {
         }
         let n = match p {
             // checked by `check_sys`, which returned
-            Prim::Sys(_) => unreachable!(),
+            Prim::Sys(_) | Prim::Kernel(_) => unreachable!(),
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
@@ -3092,7 +3123,7 @@ impl<'g> FnCx<'g> {
             }
             // the order of the elements (D155): integers, floats, booleans,
             // strings
-            Prim::Sys(_) => unreachable!(),
+            Prim::Sys(_) | Prim::Kernel(_) => unreachable!(),
             Prim::Group | Prim::GroupCounts => {
                 let x = self.check(&args[0], None)?;
                 let elem = self.expect_array(&x.ty, x.span, "the keys of `$group`")?;

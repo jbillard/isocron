@@ -16,6 +16,19 @@ pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     Ok(p)
 }
 
+/// `frontend` of a source read as a part of the prelude: it may name what
+/// only the prelude can (`$…`). For the tests of the kernel of the runtime
+/// (D601), whose code is the prelude's.
+pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, String> {
+    let files = isc_types::source_files(path);
+    let user = isc_syntax::parse(src, isc_types::PRELUDE_FILE).map_err(|d| d.render(&files))?;
+    let render = |d: isc_syntax::Diagnostic| d.render(&files);
+    let t = isc_types::check_parsed(&user).map_err(render)?;
+    let mut p = isc_ir::lower::lower(&t).map_err(render)?;
+    isc_ir::passes::optimize(&mut p).map_err(render)?;
+    Ok(p)
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct BuildOptions {
     pub output: PathBuf,

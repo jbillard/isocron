@@ -2961,9 +2961,11 @@ impl<'p> Lower<'p> {
             | Prim::WriteBytes
             | Prim::Print
             | Prim::Clock
+            | Prim::Kernel(_)
             | Prim::Sys(_) => {
                 let op = match p {
                     Prim::Sys(o) => ActionOp::Sys(o),
+                    Prim::Kernel(o) => ActionOp::Kernel(o),
                     Prim::ReadF64 => ActionOp::ReadF64,
                     Prim::ReadF32 => ActionOp::ReadF32,
                     Prim::ReadBytes => ActionOp::ReadBytes,

@@ -182,6 +182,9 @@ pub enum Prim {
     DecimalText,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
+    /// A primitive of the kernel of the runtime (D601), named by the
+    /// prelude alone.
+    Kernel(KernelOp),
     /// `argsort(x)`: the indices of the elements in their order, stable
     /// (D155): the primitive of `sort` and `sortBy`.
     ArgSort,
@@ -270,6 +273,75 @@ impl MathFn {
 /// Each returns its value and the code of its error (0: none; 1 to 6 the
 /// kinds of `IoError`; below 0 the error of the system, negated), the same
 /// in the interpreter and in the compiled code.
+/// The primitives of the kernel of the runtime written in Isocron (SPEC
+/// section 17, D599, D601): the raw memory of the arena, named by the
+/// address of a byte and tested to be inside it before each use, and the
+/// zone of the thread. Actions that only the prelude can name (`$…`); the
+/// same in the interpreter, over an arena and a zone of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KernelOp {
+    /// `$arenaReserve(bytes) => base`: the one range of addresses of the
+    /// heap, none of its pages usable yet; 0 when the system has none.
+    ArenaReserve,
+    /// `$arenaCommit(a, bytes) => code`: the pages of `bytes` bytes from
+    /// `a`, inside the arena, readable and writable (zeros); 0, or the
+    /// error of the system, negated.
+    ArenaCommit,
+    /// `$arenaBase()`, `$arenaSize()`: the arena reserved (0 before).
+    ArenaBase,
+    ArenaSize,
+    /// `$load8(a)`, `$load16`, `$load32`, `$load64`: the bytes at `a` as an
+    /// unsigned word; a panic when they are not inside the arena.
+    Load(u8),
+    /// `$store8(a, v)`, `$store16`, `$store32`, `$store64`: the low bytes of
+    /// `v` written at `a`; a panic when they are not inside the arena.
+    Store(u8),
+    /// `$zoneLoad16(at)`, `$zoneLoad32`, `$zoneLoad64`: the bytes at `at` of
+    /// the zone of the calling thread (zeros at its start); a panic past
+    /// its end.
+    ZoneLoad(u8),
+    /// `$zoneStore16(at, v)`, `$zoneStore32`, `$zoneStore64`.
+    ZoneStore(u8),
+}
+
+/// The bytes of the zone of a thread (`KernelOp::ZoneLoad`).
+pub const KERNEL_ZONE: u64 = 4096;
+
+impl KernelOp {
+    /// The primitive of a name of the prelude.
+    pub fn named(name: &str) -> Option<KernelOp> {
+        Some(match name {
+            "$arenaReserve" => KernelOp::ArenaReserve,
+            "$arenaCommit" => KernelOp::ArenaCommit,
+            "$arenaBase" => KernelOp::ArenaBase,
+            "$arenaSize" => KernelOp::ArenaSize,
+            "$load8" => KernelOp::Load(1),
+            "$load16" => KernelOp::Load(2),
+            "$load32" => KernelOp::Load(4),
+            "$load64" => KernelOp::Load(8),
+            "$store8" => KernelOp::Store(1),
+            "$store16" => KernelOp::Store(2),
+            "$store32" => KernelOp::Store(4),
+            "$store64" => KernelOp::Store(8),
+            "$zoneLoad16" => KernelOp::ZoneLoad(2),
+            "$zoneLoad32" => KernelOp::ZoneLoad(4),
+            "$zoneLoad64" => KernelOp::ZoneLoad(8),
+            "$zoneStore16" => KernelOp::ZoneStore(2),
+            "$zoneStore32" => KernelOp::ZoneStore(4),
+            "$zoneStore64" => KernelOp::ZoneStore(8),
+            _ => return None,
+        })
+    }
+
+    pub fn arity(self) -> usize {
+        match self {
+            KernelOp::ArenaBase | KernelOp::ArenaSize => 0,
+            KernelOp::ArenaReserve | KernelOp::Load(_) | KernelOp::ZoneLoad(_) => 1,
+            KernelOp::ArenaCommit | KernelOp::Store(_) | KernelOp::ZoneStore(_) => 2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SysOp {
     /// `sysGetenv(name) => [value, found]`
@@ -480,6 +552,7 @@ impl Prim {
         matches!(
             self,
             Prim::Sys(_)
+                | Prim::Kernel(_)
                 | Prim::MapParallel
                 | Prim::ReadF64
                 | Prim::ReadF32

@@ -621,6 +621,67 @@ fn invalid_free() -> ! {
     super::die(0, 0, &Panic::InvalidFree)
 }
 
+/// `$arenaReserve(bytes)` of the kernel written in Isocron (D601): `bytes`
+/// bytes of addresses that nothing else will be given, on a multiple of 2
+/// MiB, none of their pages usable yet; 0 when the system has none. One of
+/// the two calls of the system the kernel still makes through Rust, until
+/// its primitives of the system are the compiler's own.
+#[cfg(not(windows))]
+#[no_mangle]
+pub extern "C" fn isc_arena_reserve(bytes: i64) -> i64 {
+    const PROT_NONE: c_int = 0;
+    if bytes <= 0 {
+        return 0;
+    }
+    let len = bytes as usize + HUGE;
+    // SAFETY: a new anonymous mapping without access at a place the kernel
+    // chooses: no memory of the program changed
+    let p = unsafe { mmap(null_mut(), len, PROT_NONE, MAP_PRIVATE_ANONYMOUS | MAP_NORESERVE, -1, 0) };
+    if p as isize == -1 {
+        return 0;
+    }
+    ((p as usize + HUGE - 1) & !(HUGE - 1)) as i64
+}
+
+/// `$arenaCommit(a, bytes)` (D601): the pages of the `bytes` bytes at `a`
+/// readable and writable, zeros; they must lie inside the arena (`base`,
+/// `size`, given by the generated code), on whole pages. 0, or -22 when they
+/// do not, -12 when the system has no memory.
+#[cfg(not(windows))]
+#[no_mangle]
+pub extern "C" fn isc_arena_commit(a: i64, bytes: i64, base: i64, size: i64) -> i64 {
+    const MAP_FIXED: c_int = 0x10;
+    let (a, bytes, base, size) = (a as u64, bytes as u64, base as u64, size as u64);
+    let off = a.wrapping_sub(base);
+    if bytes == 0 || size < bytes || off > size - bytes || a % 4096 != 0 || bytes % 4096 != 0 {
+        return -22;
+    }
+    // SAFETY: the pages named lie inside the arena that `isc_arena_reserve`
+    // reserved (checked above): a range of addresses of this allocator
+    // alone, whose pages hold nothing or blocks of the kernel that asks
+    let p = unsafe { mmap(a as *mut c_void, bytes as usize, PROT_READ_WRITE, MAP_PRIVATE_ANONYMOUS | MAP_FIXED, -1, 0) };
+    if p as isize == -1 {
+        -12
+    } else {
+        0
+    }
+}
+
+/// Under Windows the arena is not reserved yet (the `mmap` of `windows.rs`
+/// reserves and commits at once): no arena, the kernel in Isocron not used
+/// there until its step (D599).
+#[cfg(windows)]
+#[no_mangle]
+pub extern "C" fn isc_arena_reserve(_bytes: i64) -> i64 {
+    0
+}
+
+#[cfg(windows)]
+#[no_mangle]
+pub extern "C" fn isc_arena_commit(_a: i64, _bytes: i64, _base: i64, _size: i64) -> i64 {
+    -22
+}
+
 /// A new mapping of `len` bytes, readable and writable; null when the
 /// system has none.
 fn map(len: usize, flags: c_int) -> *mut u8 {

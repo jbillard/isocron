@@ -1329,8 +1329,27 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// A primitive of the kernel (D601) over the interpreter's own arena
+    /// and zone (`rt::kernel`): the same words and the same panics as the
+    /// compiled code; a page not committed is a panic here, a fault there.
+    fn kernel(&mut self, e: &Expr, op: isc_ir::KernelOp, args: &[Expr]) -> R<Value> {
+        let mut vs = Vec::new();
+        for a in args {
+            match self.eval(a)? {
+                Value::Int(x) => vs.push(x as u64),
+                v => panic!("expected an integer, got {:?}", v),
+            }
+        }
+        match rt::kernel(op, &vs) {
+            Ok(Some(x)) => Ok(Value::Int(x as i64)),
+            Ok(None) => Ok(Value::Unit),
+            Err(msg) => panic_at(e, msg.to_string()),
+        }
+    }
+
     fn action(&mut self, e: &Expr, op: ActionOp, args: &[Expr]) -> R<Value> {
         Ok(match op {
+            ActionOp::Kernel(o) => self.kernel(e, o, args)?,
             // the primitives of the system (D322), as the runtime does them
             ActionOp::Sys(o) => {
                 let mut vs = Vec::new();

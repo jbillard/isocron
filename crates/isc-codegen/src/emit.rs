@@ -13817,6 +13817,91 @@ impl<'p> Gen<'p> {
         Ok(())
     }
 
+    /// A primitive of the kernel (D601). The arena: its base and its size
+    /// in two words of the program, written once by `$arenaReserve`; an
+    /// address is tested to be inside it (`at - base` and the width below
+    /// the size: one comparison, false while nothing is reserved) before
+    /// its bytes are read or written. The zone of the thread: 4096 bytes of
+    /// its thread-local storage, an offset tested against its end.
+    fn kernel(&mut self, op: isc_ir::KernelOp, vals: &[V], pos: &str) -> V {
+        use isc_ir::KernelOp as K;
+        self.decls.insert("@isc_arena_base = global i64 0".into());
+        self.decls.insert("@isc_arena_size = global i64 0".into());
+        let fail = |g: &mut Self, ok: &str, msg: &str| {
+            let (m, n) = g.str_const(msg);
+            let (none, _) = g.str_const("");
+            g.guard(ok, format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 0, ptr {}, i64 0, {})", m, n, none, none, pos));
+        };
+        // the address of the `w` bytes at `a`, tested inside the arena
+        let place = |g: &mut Self, a: &str, w: u8| -> String {
+            let base = g.ins("load i64, ptr @isc_arena_base".to_string());
+            let size = g.ins("load i64, ptr @isc_arena_size".to_string());
+            g.decls.insert("declare i64 @llvm.usub.sat.i64(i64, i64)".into());
+            let off = g.ins(format!("sub i64 {}, {}", a, base));
+            let lim = g.ins(format!("call i64 @llvm.usub.sat.i64(i64 {}, i64 {})", size, w - 1));
+            let ok = g.ins(format!("icmp ult i64 {}, {}", off, lim));
+            fail(g, &ok, "the kernel reached outside its arena");
+            g.ins(format!("inttoptr i64 {} to ptr", a))
+        };
+        let zone = |g: &mut Self, at: &str, w: u8| -> String {
+            g.decls.insert(format!("@isc_kernel_zone = thread_local(localexec) global [{} x i8] zeroinitializer, align 64", isc_ir::KERNEL_ZONE));
+            let ok = g.ins(format!("icmp ule i64 {}, {}", at, isc_ir::KERNEL_ZONE - w as u64));
+            fail(g, &ok, "the kernel reached outside the zone of its thread");
+            g.ins(format!("getelementptr inbounds i8, ptr @isc_kernel_zone, i64 {}", at))
+        };
+        let read = |g: &mut Self, p: &str, w: u8| -> V {
+            if w == 8 {
+                return v(g.ins(format!("load i64, ptr {}, align 1", p)), "i64");
+            }
+            let x = g.ins(format!("load i{}, ptr {}, align 1", w * 8, p));
+            v(g.ins(format!("zext i{} {} to i64", w * 8, x)), "i64")
+        };
+        let write = |g: &mut Self, p: &str, w: u8, x: &str| -> V {
+            if w == 8 {
+                g.emit(format!("store i64 {}, ptr {}, align 1", x, p));
+            } else {
+                let t = g.ins(format!("trunc i64 {} to i{}", x, w * 8));
+                g.emit(format!("store i{} {}, ptr {}, align 1", w * 8, t, p));
+            }
+            v("0".to_string(), "i8")
+        };
+        match op {
+            K::ArenaReserve => {
+                self.decls.insert("declare i64 @isc_arena_reserve(i64)".into());
+                let base = self.ins(format!("call i64 @isc_arena_reserve(i64 {})", vals[0].r));
+                let got = self.ins(format!("icmp ne i64 {}, 0", base));
+                let size = self.ins(format!("select i1 {}, i64 {}, i64 0", got, vals[0].r));
+                self.emit(format!("store i64 {}, ptr @isc_arena_base", base));
+                self.emit(format!("store i64 {}, ptr @isc_arena_size", size));
+                v(base, "i64")
+            }
+            K::ArenaBase => v(self.ins("load i64, ptr @isc_arena_base".to_string()), "i64"),
+            K::ArenaSize => v(self.ins("load i64, ptr @isc_arena_size".to_string()), "i64"),
+            K::ArenaCommit => {
+                self.decls.insert("declare i64 @isc_arena_commit(i64, i64, i64, i64)".into());
+                let base = self.ins("load i64, ptr @isc_arena_base".to_string());
+                let size = self.ins("load i64, ptr @isc_arena_size".to_string());
+                v(self.ins(format!("call i64 @isc_arena_commit(i64 {}, i64 {}, i64 {}, i64 {})", vals[0].r, vals[1].r, base, size)), "i64")
+            }
+            K::Load(w) => {
+                let p = place(self, &vals[0].r, w);
+                read(self, &p, w)
+            }
+            K::Store(w) => {
+                let p = place(self, &vals[0].r, w);
+                write(self, &p, w, &vals[1].r)
+            }
+            K::ZoneLoad(w) => {
+                let p = zone(self, &vals[0].r, w);
+                read(self, &p, w)
+            }
+            K::ZoneStore(w) => {
+                let p = zone(self, &vals[0].r, w);
+                write(self, &p, w, &vals[1].r)
+            }
+        }
+    }
+
     fn action(&mut self, op: ActionOp, args: &[Expr], e: &Expr) -> R<V> {
         let mut vals = Vec::new();
         for a in args {
@@ -13824,6 +13909,7 @@ impl<'p> Gen<'p> {
         }
         let pos = Self::pos(e.span);
         Ok(match op {
+            ActionOp::Kernel(o) => self.kernel(o, &vals, &pos),
             // the standard input (D155)
             ActionOp::ReadStdin | ActionOp::ReadStdinText => {
                 let f = if op == ActionOp::ReadStdin { "isc_read_stdin" } else { "isc_read_stdin_text" };
