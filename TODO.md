@@ -530,13 +530,14 @@ v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest
 ### v1 (2 to 3 days from 2026-11-10)
 
 - [x] The 20 mathematical functions (`exp`, `log`, `sin`, `cos`, `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, `f64` and `f32`) in Isocron, the same bits as libm, fewer instructions everywhere, fewer cycles but for the chains of `exp` and `log` (each call on the result of the one before), 0.6 to 1.8 % slower (D628)
-- [ ] `lastIndexOf`, `replace` and `replaceAll`, `Number`, the floats of the CSV readers in Isocron (an agent)
-- [ ] The measurable costs of the two allocators side by side (D605, D609): the start of a small program +14 %, `maps.get.i64` +20 % at 200 rounds, `json.decode` +2.5 %: fixed or explained, one day at most
+- [x] (D626, D627: 13 to 98 % fewer instructions on 79 forms; `replaceAll` of a needle of 3 to 16 bytes left to the runtime, slower in Isocron after 8 attempts) `lastIndexOf`, `replace` and `replaceAll`, `Number`, the floats of the CSV readers in Isocron (an agent)
+- [x] (D623, D625: explained) The measurable costs of the two allocators side by side (D605, D609): the start of a small program +14 %, `maps.get.i64` +20 % at 200 rounds, `json.decode` +2.5 %: fixed or explained, one day at most
 - [x] The frontier written and its ratchet test (D622)
 - [x] (D623) The start of a small program: its own work the same (3990 → 4037 instructions), 30 000 cycles more in the kernel (the reservation of the arena and its first part, two calls of the system): explained, the reservation made lazily belongs to the rest of the allocator (v2); `maps.get.i64` +0.0 % on a quiet machine (was +20 %), `json.decode` +1.9 % (was +2.5 to 3.4 %), `maps.get.string` +2.3 %, `maps.Map.build.i64` +1.3 %; `json.stringify` −15.7 %, `json.parse` −3.1 %, `json.encode` −8.1 %
 - [x] (D625) `json.decode` +3.3 % of cycles with 2.5 % fewer instructions against the compiler of before the kernel: the front of the processor (misses of the cache of instructions +57 %, of branches +18 % a record), the code of the program larger; `maps.get.string` the same instructions, −2.4 % to +2.3 % of cycles from a measure to the next: noise
 - [ ] (v2) The place of the code of a program: `json.decode` loses 3 % to the front of the processor since the prelude inlines more (D625): hot and cold parts of functions apart, the order of the functions
 - [ ] `a_program_carries_what_it_reaches` (`pre.rs`) failed once in the pass of glibc of suite 429: a hello linked with the module 182 600 bytes against 112 968 without; not again in 16 runs; its message now gives the state of the module
+- [ ] The time of a compilation after v1: the prelude (5989 lines) read and checked whole at each compilation (a hello 241.5 → 308.3 million instructions of the compiler since 0.6.0, +28 %); one call of `sin` 341 → 604, of `Number` 322 → 1384: check only the functions of the prelude a program reaches, keep the prelude parsed in the compiler, and D611 (d) (the functions of the module not lowered in a program)
 - [ ] Release 1.0? (to propose to the author when the items above are done)
 
 ### v2: the runtime without Rust
