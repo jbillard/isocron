@@ -815,3 +815,45 @@ action main(args: string[k]): i32 {
     assert!(text.ends_with("true\n"), "{}", text);
     drop(silent);
 }
+
+/// Every program of these tests and the ten of the Benchmarks Game are
+/// built for both targets of Windows here, without the machine of Windows:
+/// a program that LLVM cannot compile for Windows is seen by the suite, not
+/// only in that machine. (`indexOf` written in Isocron, D596, made LLVM
+/// stop on every program that used it, D621: a tail call to a function
+/// taking more arguments on the stack than its caller.)
+#[test]
+fn programs_build_for_windows() {
+    if std::env::var_os("ISC_MINGW_DIR").is_none() && !std::path::Path::new("/usr/x86_64-w64-mingw32/lib").is_dir() {
+        eprintln!("no MinGW-w64: the builds for Windows skipped");
+        return;
+    }
+    // (the allocator of Linux changes nothing to a program for Windows: the
+    // same builds in the three passes of the suite, made in its first)
+    if std::env::var_os("ISC_ALLOC").is_some() {
+        return;
+    }
+    let data = format!("{}/tests/data", env!("CARGO_MANIFEST_DIR"));
+    let mut sources: Vec<(String, String)> = std::fs::read_dir(&data)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "isc"))
+        // (those of the kernel name what only the prelude can: `kernel.rs`)
+        .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("kernel_")))
+        .map(|p| (p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap()))
+        .collect();
+    for name in ["binarytrees", "fannkuchredux", "fasta", "knucleotide", "mandelbrot", "nbody", "pidigits", "regexredux", "revcomp", "spectralnorm"] {
+        sources.push((name.to_string(), source(name)));
+    }
+    sources.push(("search".to_string(), "action main(args: string[k]): i32 {\n    const t = \"a long text to look into, with a pattern near its end: abcabd\";\n    print([t.indexOf(args.length > 0 ? \"abcabd\" : \"x\"), t.includes(\"pattern near\") ? 1 : 0, t.lastIndexOf(\"a\")]);\n    return 0;\n}\n".to_string()));
+    sources.sort();
+    assert!(sources.len() > 20, "{} programs", sources.len());
+    for (name, src) in &sources {
+        for msvc in [false, true] {
+            let exe = compile_windows_with(src, &format!("built_{}_{}", name, if msvc { "msvc" } else { "gnu" }), msvc);
+            let head = std::fs::read(&exe).unwrap();
+            assert!(head.starts_with(b"MZ"), "{} (msvc {}): not an executable of Windows", name, msvc);
+        }
+    }
+}

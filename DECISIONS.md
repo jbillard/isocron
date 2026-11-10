@@ -15072,3 +15072,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   a release, the virtual machine. Each place taken in one step and given
   back only by its job. The suite on cb6c74a: 9.6 minutes (D617), against
   17 to 19.
+- **D620 — The functions of a program for Windows in `fastcc`, not
+  `tailcc` (2026-11-10).** Found by the tests of the release 0.6.0 in the
+  machine of Windows: LLVM stopped ("Can't handle guaranteed tail call
+  under win64 yet") on every program that used `indexOf` or `includes`
+  (D596, after 0.5.0), so on every program of the network and of HTTP.
+  `$twoWay` (3 parameters, 5 words) ends by a tail call to
+  `$twoWayPeriodic` (8 words) or `$twoWayPlain` (7): a tail call of
+  `tailcc` is guaranteed, and Windows passes the arguments after the
+  fourth on the stack, more of them than the caller received; LLVM cannot
+  guarantee that call on Win64. Removing such calls from the IR was not
+  enough: the optimizer makes tail calls itself after inlining, and every
+  one is guaranteed under `tailcc`. For Windows the functions of a program
+  are `fastcc`: a tail call made where it can be (the same signature: a
+  loop of mutual tail calls), an ordinary call otherwise; Linux keeps
+  `tailcc`. Not seen by the suite, whose tests of Windows run in that
+  machine only: `programs_build_for_windows` (`windows.rs`) builds every
+  program of the tests and the ten of the Benchmarks Game for both targets
+  of Windows here, in the first pass (24 programs that LLVM stopped on
+  before: 6 of them, for both targets, with the compiler of 724a7ef).

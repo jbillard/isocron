@@ -3752,9 +3752,21 @@ impl<'p> Gen<'p> {
 
     /// The calling convention of the recursive functions: `tailcc` (D113),
     /// C's on WebAssembly.
+    /// The calling convention of the functions of the program: `tailcc`,
+    /// whose tail calls are guaranteed (a loop of mutual tail calls in
+    /// constant stack, D113). Not in WebAssembly (only C's there), and not
+    /// for Windows: a tail call of `tailcc` is guaranteed there too, those
+    /// the optimizer of LLVM makes after inlining included, and LLVM cannot
+    /// guarantee one to a function that takes more of its arguments on the
+    /// stack (the fifth and after) than its caller: it stopped on every
+    /// program that used `indexOf` (`$twoWay`, 5 words, to
+    /// `$twoWayPeriodic`, 8, D621). `fastcc` there: a tail call made when
+    /// it can be, an ordinary call otherwise.
     fn fn_cc(&self) -> &'static str {
         if self.opts.isa.is_wasm() {
             ""
+        } else if self.opts.windows {
+            "fastcc "
         } else {
             "tailcc "
         }
@@ -5841,7 +5853,7 @@ impl<'p> Gen<'p> {
                         self.drop_var(*var, &x);
                     }
                     self.text_called.insert(*f);
-                    let r = self.ins(format!("tail call tailcc {} @isc_fn_{}({})", ret, f, vals.join(", ")));
+                    let r = self.ins(format!("tail call {}{} @isc_fn_{}({})", self.fn_cc(), ret, f, vals.join(", ")));
                     self.emit(format!("ret {} {}", ret, r));
                     let dead = self.label();
                     self.block(&dead);
