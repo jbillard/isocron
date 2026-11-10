@@ -476,6 +476,8 @@ pub struct Function {
     pub require_tail: Option<isc_syntax::Span>,
     /// `@cold` (D584): compiled `cold` and `noinline`, its calls unlikely.
     pub cold: bool,
+    /// `@noInline`: compiled `noinline`, its calls not unlikely.
+    pub no_inline: bool,
     /// Per parameter: owned by the function and taken apart on entry (the
     /// state of a loop, D206); its caller lends it, so the generated code
     /// copies it once on entry.

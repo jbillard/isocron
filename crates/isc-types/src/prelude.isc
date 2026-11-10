@@ -1886,6 +1886,8 @@ function $radixValue(b: u8[k], bits: i64, i: i64, acc: u64, nb: i64, sticky: boo
 }
 
 // From `p`, the first character that is not white space of ECMAScript.
+// (Not `@cold`: tried, 0.3 to 6 % more instructions on `Number` of the
+// texts that never reach it, the code around its call laid out again.)
 function $jsSpacesFrom(b: u8[k], p: i64): i64 {
     const w = $jsSpaceWidth(b, p);
     return w == 0 ? p : $jsSpacesFrom(b, p + w);
@@ -2109,9 +2111,18 @@ function $pattern(s: string, a: i64, z: i64, c: u8): string {
 // `parseCsvF64(t, skip)` (`readCsvF64` on the text read): its panic at the
 // place of its call.
 function $csvParse(t: string, skip: i64): f64[r][c] {
-    const b = bytes(t);
+    const [m, e, line, field, x, y] = $csvRead(bytes(t), skip);
+    return e == 0 ? m : $panic($csvHead(e, line, field, x), e == 1 ? t.slice(x, y) : "", e == 1 ? "` is not a number" : "");
+}
+
+// The reading of a whole text: its rows (none after an error) and the
+// error of `$csvStep`. Called, not inlined (`@noInline`): one call for
+// all the fields of a text; compiled once for every program (D611), with
+// `$csvStep` and the reading of its floats.
+@noInline
+function $csvRead(b: u8[k], skip: i64): [f64[r][c], i64, i64, i64, i64, i64] {
     const [vals, rows, cols, e, line, field, x, y] = $csvStep(b, skip, $csvRoom(b), 0, 0, 0, 1, 0, -1, 0);
-    return e == 0 ? $csvRows(vals, rows, cols) : $panic($csvHead(e, line, field, x), e == 1 ? t.slice(x, y) : "", e == 1 ? "` is not a number" : "");
+    return [$csvRows(vals, e == 0 ? rows : 0, e == 0 ? cols : 0), e, line, field, x, y];
 }
 
 // `readCsvF64OrError(path, skip)` (D138): the rows and `""`, or none and the
@@ -2123,11 +2134,10 @@ action readCsvF64OrError(path: string, skip: i64): [f64[r][c], string] {
 
 // The rows of `t` and `""`, or none and the message of the first error:
 // `err` (the reading of the file, `t` then empty), or that of the text.
+// (A file not read: `t` empty, no rows.)
 function $csvOrError(t: string, skip: i64, err: string): [f64[r][c], string] {
-    const b = bytes(t);
-    const [vals, rows, cols, e, line, field, x, y] = $csvStep(b, skip, $csvRoom(b), 0, 0, 0, 1, 0, -1, 0);
-    const ok = e == 0 && err == "";
-    return [$csvRows(vals, ok ? rows : 0, ok ? cols : 0), err != "" ? err : e == 0 ? "" : $csvMessage(t, e, line, field, x, y)];
+    const [m, e, line, field, x, y] = $csvRead(bytes(t), skip);
+    return [m, err != "" ? err : e == 0 ? "" : $csvMessage(t, e, line, field, x, y)];
 }
 
 // The room for the values: one for each comma and each line, and one.
@@ -2146,7 +2156,9 @@ function $csvRows(vals: f64[w], rows: i64, cols: i64): f64[r][c] {
 // row). Gives the values, the rows, the columns and an error: 0 none; 1 a
 // field that is no number, its line, its number and its bounds; 2 a row of
 // another length, its line, its fields and those of the first row. One
-// function, its tail calls a loop.
+// function, its tail calls a loop; a function of its own (`@noInline`):
+// copied into `$csvRead`, its loop took 6 to 8 instructions more a field.
+@noInline
 function $csvStep(b: u8[k], skip: i64, vals: f64[w], n: i64, a: i64, e: i64, line: i64, j: i64, cols: i64, rows: i64): [f64[w], i64, i64, i64, i64, i64, i64, i64] {
     if (j == 0) {
         if (a >= k) {

@@ -86,6 +86,11 @@ pub enum Modifier {
     /// `@cold` (D584): a function rarely called, compiled once and called,
     /// never inlined, its calls unlikely.
     Cold,
+    /// `@noInline` (D6xx (texts)): compiled once and called, never inlined,
+    /// its calls as likely as any other code (a function of the prelude
+    /// run once for a whole text, then compiled once for every program,
+    /// D611).
+    NoInline,
 }
 
 /// A `fn` or an `action` declaration.

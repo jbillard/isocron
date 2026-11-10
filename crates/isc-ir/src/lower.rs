@@ -2582,7 +2582,8 @@ impl<'p> Lower<'p> {
         self.reassoc_body(f, &mut body);
         let consumed = vec![false; params.len()];
         let cold = f.requires.iter().any(|(m, _)| *m == isc_syntax::ast::Modifier::Cold);
-        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, cold, consumed });
+        let no_inline = f.requires.iter().any(|(m, _)| *m == isc_syntax::ast::Modifier::NoInline);
+        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, cold, no_inline, consumed });
         Ok(idx)
     }
 

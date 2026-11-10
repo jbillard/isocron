@@ -721,6 +721,12 @@ pub struct Gen<'p> {
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
     ntask: u32,
+    /// The function whose tasks are being outlined (its name after
+    /// `isc_fn_`, and the tasks it has so far): a task of a function is
+    /// named from it (`isc_task_<name>.<k>`), whatever the program numbers
+    /// before it, so a function of the module compiled once that runs
+    /// tasks is the same text in every program (D611).
+    task_owner: Option<(String, u32)>,
     decls: BTreeSet<String>,
     globals: Vec<String>,
     funcs: Vec<String>,
@@ -1212,6 +1218,29 @@ fn text_word(text: &str) -> String {
     format!("{:016x}{:016x}", hash(0xcbf29ce484222325), hash(0x84222325cbf29ce4))
 }
 
+/// `text` with the metadata of each loop named by its kind, not its number:
+/// the loops are numbered in the order of the whole program (a scalar loop
+/// `!2` in one, `!11` in another), and the metadata of a kind is the same
+/// whatever its number (`distinct !{!n, !0, !1}`, or `!{!n, !UNROLL_IDS}`).
+fn loop_kinds(text: String) -> String {
+    const TAG: &str = "!llvm.loop !";
+    if !text.contains(TAG) {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(TAG) {
+        out.push_str(&rest[..at + TAG.len()]);
+        rest = &rest[at + TAG.len()..];
+        let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        let n: u64 = rest[..digits].parse().unwrap_or(0);
+        out.push_str(if n >= UNROLL_IDS { "unrolled" } else { "scalar" });
+        rest = &rest[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// What the functions of a module are made from (D611): the text of each
 /// under the names every program gives (`canon`), the constants and the
 /// words it names written as words for their values, and the functions of
@@ -1245,7 +1274,7 @@ impl PreMade<'_> {
                 out.push_str(&c);
             }
         });
-        (out, calls)
+        (loop_kinds(out), calls)
     }
 
     /// The word for all the function `name` is made from: its text and the
@@ -1476,6 +1505,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         join_fns: false,
         unrolled_loops: 0,
         ntask: 0,
+        task_owner: None,
         decls: BTreeSet::new(),
         globals: Vec::new(),
         funcs: Vec::new(),
@@ -1677,7 +1707,12 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
             let ours = f.name.starts_with('$') && named.get(f.name.as_str()) == Some(&1);
             ours.then(|| format!("isc.pre.{}", &f.name[1..]))
         };
-        let canon = |name: &str| -> String { lowered_name(name).and_then(|(i, variant)| stable(i).map(|n| format!("{}{}", n, variant))).unwrap_or_else(|| name.to_string()) };
+        let lowered = |name: &str| -> Option<String> { lowered_name(name).and_then(|(i, variant)| stable(i).map(|n| format!("{}{}", n, variant))) };
+        // (a task by the name of its function and its place there)
+        let canon = |name: &str| -> String {
+            let task = name.strip_prefix("isc_task_").and_then(|r| r.split_once('.')).and_then(|(owner, k)| lowered(&format!("isc_fn_{}", owner)).map(|n| format!("{}.task{}", n, k)));
+            task.or_else(|| lowered(name)).unwrap_or_else(|| name.to_string())
+        };
         let entries = ["isc.kernel.start", "isc.kernel.free", "isc.late.free_strs"];
         let fn_parts = ir_parts(&(g.funcs.join("\n") + "\n"));
         let kernel_parts = ir_parts(&kernel_text);
@@ -3430,6 +3465,16 @@ impl<'p> Gen<'p> {
         // the texts on the stack, by the names of the registers of a
         // function (D442)
         let saved_stack_strs = std::mem::take(&mut self.stack_strs);
+        let name = if in_region {
+            format!("{}_rg", i)
+        } else if counted {
+            format!("{}_sm", i)
+        } else if buffered {
+            format!("{}_buf", i)
+        } else {
+            i.to_string()
+        };
+        let saved_owner = std::mem::replace(&mut self.task_owner, Some((name.clone(), 0)));
         let mut ps = Vec::new();
         if in_region {
             ps.push("ptr %rg".to_string());
@@ -3557,20 +3602,13 @@ impl<'p> Gen<'p> {
         // `tailcc`: a call marked `tail` and followed by `ret` reuses the frame
         // (mutual tail recursion, D113)
         let cc = self.fn_cc();
-        let name = if in_region {
-            format!("{}_rg", i)
-        } else if counted {
-            format!("{}_sm", i)
-        } else if buffered {
-            format!("{}_buf", i)
-        } else {
-            i.to_string()
-        };
         // on 64 bytes (D213): a small function called at each node of a
         // tree stays whole in the cache of decoded instructions
         // `@cold` (D584): never inlined back by LLVM, its calls unlikely
         let cold = if self.p.fns[i].cold {
             " cold noinline"
+        } else if self.p.fns[i].no_inline {
+            " noinline"
         } else if int_text || kernel_entry {
             " alwaysinline"
         } else {
@@ -3590,6 +3628,7 @@ impl<'p> Gen<'p> {
         self.count_param = saved_count_param;
         self.stack_strs = saved_stack_strs;
         self.text_buf = saved_text_buf;
+        self.task_owner = saved_owner;
         r?;
         self.funcs.push(text);
         Ok(())
@@ -9240,8 +9279,16 @@ impl<'p> Gen<'p> {
             let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 {}", ctx_ty, ctxp, i));
             self.emit(format!("store {} {}, ptr {}", c.t, c.r, g));
         }
-        self.ntask += 1;
-        let name = format!("@isc_task_{}", self.ntask);
+        let name = match self.task_owner.as_mut() {
+            Some((owner, k)) => {
+                *k += 1;
+                format!("@isc_task_{}.{}", owner, k)
+            }
+            None => {
+                self.ntask += 1;
+                format!("@isc_task_{}", self.ntask)
+            }
+        };
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_divmod = std::mem::take(&mut self.divmod);

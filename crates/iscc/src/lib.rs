@@ -76,11 +76,10 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
 /// allocator, which every program has; and the reading of a float
 /// (`parseF64`, `tryParseF64`), whose rare paths, `@cold` functions that
 /// only the prelude can name, are the same in every program that calls it;
-/// those of `lastIndexOf`, `Number` and the readers of CSV too (D6xx
-/// (texts)). Not those of `replace` and `replaceAll`: their joins are
-/// tasks, numbered in the order of the module, and the functions emitted
-/// after them (the rest of `toFixed`) then differed from those of the
-/// programs, which compiled them again (`pre.rs`).
+/// those of `lastIndexOf`, `Number`, `replace` and `replaceAll`, and the
+/// reading of CSV (`@noInline`) too (D6xx (texts), D6xx (texts, compile):
+/// the tasks of `replace` named from their function, not in the order of
+/// the module, which made the rest of `toFixed` differ before).
 /// The module compiled once is made from it; a function it does not reach
 /// stays in the programs that do.
 const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
@@ -93,6 +92,7 @@ const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
     print(parseF64(args[0]));
     print(match (tryParseF64(args[0])) { Ok(v) => v, Err(e) => 0.0 });
     print(args[0].lastIndexOf(args[n - 1]) + i64(Number(args[0])));
+    print(args[0].replace(args[1], args[n - 1]) + args[0].replaceAll(args[1], args[n - 1]));
     print(parseCsvF64(args[0], 1));
     print(match (tryReadCsvF64(args[0], 1)) { Ok(m) => m.length, Err(e) => 0 });
     return 0;

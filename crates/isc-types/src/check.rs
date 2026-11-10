@@ -4145,10 +4145,12 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
     let mut recursive = recursive_fns(&fns);
     // `@cold` (D584): called, never inlined; not a function that takes or
     // returns a function (each call specializes it, SPEC section 11)
+    // (`@noInline` the same, its calls not unlikely)
     for (id, f) in fns.iter().enumerate() {
-        if let Some((_, at)) = f.requires.iter().find(|(m, _)| *m == isc_syntax::ast::Modifier::Cold) {
+        if let Some((m, at)) = f.requires.iter().find(|(m, _)| matches!(m, isc_syntax::ast::Modifier::Cold | isc_syntax::ast::Modifier::NoInline)) {
             if f.param_tys.iter().chain(std::iter::once(&f.ret)).any(|t| holds_function(&globals, t, &mut Vec::new())) {
-                return err(*at, format!("`@cold` function `{}` takes or returns a function: it would be specialized at each call, never compiled once", f.name));
+                let name = if *m == isc_syntax::ast::Modifier::Cold { "cold" } else { "noInline" };
+                return err(*at, format!("`@{}` function `{}` takes or returns a function: it would be specialized at each call, never compiled once", name, f.name));
             }
             recursive[id] = true;
         }

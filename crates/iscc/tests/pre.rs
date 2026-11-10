@@ -180,6 +180,37 @@ fn a_list_that_is_not_one() {
     assert_eq!((r.code, r.stdout.as_str()), (0, TEXTS_OUT), "{}", r.stderr);
 }
 
+/// The texts moved to Isocron (D6xx (texts)): the rare paths of `replace`,
+/// `replaceAll` and `lastIndexOf`, whose tasks are named from their
+/// function and not from their place in a program, and the reading of a
+/// CSV text (`@noInline`), the module's in a program whose own tasks come
+/// first; its output that of the whole program.
+#[test]
+fn the_moved_texts_from_the_module() {
+    let src = "action main(args: string[k]): i32 {
+    const s = args[0];
+    print(sum(map(iota(parseI64(args[1])), (i) => i % 7)));
+    print(s.replaceAll(args[2], args[3]) + \"|\" + s.replace(args[2], args[3]));
+    print(s.lastIndexOf(args[2]));
+    print(Number(args[1]));
+    print(parseCsvF64(args[4], 0));
+    return 0;
+}
+";
+    let dir = cache("pre_texts");
+    let (bin, ir) = built(src, "pre_texts_a", Some(&dir));
+    for name in ["isc.pre.replaceSlow", "isc.pre.replaceLong", "isc.pre.twoWayLast", "isc.pre.csvRead"] {
+        assert!(ir.lines().any(|l| l.starts_with("declare hidden ") && l.contains(&format!("@{}(", name))), "{} is not declared", name);
+        assert!(!ir.lines().any(|l| l.starts_with("define ") && l.contains(&format!("@{}(", name))), "{} is defined", name);
+    }
+    let (whole, _) = built(src, "pre_texts_whole", None);
+    for args in [["a$b$c-$$-abcabc", "100000", "$", "[$&]", "1,2\n3,4\n"], ["xyzxyz", "12", "yz", "$'", "1, 2.5\n"]] {
+        let (r, w) = (run_bin(&bin, &args), run_bin(&whole, &args));
+        assert_eq!((r.code, r.stdout.as_str()), (0, w.stdout.as_str()), "{:?}: {}", args, r.stderr);
+        assert_eq!(w.code, 0, "{:?}: {}", args, w.stderr);
+    }
+}
+
 /// The manifest as text and back.
 #[test]
 fn the_list_as_text() {

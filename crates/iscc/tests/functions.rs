@@ -657,3 +657,47 @@ action main(args: string[k]): i32 {
     let e = iscc::frontend("cold_bad.isc", bad).err().expect("refused");
     assert!(e.to_string().contains("`@cold` function `apply` takes or returns a function"), "{}", e);
 }
+
+/// `@noInline` (D6xx (texts)): compiled once and called, never inlined, its
+/// calls not taken as unlikely (`noinline` without `cold`). The same
+/// results interpreted and compiled; one that takes a function is refused
+/// at compilation.
+#[test]
+fn no_inline_functions_called_not_inlined() {
+    let src = "@noInline
+function weight(x: i64): i64 {
+    return x % 3 == 0 ? x * 5 : x + 1;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(sum(map(iota(n), weight)));
+    print(weight(n));
+    return 0;
+}
+";
+    let bin = compile(src, "no_inline_functions");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let defined: Vec<&str> = ll.lines().filter(|l| l.starts_with("define internal ") && l.contains("@isc_fn_")).collect();
+    assert!(defined.iter().any(|l| l.contains(" noinline") && !l.contains(" cold")), "{:?}", defined);
+    for args in [["10"], ["5000"]] {
+        let want = interp_ok(src, &args);
+        let n: i64 = args[0].parse().unwrap();
+        let weight = |x: i64| if x % 3 == 0 { x * 5 } else { x + 1 };
+        assert_eq!(want, format!("{}\n{}\n", (0..n).map(weight).sum::<i64>(), weight(n)));
+        let r = run_bin(&bin, &args);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", args, r.stderr);
+    }
+    let bad = "@noInline
+function apply(f: (i64) => i64, x: i64): i64 {
+    return f(x);
+}
+
+action main(args: string[k]): i32 {
+    print(apply((v) => v + 1, 2));
+    return 0;
+}
+";
+    let e = iscc::frontend("no_inline_bad.isc", bad).err().expect("refused");
+    assert!(e.to_string().contains("`@noInline` function `apply` takes or returns a function"), "{}", e);
+}

@@ -15206,3 +15206,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `isc_parse_csv_f64`, `isc_read_csv_f64`, `isc_try_read_csv_f64` (the
     case `Number` of `isc_js_number` too, kept for `parseFloat` and
     `parseInt`); the runtime core keeps their code for the native forms.
+- **D6xx (texts, compile) — The time of a compilation of the moved texts
+  (2026-11-10).** Three changes, the code of every program the same:
+  - **Names of the module that do not depend on the program** (D611): a
+    task is named from its function and its place in it
+    (`isc_task_<function>.<k>`, `isc_task_<k>` outside a function) and the
+    text compared names it so; the metadata of a loop is compared by its
+    kind, not its number (counted in the whole program, `!2` here, `!11`
+    there: the reading of CSV and the radix of `Number` never matched).
+    `replace` back in the program of the module: its rare paths
+    (`$replaceSlow`, `$replaceLong`, their joins) compiled once.
+  - **`@noInline`**: compiled once and called, never inlined, its calls
+    not unlikely (`@cold` without the "rarely"). The reading of a CSV text
+    is `$csvRead` (the room, the loop, the rows), `@noInline`, and its loop
+    `$csvStep` too: copied into `$csvRead`, it took 6 to 8 instructions more
+    a field (+1.6 to +5.6 %); a function of its own, −0.2 to −6.1 %.
+    Both the module's, with their reading of floats.
+  - Tried, not kept: the white space of several bytes of `Number`
+    (`$jsSpacesFrom`, `$jsSpacesBack`) `@cold`: −7.4 % for a program with
+    one `Number`, but +0.3 to +6 % instructions on its forms that never
+    reach them (`names` +3.5 a text): the code around a call laid out
+    again. `Number` keeps its reading of floats inlined (a call each time
+    otherwise).
+  - Instructions of the compiler (release, best of 3), 576c742 → now: a
+    hello 226.7 → 227.0 M; one `Number` 1385.9 → 1386.4; `replaceAll` and
+    `lastIndexOf` of texts of the arguments 5394.9 → 2713.4 (−49.7 %), of
+    literals 1218.8 → 1091.9 (−10.4 %); one `parseCsvF64` 2130.7 → 935.7
+    (−56.1 %), of a literal 1478.5 → 934.6 (−36.8 %);
+    `moved_texts_calls.isc` 4441.8 → 2243.0 (−49.5 %). The forms of
+    `last_index`, `replace`, `number`, `csv`, `parse_float`: none above
+    (+0.06 % at most, noise: the `main` of the pilots of the four others
+    the same instructions but for the lines of the prelude in their panics
+    and a call of `$fixedRest`, which their programs compiled again before,
+    its names shifted by the tasks), the same outputs.
+  - Left: a pattern known at compilation still has all its paths emitted
+    (`if`s on a constant length kept until LLVM); the module's functions
+    are lowered and written by each program to be compared (TODO, D611 (d)).

@@ -2448,6 +2448,29 @@ action main(args: string[k]): i32 {
 [3, 23, 7]
 ```
 
+`@noInline` is the same indication without the "rarely": the function is
+compiled once and called, never copied into its callers, and its calls
+are as likely as the code around them. It suits a large function called
+once for a whole piece of work (the prelude reads a CSV text so: one call
+for all its fields, the code of the reading compiled once). The same rule
+for a function that takes or returns a function.
+
+```isc
+@noInline
+function checksum(b: u8[n]): i64 {
+    return fold(b, 7, (a, c) => a * 31 + i64(c));
+}
+
+action main(args: string[k]): i32 {
+    print(checksum(bytes("abc")));
+    return 0;
+}
+```
+
+```output
+304891
+```
+
 ## Errors and panics
 
 Compile errors are printed as `file:line:column: error: message`, and `iscc`

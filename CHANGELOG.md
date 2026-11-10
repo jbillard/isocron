@@ -11,6 +11,14 @@
   16 bytes stays the runtime's; a program that calls them takes longer to
   compile (D6xx (texts)). A search from the end (`fold(iota(n), init,
   (a, i) => c ? i : a)`) runs by vectors.
+- `@noInline`: a function compiled once and called, never inlined, its
+  calls as likely as the code around them (`@cold` without "rarely").
+- Faster compilations of programs that read CSV texts (−37 to −56 %
+  instructions of the compiler for one `parseCsvF64`) or call `replace`,
+  `replaceAll` and `lastIndexOf` (−10 to −50 %): their rare paths and the
+  reading of CSV are compiled once in the module of the prelude, whose
+  tasks and loops are now named the same in every program (D6xx (texts,
+  compile)).
 
 ## 0.6.0 — 2026-11-10
 
