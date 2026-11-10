@@ -89,10 +89,9 @@ action main(args: string[k]): i32 {
 
 fn valgrind_clean(bin: &std::path::Path) {
     checked_clean_bin(bin, &[], None);
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if !vg.is_file() {
+    let Some(vg) = valgrind_path() else {
         return;
-    }
+    };
     let out = std::process::Command::new(vg)
         .args(["--error-exitcode=9", "--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "-q"])
         .arg(bin)

@@ -9,11 +9,10 @@ use common::*;
 /// error, nothing lost.
 fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
     checked_clean(src, name, args);
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if !vg.is_file() {
-        eprintln!("valgrind not installed: {} skipped", name);
+    let Some(vg) = valgrind_path() else {
+        eprintln!("valgrind not run (not installed, or ISC_TEST_NO_VALGRIND): {} skipped", name);
         return;
-    }
+    };
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
     let bin = compile_glibc(src, &format!("{}_vg", name), opts);
     let out = std::process::Command::new(vg)
@@ -278,11 +277,10 @@ fn lines_and_parts_that_are_views_of_a_text() {
             checked_clean_bin(&bin, &[], Some(&t));
         }
     }
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if !vg.is_file() {
-        eprintln!("valgrind not installed: views_of_lines skipped");
+    let Some(vg) = valgrind_path() else {
+        eprintln!("valgrind not run (not installed, or ISC_TEST_NO_VALGRIND): views_of_lines skipped");
         return;
-    }
+    };
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
     let vbin = compile_glibc(src, "views_of_lines_vg", opts);
     let vg_input = tmp("views_of_lines_vg.txt");
@@ -360,11 +358,10 @@ action main(args: string[k]): i32 {
         let o = std::process::Command::new(&bin).env("ISC_THREADS", threads).stdin(std::fs::File::open(&path).unwrap()).output().unwrap();
         assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), want.clone()), "{} threads: {}", threads, String::from_utf8_lossy(&o.stderr));
     }
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if !vg.is_file() {
-        eprintln!("valgrind not installed: stdin_lines_block skipped");
+    let Some(vg) = valgrind_path() else {
+        eprintln!("valgrind not run (not installed, or ISC_TEST_NO_VALGRIND): stdin_lines_block skipped");
         return;
-    }
+    };
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
     let bin = compile_glibc(src, "stdin_lines_block_vg", opts);
     let o = std::process::Command::new(vg)

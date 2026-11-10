@@ -33,6 +33,7 @@ extern "C" {
     fn LLVMParseCommandLineOptions(argc: i32, argv: *const *const c_char, overview: *const c_char);
     fn LLVMGetTargetFromTriple(triple: *const c_char, t: *mut Ref, msg: *mut *mut c_char) -> i32;
     fn LLVMGetHostCPUName() -> *mut c_char;
+    fn LLVMGetVersion(major: *mut u32, minor: *mut u32, patch: *mut u32);
     fn LLVMGetHostCPUFeatures() -> *mut c_char;
     fn LLVMCreateTargetMachine(
         t: Ref,
@@ -199,7 +200,71 @@ pub fn compile_pre(ir: &str, obj: &Path, isa: crate::emit::Isa, windows: bool, m
     Ok(optimized)
 }
 
+/// The objects already made (D617). With `$ISC_OBJECT_CACHE` set (the
+/// tests of the suite set it), the object of each text of LLVM IR, and its
+/// assembly when asked, is kept in that directory under a word made of all
+/// that makes it: the text, the target and its CPU, the version of LLVM and
+/// the code of this file (its passes, its options); asked again, it is
+/// copied, not made again. The suite builds the same programs three times
+/// (the three allocators change the linking, not the IR) and most of them
+/// again at the next commit. The module compiled once (D611), whose text
+/// as optimized is read back, is never taken from it.
+fn object_cache(ir: &str, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Option<(std::path::PathBuf, String)> {
+    let dir = std::env::var_os("ISC_OBJECT_CACHE").filter(|v| !v.is_empty())?;
+    let (mut major, mut minor, mut patch) = (0u32, 0u32, 0u32);
+    // SAFETY: three places of this frame, written by LLVM during the call
+    unsafe { LLVMGetVersion(&mut major, &mut minor, &mut patch) };
+    // (the CPU of the host, which `native`, `avx2` and `avx512` take; a word
+    // more for the others)
+    let host = if isa.is_wasm() { String::new() } else { format!("{} {}", unsafe { take_msg(LLVMGetHostCPUName()) }, host_features()) };
+    let (mut a, mut b) = (0xcbf29ce484222325u64, 0x84222325cbf29ce4u64);
+    let mut feed = |bytes: &[u8]| {
+        for &x in bytes {
+            a = (a ^ x as u64).wrapping_mul(0x100000001b3);
+            b = (b ^ x as u64).wrapping_mul(0x1000193_0000_01b3);
+        }
+    };
+    feed(include_str!("backend.rs").as_bytes());
+    feed(format!("|{}.{}.{}|{:?}|{}|{}|{}|", major, minor, patch, isa, windows, msvc, host).as_bytes());
+    feed(ir.as_bytes());
+    Some((std::path::PathBuf::from(dir), format!("{:016x}{:016x}", a, b)))
+}
+
 fn compile_text(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>) -> Result<(), String> {
+    let cache = if optimized.is_none() { object_cache(ir, isa, windows, msvc) } else { None };
+    if let Some((dir, key)) = &cache {
+        let (o, s) = (dir.join(format!("{}.o", key)), dir.join(format!("{}.s", key)));
+        let whole = o.is_file() && asm.is_none_or(|_| s.is_file());
+        if whole && std::fs::copy(&o, obj).is_ok() && asm.is_none_or(|a| std::fs::copy(&s, a).is_ok()) {
+            // (its time the last use: the suite removes the old ones)
+            if let Ok(f) = std::fs::File::options().write(true).open(&o) {
+                let _ = f.set_modified(std::time::SystemTime::now());
+            }
+            return Ok(());
+        }
+    }
+    let made = compile_llvm(ir, obj, asm, isa, windows, msvc, optimized);
+    if let (Ok(()), Some((dir, key))) = (&made, &cache) {
+        // written under another name, then named: a reader never sees half
+        static PARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let keep = |from: &Path, ext: &str| {
+            let n = PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let part = dir.join(format!("{}.{}.{}.{}.part", key, ext, std::process::id(), n));
+            if std::fs::copy(from, &part).is_ok() && std::fs::rename(&part, dir.join(format!("{}.{}", key, ext))).is_err() {
+                let _ = std::fs::remove_file(&part);
+            }
+        };
+        if std::fs::create_dir_all(dir).is_ok() {
+            if let Some(a) = asm {
+                keep(a, "s");
+            }
+            keep(obj, "o");
+        }
+    }
+    made
+}
+
+fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>) -> Result<(), String> {
     init_llvm();
     unsafe {
         let wasm = isa.is_wasm();

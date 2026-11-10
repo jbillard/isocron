@@ -154,8 +154,7 @@ fn clocks_read_through_the_vdso() {
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(!calls.contains("clock_gettime("), "the clocks read by system calls:\n{}", calls);
     }
-    let vg = std::path::Path::new("/usr/bin/valgrind");
-    if vg.is_file() {
+    if let Some(vg) = valgrind_path() {
         let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
         let bin = compile_glibc(src, "std_clock_vg", opts);
         let before = second();

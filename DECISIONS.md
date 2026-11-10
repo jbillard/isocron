@@ -15025,3 +15025,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `results/benchmarks_game.md`, `benchmarks_game.tsv`, `floors.md`,
   `floors.tsv`, `floors_isocron.tsv`, the table of the README and its
   figure made again from these lines.
+- **D617 — The suite does the same work once (2026-11-10).** Asked by the
+  author to go much faster. The suite took 17 to 19 minutes for each
+  commit (3668 s of work over 4 places, suite 424), and it is run before
+  each push. Profiled (`perf record` of the file `strings`, by process):
+  70 % of its time was Valgrind's. About sixty programs of the tests are
+  run under Valgrind; they link with glibc and set `ISC_ALLOC=glibc`
+  themselves, so the three passes of the suite (`ISC_ALLOC` unset, `glibc`,
+  `check`) ran the same runs three times. And the IR of a program does not
+  depend on `ISC_ALLOC` (it changes the linking only): the three passes
+  compiled the same programs three times.
+  - Valgrind once: `common::valgrind_path()` gives none under
+    `ISC_TEST_NO_VALGRIND`, which `tools/suite.py` sets in its second and
+    third passes; every run under Valgrind of the tests goes through it.
+    Nothing is checked less: the first pass runs them all.
+  - The objects already made: with `$ISC_OBJECT_CACHE` (set by the suite,
+    `target/isc-objects`, the files not used for three days removed at its
+    start), `backend::compile_text` keeps the object of each text of LLVM
+    IR, and its assembly when asked, under a word made of all that makes
+    it (the text, the target and the CPU, the version of LLVM, the source
+    of `backend.rs`), and copies it when the same text comes again. The
+    module compiled once (D611), whose optimized text is read back, never.
+  - The programs of the tests no longer ask LLVM for their assembly (a
+    second emission of each module): `common::compile_asm` for the two
+    tests that read it.
+  - Measured, one file alone on the machine, its first pass (Valgrind,
+    the objects made) → a later pass (no Valgrind, the objects copied):
+    `strings` 74.5 → 41.0 s; `stdlib` 175.8 → 79.2 s. `codegen` 14.5 s
+    without the cache → 2.2 s with it, `output` 3.4 → 0.5 s.
+  - `bench/replace.py` (D617 too): the checks of a part of the runtime
+    that moves, one command each, the same for an agent and its review;
+    forms of three families in `bench/replace/`.

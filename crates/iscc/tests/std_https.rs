@@ -77,8 +77,7 @@ fn s_server(dir: &Path) -> (std::process::Child, u16) {
 }
 
 fn valgrind_bin() -> Option<PathBuf> {
-    let vg = PathBuf::from("/usr/bin/valgrind");
-    vg.is_file().then_some(vg)
+    valgrind_path()
 }
 
 /// D343: the client against `openssl s_server`: a small body and 3000000

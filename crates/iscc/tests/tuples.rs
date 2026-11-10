@@ -135,8 +135,8 @@ action main(args: string[k]): i32 {
             assert_eq!(r.stdout, want, "n {} T={}", n, t);
         }
     }
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if vg.is_file() {
+    let vg = valgrind_path();
+    if let Some(vg) = vg {
         let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
         let bin = compile_glibc(src, "take_component_vg", opts);
         let out = std::process::Command::new(vg)
@@ -212,8 +212,8 @@ action main(args: string[k]): i32 {
             assert_eq!(r.stdout, want, "n {} T={}", n, t);
         }
     }
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if vg.is_file() {
+    let vg = valgrind_path();
+    if let Some(vg) = vg {
         let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
         let bin = compile_glibc(src, "if_tuple_vg", opts);
         let out = std::process::Command::new(vg)

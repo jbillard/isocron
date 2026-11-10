@@ -7,11 +7,10 @@ use common::*;
 
 fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
     checked_clean(src, name, args);
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if !vg.is_file() {
-        eprintln!("valgrind not installed: {} skipped", name);
+    let Some(vg) = valgrind_path() else {
+        eprintln!("valgrind not run (not installed, or ISC_TEST_NO_VALGRIND): {} skipped", name);
         return;
-    }
+    };
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
     let bin = compile_glibc(src, &format!("{}_vg", name), opts);
     let out = std::process::Command::new(vg)

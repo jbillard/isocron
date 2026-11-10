@@ -11,10 +11,9 @@ use std::net::TcpListener;
 
 fn valgrind_clean(src: &str, name: &str, args: &[&str]) {
     checked_clean(src, name, args);
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if !vg.is_file() {
+    let Some(vg) = valgrind_path() else {
         return;
-    }
+    };
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
     let bin = compile_glibc(src, &format!("{}_vg", name), opts);
     let out = std::process::Command::new(vg)
@@ -338,7 +337,7 @@ fn server_against_clients_of_the_test() {
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join("server.isc");
     std::fs::write(&file, src).unwrap();
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
+    let vg = valgrind_path();
     let mut runs: Vec<(&str, std::process::Command)> = Vec::new();
     let mut c = std::process::Command::new(&bin);
     c.arg("206").env("ISC_THREADS", "4");
@@ -346,7 +345,7 @@ fn server_against_clients_of_the_test() {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"));
     c.arg("run").arg(&file).arg("206");
     runs.push(("interpreted", c));
-    if vg.is_file() {
+    if let Some(vg) = vg {
         let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
         let vbin = compile_glibc(src, "std_http_server_vg", opts);
         let mut c = std::process::Command::new(&vg);

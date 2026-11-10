@@ -132,20 +132,37 @@ pub fn compile_with(src: &str, name: &str, codegen: isc_codegen::Options) -> Pat
 
 /// `compile_with` and the libraries of the `extern` functions (`--link`).
 pub fn compile_linked(src: &str, name: &str, codegen: isc_codegen::Options, link: &[&str]) -> PathBuf {
-    compile_built(src, name, codegen, link, false, false)
+    compile_built(src, name, codegen, link, false, false, false)
+}
+
+/// `compile`, its assembly written beside it (`<name>.s`), for the tests
+/// that read it (the others do not ask LLVM for it: a second emission of
+/// the module for each program, D617).
+pub fn compile_asm(src: &str, name: &str) -> PathBuf {
+    compile_built(src, name, isc_codegen::Options::default(), &[], false, false, true)
 }
 
 /// `compile`, every function the program reaches compiled in it, none
 /// taken from the module of the prelude compiled once (D611): for the
 /// tests that read the IR of a whole program.
 pub fn compile_whole(src: &str, name: &str) -> PathBuf {
-    compile_built(src, name, isc_codegen::Options::default(), &[], false, true)
+    compile_built(src, name, isc_codegen::Options::default(), &[], false, true, true)
 }
 
 /// `compile_with`, the program linked with glibc (D289): for Valgrind,
 /// which sees the blocks of glibc's allocator (`ISC_ALLOC=glibc`).
 pub fn compile_glibc(src: &str, name: &str, codegen: isc_codegen::Options) -> PathBuf {
-    compile_built(src, name, codegen, &[], true, false)
+    compile_built(src, name, codegen, &[], true, false, false)
+}
+
+/// Valgrind for the runs of the tests under it, or none: not installed, or
+/// `ISC_TEST_NO_VALGRIND` set. The suite sets it in its second and third
+/// passes (D617): those runs link their programs with glibc and set
+/// `ISC_ALLOC` themselves, so the three passes ran the same runs three times
+/// (70 % of the time of `strings` was Valgrind's).
+pub fn valgrind_path() -> Option<PathBuf> {
+    let vg = PathBuf::from("/usr/bin/valgrind");
+    (std::env::var_os("ISC_TEST_NO_VALGRIND").is_none() && vg.is_file()).then_some(vg)
 }
 
 /// The memory of every program checked (D578): with `ISC_TEST_MEMCHECK` set,
@@ -162,7 +179,7 @@ pub fn memcheck() -> bool {
 /// instructions, which Valgrind may not decode).
 static MEMCHECKED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
-fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link: &[&str], mut glibc: bool, whole: bool) -> PathBuf {
+fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link: &[&str], mut glibc: bool, whole: bool, asm: bool) -> PathBuf {
     let checked = memcheck() && !codegen.windows;
     if checked {
         if matches!(codegen.isa, isc_codegen::Isa::Native | isc_codegen::Isa::Avx512) {
@@ -175,7 +192,7 @@ fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link:
     let opts = iscc::BuildOptions {
         output: out.clone(),
         emit_llvm: Some(out.with_extension("ll")),
-        emit_asm: Some(out.with_extension("s")),
+        emit_asm: asm.then(|| out.with_extension("s")),
         debug: false,
         codegen,
         link: link.iter().map(|s| s.to_string()).collect(),

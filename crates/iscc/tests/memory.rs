@@ -8,8 +8,7 @@ mod common;
 use common::*;
 
 fn valgrind() -> Option<std::path::PathBuf> {
-    let p = std::path::PathBuf::from("/usr/bin/valgrind");
-    p.is_file().then_some(p)
+    valgrind_path()
 }
 
 fn clean(src: &str, name: &str, args: &[&str]) {

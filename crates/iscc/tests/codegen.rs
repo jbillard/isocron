@@ -102,7 +102,7 @@ fn histogram_matches_interpreter() {
 #[test]
 fn simd_is_visible_in_the_assembly() {
     for (name, src) in [("c_sum", SUM), ("c_dot", DOT), ("c_std", STD)] {
-        let bin = compile(src, &format!("{}_asm", name));
+        let bin = compile_asm(src, &format!("{}_asm", name));
         let asm = std::fs::read_to_string(bin.with_extension("s")).unwrap();
         // packed double-precision additions (SSE2 `addpd` or AVX `vaddpd`)
         let packed = asm.lines().filter(|l| l.contains("addpd")).count();

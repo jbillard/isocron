@@ -71,8 +71,8 @@ fn tcp_and_dns_on_the_local_machine() {
         assert_eq!((r.code, r.stdout.as_str()), (0, want), "compiled, {} threads: {}", t, r.stderr);
     }
     // nothing lost (Valgrind, the allocator of glibc)
-    let vg = std::path::PathBuf::from("/usr/bin/valgrind");
-    if vg.is_file() {
+    let vg = valgrind_path();
+    if let Some(vg) = vg {
         let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
         let bin = compile_glibc(SRC, "std_net_vg", opts);
         let out = std::process::Command::new(vg)

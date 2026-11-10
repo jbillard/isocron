@@ -19,6 +19,17 @@ wt, target, log, jobs = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 # the modules of the prelude compiled once (D611) by the compilers of the
 # tests: with the build, not in the cache of the user
 env = dict(os.environ, CARGO_TARGET_DIR=target, ISC_CACHE_DIR=os.path.join(os.path.abspath(target), "isc-cache"))
+# the objects of the programs of the tests (D617): the three passes build the
+# same programs, and most of them are the same at the next commit; those not
+# used for three days removed
+env["ISC_OBJECT_CACHE"] = os.path.join(os.path.abspath(target), "isc-objects")
+os.makedirs(env["ISC_OBJECT_CACHE"], exist_ok=True)
+for f in os.scandir(env["ISC_OBJECT_CACHE"]):
+    try:
+        if time.time() - f.stat().st_mtime > 3 * 86400 or f.name.endswith(".part"):
+            os.remove(f.path)
+    except OSError:
+        pass
 out = open(log, "w", buffering=1)
 t0 = time.time()
 b = subprocess.run(["cargo", "test", "--no-run", "--message-format=json"], cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -72,6 +83,10 @@ def run(r):
     e = dict(env)
     if alloc:
         e["ISC_ALLOC"] = alloc
+        # (the runs under Valgrind set their allocator and link with glibc
+        # themselves: the same in the three passes, run in the first only,
+        # D617)
+        e["ISC_TEST_NO_VALGRIND"] = "1"
     # each allocator its own directory of temporary files
     e["ISC_TEST_TMP"] = os.path.join(target, "isc-tests-" + (alloc or "isc"))
     os.makedirs(e["ISC_TEST_TMP"], exist_ok=True)
