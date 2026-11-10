@@ -539,8 +539,11 @@ v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest
 - [ ] (v2) The place of the code of a program: `json.decode` loses 3 % to the front of the processor since the prelude inlines more (D625): hot and cold parts of functions apart, the order of the functions
 - [ ] `a_program_carries_what_it_reaches` (`pre.rs`) failed once in the pass of glibc of suite 429: a hello linked with the module 182 600 bytes against 112 968 without; not again in 16 runs; its message now gives the state of the module
 - [x] The time of a compilation after v1: the prelude (5989 lines) read and checked whole at each compilation (a hello 241.5 → 308.3 million instructions of the compiler since 0.6.0, +28 %); one call of `sin` 341 → 604, of `Number` 322 → 1384: D629, the places of the declarations of the prelude found when iscc is built, the headers parsed, the bodies of the functions a program reaches parsed and checked (a hello 273.6 → 139.7, `sin` 603.7 → 496.7, `Number` 1432.9 → 1347.8; `iscc check` of an empty program 183.0 → 49.2)
-- [ ] The time of a compilation, what is left after D629: the programs of `json` and `http` (26 to 73 G instructions each; `std_json_decode.isc` 9.1 s, O3 4.1 s and code generation 4.3 s of a module of 196 492 lines, 55 368 of them `main`), the volume of code LLVM is given; one `sin` or `Number`, the code of their common path compiled in each program (the price of their speed); D611 (d)
 - [x] Release 0.7.0, v1 (D630): 0.7.0 rather than 1.0, at the author's word
+
+### Outside the plan: the compiler
+
+- [ ] The time of a compilation, what is left after D629: the programs of `json` and `http` (26 to 73 G instructions each; `std_json_decode.isc` 9.1 s, O3 4.1 s and code generation 4.3 s of a module of 196 492 lines, 55 368 of them `main`), the volume of code LLVM is given; one `sin` or `Number`, the code of their common path compiled in each program (the price of their speed); D611 (d)
 
 ### v2: the runtime without Rust
 
