@@ -182,10 +182,14 @@ fn the_generated_code_allocates_in_the_arena() {
     let p = iscc::frontend_as_prelude("kernel.isc", src).unwrap_or_else(|e| panic!("{}", e));
     let texts = "[0-0, 1393-199]\n1330\n";
     // (a program linked without the C library has no other allocator than
-    // Isocron's, D289: `ISC_ALLOC=glibc` changes nothing there)
+    // Isocron's, D289: `ISC_ALLOC=glibc` changes nothing there; a program
+    // built with `ISC_ALLOC=glibc` set, the second run of the suite, is
+    // linked with it whatever it asks)
     let (ours, theirs) = ("[1, 1, 1]\n", "[0, -1, 0]\n");
+    let linked_anyway = std::env::var("ISC_ALLOC").map(|v| v == "glibc").unwrap_or(false);
+    let without = if linked_anyway { theirs } else { ours };
     let out = tmp("kernel_wired");
-    for (glibc, modes) in [(false, [(None, ours), (Some("glibc"), ours), (Some("check"), theirs)]), (true, [(None, ours), (Some("glibc"), theirs), (Some("check"), theirs)])] {
+    for (glibc, modes) in [(false, [(None, ours), (Some("glibc"), without), (Some("check"), theirs)]), (true, [(None, ours), (Some("glibc"), theirs), (Some("check"), theirs)])] {
         let opts = iscc::BuildOptions {
             output: out.clone(),
             emit_llvm: Some(out.with_extension("ll")),
@@ -218,7 +222,7 @@ fn the_generated_code_allocates_in_the_arena() {
     let ll = std::fs::read_to_string(out.with_extension("ll")).unwrap();
     assert!(ll.contains("call noalias ptr @isc.late.alloc(") && ll.contains("call void @isc.late.free(ptr "), "the entries are not called");
     assert_eq!(ll.matches("@isc_alloc(i64 ").count(), 3, "the allocator of the runtime called outside the entries");
-    assert_eq!(ll.matches("call void @isc_free(").count(), 2, "the free of the runtime called outside the entries");
+    assert_eq!(ll.matches("call void @isc_free(").count(), 3, "the free of the runtime called outside the entries");
 }
 
 /// D605: a block of the runtime's allocator is not one of the arena:
@@ -237,6 +241,82 @@ fn a_block_of_the_runtime_is_not_of_the_arena() {
 ";
     let e = interpreted(src).unwrap_err();
     assert!(e.contains("the allocator of the runtime is not the interpreter's"), "{}", e);
-    let r = compiled(src, "kernel_runtime_block");
-    assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0, 0, 0, 0]\n[1, 1]\n"), "{}", r.stderr);
+    // (the block of the runtime is not given back, no primitive does it:
+    // run without the checked allocator, `ISC_ALLOC=check` of the third run
+    // of the suite, which rightly says so)
+    let _ = compiled(src, "kernel_runtime_block");
+    let r = std::process::Command::new(tmp("kernel_runtime_block")).env_remove("ISC_ALLOC").output().unwrap();
+    assert_eq!((r.status.code(), String::from_utf8_lossy(&r.stdout).as_ref()), (Some(0), "[0, 0, 0, 0, 0]\n[1, 1]\n"), "{}", String::from_utf8_lossy(&r.stderr));
+}
+
+/// D605: a block of the arena goes back to the kernel whoever frees it.
+/// The texts of an array are freed by the module (`isc.late.free_strs`);
+/// those of a large array out of the order of their places, and a text
+/// given to a function of the runtime, by the runtime, which gives each
+/// back through the entry of the program. After the first rounds nothing
+/// new is cut from the arena. (Before, a block freed by the runtime joined
+/// the lists of its allocator and the kernel cut new ones for ever: 1.2
+/// GiB for an array of 4096 texts made and freed 2400 times.)
+#[test]
+fn blocks_freed_by_the_runtime_come_back() {
+    let src = "function texts(n: i64, r: i64): string[n] {
+    return map(iota(n), (i) => toString(i * 7 + r) + \"-\" + toString(r));
+}
+
+function total(xs: string[n]): i64 {
+    return sum(map(xs, (t) => t.length));
+}
+
+// an array of texts made, read twice, freed
+action small(r: i64): i64 {
+    const xs = texts(300, r);
+    return total(xs) + xs[r % 300].length;
+}
+
+// 5000 texts sorted (their places out of order), freed
+action sorted(r: i64): i64 {
+    const xs = sortBy(texts(5000, r), (t) => 0 - t.length);
+    return total(xs) + xs[r % 5000].length;
+}
+
+// texts given to functions of the runtime (`replace`, `split`)
+action given(r: i64): i64 {
+    const t = toString(r) + \"-a-b-c-\" + toString(r * 3);
+    const parts = split(replace(t, \"-\", \"+\"), \"+\");
+    return parts.length + total(parts);
+}
+
+action rounds(from: i64, count: i64): i64 {
+    return sum(map(iota(count), (k) => small(from + k) + sorted(from + k) + given(from + k)));
+}
+
+action main(args: string[k]): i32 {
+    const base = $arenaBase();
+    // (the same count each time: the array of the results of the rounds is
+    // a block too)
+    const warm = rounds(0, 40);
+    const cut = $load64(base);
+    const more = rounds(40, 40) + rounds(80, 40) + rounds(120, 40);
+    print([warm > 0 ? 1 : 0, more > 0 ? 1 : 0, $load64(base) == cut ? 1 : 0]);
+    return 0;
+}
+";
+    let p = iscc::frontend_as_prelude("kernel.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let out = tmp("kernel_back");
+    let opts = iscc::BuildOptions {
+        output: out.clone(),
+        emit_llvm: Some(out.with_extension("ll")),
+        emit_asm: None,
+        debug: false,
+        codegen: isc_codegen::Options::default(),
+        link: Vec::new(),
+        glibc: false,
+    };
+    iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
+    let ll = std::fs::read_to_string(out.with_extension("ll")).unwrap();
+    assert!(ll.contains("call void @isc.late.free_strs(ptr "), "no array of texts freed by the module");
+    for threads in ["1", "4"] {
+        let r = std::process::Command::new(&out).env_remove("ISC_ALLOC").env("ISC_THREADS", threads).output().unwrap();
+        assert_eq!((r.status.code(), String::from_utf8_lossy(&r.stdout).as_ref()), (Some(0), "[1, 1, 1]\n"), "{} threads: {}", threads, String::from_utf8_lossy(&r.stderr));
+    }
 }

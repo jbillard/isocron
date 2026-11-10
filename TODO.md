@@ -360,12 +360,13 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
     - [x] 1. (D601: not done, the plan changed: the allocator in Isocron takes the arena kind of block by kind, beside the allocator of today; an address inside the arena is a block of the new one) Every block of the heap inside one reserved range of addresses
     - [x] 2. (D601: `$arenaReserve`, `$arenaCommit`, `$load8` to `$store64`, `$zoneLoad16` to `$zoneStore64`, interpreted and compiled; not under Windows yet) The primitives of the kernel in the prelude: loads and stores tested to be in the arena, the zone of the thread
     - [ ] 2b. The base and the size of the arena read once, not at each access; atomic operations and locks; the calls of the system (reserve, commit) made by the compiler itself; the arena under Windows and in WebAssembly
-    - [ ] 3. The small blocks in Isocron (D602, D603: atomic operations, the locks of the shared lists, the lists of a thread bounded; D605: the generated code takes its blocks of 1 to 1024 bytes from it on Linux, its fast paths inlined after the optimization of the module, 164 instructions against 182 for a block taken and given back, the ten programs within 0.2 % of their instructions); to do:
-      - [ ] The times of D605 on a quiet machine (a transcoder ran during the step): the loop of small blocks, the ten programs, the groups of `bench/primitives`
-      - [ ] The start of a small program: a hello 181 → 216 thousand cycles (two heaps start; 5 page faults and 2 calls of the system more), until the runtime's allocator no longer serves the arguments and the larger blocks
+    - [ ] 3. The small blocks in Isocron (D602, D603: atomic operations, the locks of the shared lists, the lists of a thread bounded; D605: the generated code takes its blocks of 1 to 1024 bytes from it on Linux, its fast paths inlined after the optimization of the module, each block given back to the allocator that made it; 164 instructions against 182 for a block taken and given back, the ten programs between −2.49 and +0.04 % of their instructions, the same memory); to do:
+      - [ ] The times of D605 to D608 on a quiet machine (a transcoder ran during the step): the loop of small blocks, the ten programs, the groups of `bench/primitives`, the pilots `pad_forms`, `join_forms`, `case_pilot`
+      - [ ] The start of a small program: a hello 177 → 201 thousand cycles (two heaps start; 1 page fault and 2 calls of the system more), until the runtime's allocator no longer serves the arguments and the larger blocks
       - [ ] The blocks of the list of a thread that ends (lost today: the threads of the pool live as long as the program)
       - [ ] The arena under Windows and in WebAssembly (the entries are not emitted there)
       - [ ] The thread of the large stack only for a program whose functions can nest (today: any function lowered, the text of an integer among them)
+      - [ ] A test of the suite that bounds the memory of each family of loops (the leak of the first wiring passed 159 runs; one test holds two patterns now)
     - [ ] 4. The slow paths one at a time (lists refilled, medium blocks, large blocks, memory given back, the end of a thread); then the pool, files and `print`, the start and the panics, the copies of blocks, Windows and WebAssembly, regular expressions and big integers
 - [x] A tuple literal first in a choice (`c ? [0u64, 1u64] : f()`) is typed as an array (D582): type it from the other branch, or say so in the message (D585; `match` arms still in the order of the arms)
 - [ ] Step 7, next pure functions in Isocron (SPEC section 17, order 2): `split`, lines, `replace`, sort, the writing of numbers; each at least as fast as its Rust version (principle 6), and the checks of bounds proven needless removed in loops
@@ -375,6 +376,12 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] The copy of a text, the concatenation, the equality, the order, `startsWith` and `endsWith` made by the code generator (D592)
   - [x] (D595) `findIndex` among bytes by vectors of 16 for arrays of 16 to 63 bytes and the ends of longer ones (a byte in a line of 60: 332 → 53 instructions), the elements of an `iota` read at the index of its loop: what `indexOf` written in Isocron needs
   - [x] `indexOf` and `includes` in the prelude (D596: 12 to 83 % faster than Rust; the two-way search past a budget of bytes compared in vain)
+  - [x] `padStart`, `padEnd` and the padded text of an integer made by the code generator (D606: 26 to 85 % fewer instructions)
+  - [x] `join` made by the code generator (D607: 21 to 68 % fewer)
+  - [x] `toUpperCase` and `toLowerCase`: ASCII by vectors in the generated code, the rest in the prelude (D608: 35 to 85 % fewer)
+  - [ ] `isc_put_int` (the padded integers inside a template, D363) is still in the runtime
+  - [ ] `toLowerCase` has no rule of the final sigma, which TypeScript has (`docs/language.md` says the functions of texts mean what they mean there): decide and say
+  - [ ] A program that declares a function named as one the prelude uses (`findIndex`, `iota`) fails inside the prelude: the prelude should name its own (`$stringOf` does, D608)
   - [x] (D604: the same ratios within 2 points) The measures of D596 again on a quiet machine (taken beside a transcoder, 2026-11-10 00:32 to 00:40): `srch.isc` and the group strings against the compiler before D580, the groups json, maps, numbers, control and arrays before and after
   - [x] The text of a float in the prelude (D597: `toString` of a `f64` and of a `f32`, 48 to 87 % fewer instructions; `$floatBits`, `$mulHigh`, `$decimalText`)
   - [ ] (the times on a quiet machine: D604, `toString` of a `f64` 58.570 → 32.505 ns, −44.5 %) `print` of a float through the prelude, so that `f64text.rs` and its table leave the runtime (a program that prints a float and writes its text holds the table of the powers of ten twice)

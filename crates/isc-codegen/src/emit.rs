@@ -1186,7 +1186,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     // (the functions of the allocator written in Isocron are in every
     // program, D605, and none nests: they do not make a program one with
     // recursive functions)
-    let big_stack = (0..p.fns.len()).any(|i| !kernel_fns(p).contains(&(i as u32))) && !opts.isa.is_wasm();
+    let big_stack = p.fns.len() > p.kernel_fns().len() && !opts.isa.is_wasm();
     let body_name = if big_stack { "isc_main_body" } else { main_name };
     let mut main = g.finish(&format!("define i32 @{}(i32 %argc, ptr %argv){}", body_name, attrs));
     // the variants of the builders whose trees are made in a region (D200),
@@ -1235,6 +1235,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
                 .replace("call noalias ptr @isc_alloc_zeroed(", "call noalias ptr @isc.late.alloc_zeroed(")
                 .replace("call ptr @isc_alloc_zeroed(", "call noalias ptr @isc.late.alloc_zeroed(")
                 .replace("call void @isc_free(ptr ", "call void @isc.late.free(ptr ")
+                .replace("call void @isc_free_strs(ptr ", "call void @isc.late.free_strs(ptr ")
         };
         for f in g.funcs.iter_mut() {
             *f = late(f);
@@ -1247,6 +1248,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         main.insert_str(after, "  call void @isc.kernel.start()\n");
         g.decls.insert("@isc_heap_mode = external global i8".into());
         g.decls.insert("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
+        g.decls.insert("declare void @isc_free_strs(ptr, i64)".into());
         let small = format!(
             "entry:\n  %m = add i64 %n, -1\n  %small = icmp ult i64 %m, {}\n  br i1 %small, label %fast, label %slow\nfast:\n  %a = call tailcc i64 @isc_fn_{}(i64 %n)\n  %p = inttoptr i64 %a to ptr\n",
             KERNEL_SMALL, alloc
@@ -1255,10 +1257,13 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
             "\ndefine internal void @isc.kernel.start() noinline nounwind {{\nentry:\n  %first = call ptr @isc_alloc(i64 1)\n  call void @isc_free(ptr %first)\n  %mode = load i8, ptr @isc_heap_mode\n  %on = icmp eq i8 %mode, 2\n  br i1 %on, label %go, label %done\ngo:\n  %b = call tailcc i64 @isc_fn_{start}()\n  br label %done\ndone:\n  ret void\n}}\n\
              \ndefine internal noalias ptr @isc.late.alloc(i64 %n) noinline nounwind {{\n{small}  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc(i64 %n)\n  ret ptr %q\n}}\n\
              \ndefine internal noalias ptr @isc.late.alloc_zeroed(i64 %n) noinline nounwind {{\n{small}  call void @llvm.memset.p0.i64(ptr %p, i8 0, i64 %n, i1 false)\n  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc_zeroed(i64 %n)\n  ret ptr %q\n}}\n\
-             \ndefine internal void @isc.late.free(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n",
+             \ndefine internal void @isc.late.free(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n\
+             \ndefine internal void @isc.kernel.free(ptr %p) nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  ret void\n}}\n\
+             {strs}",
             start = start,
             small = small,
-            free = free
+            free = free,
+            strs = free_strs_text(free)
         );
     }
     let mut out = String::new();
@@ -1338,25 +1343,36 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     Ok(out)
 }
 
-/// The functions of the allocator written in Isocron (D605): its three
-/// entries and what they call.
-fn kernel_fns(p: &Program) -> HashSet<u32> {
-    fn calls(e: &Expr, out: &mut Vec<u32>) {
-        if let ExprKind::Call(f, _) = &e.kind {
-            out.push(*f);
-        }
-        for c in e.children() {
-            calls(c, out);
-        }
-    }
-    let mut seen = HashSet::new();
-    let mut todo: Vec<u32> = p.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
-    while let Some(f) = todo.pop() {
-        if seen.insert(f) {
-            calls(&p.fns[f as usize].body, &mut todo);
-        }
-    }
-    seen
+/// The texts of an array freed by the module itself (D605): each a block of
+/// the arena given back to the kernel where it is (`$kFree`, inlined), not
+/// one by one through the runtime, which would give each back by a call.
+/// What is not such a block is the runtime's: a line of a block of lines
+/// (8 bytes past a multiple of 16, D298), and the rest of the array with it
+/// (the runtime counts the lines of one block down at once, D305); any
+/// other text alone (a literal, the empty text, a block of the runtime).
+/// An array of 4096 texts or more whose places are out of order and whose
+/// blocks take 12 MiB or more (more than one text in 16 below the one
+/// before, the blocks counted with their headers, one text in 16 looked at:
+/// `scattered` of the runtime, D557) is the runtime's whole: it frees such
+/// texts from the highest place down, and each block of the arena comes
+/// back by its entry.
+fn free_strs_text(free: u32) -> String {
+    format!(
+        "\ndefine internal void @isc.late.free_strs(ptr %xs, i64 %n) noinline nounwind {{\n\
+entry:\n  %big = icmp sge i64 %n, 4096\n  br i1 %big, label %sh, label %head\n\
+sh:\n  %j = phi i64 [ 0, %entry ], [ %j1, %sb ]\n  %below = phi i64 [ 0, %entry ], [ %below1, %sb ]\n  %prev = phi i64 [ 0, %entry ], [ %sa, %sb ]\n  %seen = phi i64 [ 0, %entry ], [ %seen1, %sb ]\n  %bytes = phi i64 [ 0, %entry ], [ %bytes1, %sb ]\n  %sgo = icmp slt i64 %j, %n\n  br i1 %sgo, label %sb, label %sd\n\
+sb:\n  %sp = getelementptr {{ ptr, i64 }}, ptr %xs, i64 %j, i32 0\n  %spp = load ptr, ptr %sp\n  %sa = ptrtoint ptr %spp to i64\n  %slt = icmp ult i64 %sa, %prev\n  %slz = zext i1 %slt to i64\n  %below1 = add i64 %below, %slz\n  %seen1 = add i64 %seen, 1\n  %slp = getelementptr {{ ptr, i64 }}, ptr %xs, i64 %j, i32 1\n  %slen = load i64, ptr %slp\n  %sl63 = add i64 %slen, 63\n  %slr = and i64 %sl63, -64\n  %sls = icmp ult i64 %slr, 64\n  %slm = select i1 %sls, i64 64, i64 %slr\n  %sblk = add i64 %slm, 64\n  %sal = and i64 %sa, 63\n  %s64 = icmp eq i64 %sal, 0\n  %sadd = select i1 %s64, i64 %sblk, i64 0\n  %bytes1 = add i64 %bytes, %sadd\n  %j1 = add i64 %j, 16\n  br label %sh\n\
+sd:\n  %b16 = shl i64 %below, 4\n  %out = icmp ugt i64 %b16, %seen\n  %span = shl i64 %bytes, 4\n  %wide = icmp uge i64 %span, 12582912\n  %both = and i1 %out, %wide\n  br i1 %both, label %whole, label %head\n\
+whole:\n  call void @isc_free_strs(ptr %xs, i64 %n)\n  ret void\n\
+head:\n  %i = phi i64 [ 0, %entry ], [ 0, %sd ], [ %i1, %next ]\n  %more = icmp slt i64 %i, %n\n  br i1 %more, label %body, label %done\n\
+body:\n  %at = getelementptr {{ ptr, i64 }}, ptr %xs, i64 %i, i32 0\n  %p = load ptr, ptr %at\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %next, label %other\n\
+other:\n  %low = and i64 %a, 15\n  %line = icmp eq i64 %low, 8\n  br i1 %line, label %rest, label %one\n\
+one:\n  call void @isc_free(ptr %p)\n  br label %next\n\
+next:\n  %i1 = add i64 %i, 1\n  br label %head\n\
+rest:\n  %xr = getelementptr {{ ptr, i64 }}, ptr %xs, i64 %i\n  %nr = sub i64 %n, %i\n  call void @isc_free_strs(ptr %xr, i64 %nr)\n  ret void\n\
+done:\n  ret void\n}}\n",
+        free = free
+    )
 }
 
 /// The base of the arena before it is reserved (D605): an address where a
@@ -14898,8 +14914,12 @@ impl<'p> Gen<'p> {
         };
         match op {
             K::ArenaReserve => {
-                self.decls.insert("declare i64 @isc_arena_reserve(i64)".into());
-                let base = self.ins(format!("call i64 @isc_arena_reserve(i64 {})", arena));
+                // (with the entry that frees a block of the arena, for the
+                // functions of the runtime that free one: where the entries
+                // of the allocator are emitted, `kernel_text`)
+                self.decls.insert("declare i64 @isc_arena_reserve(i64, ptr)".into());
+                let entry = if self.p.kernel.is_some() && !self.opts.isa.is_wasm() && !self.opts.windows { "@isc.kernel.free" } else { "null" };
+                let base = self.ins(format!("call i64 @isc_arena_reserve(i64 {}, ptr {})", arena, entry));
                 let got = self.ins(format!("icmp ne i64 {}, 0", base));
                 let word = self.ins(format!("select i1 {}, i64 {}, i64 {}", got, base, NO_ARENA));
                 self.emit(format!("store i64 {}, ptr @isc_arena_base, !tbaa !{}", word, TBAA_BASE));

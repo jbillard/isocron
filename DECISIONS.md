@@ -14270,15 +14270,12 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   allocator written in Isocron (2026-11-10).** Step 3 of the kernel
   (D599), its wiring. On Linux, every allocation and every free of a
   compiled program goes through an entry of its own module
-  (`isc.late.alloc`, `isc.late.alloc_zeroed`, `isc.late.free`): a block
-  of 1 to 1024 bytes is the kernel's (`$kAlloc`), a larger one the
-  runtime's; a block given back is the kernel's when it is in the arena
-  (`$kFree` says so), the runtime's otherwise. The two allocators lay a
-  block out the same way (D601): a block one of them made may be freed
-  or given again by the other (the lists of small blocks of the
-  runtime's are lists only: no address of a chunk computed from a
-  block). Under Windows and in WebAssembly the entries are not emitted:
-  the runtime's allocator as before.
+  (`isc.late.alloc`, `isc.late.alloc_zeroed`, `isc.late.free`,
+  `isc.late.free_strs`): a block of 1 to 1024 bytes is the kernel's
+  (`$kAlloc`), a larger one the runtime's; a block given back is the
+  kernel's when it is in the arena (`$kFree` says so), the runtime's
+  otherwise. Under Windows and in WebAssembly the entries are not
+  emitted: the runtime's allocator as before.
   - The entries are functions of the module declared as the runtime's
     were (`noalias`), not inlined while the module is optimized, inlined
     after by a second run of passes (D600). `main` starts the arena after
@@ -14287,6 +14284,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the C library, no arena is reserved and every block is the runtime's
     (`$kRefill` asks it: `$runtimeAlloc`, a primitive for the time the
     runtime's allocator exists).
+  - **Each block goes back to the allocator that made it.** The first
+    wiring let a block of the arena that a function of the runtime freed
+    (the texts of an array, a text given to it) join the lists of the
+    runtime's allocator, the two laying a block out the same way (D601):
+    it never came back, and the kernel cut new blocks for ever. An array
+    of 4096 texts made and freed 2400 times: 1 233 MiB at most, against
+    11 with the allocator in Rust. The suite did not see it (on that
+    commit, 151 of its 159 runs green; the 8 others: a test that
+    counted the functions of a program, two tests of this step under the
+    allocators of the second and third runs, and the examples of the
+    README in a suite launched without the path of MinGW); a count of
+    instructions did: 131.65 a text where the same code with the
+    allocator in Rust took 118.65, the cost of cutting. Now:
+    - the texts of an array are freed by the module
+      (`isc.late.free_strs`: `$kFree` inlined in a loop; a line of a
+      block of lines and what follows it, and an array of 4096 texts or
+      more out of the order of their places over 12 MiB or more, D557,
+      stay the runtime's);
+    - the reservation of the arena gives the runtime the entry of the
+      program that frees a block of it (`isc_arena_reserve(bytes,
+      free)`), which the slow path of `isc_free` calls for a block of
+      the arena;
+    - a block of the arena in use carries a mark in the byte after its
+      state (0x41, where a block in use of the runtime has 0): the fast
+      path of `isc_free` compares the four bytes from the state at once
+      and does not take it, without an instruction more (two bytes
+      compared: one instruction more, 2 a tree of binary-trees).
+    The same array: 11 MiB, and 107 instructions a text.
+  - The lists. A thread keeps at most 64 free blocks of a class and a
+    batch in reserve; a list changes hands whole, in one step, never
+    walked: full, it becomes the batch in reserve and the batch that was
+    goes to all the threads; empty, the thread takes its batch in
+    reserve, or one that a thread gave, or cuts 32 new blocks. A thread
+    that takes and gives blocks back around the limit stays in its own
+    lists (as D371 of the runtime's allocator).
   - The measure: one block taken and given back in a loop (the text of
     an integer and a letter), instructions of one thread, the difference
     of two counts of rounds. The allocator in Rust: 182.01 a round. The
@@ -14302,7 +14334,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     2. The fast paths were not inlined (the rare ones were lowered
        inside them), and each tested the stack. `$kAlloc` and `$kFree`
        are inlined into the entries without that test; `$kRefill`,
-       `$kCarve`, `$kFlush` and the panics (`$kDamaged`) are `@cold`
+       `$kCarve`, `$kSpill` and the panics (`$kDamaged`) are `@cold`
        functions. With 1: 211.
     3. Each word of a header had its test, and the size of the arena was
        a word read at each. The size is a constant, 1 TiB
@@ -14316,42 +14348,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
        The base, the words of the arena and those of the zone are three
        kinds of memory that are never one another, which LLVM is told
        (`!tbaa`): 164.01, 9.9 % fewer than with the allocator in Rust.
-       An allocation: the head of the list, one test of the arena, the
-       state of the block, three stores. A free: one test of the arena,
-       its alignment, its state and its class, four stores, the count.
   - Before the reservation the base is an address no program has (2^62,
     which the processor refuses): every test fails without a second
     word. A word of the kernel in the 2^40 addresses from it would pass
     the test and be refused by the processor, a fault and not a panic,
     no memory read or written; no path of the kernel makes one.
-  - The ten programs, instructions of one thread (their small arguments),
-    before → after: binary-trees 258 207 463 → 258 203 604, fannkuch-redux
-    46 008 684 → 46 030 083 (+0.05 %), n-body 84 442 456 → 82 342 377
-    (−2.49 %), spectral-norm −0.02 %, mandelbrot +0.00 %, pidigits
-    −0.17 %, fasta −0.06 %, reverse-complement −0.07 %, k-nucleotide
-    −0.00 %, regex-redux +0.00 %; the same outputs. The two that move
-    do not allocate in their loops: n-body makes 12 allocations whatever
-    its steps, and a step is 243.00 → 236.00 instructions with the same
-    14 stores and the same branch, 29 → 27 loads (the registers of the
-    loop, allocated otherwise now that no call is around it);
-    fannkuch-redux makes 182 allocations for 10 elements, and the only
-    function whose assembly differs is the task that holds them, by its
-    saves on the stack.
-  - What it costs. The start of a program: a hello, 3 990 → 4 199
-    instructions of the program, 18.8 → 22.8 thousand cycles of it, 162
-    → 193 thousand cycles of the system, 20 → 25 page faults, two calls
-    of the system more (the reservation, the first megabyte). Two heaps
-    start while the runtime's allocator serves the rest. The first
-    megabyte of the arena is asked alone: a mapping that holds no whole
-    huge page is never given one, and the first 4 MiB are in pages of 4
-    KiB as the first chunk of the runtime's (D289); committed as 2 MiB
-    without that, the same hello took 0.29 ms against 0.05. An arena
-    readable and writable from its reservation was tried: 762 to 825
-    thousand cycles of the system, a huge page cleared. The size of a
-    program: n-body 133 248 → 145 672 bytes, binary-trees 84 496 → 95
-    192, k-nucleotide 345 728 → 372 392 (the kernel's functions, once
-    in a program, and its fast paths at each allocation and each free;
-    the two parts not measured apart).
+  - The ten programs, instructions of one thread (their small arguments)
+    and the most memory they hold, with the allocator in Rust (the
+    compiler of D592; the changes of D593 to D598 and of D606 to D608 are
+    between the two as well) and with this one: binary-trees 258 206 924
+    → 258 201 327 (−0.00 %), fannkuch-redux 46 009 673 → 46 029 570
+    (+0.04 %), n-body 84 443 312 → 82 344 006 (−2.49 %), spectral-norm
+    −0.02 %, mandelbrot −0.00 %, pidigits −0.19 %, fasta −0.06 %,
+    reverse-complement −0.07 %, k-nucleotide 279 430 652 → 278 830 651
+    (−0.21 %), regex-redux +0.00 %; the same outputs, the same memory
+    (18.5 to 18.9 MiB, 31.7 for k-nucleotide, 28.0 for regex-redux, each
+    within 0.3 MiB). The two that move without allocating in their
+    loops: n-body makes 12 allocations whatever its steps, and a step is
+    243.00 → 236.00 instructions with the same 14 stores and the same
+    branch, 29 → 27 loads (the registers of the loop, allocated otherwise
+    now that no call is around it); fannkuch-redux makes 182 allocations
+    for 10 elements, and the only function whose assembly differs is the
+    task that holds them, by its saves on the stack.
+  - What it costs. The start of a program: a hello, 3 990 → 4 060
+    instructions of the program, 18.6 → 19.7 thousand cycles of it, 159
+    → 181 thousand cycles of the system (166 754 → 194 342 of its
+    instructions), 20 → 21 page faults, two calls of the system more (the
+    reservation, the first megabyte): 13.5 % more cycles for a program
+    that does nothing. Two heaps start while the runtime's allocator
+    serves the rest. The first megabyte of the arena is asked alone: a
+    mapping that holds no whole huge page is never given one, and the
+    first 4 MiB are in pages of 4 KiB as the first chunk of the runtime's
+    (D289); committed as 2 MiB without that, the same hello took 0.29 ms
+    against 0.05. An arena readable and writable from its reservation was
+    tried: 762 to 825 thousand cycles of the system, a huge page cleared.
+    The size of a program: a hello 64 176 → 70 744 bytes, n-body 133 248
+    → 145 864, binary-trees 84 496 → 93 400, k-nucleotide 345 728 → 372
+    456 (the kernel's functions, once in a program, and its fast paths at
+    each allocation and each free; the two parts not measured apart).
   - Found on the way. (a) The first wiring looked green and measured
     nothing: the runtime reads `ISC_ALLOC` at its first allocation, the
     mode was not read yet at the start of `main`, and no arena was
@@ -14362,12 +14396,106 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     settings. (c) Every program ran its `main` on the thread of the
     large stack, because that choice was "the program has functions" and
     the kernel's are in every program: twice the time of the start of a
-    hello; the kernel's functions no longer count.
+    hello; the kernel's functions no longer count, and the text of the IR
+    of a program (`iscc ir`) does not show them. (d) The blocks that
+    never came back, above: the tests of the suite compare outputs, none
+    bounded the memory of a loop; `blocks_freed_by_the_runtime_come_back`
+    does (the bytes cut from the arena no longer move after the first
+    rounds), and the two patterns it holds grow to 754 and 629 MiB with
+    the first wiring.
   - `@requireTail`, `@requireNoAlloc` and `@cold` are accepted on an
     action (a loop of the kernel is a tail call: its code builds no
     array, an array would call it); `@requireFused` and `@allowReassoc`
     stay a function's.
+  - Added for the time the two allocators live together, to go with the
+    runtime's: the second parameter of `isc_arena_reserve` and the three
+    words it keeps, `arena_free` (one `transmute` of that word back into
+    the function it was), the mark of the blocks.
   - Not measured: times. A transcoder of the machine ran during the whole
     step; the times of the loop and of the ten programs are to be taken
     on a quiet machine. Left: the blocks of a thread that ends, the
     larger blocks, Windows and WebAssembly, the start of a small program.
+- **D606 — `padStart`, `padEnd` and the padded text of an integer made
+  by the generated code (2026-11-10).** The work of an agent in its own
+  tree (two commits taken as they were, their conflicts with D605 and
+  D607 resolved here), checked again here.
+  - One block of the size of the padded text (the stack buffer of D458
+    when it fits, now for any fill), the text by moves, a one-byte fill by
+    stores, a longer fill once then copied after itself, cut at the start
+    of a character. The digits of a padded integer from `$rtDigitWords`
+    of the prelude (split out of the text of an integer, D588). Removed:
+    `isc_pad`, `isc_pad_into`, `isc_pad1_into`, `isc_pad_int`.
+  - Found by the agent: the padding of the interpreter subtracted before
+    it compared, an overflow for a width near the least `i64`; it
+    compares first.
+  - Checked here, not with the agent's inputs: 13 texts of mine (empty,
+    63 to 129 and 300 bytes, accents, characters of 4 bytes, combining
+    marks) through the three modes of its differential program, 16 MiB of
+    output the same with the compiler before D580, with this one, and
+    under the checked allocator on 3 threads.
+  - Instructions a text, one thread, counted here, the runtime in Rust →
+    the generated code on the allocator in Rust → on the allocator of
+    D605: `padStart` read in its scope 86.06 → 13.05 → 13.05; kept, 158.00
+    → 118.65 → 95.00; a fill of two bytes 945.92 → 207.73 → 184.06; of
+    two bytes a character 1023.93 → 187.18 → 162.29; to 200 bytes 189.18
+    → 152.37 → 126.72; a padded integer 221.85 → 182.87 → 147.32, a `u8`
+    173.74 → 122.37 → 90.74. Seventeen forms counted: 26 to 85 % fewer
+    than the runtime, none above; the agent's counts of the middle column
+    found again within 0.05.
+- **D607 — `join` made by the generated code (2026-11-10).** The same
+  agent.
+  - The lengths added, one block, each text copied after its separator in
+    place; 1 MiB or more by ranges on the pool (D427). The ranges and the
+    gather of a join read by a `map` (D428) are functions emitted with
+    the program. Removed: `isc_join`, `isc_join_ranges`, `isc_join_next`,
+    and the `unsafe impl Sync for IscStr` that only the parallel join
+    needed.
+  - Checked here: 9 sets of arguments of mine (counts, a text of 3 MB at
+    several places, separators of 0 to 70 bytes and of several bytes a
+    character) on 1, 3 and 16 threads, with and without the checked
+    allocator: 54 runs compared with the compiler before D580, none
+    different.
+  - Instructions a text, counted here, the same three columns: a line of
+    60 bytes 58.07 → 20.81 → 20.81; numbers 63.07 → 26.81; a separator not
+    known to the compiler 58.07 → 40.80 → 39.81; texts of 300 bytes 68.58
+    → 53.94; two texts 246.06 → 127.06 → 111.06; six 532.08 → 235.11 →
+    219.11; a join read by a `map` 176.19 → 125.80. Twelve forms: 21 to
+    68 % fewer.
+- **D608 — `toUpperCase` and `toLowerCase` out of the runtime
+  (2026-11-10).** Another agent, two commits.
+  - A text of ASCII by code that the generator emits: vectors of 32 bytes
+    (16 without AVX2 and in WebAssembly), the bytes read or-ed, one test
+    at the end that says whether one was not ASCII. The others by the
+    prelude (`$caseText`): a character whose other case has the same
+    number of bytes written in place, the others counted then spliced
+    into a text of the final length, in linear time. The tables are
+    those of Unicode 17 that Rust gives; a test builds them again from
+    Rust's and wants the prelude equal. Each character on its own, as
+    before (no rule of the final sigma: `"ΌΣΟΣ".toLowerCase()` is `όσοσ`
+    before and after, where TypeScript gives `όσος`; noted in TODO).
+  - For the prelude only: `$withText(t, at, piece)`, the text `t` with
+    the bytes of `piece` from `at`, a panic unless they lie in `t`
+    between two starts of characters, in place when `t` is at its last
+    use; `$words("…")`, an array of `u64` from one literal of hexadecimal
+    digits (the tables: the time of a compilation); `$stringOf`. Removed:
+    `isc_to_case`, `isc_to_case_into`. The second commit: the lexer takes
+    the characters of a file of ASCII from its bytes (a larger prelude to
+    read at each compilation).
+  - Checked here: 1744 lines of mine (lengths 0 to 139 and around 256,
+    4096 and 70 000 characters; 47 characters whose other case has
+    another length or another plane, each at 14 places around the ends of
+    the vectors): the same 1.2 MiB with the compiler before D580, with
+    this one on 1 and 4 threads, under the checked allocator, and
+    interpreted.
+  - Instructions a text, counted here, the same three columns,
+    `toUpperCase`: a line of 60 bytes read in its scope 219.06 → 53.06 →
+    53.06, kept 293.12 → 136.07 → 110.45; a word of 8 bytes 83.06 → 46.06,
+    kept 154.12 → 125.07 → 97.51; a line with one accent 3208.26 → 509.94
+    → 481.93; German 3045.60 → 647.14 → 622.33; Turkish 3385.48 → 1500.30
+    → 1458.79; Greek 7481.23 → 2739.38 → 2669.11; CJK 6157.06 → 1492.06 →
+    1465.05; characters that change length 4483.65 → 2863.29 → 2833.89.
+    Eighteen forms: 35 to 85 % fewer.
+  - Its cost, measured by the agent: the prelude 77 → 142 KiB, `iscc
+    check` of three lines 58.65 → 64.45 million instructions (the same
+    time, 10.9 ms); a program that changes case carries the tables of
+    both directions (about 24 KiB).

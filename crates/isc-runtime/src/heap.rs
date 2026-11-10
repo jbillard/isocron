@@ -81,6 +81,8 @@
 
 use core::ffi::{c_int, c_uint, c_void};
 use core::ptr::null_mut;
+#[cfg(not(windows))]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use isc_runtime_core::{alloc_class, alloc_class_size, Panic, ALLOC_CLASSES as CLASSES};
 
@@ -184,6 +186,11 @@ const THREAD_LIMIT: [u32; SMALL_CLASSES] = {
 // states of a block
 const IN_USE: u8 = 0xA5;
 const FREE: u8 = 0x5A;
+// contents of a block of the arena of the kernel written in Isocron (D605:
+// `0x41A5` written by `$kAlloc` over its state and its contents)
+#[allow(dead_code)]
+const ARENA_MARK: u8 = 0x41;
+const _: () = assert!(core::mem::offset_of!(Header, state) == 4 && core::mem::offset_of!(Header, contents) == 5 && core::mem::offset_of!(Header, next) == 8 && DIRTY == 0);
 /// A medium block in the cache of a thread (in use for its neighbours).
 const CACHED: u8 = 0xC3;
 // contents of a free block
@@ -626,9 +633,15 @@ fn invalid_free() -> ! {
 /// MiB, none of their pages usable yet; 0 when the system has none. One of
 /// the two calls of the system the kernel still makes through Rust, until
 /// its primitives of the system are the compiler's own.
+///
+/// `free` is the entry of the program that gives a block of the arena back
+/// to the kernel (D605): the runtime calls it for a block of the arena that
+/// one of its functions frees (the texts of an array, a text given to it),
+/// so that the block goes back to the allocator that made it. Kept with
+/// the range of the arena.
 #[cfg(not(windows))]
 #[no_mangle]
-pub extern "C" fn isc_arena_reserve(bytes: i64) -> i64 {
+pub extern "C" fn isc_arena_reserve(bytes: i64, free: Option<extern "C" fn(*mut u8)>) -> i64 {
     const PROT_NONE: c_int = 0;
     if bytes <= 0 {
         return 0;
@@ -640,7 +653,43 @@ pub extern "C" fn isc_arena_reserve(bytes: i64) -> i64 {
     if p as isize == -1 {
         return 0;
     }
-    ((p as usize + HUGE - 1) & !(HUGE - 1)) as i64
+    let base = (p as usize + HUGE - 1) & !(HUGE - 1);
+    if let Some(f) = free {
+        ARENA_FREE.store(f as usize, Ordering::Relaxed);
+        ARENA_AT.store(base, Ordering::Relaxed);
+        ARENA_LEN.store(bytes as usize, Ordering::Relaxed);
+    }
+    base as i64
+}
+
+/// The arena of the kernel written in Isocron, when the program gave the
+/// entry that frees its blocks (`isc_arena_reserve`): its first address, its
+/// bytes (0: none), that entry. Written once, before the program makes its
+/// first block.
+#[cfg(not(windows))]
+static ARENA_AT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(windows))]
+static ARENA_LEN: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(windows))]
+static ARENA_FREE: AtomicUsize = AtomicUsize::new(0);
+
+/// `p` given back to the kernel written in Isocron when it is a block of
+/// its arena (D605); false, nothing done, when it is not. Without it, a
+/// block of the arena freed by the runtime joined the lists of this
+/// allocator and never those of the kernel, which cut new blocks for ever
+/// (an array of 4096 texts made and freed 2400 times: 1.2 GiB against 11
+/// MiB).
+#[cfg(not(windows))]
+#[inline(always)]
+pub fn arena_free(p: *mut u8) -> bool {
+    if (p as usize).wrapping_sub(ARENA_AT.load(Ordering::Relaxed)) >= ARENA_LEN.load(Ordering::Relaxed) {
+        return false;
+    }
+    // SAFETY: the word is the function `isc_arena_reserve` received, stored
+    // with the range just tested (never 0 when the range is not empty)
+    let f: extern "C" fn(*mut u8) = unsafe { core::mem::transmute(ARENA_FREE.load(Ordering::Relaxed)) };
+    f(p);
+    true
 }
 
 /// `$arenaCommit(a, bytes)` (D601): the pages of the `bytes` bytes at `a`
@@ -693,8 +742,15 @@ pub extern "C" fn isc_arena_commit(a: i64, bytes: i64, base: i64, size: i64) -> 
 /// there until its step (D599).
 #[cfg(windows)]
 #[no_mangle]
-pub extern "C" fn isc_arena_reserve(_bytes: i64) -> i64 {
+pub extern "C" fn isc_arena_reserve(_bytes: i64, _free: Option<extern "C" fn(*mut u8)>) -> i64 {
     0
+}
+
+/// No arena under Windows: no block is one of it.
+#[cfg(windows)]
+#[inline(always)]
+pub fn arena_free(_p: *mut u8) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -799,6 +855,7 @@ unsafe fn idle_remove(st: &mut State, h: *mut Header) {
             (*(*h).older).newer = (*h).newer;
         }
         (*h).idle = 0;
+        (*h)._pad = 0;
         st.idle -= idle_bytes(h);
     }
 }
@@ -1078,6 +1135,7 @@ fn carve(class: usize, size: usize) -> *mut Header {
         (*h).state = FREE;
         (*h).contents = ZERO;
         (*h).idle = 0;
+        (*h)._pad = 0;
         (*h).next = null_mut();
         h
     }
@@ -1133,6 +1191,7 @@ unsafe fn carve_many(tc: *mut ThreadCache, class: usize, size: usize, count: usi
                     (*h).state = FREE;
                     (*h).contents = ZERO;
                     (*h).idle = 0;
+                    (*h)._pad = 0;
                     (*h).next = list;
                     list = h;
                 }
@@ -1161,6 +1220,7 @@ unsafe fn carve_many(tc: *mut ThreadCache, class: usize, size: usize, count: usi
             (*h).state = FREE;
             (*h).contents = ZERO;
             (*h).idle = 0;
+            (*h)._pad = 0;
             (*h).next = list;
             list = h;
         }
@@ -1992,7 +2052,16 @@ pub unsafe fn free_cached(p: *mut u8) -> bool {
         if !p.is_null() && p as usize % 64 == 0 {
             let h = p.sub(HEADER) as *mut Header;
             let class = (*h).class as usize;
-            if class < SMALL_CLASSES && (*h).state == IN_USE {
+            // its state and the three bytes after it in one word of 32
+            // bits (one comparison, as that of the state alone): a small
+            // block in use of this allocator has `DIRTY` (0) for contents
+            // since `alloc` gave it, is not idle, and its last byte is 0
+            // since it was cut; one of the arena of the kernel written in
+            // Isocron carries `ARENA_MARK` for contents (D605) and is not
+            // taken here (it goes back to the kernel by the slow path,
+            // `arena_free`)
+            let word = core::ptr::read(core::ptr::addr_of!((*h).state) as *const u32);
+            if class < SMALL_CLASSES && word == IN_USE as u32 {
                 let tc = thread_cache();
                 if (*tc).registered != 0 && ((*tc).counts[class] as u32) < THREAD_LIMIT[class] {
                     // the head of the list read before the header of the block is

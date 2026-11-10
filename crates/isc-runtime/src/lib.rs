@@ -792,6 +792,14 @@ pub unsafe extern "C" fn isc_free(p: *mut u8) {
 #[cold]
 #[inline(never)]
 unsafe fn free_cold(p: *mut u8) {
+    // a block of the arena of the kernel written in Isocron (D605), freed
+    // by a function of the runtime: given back to the kernel. Here and not
+    // on the fast path: such a block carries a mark that `free_cached`
+    // refuses at the cost of the test it made already.
+    #[cfg(not(target_os = "wasi"))]
+    if heap::arena_free(p) {
+        return;
+    }
     // the standard input mapped from its file (D257)
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     if mapped::owns(p) {

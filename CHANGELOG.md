@@ -6,6 +6,13 @@
   allocator written in Isocron (in the prelude), its fast paths inlined in
   the generated code: a block taken and given back runs 10 % fewer
   instructions; larger blocks, Windows and WebAssembly as before (D605).
+- `padStart`, `padEnd`, `join`, `toUpperCase` and `toLowerCase` are made by
+  the generated code and the prelude, no longer by the runtime: 21 to 85 %
+  fewer instructions a text (D606, D607, D608).
+- Fixed: under `iscc run`, a padding to a width near the least `i64`
+  overflowed (D606).
+- `iscc ir` does not show the functions of the allocator of the runtime,
+  present in every program (D605).
 - `@requireTail`, `@requireNoAlloc` and `@cold` are accepted before an
   `action` (D605).
 - `sort` and `sortBy` of texts whose source is read again after them, and the

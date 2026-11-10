@@ -550,6 +550,54 @@ pub struct Program {
     pub kernel: Option<(u32, u32, u32)>,
 }
 
+impl Program {
+    /// The functions of the allocator written in Isocron (D605): its three
+    /// entries and what they call. They are in every program, called by
+    /// the generated code alone.
+    pub fn kernel_fns(&self) -> std::collections::HashSet<u32> {
+        let mut seen = std::collections::HashSet::new();
+        let mut todo: Vec<u32> = self.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
+        while let Some(f) = todo.pop() {
+            if seen.insert(f) {
+                calls_of(&self.fns[f as usize].body, &mut todo);
+            }
+        }
+        seen
+    }
+
+    /// The functions that the text of the IR does not show: those of the
+    /// allocator that the program itself does not call (a program reads its
+    /// own code there, not the runtime's).
+    pub fn hidden_fns(&self) -> std::collections::HashSet<u32> {
+        let kernel = self.kernel_fns();
+        let mut called = Vec::new();
+        calls_of(&self.body, &mut called);
+        for (i, f) in self.fns.iter().enumerate() {
+            if !kernel.contains(&(i as u32)) {
+                calls_of(&f.body, &mut called);
+            }
+        }
+        // (what the program calls, and what those call)
+        let mut shown = std::collections::HashSet::new();
+        while let Some(f) = called.pop() {
+            if kernel.contains(&f) && shown.insert(f) {
+                calls_of(&self.fns[f as usize].body, &mut called);
+            }
+        }
+        kernel.difference(&shown).copied().collect()
+    }
+}
+
+/// The functions called in `e`.
+fn calls_of(e: &Expr, out: &mut Vec<u32>) {
+    if let ExprKind::Call(f, _) = &e.kind {
+        out.push(*f);
+    }
+    for c in e.children() {
+        calls_of(c, out);
+    }
+}
+
 /// What `print` shows beyond the IR type of a value: the names of the
 /// fields of records, which are tuples in the IR.
 #[derive(Clone, Debug, PartialEq)]

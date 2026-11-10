@@ -7,6 +7,13 @@ fn build(src: &str) -> Program {
     p
 }
 
+/// The functions of the program: not those of the prelude lowered for every
+/// program (the allocator written in Isocron, `$k…`, D605), which come
+/// after them.
+fn own_fns(p: &Program) -> usize {
+    p.fns.iter().filter(|f| !f.name.starts_with('$')).count()
+}
+
 fn count(e: &isc_ir::Expr, f: &dyn Fn(&ExprKind) -> bool) -> usize {
     let mut n = if f(&e.kind) { 1 } else { 0 };
     for c in e.children() {
@@ -264,7 +271,7 @@ action main(args: string[k]): i32 {
 }
 ",
     );
-    assert_eq!(p.fns.len(), 2, "{}", print::program(&p));
+    assert_eq!(own_fns(&p), 2, "{}", print::program(&p));
     assert_eq!(count(&p.body, &|k| matches!(k, ExprKind::Call(..))), 2);
     let p = build(
         "function apply(f: (i64) => i64, n: i64): i64 {
@@ -286,7 +293,7 @@ action main(args: string[k]): i32 {
 ",
     );
     // one specialization per function given
-    assert_eq!(p.fns.len(), 2, "{}", print::program(&p));
+    assert_eq!(own_fns(&p), 2, "{}", print::program(&p));
     let t = isc_types::check_source(
         "function apply(f: (i64) => i64, n: i64): i64 {
     if (n == 0) {
@@ -309,7 +316,7 @@ action main(args: string[k]): i32 {
     .unwrap();
     // the size `m` the lambda reads: a parameter of the specialization (D152)
     let p = lower(&t).unwrap();
-    assert_eq!(p.fns.len(), 1);
+    assert_eq!(own_fns(&p), 1);
     assert_eq!(p.fns[0].params.len(), 2, "n and the size m");
     // a lambda that reads a function of its context which reads nothing of
     // its own: that function part of the key of the specialization (D387)

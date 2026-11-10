@@ -25,7 +25,13 @@ pub fn program(p: &Program) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "main(%{}{}):", p.args, if p.drop_args { " drop" } else { "" });
     expr(&p.body, p, 1, &mut s);
+    // (not the functions of the allocator of the runtime, in every program,
+    // D605: a program reads its own code here)
+    let hidden = p.hidden_fns();
     for (i, f) in p.fns.iter().enumerate() {
+        if hidden.contains(&(i as u32)) {
+            continue;
+        }
         let ps: Vec<String> = f.params.iter().map(|v| name(p, *v)).collect();
         let _ = writeln!(s, "fn {}#{}({}):", f.name, i, ps.join(", "));
         expr(&f.body, p, 1, &mut s);
