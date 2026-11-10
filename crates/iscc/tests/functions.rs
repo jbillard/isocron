@@ -470,7 +470,7 @@ action main(args: string[k]): i32 {
 #[test]
 fn lengths_known_before_running() {
     // (`n` read by `parseInt`: `parseI64`, `parseF64` and `Number` (since
-    // D6xx (texts)) are functions of the prelude, inlined, and read the
+    // D626) are functions of the prelude, inlined, and read the
     // length of their text)
     let src = "const ALU = \"GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGG\";
 action main(args: string[k]): i32 {
@@ -658,7 +658,7 @@ action main(args: string[k]): i32 {
     assert!(e.to_string().contains("`@cold` function `apply` takes or returns a function"), "{}", e);
 }
 
-/// `@noInline` (D6xx (texts)): compiled once and called, never inlined, its
+/// `@noInline` (D626): compiled once and called, never inlined, its
 /// calls not taken as unlikely (`noinline` without `cold`). The same
 /// results interpreted and compiled; one that takes a function is refused
 /// at compilation.

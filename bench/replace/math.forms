@@ -1,4 +1,4 @@
-# name n r1 r2 pilot args (ROUNDS: the rounds) — the mathematical functions (D626)
+# name n r1 r2 pilot args (ROUNDS: the rounds) — the mathematical functions (D628)
 exp.sum 4096 20 120 bench/primitives/math_pilot.isc exp.sum ROUNDS
 exp.map 4096 20 120 bench/primitives/math_pilot.isc exp.map ROUNDS
 exp.chain 4096 20 120 bench/primitives/math_pilot.isc exp.chain ROUNDS

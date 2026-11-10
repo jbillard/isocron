@@ -202,8 +202,7 @@ pub enum StrOp {
     /// The functions of TypeScript (D155).
     StartsWith,
     EndsWith,
-    /// `replaceAll` of texts by the runtime (`$runtimeReplaceAll`, D6xx
-    /// (texts)): a new string.
+    /// `replaceAll` of texts by the runtime (`$runtimeReplaceAll`, D626): a new string.
     ReplaceAll,
     ToUpper,
     ToLower,
@@ -647,7 +646,7 @@ impl Expr {
     /// whose bits are read or made (`$floatBits`, `$bitsFloat`,
     /// `$bitsFloat32`): the operations that compute it stay as the prelude
     /// writes them (the reading of a float, and the mathematical functions,
-    /// D626, give the same bits wherever they are called).
+    /// D628, give the same bits wherever they are called).
     pub fn mark_reassoc(&mut self) {
         self.reassoc = true;
         if matches!(self.kind, ExprKind::StrOp(StrOp::FloatBits | StrOp::BitsFloat | StrOp::BitsFloat32, _)) {

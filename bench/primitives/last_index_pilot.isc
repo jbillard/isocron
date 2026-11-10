@@ -1,5 +1,5 @@
 // The pilot of `lastIndexOf` written in Isocron (SPEC section 17, order 2;
-// D6xx (texts)): one kind of search a run, so that the cycles and the
+// D626): one kind of search a run, so that the cycles and the
 // instructions of a search are read with `perf stat` as the difference
 // between two numbers of rounds. Its line: the kind, the nanoseconds of a
 // search (the mean over the rounds, `bench`), the sum of the places found,

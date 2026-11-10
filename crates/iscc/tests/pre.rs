@@ -180,7 +180,7 @@ fn a_list_that_is_not_one() {
     assert_eq!((r.code, r.stdout.as_str()), (0, TEXTS_OUT), "{}", r.stderr);
 }
 
-/// The texts moved to Isocron (D6xx (texts)): the rare paths of `replace`,
+/// The texts moved to Isocron (D626): the rare paths of `replace`,
 /// `replaceAll` and `lastIndexOf`, whose tasks are named from their
 /// function and not from their place in a program, and the reading of a
 /// CSV text (`@noInline`), the module's in a program whose own tasks come

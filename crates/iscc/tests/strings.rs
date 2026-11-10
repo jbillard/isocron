@@ -1097,11 +1097,10 @@ fn literals_kept_without_a_copy() {
     // the copy left is not of a literal: the accumulator of `grow` at its
     // entry (rule A, D351); the elements `sort` puts in its array are moved
     // from its source, read for the last time (D548). And four of
-    // `replaceAll` of a text, written in Isocron since D6xx (texts): the
+    // `replaceAll` of a text, written in Isocron since D626: the
     // block of the text replaced made by a copy where nothing is replaced,
     // one at each way out of its function, inlined (the runtime made that
-    // block itself); the five of its rare paths are the module's (D6xx
-    // (texts, compile))
+    // block itself); the five of its rare paths are the module's (D627)
     assert_eq!(ll.matches("; text copy").count(), 5, "a literal copied");
     // the literals of at most 12 bytes are values, their bytes in them
     // (D530); the one longer kept in the program's data
@@ -2592,7 +2591,7 @@ fn index_of_and_includes_written_in_isocron() {
     assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "WebAssembly: {}", r.stderr);
 }
 
-/// D6xx (texts): `lastIndexOf` written in Isocron, a function of the
+/// D626: `lastIndexOf` written in Isocron, a function of the
 /// prelude (a byte by a search of rule L, by vectors from the end; more by
 /// pairs of its bytes from the end; past a budget of bytes compared in
 /// vain, the two-way search from the end), no longer `isc_last_index_of`:

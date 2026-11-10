@@ -1,4 +1,4 @@
-// One call of each function of texts moved to Isocron by D6xx (texts):
+// One call of each function of texts moved to Isocron by D626:
 // `lastIndexOf`, `replace`, `replaceAll`, `Number` of a text,
 // `parseCsvF64`, `readCsvF64`, `tryReadCsvF64`; for the time of a
 // compilation (`bench/replace.py compile`).

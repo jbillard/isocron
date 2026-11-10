@@ -1,5 +1,5 @@
 // `lastIndexOf`, `replace` and `replaceAll` of texts, `Number` of a text
-// and the readers of CSV, written in Isocron (D6xx (texts)): their values on
+// and the readers of CSV, written in Isocron (D626): their values on
 // generated inputs, one mode a run, for the test to compare with those of
 // the runtime's functions (the native forms of the interpreter, D616).
 // usage: strings_moved <last|replace|number|csv> <cases> [file for csv]

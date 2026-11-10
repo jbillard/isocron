@@ -1,4 +1,4 @@
-// The mathematical functions of the prelude (D626) on values of each of
+// The mathematical functions of the prelude (D628) on values of each of
 // their paths, as values and called: tests/math.rs (compiled, interpreted,
 // under iscc run) and tests/windows.rs (built for both targets of Windows).
 action main(args: string[k]): i32 {

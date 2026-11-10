@@ -1,5 +1,5 @@
 // The pilot of the readers of CSV written in Isocron (SPEC section 17,
-// order 2; D6xx (texts)): `parseCsvF64`, and `readCsvF64` and
+// order 2; D626): `parseCsvF64`, and `readCsvF64` and
 // `tryReadCsvF64` of a file, one kind of text a run, so that the cycles
 // and the instructions of a field are read with `perf stat` as the
 // difference between two numbers of rounds. Its line: the kind, the

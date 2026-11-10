@@ -1,5 +1,5 @@
 # name n r1 r2 pilot args (ROUNDS: the rounds) — `replace` and `replaceAll`
-# of texts (D6xx (texts))
+# of texts (D626)
 one.line.1.early 4096 100 400 bench/primitives/replace_pilot.isc one.line.1.early.plain ROUNDS
 one.line.2.early 4096 100 400 bench/primitives/replace_pilot.isc one.line.2.early.plain ROUNDS
 one.line.5.late 4096 100 400 bench/primitives/replace_pilot.isc one.line.5.late.plain ROUNDS

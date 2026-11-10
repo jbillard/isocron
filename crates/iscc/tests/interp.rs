@@ -288,7 +288,7 @@ fn native_forms_keep_the_program() {
     assert!(matches!(run_native(required, &["  le thé ", "thé"]), Outcome::Exit(0, out) if out == want));
 }
 
-/// D6xx (texts): `lastIndexOf`, `replace` and `replaceAll` of texts,
+/// D626: `lastIndexOf`, `replace` and `replaceAll` of texts,
 /// `Number` of a text and the readers of CSV written in Isocron (the
 /// prelude), with a native form each under `iscc run`: the function of the
 /// runtime each replaced. On generated inputs (texts over small alphabets
@@ -344,7 +344,7 @@ fn native_forms_of_the_moved_texts() {
     assert!(matches!(run_native(required, &["a 12 b 12", " 12"]), Outcome::Exit(0, out) if out == want));
 }
 
-/// D6xx (texts): the panics of `parseCsvF64` and `readCsvF64` written in
+/// D626: the panics of `parseCsvF64` and `readCsvF64` written in
 /// Isocron, at the place of their call, with the messages of the runtime's
 /// (a field that is no number, its text trimmed; a row of another length,
 /// one field or more; a file that cannot be read): compiled, run node by

@@ -9,7 +9,7 @@
   to 71 % (each field read once), `replace` 11 to 98 % and `replaceAll`
   23 to 96 % (`$` patterns 96 to 98 %); `replaceAll` of a needle of 3 to
   16 bytes stays the runtime's; a program that calls them takes longer to
-  compile (D6xx (texts)). A search from the end (`fold(iota(n), init,
+  compile (D626). A search from the end (`fold(iota(n), init,
   (a, i) => c ? i : a)`) runs by vectors.
 - `@noInline`: a function compiled once and called, never inlined, its
   calls as likely as the code around them (`@cold` without "rarely").
@@ -17,8 +17,7 @@
   instructions of the compiler for one `parseCsvF64`) or call `replace`,
   `replaceAll` and `lastIndexOf` (−10 to −50 %): their rare paths and the
   reading of CSV are compiled once in the module of the prelude, whose
-  tasks and loops are now named the same in every program (D6xx (texts,
-  compile)).
+  tasks and loops are now named the same in every program (D627).
 - `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and
   `pow` (and `x ** y` of a floating `y`), of `f64` and `f32`, are written in
   Isocron: musl's algorithms, the same bits as before for every input
@@ -26,8 +25,8 @@
   inline where they are called, no longer a call of the runtime: 2 to
   58 % fewer instructions a call, up to 73 % fewer cycles; a chain of
   calls of `exp` or `log`, each on the result of the one before, 0.6 to
-  1.8 % slower (D626). A program that uses them takes longer to compile,
-  and the prelude makes every compilation about 20 % longer (D626).
+  1.8 % slower (D628). A program that uses them takes longer to compile,
+  and the prelude makes every compilation about 20 % longer (D628).
 
 ## 0.6.0 — 2026-11-10
 

@@ -37,8 +37,8 @@ pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String
     // (a text of the source, or of a module it imports, names one: by its
     // public name, which the functions of the prelude that call them have)
     // (`indexOf` in `lastIndexOf`, `replace` in `replaceAll`, `Csv` in the
-    // readers of CSV: D6xx (texts); the mathematical functions by theirs,
-    // `pow` by `**` too: D626)
+    // readers of CSV: D626; the mathematical functions by theirs,
+    // `pow` by `**` too: D628)
     let named = ["parseF64", "parseI64", "trim", "indexOf", "includes", "Number", "replace", "Csv", "import ", "exp", "log", "sin", "cos", "tan", "atan", "pow", "**"].iter().any(|n| src.contains(n));
     let native: Vec<usize> = t.fns.iter().enumerate().filter(|(_, f)| f.from_prelude && isc_interp::native_form(&f.name)).map(|(i, _)| i).collect();
     if !named || native.is_empty() {
@@ -78,10 +78,10 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
 /// (`parseF64`, `tryParseF64`), whose rare paths, `@cold` functions that
 /// only the prelude can name, are the same in every program that calls it;
 /// those of `lastIndexOf`, `Number`, `replace` and `replaceAll`, and the
-/// reading of CSV (`@noInline`) too (D6xx (texts), D6xx (texts, compile):
+/// reading of CSV (`@noInline`) too (D626, D627:
 /// the tasks of `replace` named from their function, not in the order of
 /// the module, which made the rest of `toFixed` differ before), and of the
-/// mathematical functions (D626: the reduction of a large argument of
+/// mathematical functions (D628: the reduction of a large argument of
 /// `sin`, the results out of range of `exp` and `pow`, ...).
 /// The module compiled once is made from it; a function it does not reach
 /// stays in the programs that do.

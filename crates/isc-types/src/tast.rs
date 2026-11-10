@@ -114,12 +114,12 @@ pub enum Prim {
     OrError(Fallible),
     /// The functions of strings of TypeScript (D155), on bytes of UTF-8
     /// (`indexOf` and `includes`: functions of the prelude, D596;
-    /// `lastIndexOf` too, D6xx (texts)).
+    /// `lastIndexOf` too, D626).
     StartsWith,
     EndsWith,
     ReplaceAll,
     /// `$runtimeReplaceAll(s, from, to)`: `replaceAll` of texts by the
-    /// runtime's function, for the prelude alone (D6xx (texts): the needles
+    /// runtime's function, for the prelude alone (D626: the needles
     /// of 3 to 16 bytes, where it is faster than the prelude's)
     RuntimeReplaceAll,
     ToUpper,
@@ -171,7 +171,7 @@ pub enum Prim {
     BitsFloat,
     /// `$bitsFloat32(w)`: the `f32` whose bits are the low 32 bits of the
     /// `u64` `w` (the reverse of `$floatBits` of a `f32`); the prelude
-    /// alone can name it (the mathematical functions of `f32`, D626)
+    /// alone can name it (the mathematical functions of `f32`, D628)
     BitsFloat32,
     /// `$mulHigh(a, b)`: the high 64 bits of the product of two `u64` (128
     /// bits); the prelude alone can name it

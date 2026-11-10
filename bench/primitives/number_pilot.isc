@@ -1,5 +1,5 @@
 // The pilot of `Number(s)` of a text written in Isocron (SPEC section 17,
-// order 2; D6xx (texts)): one kind of texts a run, so that the cycles and
+// order 2; D626): one kind of texts a run, so that the cycles and
 // the instructions of a text are read with `perf stat` as the difference
 // between two numbers of rounds. Its line: the kind, the nanoseconds of a
 // text (the mean over the rounds, `bench`), a checksum of the values, two

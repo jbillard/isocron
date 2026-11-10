@@ -2063,7 +2063,7 @@ impl<'p> Lower<'p> {
     }
 
     /// A call of the function `name` of the prelude, at the place of the
-    /// primitive it is written for (D6xx (texts): `Number` of a text,
+    /// primitive it is written for (D626: `Number` of a text,
     /// `replace` and `replaceAll` of texts, the readers of CSV): its panics
     /// there, as those of the runtime's function it replaced.
     fn prelude_call(&mut self, name: &str, args: Vec<Expr>, ret: &Type, span: Span) -> R<Expr> {
@@ -2261,7 +2261,7 @@ impl<'p> Lower<'p> {
     }
 
     /// A mathematical function that is no instruction (`exp`, `log`,
-    /// `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`; D626):
+    /// `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`; D628):
     /// the function of the prelude `$<name>F64` or `$<name>F32`, written in
     /// Isocron as musl's algorithm (the same bits as the crate `libm` of
     /// before), inlined where it is called as any function of the prelude;
@@ -2686,7 +2686,7 @@ impl<'p> Lower<'p> {
             }
             // strings (D134)
             // `replace` and `replaceAll` of a text: written in Isocron
-            // (D6xx (texts))
+            // (D626)
             Prim::Replace | Prim::ReplaceAll if self.conc(env, &args[1].ty) != Ty::RegExp => {
                 let mut out = Vec::new();
                 for a in args {
@@ -2695,7 +2695,7 @@ impl<'p> Lower<'p> {
                 let name = if p == Prim::Replace { "$replaceOne" } else { "$replaceEvery" };
                 return self.prelude_call(name, out, &ty, span);
             }
-            // the readers of CSV (D135), written in Isocron (D6xx (texts)):
+            // the readers of CSV (D135), written in Isocron (D626):
             // `readCsvF64` the text of `readText` read
             Prim::ParseCsvF64 | Prim::ReadCsvF64 => {
                 let mut text = self.expr(env, &args[0])?;
@@ -3007,7 +3007,7 @@ impl<'p> Lower<'p> {
                 return Ok(self.let_(v, n, checked, false, span));
             }
             // `Number(x)` (D156): of a text, ECMAScript's conversion (written
-            // in Isocron, D6xx (texts)); of a number, its `f64`
+            // in Isocron, D626); of a number, its `f64`
             Prim::JsNumber => {
                 let x = self.expr(env, &args[0])?;
                 if x.ty == Type::Str {

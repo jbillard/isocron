@@ -1658,7 +1658,7 @@ function $sameAt(b: u8[k], i: i64, p: u8[m]): boolean {
 }
 
 // ---------------------------------------------------------------------
-// `lastIndexOf` (D6xx): the search of `indexOf` from the end. A byte: the
+// `lastIndexOf` (D626): the search of `indexOf` from the end. A byte: the
 // last index where it is (rule L, by vectors from the end). More: the
 // places where two bytes of the needle both are (`$filterAt`), from the end
 // (two reads by vectors), at each its bytes compared, as one or two words
@@ -1789,7 +1789,7 @@ function $twoWayLast(b: u8[k], p: u8[m], end: i64): i64 {
 }
 
 // ---------------------------------------------------------------------
-// `Number(s)` of a text (D6xx), ECMAScript's StringToNumber as the runtime
+// `Number(s)` of a text (D626), ECMAScript's StringToNumber as the runtime
 // read it (D156): the white space of ECMAScript at the ends left (its
 // spaces, U+FEFF and its ends of lines; not U+0085, which `trim` leaves),
 // the empty text 0; `0x`, `0o` or `0b` and digits of that radix (no sign),
@@ -1917,7 +1917,7 @@ function $jsSpaceWidth(b: u8[k], p: i64): i64 {
 }
 
 // ---------------------------------------------------------------------
-// `s.replace(from, to)` and `s.replaceAll(from, to)` of texts (D6xx), as
+// `s.replace(from, to)` and `s.replaceAll(from, to)` of texts (D626), as
 // the runtime made them (D157, D302): the places of `from` left to right,
 // without overlap (`$find`), the first or each replaced by `to`; `to` with
 // the patterns of ECMAScript's GetSubstitution that a text has, `$$`, `$&`,
@@ -2096,7 +2096,7 @@ function $pattern(s: string, a: i64, z: i64, c: u8): string {
 
 // ---------------------------------------------------------------------
 // `parseCsvF64(text, skip)`, `readCsvF64(path, skip)` and
-// `readCsvF64OrError(path, skip)` written in Isocron (D6xx), as the runtime
+// `readCsvF64OrError(path, skip)` written in Isocron (D626), as the runtime
 // read them (D135): the lines of the text (separated by `\n`, no empty last
 // line after a final one), the first `skip` and the blank ones left (white
 // space alone, that of `trim`); each other a row of fields separated by
@@ -4305,7 +4305,7 @@ action $kSpill(class: i64, h: u64): i64 {
 }
 
 // ---------------------------------------------------------------------
-// The mathematical functions (D108, D626): `exp`, `log`, `sin`, `cos`,
+// The mathematical functions (D108, D628): `exp`, `log`, `sin`, `cos`,
 // `tan`, `asin`, `acos`, `atan`, `atan2` and `pow` of a `f64` and of a
 // `f32`. Each is musl's algorithm (FreeBSD's, from Sun's fdlibm) as the
 // crate `libm` 0.2.16 writes it, operation for operation: the same bits as
@@ -5550,7 +5550,7 @@ function $sinF32(x: f32): f32 {
         return x - x;
     }
     // (a branch for each quadrant, as libm: the sign of a result chosen
-    // without a branch took longer, D626)
+    // without a branch took longer, D628)
     const [n, y] = $mRemPio2F(x, ix);
     const q = n & 3i32;
     if (q == 0i32) {

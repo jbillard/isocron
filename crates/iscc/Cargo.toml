@@ -17,5 +17,5 @@ isc-codegen = { path = "../isc-codegen" }
 
 [dev-dependencies]
 # the mathematical functions of `libm`, the reference of those of the
-# prelude (tests/math.rs, D626)
+# prelude (tests/math.rs, D628)
 isc-runtime-core = { path = "../isc-runtime-core" }

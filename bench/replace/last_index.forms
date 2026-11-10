@@ -1,4 +1,4 @@
-# name n r1 r2 pilot args (ROUNDS: the rounds) — `lastIndexOf` (D6xx (texts))
+# name n r1 r2 pilot args (ROUNDS: the rounds) — `lastIndexOf` (D626)
 line.1.end 4096 100 400 bench/primitives/last_index_pilot.isc line.1.end ROUNDS
 line.1.start 4096 100 400 bench/primitives/last_index_pilot.isc line.1.start ROUNDS
 line.1.never 4096 100 400 bench/primitives/last_index_pilot.isc line.1.never ROUNDS

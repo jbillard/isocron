@@ -50,8 +50,8 @@ pub enum Value {
 pub const NATIVE: &str = "native:";
 
 /// The function of the prelude `name` has a native form: the readings of
-/// numbers, `trim`, `indexOf`, `includes` (D616), those of D6xx (texts), and
-/// the mathematical functions (`$expF64`, ..., D626).
+/// numbers, `trim`, `indexOf`, `includes` (D616), those of D626, and
+/// the mathematical functions (`$expF64`, ..., D628).
 pub fn native_form(name: &str) -> bool {
     matches!(
         name,
@@ -108,7 +108,7 @@ fn native_call(name: &str, vs: &[Value]) -> Option<Result<Value, String>> {
         "trimEnd" => Value::Str(Rc::from(text(0).trim_end())),
         "indexOf" => Value::Int(isc_runtime_core::find_bytes(text(0).as_bytes(), text(1).as_bytes()).map(|i| i as i64).unwrap_or(-1)),
         "includes" => Value::Bool(text(0).contains(&*text(1))),
-        // D6xx (texts): the functions of the runtime they replaced
+        // D626: the functions of the runtime they replaced
         "lastIndexOf" => Value::Int(isc_runtime_core::last_index_of(&text(0), &text(1))),
         "$jsNumber" => Value::F64(isc_runtime_core::js_number(&text(0))),
         "$replaceOne" => replaced(false),
@@ -306,7 +306,7 @@ impl Interp<'_> {
             }
             // the functions of TypeScript (D155): the code of the runtime
             S::StartsWith => Value::Bool(s(&vs[0]).starts_with(&*s(&vs[1]))),
-            // (`$runtimeReplaceAll`, D6xx (texts))
+            // (`$runtimeReplaceAll`, D626)
             S::ReplaceAll => {
                 let mut out = String::new();
                 let _ = isc_runtime_core::replace_text(&mut out, &s(&vs[0]), &s(&vs[1]), &s(&vs[2]), true);
@@ -697,7 +697,7 @@ pub struct Interp<'a> {
     /// The `extern` functions and their addresses (D125).
     externs: Rc<Vec<(isc_ir::ExternFn, usize)>>,
     /// For each function, the mathematical function of the prelude it is in
-    /// its native form (an index of `MATH_NAMES`, D626): found once, not by
+    /// its native form (an index of `MATH_NAMES`, D628): found once, not by
     /// its name at each call.
     math_natives: Rc<Vec<Option<usize>>>,
 }
@@ -1270,7 +1270,7 @@ impl<'a> Interp<'a> {
                     vals.push(self.eval(a)?);
                 }
                 let fi = *f as usize;
-                // a mathematical function in its native form (D626)
+                // a mathematical function in its native form (D628)
                 if let Some(k) = self.math_natives[fi] {
                     return Ok(native_math(k, &vals));
                 }
@@ -1837,7 +1837,7 @@ fn zero_value(t: &Type) -> Value {
 
 /// A mathematical function that is an instruction of the compiled code
 /// (`fma`, the roundings, `abs`: D108, D613). The others are functions of
-/// the prelude (D626), run node by node, or in their native form under
+/// the prelude (D628), run node by node, or in their native form under
 /// `iscc run` (`native_math`).
 fn math(f: MathFn, vs: &[Value]) -> Value {
     use isc_runtime_core as m;
@@ -1859,7 +1859,7 @@ fn math(f: MathFn, vs: &[Value]) -> Value {
 }
 
 /// The mathematical functions of the prelude in their native form (D616,
-/// D626), `k` their index in `MATH_NAMES`: the code of the crate `libm`
+/// D628), `k` their index in `MATH_NAMES`: the code of the crate `libm`
 /// that the runtime called before they were written in Isocron, the same
 /// bits (a test holds them equal).
 fn native_math(k: usize, vs: &[Value]) -> Value {

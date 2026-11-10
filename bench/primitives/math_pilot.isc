@@ -1,4 +1,4 @@
-// The pilot of the mathematical functions written in Isocron (D626): `exp`,
+// The pilot of the mathematical functions written in Isocron (D628): `exp`,
 // `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and `pow` of
 // a `f64` and of a `f32`, one form a run, so that the cycles and the
 // instructions of an element are read with `perf stat` as the difference

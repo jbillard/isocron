@@ -15150,7 +15150,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   .string`: 146.58 → 146.57 instructions, 42.9 → 41.9 cycles here, +2.3 %
   in D623: noise. The place of the code (hot and cold parts apart, the
   order of the functions) left to v2.
-- **D6xx (texts) — `lastIndexOf`, `replace` and `replaceAll` of texts,
+- **D626 — `lastIndexOf`, `replace` and `replaceAll` of texts,
   `Number` of a text and the readers of CSV written in Isocron
   (2026-11-10).** By an agent in its own tree.
   - What moved. `lastIndexOf` is a function of the prelude (its primitive
@@ -15206,7 +15206,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `isc_parse_csv_f64`, `isc_read_csv_f64`, `isc_try_read_csv_f64` (the
     case `Number` of `isc_js_number` too, kept for `parseFloat` and
     `parseInt`); the runtime core keeps their code for the native forms.
-- **D6xx (texts, compile) — The time of a compilation of the moved texts
+- **D627 — The time of a compilation of the moved texts
   (2026-11-10).** Three changes, the code of every program the same:
   - **Names of the module that do not depend on the program** (D611): a
     task is named from its function and its place in it
@@ -15242,7 +15242,7 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Left: a pattern known at compilation still has all its paths emitted
     (`if`s on a constant length kept until LLVM); the module's functions
     are lowered and written by each program to be compared (TODO, D611 (d)).
-- **D626 (math) — The mathematical functions written in Isocron
+- **D628 — The mathematical functions written in Isocron
   (2026-11-10).** `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`,
   `atan`, `atan2`, `pow` of `f64` and `f32` (`x ** y` of a float `y`) were
   calls of the runtime (the crate `libm` 0.2.16, D108). They are functions

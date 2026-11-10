@@ -2521,7 +2521,7 @@ unsafe fn text<'a>(p: *const u8, n: i64) -> &'a str {
 
 /// `s.replace(from, to)` (`all` 0) and `s.replaceAll(from, to)` of a text,
 /// with the `$` patterns of `to` (D157); called by `$runtimeReplaceAll` of
-/// the prelude alone since D6xx (texts), for the needles of 3 to 16 bytes.
+/// the prelude alone since D626, for the needles of 3 to 16 bytes.
 ///
 /// # Safety
 /// The pointers as the generated code gives them (C1).
@@ -3437,7 +3437,7 @@ pub unsafe extern "C" fn isc_big_to_string(out: *mut IscStr, p: *const u8, n: i6
 }
 
 /// ECMAScript's `parseFloat(s)` (1), `parseInt(s, radix)` (2) (D156;
-/// `Number(s)` is written in Isocron, D6xx (texts)).
+/// `Number(s)` is written in Isocron, D626).
 ///
 /// # Safety
 /// The pointers as the generated code gives them (C1).

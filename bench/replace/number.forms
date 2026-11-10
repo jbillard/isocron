@@ -1,5 +1,5 @@
 # name n r1 r2 pilot args (ROUNDS: the rounds) — `Number(s)` of a text
-# (D6xx (texts))
+# (D626)
 decimals 4096 30 130 bench/primitives/number_pilot.isc decimals ROUNDS
 ints 4096 30 130 bench/primitives/number_pilot.isc ints ROUNDS
 thirds 4096 30 130 bench/primitives/number_pilot.isc thirds ROUNDS

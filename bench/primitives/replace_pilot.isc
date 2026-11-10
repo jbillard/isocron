@@ -1,5 +1,5 @@
 // The pilot of `replace` and `replaceAll` of texts written in Isocron (SPEC
-// section 17, order 2; D6xx (texts)): one kind a run, so that the cycles
+// section 17, order 2; D626): one kind a run, so that the cycles
 // and the instructions of a replacement are read with `perf stat` as the
 // difference between two numbers of rounds. Its line: the kind, the
 // nanoseconds of a replacement (the mean over the rounds, `bench`), the sum

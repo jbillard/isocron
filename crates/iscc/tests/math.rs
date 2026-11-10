@@ -1,4 +1,4 @@
-//! The mathematical functions written in Isocron (D626): `exp`, `log`,
+//! The mathematical functions written in Isocron (D628): `exp`, `log`,
 //! `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and `pow` of `f64`
 //! and of `f32` are functions of the prelude, musl's algorithms as the
 //! crate `libm` 0.2.16 writes them. They give its bits, NaN included, for

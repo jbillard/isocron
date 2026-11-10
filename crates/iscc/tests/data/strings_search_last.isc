@@ -1,4 +1,4 @@
-// `lastIndexOf` of the prelude (D6xx (texts)) against a search one place at
+// `lastIndexOf` of the prelude (D626) against a search one place at
 // a time from the end: texts over alphabets of 1 to 4 letters and of
 // characters of several bytes, needles cut from them (at their ends too)
 // or not; long repeated texts whose needles spend the budget of the

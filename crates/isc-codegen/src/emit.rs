@@ -1950,7 +1950,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
                     // (a rare path without a table of jumps: LLVM puts those of
                     // every function in one section of data, whose addresses
                     // of code would keep in a program every function that has
-                    // one, reached or not, D626)
+                    // one, reached or not, D628)
                     if kind == ".text.unlikely" {
                         out.push_str(" \"no-jump-tables\"=\"true\"");
                     }
@@ -5454,8 +5454,8 @@ impl<'p> Gen<'p> {
                 Ok(V { r, t, uni: uni(&xv) })
             }
             // the other functions are functions of the prelude, inlined by the
-            // lowering (D626): none is left here
-            Math(f, _) => Err(format!("internal error: `{}` not lowered to its function of the prelude (D626)", f.name())),
+            // lowering (D628): none is left here
+            Math(f, _) => Err(format!("internal error: `{}` not lowered to its function of the prelude (D628)", f.name())),
             Sqrt(x) => {
                 let xv = self.ex(x, w)?;
                 let ww = if uni(&xv) { 1 } else { w };
@@ -15023,8 +15023,7 @@ impl<'p> Gen<'p> {
                 let same = self.text_same(&at, &q, &k);
                 v(self.ins(format!("and i1 {}, {}", fits, same)), "i1")
             }
-            // `replaceAll` of texts by the runtime (`$runtimeReplaceAll`, D6xx
-            // (texts))
+            // `replaceAll` of texts by the runtime (`$runtimeReplaceAll`, D626)
             S::ReplaceAll => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
@@ -15230,7 +15229,7 @@ impl<'p> Gen<'p> {
                     }
                 }
             }
-            // (`Number(s)`: `$jsNumber` of the prelude, D6xx (texts))
+            // (`Number(s)`: `$jsNumber` of the prelude, D626)
             S::JsParseFloat | S::JsParseInt => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (which, radix) = match op {
