@@ -39,6 +39,44 @@ pub enum Value {
     Handle(Rc<handles::Cell>),
 }
 
+/// The functions of the prelude that the interpreter can run in a native
+/// form (D616): written in Isocron for the compiled programs (the readings
+/// of numbers, `trim`, `indexOf`, `includes`), they are long to run node by
+/// node (12 to 90 times the time of their versions of before). `iscc run`
+/// names them `native:<name>` in the program it runs, and calls of them
+/// give the value of `native_call`. Each native form is the function the
+/// interpreter had before the one of the prelude; a test holds them equal
+/// to the prelude's, run node by node.
+pub const NATIVE: &str = "native:";
+
+/// The function of the prelude `name` has a native form.
+pub fn native_form(name: &str) -> bool {
+    matches!(name, "$parseF64Value" | "$parseI64Value" | "trim" | "trimStart" | "trimEnd" | "indexOf" | "includes")
+}
+
+/// The value of the function `name` of the prelude for these arguments;
+/// none: no native form.
+fn native_call(name: &str, vs: &[Value]) -> Option<Value> {
+    let text = |i: usize| -> Rc<str> {
+        match &vs[i] {
+            Value::Str(s) => s.clone(),
+            v => panic!("a text expected, got {:?}", v),
+        }
+    };
+    // (a value and a word that is not 0 when the text is no number)
+    let read = |v: Option<Value>, none: Value| Value::Tuple(Rc::new(vec![v.clone().unwrap_or(none), Value::Int(v.is_none() as i64)]));
+    Some(match name {
+        "$parseF64Value" => read(text(0).parse::<f64>().ok().map(Value::F64), Value::F64(0.0)),
+        "$parseI64Value" => read(text(0).parse::<i64>().ok().map(Value::Int), Value::Int(0)),
+        "trim" => Value::Str(Rc::from(text(0).trim())),
+        "trimStart" => Value::Str(Rc::from(text(0).trim_start())),
+        "trimEnd" => Value::Str(Rc::from(text(0).trim_end())),
+        "indexOf" => Value::Int(isc_runtime_core::find_bytes(text(0).as_bytes(), text(1).as_bytes()).map(|i| i as i64).unwrap_or(-1)),
+        "includes" => Value::Bool(text(0).contains(&*text(1))),
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Array {
     Int(Vec<i64>),
@@ -1170,6 +1208,11 @@ impl<'a> Interp<'a> {
                     vals.push(self.eval(a)?);
                 }
                 let fi = *f as usize;
+                // a function of the prelude in its native form (`iscc run`,
+                // D616): its value, not its body run node by node
+                if let Some(v) = self.fns[fi].name.strip_prefix(NATIVE).and_then(|name| native_call(name, &vals)) {
+                    return Ok(v);
+                }
                 // a direct tail call: its arguments for the loop of the call
                 // in progress, which runs the body again
                 if let Some(&cur) = self.running.last() {

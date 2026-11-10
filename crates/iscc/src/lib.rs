@@ -16,6 +16,45 @@ pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     Ok(p)
 }
 
+/// `frontend` for `iscc run` (D616). The program is checked as by `check`
+/// and `build` (the same errors, the same requirements); the program the
+/// interpreter runs is then lowered again with the functions of the prelude
+/// that have a native form in the interpreter kept as functions, under the
+/// names it knows (`isc_interp::NATIVE`), not inlined where they are
+/// called. The requirements, checked on the first form, are not asked of
+/// the second (a function called allocates its result, which the same
+/// function inlined does not). A source that names none of them is lowered
+/// once.
+pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String> {
+    let mut files = isc_types::source_files(path);
+    let mut user = isc_syntax::parse(src, isc_types::USER_FILE).map_err(|d| d.render(&files))?;
+    let loaded = isc_types::modules::load_modules(&mut user, Path::new(path), &mut files);
+    let render = |d: isc_syntax::Diagnostic| d.render(&files);
+    loaded.map_err(render)?;
+    let t = isc_types::check_parsed(&user).map_err(render)?;
+    let mut p = isc_ir::lower::lower(&t).map_err(render)?;
+    isc_ir::passes::optimize(&mut p).map_err(render)?;
+    // (a text of the source, or of a module it imports, names one: by its
+    // public name, which the functions of the prelude that call them have)
+    let named = ["parseF64", "parseI64", "trim", "indexOf", "includes", "import "].iter().any(|n| src.contains(n));
+    let native: Vec<usize> = t.fns.iter().enumerate().filter(|(_, f)| f.from_prelude && isc_interp::native_form(&f.name)).map(|(i, _)| i).collect();
+    if !named || native.is_empty() {
+        return Ok(p);
+    }
+    let mut t = t;
+    for &i in &native {
+        t.recursive[i] = true;
+        t.fns[i].name = format!("{}{}", isc_interp::NATIVE, t.fns[i].name);
+    }
+    for f in &mut t.fns {
+        use isc_syntax::ast::Modifier;
+        f.requires.retain(|(m, _)| !matches!(m, Modifier::RequireFused | Modifier::RequireNoAlloc | Modifier::RequireTail));
+    }
+    let mut p = isc_ir::lower::lower(&t).map_err(render)?;
+    isc_ir::passes::optimize(&mut p).map_err(render)?;
+    Ok(p)
+}
+
 /// `frontend` of a source read as a part of the prelude: it may name what
 /// only the prelude can (`$…`). For the tests of the kernel of the runtime
 /// (D601), whose code is the prelude's.

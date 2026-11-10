@@ -14969,3 +14969,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     second allocator beside it.
   - For the steps of the kernel to come (the larger blocks, the pool, the
     files): each changes who makes and who frees a block.
+- **D616 — Under `iscc run`, the functions moved to the prelude keep a
+  native form (2026-11-10).** The interpreter runs the code of the prelude
+  node by node. The functions written in Isocron since 0.5.0 as functions
+  of the prelude (not as primitives whose code the generator calls) had
+  become, under `iscc run`, 12 to 90 times slower than the native
+  functions they replaced, and three of them for a day without a measure
+  of mine: ns a call, before the step 7 → after it: `parseF64` 179.4 →
+  16 185.5; `trim` 236.8 → 12 955.0; `includes` 221.4 → 11 766.4;
+  `indexOf` 270.2 → 11 332.8; `parseI64` 161.5 → 1889.2. (The functions
+  kept as primitives, `toString`, `toFixed`, the pads, the cases, `join`,
+  `floor`: unchanged, 0.9 to 1.3 times.) Found by measuring each before a
+  release, where I had measured `parseF64` alone.
+  - `iscc run` (`frontend_for_run`) checks the program as `check` and
+    `build` do (the same errors, the same requirements, on the same IR),
+    then lowers it again with seven functions of the prelude kept as
+    functions under a name the interpreter knows (`native:` and their
+    name): `$parseF64Value`, `$parseI64Value`, `trim`, `trimStart`,
+    `trimEnd`, `indexOf`, `includes`. A call of one gives the value of the
+    native function (`native_call`: Rust's `str::parse`, `trim`,
+    `contains`, and `find_bytes`, what the interpreter called before the
+    step 7). The requirements are not asked of that second form (a
+    function called allocates its result, which the same function inlined
+    does not). A source that names none of them is lowered once.
+  - A function of the program that has the name of one of them is the
+    program's (only the prelude's are renamed). The compiled programs, and
+    the interpreter of the tests (`frontend`, which runs the prelude's own
+    code and so checks it against the compiled code), do not change.
+  - After: `trim` 240.7 ns, `indexOf` 272.8, `includes` 231.8, `parseF64`
+    365.0, `parseI64` 345.8 (the two readings through their function of
+    the prelude that tests the word and panics: twice their time of
+    before the step 7).
+  - Tests (`interp.rs`): the native forms give the values of the prelude's
+    run node by node and of the compiled program on 46 texts of numbers
+    and of what is none, 21 texts between spaces of Unicode (those of
+    ECMAScript that Rust has not, U+FEFF, and those Rust has that
+    ECMAScript has not, U+0085), 15 patterns; the same panic at the same
+    place; a function of the program named `trim` or `indexOf`; a
+    `@requireNoAlloc` function that calls them.
+  - To be done at each function that moves to the prelude as a function:
+    its time under `iscc run` before and after, and its native form if it
+    is needed.

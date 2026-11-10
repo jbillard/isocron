@@ -188,3 +188,102 @@ fn generic_literals_are_range_checked() {
     let ok = "function g<T extends Num>(x: T[n]): T {\n    return x[0] + 300;\n}\n\naction main(args: string[k]): i32 {\n    print(g([1i64]));\n    return 0;\n}\n";
     assert_eq!(interp_ok(ok, &[]), "301\n");
 }
+
+/// The program as `iscc run` runs it (D616): the functions of the prelude
+/// that have a native form in the interpreter called in that form.
+fn run_native(src: &str, args: &[&str]) -> Outcome {
+    let p = iscc::frontend_for_run("test.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let mut out = Vec::new();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    match isc_interp::run(&p, &args, &mut out) {
+        Ok(c) => Outcome::Exit(c, String::from_utf8(out).unwrap()),
+        Err(e) => Outcome::Panic(e.to_string(), String::from_utf8(out).unwrap()),
+    }
+}
+
+/// The texts on which the native forms could differ from the prelude's:
+/// numbers and what is none, the spaces of Unicode, patterns found at the
+/// ends, never, empty, of several bytes a character.
+const NATIVE_FORMS: &str = "function shown(s: string): string {
+    return `<${s}>`;
+}
+
+action main(args: string[k]): i32 {
+    const numbers = [\"0\", \"-0\", \"+5\", \"5\", \" 5\", \"5 \", \"\", \"-\", \"+\", \"--1\", \"0x10\", \"1e5\", \"1E-5\", \"1.5\", \".5\", \"5.\", \"inf\", \"-inf\",
+        \"Infinity\", \"NaN\", \"nan\", \"1_000\", \"9223372036854775807\", \"9223372036854775808\", \"-9223372036854775808\", \"-9223372036854775809\",
+        \"00012\", \"+0012\", \"1e309\", \"4.9e-324\", \"2.5e-324\", \"0.1\", \"123456789012345678901234567890\", \"12a\", \"a12\", \"١٢\", \"1e\", \"1e+\",
+        \"1.7976931348623157e308\", \"9007199254740993\", \"0.30000000000000004\", \"-1.5e-7\", \"1,5\", \"1 000\", \"\\t7\", \"7\\n\"];
+    print(map(numbers, (t) => match (tryParseI64(t)) {
+        Ok(v) => toString(v),
+        Err(e) => e,
+    }));
+    print(map(numbers, (t) => match (tryParseF64(t)) {
+        Ok(v) => toString(v) + (1.0 / v < 0.0 ? \"-\" : \"+\"),
+        Err(e) => e,
+    }));
+    print([parseI64(\"-42\") + 1, parseI64(\"+7\")]);
+    print(parseF64(\"2.5\") * 2.0);
+    const spaced = [\"\", \" \", \"a\", \" a\", \"a \", \"  a b  \", \"\\ta\\n\", \"\\r\\na\u{B}\u{C}\", \"\u{A0}a\u{A0}\", \"\u{1680}a\u{2000}\u{2001}\u{2002}\u{200A}\",
+        \"\u{2028}a\u{2029}\", \"\u{202F}a\u{205F}\", \"\u{3000}a\u{3000}\", \"\u{FEFF}a\u{FEFF}\", \"\u{85}a\u{85}\", \"\u{200B}a\u{200B}\", \"é \", \" é\", \"   \",
+        \"\u{180E}a\", \"a.\"];
+    print(map(spaced, (t) => shown(t.trim()) + shown(t.trimStart()) + shown(t.trimEnd())));
+    const text = \"un été à l'été, et après l'été : thé\";
+    const patterns = [\"\", \"u\", \"un\", \"é\", \"été\", \"thé\", \"hé\", \"x\", \"été,\", \"l'été :\", \"été à l'été, et après l'été : thé\", \"un été à l'été, et après l'été : thé!\", \" \", \"  \", \"é \"];
+    print(map(patterns, (q) => text.indexOf(q)));
+    print(map(patterns, (q) => text.includes(q) ? 1 : 0));
+    print([\"\".indexOf(\"\"), \"\".indexOf(\"a\"), \"aaa\".indexOf(\"aa\"), \"abcabc\".indexOf(\"cab\")]);
+    print([args[0].trim().length, args[0].indexOf(args[1]), args[0].includes(args[1]) ? 1 : 0]);
+    return 0;
+}
+";
+
+/// D616: under `iscc run` the readings of numbers, `trim`, `indexOf` and
+/// `includes` are native functions of the interpreter, not the functions of
+/// the prelude run node by node (12 to 90 times slower): the same values as
+/// the prelude's, and as the compiled program.
+#[test]
+fn native_forms_of_the_prelude() {
+    let args = ["  le thé  ", "thé"];
+    let want = interp_ok(NATIVE_FORMS, &args);
+    assert!(want.contains("[-41, 7]\n5\n"), "{}", want);
+    match run_native(NATIVE_FORMS, &args) {
+        Outcome::Exit(0, out) => assert_eq!(out, want, "the native forms and the prelude's"),
+        Outcome::Exit(c, out) => panic!("exit {} ({})", c, out),
+        Outcome::Panic(m, _) => panic!("unexpected panic: {}", m),
+    }
+    let bin = compile(NATIVE_FORMS, "native_forms");
+    let r = run_bin(&bin, &args);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "compiled: {}", r.stderr);
+    // the native forms are called: the program run names them
+    let p = iscc::frontend_for_run("test.isc", NATIVE_FORMS).unwrap();
+    let named: Vec<&str> = p.fns.iter().filter_map(|f| f.name.strip_prefix(isc_interp::NATIVE)).collect();
+    for name in ["$parseF64Value", "$parseI64Value", "trim", "trimStart", "trimEnd", "indexOf", "includes"] {
+        assert!(named.contains(&name), "{} is not in its native form: {:?}", name, named);
+    }
+    assert!(iscc::frontend("test.isc", NATIVE_FORMS).unwrap().fns.iter().all(|f| !f.name.starts_with(isc_interp::NATIVE)));
+}
+
+/// A panic of a reading is the same message at the same place; a function
+/// of a program that has the name of one of the prelude is the program's;
+/// a requirement that holds for the program as compiled is not refused
+/// because a function is called in the program as run.
+#[test]
+fn native_forms_keep_the_program() {
+    let bad = "action main(args: string[k]): i32 {\n    print(parseI64(args[0]));\n    print(parseF64(args[1]));\n    return 0;\n}\n";
+    for args in [["12x", "1.5"], ["12", "1.5x"]] {
+        let (a, b) = (interp_panic(bad, &args), match run_native(bad, &args) {
+            Outcome::Panic(m, _) => m,
+            Outcome::Exit(c, out) => panic!("expected a panic, got exit {} ({})", c, out),
+        });
+        assert_eq!(a, b);
+        assert!(a.contains("is not a valid"), "{}", a);
+    }
+    let own = "function trim(s: string): string {\n    return \"mine:\" + s;\n}\n\nfunction indexOf(s: string, t: string): i64 {\n    return 0 - s.length - t.length;\n}\n\naction main(args: string[k]): i32 {\n    print(trim(\" a \"));\n    print(indexOf(\"abc\", \"c\"));\n    print(\" b \".trimEnd() + \"|\");\n    return 0;\n}\n";
+    let want = interp_ok(own, &[]);
+    assert_eq!(want, "mine: a \n-4\n b|\n");
+    assert!(matches!(run_native(own, &[]), Outcome::Exit(0, out) if out == want));
+    let required = "@requireNoAlloc\nfunction place(s: string, t: string): i64 {\n    return s.trim().indexOf(t) + (s.includes(t) ? 1 : 0);\n}\n\naction main(args: string[k]): i32 {\n    print(place(args[0], args[1]));\n    return 0;\n}\n";
+    let want = interp_ok(required, &["  le thé ", "thé"]);
+    assert_eq!(want, "4\n");
+    assert!(matches!(run_native(required, &["  le thé ", "thé"]), Outcome::Exit(0, out) if out == want));
+}

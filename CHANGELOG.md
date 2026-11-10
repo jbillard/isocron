@@ -12,8 +12,25 @@
 - Fixed: under `iscc run`, a padding to a width near the least `i64`
   overflowed (D606).
 - `toFixed` and `print` of a float are written in Isocron: 19 to 95 % fewer
-  instructions; a program that uses them is built more slowly for now
-  (D610).
+  instructions (D610).
+- `parseF64` and `tryParseF64` are written in Isocron: the same values, bit
+  for bit, with 5 to 83 % fewer instructions a text (decimals twice as
+  fast, texts of many digits three times); a program that reads a float is
+  43 KB larger (D614).
+- `Math.floor`, `Math.ceil`, `Math.trunc`, `Math.round` and `Math.abs` of a
+  float are instructions of the processor, on 8 `f64` or 16 `f32` at once
+  in a `map`: 92 to 97 % fewer cycles an element (D613).
+- The parts of the runtime written in Isocron that no program inlines (the
+  rare paths of the allocator, of the texts and of the readings of floats)
+  are compiled once for a compiler and a target, at its first `build`
+  (about a second), into `$ISC_CACHE_DIR` (by default
+  `$XDG_CACHE_HOME/isocron`, or `~/.cache/isocron`;
+  `%LOCALAPPDATA%\isocron\cache` on Windows), and linked with each program
+  after; `ISC_PRE=inline`, or no place to write, compiles them in each
+  program (D611, D612).
+- Under `iscc run`, the readings of numbers, `trim`, `indexOf` and
+  `includes`, now written in Isocron, keep a native form in the
+  interpreter: as fast as before (D616).
 - `iscc ir` does not show the functions of the allocator of the runtime,
   present in every program (D605).
 - `@requireTail`, `@requireNoAlloc` and `@cold` are accepted before an

@@ -395,7 +395,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `toUpperCase` and `toLowerCase`: ASCII by vectors in the generated code, the rest in the prelude (D608: 35 to 85 % fewer)
   - [x] `toFixed` and the `print` of a float written in Isocron (D610: 19 to 95 % fewer instructions)
   - [x] `parseF64` and `tryParseF64` written in Isocron (D614: 4.7 to 82.6 % fewer instructions a text for twenty kinds, the same values on 300 135 texts; two `unsafe` functions out of the runtime)
-  - [ ] What D614 costs: the interpreter runs the reader of floats node by node (17 to 174 times slower than Rust's `str::parse` was: a native form of chosen functions of the prelude for `iscc run`, or a faster interpreter); a program that reads a float is 43 KB larger (`$floatAny`) and takes 0.137 s to compile against 0.047; the floats of the CSV readers are still Rust's
+  - [x] Under `iscc run`, the functions moved to the prelude as functions (`parseF64`, `parseI64`, `trim`, `indexOf`, `includes`) were 12 to 90 times slower: a native form in the interpreter (D616)
+  - [ ] What D614 costs: a program that reads a float is 43 KB larger (`$floatAny`) and takes 0.137 s to compile against 0.047; the floats of the CSV readers are still Rust's
   - [x] `floor`, `ceil`, `trunc`, `round` and `abs` of a float: instructions of the processor in the generated code, on vectors in a `map` (D613: 7.54 → 0.37 cycles an element for `floor`, 11.57 → 0.66 for `round`; ten functions out of the runtime)
   - [ ] The twenty other mathematical functions (`exp`, `log`, `sin`, `cos`, `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, for `f64` and `f32`): musl's algorithms written in Isocron, the same bits, then on vectors (D108's open question)
   - [ ] `isc_put_int` (the padded integers inside a template, D363) is still in the runtime

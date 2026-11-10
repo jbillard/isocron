@@ -251,7 +251,10 @@ fn main() {
             exit(2)
         }
     };
-    let prog = match iscc::frontend(&path, &src) {
+    // (`run`: the functions of the prelude that the interpreter has in a
+    // native form, D616)
+    let front = if cmd == "run" { iscc::frontend_for_run(&path, &src) } else { iscc::frontend(&path, &src) };
+    let prog = match front {
         Ok(p) => p,
         Err(msg) => {
             eprintln!("{}", style.diagnostics(&msg, &path, &src));
