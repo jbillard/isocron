@@ -105,3 +105,23 @@ fn only_the_prelude_and_only_actions() {
     let e = iscc::frontend_as_prelude("t.isc", "function f(a: u64): u64 {\n    return $load64(a);\n}\n\naction main(args: string[k]): i32 {\n    print(f(0u64));\n    return 0;\n}\n").unwrap_err();
     assert!(e.contains("cannot be called here") || e.contains("cannot call the action"), "{}", e);
 }
+
+/// D602: the small blocks of the allocator written in Isocron over the
+/// primitives of the kernel, a first version on one thread: 3000 blocks of
+/// 1 to 1024 bytes on 64 bytes, none over another, their marks whole; half
+/// of them freed and taken again, the last freed first; the others not
+/// touched; everything freed in the end. The same interpreted and compiled.
+#[test]
+fn small_blocks_written_in_isocron() {
+    let src = include_str!("data/kernel_small.isc");
+    let got = interpreted(src).unwrap_or_else(|e| panic!("interpreted: {}", e));
+    let r = compiled(src, "kernel_small");
+    assert_eq!((r.code, r.stdout.as_str()), (0, got.as_str()), "{}", r.stderr);
+    let lines: Vec<&str> = got.lines().collect();
+    assert_eq!(lines[0], "1", "the arena");
+    assert_eq!(lines[1], "[3000, 2999, 2999]", "on 64 bytes, apart");
+    assert_eq!(lines[2], "3000", "the marks");
+    assert_eq!(lines[3], "1500", "the blocks freed taken again, the last first");
+    assert_eq!(lines[4], "1500", "the blocks kept");
+    assert_eq!(lines[5], "0", "every block in the lists of the thread, by 32");
+}

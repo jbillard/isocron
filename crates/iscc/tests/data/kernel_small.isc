@@ -1,0 +1,125 @@
+// The small blocks of the allocator written in Isocron, a first version
+// (D602): one thread, no lock yet, not called by the generated code yet.
+//
+// The arena. Its first page: at 0 the next byte never given, at 8 the end of
+// its committed bytes. A block of the class c (64 * (c + 1) bytes, 16
+// classes) is 64 bytes after its header: at 0 its class (4 bytes), at 4 its
+// state (1 byte: in use or free), at 8 the next block of its list.
+// The zone of the thread: at 8 * c the list of its free blocks of the class
+// c, at 128 + 2 * c their count.
+
+action $kStart(): u64 {
+    const base = $arenaReserve(1099511627776u64);
+    if (base == 0u64) {
+        return 0u64;
+    }
+    const code = $arenaCommit(base, 2097152u64);
+    if (code != 0) {
+        return 0u64;
+    }
+    $store64(base, base + 4096u64);
+    $store64(base + 8u64, base + 2097152u64);
+    return base;
+}
+
+// A block of `bytes` bytes (1 to 1024): the first of the list of the
+// thread, or new ones.
+action $kAlloc(bytes: i64): u64 {
+    const class = (bytes + 63) / 64 - 1;
+    const head = $zoneLoad64(class * 8);
+    if (head == 0u64) {
+        return $kRefill(class);
+    }
+    $zoneStore64(class * 8, $load64(head + 8u64));
+    $zoneStore16(128 + class * 2, $zoneLoad16(128 + class * 2) - 1u64);
+    $store8(head + 4u64, 0xA5u64);
+    return head + 64u64;
+}
+
+// 32 new blocks of the class cut after the last byte given (their pages
+// committed by 2 MiB): the first one given, the others the list of the
+// thread.
+action $kRefill(class: i64): u64 {
+    const base = $arenaBase();
+    const step = u64(class + 1) * 64u64 + 64u64;
+    const count = 32;
+    const start = $load64(base);
+    const end = start + step * u64(count);
+    const committed = $load64(base + 8u64);
+    if (end > committed) {
+        const more = (end - committed + 2097151u64) / 2097152u64 * 2097152u64;
+        const code = $arenaCommit(committed, more);
+        if (code != 0) {
+            $panic("out of memory", "", "");
+        }
+        $store64(base + 8u64, committed + more);
+    }
+    $store64(base, end);
+    forEach(iota(count - 1), (i) => {
+        const h = start + step * u64(i + 1);
+        $store32(h, u64(class));
+        $store8(h + 4u64, 0x5Au64);
+        $store64(h + 8u64, i + 2 < count ? h + step : 0u64);
+    });
+    $zoneStore64(class * 8, start + step);
+    $zoneStore16(128 + class * 2, u64(count - 1));
+    $store32(start, u64(class));
+    $store8(start + 4u64, 0xA5u64);
+    return start + 64u64;
+}
+
+// The block `p` given back: the first of the list of its class.
+action $kFree(p: u64): i64 {
+    const h = p - 64u64;
+    const class = i64($load32(h));
+    if ($load8(h + 4u64) != 0xA5u64 || class >= 16) {
+        $panic("invalid free (a block freed twice or not allocated by the runtime)", "", "");
+    }
+    $store8(h + 4u64, 0x5Au64);
+    $store64(h + 8u64, $zoneLoad64(class * 8));
+    $zoneStore64(class * 8, h);
+    $zoneStore16(128 + class * 2, $zoneLoad16(128 + class * 2) + 1u64);
+    return class;
+}
+
+// ---- the test
+
+// the bytes asked for the block `i`
+function wanted(i: i64): i64 {
+    return 1 + (i * 37) % 1024;
+}
+
+action main(args: string[k]): i32 {
+    const base = $kStart();
+    print(base != 0u64 ? 1 : 0);
+    const n = 3000;
+    // n blocks, each marked at the first and the last 8 bytes of its class
+    const ps = map(iota(n), (i) => {
+        const p = $kAlloc(wanted(i));
+        $store64(p, u64(i));
+        $store64(p + u64((wanted(i) + 63) / 64 * 64 - 8), u64(i * 7 + 1));
+        return p;
+    });
+    // each on 64 bytes, inside the arena, and none over another: in the
+    // order of their addresses, each ends before the next starts
+    const order = sortBy(iota(n), (i) => ps[i]);
+    const apart = count(iota(n - 1), (j) => ps[order[j]] + u64((wanted(order[j]) + 63) / 64 * 64) <= ps[order[j + 1]] - 64u64);
+    print([count(ps, (p) => p % 64u64 == 0u64), apart, n - 1]);
+    // the marks are whole
+    const whole = map(iota(n), (i) => $load64(ps[i]) == u64(i) && $load64(ps[i] + u64((wanted(i) + 63) / 64 * 64 - 8)) == u64(i * 7 + 1) ? 1 : 0);
+    print(sum(whole));
+    // every other block freed, then as many asked again: the blocks freed,
+    // the last one first
+    const freed = map(iota(n / 2), (i) => $kFree(ps[2 * i]));
+    const again = map(iota(n / 2), (i) => $kAlloc(wanted(2 * (n / 2 - 1 - i))));
+    print(count(iota(n / 2), (i) => again[i] == ps[2 * (n / 2 - 1 - i)]));
+    // the blocks kept were not touched
+    const kept = map(iota(n / 2), (i) => $load64(ps[2 * i + 1]) == u64(2 * i + 1) ? 1 : 0);
+    print(sum(kept));
+    // everything freed: the lists of the thread hold every block
+    const f1 = map(iota(n / 2), (i) => $kFree(again[i]));
+    const f2 = map(iota(n / 2), (i) => $kFree(ps[2 * i + 1]));
+    print(sum(map(iota(16), (c) => i64($zoneLoad16(128 + c * 2)))) % 32);
+    print([sum(freed) + sum(f1) + sum(f2) > 0 ? 1 : 0, i64(($load64(base) - base) / 1048576u64)]);
+    return 0;
+}

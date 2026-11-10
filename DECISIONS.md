@@ -14184,3 +14184,28 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     source as a part of the prelude, for the tests. Tests (`kernel`):
     `arena_and_zone_words`, `outside_the_arena_is_a_panic` (8 ways out),
     `only_the_prelude_and_only_actions`.
+- **D602 — The kernel: the small blocks written in Isocron, a first
+  version on one thread (2026-11-10).** Step 3 of D599, its first part:
+  the allocator as code of the language, run before it is used.
+  - Over the primitives of D601, as actions that the prelude alone can
+    name (kept in the test for now, `tests/data/kernel_small.isc`):
+    `$kStart` (the arena of 1 TiB reserved, its first 2 MiB committed),
+    `$kAlloc(bytes)` (the first block of the list of the thread for the
+    class, 16 classes of 64 to 1024 bytes), `$kRefill(class)` (32 new
+    blocks cut after the last byte given, their pages committed by 2
+    MiB), `$kFree(p)` (the block the first of the list of its class; one
+    freed twice or not of the allocator, a panic).
+  - The layout of today: a header of 64 bytes before each block (its
+    class, its state, the next of its list); the lists of the thread and
+    their counts in its zone; the next byte never given and the end of
+    the committed bytes in the first page of the arena.
+  - Tested interpreted and compiled, the same output: 3000 blocks of 1
+    to 1024 bytes, each on 64 bytes, none over another (in the order of
+    their addresses), their marks whole; half of them freed and asked
+    again: the blocks freed, the last one first; the others untouched;
+    everything freed in the end. Test `small_blocks_written_in_isocron`
+    (`kernel`).
+  - Not yet: several threads (the lists shared between them, their lock:
+    atomic operations to add), the lists of a thread bounded, the
+    generated code calling it (inlined after the optimization of the
+    module, D600), the measure against the allocator of today.
