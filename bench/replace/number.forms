@@ -1,0 +1,14 @@
+# name n r1 r2 pilot args (ROUNDS: the rounds) — `Number(s)` of a text
+# (D6xx (texts))
+decimals 4096 30 130 bench/primitives/number_pilot.isc decimals ROUNDS
+ints 4096 30 130 bench/primitives/number_pilot.isc ints ROUNDS
+thirds 4096 30 130 bench/primitives/number_pilot.isc thirds ROUNDS
+exps 4096 30 130 bench/primitives/number_pilot.isc exps ROUNDS
+hex 4096 30 130 bench/primitives/number_pilot.isc hex ROUNDS
+bin 4096 30 130 bench/primitives/number_pilot.isc bin ROUNDS
+bighex 4096 30 130 bench/primitives/number_pilot.isc bighex ROUNDS
+spaced 4096 30 130 bench/primitives/number_pilot.isc spaced ROUNDS
+names 4096 30 130 bench/primitives/number_pilot.isc names ROUNDS
+junk 4096 30 130 bench/primitives/number_pilot.isc junk ROUNDS
+empty 4096 30 130 bench/primitives/number_pilot.isc empty ROUNDS
+mixed 4096 30 130 bench/primitives/number_pilot.isc mixed ROUNDS

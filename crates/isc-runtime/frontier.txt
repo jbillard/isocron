@@ -77,19 +77,16 @@ isc_print_u64
 isc_print_u64_line
 isc_put_int
 
-# files, standard input, CSV: 19
+# files, standard input: 16
 isc_lines
 isc_lines_view
-isc_parse_csv_f64
 isc_read_bytes
-isc_read_csv_f64
 isc_read_f32
 isc_read_f64
 isc_read_stdin
 isc_read_stdin_text
 isc_read_text
 isc_try_read_bytes
-isc_try_read_csv_f64
 isc_try_read_f64
 isc_try_read_text
 isc_try_write_bytes
@@ -98,11 +95,10 @@ isc_write_f32
 isc_write_f64
 isc_write_text
 
-# texts: 12
+# texts: 11
 isc_cstr
 isc_free_strs
 isc_js_number
-isc_last_index_of
 isc_replace_all
 isc_split
 isc_split_view

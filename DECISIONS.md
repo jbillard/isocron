@@ -15150,3 +15150,59 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   .string`: 146.58 → 146.57 instructions, 42.9 → 41.9 cycles here, +2.3 %
   in D623: noise. The place of the code (hot and cold parts apart, the
   order of the functions) left to v2.
+- **D6xx (texts) — `lastIndexOf`, `replace` and `replaceAll` of texts,
+  `Number` of a text and the readers of CSV written in Isocron
+  (2026-11-10).** By an agent in its own tree.
+  - What moved. `lastIndexOf` is a function of the prelude (its primitive
+    gone, as `indexOf`'s, D596); `Number` of a text (also as a value),
+    `replace`/`replaceAll` of a text pattern, `parseCsvF64` and
+    `readCsvF64` (on the text of `readText`) are lowered to `$jsNumber`,
+    `$replaceOne`, `$replaceEvery`, `$csvParse`, inlined where the
+    primitive was (its panics keep their place); `readCsvF64OrError` is an
+    action of the prelude. A native form each under `iscc run` (D616).
+  - How. Rule L (`fold(iota(n), init, (a, i) => c ? i : a)`) runs by
+    vectors from the end (four a round for one array of bytes): a byte by
+    it; more by two of its bytes (three past 16 bytes), past a budget the
+    two-way search of the reversed needle (`@cold`, nothing allocated).
+    `replaceAll` of 1, 2 or more than 16 bytes: the places all at once
+    (`$filter`; past 16 bytes one after the other), the parts joined by
+    `to` (`$join`), never appended (a text grown is copied at each append
+    in WebAssembly, D508: the first version was quadratic there). `Number`: the spaces of ECMAScript (U+FEFF, not
+    U+0085), `0x`/`0o`/`0b` (`@cold`), else `$parseF64Bytes` (split out of
+    D614's reading) and `Infinity` alone. CSV: one pass, each field read
+    once where it is into an array updated in place, its rows copied out
+    (the runtime read each field twice). `$filter`, `$join` named for the
+    prelude, as `$stringOf`.
+  - The same results, the compiler of 43d8b1b against this one, compiled,
+    in WebAssembly and under `iscc run`: 100 000 searches from the end,
+    60 000 texts replaced (first and all; 3000 under `iscc run`), 300 000
+    texts given to `Number`, 20 000 texts of CSV and 600 panics of
+    `parseCsvF64` and `readCsvF64` (`interp.rs`: the native forms, the
+    prelude run node by node and the program, on generated inputs).
+  - Instructions (`bench/replace.py counts`, 71 forms in
+    `bench/replace/{last_index,replace,number,csv}.forms`): `lastIndexOf`
+    13 to 94 % fewer, `Number` 34 to 86 %, CSV 65 to 71 %, `replace` 11 to
+    98 %, `replaceAll` 23 to 96 %. But `replaceAll` of 3 to 16 bytes:
+    written here, 5 bytes at 4 places of a line of 60 cost +3.4 to +6.7 %
+    instructions as its rare paths changed, +0.7 then +4.8 % cycles; tried:
+    the places from the first byte found, by its two first bytes, its byte
+    counted, by a slice, checked by a second `$filter`, appended one after
+    the other (8 versions): it stays the runtime's (`$runtimeReplaceAll`, a
+    primitive of the prelude alone; `isc_replace_all` kept), +0.0 to +0.4 %
+    (its dispatch). Cycles (median of 9): `replaceAll` of 2 bytes −18.8 %,
+    `lastIndexOf` of 2 bytes in a line −15.9 %. `iscc run`: 0.69 to 1.13
+    times its time. The most memory of the 71 loops the same at r and 10 r
+    rounds.
+  - Costs (`bench/replace.py compile`): the prelude 566 lines longer, the
+    build of a hello +9.8 % instructions (206.8 → 227.1 million); a program
+    with one call of each 475 → 3779 million (`parseF64`'s reading inlined
+    twice, the joins), its executable 1 658 616 → 227 000 bytes; the
+    pilots +17 to +129 %. The rare paths of `lastIndexOf`, `Number` and
+    CSV in the module of the prelude (D611); not those of `replace`: their
+    joins are tasks, named in the order of the module, after which the
+    rest of `toFixed` no longer matched the programs' (`pre.rs`), compiled
+    again by each (a weakness of D611's names, TODO).
+  - Out of the runtime (and of `frontier.txt`): `isc_last_index_of`,
+    `isc_parse_csv_f64`, `isc_read_csv_f64`, `isc_try_read_csv_f64` (the
+    case `Number` of `isc_js_number` too, kept for `parseFloat` and
+    `parseInt`); the runtime core keeps their code for the native forms.

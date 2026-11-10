@@ -1,0 +1,111 @@
+// `lastIndexOf`, `replace` and `replaceAll` of texts, `Number` of a text
+// and the readers of CSV, written in Isocron (D6xx (texts)): their values on
+// generated inputs, one mode a run, for the test to compare with those of
+// the runtime's functions (the native forms of the interpreter, D616).
+// usage: strings_moved <last|replace|number|csv> <cases> [file for csv]
+
+// the characters of a text over an alphabet of `letters` letters, from a
+// seed; a character of two, three or four bytes in seven when `wide`
+function chars(seed: i64, n: i64, letters: i64, wide: boolean): string[n] {
+    return map(iota(n), (j) => {
+        const c = ((seed * 31 + j * j * 7 + j * (seed % 13 + 1)) % 1009) % letters;
+        return wide && j % 7 == 3 ? (c % 3 == 0 ? "\u{e9}" : c % 3 == 1 ? "\u{20ac}" : "\u{1f600}") : stringOf([u8(97 + c)]);
+    });
+}
+
+// a text and a needle: cut from it (at its ends too), or not, or empty
+function pair(q: i64): [string, string] {
+    const cs = chars(q, (q * 13) % 131, 1 + q % 4, q % 3 == 2);
+    const n = cs.length;
+    const from = (q * 7) % (n + 1);
+    const len = q % 11 == 0 ? 0 : 1 + (q * 3) % 40;
+    const end = from + len < n ? from + len : n;
+    const w = q % 6;
+    const p = w == 0 ? join(cs.slice(from, end), "")
+        : w == 1 ? join(cs.slice(0, end - from), "")
+        : w == 2 ? join(cs.slice(n - (end - from), n), "")
+        : w == 3 ? join(chars(q + 5, (q % 23) % 5, 1 + q % 4, false), "")
+        : w == 4 ? join(cs.slice(from, end), "") + "z"
+        : join(cs.slice(from, end), "");
+    return [join(cs, ""), p];
+}
+
+const TOS = ["", "x", "XYZ", "$\u{0}$&", "$", "$$", "$&", "$`", "$'", "$1", "$0", "$<", "$$$", "a$&b", "$'$`", "$\u{e9}", "$x", "[$&]", "$&$&", "$$&", "\u{20ac}$`\u{20ac}", "$$'", "$'$", "<$&>$"];
+
+const NUMBERS = ["0", "-0", "+0", "5", "+5", "-5", " 5", "5 ", "\t5\n", "", " ", "-", "+", "--1", "+-1", "1e5", "1E+05", "1e-5", "1e", "e1", ".5", "5.", "-.5", ".", "1.5.1",
+    "inf", "-inf", "Infinity", "-Infinity", "+Infinity", "infinity", "INFINITY", "Infinityx", "Inf", "NaN", "nan", "-NaN", "1_000", "1,5", "1 2", "١٢",
+    "0x10", "0X1f", "0xFF", "0x", "0x-1", "-0x1", "+0x1", "00x1", "0xg", "0x1.5", "0o17", "0O7", "0o8", "0b101", "0B1", "0b2", "0b", "0o",
+    "0x1fffffffffffff", "0x20000000000001", "0x20000000000003", "0x3fffffffffffffff", "0xffffffffffffffff", "0x10000000000000000", "0x1000000000000081",
+    "0x0000000000000000000000000001", "0b" + "1" + "0000000000000000000000000000000000000000000000000000" + "1", "0b" + "11111111111111111111111111111111111111111111111111111" + "1",
+    "0x" + "f" + "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "9007199254740993", "4.9e-324", "2.5e-324", "1e309", "-1e309", "1.7976931348623157e308", "0.1", "123456789012345678901234567890", "1e400", "-1e-400",
+    "\u{a0}7\u{a0}", "\u{3000}7", "7\u{feff}", "\u{feff}7\u{2028}", "\u{85}7", "7\u{85}", "\u{200b}7", "\u{180e}7", "\u{1680}\u{2000}\u{200a}\u{202f}\u{205f}8\u{2029}",
+    "\u{a0}", "\u{feff}", "\u{85}", "\u{3000}\u{3000}", "\u{a0}0x10", "0x10\u{feff}", " Infinity ", "\u{2028}-Infinity", "\u{0}", "1\u{0}", "12abc", "abc", "\u{e9}"];
+
+// a field of CSV, from a seed: numbers of several forms, white space
+// around (of Unicode too), and what is no number
+function field(q: i64): string {
+    const forms = ["1", "-2.5", " 3 ", "\t4\t", "1e5", "inf", "NaN", "-0", ".5", "5.", "+7", "\u{3000}8\u{a0}", "9\u{85}", "\u{2028}10", "x", "", " ", "1 2", "\u{feff}1", "0x10", "1e400", "123456789.123456789"];
+    return forms[q % forms.length];
+}
+
+function line(q: i64, cols: i64): string {
+    return join(map(iota(cols), (j) => field(q * 7 + j * 3 + (q % 5 == 0 ? 0 : j % 2))), ",");
+}
+
+// a text of CSV, from a seed: rows of a few columns, sometimes one of
+// another length, blank lines (of Unicode spaces too), a header, CRLF
+function csv(q: i64): [string, i64] {
+    const cols = 1 + q % 4;
+    const rows = q % 7;
+    const eol = q % 3 == 0 ? "\r\n" : "\n";
+    const body = map(iota(rows), (i) => {
+        const r = q * 11 + i;
+        return r % 13 == 5 ? (r % 2 == 0 ? "" : r % 3 == 0 ? " \u{3000} " : "\t") : r % 17 == 3 ? line(r, cols + 1) : line(r % 4 == 0 ? r * 3 : 1, cols);
+    });
+    const head = q % 4 == 1 ? "a,b,c" + eol : "";
+    const tail = q % 5 == 2 ? "" : eol;
+    return [head + join(body, eol) + tail, q % 4 == 1 ? 1 : q % 9 == 4 ? -1 : q % 11 == 7 ? 3 : 0];
+}
+
+action csvEach(path: string, q: i64, n: i64): void {
+    if (q == n) {
+        return;
+    }
+    const [t, skip] = csv(q);
+    writeText(path, t);
+    match (tryReadCsvF64(path, skip)) {
+        Ok(m) => {
+            print(m);
+            print(parseCsvF64(t, skip));
+        },
+        Err(e) => print(e),
+    };
+    csvEach(path, q + 1, n);
+}
+
+action main(args: string[k]): i32 {
+    const mode = args[0];
+    const n = parseI64(args[1]);
+    if (mode == "last") {
+        print(map(iota(n), (q) => {
+            const [s, p] = pair(q);
+            return s.lastIndexOf(p);
+        }));
+    }
+    if (mode == "replace") {
+        print(map(iota(n), (q) => {
+            const [s, p] = pair(q);
+            const to = TOS[q % TOS.length];
+            return `${s.replace(p, to)}|${s.replaceAll(p, to)}`;
+        }));
+    }
+    if (mode == "number") {
+        print(map(NUMBERS, Number));
+        print(map(iota(n), (q) => Number(`${q % 3 == 0 ? " " : ""}${f64(q * 7919 % 100003 - 50000) / f64(10 ** (q % 6))}e${q % 41 - 20}`)));
+    }
+    if (mode == "csv") {
+        csvEach(args[2], 0, n);
+    }
+    return 0;
+}

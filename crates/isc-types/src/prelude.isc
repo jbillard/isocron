@@ -433,8 +433,12 @@ function parseF64(s: string): f64 {
 // `parseI64`: a branch on the first byte, foreseen. The tests of the short
 // texts are inside one of the length: a longer text passes one test.
 function $parseF64Value(s: string): [f64, u64] {
-    const b = bytes(s);
-    const k = b.length;
+    return $parseF64Bytes(bytes(s));
+}
+
+// The same of the bytes of a text (`Number`, the fields of a CSV text read
+// where they are, slices of its bytes).
+function $parseF64Bytes(b: u8[k]): [f64, u64] {
     const c = k > 0 ? b[0] : 0u8;
     const neg = c == 45u8;
     const signed = neg || c == 43u8;
@@ -1651,6 +1655,568 @@ function $findOne(b: u8[k], p: u8[m], o: i64, x: u8, last: u8, at: i64, misses: 
 // The bytes of `p` (2 or more) are those of `b` from `i`.
 function $sameAt(b: u8[k], i: i64, p: u8[m]): boolean {
     return m <= 16 ? $sameWords(b, i, p) : $mismatch(b, i, p, 0) < 0;
+}
+
+// ---------------------------------------------------------------------
+// `lastIndexOf` (D6xx): the search of `indexOf` from the end. A byte: the
+// last index where it is (rule L, by vectors from the end). More: the
+// places where two bytes of the needle both are (`$filterAt`), from the end
+// (two reads by vectors), at each its bytes compared, as one or two words
+// up to 16 bytes; beyond, by three of its bytes, then by vectors; past a
+// budget of bytes compared in vain, the two-way search of the needle
+// reversed in the text reversed, read from the end where they are
+// (`$twoWayLast`, `@cold`): linear time whatever the texts, as the
+// runtime's (`memmem::rfind`).
+
+// `s.lastIndexOf(t)`: the byte index of the last `t` in `s`, -1 if none (the
+// length of `s` for an empty `t`).
+function lastIndexOf(s: string, t: string): i64 {
+    return $findLast(bytes(s), bytes(t));
+}
+
+function $findLast(b: u8[k], p: u8[m]): i64 {
+    return m == 0 ? k : m > k ? -1 : m == 1 ? $findLastByte(b, p[0]) : $findLastFrom(b, p, $filterAt(p));
+}
+
+// The last byte `c` of `b`, -1 if none.
+function $findLastByte(b: u8[k], c: u8): i64 {
+    return fold(iota(k), -1, (a, i) => b[i] == c ? i : a);
+}
+
+function $findLastFrom(b: u8[k], p: u8[m], o: i64): i64 {
+    return m <= 16 ? $findLastShort(b, p, o, p[o], p[m - 1], k - m) : $findLastLong(b, p, o, p[o], m / 2, p[m / 2], p[m - 1], k - m, 0);
+}
+
+// The last index where `h` holds `first`, `u` holds `mid` and `t` holds
+// `last`.
+function $tripleLast(h: u8[n], u: u8[n], t: u8[n], first: u8, mid: u8, last: u8): i64 {
+    return fold(iota(n), -1, (a, j) => h[j] == first && u[j] == mid && t[j] == last ? j : a);
+}
+
+// The last index where `h` holds `first` and `t` holds `last`.
+function $pairLast(h: u8[n], t: u8[n], first: u8, last: u8): i64 {
+    return fold(iota(n), -1, (a, j) => h[j] == first && t[j] == last ? j : a);
+}
+
+// The last place of `p` (2 to 16 bytes) in `b` at or before `end`: the
+// places where its byte `x` (at `o`) and its last byte are, then its bytes
+// compared as words.
+function $findLastShort(b: u8[k], p: u8[m], o: i64, x: u8, last: u8, end: i64): i64 {
+    const d = end < 0 ? -1 : $pairLast(b.slice(o, end + 1 + o), b.slice(m - 1, end + m), x, last);
+    return d < 0 ? -1 : $sameWords(b, d, p) ? d : $findLastShort(b, p, o, x, last, d - 1);
+}
+
+// The last place of `p` (more than 16 bytes) in `b` at or before `end`,
+// the same way but by three of its bytes, its byte `y` at `q` (its middle)
+// too, its bytes then compared by vectors (a long needle checked costs
+// more: the places where its two ends are, frequent in a text of a few
+// letters, were 3 times the instructions of the runtime's search); `spent`
+// the bytes compared in vain: past 8 for each byte passed, the search of
+// linear time.
+function $findLastLong(b: u8[k], p: u8[m], o: i64, x: u8, q: i64, y: u8, last: u8, end: i64, spent: i64): i64 {
+    const d = end < 0 ? -1 : $tripleLast(b.slice(o, end + 1 + o), b.slice(q, end + 1 + q), b.slice(m - 1, end + m), x, y, last);
+    const w = d < 0 ? -1 : $mismatch(b, d, p, 0);
+    return d < 0 ? -1 : w < 0 ? d : spent + w > 8 * (k - m - d) + 4096 ? $twoWayLast(b, p, d - 1) : $findLastLong(b, p, o, x, q, y, last, d - 1, spent + w + 64);
+}
+
+// ---- the two-way search from the end: that of `$twoWay` on the needle
+// and the text reversed (`P[x]` is `p[m - 1 - x]`, `B[y]` is `b[k - 1 -
+// y]`), read where they are, nothing made
+
+// The maximal suffix of `P` (`$maxSuffix`).
+function $maxSuffixRev(p: u8[m], rev: boolean, ms: i64, j: i64, q: i64, per: i64): [i64, i64] {
+    if (j + q >= m) {
+        return [ms, per];
+    }
+    const a = p[m - 1 - j - q];
+    const c = p[m - 1 - ms - q];
+    const less = rev ? c < a : a < c;
+    return less ? $maxSuffixRev(p, rev, ms, j + q, 1, j + q - ms)
+        : a == c ? (q != per ? $maxSuffixRev(p, rev, ms, j, q + 1, per) : $maxSuffixRev(p, rev, ms, j + per, 1, per))
+        : $maxSuffixRev(p, rev, j, j + 1, 1, 1);
+}
+
+// The first index from `from` where `P` differs from `B` at `i`, -1 if
+// none (`$mismatch`).
+function $mismatchRev(b: u8[k], i: i64, p: u8[m], from: i64): i64 {
+    const d = findIndex(iota(m - from), (j) => b[k - 1 - i - from - j] != p[m - 1 - from - j]);
+    return d < 0 ? -1 : d + from;
+}
+
+// From `i` down to above `low`, the last index where `P` differs from `B`
+// at `j`; `low` if none (`$mismatchBack`).
+function $mismatchBackRev(b: u8[k], j: i64, p: u8[m], i: i64, low: i64): i64 {
+    return i <= low ? low : p[m - 1 - i] != b[k - 1 - j - i] ? i : $mismatchBackRev(b, j, p, i - 1, low);
+}
+
+function $twoWayPeriodicRev(b: u8[k], p: u8[m], ell: i64, per: i64, j: i64, memory: i64): i64 {
+    if (j + m > k) {
+        return -1;
+    }
+    const from = (ell > memory ? ell : memory) + 1;
+    const x = $mismatchRev(b, j, p, from);
+    if (x >= 0) {
+        return $twoWayPeriodicRev(b, p, ell, per, j + x - ell, -1);
+    }
+    const y = $mismatchBackRev(b, j, p, ell, memory);
+    return y <= memory ? j : $twoWayPeriodicRev(b, p, ell, per, j + per, m - per - 1);
+}
+
+function $twoWayPlainRev(b: u8[k], p: u8[m], ell: i64, per: i64, j: i64): i64 {
+    if (j + m > k) {
+        return -1;
+    }
+    const x = $mismatchRev(b, j, p, ell + 1);
+    if (x >= 0) {
+        return $twoWayPlainRev(b, p, ell, per, j + x - ell);
+    }
+    const y = $mismatchBackRev(b, j, p, ell, -1);
+    return y < 0 ? j : $twoWayPlainRev(b, p, ell, per, j + per);
+}
+
+// The last place of `p` in `b` at or before `end`, in time linear in their
+// lengths: the first place of `P` in `B` from `k - m - end`.
+@cold
+function $twoWayLast(b: u8[k], p: u8[m], end: i64): i64 {
+    const [i1, p1] = $maxSuffixRev(p, false, -1, 0, 1, 1);
+    const [i2, p2] = $maxSuffixRev(p, true, -1, 0, 1, 1);
+    const ell = i1 > i2 ? i1 : i2;
+    const per = i1 > i2 ? p1 : p2;
+    const periodic = per + ell + 1 <= m && findIndex(iota(ell + 1), (t) => p[m - 1 - t] != p[m - 1 - t - per]) < 0;
+    const side = ell + 1 > m - ell - 1 ? ell + 1 : m - ell - 1;
+    const r = end < 0 ? -1 : periodic ? $twoWayPeriodicRev(b, p, ell, per, k - m - end, -1) : $twoWayPlainRev(b, p, ell, side + 1, k - m - end);
+    return r < 0 ? -1 : k - m - r;
+}
+
+// ---------------------------------------------------------------------
+// `Number(s)` of a text (D6xx), ECMAScript's StringToNumber as the runtime
+// read it (D156): the white space of ECMAScript at the ends left (its
+// spaces, U+FEFF and its ends of lines; not U+0085, which `trim` leaves),
+// the empty text 0; `0x`, `0o` or `0b` and digits of that radix (no sign),
+// the float nearest their integer; otherwise a decimal with its sign, or
+// `Infinity`, read as `parseF64` reads a text (the same grammar but for
+// the names: Rust reads `inf`, `infinity` and `nan` in any case, of which
+// ECMAScript has `Infinity` alone); NaN for anything else. A text whose
+// ends are bytes of ASCII above the space reads whole; the others without
+// their white space (`$jsBounds`), a slice of their bytes.
+function $jsNumber(s: string): f64 {
+    const b = bytes(s);
+    const k = b.length;
+    const [a, z] = k > 0 && $jsPlain(b[0]) && $jsPlain(b[k - 1]) ? [0, k] : $jsBounds(b);
+    return a == z ? 0.0 : $jsNumberOf(b.slice(a, z));
+}
+
+// The bounds of `b` without the white space of ECMAScript at its ends: that
+// of ASCII by `findIndex`, a character of several bytes there one at a time.
+function $jsBounds(b: u8[k]): [i64, i64] {
+    const i = findIndex(b, (c) => !$asciiSpace(c));
+    const a = i < 0 ? k : b[i] < 128u8 ? i : $jsSpacesFrom(b, i);
+    const d = findIndex(iota(k - a), (j) => !$asciiSpace(b[k - 1 - j]));
+    const q = k - 1 - d;
+    return [a, d < 0 ? a : b[q] < 128u8 ? q + 1 : $jsSpacesBack(b, a, q + 1)];
+}
+
+// A byte at an end of a text that is no white space of ECMAScript.
+function $jsPlain(c: u8): boolean {
+    return c > 32u8 && c < 128u8;
+}
+
+// The number of `b`, without white space at its ends, not empty.
+function $jsNumberOf(b: u8[k]): f64 {
+    const c = b[0];
+    const radix = k > 2 && c == 48u8 ? $radixOf(b[1]) : 0;
+    if (radix > 0) {
+        return $radixNumber(b, radix);
+    }
+    // a letter first after the sign, where a decimal has a digit or a point:
+    // a name, of which only `Infinity` is a number (not read by
+    // `$parseF64Bytes`, whose names are others)
+    const at = c == 43u8 || c == 45u8 ? 1 : 0;
+    if (at < k && b[at] > 57u8) {
+        return $jsInfinity(b, at, c == 45u8);
+    }
+    const [v, bad] = $parseF64Bytes(b);
+    return bad != 0u64 ? $bitsFloat(0x7FF8000000000000u64) : v;
+}
+
+// The infinity of that sign when the bytes of `b` from `at` are
+// `Infinity`, NaN otherwise.
+function $jsInfinity(b: u8[k], at: i64, neg: boolean): f64 {
+    return k - at == 8 && readWord(b, at, 8) == 0x7974696E69666E49u64 ? $bitsFloat(neg ? 0xFFF0000000000000u64 : 0x7FF0000000000000u64) : $bitsFloat(0x7FF8000000000000u64);
+}
+
+// The radix of the letter after a `0`: `x`, `o`, `b` and their capitals;
+// 0 for any other byte.
+function $radixOf(c: u8): i64 {
+    return c == 120u8 || c == 88u8 ? 16 : c == 111u8 || c == 79u8 ? 8 : c == 98u8 || c == 66u8 ? 2 : 0;
+}
+
+// `0x`, `0o` or `0b` then digits of that radix: the float nearest their
+// integer, rounded once (the 64 first bits, a last one set when one of the
+// others is, then the power of two of the others, as the runtime's
+// `big::to_f64`); NaN if one is no digit of the radix.
+@cold
+function $radixNumber(b: u8[k], radix: i64): f64 {
+    const bad = findIndex(iota(k - 2), (i) => $digitOf(b[i + 2]) >= radix) >= 0;
+    return bad ? $bitsFloat(0x7FF8000000000000u64) : $radixValue(b, radix == 16 ? 4 : radix == 8 ? 3 : 1, 2, 0u64, 0, false, 0);
+}
+
+// The value of a digit of a radix up to 16 (99 for any other byte).
+function $digitOf(c: u8): i64 {
+    return c >= 48u8 && c <= 57u8 ? i64(c) - 48 : c >= 97u8 && c <= 102u8 ? i64(c) - 87 : c >= 65u8 && c <= 70u8 ? i64(c) - 55 : 99;
+}
+
+// The digits of `b` from `i`, each of `bits` bits, after `acc`, which holds
+// the `nb` first bits of the integer that are not zeros (at most 64);
+// `extra` the bits past them, `sticky` one of those is set.
+function $radixValue(b: u8[k], bits: i64, i: i64, acc: u64, nb: i64, sticky: boolean, extra: i64): f64 {
+    if (i == k) {
+        const f = f64(acc | (sticky ? 1u64 : 0u64));
+        return extra == 0 ? f : extra >= 1024 ? $bitsFloat(0x7FF0000000000000u64) : f * $bitsFloat(u64(1023 + extra) << 52u64);
+    }
+    const d = u64($digitOf(b[i]));
+    if (nb == 0) {
+        return $radixValue(b, bits, i + 1, d, d == 0u64 ? 0 : 64 - leadingZeros(d), false, 0);
+    }
+    if (nb + bits <= 64) {
+        return $radixValue(b, bits, i + 1, (acc << u64(bits)) | d, nb + bits, false, 0);
+    }
+    const out = bits - (64 - nb);
+    return $radixValue(b, bits, i + 1, (acc << u64(64 - nb)) | (d >> u64(out)), 64, sticky || (d & ((1u64 << u64(out)) - 1u64)) != 0u64, extra + out);
+}
+
+// From `p`, the first character that is not white space of ECMAScript.
+function $jsSpacesFrom(b: u8[k], p: i64): i64 {
+    const w = $jsSpaceWidth(b, p);
+    return w == 0 ? p : $jsSpacesFrom(b, p + w);
+}
+
+// Below `end`, one past the last character that is not white space of
+// ECMAScript, not below `low`.
+function $jsSpacesBack(b: u8[k], low: i64, end: i64): i64 {
+    const start = $charStart(b, end - 1, low);
+    return end <= low ? low : $jsSpaceWidth(b, start) == end - start ? $jsSpacesBack(b, low, start) : end;
+}
+
+// The bytes of the character of white space of ECMAScript at `p` (0 if it
+// is not one, or if `p` is the end): `StrWhiteSpaceChar`, the tabs, the
+// spaces (category Zs), U+FEFF, the ends of lines.
+function $jsSpaceWidth(b: u8[k], p: i64): i64 {
+    const c = p < k ? b[p] : 0u8;
+    const x = p + 1 < k ? b[p + 1] : 0u8;
+    const y = p + 2 < k ? b[p + 2] : 0u8;
+    return $asciiSpace(c) ? 1
+        : c == 0xC2u8 ? (x == 0xA0u8 ? 2 : 0)
+        : c == 0xE1u8 ? (x == 0x9Au8 && y == 0x80u8 ? 3 : 0)
+        : c == 0xE2u8 ? ((x == 0x80u8 && ((y >= 0x80u8 && y <= 0x8Au8) || y == 0xA8u8 || y == 0xA9u8 || y == 0xAFu8)) || (x == 0x81u8 && y == 0x9Fu8) ? 3 : 0)
+        : c == 0xE3u8 ? (x == 0x80u8 && y == 0x80u8 ? 3 : 0)
+        : c == 0xEFu8 ? (x == 0xBBu8 && y == 0xBFu8 ? 3 : 0)
+        : 0;
+}
+
+// ---------------------------------------------------------------------
+// `s.replace(from, to)` and `s.replaceAll(from, to)` of texts (D6xx), as
+// the runtime made them (D157, D302): the places of `from` left to right,
+// without overlap (`$find`), the first or each replaced by `to`; `to` with
+// the patterns of ECMAScript's GetSubstitution that a text has, `$$`, `$&`,
+// `` $` `` and `$'` (any other `$` is itself: no groups); an empty `from`,
+// a place before each character and one at the end. With `from` not empty
+// and no `$` in `to`: the first place, the text made of three parts; every
+// place, the places found (all at once up to 16 bytes, one after the other
+// beyond), then the parts between them joined by `to`. The others `@cold`,
+// the same way.
+
+// `s.replace(from, to)`, `from` a text.
+function $replaceOne(s: string, from: string, to: string): string {
+    const b = bytes(s);
+    const p = bytes(from);
+    const i = $find(b, p);
+    return i < 0 ? s : p.length == 0 || $hasDollar(to) ? $replaceSlow(s, from, to, false) : s.slice(0, i) + to + s.slice(i + p.length, b.length);
+}
+
+// `s.replaceAll(from, to)`, `from` a text. Of 3 to 16 bytes, the runtime's
+// (`$runtimeReplaceAll`): written here, at many places of a short text it
+// was slower than the runtime (5 bytes at 4 places of a line of 60, +4.8 %
+// cycles, +3.4 to +6.7 % instructions as the code of its rare paths
+// changed), principle 6 of SPEC section 17. Otherwise a text without the
+// first byte of `from` is itself, nothing made (looking for its places at
+// once there: a line of 60 bytes 140 → 506 instructions, the runtime 288);
+// with it, the places looked for from there (`f`).
+function $replaceEvery(s: string, from: string, to: string): string {
+    const b = bytes(s);
+    const p = bytes(from);
+    const m = p.length;
+    if (m >= 3 && m <= 16) {
+        return $runtimeReplaceAll(s, from, to);
+    }
+    const f = m == 0 || m > b.length ? -1 : $findByte(b, p[0]);
+    return m == 0 ? $replaceSlow(s, from, to, true)
+        : f < 0 ? s
+        : $hasDollar(to) ? $replaceSlow(s, from, to, true)
+        : m == 1 ? $replaceBytes(s, b, p[0], to, f)
+        : m == 2 ? $replacePlaces(s, b, p, to, f)
+        : $replaceLong(s, b, p, to);
+}
+
+// `to` holds a `$`.
+function $hasDollar(to: string): boolean {
+    return $findByte(bytes(to), 36u8) >= 0;
+}
+
+// Each byte `c` of `s` replaced by `to`, the first at `f`: its places all
+// at once (`$filter`, by vectors), then the parts between them joined by
+// `to` (`$join`, made by the generated code, D607: their lengths added,
+// one block). With appends after each place found, a place every 12 bytes
+// of a text of 4096 bytes cost 60 142 instructions (52 902 for the
+// runtime); so, 30 008.
+function $replaceBytes(s: string, b: u8[k], c: u8, to: string, f: i64): string {
+    return $joinPlaces(s, $filter(iota(k - f), (j) => b[j + f] == c), -1, f, 1, to);
+}
+
+// `p` of two bytes, its first byte first at `f`. Two bytes that differ: the places where both are, all at
+// once in the bytes from `f` (`$filter`, by vectors), are its places, and
+// none overlaps another. Otherwise the places of its first byte all at
+// once, then those where `p` is, left to right without overlap, written at
+// the start of the same array (`$placesKept`). The parts between them
+// joined.
+function $replacePlaces(s: string, b: u8[k], p: u8[m], to: string, f: i64): string {
+    const x = p[0];
+    const y = p[1];
+    if (m == 2 && x != y) {
+        const r = b.slice(f, k);
+        const n = k - f;
+        return $joinPlaces(s, $filter(iota(n < 2 ? 0 : n - 1), (j) => r[j] == x && r[j + 1] == y), -1, f, 2, to);
+    }
+    const w0 = readWord(p, 0, m <= 8 ? m : 8);
+    const w1 = m <= 8 ? 0u64 : readWord(p, m - 8, 8);
+    const [at, c] = $placesKept(b, m, w0, w1, $filter(iota(k - m + 1), (j) => b[j] == x), 0, 0, 0);
+    return $joinPlaces(s, at, c, 0, m, to);
+}
+
+// Of the places `cs` from `i`, those where the needle is (its `m` bytes in
+// the words `w0`, `w1`) and that do not overlap the one before (none before
+// `next`), written from `n` on in `cs`; `cs` and their count.
+function $placesKept(b: u8[k], m: i64, w0: u64, w1: u64, cs: i64[w], i: i64, n: i64, next: i64): [i64[w], i64] {
+    if (i == w) {
+        return [cs, n];
+    }
+    const c = cs[i];
+    const same = m <= 8 ? readWord(b, c, m) == w0 : readWord(b, c, 8) == w0 && readWord(b, c + m - 8, 8) == w1;
+    return c >= next && same ? $placesKept(b, m, w0, w1, cs.with(n, c), i + 1, n + 1, c + m) : $placesKept(b, m, w0, w1, cs, i + 1, n, next);
+}
+
+// `s` whose `n` places of `m` bytes in `at` (all of them when `n` is -1),
+// `off` added to each, are replaced by `to`; `s` itself without places.
+function $joinPlaces(s: string, at: i64[w], n: i64, off: i64, m: i64, to: string): string {
+    const c = n < 0 ? w : n;
+    return c == 0 ? s : $join(map(iota(c + 1), (q) => s.slice(q == 0 ? 0 : at[q - 1] + off + m, q == c ? s.length : at[q] + off)), to);
+}
+
+// `p` of more than 16 bytes: its places one after the other (`$findOne`
+// from the end of the one before: by its byte at `o` alone, then its
+// others; by pairs of bytes when that byte is frequent; past a budget, the
+// two-way search: linear time), into an array as long as there can be of
+// them, then the parts between them joined. (Not appended one after the
+// other: a text grown is copied at each append in WebAssembly, where the
+// room of its block is not known, D508.) `@cold`: inlined, its join made
+// the code of the common needles slower (5 bytes in a line of 60: 3.4 to
+// 7.0 % more instructions than the runtime).
+@cold
+function $replaceLong(s: string, b: u8[k], p: u8[m], to: string): string {
+    const i = $find(b, p);
+    return i < 0 ? s : $joinFound(s, $placesLong(b, p, $filterAt(p), fill(k / m + 1, 0).with(0, i), 1, i + m), m, to);
+}
+
+// The places found and their count, of `m` bytes each, replaced by `to`.
+function $joinFound(s: string, found: [i64[w], i64], m: i64, to: string): string {
+    const [at, n] = found;
+    return $joinPlaces(s, at, n, 0, m, to);
+}
+
+// From the place `from`, the places of `p` written from `n` on in `at`.
+function $placesLong(b: u8[k], p: u8[m], o: i64, at: i64[w], n: i64, from: i64): [i64[w], i64] {
+    const d = $findOne(b, p, o, p[o], p[m - 1], from, 0);
+    return d < 0 ? [at, n] : $placesLong(b, p, o, at.with(n, d), n + 1, d + m);
+}
+
+// `to` with patterns, or `from` empty: the places first (`p` empty: before
+// each character and at the end), `to` with its patterns at each, the
+// parts between them joined (`all` false: the first place alone).
+@cold
+function $replaceSlow(s: string, from: string, to: string, all: boolean): string {
+    const b = bytes(s);
+    const p = bytes(from);
+    const k = b.length;
+    return p.length == 0 ? $substituteAt(s, $filter(iota(k + 1), (j) => j == k || (b[j] & 192u8) != 128u8), -1, 0, to, all)
+        : $substituteSome(s, b, p, to, all);
+}
+
+function $substituteSome(s: string, b: u8[k], p: u8[m], to: string, all: boolean): string {
+    const [at, n] = $placesFrom(b, p, fill(m > k ? 1 : k / m + 1, 0), 0, 0);
+    return $substituteAt(s, at, n, m, to, all);
+}
+
+// `s` whose `n` places of `m` bytes in `at` (all of them when `n` is -1;
+// the first alone unless `all`) are replaced by `to` with its patterns.
+function $substituteAt(s: string, at: i64[w], n: i64, m: i64, to: string, all: boolean): string {
+    const n1 = n < 0 ? w : n;
+    const c = !all && n1 > 1 ? 1 : n1;
+    const tb = bytes(to);
+    return c == 0 ? s : $join(map(iota(c + 1), (q) => (q == 0 ? "" : $substitute(s, at[q - 1], at[q - 1] + m, tb, to, "", 0)) + s.slice(q == 0 ? 0 : at[q - 1] + m, q == c ? s.length : at[q])), "");
+}
+
+// From `from`, the places of `p` (not empty) written from `n` on in `at`.
+function $placesFrom(b: u8[k], p: u8[m], at: i64[w], n: i64, from: i64): [i64[w], i64] {
+    const d = from + m > k ? -1 : $find(b.slice(from, k), p);
+    return d < 0 ? [at, n] : $placesFrom(b, p, at.with(n, from + d), n + 1, from + d + m);
+}
+
+// After `acc`, `to` from its byte `j`, its patterns those of the place `a`
+// to `z` of `s`.
+function $substitute(s: string, a: i64, z: i64, tb: u8[t], to: string, acc: string, j: i64): string {
+    const d = $findByte(tb.slice(j, t), 36u8);
+    const q = j + d;
+    if (d < 0 || q + 1 >= t) {
+        return acc + to.slice(j, t);
+    }
+    const c = tb[q + 1];
+    if (c == 36u8 || c == 38u8 || c == 96u8 || c == 39u8) {
+        return $substitute(s, a, z, tb, to, acc + to.slice(j, q) + $pattern(s, a, z, c), q + 2);
+    }
+    return $substitute(s, a, z, tb, to, acc + to.slice(j, q + 1), q + 1);
+}
+
+// The text of the pattern `$c` (`$`, `&`, `` ` ``, `'`) at the place `a`
+// to `z` of `s`.
+function $pattern(s: string, a: i64, z: i64, c: u8): string {
+    return c == 36u8 ? "$" : c == 38u8 ? s.slice(a, z) : c == 96u8 ? s.slice(0, a) : s.slice(z, s.length);
+}
+
+// ---------------------------------------------------------------------
+// `parseCsvF64(text, skip)`, `readCsvF64(path, skip)` and
+// `readCsvF64OrError(path, skip)` written in Isocron (D6xx), as the runtime
+// read them (D135): the lines of the text (separated by `\n`, no empty last
+// line after a final one), the first `skip` and the blank ones left (white
+// space alone, that of `trim`); each other a row of fields separated by
+// `,`, each field without the white space at its ends read as `parseF64`
+// reads a text (`$parseF64Bytes`, on a slice of the bytes: no text made),
+// every row as long as the first. The error, the first in the text: a
+// field that is no number, then a row of another length. Each field read
+// once, its value written in place into an array of as many values as the
+// text has commas and lines, and one more (a bound of its fields), whose
+// rows are then copied out.
+
+// `parseCsvF64(t, skip)` (`readCsvF64` on the text read): its panic at the
+// place of its call.
+function $csvParse(t: string, skip: i64): f64[r][c] {
+    const b = bytes(t);
+    const [vals, rows, cols, e, line, field, x, y] = $csvStep(b, skip, $csvRoom(b), 0, 0, 0, 1, 0, -1, 0);
+    return e == 0 ? $csvRows(vals, rows, cols) : $panic($csvHead(e, line, field, x), e == 1 ? t.slice(x, y) : "", e == 1 ? "` is not a number" : "");
+}
+
+// `readCsvF64OrError(path, skip)` (D138): the rows and `""`, or none and the
+// message of the error.
+action readCsvF64OrError(path: string, skip: i64): [f64[r][c], string] {
+    const [t, e] = readTextOrError(path);
+    return $csvOrError(t, skip, e);
+}
+
+// The rows of `t` and `""`, or none and the message of the first error:
+// `err` (the reading of the file, `t` then empty), or that of the text.
+function $csvOrError(t: string, skip: i64, err: string): [f64[r][c], string] {
+    const b = bytes(t);
+    const [vals, rows, cols, e, line, field, x, y] = $csvStep(b, skip, $csvRoom(b), 0, 0, 0, 1, 0, -1, 0);
+    const ok = e == 0 && err == "";
+    return [$csvRows(vals, ok ? rows : 0, ok ? cols : 0), err != "" ? err : e == 0 ? "" : $csvMessage(t, e, line, field, x, y)];
+}
+
+// The room for the values: one for each comma and each line, and one.
+function $csvRoom(b: u8[k]): f64[w] {
+    return fill(sum(map(b, (c) => c == 44u8 || c == 10u8 ? 1 : 0)) + 1, 0.0);
+}
+
+// The `rows` rows of `cols` values at the start of `vals`.
+function $csvRows(vals: f64[w], rows: i64, cols: i64): f64[r][c] {
+    return map(iota(rows), (i) => vals.slice(i * cols, i * cols + cols));
+}
+
+// The reading from `a`: at the start of the line `line` when `j` is 0,
+// otherwise in that line, which ends at `e`, its field `j` next. `vals`
+// holds `n` values, `rows` rows of `cols` fields (-1 before the first
+// row). Gives the values, the rows, the columns and an error: 0 none; 1 a
+// field that is no number, its line, its number and its bounds; 2 a row of
+// another length, its line, its fields and those of the first row. One
+// function, its tail calls a loop.
+function $csvStep(b: u8[k], skip: i64, vals: f64[w], n: i64, a: i64, e: i64, line: i64, j: i64, cols: i64, rows: i64): [f64[w], i64, i64, i64, i64, i64, i64, i64] {
+    if (j == 0) {
+        if (a >= k) {
+            return [vals, rows, cols < 0 ? 0 : cols, 0, 0, 0, 0, 0];
+        }
+        const d = $findByte(b.slice(a, k), 10u8);
+        const end = d < 0 ? k : a + d;
+        return line <= skip ? $csvStep(b, skip, vals, n, end + 1, 0, line + 1, 0, cols, rows) : $csvStep(b, skip, vals, n, a, end, line, 1, cols, rows);
+    }
+    const d = $findByte(b.slice(a, e), 44u8);
+    const z = d < 0 ? e : a + d;
+    const fa = $csvStart(b, a, z);
+    const fz = $csvEnd(b, fa, z);
+    if (j == 1 && d < 0 && fa == fz) {
+        // a blank line
+        return $csvStep(b, skip, vals, n, e + 1, 0, line + 1, 0, cols, rows);
+    }
+    const [v, bad] = $parseF64Bytes(b.slice(fa, fz));
+    if (bad != 0u64) {
+        return [vals, rows, cols, 1, line, j, fa, fz];
+    }
+    if (d >= 0) {
+        return $csvStep(b, skip, vals.with(n, v), n + 1, z + 1, e, line, j + 1, cols, rows);
+    }
+    if (cols >= 0 && j != cols) {
+        return [vals, rows, cols, 2, line, j, cols, 0];
+    }
+    return $csvStep(b, skip, vals.with(n, v), n + 1, e + 1, 0, line + 1, 0, j, rows + 1);
+}
+
+// The first byte from `a` that is no white space, `z` if none.
+function $csvStart(b: u8[k], a: i64, z: i64): i64 {
+    const c = a < z ? b[a] : 32u8;
+    return c > 32u8 && c < 128u8 ? a : $csvSkip(b, a, z);
+}
+
+function $csvSkip(b: u8[k], a: i64, z: i64): i64 {
+    const i = findIndex(b.slice(a, z), (c) => !$asciiSpace(c));
+    return i < 0 ? z : b[a + i] < 128u8 ? a + i : $csvSkipSlow(b, a + i, z);
+}
+
+// From `p`, character by character.
+@cold
+function $csvSkipSlow(b: u8[k], p: i64, z: i64): i64 {
+    const w = p < z ? $spaceWidth(b, p) : 0;
+    return w == 0 ? p : $csvSkipSlow(b, p + w, z);
+}
+
+// Below `z`, one past the last byte that is no white space, `fa` if none.
+function $csvEnd(b: u8[k], fa: i64, z: i64): i64 {
+    const c = z > fa ? b[z - 1] : 32u8;
+    return c > 32u8 && c < 128u8 ? z : $csvBack(b, fa, z);
+}
+
+function $csvBack(b: u8[k], low: i64, z: i64): i64 {
+    const d = findIndex(iota(z - low), (j) => !$asciiSpace(b[z - 1 - j]));
+    const q = z - 1 - d;
+    return d < 0 ? low : b[q] < 128u8 ? q + 1 : $spacesBackSlow(b, low, q + 1);
+}
+
+// The message of an error (`$csvHead`, then for a field its text).
+@cold
+function $csvMessage(t: string, e: i64, line: i64, field: i64, x: i64, y: i64): string {
+    return e == 1 ? $csvHead(e, line, field, x) + t.slice(x, y) + "` is not a number" : $csvHead(e, line, field, x);
+}
+
+// The message of a row of another length; of a field, its start.
+@cold
+function $csvHead(e: i64, line: i64, field: i64, x: i64): string {
+    return e == 1 ? `csv: line ${line}, field ${field}: \`` : `csv: line ${line} has ${field} ${field == 1 ? "field" : "fields"}, the first row has ${x}`;
 }
 
 // The text of a float written in Isocron (SPEC section 17, order 2):

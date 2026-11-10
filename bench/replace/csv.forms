@@ -1,0 +1,13 @@
+# name n r1 r2 pilot args (ROUNDS: the rounds) — the readers of CSV (D6xx
+# (texts)); n the fields of a reading; `read.` and `try.` write their file
+# `csv_pilot.csv` where they run
+few.short 3072 10 40 bench/primitives/csv_pilot.isc few.short ROUNDS
+few.long 3072 10 40 bench/primitives/csv_pilot.isc few.long ROUNDS
+many.short 4000 10 40 bench/primitives/csv_pilot.isc many.short ROUNDS
+many.long 4000 10 40 bench/primitives/csv_pilot.isc many.long ROUNDS
+few.short.crlf 3072 10 40 bench/primitives/csv_pilot.isc few.short.crlf ROUNDS
+few.short.spaced 3072 10 40 bench/primitives/csv_pilot.isc few.short.spaced ROUNDS
+few.short.blank 3072 10 40 bench/primitives/csv_pilot.isc few.short.blank ROUNDS
+many.long.crlf 4000 10 40 bench/primitives/csv_pilot.isc many.long.crlf ROUNDS
+read.few.short 3072 10 40 bench/primitives/csv_pilot.isc read.few.short ROUNDS csv_pilot.csv
+try.many.long 4000 10 40 bench/primitives/csv_pilot.isc try.many.long ROUNDS csv_pilot.csv

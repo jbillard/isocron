@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `lastIndexOf`, `replace` and `replaceAll` of texts, `Number` of a text
+  and the readers of CSV (`parseCsvF64`, `readCsvF64`, `tryReadCsvF64`)
+  are written in Isocron: the same values and messages; `lastIndexOf` 13
+  to 94 % fewer instructions, `Number` 34 to 86 %, the readers of CSV 65
+  to 71 % (each field read once), `replace` 11 to 98 % and `replaceAll`
+  23 to 96 % (`$` patterns 96 to 98 %); `replaceAll` of a needle of 3 to
+  16 bytes stays the runtime's; a program that calls them takes longer to
+  compile (D6xx (texts)). A search from the end (`fold(iota(n), init,
+  (a, i) => c ? i : a)`) runs by vectors.
+
 ## 0.6.0 — 2026-11-10
 
 The runtime starts to be written in Isocron. On Linux the small blocks of a

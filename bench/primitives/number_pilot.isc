@@ -1,0 +1,64 @@
+// The pilot of `Number(s)` of a text written in Isocron (SPEC section 17,
+// order 2; D6xx (texts)): one kind of texts a run, so that the cycles and
+// the instructions of a text are read with `perf stat` as the difference
+// between two numbers of rounds. Its line: the kind, the nanoseconds of a
+// text (the mean over the rounds, `bench`), a checksum of the values, two
+// of the texts. The Rust version (the runtime's `isc_js_number`) is
+// measured by building this file with a compiler that still has it.
+// The kinds, 4096 texts each by default:
+//   decimals   thousandths from -500 to 500
+//   ints       integers of 9 digits, half of them negative
+//   thirds     16 or 17 digits, the point inside
+//   exps       1 to 4 digits and an exponent of -20 to 20
+//   hex        `0x` and 1 to 8 hexadecimal digits
+//   bin        `0b` and 20 binary digits
+//   bighex     `0x` and 20 hexadecimal digits (more than 64 bits)
+//   spaced     decimals between spaces and tabs
+//   names      `Infinity`, `-Infinity`, `NaN`, `inf`
+//   junk       a number and a letter, or a word: NaN
+//   empty      the empty text and spaces: 0
+//   mixed      decimals, ints, hex, spaced in turn
+// usage: number_pilot <kind> <rounds> [texts]
+
+function third(i: i64): f64 {
+    return (i % 2 == 0 ? 1.0 : -1.0) * f64(i * i * 7 + 1) / 3.0;
+}
+
+function hexDigits(i: i64, n: i64): string {
+    return stringOf(map(iota(n), (j) => u8(randomInt(i, j, 16) < 10 ? 48 + randomInt(i, j, 16) : 87 + randomInt(i, j, 16))));
+}
+
+function pick(i: i64): string {
+    const w = i % 4;
+    return w == 0 ? text("decimals", i) : w == 1 ? text("ints", i) : w == 2 ? text("hex", i) : text("spaced", i);
+}
+
+function text(kind: string, i: i64): string {
+    return kind == "decimals" ? toString(f64((i * 7919) % 1000003 - 500000) / 1000.0)
+        : kind == "ints" ? toString((i * 7919 * 104729) % 1000000007 - 500000000)
+        : kind == "thirds" ? toString(third(i))
+        : kind == "exps" ? `${f64((i * 7919) % 10007) / f64(10 ** (i % 4))}e${(i * 31) % 41 - 20}`
+        : kind == "hex" ? `0x${hexDigits(i, 1 + i % 8)}`
+        : kind == "bin" ? `0b${stringOf(map(iota(20), (j) => u8(48 + randomInt(i, j, 2))))}`
+        : kind == "bighex" ? `0x${hexDigits(i, 20)}`
+        : kind == "spaced" ? `${i % 2 == 0 ? " " : "\t "}${toString(f64((i * 7919) % 1000003 - 500000) / 1000.0)}${i % 3 == 0 ? "\n" : " "}`
+        : kind == "names" ? (i % 4 == 0 ? "Infinity" : i % 4 == 1 ? "-Infinity" : i % 4 == 2 ? "NaN" : "inf")
+        : kind == "junk" ? (i % 2 == 0 ? `${i}x` : "abc")
+        : kind == "empty" ? (i % 2 == 0 ? "" : "  ")
+        : pick(i);
+}
+
+// a checksum of a value: NaN and the infinities apart
+function check(v: f64): i64 {
+    return v != v ? 7 : v > 1e15 ? 11 : v < -1e15 ? 13 : i64(v * 3.0);
+}
+
+action main(args: string[k]): i32 {
+    const kind = args[0];
+    const r = parseI64(args[1]);
+    const n = args.length > 2 ? parseI64(args[2]) : 4096;
+    const xs = map(iota(n), (i) => text(kind, i));
+    const [a, t] = bench(r, () => sum(map(xs, (s) => check(Number(s)))));
+    print(`${kind} ${(f64(t) / f64(r * n)).toFixed(3)} ${a} [${xs[1]}] [${xs[n - 2]}]`);
+    return 0;
+}

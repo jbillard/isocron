@@ -162,8 +162,6 @@ pub enum ActionOp {
     /// Text (D135).
     ReadText,
     WriteText,
-    ParseCsvF64,
-    ReadCsvF64,
     /// The bytes of a `[n]u8` to the standard output (D136).
     PrintBytes,
     /// A fallible form of an action (D138): `(value, message)`, or a
@@ -202,10 +200,10 @@ pub enum StrOp {
     Split,
     Join,
     /// The functions of TypeScript (D155).
-    /// The byte index of the last `t` in `s`, -1 if none (D482).
-    LastIndexOf,
     StartsWith,
     EndsWith,
+    /// `replaceAll` of texts by the runtime (`$runtimeReplaceAll`, D6xx
+    /// (texts)): a new string.
     ReplaceAll,
     ToUpper,
     ToLower,
@@ -258,10 +256,8 @@ pub enum StrOp {
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.
     Rx(RxOp),
-    /// `s.replace(a, b)` of a text: its first `a` (D157).
-    ReplaceFirst,
-    /// ECMAScript's `Number(s)`, `parseFloat(s)`, `parseInt(s, radix)` (D156).
-    JsNumber,
+    /// ECMAScript's `parseFloat(s)`, `parseInt(s, radix)` (D156; `Number(s)`
+    /// is `$jsNumber` of the prelude).
     JsParseFloat,
     JsParseInt,
 }

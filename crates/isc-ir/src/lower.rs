@@ -2062,6 +2062,20 @@ impl<'p> Lower<'p> {
         Ok(out)
     }
 
+    /// A call of the function `name` of the prelude, at the place of the
+    /// primitive it is written for (D6xx (texts): `Number` of a text,
+    /// `replace` and `replaceAll` of texts, the readers of CSV): its panics
+    /// there, as those of the runtime's function it replaced.
+    fn prelude_call(&mut self, name: &str, args: Vec<Expr>, ret: &Type, span: Span) -> R<Expr> {
+        // (under `iscc run`, the name of its native form: `native:` and its
+        // name, D616)
+        let named = |f: &tast::TFn| f.name == name || f.name.strip_suffix(name) == Some("native:");
+        let Some(id) = self.p.fns.iter().position(|f| f.from_prelude && named(f)) else {
+            return internal(span, &format!("`{}` is not in the prelude", name));
+        };
+        self.apply(&FuncVal::Global { id: id as FnId, type_args: Vec::new() }, args.into_iter().map(Arg::Val).collect(), ret, span)
+    }
+
     fn apply(&mut self, fv: &FuncVal<'p>, args: Vec<Arg<'p>>, ret: &Type, span: Span) -> R<Expr> {
         match fv {
             FuncVal::Lambda { params, body, env, .. } => {
@@ -2229,7 +2243,7 @@ impl<'p> Lower<'p> {
                     }
                     Prim::Convert(_) => Ok(Expr::new(ExprKind::Convert(Box::new(x)), ret.clone(), span)),
                     Prim::ParseFloat => Ok(Expr::new(ExprKind::StrOp(StrOp::JsParseFloat, vec![x]), ret.clone(), span)),
-                    Prim::JsNumber => Ok(Expr::new(ExprKind::StrOp(StrOp::JsNumber, vec![x]), ret.clone(), span)),
+                    Prim::JsNumber => self.prelude_call("$jsNumber", vec![x], ret, span),
                     _ => internal(span, "primitive used as a value"),
                 }
             }
@@ -2627,11 +2641,31 @@ impl<'p> Lower<'p> {
                 ExprKind::Len(Box::new(keys))
             }
             // strings (D134)
+            // `replace` and `replaceAll` of a text: written in Isocron
+            // (D6xx (texts))
+            Prim::Replace | Prim::ReplaceAll if self.conc(env, &args[1].ty) != Ty::RegExp => {
+                let mut out = Vec::new();
+                for a in args {
+                    out.push(self.expr(env, a)?);
+                }
+                let name = if p == Prim::Replace { "$replaceOne" } else { "$replaceEvery" };
+                return self.prelude_call(name, out, &ty, span);
+            }
+            // the readers of CSV (D135), written in Isocron (D6xx (texts)):
+            // `readCsvF64` the text of `readText` read
+            Prim::ParseCsvF64 | Prim::ReadCsvF64 => {
+                let mut text = self.expr(env, &args[0])?;
+                let skip = self.expr(env, &args[1])?;
+                if p == Prim::ReadCsvF64 {
+                    text = Expr::new(ExprKind::Action(ActionOp::ReadText, vec![text]), Type::Str, span);
+                }
+                return self.prelude_call("$csvParse", vec![text, skip], &ty, span);
+            }
             // the functions of strings of TypeScript (D155)
-            Prim::LastIndexOf
-            | Prim::StartsWith
+            Prim::StartsWith
             | Prim::EndsWith
             | Prim::ReplaceAll
+            | Prim::RuntimeReplaceAll
             | Prim::ToUpper
             | Prim::ToLower
             | Prim::PadStart
@@ -2674,11 +2708,11 @@ impl<'p> Lower<'p> {
                     Prim::FixedText => StrOp::FixedText,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
-                    Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),
-                    Prim::LastIndexOf => StrOp::LastIndexOf,
+                    // (of a text: `$replaceEvery`, above)
+                    Prim::ReplaceAll => StrOp::Rx(RxOp::ReplaceAll),
+                    Prim::RuntimeReplaceAll => StrOp::ReplaceAll,
                     Prim::StartsWith => StrOp::StartsWith,
                     Prim::EndsWith => StrOp::EndsWith,
-                    Prim::ReplaceAll => StrOp::ReplaceAll,
                     Prim::ToUpper => StrOp::ToUpper,
                     Prim::ToLower => StrOp::ToLower,
                     Prim::PadStart => StrOp::PadStart,
@@ -2742,14 +2776,12 @@ impl<'p> Lower<'p> {
                     ExprKind::StrOp(op, out)
                 }
             }
-            Prim::ReadText | Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::PrintBytes | Prim::OrError(_) => {
+            Prim::ReadText | Prim::WriteText | Prim::PrintBytes | Prim::OrError(_) => {
                 let op = match p {
                     Prim::OrError(f) => ActionOp::OrError(f),
                     Prim::PrintBytes => ActionOp::PrintBytes,
                     Prim::ReadText => ActionOp::ReadText,
-                    Prim::WriteText => ActionOp::WriteText,
-                    Prim::ParseCsvF64 => ActionOp::ParseCsvF64,
-                    _ => ActionOp::ReadCsvF64,
+                    _ => ActionOp::WriteText,
                 };
                 let mut out = Vec::new();
                 for a in args {
@@ -2928,12 +2960,12 @@ impl<'p> Lower<'p> {
                 let checked = Expr::new(ExprKind::CheckNonNegative(Box::new(nv), Box::new(built)), ty, span);
                 return Ok(self.let_(v, n, checked, false, span));
             }
-            // `Number(x)` (D156): of a text, ECMAScript's conversion; of a
-            // number, its `f64`
+            // `Number(x)` (D156): of a text, ECMAScript's conversion (written
+            // in Isocron, D6xx (texts)); of a number, its `f64`
             Prim::JsNumber => {
                 let x = self.expr(env, &args[0])?;
                 if x.ty == Type::Str {
-                    ExprKind::StrOp(StrOp::JsNumber, vec![x])
+                    return self.prelude_call("$jsNumber", vec![x], &ty, span);
                 } else if x.ty == Type::Big {
                     ExprKind::StrOp(StrOp::Big(BigOp::ToF64), vec![x])
                 } else {
@@ -3006,8 +3038,8 @@ impl<'p> Lower<'p> {
                     Prim::RxSearch => StrOp::Rx(RxOp::Search),
                     Prim::RxCount => StrOp::Rx(RxOp::Count),
                     Prim::RxMatches => StrOp::Rx(RxOp::Matches),
-                    _ if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::Replace),
-                    _ => StrOp::ReplaceFirst,
+                    // (of a text: `$replaceOne`, above)
+                    _ => StrOp::Rx(RxOp::Replace),
                 };
                 let mut out = Vec::new();
                 for a in args {

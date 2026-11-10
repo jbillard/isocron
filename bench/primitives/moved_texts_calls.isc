@@ -1,0 +1,20 @@
+// One call of each function of texts moved to Isocron by D6xx (texts):
+// `lastIndexOf`, `replace`, `replaceAll`, `Number` of a text,
+// `parseCsvF64`, `readCsvF64`, `tryReadCsvF64`; for the time of a
+// compilation (`bench/replace.py compile`).
+// usage: moved_texts_calls <text> <file>
+
+action main(args: string[k]): i32 {
+    const s = args[0];
+    print(s.lastIndexOf("/"));
+    print(s.replace("a", "b"));
+    print(s.replaceAll("a", "$&$&"));
+    print(Number(s));
+    print(parseCsvF64(s, 0));
+    print(readCsvF64(args[1], 1));
+    print(match (tryReadCsvF64(args[1], 1)) {
+        Ok(m) => m.length,
+        Err(e) => -1,
+    });
+    return 0;
+}

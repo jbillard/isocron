@@ -33,7 +33,6 @@ pub enum Fallible {
     ReadBytes,
     ReadF64,
     ReadText,
-    ReadCsvF64,
     WriteBytes,
     WriteText,
 }
@@ -44,7 +43,6 @@ impl Fallible {
             "readBytes" => Fallible::ReadBytes,
             "readF64" => Fallible::ReadF64,
             "readText" => Fallible::ReadText,
-            "readCsvF64" => Fallible::ReadCsvF64,
             "writeBytes" => Fallible::WriteBytes,
             "writeText" => Fallible::WriteText,
             _ => return None,
@@ -115,11 +113,15 @@ pub enum Prim {
     /// A fallible form of an action (D138).
     OrError(Fallible),
     /// The functions of strings of TypeScript (D155), on bytes of UTF-8
-    /// (`indexOf` and `includes`: functions of the prelude, D596).
-    LastIndexOf,
+    /// (`indexOf` and `includes`: functions of the prelude, D596;
+    /// `lastIndexOf` too, D6xx (texts)).
     StartsWith,
     EndsWith,
     ReplaceAll,
+    /// `$runtimeReplaceAll(s, from, to)`: `replaceAll` of texts by the
+    /// runtime's function, for the prelude alone (D6xx (texts): the needles
+    /// of 3 to 16 bytes, where it is faster than the prelude's)
+    RuntimeReplaceAll,
     ToUpper,
     ToLower,
     PadStart,

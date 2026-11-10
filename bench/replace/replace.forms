@@ -1,0 +1,24 @@
+# name n r1 r2 pilot args (ROUNDS: the rounds) — `replace` and `replaceAll`
+# of texts (D6xx (texts))
+one.line.1.early 4096 100 400 bench/primitives/replace_pilot.isc one.line.1.early.plain ROUNDS
+one.line.2.early 4096 100 400 bench/primitives/replace_pilot.isc one.line.2.early.plain ROUNDS
+one.line.5.late 4096 100 400 bench/primitives/replace_pilot.isc one.line.5.late.plain ROUNDS
+one.line.30.late 4096 100 400 bench/primitives/replace_pilot.isc one.line.30.late.plain ROUNDS
+one.line.5.never 4096 100 400 bench/primitives/replace_pilot.isc one.line.5.never.plain ROUNDS
+one.line.2.dollar 4096 100 400 bench/primitives/replace_pilot.isc one.line.2.early.dollar ROUNDS
+one.line.0 4096 100 400 bench/primitives/replace_pilot.isc one.line.0.never.plain ROUNDS
+all.line.1.many 4096 100 400 bench/primitives/replace_pilot.isc all.line.1.many.plain ROUNDS
+all.line.2.many 4096 100 400 bench/primitives/replace_pilot.isc all.line.2.many.plain ROUNDS
+all.line.5.many 4096 100 400 bench/primitives/replace_pilot.isc all.line.5.many.plain ROUNDS
+all.line.30.early 4096 100 400 bench/primitives/replace_pilot.isc all.line.30.early.plain ROUNDS
+all.line.1.never 4096 100 400 bench/primitives/replace_pilot.isc all.line.1.never.plain ROUNDS
+all.line.5.never 4096 100 400 bench/primitives/replace_pilot.isc all.line.5.never.plain ROUNDS
+all.line.2.many.none 4096 100 400 bench/primitives/replace_pilot.isc all.line.2.many.none ROUNDS
+all.line.2.many.dollar 4096 100 400 bench/primitives/replace_pilot.isc all.line.2.many.dollar ROUNDS
+all.line.0 4096 30 120 bench/primitives/replace_pilot.isc all.line.0.never.plain ROUNDS
+all.utf8.2.many 4096 100 400 bench/primitives/replace_pilot.isc all.utf8.2.many.plain ROUNDS
+one.long.5.late 256 20 80 bench/primitives/replace_pilot.isc one.long.5.late.plain ROUNDS
+all.long.1.many 256 20 80 bench/primitives/replace_pilot.isc all.long.1.many.plain ROUNDS
+all.long.5.many 256 20 80 bench/primitives/replace_pilot.isc all.long.5.many.plain ROUNDS
+all.long.30.many 256 20 80 bench/primitives/replace_pilot.isc all.long.30.many.plain ROUNDS
+all.long.5.never 256 20 80 bench/primitives/replace_pilot.isc all.long.5.never.plain ROUNDS

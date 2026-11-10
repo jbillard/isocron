@@ -51,21 +51,48 @@ pub const NATIVE: &str = "native:";
 
 /// The function of the prelude `name` has a native form.
 pub fn native_form(name: &str) -> bool {
-    matches!(name, "$parseF64Value" | "$parseI64Value" | "trim" | "trimStart" | "trimEnd" | "indexOf" | "includes")
+    matches!(
+        name,
+        "$parseF64Value"
+            | "$parseI64Value"
+            | "trim"
+            | "trimStart"
+            | "trimEnd"
+            | "indexOf"
+            | "includes"
+            | "lastIndexOf"
+            | "$jsNumber"
+            | "$replaceOne"
+            | "$replaceEvery"
+            | "$csvParse"
+            | "$csvOrError"
+    )
 }
 
-/// The value of the function `name` of the prelude for these arguments;
-/// none: no native form.
-fn native_call(name: &str, vs: &[Value]) -> Option<Value> {
+/// The value of the function `name` of the prelude for these arguments, or
+/// the message of its panic; none: no native form.
+fn native_call(name: &str, vs: &[Value]) -> Option<Result<Value, String>> {
     let text = |i: usize| -> Rc<str> {
         match &vs[i] {
             Value::Str(s) => s.clone(),
             v => panic!("a text expected, got {:?}", v),
         }
     };
+    let int = |i: usize| -> i64 {
+        match &vs[i] {
+            Value::Int(k) => *k,
+            v => panic!("an integer expected, got {:?}", v),
+        }
+    };
     // (a value and a word that is not 0 when the text is no number)
     let read = |v: Option<Value>, none: Value| Value::Tuple(Rc::new(vec![v.clone().unwrap_or(none), Value::Int(v.is_none() as i64)]));
-    Some(match name {
+    let replaced = |all: bool| {
+        let mut out = String::new();
+        let _ = isc_runtime_core::replace_text(&mut out, &text(0), &text(1), &text(2), all);
+        Value::Str(Rc::from(out))
+    };
+    let rows = |rs: Vec<Vec<f64>>| Value::Array(Rc::new(Array::Rows(rs.into_iter().map(|r| Rc::new(Array::F64(r))).collect())));
+    Some(Ok(match name {
         "$parseF64Value" => read(text(0).parse::<f64>().ok().map(Value::F64), Value::F64(0.0)),
         "$parseI64Value" => read(text(0).parse::<i64>().ok().map(Value::Int), Value::Int(0)),
         "trim" => Value::Str(Rc::from(text(0).trim())),
@@ -73,8 +100,27 @@ fn native_call(name: &str, vs: &[Value]) -> Option<Value> {
         "trimEnd" => Value::Str(Rc::from(text(0).trim_end())),
         "indexOf" => Value::Int(isc_runtime_core::find_bytes(text(0).as_bytes(), text(1).as_bytes()).map(|i| i as i64).unwrap_or(-1)),
         "includes" => Value::Bool(text(0).contains(&*text(1))),
+        // D6xx (texts): the functions of the runtime they replaced
+        "lastIndexOf" => Value::Int(isc_runtime_core::last_index_of(&text(0), &text(1))),
+        "$jsNumber" => Value::F64(isc_runtime_core::js_number(&text(0))),
+        "$replaceOne" => replaced(false),
+        "$replaceEvery" => replaced(true),
+        "$csvParse" => match rt::parse_csv(&text(0), int(1)) {
+            Ok(rs) => rows(rs),
+            Err(m) => return Some(Err(m)),
+        },
+        // (the text and the message of its reading)
+        "$csvOrError" => {
+            let read = text(2);
+            let (rs, m) = match rt::parse_csv(&text(0), int(1)) {
+                _ if !read.is_empty() => (Vec::new(), read.to_string()),
+                Ok(rs) => (rs, String::new()),
+                Err(m) => (Vec::new(), m),
+            };
+            Value::Tuple(Rc::new(vec![rows(rs), Value::Str(Rc::from(m))]))
+        }
         _ => return None,
-    })
+    }))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -251,15 +297,14 @@ impl Interp<'_> {
                 Value::Array(Rc::new(Array::Str(t.split(&*sep).map(Rc::from).collect())))
             }
             // the functions of TypeScript (D155): the code of the runtime
-            S::LastIndexOf => Value::Int(isc_runtime_core::last_index_of(&s(&vs[0]), &s(&vs[1]))),
             S::StartsWith => Value::Bool(s(&vs[0]).starts_with(&*s(&vs[1]))),
-            S::EndsWith => Value::Bool(s(&vs[0]).ends_with(&*s(&vs[1]))),
-            // through the engine of regular expressions: `$` patterns (D157)
-            S::ReplaceAll | S::ReplaceFirst => {
+            // (`$runtimeReplaceAll`, D6xx (texts))
+            S::ReplaceAll => {
                 let mut out = String::new();
-                let _ = isc_runtime_core::replace_text(&mut out, &s(&vs[0]), &s(&vs[1]), &s(&vs[2]), op == S::ReplaceAll);
+                let _ = isc_runtime_core::replace_text(&mut out, &s(&vs[0]), &s(&vs[1]), &s(&vs[2]), true);
                 Value::Str(Rc::from(out))
             }
+            S::EndsWith => Value::Bool(s(&vs[0]).ends_with(&*s(&vs[1]))),
             S::Rx(r) => {
                 use isc_ir::RxOp as X;
                 use isc_runtime_core::rx;
@@ -397,7 +442,6 @@ impl Interp<'_> {
                 }
             }
             // ECMAScript's conversions (D156)
-            S::JsNumber => Value::F64(isc_runtime_core::js_number(&s(&vs[0]))),
             S::JsParseFloat => Value::F64(isc_runtime_core::js_parse_float(&s(&vs[0]))),
             S::JsParseInt => {
                 let r = match vs[1] {
@@ -1210,8 +1254,10 @@ impl<'a> Interp<'a> {
                 let fi = *f as usize;
                 // a function of the prelude in its native form (`iscc run`,
                 // D616): its value, not its body run node by node
-                if let Some(v) = self.fns[fi].name.strip_prefix(NATIVE).and_then(|name| native_call(name, &vals)) {
-                    return Ok(v);
+                match self.fns[fi].name.strip_prefix(NATIVE).and_then(|name| native_call(name, &vals)) {
+                    Some(Ok(v)) => return Ok(v),
+                    Some(Err(m)) => return panic_at(e, m),
+                    None => {}
                 }
                 // a direct tail call: its arguments for the loop of the call
                 // in progress, which runs the body again
@@ -1533,16 +1579,6 @@ impl<'a> Interp<'a> {
                         Ok(t) => pair(Value::Str(Rc::from(t)), Ok(())),
                         Err(m) => pair(Value::Str(Rc::from("")), Err(m)),
                     },
-                    F::ReadCsvF64 => {
-                        let skip = self.int(&args[1])?;
-                        match rt::read_text_file(&a).and_then(|t| rt::parse_csv(&t, skip)) {
-                            Ok(rows) => pair(
-                                Value::Array(Rc::new(Array::Rows(rows.into_iter().map(|r| Rc::new(Array::F64(r))).collect()))),
-                                Ok(()),
-                            ),
-                            Err(m) => pair(empty(&vt), Err(m)),
-                        }
-                    }
                     F::WriteBytes | F::WriteText => {
                         let data: Vec<u8> = if f == F::WriteText {
                             self.string(&args[1])?.as_bytes().to_vec()
@@ -1593,22 +1629,6 @@ impl<'a> Interp<'a> {
                     return panic_at(e, m);
                 }
                 Value::Unit
-            }
-            ActionOp::ParseCsvF64 | ActionOp::ReadCsvF64 => {
-                let a = self.string(&args[0])?;
-                let skip = self.int(&args[1])?;
-                let t = if op == ActionOp::ReadCsvF64 {
-                    match rt::read_text_file(&a) {
-                        Ok(t) => Rc::from(t),
-                        Err(m) => return panic_at(e, m),
-                    }
-                } else {
-                    a
-                };
-                match rt::parse_csv(&t, skip) {
-                    Ok(rows) => Value::Array(Rc::new(Array::Rows(rows.into_iter().map(|r| Rc::new(Array::F64(r))).collect()))),
-                    Err(m) => return panic_at(e, m),
-                }
             }
             ActionOp::Extern(i) => return self.call_extern(e, i, args),
         })

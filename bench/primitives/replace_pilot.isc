@@ -1,0 +1,62 @@
+// The pilot of `replace` and `replaceAll` of texts written in Isocron (SPEC
+// section 17, order 2; D6xx (texts)): one kind a run, so that the cycles
+// and the instructions of a replacement are read with `perf stat` as the
+// difference between two numbers of rounds. Its line: the kind, the
+// nanoseconds of a replacement (the mean over the rounds, `bench`), the sum
+// of the lengths of the results, a hash of their bytes. The Rust version
+// (the runtime's `isc_replace_all`: its places by `find_bytes`, then one
+// block; with a `$` in `to` or `from` empty, the engine of regular
+// expressions) is measured by building this file with a compiler that
+// still has it.
+// The kinds `<op>.<text>.<needle>.<where>.<to>`:
+//   op      one: `replace`; all: `replaceAll`
+//   text    line: 60 bytes of 16 letters, 4096 texts; long: 4096 bytes, 256
+//           texts; utf8: 60 bytes, a character of two bytes in five
+//   needle  its bytes: 0 (empty), 1, 2, 5, 30
+//   where   early: one place, 5 bytes after the start; late: one place, 5
+//           bytes before the end; never: none; many: a place every 11 bytes
+//           and the needle's
+//   to      plain: `XYZ`; dollar: `<$&>`; none: the empty text
+// usage: replace_pilot <kind> <rounds> [texts]
+
+// `n` letters from `base`, of `span` kinds, at random (the seed `i`)
+function letters(i: i64, n: i64, base: i64, span: i64): string {
+    return stringOf(map(iota(n), (j) => u8(base + randomInt(i, j, span))));
+}
+
+// `n` bytes, a character of two bytes in five
+function utf8(i: i64, n: i64): string {
+    return join(map(iota(n / 5), (g) => letters(i + g, 3, 97, 16) + "\u{e9}"), "") + letters(i, n % 5, 97, 16);
+}
+
+function body(shape: string, i: i64, n: i64): string {
+    return shape == "utf8" ? utf8(i, n) : letters(i, n, 97, 16);
+}
+
+function text(shape: string, where: string, p: string, m: i64, i: i64): string {
+    const n = shape == "long" ? 4096 : 60;
+    return where == "early" ? letters(i, 5, 97, 16) + p + body(shape, i, n - m - 5)
+        : where == "late" ? body(shape, i, n - m - 5) + p + letters(i, 5, 97, 16)
+        : where == "many" ? join(map(iota(n / (m + 11)), (g) => body(shape, i + g, 11) + p), "") + letters(i, n % (m + 11), 97, 16)
+        : body(shape, i, n);
+}
+
+function hash(t: string): i64 {
+    return fold(bytes(t), 7, (h, c) => h * 31 + i64(c));
+}
+
+action main(args: string[k]): i32 {
+    const kind = args[0];
+    const parts = split(kind, ".");
+    const all = parts[0] == "all";
+    const r = parseI64(args[1]);
+    const n = args.length > 2 ? parseI64(args[2]) : parts[1] == "long" ? 256 : 4096;
+    const m = parseI64(parts[2]);
+    const p = letters(3, m, 119, 4);
+    const to = parts[4] == "dollar" ? "<$&>" : parts[4] == "none" ? "" : "XYZ";
+    const xs = map(iota(n), (i) => text(parts[1], parts[3], p, m, i));
+    const h = sum(map(xs, (s) => hash(all ? s.replaceAll(p, to) : s.replace(p, to))));
+    const [a, t] = all ? bench(r, () => sum(map(xs, (s) => s.replaceAll(p, to).length))) : bench(r, () => sum(map(xs, (s) => s.replace(p, to).length)));
+    print(`${kind} ${(f64(t) / f64(r * n)).toFixed(3)} ${a} ${h}`);
+    return 0;
+}

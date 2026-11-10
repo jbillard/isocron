@@ -2519,20 +2519,9 @@ unsafe fn text<'a>(p: *const u8, n: i64) -> &'a str {
 // the functions of strings of TypeScript (D155): the code of
 // `isc-runtime-core`, as the interpreter
 
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_last_index_of(p: *const u8, n: i64, q: *const u8, m: i64) -> i64 {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        sem::last_index_of(text(p, n), text(q, m))
-    }
-}
-
 /// `s.replace(from, to)` (`all` 0) and `s.replaceAll(from, to)` of a text,
-/// with the `$` patterns of `to` (D157).
+/// with the `$` patterns of `to` (D157); called by `$runtimeReplaceAll` of
+/// the prelude alone since D6xx (texts), for the needles of 3 to 16 bytes.
 ///
 /// # Safety
 /// The pointers as the generated code gives them (C1).
@@ -3447,8 +3436,8 @@ pub unsafe extern "C" fn isc_big_to_string(out: *mut IscStr, p: *const u8, n: i6
     }
 }
 
-/// ECMAScript's `Number(s)` (0), `parseFloat(s)` (1), `parseInt(s, radix)`
-/// (2) (D156).
+/// ECMAScript's `parseFloat(s)` (1), `parseInt(s, radix)` (2) (D156;
+/// `Number(s)` is written in Isocron, D6xx (texts)).
 ///
 /// # Safety
 /// The pointers as the generated code gives them (C1).
@@ -3459,7 +3448,6 @@ pub unsafe extern "C" fn isc_js_number(p: *const u8, n: i64, which: i32, radix: 
     unsafe {
         let s = text(p, n);
         match which {
-            0 => sem::js_number(s),
             1 => sem::js_parse_float(s),
             _ => sem::js_parse_int(s, radix),
         }
@@ -4005,52 +3993,6 @@ pub unsafe extern "C" fn isc_group(out: *mut IscArray, p: *const u8, n: i64, kin
     }
 }
 
-/// An array of arrays of `f64`: its block, rows, columns and stride (the
-/// layout of the code generator).
-#[repr(C)]
-pub struct IscNested {
-    pub ptr: *mut u8,
-    pub rows: i64,
-    pub cols: i64,
-    pub stride: i64,
-}
-
-/// `parseCsvF64(text, skip)`: checked and counted, then read into one
-/// block, rows contiguous.
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_parse_csv_f64(out: *mut IscNested, p: *const u8, n: i64, skip: i64, line: i32, col: i32) {
-    // SAFETY: the pointers the generated code gives (C1)
-    unsafe {
-        let s = core::str::from_utf8_unchecked(bytes_of(p, n));
-        let (rows, cols) = match sem::parse_csv_f64(s, skip, &mut |_, _| {}) {
-            Ok(rc) => rc,
-            Err(e) => die(line, col, &e),
-        };
-        let (q, values) = new_f64s((rows * cols) as usize);
-        let _ = sem::parse_csv_f64(s, skip, &mut |i, v| values[i] = v);
-        *out = IscNested { ptr: q as *mut u8, rows, cols, stride: cols };
-    }
-}
-
-/// `readCsvF64(path, skip)`.
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_read_csv_f64(out: *mut IscNested, path: *const u8, plen: i64, skip: i64, line: i32, col: i32) {
-    // SAFETY: the pointers the generated code gives (C1); `t` the text read,
-    // given to `isc_parse_csv_f64` then freed once
-    unsafe {
-        let mut t = IscStr { ptr: core::ptr::null(), len: 0 };
-        isc_read_text(&mut t, path, plen, line, col);
-        isc_parse_csv_f64(out, t.ptr, t.len, skip, line, col);
-        isc_free(t.ptr as *mut u8);
-    }
-}
-
 // ---------------------------------------------------------------------
 // the fallible forms of the actions (D138): the value, and an error
 // message instead of a panic ("" when the action succeeds; on an error the
@@ -4081,17 +4023,6 @@ fn message(p: &Panic) -> IscStr {
     let mut f = Fill(q, 0);
     let _ = write!(f, "{}", p);
     IscStr { ptr: q, len: c.0 as i64 }
-}
-
-/// A new block of `n` values `f64`, as a slice for its writer (its values
-/// not yet written: zeros or the bytes of a block freed before, any of
-/// which is an `f64`).
-fn new_f64s(n: usize) -> (*mut f64, &'static mut [f64]) {
-    let q = isc_alloc((n * 8) as i64) as *mut f64;
-    // SAFETY: a new block of `n * 8` bytes (the empty block, aligned, when
-    // `n` is 0), aligned on ARRAY_ALIGN, given to the caller alone; any bytes
-    // are an `f64`
-    (q, unsafe { core::slice::from_raw_parts_mut(q, n) })
 }
 
 fn no_error() -> IscStr {
@@ -4126,13 +4057,6 @@ fn try_read_text(p: &str) -> Result<IscStr, Panic<'_>> {
         }
         Ok(IscStr { ptr: a.ptr, len: a.len })
     }
-}
-
-fn try_csv(s: &str, skip: i64) -> Result<IscNested, Panic<'_>> {
-    let (rows, cols) = sem::parse_csv_f64(s, skip, &mut |_, _| {})?;
-    let (q, values) = new_f64s((rows * cols) as usize);
-    let _ = sem::parse_csv_f64(s, skip, &mut |i, v| values[i] = v);
-    Ok(IscNested { ptr: q as *mut u8, rows, cols, stride: cols })
 }
 
 ///
@@ -4176,28 +4100,6 @@ pub unsafe extern "C" fn isc_try_read_text(out: *mut IscStr, e: *mut IscStr, pat
         match try_read_text(str_of(path, plen)) {
             Ok(t) => (*out, *e) = (t, no_error()),
             Err(p) => (*out, *e) = (no_error(), message(&p)),
-        }
-    }
-}
-
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_try_read_csv_f64(out: *mut IscNested, e: *mut IscStr, path: *const u8, plen: i64, skip: i64) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // (the value, the message) and its strings and arrays
-    unsafe {
-        let empty = || IscNested { ptr: isc_alloc(0), rows: 0, cols: 0, stride: 0 };
-        match try_read_text(str_of(path, plen)) {
-            Ok(t) => {
-                match try_csv(core::str::from_utf8_unchecked(bytes_of(t.ptr, t.len)), skip) {
-                    Ok(m) => (*out, *e) = (m, no_error()),
-                    Err(p) => (*out, *e) = (empty(), message(&p)),
-                }
-                isc_free(t.ptr as *mut u8);
-            }
-            Err(p) => (*out, *e) = (empty(), message(&p)),
         }
     }
 }

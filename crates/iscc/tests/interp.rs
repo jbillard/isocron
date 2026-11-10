@@ -287,3 +287,95 @@ fn native_forms_keep_the_program() {
     assert_eq!(want, "4\n");
     assert!(matches!(run_native(required, &["  le thé ", "thé"]), Outcome::Exit(0, out) if out == want));
 }
+
+/// D6xx (texts): `lastIndexOf`, `replace` and `replaceAll` of texts,
+/// `Number` of a text and the readers of CSV written in Isocron (the
+/// prelude), with a native form each under `iscc run`: the function of the
+/// runtime each replaced. On generated inputs (texts over small alphabets
+/// and of characters of several bytes, needles cut at their ends or not or
+/// empty, every `$` pattern and malformed ones, numbers of every form and
+/// what is none, between the spaces of both standards; texts of CSV with
+/// blank lines, a header, CRLF, a row of another length, fields that are no
+/// number): the native forms (the runtime's code), the prelude's run node by
+/// node, the compiled program (with the allocator checked too), and the
+/// program in WebAssembly, the same outputs.
+#[test]
+fn native_forms_of_the_moved_texts() {
+    let src = include_str!("data/strings_moved.isc");
+    let file = tmp("strings_moved.csv").to_string_lossy().to_string();
+    let bin = compile(src, "strings_moved");
+    let wasm = wasi_runner().map(|r| (r, compile_wasm(src, "strings_moved_wasm")));
+    for (mode, n, few) in [("last", "3000", "300"), ("replace", "3000", "300"), ("number", "2000", "200"), ("csv", "600", "120")] {
+        let native = match run_native(src, &[mode, n, &file]) {
+            Outcome::Exit(0, out) => out,
+            Outcome::Exit(c, out) => panic!("{}: exit {} ({})", mode, c, out),
+            Outcome::Panic(m, _) => panic!("{}: unexpected panic: {}", mode, m),
+        };
+        let r = run_bin(&bin, &[mode, n, &file]);
+        assert!(r.code == 0 && r.stdout == native, "{}: the compiled program and the native forms differ: {}", mode, r.stderr);
+        checked_clean_bin(&bin, &[mode, few, &file], None);
+        // (node by node: fewer inputs)
+        let short = match run_native(src, &[mode, few, &file]) {
+            Outcome::Exit(0, out) => out,
+            _ => panic!("{}", mode),
+        };
+        assert!(interp_ok(src, &[mode, few, &file]) == short, "{}: the prelude's run node by node and the native forms differ", mode);
+        if let Some((runner, w)) = &wasm {
+            let r = run_wasm(runner, w, &[mode, n, &file]);
+            assert!(r.code == 0 && r.stdout == native, "{}: WebAssembly and the native forms differ: {}", mode, r.stderr);
+        }
+    }
+    let p = iscc::frontend_for_run("test.isc", src).unwrap();
+    let named: Vec<&str> = p.fns.iter().filter_map(|f| f.name.strip_prefix(isc_interp::NATIVE)).collect();
+    for name in ["lastIndexOf", "$jsNumber", "$replaceOne", "$replaceEvery", "$csvParse", "$csvOrError"] {
+        assert!(named.contains(&name), "{} is not in its native form: {:?}", name, named);
+    }
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    // (`isc_js_number` stays for `parseFloat` and `parseInt`: declared;
+    // `isc_replace_all` for `replaceAll` of 3 to 16 bytes)
+    for f in ["@isc_last_index_of(", "call double @isc_js_number(", "@isc_parse_csv_f64(", "@isc_read_csv_f64(", "@isc_try_read_csv_f64("] {
+        assert!(!ll.contains(f), "{} still called", f);
+    }
+    // a function that must not allocate may call `lastIndexOf` and
+    // `Number` of a text, as it could call the runtime's
+    let required = "@requireNoAlloc\nfunction place(s: string, t: string): f64 {\n    return f64(s.lastIndexOf(t)) + Number(t);\n}\n\naction main(args: string[k]): i32 {\n    print(place(args[0], args[1]));\n    return 0;\n}\n";
+    let want = interp_ok(required, &["a 12 b 12", " 12"]);
+    assert_eq!(want, "18\n");
+    assert!(matches!(run_native(required, &["a 12 b 12", " 12"]), Outcome::Exit(0, out) if out == want));
+}
+
+/// D6xx (texts): the panics of `parseCsvF64` and `readCsvF64` written in
+/// Isocron, at the place of their call, with the messages of the runtime's
+/// (a field that is no number, its text trimmed; a row of another length,
+/// one field or more; a file that cannot be read): compiled, run node by
+/// node and in the native forms.
+#[test]
+fn panics_of_the_readers_of_csv() {
+    let file = tmp("csv_panics.csv").to_string_lossy().to_string();
+    let missing = tmp("csv_panics_missing.csv").to_string_lossy().to_string();
+    let parse = "action main(args: string[k]): i32 {\n    const t = args[0].replaceAll(\";\", \"\\n\");\n    print(t.length);\n    print(parseCsvF64(t, parseI64(args[1])));\n    return 0;\n}\n";
+    let read = "action main(args: string[k]): i32 {\n    writeText(args[2], args[0].replaceAll(\";\", \"\\r\\n\"));\n    print(\n        readCsvF64(args[3], parseI64(args[1])));\n    return 0;\n}\n";
+    let cases: [(&str, &str, &str, &str); 7] = [
+        (parse, "1,2;3, x ;4,5", "0", "panic at line 4, column 22: csv: line 2, field 2: `x` is not a number"),
+        (parse, "1,2;3;4,5", "0", "panic at line 4, column 22: csv: line 2 has 1 field, the first row has 2"),
+        (parse, "a,b;1;2,3,4", "1", "panic at line 4, column 22: csv: line 3 has 3 fields, the first row has 1"),
+        (parse, "1;2,\u{3000}3\u{a0}", "0", "panic at line 4, column 22: csv: line 2 has 2 fields, the first row has 1"),
+        (parse, "1,\u{feff}2", "0", "panic at line 4, column 22: csv: line 1, field 2: `\u{feff}2` is not a number"),
+        (read, "1,2;;3,4,5", "0", "panic at line 4, column 19: csv: line 3 has 3 fields, the first row has 2"),
+        (read, "1,2", "0", "panic at line 4, column 19: cannot read"),
+    ];
+    for (i, (src, text, skip, want)) in cases.iter().enumerate() {
+        let target = if i == cases.len() - 1 { missing.as_str() } else { file.as_str() };
+        let args = [*text, *skip, file.as_str(), target];
+        let node = interp_panic(src, &args);
+        assert!(node.starts_with(want), "case {}: {}", i, node);
+        match run_native(src, &args) {
+            Outcome::Panic(m, _) => assert_eq!(m, node, "case {}: the native form", i),
+            Outcome::Exit(c, out) => panic!("case {}: expected a panic, got exit {} ({})", i, c, out),
+        }
+        let bin = compile(src, &format!("csv_panic_{}", i));
+        let r = run_bin(&bin, &args);
+        assert_eq!(r.code, 101, "case {}: {}", i, r.stderr);
+        assert!(r.stderr.contains(want), "case {}: {}", i, r.stderr);
+    }
+}

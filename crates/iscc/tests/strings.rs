@@ -1096,8 +1096,13 @@ fn literals_kept_without_a_copy() {
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     // the copy left is not of a literal: the accumulator of `grow` at its
     // entry (rule A, D351); the elements `sort` puts in its array are moved
-    // from its source, read for the last time (D548)
-    assert_eq!(ll.matches("; text copy").count(), 1, "a literal copied");
+    // from its source, read for the last time (D548). And nine of
+    // `replaceAll` of a text, written in Isocron since D6xx (texts): the
+    // block of the text replaced made by a copy where nothing is replaced,
+    // one at each way out of its function, inlined (the runtime made that
+    // block itself), and five in its rare paths (compiled in the program:
+    // not in the module of the prelude, D6xx (texts))
+    assert_eq!(ll.matches("; text copy").count(), 10, "a literal copied");
     // the literals of at most 12 bytes are values, their bytes in them
     // (D530); the one longer kept in the program's data
     assert!(ll.matches("@.olit.").count() >= 1, "the literals not kept where they are");
@@ -2583,6 +2588,36 @@ fn index_of_and_includes_written_in_isocron() {
         return;
     };
     let wasm = compile_wasm(src, "strings_search_wasm");
+    let r = run_wasm(&runner, &wasm, &["400"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "WebAssembly: {}", r.stderr);
+}
+
+/// D6xx (texts): `lastIndexOf` written in Isocron, a function of the
+/// prelude (a byte by a search of rule L, by vectors from the end; more by
+/// pairs of its bytes from the end; past a budget of bytes compared in
+/// vain, the two-way search from the end), no longer `isc_last_index_of`:
+/// the place of a search one place at a time from the end, over texts of
+/// small alphabets and of characters of several bytes, needles cut at their
+/// ends or not, long repeated texts that spend the budget; interpreted,
+/// compiled, with the allocator checked, in WebAssembly.
+#[test]
+fn last_index_of_written_in_isocron() {
+    let src = include_str!("data/strings_search_last.isc");
+    assert_eq!(interp_ok(src, &["120"]), "[0, 0]\n", "interpreted");
+    let bin = compile(src, "strings_search_last");
+    let r = run_bin(&bin, &["4000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "{}", r.stderr);
+    checked_clean_bin(&bin, &["400"], None);
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(!ll.contains("@isc_last_index_of("), "isc_last_index_of still called");
+    // the search of a byte from the end by vectors: lanes of 16, 32 or 64
+    // bytes and the last one set (`ctlz`)
+    assert!(ll.contains("@llvm.ctlz.i16(") || ll.contains("@llvm.ctlz.i32(") || ll.contains("@llvm.ctlz.i64("), "no search from the end by vectors");
+    let Some(runner) = wasi_runner() else {
+        eprintln!("no WASI engine (wasmtime): the WebAssembly program not run");
+        return;
+    };
+    let wasm = compile_wasm(src, "strings_search_last_wasm");
     let r = run_wasm(&runner, &wasm, &["400"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 0]\n"), "WebAssembly: {}", r.stderr);
 }

@@ -36,7 +36,9 @@ pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String
     isc_ir::passes::optimize(&mut p).map_err(render)?;
     // (a text of the source, or of a module it imports, names one: by its
     // public name, which the functions of the prelude that call them have)
-    let named = ["parseF64", "parseI64", "trim", "indexOf", "includes", "import "].iter().any(|n| src.contains(n));
+    // (`indexOf` in `lastIndexOf`, `replace` in `replaceAll`, `Csv` in the
+    // readers of CSV: D6xx (texts))
+    let named = ["parseF64", "parseI64", "trim", "indexOf", "includes", "Number", "replace", "Csv", "import "].iter().any(|n| src.contains(n));
     let native: Vec<usize> = t.fns.iter().enumerate().filter(|(_, f)| f.from_prelude && isc_interp::native_form(&f.name)).map(|(i, _)| i).collect();
     if !named || native.is_empty() {
         return Ok(p);
@@ -73,7 +75,12 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
 /// and of the floats, `toFixed`, the cases, the `print` of a float, and the
 /// allocator, which every program has; and the reading of a float
 /// (`parseF64`, `tryParseF64`), whose rare paths, `@cold` functions that
-/// only the prelude can name, are the same in every program that calls it.
+/// only the prelude can name, are the same in every program that calls it;
+/// those of `lastIndexOf`, `Number` and the readers of CSV too (D6xx
+/// (texts)). Not those of `replace` and `replaceAll`: their joins are
+/// tasks, numbered in the order of the module, and the functions emitted
+/// after them (the rest of `toFixed`) then differed from those of the
+/// programs, which compiled them again (`pre.rs`).
 /// The module compiled once is made from it; a function it does not reach
 /// stays in the programs that do.
 const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
@@ -85,6 +92,9 @@ const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
     print(y);
     print(parseF64(args[0]));
     print(match (tryParseF64(args[0])) { Ok(v) => v, Err(e) => 0.0 });
+    print(args[0].lastIndexOf(args[n - 1]) + i64(Number(args[0])));
+    print(parseCsvF64(args[0], 1));
+    print(match (tryReadCsvF64(args[0], 1)) { Ok(m) => m.length, Err(e) => 0 });
     return 0;
 }
 ";

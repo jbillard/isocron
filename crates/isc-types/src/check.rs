@@ -126,7 +126,9 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "isPure" => Prim::IsPure,
         "zip" => Prim::Zip,
         "scan" => Prim::Scan,
-        "filter" => Prim::Filter,
+        // (`$filter`, `$join`: for the prelude, whatever the program
+        // declares, as `$stringOf`)
+        "filter" | "$filter" => Prim::Filter,
         "window" => Prim::Window,
         "min" => Prim::Min,
         "max" => Prim::Max,
@@ -177,10 +179,10 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "readCsvF64" => Prim::ReadCsvF64,
         "lines" => Prim::Lines,
         "split" => Prim::Split,
-        "lastIndexOf" => Prim::LastIndexOf,
         "startsWith" => Prim::StartsWith,
         "endsWith" => Prim::EndsWith,
         "replaceAll" => Prim::ReplaceAll,
+        "$runtimeReplaceAll" => Prim::RuntimeReplaceAll,
         "toUpperCase" => Prim::ToUpper,
         "toLowerCase" => Prim::ToLower,
         "padStart" => Prim::PadStart,
@@ -218,7 +220,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "countMatches" => Prim::RxCount,
         "matches" => Prim::RxMatches,
         "replace" => Prim::Replace,
-        "join" => Prim::Join,
+        "join" | "$join" => Prim::Join,
         "printBytes" => Prim::PrintBytes,
         _ if Fallible::from_name(name).is_some() => Prim::OrError(Fallible::from_name(name).unwrap()),
         "i8" => Prim::Convert(ScalarTy::Int(IntKind::I8)),
@@ -2753,7 +2755,7 @@ impl<'g> FnCx<'g> {
             Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits | Prim::BitsFloat | Prim::Words => 1,
             Prim::Concat | Prim::MulHigh => 2,
             Prim::ReadText | Prim::Lines | Prim::PrintBytes => 1,
-            Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
+            Prim::OrError(Fallible::WriteBytes | Fallible::WriteText) => 2,
             Prim::OrError(_) => 1,
             Prim::WriteText | Prim::ParseCsvF64 | Prim::ReadCsvF64 | Prim::Split | Prim::Join => 2,
             Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
@@ -2770,8 +2772,8 @@ impl<'g> FnCx<'g> {
                     2
                 }
             }
-            Prim::LastIndexOf | Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
-            Prim::ReplaceAll | Prim::StrSlice | Prim::Replace => 3,
+            Prim::StartsWith | Prim::EndsWith | Prim::Repeat | Prim::ToFixed => 2,
+            Prim::ReplaceAll | Prim::StrSlice | Prim::Replace | Prim::RuntimeReplaceAll => 3,
             Prim::RxTest | Prim::RxSearch | Prim::RxCount | Prim::RxMatches => 2,
             Prim::MapOf => 3,
             Prim::MapParts | Prim::MapSize => 1,
@@ -3096,14 +3098,6 @@ impl<'g> FnCx<'g> {
                     Fallible::ReadBytes => Ty::Array(exist(self, "k"), Box::new(Ty::Int(IntKind::U8))),
                     Fallible::ReadF64 => Ty::Array(exist(self, "k"), Box::new(Ty::F64)),
                     Fallible::ReadText => Ty::Str,
-                    Fallible::ReadCsvF64 => {
-                        let k = self.check(&args[1], Some(&Ty::Int(IntKind::I64)))?;
-                        self.unify(&Ty::Int(IntKind::I64), &k.ty, k.span)?;
-                        checked.push(k);
-                        let r = exist(self, "r");
-                        let c = exist(self, "c");
-                        Ty::Array(r, Box::new(Ty::Array(c, Box::new(Ty::F64))))
-                    }
                     Fallible::WriteBytes | Fallible::WriteText => {
                         let want = if f == Fallible::WriteText {
                             Ty::Str
@@ -3445,19 +3439,14 @@ impl<'g> FnCx<'g> {
                 self.unify(&Ty::Str, &to.ty, to.span)?;
                 Ok(mk(vec![x, pat, to], Ty::Str, self))
             }
-            Prim::LastIndexOf | Prim::StartsWith | Prim::EndsWith => {
+            Prim::StartsWith | Prim::EndsWith | Prim::RuntimeReplaceAll => {
                 let mut xs = Vec::new();
                 for a in args {
                     let x = self.check(a, Some(&Ty::Str))?;
                     self.unify(&Ty::Str, &x.ty, x.span)?;
                     xs.push(x);
                 }
-                let t = match p {
-                    Prim::LastIndexOf => Ty::Int(IntKind::I64),
-                    Prim::ReplaceAll => Ty::Str,
-                    _ => Ty::Bool,
-                };
-                Ok(mk(xs, t, self))
+                Ok(mk(xs, if p == Prim::RuntimeReplaceAll { Ty::Str } else { Ty::Bool }, self))
             }
             Prim::PadStart | Prim::PadEnd | Prim::Repeat | Prim::StrSlice => {
                 let a = self.check(&args[0], Some(&Ty::Str))?;

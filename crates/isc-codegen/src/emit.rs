@@ -1064,7 +1064,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_try_read_bytes(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_f64(ptr, ptr, ptr, i64)",
     "declare void @isc_try_read_text(ptr, ptr, ptr, i64)",
-    "declare void @isc_try_read_csv_f64(ptr, ptr, ptr, i64, i64)",
     "declare void @isc_try_write_bytes(ptr, ptr, i64, ptr, i64)",
     "declare i64 @isc_clock_ns()",
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
@@ -1075,7 +1074,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines_view(ptr, ptr, i64)",
     "declare void @isc_split_view(ptr, ptr, i64, ptr, i64, i32, i32)",
-    "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64, i32)",
     "declare void @isc_rx_new(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare i64 @isc_rx_int(ptr, i64, ptr, i64, i32)",
     "declare void @isc_rx_matches(ptr, ptr, i64, ptr, i64)",
@@ -1089,7 +1087,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_panic_str_slice(i64, i64, i64, i32, i32) noreturn",
     "declare void @isc_panic_boundary(i64, i32, i32) noreturn",
     "declare void @isc_panic_text_slice(ptr, i64, i64, i64, i32, i32) noreturn",
-    "declare i64 @isc_last_index_of(ptr, i64, ptr, i64)",
     "declare void @isc_hash_index(ptr, ptr, i64, i32)",
     "declare i64 @isc_hash_find(ptr, i64, ptr, i64, i32, i64, ptr, i64)",
     "declare void @isc_panic_fixed(i64, i32, i32) noreturn",
@@ -1100,6 +1097,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare ptr @isc_groups_new(i64, i64, i32)",
     "declare void @isc_groups_add(ptr, i64, ptr, i64, i64, i32)",
     "declare void @isc_groups_end(ptr, ptr)",
+    "declare void @isc_replace_all(ptr, ptr, i64, ptr, i64, ptr, i64, i32)",
     "declare double @isc_js_number(ptr, i64, i32, i64)",
     "declare void @isc_print_big(ptr, i64)",
     "declare void @isc_big_op(ptr, ptr, i64, ptr, i64, i32, i32, i32)",
@@ -1113,8 +1111,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare double @isc_big_to_f64(ptr, i64)",
     "declare void @isc_big_to_string(ptr, ptr, i64)",
     "declare void @isc_read_stdin_text(ptr, i32, i32)",
-    "declare void @isc_parse_csv_f64(ptr, ptr, i64, i64, i32, i32)",
-    "declare void @isc_read_csv_f64(ptr, ptr, i64, i64, i32, i32)",
     "declare void @isc_args(ptr, i32, ptr)",
     "declare void @isc_panic_bounds(i64, i64, i32, i32, i32) noreturn",
     "declare void @isc_panic_size(i64, i64, i32, i32) noreturn",
@@ -11302,7 +11298,14 @@ impl<'p> Gen<'p> {
     /// the other cases (a read out of bounds, `n = 0`) by the loop as written
     /// (its checks, its panic). `c` evaluated for fewer `i` gives the same
     /// result: it reads neither the accumulator nor anything that can stop
-    /// the program.
+    /// the program. Off WebAssembly, `w` indices at a time first, from the
+    /// end, as rule F does from the start (`fold_first`): whole vectors
+    /// ending where the indices not yet tested end, their last lane set the
+    /// result (`fold_last_lane`); for bytes, vectors of 16 after them, and
+    /// the indices still left (fewer than 16) by one vector more over the
+    /// start of the one after (its lanes already tested hold no `c`); the
+    /// indices left otherwise one at a time (a search from the end: what
+    /// `lastIndexOf` written in Isocron needs, one index at a time before).
     fn fold_last(&mut self, x: &Expr, init: &Expr, l: &Lambda, c: &Expr) -> R<V> {
         let (src, n) = self.prepare_src(x)?;
         let iv = self.ex(init, 1)?;
@@ -11330,15 +11333,127 @@ impl<'p> Gen<'p> {
             self.ins(format!("and i1 {}, {}", some, fine))
         };
         let (lhead, lbody, lfound, lnext, lslow, ljoin) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        // `at`: one past the last index not yet tested
         let at = self.alloca("i64");
-        let last = self.ins(format!("sub i64 {}, 1", n));
-        self.emit(format!("store i64 {}, ptr {}", last, at));
-        self.cbr(&ok, &lhead, &lslow);
+        self.emit(format!("store i64 {}, ptr {}", n, at));
+        let size = reads.iter().map(|(a, _)| if a.ty.is_array() { esize(a.ty.elem()) } else { 8 }).max().unwrap_or(8).max(1);
+        let bytes = if BYTE_MASKS.with(|b| b.get()) { 64 } else { 32 };
+        let w = (bytes / size) as u32;
+        if w > 1 && safe_cond_in(c, true) && !self.opts.isa.is_wasm() {
+            let (a, j) = (l.params[0], l.params[1]);
+            let lvec = self.label();
+            self.cbr(&ok, &lvec, &lslow);
+            self.block(&lvec);
+            let narrow: u32 = if size == 1 { NARROW_SEARCH.min(w) } else { w };
+            if size == 1 && reads.len() <= 1 {
+                // one array of bytes read: four vectors a round while they
+                // fit, their masks or-ed and tested once, the last of them
+                // with a lane set then found (a byte absent of a text of
+                // 4096 bytes: 665 instructions, against 489 for `memrchr`,
+                // with one vector a round; 275 so). Not for the searches by
+                // pairs of bytes: called again at each candidate, frequent
+                // in some texts, they paid the four vectors each time and
+                // the vectors made ready for them (a needle of 5 bytes whose
+                // ends are frequent, in a text of 4096 bytes: 19 228 → 30 814
+                // instructions, more than `memmem::rfind`)
+                const ROUND: u32 = 4;
+                let (lloop, lvbody, lhit, lvnext, ldone) = (self.label(), self.label(), self.label(), self.label(), self.label());
+                self.br(&lloop);
+                self.block(&lloop);
+                let i = self.ins(format!("load i64, ptr {}", at));
+                let more = self.ins(format!("icmp sge i64 {}, {}", i, ROUND * w));
+                self.cbr(&more, &lvbody, &ldone);
+                self.block(&lvbody);
+                let base = self.ins(format!("sub i64 {}, {}", i, ROUND * w));
+                let mut quarters = Vec::new();
+                for q in 0..ROUND {
+                    let from = self.ins(format!("add i64 {}, {}", base, q * w));
+                    let (_, bits) = self.fold_first_vector(c, (a, j), &iv, &reads, &from, w)?;
+                    quarters.push((from, bits));
+                }
+                let mut any = quarters[0].1.clone();
+                for (_, bits) in &quarters[1..] {
+                    any = self.ins(format!("or i{} {}, {}", w, any, bits));
+                }
+                let hit = self.ins(format!("icmp ne i{} {}, 0", w, any));
+                self.cbr(&hit, &lhit, &lvnext);
+                self.block(&lhit);
+                // the last vector with a lane set, from the end
+                for (q, (from, bits)) in quarters.iter().enumerate().rev() {
+                    let (lfound_q, lnext_q) = (self.label(), self.label());
+                    if q > 0 {
+                        let set = self.ins(format!("icmp ne i{} {}, 0", w, bits));
+                        self.cbr(&set, &lfound_q, &lnext_q);
+                    } else {
+                        self.br(&lfound_q);
+                    }
+                    self.block(&lfound_q);
+                    let found = self.fold_last_lane(bits, from, w);
+                    self.emit(format!("store i64 {}, ptr {}", found, acc));
+                    self.br(&ljoin);
+                    self.block(&lnext_q);
+                    if q == 0 {
+                        self.emit("unreachable");
+                    }
+                }
+                self.block(&lvnext);
+                self.emit(format!("store i64 {}, ptr {}", base, at));
+                self.br(&lloop);
+                self.block(&ldone);
+            }
+            let mut widths = vec![w];
+            if narrow < w {
+                widths.push(narrow);
+            }
+            for &width in &widths {
+                let (lloop, lvbody, lhit, lvnext, ldone) = (self.label(), self.label(), self.label(), self.label(), self.label());
+                self.br(&lloop);
+                self.block(&lloop);
+                let i = self.ins(format!("load i64, ptr {}", at));
+                let more = self.ins(format!("icmp sge i64 {}, {}", i, width));
+                self.cbr(&more, &lvbody, &ldone);
+                self.block(&lvbody);
+                let base = self.ins(format!("sub i64 {}, {}", i, width));
+                let (any, bits) = self.fold_first_vector(c, (a, j), &iv, &reads, &base, width)?;
+                self.cbr(&any, &lhit, &lvnext);
+                self.block(&lhit);
+                let found = self.fold_last_lane(&bits, &base, width);
+                self.emit(format!("store i64 {}, ptr {}", found, acc));
+                self.br(&ljoin);
+                self.block(&lvnext);
+                self.emit(format!("store i64 {}, ptr {}", base, at));
+                self.br(&lloop);
+                self.block(&ldone);
+            }
+            if size == 1 {
+                // fewer than `narrow` left: one vector over the start, when
+                // the array holds one
+                let (lleft, lover, lhit) = (self.label(), self.label(), self.label());
+                let i = self.ins(format!("load i64, ptr {}", at));
+                let left = self.ins(format!("icmp sgt i64 {}, 0", i));
+                self.cbr(&left, &lleft, &ljoin);
+                self.block(&lleft);
+                let whole = self.ins(format!("icmp sge i64 {}, {}", n, narrow));
+                self.cbr(&whole, &lover, &lhead);
+                self.block(&lover);
+                let (any, bits) = self.fold_first_vector(c, (a, j), &iv, &reads, "0", narrow)?;
+                self.cbr(&any, &lhit, &ljoin);
+                self.block(&lhit);
+                let found = self.fold_last_lane(&bits, "0", narrow);
+                self.emit(format!("store i64 {}, ptr {}", found, acc));
+                self.br(&ljoin);
+            } else {
+                self.br(&lhead);
+            }
+        } else {
+            self.cbr(&ok, &lhead, &lslow);
+        }
         self.block(&lhead);
-        let i = self.ins(format!("load i64, ptr {}", at));
-        let inside = self.ins(format!("icmp sge i64 {}, 0", i));
+        let top = self.ins(format!("load i64, ptr {}", at));
+        let inside = self.ins(format!("icmp sgt i64 {}, 0", top));
         self.cbr(&inside, &lbody, &ljoin);
         self.block(&lbody);
+        let i = self.ins(format!("sub i64 {}, 1", top));
         for (_, k) in &reads {
             self.prechecked.insert(*k as *const Expr);
         }
@@ -11354,8 +11469,7 @@ impl<'p> Gen<'p> {
         self.emit(format!("store i64 {}, ptr {}", i, acc));
         self.br(&ljoin);
         self.block(&lnext);
-        let down = self.ins(format!("sub i64 {}, 1", i));
-        self.emit(format!("store i64 {}, ptr {}", down, at));
+        self.emit(format!("store i64 {}, ptr {}", i, at));
         self.br(&lhead);
         self.block(&lslow);
         let slow = self.fold_loop(&src, &n, &iv, &init.ty, l)?;
@@ -11363,6 +11477,16 @@ impl<'p> Gen<'p> {
         self.br(&ljoin);
         self.block(&ljoin);
         Ok(v(self.ins(format!("load i64, ptr {}", acc)), "i64"))
+    }
+
+    /// The index of the last lane set of `bits` (not 0), the mask of the
+    /// `w` indices from `i`.
+    fn fold_last_lane(&mut self, bits: &str, i: &str, w: u32) -> String {
+        self.decls.insert(format!("declare i{w} @llvm.ctlz.i{w}(i{w}, i1)", w = w));
+        let k = self.ins(format!("call i{w} @llvm.ctlz.i{w}(i{w} {b}, i1 true)", w = w, b = bits));
+        let k64 = if w == 64 { k } else { self.ins(format!("zext i{} {} to i64", w, k)) };
+        let lane = self.ins(format!("sub i64 {}, {}", w - 1, k64));
+        self.ins(format!("add i64 {}, {}", i, lane))
     }
 
     /// `c` of a search of rule F on the `w` indices from `i`: whether it
@@ -14830,11 +14954,6 @@ impl<'p> Gen<'p> {
                 new_str(self, format!("call void @{}(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, {})", f, p, n, q, m, pos))
             }
             // the functions of TypeScript (D155)
-            S::LastIndexOf => {
-                let (p, n) = self.str_parts(&vals[0]);
-                let (q, m) = self.str_parts(&vals[1]);
-                v(self.ins(format!("call i64 @isc_last_index_of(ptr {}, i64 {}, ptr {}, i64 {})", p, n, q, m)), "i64")
-            }
             // against a literal of at most 16 bytes: its length, then its
             // bytes compared as one or two integers, without a call (D301)
             S::StartsWith | S::EndsWith if self.literal_of(&es[1]).is_some_and(|t| t.len() <= 16) => {
@@ -14858,12 +14977,13 @@ impl<'p> Gen<'p> {
                 let same = self.text_same(&at, &q, &k);
                 v(self.ins(format!("and i1 {}, {}", fits, same)), "i1")
             }
-            S::ReplaceAll | S::ReplaceFirst => {
+            // `replaceAll` of texts by the runtime (`$runtimeReplaceAll`, D6xx
+            // (texts))
+            S::ReplaceAll => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);
                 let (r, k) = self.str_parts(&vals[2]);
-                let all = (op == S::ReplaceAll) as i32;
-                new_str(self, format!("call void @isc_replace_all(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", p, n, q, m, r, k, all))
+                new_str(self, format!("call void @isc_replace_all(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, ptr {}, i64 {}, i32 1)", p, n, q, m, r, k))
             }
             // regular expressions (D157)
             S::Rx(x) => {
@@ -15064,10 +15184,10 @@ impl<'p> Gen<'p> {
                     }
                 }
             }
-            S::JsNumber | S::JsParseFloat | S::JsParseInt => {
+            // (`Number(s)`: `$jsNumber` of the prelude, D6xx (texts))
+            S::JsParseFloat | S::JsParseInt => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (which, radix) = match op {
-                    S::JsNumber => (0, "0".to_string()),
                     S::JsParseFloat => (1, "0".to_string()),
                     _ => (2, vals[1].r.clone()),
                 };
@@ -16125,12 +16245,10 @@ impl<'p> Gen<'p> {
                     F::ReadBytes => ("{ ptr, i64 }".to_string(), "isc_try_read_bytes"),
                     F::ReadF64 => ("{ ptr, i64 }".to_string(), "isc_try_read_f64"),
                     F::ReadText => ("{ ptr, i64 }".to_string(), "isc_try_read_text"),
-                    F::ReadCsvF64 => (NESTED.to_string(), "isc_try_read_csv_f64"),
                     F::WriteBytes | F::WriteText => unreachable!(),
                 };
                 let val = self.alloca(&vt);
-                let skip = if f == F::ReadCsvF64 { format!(", i64 {}", vals[1].r) } else { String::new() };
-                self.emit(format!("call void @{}(ptr {}, ptr {}, ptr {}, i64 {}{})", name, val, err, p, n, skip));
+                self.emit(format!("call void @{}(ptr {}, ptr {}, ptr {}, i64 {})", name, val, err, p, n));
                 let x = self.ins(format!("load {}, ptr {}", vt, val));
                 let m = self.ins(format!("load {{ ptr, i64 }}, ptr {}", err));
                 let tt = lt(&e.ty);
@@ -16149,13 +16267,6 @@ impl<'p> Gen<'p> {
                 let (d, m) = self.str_parts(&vals[1]);
                 self.emit(format!("call void @isc_write_text(ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, d, m, pos));
                 v("false", "i1")
-            }
-            ActionOp::ParseCsvF64 | ActionOp::ReadCsvF64 => {
-                let (p, n) = self.str_parts(&vals[0]);
-                let f = if op == ActionOp::ParseCsvF64 { "isc_parse_csv_f64" } else { "isc_read_csv_f64" };
-                let slot = self.alloca(NESTED);
-                self.emit(format!("call void @{}(ptr {}, ptr {}, i64 {}, i64 {}, {})", f, slot, p, n, vals[1].r, pos));
-                v(self.ins(format!("load {}, ptr {}", NESTED, slot)), NESTED)
             }
             ActionOp::Extern(i) => self.call_extern(i, &vals, e)?,
         })

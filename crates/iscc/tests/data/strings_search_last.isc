@@ -1,0 +1,61 @@
+// `lastIndexOf` of the prelude (D6xx (texts)) against a search one place at
+// a time from the end: texts over alphabets of 1 to 4 letters and of
+// characters of several bytes, needles cut from them (at their ends too)
+// or not; long repeated texts whose needles spend the budget of the
+// search by pairs (the two-way search from the end takes over). The counts
+// of wrong answers, each 0.
+
+// the reference: one place at a time, from `at` down
+function slowAt(b: u8[k], p: u8[m], at: i64): i64 {
+    return at < 0 ? -1 : findIndex(iota(m), (j) => b[at + j] != p[j]) < 0 ? at : slowAt(b, p, at - 1);
+}
+
+function check(s: string, t: string): i64 {
+    const want = t.length > s.length ? -1 : slowAt(bytes(s), bytes(t), s.length - t.length);
+    return s.lastIndexOf(t) == want ? 0 : 1;
+}
+
+// the characters of a text over an alphabet of `letters` letters, from a
+// seed; a character of two or three bytes in seven when `wide`
+function chars(seed: i64, n: i64, letters: i64, wide: boolean): string[n] {
+    return map(iota(n), (j) => {
+        const c = ((seed * 31 + j * j * 7 + j * (seed % 13 + 1)) % 1009) % letters;
+        return wide && j % 7 == 3 ? (c % 2 == 0 ? "\u{e9}" : "\u{20ac}") : stringOf([u8(97 + c)]);
+    });
+}
+
+action main(args: string[k]): i32 {
+    // random texts and needles cut from them or not, small alphabets
+    const rounds = parseI64(args[0]);
+    const wrong1 = sum(map(iota(rounds), (q) => {
+        const letters = 1 + q % 4;
+        const cs = chars(q, q % 97, letters, q % 3 == 2);
+        const s = join(cs, "");
+        const n = cs.length;
+        const from = (q * 7) % (n + 1);
+        const len = (q * 3) % (n - from + 1);
+        const cut = join(cs.slice(from, from + len), "");
+        const head = join(cs.slice(0, len), "");
+        const tail = join(cs.slice(n - len, n), "");
+        const other = join(chars(q + 5, q % 23, letters, false), "");
+        return check(s, cut) + check(s, head) + check(s, tail) + check(s, other) + check(s, cut + "z") + check(s, "z" + cut);
+    }));
+    // long repeated texts: the budget of the search by pairs spent
+    const a = stringOf(map(iota(6000), (j) => 97u8));
+    const ab = stringOf(map(iota(6000), (j) => u8(97 + j % 2)));
+    const abc = stringOf(map(iota(6000), (j) => u8(97 + j % 3)));
+    const wrong2 = sum(map(iota(rounds / 40 + 1), (q) => {
+        const m = 17 + q * 5;
+        const n1 = "ab" + a.slice(0, m - 2);
+        const n2 = "b" + a.slice(0, m - 1);
+        const n3 = a.slice(0, m - 1) + "b";
+        const n4 = "aa" + ab.slice(0, m - 1);
+        const n5 = abc.slice(0, m) + abc.slice(0, m);
+        const n6 = ab.slice(0, 4) + "a" + ab.slice(1, m);
+        const n7 = ab.slice(0, m) + "aa" + ab.slice(0, m);
+        return check(a, n1) + check(a, n2) + check(a, n3) + check(ab, n4) + check(abc, n5) + check(ab, n6) + check(ab, n7)
+            + check(n1 + a, n1) + check(ab + n4 + ab, n4) + check(abc + "x" + abc, abc.slice(0, m) + "x") + check(n7 + ab, n7) + check(ab + n7 + ab, n7);
+    }));
+    print([wrong1, wrong2]);
+    return 0;
+}
