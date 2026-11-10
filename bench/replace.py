@@ -86,20 +86,32 @@ def perf(cmd, events="instructions:u", pin=None):
     return v, p.stdout
 
 
-def shown(stdout):
-    """The output of a pilot without its column of time (the second)."""
+def shown(stdout, varying=()):
+    """The output of a pilot without its columns of time: the second, and
+    those (`varying`) that differ between two runs of the same binary (a
+    pilot may print its time elsewhere: `case_pilot` in the fourth)."""
     lines = []
-    for l in stdout.splitlines():
+    for k, l in enumerate(stdout.splitlines()):
         f = l.split()
-        lines.append(" ".join(f[:1] + f[2:]))
+        lines.append(" ".join(x for j, x in enumerate(f) if j != 1 and (k, j) not in varying))
     return hashlib.md5("\n".join(lines).encode()).hexdigest()[:8]
 
 
+def varying(a, b):
+    """The places (line, column) where two outputs of one binary differ."""
+    out = set()
+    for k, (x, y) in enumerate(zip(a.splitlines(), b.splitlines())):
+        for j, (p, q) in enumerate(zip(x.split(), y.split())):
+            if p != q:
+                out.add((k, j))
+    return out
+
+
 def per_element(binary, form, events="instructions:u", pin=None):
-    a, _ = perf([binary] + args_of(form, form["r1"]), events, pin)
+    a, first = perf([binary] + args_of(form, form["r1"]), events, pin)
     b, out = perf([binary] + args_of(form, form["r2"]), events, pin)
     k = (form["r2"] - form["r1"]) * form["n"]
-    return {e: (b[e] - a[e]) / k for e in a}, out
+    return {e: (b[e] - a[e]) / k for e in a}, (first, out)
 
 
 def pilots(old, new, fs, env=None):
@@ -116,11 +128,12 @@ def counts(old, new, path):
     print("| --- | ---: | ---: | ---: | --- |")
     worse = []
     for f in fs:
-        b, ob = per_element(bins[f["pilot"]][0], f)
-        a, oa = per_element(bins[f["pilot"]][1], f)
+        b, (ob1, ob) = per_element(bins[f["pilot"]][0], f)
+        a, (oa1, oa) = per_element(bins[f["pilot"]][1], f)
         bi, ai = b["instructions"], a["instructions"]
         d = 100 * (ai - bi) / bi if bi else 0.0
-        same = "same" if shown(ob) == shown(oa) else "**DIFFERENT**"
+        vary = varying(ob1, ob) | varying(oa1, oa)
+        same = "same" if shown(ob, vary) == shown(oa, vary) else "**DIFFERENT**"
         if d > 0.3 or same != "same":
             worse.append(f["name"])
         print("| %s | %.2f | %.2f | %+.2f %% | %s |" % (f["name"], bi, ai, d, same), flush=True)
