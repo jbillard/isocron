@@ -1,0 +1,163 @@
+// The small blocks of the allocator written in Isocron (D602, D603): not
+// called by the generated code yet.
+//
+// The arena. Its first page: at 0 the next byte never given, at 8 the end of
+// its committed bytes, at 16 the lock of both; from 64, for each class c, at
+// 64 + 16 * c the list of its free blocks shared by the threads, at 72 + 16 *
+// c the lock of that list. A block of the class c (64 * (c + 1) bytes, 16
+// classes) is 64 bytes after its header: at 0 its class (4 bytes), at 4 its
+// state (1 byte: in use or free), at 8 the next block of its list.
+// The zone of the thread: at 8 * c the list of its free blocks of the class
+// c, at 128 + 2 * c their count (at most 64: beyond, half of them go to the
+// shared list).
+
+action $kStart(): u64 {
+    const base = $arenaReserve(1099511627776u64);
+    if (base == 0u64) {
+        return 0u64;
+    }
+    const code = $arenaCommit(base, 2097152u64);
+    if (code != 0) {
+        return 0u64;
+    }
+    $store64(base, base + 4096u64);
+    $store64(base + 8u64, base + 2097152u64);
+    return base;
+}
+
+// The lock at `a` taken: the word 0 made 1 in one step, tried again while
+// another thread holds it.
+action $kLock(a: u64): i64 {
+    if ($cas64(a, 0u64, 1u64) == 0u64) {
+        return 0;
+    }
+    $spinHint();
+    return $kLock(a);
+}
+
+action $kUnlock(a: u64): i64 {
+    $atomicStore64(a, 0u64);
+    return 0;
+}
+
+// A block of `bytes` bytes (1 to 1024): the first of the list of the
+// thread, or blocks from the shared list, or new ones.
+action $kAlloc(bytes: i64): u64 {
+    const class = (bytes + 63) / 64 - 1;
+    const head = $zoneLoad64(class * 8);
+    if (head == 0u64) {
+        return $kRefill(class);
+    }
+    $zoneStore64(class * 8, $load64(head + 8u64));
+    $zoneStore16(128 + class * 2, $zoneLoad16(128 + class * 2) - 1u64);
+    $store8(head + 4u64, 0xA5u64);
+    return head + 64u64;
+}
+
+// The list of the thread is empty: up to 32 blocks of the shared list of
+// the class, under its lock; none there, 32 new ones. The first is given.
+action $kRefill(class: i64): u64 {
+    const base = $arenaBase();
+    const shared = base + 64u64 + u64(class) * 16u64;
+    const l = $kLock(shared + 8u64);
+    const first = $load64(shared);
+    if (first == 0u64) {
+        const u = $kUnlock(shared + 8u64);
+        return $kCarve(class);
+    }
+    // the 32nd block of the shared list, or its last
+    const tail = $kWalk(first, 31);
+    $store64(shared, $load64(tail + 8u64));
+    const u = $kUnlock(shared + 8u64);
+    $store64(tail + 8u64, 0u64);
+    const taken = $kCount(first, 0);
+    $zoneStore64(class * 8, $load64(first + 8u64));
+    $zoneStore16(128 + class * 2, u64(taken - 1));
+    $store8(first + 4u64, 0xA5u64);
+    return first + 64u64;
+}
+
+// The block `steps` after `h` in its list, or the last of the list.
+action $kWalk(h: u64, steps: i64): u64 {
+    const next = $load64(h + 8u64);
+    if (steps == 0 || next == 0u64) {
+        return h;
+    }
+    return $kWalk(next, steps - 1);
+}
+
+// The blocks of the list from `h`, after `n` of them.
+action $kCount(h: u64, n: i64): i64 {
+    if (h == 0u64) {
+        return n;
+    }
+    return $kCount($load64(h + 8u64), n + 1);
+}
+
+// 32 new blocks of the class cut after the last byte given, under the lock
+// of that byte (their pages committed by 2 MiB): the first one given, the
+// others the list of the thread.
+action $kCarve(class: i64): u64 {
+    const base = $arenaBase();
+    const step = u64(class + 1) * 64u64 + 64u64;
+    const count = 32;
+    const l = $kLock(base + 16u64);
+    const start = $load64(base);
+    const end = start + step * u64(count);
+    const committed = $load64(base + 8u64);
+    if (end > committed) {
+        const more = (end - committed + 2097151u64) / 2097152u64 * 2097152u64;
+        const code = $arenaCommit(committed, more);
+        if (code != 0) {
+            $panic("out of memory", "", "");
+        }
+        $store64(base + 8u64, committed + more);
+    }
+    $store64(base, end);
+    const u = $kUnlock(base + 16u64);
+    forEach(iota(count - 1), (i) => {
+        const h = start + step * u64(i + 1);
+        $store32(h, u64(class));
+        $store8(h + 4u64, 0x5Au64);
+        $store64(h + 8u64, i + 2 < count ? h + step : 0u64);
+    });
+    $zoneStore64(class * 8, start + step);
+    $zoneStore16(128 + class * 2, u64(count - 1));
+    $store32(start, u64(class));
+    $store8(start + 4u64, 0xA5u64);
+    return start + 64u64;
+}
+
+// The block `p` given back: the first of the list of its class; that list
+// past 64 blocks, its first 32 go to the shared list.
+action $kFree(p: u64): i64 {
+    const h = p - 64u64;
+    const class = i64($load32(h));
+    if ($load8(h + 4u64) != 0xA5u64 || class >= 16) {
+        $panic("invalid free (a block freed twice or not allocated by the runtime)", "", "");
+    }
+    $store8(h + 4u64, 0x5Au64);
+    $store64(h + 8u64, $zoneLoad64(class * 8));
+    $zoneStore64(class * 8, h);
+    const held = $zoneLoad16(128 + class * 2) + 1u64;
+    $zoneStore16(128 + class * 2, held);
+    if (held > 64u64) {
+        return $kFlush(class);
+    }
+    return class;
+}
+
+// The first 32 blocks of the list of the thread given to the shared list of
+// the class, under its lock.
+action $kFlush(class: i64): i64 {
+    const first = $zoneLoad64(class * 8);
+    const tail = $kWalk(first, 31);
+    $zoneStore64(class * 8, $load64(tail + 8u64));
+    $zoneStore16(128 + class * 2, $zoneLoad16(128 + class * 2) - 32u64);
+    const shared = $arenaBase() + 64u64 + u64(class) * 16u64;
+    const l = $kLock(shared + 8u64);
+    $store64(tail + 8u64, $load64(shared));
+    $store64(shared, first);
+    const u = $kUnlock(shared + 8u64);
+    return class;
+}

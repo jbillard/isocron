@@ -805,6 +805,27 @@ pub fn kernel(op: isc_ir::KernelOp, a: &[u64]) -> Result<Option<u64>, &'static s
                 }
                 None
             }
+            // (one thread runs the interpreted program: every step is whole)
+            K::Cas | K::AtomicLoad | K::AtomicStore => {
+                let o = inside(k.size, a[0], 8).filter(|o| o % 8 == 0).ok_or(KERNEL_ARENA)?;
+                let page = k.pages.get_mut(&(o / 4096)).ok_or("a page of the arena that is not committed")?;
+                let at = (o % 4096) as usize;
+                let before = u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
+                match op {
+                    K::Cas => {
+                        if before == a[1] {
+                            page[at..at + 8].copy_from_slice(&a[2].to_le_bytes());
+                        }
+                        Some(before)
+                    }
+                    K::AtomicLoad => Some(before),
+                    _ => {
+                        page[at..at + 8].copy_from_slice(&a[1].to_le_bytes());
+                        None
+                    }
+                }
+            }
+            K::SpinHint => None,
         })
     })
 }

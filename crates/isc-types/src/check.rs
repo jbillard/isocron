@@ -2709,6 +2709,10 @@ impl<'g> FnCx<'g> {
                 KernelOp::Store(_) => (vec![u64t.clone(), u64t.clone()], Ty::Unit),
                 KernelOp::ZoneLoad(_) => (vec![i64t.clone()], u64t.clone()),
                 KernelOp::ZoneStore(_) => (vec![i64t.clone(), u64t.clone()], Ty::Unit),
+                KernelOp::Cas => (vec![u64t.clone(), u64t.clone(), u64t.clone()], u64t.clone()),
+                KernelOp::AtomicLoad => (vec![u64t.clone()], u64t.clone()),
+                KernelOp::AtomicStore => (vec![u64t.clone(), u64t.clone()], Ty::Unit),
+                KernelOp::SpinHint => (vec![], Ty::Unit),
             };
             if args.len() != params.len() {
                 return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));

@@ -13899,6 +13899,32 @@ impl<'p> Gen<'p> {
                 let p = zone(self, &vals[0].r, w);
                 write(self, &p, w, &vals[1].r)
             }
+            // a word of 8 bytes of the arena, on 8 bytes (an atomic
+            // operation of LLVM needs its alignment): tested with the place
+            K::Cas | K::AtomicLoad | K::AtomicStore => {
+                let p = place(self, &vals[0].r, 8);
+                let low = self.ins(format!("and i64 {}, 7", vals[0].r));
+                let ok = self.ins(format!("icmp eq i64 {}, 0", low));
+                fail(self, &ok, "the kernel reached outside its arena");
+                match op {
+                    K::Cas => {
+                        let r = self.ins(format!("cmpxchg ptr {}, i64 {}, i64 {} seq_cst seq_cst", p, vals[1].r, vals[2].r));
+                        v(self.ins(format!("extractvalue {{ i64, i1 }} {}, 0", r)), "i64")
+                    }
+                    K::AtomicLoad => v(self.ins(format!("load atomic i64, ptr {} seq_cst, align 8", p)), "i64"),
+                    _ => {
+                        self.emit(format!("store atomic i64 {}, ptr {} seq_cst, align 8", vals[1].r, p));
+                        v("0".to_string(), "i8")
+                    }
+                }
+            }
+            K::SpinHint => {
+                if !self.opts.isa.is_wasm() {
+                    self.decls.insert("declare void @llvm.x86.sse2.pause()".into());
+                    self.emit("call void @llvm.x86.sse2.pause()".to_string());
+                }
+                v("0".to_string(), "i8")
+            }
         }
     }
 

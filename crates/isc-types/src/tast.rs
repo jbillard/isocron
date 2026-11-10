@@ -302,6 +302,18 @@ pub enum KernelOp {
     ZoneLoad(u8),
     /// `$zoneStore16(at, v)`, `$zoneStore32`, `$zoneStore64`.
     ZoneStore(u8),
+    /// `$cas64(a, expected, v) => before`: the word of 8 bytes at `a` (in
+    /// the arena, on 8 bytes) becomes `v` if it is `expected`, in one step
+    /// that no other thread can cut; the word it held before. The base of
+    /// the locks of the kernel.
+    Cas,
+    /// `$atomicLoad64(a)`, `$atomicStore64(a, v)`: the word at `a` (in the
+    /// arena, on 8 bytes) read or written in one step, in the order of the
+    /// other atomic operations on it.
+    AtomicLoad,
+    AtomicStore,
+    /// `$spinHint()`: the thread waits for another one a moment (`pause`).
+    SpinHint,
 }
 
 /// The bytes of the zone of a thread (`KernelOp::ZoneLoad`).
@@ -329,15 +341,20 @@ impl KernelOp {
             "$zoneStore16" => KernelOp::ZoneStore(2),
             "$zoneStore32" => KernelOp::ZoneStore(4),
             "$zoneStore64" => KernelOp::ZoneStore(8),
+            "$cas64" => KernelOp::Cas,
+            "$atomicLoad64" => KernelOp::AtomicLoad,
+            "$atomicStore64" => KernelOp::AtomicStore,
+            "$spinHint" => KernelOp::SpinHint,
             _ => return None,
         })
     }
 
     pub fn arity(self) -> usize {
         match self {
-            KernelOp::ArenaBase | KernelOp::ArenaSize => 0,
-            KernelOp::ArenaReserve | KernelOp::Load(_) | KernelOp::ZoneLoad(_) => 1,
-            KernelOp::ArenaCommit | KernelOp::Store(_) | KernelOp::ZoneStore(_) => 2,
+            KernelOp::ArenaBase | KernelOp::ArenaSize | KernelOp::SpinHint => 0,
+            KernelOp::ArenaReserve | KernelOp::Load(_) | KernelOp::ZoneLoad(_) | KernelOp::AtomicLoad => 1,
+            KernelOp::ArenaCommit | KernelOp::Store(_) | KernelOp::ZoneStore(_) | KernelOp::AtomicStore => 2,
+            KernelOp::Cas => 3,
         }
     }
 }

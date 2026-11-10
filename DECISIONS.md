@@ -14209,3 +14209,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     atomic operations to add), the lists of a thread bounded, the
     generated code calling it (inlined after the optimization of the
     module, D600), the measure against the allocator of today.
+- **D603 — The kernel: atomic operations, the lock of the shared lists,
+  the small blocks on several threads (2026-11-10).** Step 3 of D599
+  continued.
+  - `$cas64(a, expected, v)` (the word before), `$atomicLoad64(a)`,
+    `$atomicStore64(a, v)`: a word of 8 bytes of the arena, on 8 bytes,
+    read or written in one step (`cmpxchg`, atomic load and store of LLVM,
+    sequentially consistent for now); `$spinHint()` (`pause`). In the
+    interpreter, which runs one thread, each is whole by itself.
+  - The allocator (`tests/data/kernel_alloc.isc`): a lock is a word made
+    1 by `$cas64` (`$kLock`, tried again after `$spinHint` while another
+    thread holds it; `$kUnlock`), as the spin locks of the allocator of
+    today. The list of a thread past 64 blocks gives its first 32 to the
+    list of its class shared by the threads, under the lock of that list
+    (`$kFlush`); an empty one takes up to 32 from it (`$kRefill`), or
+    cuts 32 new ones under the lock of the next byte (`$kCarve`).
+  - Tests (`kernel`): `small_blocks_written_in_isocron` on one thread,
+    interpreted and compiled (3000 blocks; freed and asked again without
+    anything new cut; a block freed twice a panic);
+    `small_blocks_on_several_threads`, compiled: 16 tasks, each 300 times
+    200 blocks marked with its number, checked and given back, on 1, 2, 8
+    and 16 threads, three runs each: no mark of a task is another's, less
+    than 64 MiB cut.
+  - A limit of the compiler met: a lambda that reads its context given to
+    `mapParallel` and calling recursive actions is refused (« a recursive
+    function given a function that reads, of its context, a size… »); the
+    test names its actions instead.
+  - Not yet: the blocks given to another thread freed there in numbers
+    (the test frees in the thread that took them), the end of a thread,
+    the orders of the atomic operations weaker than sequentially
+    consistent where they may be, the generated code calling the
+    allocator (D600), the measure.

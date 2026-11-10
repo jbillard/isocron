@@ -106,22 +106,51 @@ fn only_the_prelude_and_only_actions() {
     assert!(e.contains("cannot be called here") || e.contains("cannot call the action"), "{}", e);
 }
 
-/// D602: the small blocks of the allocator written in Isocron over the
-/// primitives of the kernel, a first version on one thread: 3000 blocks of
-/// 1 to 1024 bytes on 64 bytes, none over another, their marks whole; half
-/// of them freed and taken again, the last freed first; the others not
-/// touched; everything freed in the end. The same interpreted and compiled.
+/// D602, D603: the small blocks of the allocator written in Isocron over
+/// the primitives of the kernel: 3000 blocks of 1 to 1024 bytes on 64
+/// bytes, none over another, their marks whole; half of them freed and the
+/// same requests again: nothing new cut, the blocks in use apart; the others
+/// not touched; everything freed and every request again: nothing new cut. A
+/// block freed twice is a panic. The same interpreted and compiled.
 #[test]
 fn small_blocks_written_in_isocron() {
-    let src = include_str!("data/kernel_small.isc");
-    let got = interpreted(src).unwrap_or_else(|e| panic!("interpreted: {}", e));
+    let src = &format!("{}\n{}", include_str!("data/kernel_alloc.isc"), include_str!("data/kernel_small.isc"));
+    let p = iscc::frontend_as_prelude("kernel.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let mut out = Vec::new();
+    let e = isc_interp::run(&p, &[], &mut out).unwrap_err().to_string();
+    assert!(e.contains("invalid free"), "interpreted: {}", e);
+    let want = "1\n1\n3000\n[1, 1]\n1500\n[1, 1]\n1\n";
+    assert_eq!(String::from_utf8(out).unwrap(), want, "interpreted");
     let r = compiled(src, "kernel_small");
-    assert_eq!((r.code, r.stdout.as_str()), (0, got.as_str()), "{}", r.stderr);
-    let lines: Vec<&str> = got.lines().collect();
-    assert_eq!(lines[0], "1", "the arena");
-    assert_eq!(lines[1], "[3000, 2999, 2999]", "on 64 bytes, apart");
-    assert_eq!(lines[2], "3000", "the marks");
-    assert_eq!(lines[3], "1500", "the blocks freed taken again, the last first");
-    assert_eq!(lines[4], "1500", "the blocks kept");
-    assert_eq!(lines[5], "0", "every block in the lists of the thread, by 32");
+    assert_eq!((r.code, r.stdout.as_str()), (101, want), "{}", r.stderr);
+    assert!(r.stderr.contains("invalid free"), "{}", r.stderr);
+}
+
+/// D603: the same allocator on several threads: 16 tasks, each 300 times
+/// 200 blocks marked with its number, its marks checked, the blocks given
+/// back; the lists of the threads overflow into the shared ones, under
+/// their locks, and are refilled from them. No mark of a task is ever
+/// another's, and the memory cut stays small: the blocks are taken again.
+#[test]
+fn small_blocks_on_several_threads() {
+    let src = &format!("{}\n{}", include_str!("data/kernel_alloc.isc"), include_str!("data/kernel_threads.isc"));
+    let p = iscc::frontend_as_prelude("kernel.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let out = tmp("kernel_threads");
+    let opts = iscc::BuildOptions {
+        output: out.clone(),
+        emit_llvm: Some(out.with_extension("ll")),
+        emit_asm: None,
+        debug: false,
+        codegen: isc_codegen::Options::default(),
+        link: Vec::new(),
+        glibc: false,
+    };
+    iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
+    let want = "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n1\n";
+    for threads in [1, 2, 8, 16] {
+        for _ in 0..3 {
+            let r = run_bin_threads(&out, &[], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want), "{} threads: {}", threads, r.stderr);
+        }
+    }
 }
