@@ -508,6 +508,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
 - [x] Release 0.4.8: `findIndex` (rule F), texts appended by the compiled code, a tuple of an `if` taken apart, a `scan` of several reads by vectors, the index of `json` by sums by prefix (D501 to D513, D514)
 - [x] Release 0.4.9: the functions too large to be inlined decided one at a time, no literal given to `isc_free`, the maps of a few heavy elements made where they are; `json.parse` and `json.decode` below 3 times their floors (D515 to D521, D522)
 - [x] Release 0.5.0: the targets without a C library (Windows, WebAssembly), the target `x86_64-windows-msvc`, the allocator checked, the relocations of static programs checked; texts compared by their first bytes, `concat` and `sort` taking what they read last (D523 to D553, D554)
+- [x] Release 0.6.0: the runtime starts to be written in Isocron (the allocator of the small blocks, the texts and readings of numbers, the pads, `join`, the cases, `trim`, `indexOf`, `includes`), the roundings as instructions, the module of the prelude compiled once; the Benchmarks Game the fastest on 10 of 10 (D621)
 
 ## The targets first (the author's decision, 2026-11-08, D540)
 

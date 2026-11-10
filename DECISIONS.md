@@ -15091,3 +15091,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   program of the tests and the ten of the Benchmarks Game for both targets
   of Windows here, in the first pass (24 programs that LLVM stopped on
   before: 6 of them, for both targets, with the compiler of 724a7ef).
+- **D621 — Release 0.6.0 (2026-11-10).** After 0.5.0: D555 to D620. The
+  runtime starts to be written in Isocron (SPEC section 17): the allocator
+  of the small blocks on Linux (D599 to D605), the texts of integers and
+  floats, `toFixed`, the `print` of floats, the readings of integers and
+  floats, the pads, `join`, the cases, `trim`, `indexOf`, `includes`
+  (D582 to D614), each at least as fast as its Rust version; the
+  roundings as instructions (D613); the module of the prelude compiled
+  once (D611); the native forms of the interpreter (D616). The ten
+  programs of the Benchmarks Game measured again (D618): the fastest on 10
+  of 10. For Windows the functions in `fastcc` (D620). The language the
+  same; no name removed: 0.6.0 for the size of the change of the runtime.
+  The steps of 0.4.3 (D449), the commit of the release the last of `main`
+  (D486).

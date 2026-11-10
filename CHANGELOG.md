@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-11-10
+
+The runtime starts to be written in Isocron. On Linux the small blocks of a
+program come from an allocator written in Isocron; the texts of integers
+and floats, `toFixed`, the `print` of floats, the readings of integers and
+floats, the pads, `join`, the cases, `trim`, `indexOf` and `includes` are
+code of the prelude or of the code generator instead of Rust, each at least
+as fast as its Rust version and most of them much faster; `floor`, `ceil`,
+`trunc`, `round` and `abs` of floats are instructions of the processor. The
+parts that no program inlines are compiled once for a compiler and a
+target and kept in the cache of the user. The ten programs of the
+Benchmarks Game: the fastest on 10 of 10. The language is the same; no
+name removed.
+
 - On Linux, the blocks of 1 to 1024 bytes of a compiled program come from an
   allocator written in Isocron (in the prelude), its fast paths inlined in
   the generated code: a block taken and given back runs 10 % fewer
@@ -31,6 +45,10 @@
 - Under `iscc run`, the readings of numbers, `trim`, `indexOf` and
   `includes`, now written in Isocron, keep a native form in the
   interpreter: as fast as before (D616).
+- For Windows, the functions of a program use the calling convention
+  `fastcc` instead of `tailcc`: a mutual tail call is made where the
+  signatures allow it, an ordinary call otherwise (LLVM could not build
+  for Windows a program that used `indexOf`) (D620).
 - `iscc ir` does not show the functions of the allocator of the runtime,
   present in every program (D605).
 - `@requireTail`, `@requireNoAlloc` and `@cold` are accepted before an
