@@ -181,7 +181,9 @@ pub(crate) fn describe(t: &T) -> String {
 /// The tokens of a file and their positions (1-based line and column, in
 /// characters); comments `//` and `/* */` are skipped.
 pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
-    let chars: Vec<char> = src.chars().collect();
+    // (a file of ASCII, as the prelude, which every program reads: each
+    // byte a character, without decoding)
+    let chars: Vec<char> = if src.is_ascii() { src.bytes().map(char::from).collect() } else { src.chars().collect() };
     let mut toks = Vec::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
     // the open insertions `${` of template literals, each with its depth of
