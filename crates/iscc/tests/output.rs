@@ -40,7 +40,10 @@ fn run_to_threads(bin: &std::path::Path, args: &[&str], to: &str, threads: &str)
     if !threads.is_empty() {
         cmd.env("ISC_THREADS", threads);
     }
-    let file = tmp(&format!("output_{}.txt", to));
+    // (a file for each program: the tests run in parallel, and a file of
+    // one name was written by two of them, each then reading the other's
+    // output; seen in the suite of the release 0.6.0)
+    let file = tmp(&format!("{}_{}.txt", bin.file_name().unwrap().to_string_lossy(), to));
     match to {
         "file" => {
             cmd.stdout(std::fs::File::create(&file).unwrap());
