@@ -342,7 +342,7 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 
 - `sum(x) = reduce(x, (+), 0)`, `product`, `min`, `max` (sémantique flottante en section 10).
 - `count(x, p)`, `findIndex(x, p)` (le premier indice où `p` est vraie, ou -1 ; règle F), `mean(x)`, `dot(a, b) = sum(a * b)`.
-- Fonctions mathématiques : `sqrt`, `fma`, `pow`, `exp`, `log`, `sin`, `cos` (section 10), et l'espace `Math` de TypeScript : `floor`, `ceil`, `trunc`, `round`, `abs`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `PI`, `E` (D151, D155).
+- Fonctions mathématiques : `sqrt`, `fma`, `pow`, `exp`, `log`, `sin`, `cos` (section 10), et l'espace `Math` de TypeScript : `floor`, `ceil`, `trunc`, `round`, `abs`, `tan`, `asin`, `acos`, `atan`, `atan2`, `min`, `max`, `PI`, `E` (D151, D155). `floor`, `ceil`, `trunc`, `abs` et `round` d'un flottant sont des instructions du processeur, exactes, sur des vecteurs comme sur des scalaires (D613) ; les fonctions transcendantes sont des fonctions du runtime, appelées un élément à la fois (D108).
 - Tri stable `sort`, `sortBy`, `toReversed` ; nombres aléatoires à graine `random(seed, i)` et `randomInt`, les mêmes bits partout (D155).
 - Chaînes et texte (D134, D135, D155) : `slice`, `indexOf`, `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `replace`, `replaceAll`, `toUpperCase`, `toLowerCase`, `padStart`, `padEnd`, `repeat`, `trim`, `split`, `join`, `toFixed`, `String`, `Number`, `parseFloat`, `parseInt`, `parseI64`, `parseF64` ; entrée standard `readStdin`, `readStdinText`, `readStdinLines`.
 - Expressions régulières (D157) : `test`, `search`, `countMatches`, `matches`, `replace`, `replaceAll`. `Map` (D158) : `Map(entrées)`, `countBy`, `size`, `get`, `has`, `keys`, `values`, `entries`, `set`, `delete`.

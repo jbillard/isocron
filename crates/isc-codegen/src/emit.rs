@@ -2907,9 +2907,9 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
             vec_ok_given(body, varying, given)
         }
         ExprKind::Unary(_, x) | ExprKind::Convert(x) | ExprKind::Sqrt(x) => vec_ok_given(x, varying, given),
-        // `fma` is an instruction; the other functions are calls of the
-        // runtime, one element at a time
-        ExprKind::Math(MathFn::Fma, xs) => xs.iter().all(|x| vec_ok_given(x, varying, given)),
+        // `fma` and the roundings are instructions (D613); the other
+        // functions are calls of the runtime, one element at a time
+        ExprKind::Math(f, xs) if f.instruction() => xs.iter().all(|x| vec_ok_given(x, varying, given)),
         ExprKind::Binary(_, a, b) => vec_ok_given(a, varying, given) && vec_ok_given(b, varying, given),
         ExprKind::Pow(b, k) => {
             vec_ok_given(b, varying, given) && !mentions(k, varying) && !has_given(k) && vec_ok_given(k, varying, given)
@@ -5342,6 +5342,47 @@ impl<'p> Gen<'p> {
                 self.decls.insert(format!("declare {} @{}({}, {}, {})", t, name, t, t, t));
                 let r = self.ins(format!("call {} @{}({} {}, {} {}, {} {})", t, name, t, vs[0].r, t, vs[1].r, t, vs[2].r));
                 Ok(V { r, t, uni: all_uni })
+            }
+            // no rounding of their own: the instruction, for a scalar and
+            // for a vector (D613); the same bits everywhere, a NaN quiet
+            Math(f @ (MathFn::Floor | MathFn::Ceil | MathFn::Trunc | MathFn::Abs | MathFn::Round), xs) => {
+                let xv = self.ex(&xs[0], w)?;
+                let ww = if uni(&xv) { 1 } else { w };
+                let (s, k) = if e.ty == Type::F32 { ("float", "f32") } else { ("double", "f64") };
+                let (t, kind, bit) = if ww == 1 {
+                    (s.to_string(), k.to_string(), "i1".to_string())
+                } else {
+                    (format!("<{} x {}>", ww, s), format!("v{}{}", ww, k), format!("<{} x i1>", ww))
+                };
+                let call = |g: &mut Self, name: &str, args: &[&str]| -> String {
+                    let full = format!("llvm.{}.{}", name, kind);
+                    g.decls.insert(format!("declare {} @{}({})", t, full, vec![t.as_str(); args.len()].join(", ")));
+                    let args: Vec<String> = args.iter().map(|a| format!("{} {}", t, a)).collect();
+                    g.ins(format!("call {} @{}({})", t, full, args.join(", ")))
+                };
+                let r = match f {
+                    MathFn::Floor => call(self, "floor", &[&xv.r]),
+                    MathFn::Ceil => call(self, "ceil", &[&xv.r]),
+                    MathFn::Trunc => call(self, "trunc", &[&xv.r]),
+                    MathFn::Abs => call(self, "fabs", &[&xv.r]),
+                    _ => {
+                        // `round` of ECMAScript (D155): the floor, and one
+                        // more when what is left is a half or more (exact:
+                        // a float and its floor are within 1); a zero
+                        // takes the sign of `x` (-0.25 gives -0). No
+                        // `x + 0.5`, which rounds; no relaxed arithmetic
+                        // here, whatever the function allows.
+                        let floor = call(self, "floor", &[&xv.r]);
+                        let left = self.ins(format!("fsub {} {}, {}", t, xv.r, floor));
+                        let up = self.ins(format!("fcmp oge {} {}, {}", t, left, self.cst(s, &fconst(0.5), ww)));
+                        let more = self.ins(format!("fadd {} {}, {}", t, floor, self.cst(s, &fconst(1.0), ww)));
+                        let y = self.ins(format!("select {} {}, {} {}, {} {}", bit, up, t, more, t, floor));
+                        let zero = self.ins(format!("fcmp oeq {} {}, zeroinitializer", t, y));
+                        let signed = call(self, "copysign", &[&y, &xv.r]);
+                        self.ins(format!("select {} {}, {} {}, {} {}", bit, zero, t, signed, t, y))
+                    }
+                };
+                Ok(V { r, t, uni: uni(&xv) })
             }
             // a function of the runtime, the same everywhere (D108)
             Math(f, xs) => {

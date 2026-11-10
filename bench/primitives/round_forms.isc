@@ -1,0 +1,73 @@
+// The forms of `floor`, `ceil`, `trunc`, `round` and `abs` of floats
+// (D613): each over an array of 4096 values in the caches, as a `map` kept
+// (one array made a round), as a `map` summed (no array) and inside a
+// longer expression, for `f64` and `f32`. Each is an instruction of the
+// processor in the generated code, on vectors as on scalars; before D613
+// each was a call of the runtime, one element at a time. Its line: the
+// form, the nanoseconds of one element (the mean over the rounds, `bench`)
+// and a value of the result. One form a run (to count its cycles and
+// instructions: `perf stat` of two numbers of rounds, their difference
+// over the elements between them). The floor of the machine for each: one
+// vector instruction for 8 `f64` or 16 `f32`, with a load and a store.
+// usage: round_forms <form> <rounds> [values]
+
+function value(i: i64): f64 {
+    return (i % 2 == 0 ? 1.0 : -1.0) * f64(i * i * 7 + 1) / 16.0;
+}
+
+action main(args: string[k]): i32 {
+    const form = args[0];
+    const r = parseI64(args[1]);
+    const n = args.length > 2 ? parseI64(args[2]) : 4096;
+    const xs = map(iota(n), (i) => value(i));
+    const ys = map(xs, (x) => f32(x));
+    const each = f64(r * n);
+    if (form == "floor.map") {
+        // (the array kept: every element made, one array a round)
+        const [a, t] = bench(r, () => map(xs, (x) => floor(x)));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a[n - 1]}`);
+    }
+    if (form == "floor.sum") {
+        const [a, t] = bench(r, () => sum(map(xs, (x) => floor(x))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "ceil.sum") {
+        const [a, t] = bench(r, () => sum(map(xs, (x) => ceil(x))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "trunc.sum") {
+        const [a, t] = bench(r, () => sum(map(xs, (x) => trunc(x))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "round.sum") {
+        const [a, t] = bench(r, () => sum(map(xs, (x) => round(x))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "round.map") {
+        // (the array kept: every element made, one array a round)
+        const [a, t] = bench(r, () => map(xs, (x) => round(x)));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a[n - 1]}`);
+    }
+    if (form == "abs.sum") {
+        const [a, t] = bench(r, () => sum(map(xs, (x) => abs(x))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "frac.sum") {
+        const [a, t] = bench(r, () => sum(map(xs, (x) => abs(x - floor(x) - 0.5) * 2.0)));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "floor32.sum") {
+        const [a, t] = bench(r, () => sum(map(ys, (y) => floor(y))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "round32.sum") {
+        const [a, t] = bench(r, () => sum(map(ys, (y) => round(y))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+    if (form == "abs32.map") {
+        // (the array kept: every element made, one array a round)
+        const [a, t] = bench(r, () => map(ys, (y) => abs(y)));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a[n - 1]}`);
+    }
+    return 0;
+}

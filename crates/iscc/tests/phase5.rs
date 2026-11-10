@@ -619,6 +619,87 @@ fn math_functions() {
     assert_eq!(std::fs::read(&ow).unwrap(), std::fs::read(&on).unwrap(), "WebAssembly and native");
 }
 
+/// D613: `floor`, `ceil`, `trunc`, `round` and `abs` of floats are
+/// instructions of the processor in the generated code, on vectors as on
+/// scalars, not calls of the runtime: the same bits as the interpreter (whose
+/// versions are musl's) for every instruction set, on 1 and 4 threads and as
+/// WebAssembly, on the values where they could differ (the zeros and their
+/// signs, the halves, the floats around 2^52, the least floats, the
+/// infinities, NaN).
+pub const ROUNDINGS: &str = "// every function on the values where it could differ: the same bits
+// interpreted and compiled, scalar and in a `map`
+action main(args: string[k]): i32 {
+    const base = [0.0, -0.0, 0.25, -0.25, 0.5, -0.5, 0.49999999999999994, -0.49999999999999994, 1.5, -1.5, 2.5, -2.5, 3.5, -3.5,
+        0.75, -0.75, 1.0, -1.0, 4503599627370495.5, -4503599627370495.5, 4503599627370496.0, -4503599627370496.0, 9007199254740993.0,
+        1e300, -1e300, 5e-324, -5e-324, 2.2250738585072014e-308, 0.1, -0.1, 123456.5, -123456.5, 0.9999999999999999, -0.9999999999999999];
+    const special = [parseF64(\"NaN\"), parseF64(\"inf\"), parseF64(\"-inf\")];
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => i < 34 ? base[i] : i < 37 ? special[i - 34] : (i % 2 == 0 ? 1.0 : -1.0) * f64(i * i * 7 + 1) / 16.0);
+    const ys = map(xs, (x) => f32(x));
+    print(map(xs, (x) => floor(x)));
+    print(map(xs, (x) => ceil(x)));
+    print(map(xs, (x) => trunc(x)));
+    print(map(xs, (x) => round(x)));
+    print(map(xs, (x) => abs(x)));
+    print(map(ys, (y) => floor(y)));
+    print(map(ys, (y) => ceil(y)));
+    print(map(ys, (y) => trunc(y)));
+    print(map(ys, (y) => round(y)));
+    print(map(ys, (y) => abs(y)));
+    // scalars, one at a time, and their signs of zero
+    print([floor(xs[3]), ceil(xs[3]), trunc(xs[3]), round(xs[3]), abs(xs[1]), round(xs[5]), round(xs[6]), round(xs[11])]);
+    print(map(xs, (x) => 1.0 / round(x) < 0.0 ? 1 : 0));
+    print(map(xs, (x) => 1.0 / ceil(x) < 0.0 ? 1 : 0));
+    print(sum(map(xs, (x) => x == x ? abs(x - floor(x) - 0.5) : 0.0)));
+    print(map(iota(n), (i) => round(f64(i) * 0.5 - 4.0) + floor(f64(i) / 3.0)));
+    // as values
+    print(map([1.5, -1.5, -0.25], round));
+    print(map([1.5, -1.5, -0.25], floor));
+    print(map([1.5f32, -1.5f32, -0.25f32], abs));
+    return 0;
+}
+";
+
+#[test]
+fn roundings_are_instructions() {
+    let want = interp_ok(ROUNDINGS, &["300"]);
+    let lines: Vec<&str> = want.lines().collect();
+    // (the first 20 values of each, checked by hand; `round` as ECMAScript:
+    // a half toward +inf, the sign of a zero kept)
+    assert!(lines[0].starts_with("[0, -0, 0, -1, 0, -1, 0, -1, 1, -2, 2, -3, 3, -4, 0, -1, 1, -1, 4503599627370495, -4503599627370496, "), "floor: {}", lines[0]);
+    assert!(lines[1].starts_with("[0, -0, 1, -0, 1, -0, 1, -0, 2, -1, 3, -2, 4, -3, 1, -0, 1, -1, 4503599627370496, -4503599627370495, "), "ceil: {}", lines[1]);
+    assert!(lines[2].starts_with("[0, -0, 0, -0, 0, -0, 0, -0, 1, -1, 2, -2, 3, -3, 0, -0, 1, -1, 4503599627370495, -4503599627370495, "), "trunc: {}", lines[2]);
+    assert!(lines[3].starts_with("[0, -0, 0, -0, 1, -0, 0, -0, 2, -1, 3, -2, 4, -3, 1, -1, 1, -1, 4503599627370496, -4503599627370495, "), "round: {}", lines[3]);
+    assert!(lines[4].starts_with("[0, 0, 0.25, 0.25, 0.5, 0.5, 0.49999999999999994, 0.49999999999999994, 1.5, 1.5, "), "abs: {}", lines[4]);
+    assert_eq!(lines[10], "[-1, -0, -0, -0, 0, -0, 0, -2]");
+    assert_eq!(&lines[lines.len() - 3..], ["[2, -1, -0]", "[1, -2, -1]", "[1.5, 1.5, 0.25]"]);
+    use isc_codegen::Isa;
+    for (isa, name) in [(Isa::Native, "native"), (Isa::Sse, "sse"), (Isa::Avx, "avx"), (Isa::Avx2, "avx2")] {
+        let mut o = isc_codegen::Options::default();
+        o.isa = isa;
+        let bin = compile_with(ROUNDINGS, &format!("roundings_{}", name), o);
+        for threads in [1, 4] {
+            let r = run_bin_threads(&bin, &["300"], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} on {} threads: {}", name, threads, r.stderr);
+        }
+        // the code: no function of the runtime, the instructions on vectors
+        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        for gone in ["@isc_floor", "@isc_ceil", "@isc_trunc", "@isc_round", "@isc_abs"] {
+            assert!(!ll.contains(gone), "{}: {} called", name, gone);
+        }
+        for made in ["@llvm.floor.v", "@llvm.ceil.v", "@llvm.trunc.v", "@llvm.fabs.v", "@llvm.copysign.v"] {
+            assert!(ll.contains(made), "{}: no {} on vectors", name, made);
+        }
+    }
+    match wasi_runner() {
+        Some(runner) => {
+            let r = run_wasm(&runner, &compile_wasm(ROUNDINGS, "roundings_wasm"), &["300"]);
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "WebAssembly: {}", r.stderr);
+        }
+        None => eprintln!("no WASI engine (wasmtime): not run as WebAssembly"),
+    }
+}
+
 /// The reductions of sliding windows by their shared levels (D115): the
 /// same bits as one `reduce` per window (the interpreter), for widths that
 /// take the cascade with one pass per lane (32, 64, 96, 128), with one pass

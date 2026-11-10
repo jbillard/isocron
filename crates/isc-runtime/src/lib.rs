@@ -5354,46 +5354,6 @@ pub extern "C" fn isc_atanf(x: f32) -> f32 {
     sem::atan_f32(x)
 }
 #[no_mangle]
-pub extern "C" fn isc_floor(x: f64) -> f64 {
-    sem::floor_f64(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_floorf(x: f32) -> f32 {
-    sem::floor_f32(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_ceil(x: f64) -> f64 {
-    sem::ceil_f64(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_ceilf(x: f32) -> f32 {
-    sem::ceil_f32(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_trunc(x: f64) -> f64 {
-    sem::trunc_f64(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_truncf(x: f32) -> f32 {
-    sem::trunc_f32(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_round(x: f64) -> f64 {
-    sem::round_f64(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_roundf(x: f32) -> f32 {
-    sem::round_f32(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_abs(x: f64) -> f64 {
-    sem::abs_f64(x)
-}
-#[no_mangle]
-pub extern "C" fn isc_absf(x: f32) -> f32 {
-    sem::abs_f32(x)
-}
-#[no_mangle]
 pub extern "C" fn isc_atan2(y: f64, x: f64) -> f64 {
     sem::atan2_f64(y, x)
 }

@@ -891,7 +891,9 @@ From lowest to highest precedence, as in TypeScript (the ECMAScript standard):
 * `Math.floor`, `Math.ceil`, `Math.trunc`, `Math.round` and `Math.abs` (also
   without `Math.`) are those of TypeScript: `Math.round` rounds a half toward
   +inf (`Math.round(-2.5)` is -2, `Math.round(-0.25)` is -0); `abs` takes an
-  integer too (modulo 2^bits: the minimum is itself).
+  integer too (modulo 2^bits: the minimum is itself). Of a float, each is
+  an instruction of the processor, on 8 `f64` or 16 `f32` at once in a
+  `map` (about a third of a cycle an element).
 * `&`, `|`, `^`, `<<` and `>>` take integers of the same type, as `+` does
   (element-wise on arrays too). They are below the comparisons, as in
   TypeScript: `x & 1 == 0` is `x & (1 == 0)`, a type error; write

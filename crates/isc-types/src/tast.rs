@@ -260,6 +260,15 @@ pub enum MathFn {
 }
 
 impl MathFn {
+    /// Made by instructions of the processor, exact, the same on every
+    /// target and on vectors as on scalars: `fma` rounds once (D108);
+    /// `floor`, `ceil`, `trunc` and `abs` round nothing of their own, and
+    /// `round` is a `floor` and a comparison (D613). The others are
+    /// functions of the runtime, called one element at a time.
+    pub fn instruction(self) -> bool {
+        matches!(self, MathFn::Fma | MathFn::Floor | MathFn::Ceil | MathFn::Trunc | MathFn::Round | MathFn::Abs)
+    }
+
     pub fn arity(self) -> usize {
         match self {
             MathFn::Pow | MathFn::Atan2 => 2,

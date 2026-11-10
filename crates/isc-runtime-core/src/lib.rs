@@ -757,14 +757,32 @@ pub fn atan_f64(x: f64) -> f64 {
 pub fn atan2_f64(y: f64, x: f64) -> f64 {
     libm::atan2(y, x)
 }
+/// A NaN as the instructions of the processors give it back (D613): quiet.
+/// `floor`, `ceil`, `trunc` and `round` are instructions in the generated
+/// code; a signaling NaN, which only a pattern of bits makes, comes back
+/// quiet from them, and so from these.
+fn quiet_f64(x: f64) -> f64 {
+    if x.is_nan() {
+        f64::from_bits(x.to_bits() | 0x0008_0000_0000_0000)
+    } else {
+        x
+    }
+}
+fn quiet_f32(x: f32) -> f32 {
+    if x.is_nan() {
+        f32::from_bits(x.to_bits() | 0x0040_0000)
+    } else {
+        x
+    }
+}
 pub fn floor_f64(x: f64) -> f64 {
-    libm::floor(x)
+    quiet_f64(libm::floor(x))
 }
 pub fn ceil_f64(x: f64) -> f64 {
-    libm::ceil(x)
+    quiet_f64(libm::ceil(x))
 }
 pub fn trunc_f64(x: f64) -> f64 {
-    libm::trunc(x)
+    quiet_f64(libm::trunc(x))
 }
 pub fn abs_f64(x: f64) -> f64 {
     libm::fabs(x)
@@ -773,7 +791,7 @@ pub fn abs_f64(x: f64) -> f64 {
 /// JavaScript (`Math.round(-2.5)` is -2, `Math.round(-0.25)` is -0).
 pub fn round_f64(x: f64) -> f64 {
     if !x.is_finite() {
-        return x;
+        return quiet_f64(x);
     }
     let r = libm::floor(x);
     // exact: `x` and `floor(x)` are within 1 of each other
@@ -818,20 +836,20 @@ pub fn atan2_f32(y: f32, x: f32) -> f32 {
     libm::atan2f(y, x)
 }
 pub fn floor_f32(x: f32) -> f32 {
-    libm::floorf(x)
+    quiet_f32(libm::floorf(x))
 }
 pub fn ceil_f32(x: f32) -> f32 {
-    libm::ceilf(x)
+    quiet_f32(libm::ceilf(x))
 }
 pub fn trunc_f32(x: f32) -> f32 {
-    libm::truncf(x)
+    quiet_f32(libm::truncf(x))
 }
 pub fn abs_f32(x: f32) -> f32 {
     libm::fabsf(x)
 }
 pub fn round_f32(x: f32) -> f32 {
     if !x.is_finite() {
-        return x;
+        return quiet_f32(x);
     }
     let r = libm::floorf(x);
     let y = if x - r >= 0.5 { r + 1.0 } else { r };

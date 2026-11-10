@@ -386,6 +386,8 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `join` made by the code generator (D607: 21 to 68 % fewer)
   - [x] `toUpperCase` and `toLowerCase`: ASCII by vectors in the generated code, the rest in the prelude (D608: 35 to 85 % fewer)
   - [x] `toFixed` and the `print` of a float written in Isocron (D610: 19 to 95 % fewer instructions)
+  - [x] `floor`, `ceil`, `trunc`, `round` and `abs` of a float: instructions of the processor in the generated code, on vectors in a `map` (D613: 7.54 → 0.37 cycles an element for `floor`, 11.57 → 0.66 for `round`; ten functions out of the runtime)
+  - [ ] The twenty other mathematical functions (`exp`, `log`, `sin`, `cos`, `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, for `f64` and `f32`): musl's algorithms written in Isocron, the same bits, then on vectors (D108's open question)
   - [ ] `isc_put_int` (the padded integers inside a template, D363) is still in the runtime
   - [ ] `toLowerCase` has no rule of the final sigma, which TypeScript has (`docs/language.md` says the functions of texts mean what they mean there): decide and say
   - [ ] A program that declares a function named as one the prelude uses (`findIndex`, `iota`) fails inside the prelude: the prelude should name its own (`$stringOf` does, D608)

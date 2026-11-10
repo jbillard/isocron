@@ -14822,3 +14822,44 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     still lowers, checks, optimizes and writes the text of every function
     of the module it reaches, to find that the text is the module's: the
     next step (TODO), with the prelude typed at each compilation.
+- **D613 — `floor`, `ceil`, `trunc`, `round` and `abs` of a float: the
+  instructions of the processor (2026-11-10).** Since D155 each was a call
+  of the runtime (`isc_floor`, ...: musl's function in Rust), one element
+  at a time, and a loop that held one was never on vectors. Each is exact
+  (no rounding of its own), so the instruction gives the same bits as the
+  function on every target, as `sqrt` and `fma` already (D108).
+  - The generated code: `llvm.floor`, `llvm.ceil`, `llvm.trunc`,
+    `llvm.fabs`, on a scalar or on the lanes of a `map` (`vrndscalepd`,
+    `vroundpd`, `roundpd`; `f64.floor` in WebAssembly). `round`
+    (ECMAScript: a half toward +inf, the sign of a zero kept) is the floor,
+    one more when what is left is a half or more (exact: a float and its
+    floor are within 1; no `x + 0.5`, which rounds), and the sign of `x`
+    for a zero (`copysign`); never under the relaxed arithmetic of
+    `@allowReassoc`. `MathFn::instruction` says which functions are so;
+    the others stay calls, one element at a time.
+  - A NaN comes back quiet from the instructions; the versions of the
+    interpreter (musl's, kept: the interpreter is the reference) gave a
+    signaling one back as it was: they make it quiet too. Only a pattern
+    of bits makes such a NaN.
+  - Out of the runtime: `isc_floor`, `isc_ceil`, `isc_trunc`, `isc_round`,
+    `isc_abs` and their `f32` versions, ten functions.
+  - Measured, one thread, 4096 values in the caches, the difference of two
+    numbers of rounds (`bench/primitives/round_forms.isc`; cycles on the
+    pinned core, the median of 7), before → after, an element:
+    - `sum(map(x, floor))`: 32.80 → 0.40 instructions, 7.54 → 0.37 cycles;
+      `ceil` 7.44 → 0.39 cycles; `trunc` 6.94 → 0.40;
+    - `round`: 49.55 → 1.27 instructions, 11.57 → 0.66 cycles;
+    - `abs`: 12.06 → 0.40 instructions, 4.06 → 0.16 cycles;
+    - `abs(x - floor(x) - 0.5) * 2.0`: 9.91 → 0.76 cycles;
+    - the array kept: `floor` 6.64 → 0.56 cycles, `round` 9.61 → 0.61;
+    - `f32`: `floor` 7.13 → 0.22 cycles, `round` 10.24 → 0.37, `abs` kept
+      3.01 → 0.08.
+    92 to 97 % fewer cycles. The floor of the machine for `floor` summed:
+    one `vrndscalepd` of 8 values and one addition, a quarter of an
+    instruction an element and the loop; 0.40 is that.
+  - The same bits compiled, interpreted and before, on the values where
+    they could differ (the zeros and their signs, the halves, the floats
+    around 2^52, the least floats, the infinities, NaN) and on 300 values:
+    the test `roundings_are_instructions` (native, SSE4.2, AVX, AVX2, 1
+    and 4 threads, WebAssembly, the functions as values); linked for the
+    two Windows targets.
