@@ -1228,7 +1228,8 @@ struct PreMade<'a> {
     /// The constants and the words of the module: their values.
     values: &'a HashMap<&'a str, &'a str>,
     canon: &'a dyn Fn(&str) -> String,
-    /// name → (its text so written, the functions of the module it names)
+    /// name → (a word for its text so written, the functions of the module
+    /// it names)
     seen: HashMap<String, (String, Vec<String>)>,
 }
 
@@ -1263,16 +1264,19 @@ impl PreMade<'_> {
                 continue;
             }
             if !self.seen.contains_key(&n) {
-                let w = self.texts.get(&n).map(|t| self.written(t, 0)).unwrap_or_default();
-                self.seen.insert(n.clone(), w);
+                // (each text read once, whatever the number of functions
+                // that reach it)
+                let (text, calls) = self.texts.get(&n).map(|t| self.written(t, 0)).unwrap_or_default();
+                self.seen.insert(n.clone(), (text_word(&text), calls));
             }
             todo.extend(self.seen[&n].1.iter().cloned());
         }
         let mut all = String::new();
         for n in &reached {
             all.push_str(n);
-            all.push('\n');
+            all.push(' ');
             all.push_str(&self.seen[n].0);
+            all.push('\n');
         }
         text_word(&all)
     }

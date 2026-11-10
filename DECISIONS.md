@@ -14787,3 +14787,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     162), for these functions are no longer all in the program; they
     build the program whole (`compile_whole`), which is what they read,
     and two of them run it linked with the module as well.
+- **D612 — The check of the memory of a function without a copy of every
+  state at each `if`; the words of the module, each text read once
+  (2026-11-10).** Found in the profile of a compilation, on the branch of
+  the reading of a float (not merged: 1589 lines more in the prelude,
+  functions of hundreds of lines): a program that reads one float took
+  1480.2 million instructions of the compiler (built optimized) against
+  293.9 on main, and a quarter of them were the check of the memory (D96)
+  copying and dropping its states.
+  - The check keeps a state for each variable of the program, and an `if`
+    copied them all twice, to start its second branch from the states
+    before and to compare the two after: the `if`s of a function times the
+    variables of the program. Each change of a state is now logged (the
+    variable, its state before); an `if` reads in the log what its
+    branches changed, puts those back before its second branch, and
+    compares those alone (a variable no branch changed is as before in
+    both). The same rules, the same messages, the variables in the same
+    order; the 18 tests of the check, those of the memory and the suite
+    unchanged.
+  - The word of a function of the module (D611) was made from the texts
+    of all it reaches, read again for each function that reaches them:
+    each text has its word once, and the word of a function is made from
+    those.
+  - Instructions of the compiler, optimized, before → after. On the branch
+    of the reading of a float, a program that reads one: 1480.2 → 1053.4
+    (`iscc check` of it: 786.4 → 400.4). On main, where the functions are
+    small: a program that prints a float 293.9 → 285.4, one that calls
+    `toFixed` 491.0 → 485.0, the texts of the tests 2244.0 → 2201.5,
+    k-nucleotide 4774.8 → 4765.1, a hello the same (205.8).
+  - What the profile shows after it, for the same program: 41 % the
+    compiler's own code, 25 % the allocator of the C library under it
+    (the children of an expression given as a new array at each visit,
+    the texts of the functions written then dropped), 29 % LLVM. A program
+    still lowers, checks, optimizes and writes the text of every function
+    of the module it reaches, to find that the text is the module's: the
+    next step (TODO), with the prelude typed at each compilation.

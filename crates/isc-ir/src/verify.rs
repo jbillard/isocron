@@ -47,6 +47,19 @@ struct Checker<'p> {
     /// The arrays whose texts are views (D555): the owned variables whose
     /// memory their texts borrow. Each owns its block alone.
     spines: std::collections::HashMap<VarId, Vec<VarId>>,
+    /// Each change of a state (`set`), in order: the variable and its state
+    /// before. An `if` reads there what its branches changed, and does not
+    /// copy the states of all the variables of the program for each (the
+    /// time of the check of a function was its `if`s times those).
+    log: Vec<(VarId, State)>,
+}
+
+impl Checker<'_> {
+    /// The state of the variable `v` becomes `s` (logged).
+    fn set(&mut self, v: VarId, s: State) {
+        let before = std::mem::replace(&mut self.st[v as usize], s);
+        self.log.push((v, before));
+    }
 }
 
 fn fail<T>(span: Span, msg: String) -> R<T> {
@@ -57,7 +70,7 @@ fn fail<T>(span: Span, msg: String) -> R<T> {
 /// borrowed (the state of a loop is owned, its copy made on entry, D206),
 /// its result is new memory or a scalar (D102).
 pub(crate) fn verify_fn(p: &Program, f: &Function) -> R<()> {
-    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default() };
+    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default(), log: Vec::new() };
     for (k, v) in f.params.iter().enumerate() {
         c.st[*v as usize] = if f.consumed.get(k).copied().unwrap_or(false) {
             State::Owned { moved: None, region: 0 }
@@ -87,7 +100,7 @@ pub fn verify(p: &Program) -> R<()> {
     for f in &p.fns {
         verify_fn(p, f)?;
     }
-    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default() };
+    let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default(), log: Vec::new() };
     // `main` owns `args`: it frees it at the end, or gives it away
     c.st[p.args as usize] = State::Owned { moved: None, region: 0 };
     let r = c.eval(&p.body)?;
@@ -190,7 +203,7 @@ impl<'p> Checker<'p> {
                     if region != self.region {
                         return fail(span, format!("`{}` is moved inside a loop or a branch, so possibly more than once", self.name(v)));
                     }
-                    self.st[v as usize] = State::Owned { moved: Some(span), region };
+                    self.set(v, State::Owned { moved: Some(span), region });
                     return Ok(Val::Fresh);
                 }
                 Ok(Val::View(vec![v]))
@@ -279,7 +292,8 @@ impl<'p> Checker<'p> {
         self.in_region(|c| {
             for (p, a) in l.params.iter().zip(args) {
                 let t = &c.p.vars[*p as usize].ty;
-                c.st[*p as usize] = c.state_of(a, t);
+                let s = c.state_of(a, t);
+                c.set(*p, s);
             }
             let v = c.eval(&l.body)?;
             result(c, v, &l.body)
@@ -374,11 +388,12 @@ impl<'p> Checker<'p> {
                     // an array whose texts are views (D555): its block owned
                     let owners = self.view_init(init)?;
                     self.spines.insert(*var, owners);
-                    self.st[*var as usize] = State::Owned { moved: None, region: self.region };
+                    self.set(*var, State::Owned { moved: None, region: self.region });
                 } else {
                     let iv = self.eval(init)?;
                     let t = self.p.vars[*var as usize].ty.clone();
-                    self.st[*var as usize] = self.state_of(&iv, &t);
+                    let s = self.state_of(&iv, &t);
+                    self.set(*var, s);
                 }
                 let bv = self.eval(body)?;
                 let name = self.name(*var);
@@ -422,15 +437,33 @@ impl<'p> Checker<'p> {
             // neither (D105)
             If(c, t, f) => {
                 self.eval(c)?;
-                let before = self.st.clone();
                 // the parts taken too: each branch from those taken before
                 // it (D367: a payload taken in one branch, the tuple read
                 // and freed in the other), then those of both
                 let taken_before = self.taken.clone();
+                let mark = self.log.len();
                 let tv = self.eval(t)?;
-                let after_t = std::mem::replace(&mut self.st, before.clone());
+                // the variables the first branch changed, each with its
+                // state before the `if` (its first change since) and its
+                // state after that branch; the second branch starts from
+                // the states before (not logged: what an `if` around this
+                // one reads of a variable is its first change, already
+                // there)
+                let mut changed: std::collections::BTreeMap<VarId, (State, State)> = std::collections::BTreeMap::new();
+                for (v, old) in &self.log[mark..] {
+                    changed.entry(*v).or_insert_with(|| (old.clone(), State::Unbound));
+                }
+                for (v, (before, after)) in changed.iter_mut() {
+                    *after = std::mem::replace(&mut self.st[*v as usize], before.clone());
+                }
                 let taken_t = std::mem::replace(&mut self.taken, taken_before);
+                let mark = self.log.len();
                 let fv = self.eval(f)?;
+                // (changed by the second branch alone: the first left it as
+                // it was)
+                for (v, old) in &self.log[mark..] {
+                    changed.entry(*v).or_insert_with(|| (old.clone(), old.clone()));
+                }
                 for (k, parts) in taken_t {
                     let t = self.taken.entry(k).or_default();
                     for p in parts {
@@ -439,17 +472,15 @@ impl<'p> Checker<'p> {
                         }
                     }
                 }
+                // (a variable no branch changed is as before in both)
                 let consumed = |s: &State| matches!(s, State::Owned { moved: Some(_), .. });
-                for (i, b) in before.iter().enumerate() {
-                    if matches!(b, State::Unbound) {
-                        self.st[i] = State::Unbound;
+                for (v, (before, after_t)) in &changed {
+                    if matches!(before, State::Unbound) {
+                        self.st[*v as usize] = State::Unbound;
                         continue;
                     }
-                    if consumed(&after_t[i]) != consumed(&self.st[i]) {
-                        return fail(
-                            e.span,
-                            format!("`{}` is moved or freed in one branch of this `if` only", self.name(i as VarId)),
-                        );
+                    if consumed(after_t) != consumed(&self.st[*v as usize]) {
+                        return fail(e.span, format!("`{}` is moved or freed in one branch of this `if` only", self.name(*v)));
                     }
                 }
                 match (tv, fv) {
@@ -487,7 +518,7 @@ impl<'p> Checker<'p> {
                         }
                         t.push(*i);
                         if comps.iter().enumerate().all(|(k, c)| !c.has_heap() || t.contains(&(k as u32))) {
-                            self.st[r as usize] = State::Owned { moved: Some(e.span), region };
+                            self.set(r, State::Owned { moved: Some(e.span), region });
                         }
                         Ok(if comps[*i as usize].has_heap() { Val::Fresh } else { Val::Scalar })
                     }
@@ -687,7 +718,7 @@ impl<'p> Checker<'p> {
                                 return fail(e.span, format!("this value borrows `{}`, which is freed after it", name));
                             }
                         }
-                        self.st[*v as usize] = State::Owned { moved: Some(e.span), region };
+                        self.set(*v, State::Owned { moved: Some(e.span), region });
                         Ok(bv)
                     }
                     State::Owned { moved: Some(at), .. } => {
