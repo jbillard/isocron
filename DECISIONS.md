@@ -14085,3 +14085,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     allocations and the copies stay, as the checks and the calls of the
     program, those of its code run by a function of the prelude too.
   - Test `the_inside_of_the_prelude_is_not_in_the_report` (`report`).
+- **D599 — The kernel of the runtime in Isocron begins: the author's word
+  (2026-11-10).** « tu peux commencer le noyau », after the proposal
+  docs/proposals/runtime-kernel.md (the confined arena) and its first
+  measure (D594). What is decided and what is read from it:
+  - The model of the proposal: one reserved range of addresses for the
+    whole heap; the raw memory named by handles confined to it; races
+    never undefined; ordered atomics and locks written over them; a zone
+    for each thread; the allocator as code of the prelude inlined into the
+    program. SPEC section 17, principles 3 and 5, are to be reworded as its
+    section 4 says, with the table of the primitives, as each is made.
+  - From D594: handles of 64 bits, a handle the address itself, tested to
+    be in the arena before its use (not masked); no handle of 32 bits.
+  - Read by me, not said by the author: the calls of `kernel32` under
+    Windows stay the one exception to « no call of C » (the state of today,
+    D541); to raise again when the step of Windows comes.
+  - Unchanged: each part replaces its Rust version only when measured at
+    least as fast (D570); the last stage, the compiler built by itself, is
+    not started without a new discussion.
+  - The order of work, each step measured against the runtime of today:
+    (0) what the generated code loses when an allocation is no longer a
+    call that LLVM knows returns memory aliasing nothing (`noalias`): the
+    first risk of an allocator inlined, to measure before its design is
+    fixed; (1) every block of the heap inside one reserved range, in the
+    allocator of today; (2) the primitives of the kernel in the prelude
+    (loads and stores tested to be in the arena, the zone of the thread);
+    (3) the fast paths of `alloc` and `free` in Isocron, the slow paths
+    still in Rust; (4) the slow paths, one at a time: the lists refilled,
+    the medium blocks, the large ones, the memory given back, the end of a
+    thread; then the pool, the files and `print`, the start and the
+    panics, the copies of blocks, Windows and WebAssembly, the regular
+    expressions and the big integers, as the proposal lists them.

@@ -1,6 +1,6 @@
 # Proposition : le noyau du runtime écrit en Isocron
 
-Statut : **proposition soumise à l'auteur**. Rien de ce document n'est décidé ni implémenté. Elle révise la section 17 de SPEC.md après la décision D589 (plus de Rust du tout, noyau compris) et le relevé du runtime du 2026-11-09.
+Statut : **modèle accepté par l'auteur le 2026-11-10** (« tu peux commencer le noyau », D599), avec des poignées de 64 bits vérifiées (section 6 bis) ; la question 3 (Windows) n'a pas reçu de réponse explicite. L'ordre de travail suivi est celui de D599. Le texte d'origine suit : au moment de sa rédaction, rien n'était décidé ni implémenté. Elle révise la section 17 de SPEC.md après la décision D589 (plus de Rust du tout, noyau compris) et le relevé du runtime du 2026-11-09.
 
 ## 1. Le constat
 
