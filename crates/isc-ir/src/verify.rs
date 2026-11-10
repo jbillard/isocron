@@ -354,9 +354,9 @@ impl<'p> Checker<'p> {
             // except the text of a replacement by a regular expression moved
             // into it, which the replacement owns (D315), and the left text
             // of a concatenation moved into it (D351), the bytes of `stringOf`
-            // moved into it (D399)
+            // moved into it (D399), the text of `$withText` moved into it
             StrOp(op, es) => {
-                let gives = matches!(op, crate::StrOp::Rx(crate::RxOp::Replace | crate::RxOp::ReplaceAll) | crate::StrOp::Concat | crate::StrOp::FromBytes);
+                let gives = matches!(op, crate::StrOp::Rx(crate::RxOp::Replace | crate::RxOp::ReplaceAll) | crate::StrOp::Concat | crate::StrOp::FromBytes | crate::StrOp::WithText);
                 for (i, x) in es.iter().enumerate() {
                     let v = self.eval(x)?;
                     if i == 0 && gives && v == Val::Fresh && matches!(x.kind, Var(_, Use::Move)) {

@@ -2559,8 +2559,9 @@ impl<'a> Rewriter<'a> {
             }
             // the left text of `a + b` (a chain, a template) at its last use,
             // owned and without alias: given to it (D351), which writes the
-            // rest after it in its block when the block has room
-            ExprKind::StrOp(crate::StrOp::Concat, es) if heap => {
+            // rest after it in its block when the block has room; the text
+            // of `$withText` the same way: written where it is
+            ExprKind::StrOp(crate::StrOp::Concat | crate::StrOp::WithText, es) if heap => {
                 let mut first = None;
                 for c in es.iter_mut() {
                     let o = self.walk(c)?;

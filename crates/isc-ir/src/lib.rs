@@ -246,6 +246,9 @@ pub enum StrOp {
     /// `$decimalText(d, w1, w2, n, point, minus)`: a decimal number of 17
     /// digits as a string, `n` of them written, `point` before the point.
     DecimalText,
+    /// `$withText(t, at, piece)`: `t` with the bytes of `piece` from `at`,
+    /// written in `t` itself when it is given (a variable at its last use).
+    WithText,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.
@@ -266,9 +269,10 @@ impl StrOp {
     /// out of its bytes (`readWord`), a `bigint` from a text that is no
     /// integer, divided by zero or raised to a negative or huge exponent, a
     /// regular expression made of a pattern that is not one or replacing
-    /// all without the flag `g`. The passes never compute it where the
-    /// program does not (`passes::cannot_panic`). A memory exhausted is no
-    /// panic of a value: not counted, as for `iota(n)`.
+    /// all without the flag `g`, a text written outside another or inside
+    /// one of its characters (`$withText`). The passes never compute it
+    /// where the program does not (`passes::cannot_panic`). A memory
+    /// exhausted is no panic of a value: not counted, as for `iota(n)`.
     pub fn may_panic(&self) -> bool {
         matches!(
             self,
@@ -281,6 +285,7 @@ impl StrOp {
                 | StrOp::Panic
                 | StrOp::TextTail
                 | StrOp::DecimalText
+                | StrOp::WithText
                 | StrOp::Big(BigOp::Div | BigOp::Rem | BigOp::Pow | BigOp::Parse)
                 | StrOp::Rx(RxOp::New | RxOp::Replace | RxOp::ReplaceAll)
         )
@@ -535,6 +540,11 @@ pub struct Program {
     /// generator writes the padded text of an integer from them, in one
     /// block (D348).
     pub digit_words: Option<u32>,
+    /// The function of the prelude that finishes `toUpperCase` and
+    /// `toLowerCase` of a text that is not ASCII (`$caseText`), lowered
+    /// when the program has one: the code generator calls it where a byte
+    /// of the text is not ASCII.
+    pub case_text: Option<u32>,
     /// The entries of the allocator written in Isocron (D605), lowered for
     /// every program: `$kStart`, `$kAlloc`, `$kFree`.
     pub kernel: Option<(u32, u32, u32)>,

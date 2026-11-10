@@ -3278,55 +3278,6 @@ unsafe fn give_back(s: *const u8, given: i32) {
     }
 }
 
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_case(out: *mut IscStr, p: *const u8, n: i64, upper: i32) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        let s = text(p, n);
-        // an ASCII text (D302): each byte mapped, the string of the same length
-        // (a character at a time through `fmt`, 187 ns for 60 bytes)
-        if s.is_ascii() {
-            let b = s.as_bytes();
-            *out = made(b.len(), |d| {
-                for (o, &c) in d.iter_mut().zip(b) {
-                    o.write(if upper != 0 { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() });
-                }
-            });
-            return;
-        }
-        *out = written(&|w| sem::to_case(w, s, upper != 0));
-    }
-}
-
-/// `isc_to_case` into the buffer `buf` of `cap` bytes (on the stack of the
-/// caller: the text only read in its scope, D501) when the text is ASCII
-/// (each byte mapped, the same length) and fits; else a block, as
-/// `isc_to_case`.
-///
-/// # Safety
-/// The pointers as the generated code gives them (C1, C3).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_case_into(out: *mut IscStr, buf: *mut u8, cap: i64, p: *const u8, n: i64, upper: i32) {
-    // SAFETY: the pointers the generated code gives: the text (C1), `buf` of
-    // `cap` bytes (C3), written only when the text fits (`n <= cap`)
-    unsafe {
-        let b = bytes_of(p, n);
-        if n <= cap && b.is_ascii() {
-            let d = core::slice::from_raw_parts_mut(buf, n as usize);
-            for (o, &c) in d.iter_mut().zip(b) {
-                *o = if upper != 0 { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() };
-            }
-            *out = IscStr { ptr: if n == 0 { empty_ptr() } else { buf }, len: n };
-            return;
-        }
-        isc_to_case(out, p, n, upper)
-    }
-}
-
 /// `s.slice(a, b)` that fails, made by the generated code (D590): the
 /// panic of `slice_str` for those bounds.
 ///

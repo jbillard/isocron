@@ -1,0 +1,90 @@
+// The pilot of `toUpperCase` and `toLowerCase` written in Isocron (SPEC
+// section 17, order 2): one kind of texts a run, so that the cycles and the
+// instructions of a text are read with `perf stat` as the difference
+// between two numbers of rounds. Its line: the kind, the direction, the
+// form, the nanoseconds of a text (the mean over the rounds, `bench`), the
+// sum of the lengths of the results and a hash of their bytes. The Rust
+// version (the runtime's `isc_to_case` and `isc_to_case_into`) is measured
+// by building this file with a compiler that still has it.
+// The kinds, 4096 texts each by default:
+//   line       60 capital letters (the lines of `strings.isc`)
+//   lower      60 small letters
+//   print      60 bytes of printable ASCII
+//   word       8 small letters
+//   tiny       3 small letters
+//   short      1 to 12 small letters
+//   long       4096 bytes of printable ASCII (measured on 64 texts)
+//   huge       1 MiB of printable ASCII (measured on 4 texts)
+//   accent     58 bytes of ASCII around one `é`
+//   french     words of ASCII and of accented letters, 1 letter in 8
+//   german     words of ASCII, some with a `ß` (`SS`: as many bytes)
+//   turkish    words of ASCII, some with a `ı` or a `İ` (another length)
+//   greek      30 Greek letters of both cases and spaces
+//   cyrillic   30 Cyrillic letters of both cases and spaces
+//   cjk        20 characters of 3 bytes without a case
+//   emoji      15 characters of 4 bytes without a case
+//   special    characters whose other case is several (`ﬁ`, `ΐ`, `ŉ`)
+//   dotless    30 letters `ı`, `İ`, `i` and `I`: another length for half
+//   one        one accented letter
+//   name       a word of 2 to 7 bytes with one accented letter
+// The directions: `upper`, `lower`. The forms: `len` (the result only read
+// in its scope: its length), `keep` (the results kept in an array).
+// usage: case_pilot <kind> <upper|lower> <len|keep> <rounds> [texts]
+
+function ascii(i: i64, n: i64, base: i64, span: i64): string {
+    return stringOf(map(iota(n), (j) => u8(base + (i * 7 + j * 13 + j * j) % span)));
+}
+
+function from(parts: string[m], i: i64, n: i64): string {
+    return join(map(iota(n), (j) => parts[(i * 7 + j * 13 + j * j) % m]), "");
+}
+
+function text(kind: string, i: i64): string {
+    return kind == "line" ? ascii(i, 60, 65, 26)
+        : kind == "lower" ? ascii(i, 60, 97, 26)
+        : kind == "print" ? ascii(i, 60, 32, 95)
+        : kind == "word" ? ascii(i, 8, 97, 26)
+        : kind == "tiny" ? ascii(i, 3, 97, 26)
+        : kind == "short" ? ascii(i, 1 + i % 12, 97, 26)
+        : kind == "long" ? ascii(i, 4096, 32, 95)
+        : kind == "huge" ? ascii(i, 1048576, 32, 95)
+        : kind == "accent" ? ascii(i, 10 + i % 40, 97, 26) + "\u{e9}" + ascii(i + 1, 48 - i % 40, 97, 26)
+        : kind == "french" ? from(["le ", "une ", "\u{e9}t\u{e9} ", "for\u{ea}t ", "gar\u{e7}on ", "Paris ", "o\u{f9} ", "na\u{ef}f ", "table ", "\u{c0} ", "chemin ", "nuit "], i, 11)
+        : kind == "german" ? from(["der ", "Stra\u{df}e ", "gro\u{df} ", "Haus ", "und ", "wei\u{df} ", "Wasser ", "Berg ", "sieben ", "Tag "], i, 11)
+        : kind == "turkish" ? from(["bir ", "k\u{131}z ", "\u{130}stanbul ", "deniz ", "s\u{131}cak ", "ve ", "ev ", "ad\u{131}m ", "yedi ", "okul "], i, 11)
+        : kind == "greek" ? from(["\u{3b1}", "\u{3b2}", "\u{393}", "\u{3b4}", "\u{3b5} ", "\u{396}", "\u{3b7}", "\u{3b8}", "\u{399}", "\u{3ba} ", "\u{3bb}", "\u{3c3}", "\u{3c2} ", "\u{3a9}", "\u{3ac}"], i, 30)
+        : kind == "cyrillic" ? from(["\u{430}", "\u{431}", "\u{412}", "\u{433}", "\u{434} ", "\u{415}", "\u{436}", "\u{437}", "\u{418}", "\u{43a} ", "\u{43b}", "\u{44f}", "\u{451} ", "\u{42e}", "\u{44d}"], i, 30)
+        : kind == "cjk" ? from(["\u{65e5}", "\u{672c}", "\u{8a9e}", "\u{4e2d}", "\u{6587}", "\u{5b57}", "\u{6f22}", "\u{3042}", "\u{30a2}", "\u{ff01}"], i, 20)
+        : kind == "emoji" ? from(["\u{1f600}", "\u{1f680}", "\u{1f4a1}", "\u{1f30d}", "\u{1f3b5}", "\u{10348}", "\u{1d11e}"], i, 15)
+        : kind == "special" ? from(["\u{fb01}n ", "\u{390} ", "\u{149}a ", "ab ", "\u{1f0} ", "\u{587} ", "\u{1f80} ", "x\u{fb03}y ", "cd ", "\u{1e96} "], i, 12)
+        : kind == "dotless" ? from(["\u{131}", "\u{130}", "i", "I", "\u{131}"], i, 30)
+        : kind == "one" ? from(["\u{e9}", "\u{e0}", "\u{c9}", "\u{f1}", "\u{3b1}", "\u{416}", "\u{fc}"], i, 1)
+        : from(["\u{e9}t\u{e9}", "No\u{eb}l", "\u{c0}", "ni\u{f1}o", "caf\u{e9}", "\u{fc}ber", "\u{c5}sa", "l\u{e0}"], i, 1);
+}
+
+function hash(t: string): i64 {
+    return fold(bytes(t), 7, (h, c) => h * 31 + i64(c));
+}
+
+action main(args: string[k]): i32 {
+    const kind = args[0];
+    const upper = args[1] == "upper";
+    const keep = args[2] == "keep";
+    const r = parseI64(args[3]);
+    const n = args.length > 4 ? parseI64(args[4]) : kind == "long" ? 64 : kind == "huge" ? 4 : 4096;
+    const xs = map(iota(n), (i) => text(kind, i));
+    const each = f64(r * n);
+    const h = sum(map(xs, (x) => hash(upper ? x.toUpperCase() : x.toLowerCase())));
+    if (keep) {
+        const [a, t] = upper
+            ? bench(r, () => sum(map(map(xs, (x) => x.toUpperCase()), (y) => y.length)))
+            : bench(r, () => sum(map(map(xs, (x) => x.toLowerCase()), (y) => y.length)));
+        print(`${kind} ${args[1]} keep ${(f64(t) / each).toFixed(3)} ${a} ${h}`);
+    } else {
+        const [a, t] = upper
+            ? bench(r, () => sum(map(xs, (x) => x.toUpperCase().length)))
+            : bench(r, () => sum(map(xs, (x) => x.toLowerCase().length)));
+        print(`${kind} ${args[1]} len ${(f64(t) / each).toFixed(3)} ${a} ${h}`);
+    }
+    return 0;
+}

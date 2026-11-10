@@ -657,6 +657,9 @@ pub struct Gen<'p> {
     rec_prints: BTreeSet<u32>,
     /// The equality functions of recursive types to emit (D129).
     rec_eqs: BTreeSet<u32>,
+    /// The functions of texts in another case written (`text_case_fn`): in
+    /// upper case, with a buffer.
+    case_fns: HashSet<(bool, bool)>,
     /// The operation being emitted is inside `allowReassoc` (D109).
     fast_math: bool,
     /// The tail calls of the function being emitted to other functions,
@@ -1001,8 +1004,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare i64 @isc_rx_int(ptr, i64, ptr, i64, i32)",
     "declare void @isc_rx_matches(ptr, ptr, i64, ptr, i64)",
     "declare void @isc_rx_replace(ptr, ptr, i64, ptr, i64, ptr, i64, i32, i32, i32, i32)",
-    "declare void @isc_to_case(ptr, ptr, i64, i32)",
-    "declare void @isc_to_case_into(ptr, ptr, i64, ptr, i64, i32)",
     "declare ptr @isc_str_reserve(ptr, i64, i64)",
     "declare void @isc_put_int(ptr, i64, i64, i64, i64, i64)",
     "declare void @isc_parallel_for_site(i64, ptr, ptr, i64, ptr, i32)",
@@ -1151,6 +1152,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         rec_drops: BTreeSet::new(),
         rec_prints: BTreeSet::new(),
         rec_eqs: BTreeSet::new(),
+        case_fns: HashSet::new(),
         fast_math: false,
         other_tails: HashMap::new(),
         pre: HashMap::new(),
@@ -13530,6 +13532,215 @@ impl<'p> Gen<'p> {
         self.ins(format!("icmp eq i32 {}, 0", c))
     }
 
+    /// `s.toUpperCase()` (`upper`) or `s.toLowerCase()` of the text `p`,
+    /// `n`: the call of the function of this module that makes it
+    /// (`text_case_fn`), with the buffer `slot` of the stack for a text
+    /// only read in its scope (D501). The call is always inlined: its
+    /// function then has no frame of its own to make for a short text
+    /// (called, 64 instructions a line of 60 bytes and 142 a word of 8 bytes
+    /// kept; inlined, 53 and 125).
+    fn text_case(&mut self, p: &str, n: &str, upper: bool, slot: Option<String>) -> R<V> {
+        let name = self.text_case_fn(upper, slot.is_some())?;
+        let buf = slot.map(|b| format!(", ptr {}", b)).unwrap_or_default();
+        Ok(v(self.ins(format!("call {}{{ ptr, i64 }} @{}(ptr {}, i64 {}{}) alwaysinline", self.fn_cc(), name, p, n, buf)), "{ ptr, i64 }"))
+    }
+
+    /// The function of the module that makes a text in upper (`upper`) or
+    /// lower case, written once: `{ ptr, i64 } (ptr %p, i64 %n)`, and with
+    /// `into` a third parameter `%buf`, a buffer of `STACK_STR` bytes of
+    /// the stack of its caller, where a result of 1 to `STACK_STR` bytes is
+    /// written (another one: a block, by the first function).
+    ///
+    /// Its result for a text of ASCII: a copy whose letters are in the
+    /// other case, by vectors, no byte one at a time past the first 3: a
+    /// text of a vector of the target or more (32 bytes, 16 without AVX2)
+    /// by whole vectors from its start, then one over its end; a shorter
+    /// one by two vectors of 16, 8 or 4 bytes, at its start and over its end
+    /// (the text and the result are two places: a byte written twice is
+    /// written the same). The bytes read are joined by `or`: one test says
+    /// whether one was not ASCII. Such a text is finished by the prelude
+    /// (`$caseText`, lowered for it: the characters of several bytes, by
+    /// the tables of Unicode) from the text and that copy, which it only
+    /// reads: the buffer, the block (freed after), or, for a text shorter
+    /// than a vector without a buffer, a place of the stack: its bytes are
+    /// tested before a block is taken for it. (The runtime's `isc_to_case`
+    /// and `isc_to_case_into` tested the whole text, then wrote it,
+    /// character by character through a formatter, twice, when it was not
+    /// ASCII.)
+    fn text_case_fn(&mut self, upper: bool, into: bool) -> R<String> {
+        let Some(rest) = self.p.case_text else {
+            return Err("codegen: a text in another case, its function of the prelude not lowered".into());
+        };
+        let name = format!("isc_text_{}{}", if upper { "upper" } else { "lower" }, if into { "_into" } else { "" });
+        if !self.case_fns.insert((upper, into)) {
+            return Ok(name);
+        }
+        // (the function without a buffer, for the texts that do not fit)
+        let plain = if into { self.text_case_fn(upper, false)? } else { String::new() };
+        let cc = self.fn_cc();
+        let saved_f = std::mem::take(&mut self.f);
+        let wide: u32 = if self.opts.isa.vector_registers().0 >= 32 && self.opts.isa != Isa::Avx { 32 } else { 16 };
+        // the first letter of the case that changes
+        let first = if upper { "97" } else { "65" };
+        let (p, n) = ("%p", "%n");
+        let vty = |lanes: u32| if lanes == 1 { "i8".to_string() } else { format!("<{} x i8>", lanes) };
+        // the `lanes` bytes of the text from `at`
+        let read = |g: &mut Self, at: &str, lanes: u32| -> String {
+            let sp = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, at));
+            g.ins(format!("load {}, ptr {}, align 1", vty(lanes), sp))
+        };
+        // the bytes `x` in the other case, written at `at` of `dst`
+        let write = |g: &mut Self, x: &str, dst: &str, at: &str, lanes: u32| {
+            let ty = vty(lanes);
+            let (bt, zero) = if lanes == 1 { ("i1".to_string(), "0") } else { (format!("<{} x i1>", lanes), "zeroinitializer") };
+            let d = g.ins(format!("sub {} {}, {}", ty, x, g.cst("i8", first, lanes)));
+            let c = g.ins(format!("icmp ult {} {}, {}", ty, d, g.cst("i8", "26", lanes)));
+            let m = g.ins(format!("select {} {}, {} {}, {} {}", bt, c, ty, g.cst("i8", "32", lanes), ty, zero));
+            let y = g.ins(format!("xor {} {}, {}", ty, x, m));
+            let dp = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, at));
+            g.emit(format!("store {} {}, ptr {}, align 1", ty, y, dp));
+        };
+        // a byte of the `lanes` bytes `x` is not ASCII
+        let any_high = |g: &mut Self, x: &str, lanes: u32| -> String {
+            if lanes == 1 {
+                return g.ins(format!("icmp slt i8 {}, 0", x));
+            }
+            let neg = g.ins(format!("icmp slt <{} x i8> {}, zeroinitializer", lanes, x));
+            let bits = g.ins(format!("bitcast <{} x i1> {} to i{}", lanes, neg, lanes));
+            g.ins(format!("icmp ne i{} {}, 0", lanes, bits))
+        };
+        // the result by the prelude, from the text and its copy at `copy`
+        let finish = |g: &mut Self, copy: &str| -> String {
+            let text = g.arr(p, n);
+            let t = g.arr(copy, n);
+            g.ins(format!(
+                "call {}{{ ptr, i64 }} @isc_fn_{}({{ ptr, i64 }} {}, {{ ptr, i64 }} {}, i64 0, i64 0, i64 0, i1 {})",
+                cc, rest, text.r, t.r, upper
+            ))
+        };
+        let ret = |g: &mut Self, ptr: &str| {
+            let r = g.arr(ptr, n);
+            g.emit(format!("ret {{ ptr, i64 }} {}", r.r));
+        };
+        // the place of the copy of a short text that is not ASCII, when no
+        // buffer is given
+        let scratch = if into { "%buf".to_string() } else { self.alloca(&format!("[{} x i8], align 16", wide)) };
+        if into {
+            // a result that does not fit: a block, by the other function
+            let nm1 = self.ins(format!("sub i64 {}, 1", n));
+            let fits = self.ins(format!("icmp ult i64 {}, {}", nm1, STACK_STR));
+            let (lfits, lblock) = (self.label(), self.label());
+            self.cbr(&fits, &lfits, &lblock);
+            self.block(&lblock);
+            let r = self.ins(format!("tail call {}{{ ptr, i64 }} @{}(ptr {}, i64 {})", cc, plain, p, n));
+            self.emit(format!("ret {{ ptr, i64 }} {}", r));
+            self.block(&lfits);
+        }
+        let (lvec, lloop, ltail, lshort, lother, lrest) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        let long = self.ins(format!("icmp uge i64 {}, {}", n, wide));
+        self.cbr(&long, &lvec, &lshort);
+        // a vector or more: whole vectors, then one over the end
+        self.block(&lvec);
+        let dst = if into { "%buf".to_string() } else { self.ins(format!("call noalias ptr @isc_alloc(i64 {})", n)) };
+        let vt = vty(wide);
+        let (at, seen) = (self.alloca("i64"), self.alloca(&vt));
+        self.emit(format!("store i64 0, ptr {}", at));
+        self.emit(format!("store {} zeroinitializer, ptr {}", vt, seen));
+        let last = self.ins(format!("sub i64 {}, {}", n, wide));
+        self.br(&lloop);
+        self.block(&lloop);
+        let i = self.ins(format!("load i64, ptr {}", at));
+        let x = read(self, &i, wide);
+        write(self, &x, &dst, &i, wide);
+        let so_far = self.ins(format!("load {}, ptr {}", vt, seen));
+        let joined = self.ins(format!("or {} {}, {}", vt, so_far, x));
+        self.emit(format!("store {} {}, ptr {}", vt, joined, seen));
+        let next = self.ins(format!("add nuw nsw i64 {}, {}", i, wide));
+        self.emit(format!("store i64 {}, ptr {}", next, at));
+        let more = self.ins(format!("icmp sle i64 {}, {}", next, last));
+        self.cbr(&more, &lloop, &ltail);
+        self.block(&ltail);
+        let x = read(self, &last, wide);
+        write(self, &x, &dst, &last, wide);
+        let so_far = self.ins(format!("load {}, ptr {}", vt, seen));
+        let joined = self.ins(format!("or {} {}, {}", vt, so_far, x));
+        let h = any_high(self, &joined, wide);
+        let lascii = self.label();
+        self.cbr(&h, &lother, &lascii);
+        self.block(&lascii);
+        ret(self, &dst);
+        // not ASCII: by the prelude, the block of the copy then freed
+        self.block(&lother);
+        let r = finish(self, &dst);
+        if !into {
+            self.emit(format!("call void @isc_free(ptr {})", dst));
+        }
+        self.emit(format!("ret {{ ptr, i64 }} {}", r));
+        // shorter: two vectors of half a vector, or a quarter, down to 4
+        // bytes, the first that the text fills; without a buffer, its bytes
+        // tested before a block is taken
+        self.block(&lshort);
+        let mut lanes = wide / 2;
+        loop {
+            let (lthis, lnext, lplain, lcopy) = (self.label(), self.label(), self.label(), self.label());
+            let fills = if lanes >= 4 { self.ins(format!("icmp uge i64 {}, {}", n, lanes)) } else { self.ins(format!("icmp ne i64 {}, 0", n)) };
+            self.cbr(&fills, &lthis, &lnext);
+            self.block(&lthis);
+            // (below 4 bytes: the first, the middle and the last)
+            let (places, width) = if lanes >= 4 {
+                let off = self.ins(format!("sub i64 {}, {}", n, lanes));
+                (vec!["0".to_string(), off], lanes)
+            } else {
+                let half = self.ins(format!("lshr i64 {}, 1", n));
+                let end = self.ins(format!("sub i64 {}, 1", n));
+                (vec!["0".to_string(), half, end], 1)
+            };
+            let xs: Vec<String> = places.iter().map(|at| read(self, at, width)).collect();
+            let mut all = xs[0].clone();
+            for x in &xs[1..] {
+                all = self.ins(format!("or {} {}, {}", vty(width), all, x));
+            }
+            let h = any_high(self, &all, width);
+            self.cbr(&h, &lcopy, &lplain);
+            self.block(&lplain);
+            // (after the call that takes a block, its bytes read again
+            // rather than kept through it)
+            let (dst, xs2) = if into {
+                ("%buf".to_string(), xs.clone())
+            } else {
+                let block = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", n));
+                let again: Vec<String> = places.iter().map(|at| read(self, at, width)).collect();
+                (block, again)
+            };
+            for (x, at) in xs2.iter().zip(&places) {
+                write(self, x, &dst, at, width);
+            }
+            ret(self, &dst);
+            self.block(&lcopy);
+            for (x, at) in xs.iter().zip(&places) {
+                write(self, x, &scratch, at, width);
+            }
+            self.br(&lrest);
+            self.block(&lnext);
+            if lanes < 4 {
+                break;
+            }
+            lanes /= 2;
+        }
+        // no byte: the empty text (never with a buffer: it has a byte)
+        let none = self.ins("call noalias ptr @isc_alloc(i64 0)".to_string());
+        ret(self, &none);
+        self.block(&lrest);
+        let r = finish(self, &scratch);
+        self.emit(format!("ret {{ ptr, i64 }} {}", r));
+        let params = if into { "ptr %p, i64 %n, ptr %buf" } else { "ptr %p, i64 %n" };
+        let attrs = self.attrs();
+        let text = self.finish(&format!("define internal {}{{ ptr, i64 }} @{}({}){}", cc, name, params, attrs));
+        self.f = saved_f;
+        self.funcs.push(text);
+        Ok(name)
+    }
+
     /// The text of the integer `x` (an `i64`, or a `u64` when not `signed`)
     /// by the function of the prelude lowered for it (D588).
     fn int_text(&mut self, x: &str, signed: bool) -> R<V> {
@@ -13785,15 +13996,14 @@ impl<'p> Gen<'p> {
                     }
                 }
             }
+            // made here for a text of ASCII, finished by the prelude for the
+            // others (`text_case`); a text only read in its scope: into its
+            // buffer on the stack when it fits (D501, as the padded texts of
+            // D458)
             S::ToUpper | S::ToLower => {
                 let (p, n) = self.str_parts(&vals[0]);
-                let up = (op == S::ToUpper) as i32;
-                // a text only read in its scope: into its buffer on the stack
-                // when it fits (D501, as the padded texts of D458)
-                match self.stack_concats.get(&(e as *const Expr)).cloned() {
-                    Some(b) => new_str(self, format!("call void @isc_to_case_into(ptr OUT, ptr {}, i64 {}, ptr {}, i64 {}, i32 {})", b, STACK_STR, p, n, up)),
-                    None => new_str(self, format!("call void @isc_to_case(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, up)),
-                }
+                let slot = self.stack_concats.get(&(e as *const Expr)).cloned();
+                self.text_case(&p, &n, op == S::ToUpper, slot)?
             }
             // made here (`pad_text`, D606)
             S::PadStart | S::PadEnd => {
@@ -14213,6 +14423,92 @@ impl<'p> Gen<'p> {
                 ));
                 let total = self.ins(format!("add i64 {}, {}", len, off));
                 self.arr(&dst, &total)
+            }
+            // `$withText(t, at, piece)`: one check (the bytes `at .. at +
+            // len(piece)` inside `t`; each of their two ends at the start of
+            // a character of `t` or at its end: no byte `10xxxxxx` there),
+            // then the bytes of `piece` copied there: into `t` itself when it
+            // is given (a new text of the program at its last use: a block of
+            // the heap, never a literal, a view or a buffer of the stack),
+            // into a copy otherwise. Whole characters of a text replaced by a
+            // text: the result is UTF-8 whatever the prelude asks.
+            S::WithText => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let at = vals[1].r.clone();
+                let (q, m) = self.str_parts(&vals[2]);
+                // (`at` up to the length of `t` less that of `piece`: no sum
+                // that an `at` near the largest integer would wrap)
+                let room = self.ins(format!("sub i64 {}, {}", n, m));
+                let c0 = self.ins(format!("icmp sge i64 {}, 0", at));
+                let c1 = self.ins(format!("icmp sle i64 {}, {}", at, room));
+                let inside = self.ins(format!("and i1 {}, {}", c0, c1));
+                let end = self.ins(format!("add i64 {}, {}", at, m));
+                let (la, lload_a, lb, lload_b, lbad, lok) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+                self.cbr(&inside, &la, &lbad);
+                for (i, here, load, next) in [(&at, &la, &lload_a, &lb), (&end, &lb, &lload_b, &lok)] {
+                    self.block(here);
+                    let before = self.ins(format!("icmp slt i64 {}, {}", i, n));
+                    self.cbr(&before, load, next);
+                    self.block(load);
+                    let bp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, i));
+                    let byte = self.ins(format!("load i8, ptr {}, align 1", bp));
+                    let starts = self.ins(format!("icmp sge i8 {}, -64", byte));
+                    self.cbr(&starts, next, &lbad);
+                }
+                self.block(&lbad);
+                let (msg, mlen) = self.str_const("withText: a text written outside another or inside one of its characters");
+                let (none, _) = self.str_const("");
+                self.emit(format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 0, ptr {}, i64 0, {})", msg, mlen, none, none, Self::pos(e.span)));
+                self.emit("unreachable");
+                self.block(&lok);
+                let base = if matches!(es[0].kind, ExprKind::Var(_, Use::Move)) {
+                    p
+                } else {
+                    let c = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", n));
+                    self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", c, p, n));
+                    c
+                };
+                let dst = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", base, at));
+                // a text of 2 or 3 bytes (a character, most often) by two
+                // moves of 2 that overlap, of 4 to 8 by two of 4, of one byte
+                // by one; the longer ones as the texts of a concatenation
+                let (lfew, l2, l1, lmore, l4, lany, ldone) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+                let pair = |g: &mut Self, ty: &str, w: i64| {
+                    let a = g.ins(format!("load {}, ptr {}, align 1", ty, q));
+                    let off = g.ins(format!("sub i64 {}, {}", m, w));
+                    let src2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", q, off));
+                    let b = g.ins(format!("load {}, ptr {}, align 1", ty, src2));
+                    g.emit(format!("store {} {}, ptr {}, align 1", ty, a, dst));
+                    let dst2 = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+                    g.emit(format!("store {} {}, ptr {}, align 1", ty, b, dst2));
+                };
+                let few = self.ins(format!("icmp ult i64 {}, 4", m));
+                self.cbr(&few, &lfew, &lmore);
+                self.block(&lfew);
+                let two = self.ins(format!("icmp uge i64 {}, 2", m));
+                self.cbr(&two, &l2, &l1);
+                self.block(&l2);
+                pair(self, "i16", 2);
+                self.br(&ldone);
+                self.block(&l1);
+                let one = self.ins(format!("icmp ne i64 {}, 0", m));
+                let lbyte = self.label();
+                self.cbr(&one, &lbyte, &ldone);
+                self.block(&lbyte);
+                let c = self.ins(format!("load i8, ptr {}, align 1", q));
+                self.emit(format!("store i8 {}, ptr {}, align 1", c, dst));
+                self.br(&ldone);
+                self.block(&lmore);
+                let mid = self.ins(format!("icmp ule i64 {}, 8", m));
+                self.cbr(&mid, &l4, &lany);
+                self.block(&l4);
+                pair(self, "i32", 4);
+                self.br(&ldone);
+                self.block(&lany);
+                self.copy_short(&dst, &q, &m);
+                self.br(&ldone);
+                self.block(&ldone);
+                self.arr(&base, &n)
             }
             // `$panic(a, b, c)` (D582): the call that does not return, then
             // a block no path reaches, where the value of its type is zero

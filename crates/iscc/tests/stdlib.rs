@@ -2268,7 +2268,7 @@ action main(args: string[k]): i32 {
     let Outcome::Exit(0, want) = interp(src, &["300", "Q"]) else { panic!("the interpreter failed") };
     let bin = compile(src, "case_stack");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    assert!(ll.contains("call void @isc_to_case_into"), "texts of another case on the stack");
+    assert!(ll.contains("@isc_text_upper_into(ptr") && ll.contains("@isc_text_lower_into(ptr"), "texts of another case on the stack");
     for t in [1, 4] {
         let r = run_bin_threads(&bin, &["300", "Q"], Some(t));
         assert_eq!(r.code, 0, "{}", r.stderr);

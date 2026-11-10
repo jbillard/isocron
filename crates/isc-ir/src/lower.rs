@@ -324,7 +324,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, digit_words: None, kernel: None })
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, digit_words: None, case_text: None, kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -389,6 +389,13 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
         _ => None,
     };
+    // the text in another case, the same way: `$caseText`, for the texts
+    // that are not ASCII
+    let writes = writes_case_text(&body) || l.fns.iter().flatten().any(|f| writes_case_text(&f.body));
+    let case_text = match (writes, named("$caseText")) {
+        (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None; 6], vec![None; 6], sp)?),
+        _ => None,
+    };
     // the allocator of the small blocks (D605): its three entries, called
     // by the generated code alone
     let kernel = match (named("$kStart"), named("$kAlloc"), named("$kFree")) {
@@ -415,6 +422,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         int_text,
         float_text,
         digit_words,
+        case_text,
         kernel,
     })
 }
@@ -432,6 +440,11 @@ fn writes_float_text(e: &Expr) -> bool {
 /// `e` pads a text (`padStart`, `padEnd`).
 fn pads_text(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::StrOp(StrOp::PadStart | StrOp::PadEnd, _)) || e.children().into_iter().any(pads_text)
+}
+
+/// `e` writes a text in another case (`toUpperCase`, `toLowerCase`).
+fn writes_case_text(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::StrOp(StrOp::ToUpper | StrOp::ToLower, _)) || e.children().into_iter().any(writes_case_text)
 }
 
 /// The positions in the prelude replaced by `at`.
@@ -2555,6 +2568,17 @@ impl<'p> Lower<'p> {
             // `Map<K, V>` (D158): its three arrays
             Prim::MapOf => ExprKind::Tuple(args.iter().map(|a| self.expr(env, a)).collect::<R<_>>()?),
             Prim::MapParts => return self.expr(env, &args[0]),
+            // `$words("...")`: its words, data of the program (D173)
+            Prim::Words => {
+                let TExprKind::Lit(isc_types::tast::Lit::Str(t)) = &args[0].kind else {
+                    return internal(span, "`$words` of another value than a literal");
+                };
+                let words = t.as_bytes().chunks(16).map(|c| u64::from_str_radix(std::str::from_utf8(c).unwrap_or(""), 16).map(|w| Lit::Int(w as i64)));
+                let Ok(lits) = words.collect::<Result<Vec<Lit>, _>>() else {
+                    return internal(span, "`$words` of digits that are not hexadecimal");
+                };
+                ExprKind::ConstArray(lits)
+            }
             Prim::MapSize => {
                 let m = self.expr(env, &args[0])?;
                 let kt = match &m.ty {
@@ -2588,6 +2612,7 @@ impl<'p> Lower<'p> {
             | Prim::FloatBits
             | Prim::MulHigh
             | Prim::DecimalText
+            | Prim::WithText
             | Prim::ParseFloat
             | Prim::ParseInt
             | Prim::StrSlice => {
@@ -2604,6 +2629,7 @@ impl<'p> Lower<'p> {
                     Prim::FloatBits => StrOp::FloatBits,
                     Prim::MulHigh => StrOp::MulHigh,
                     Prim::DecimalText => StrOp::DecimalText,
+                    Prim::WithText => StrOp::WithText,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),

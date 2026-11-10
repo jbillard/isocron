@@ -166,7 +166,8 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "concat" | "++" => Prim::Concat,
         "len" | "$length" => Prim::StrLen,
         "bytes" => Prim::Bytes,
-        "stringOf" => Prim::StringOf,
+        // (`$stringOf`: for the prelude, whatever the program declares)
+        "stringOf" | "$stringOf" => Prim::StringOf,
         // `$text`: an insertion of a template literal (D150)
         // `String(x)`, `x.toString()`, and `$text`, an insertion of a
         // template literal (D150, D151)
@@ -208,6 +209,8 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$floatBits" => Prim::FloatBits,
         "$mulHigh" => Prim::MulHigh,
         "$decimalText" => Prim::DecimalText,
+        "$withText" => Prim::WithText,
+        "$words" => Prim::Words,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2746,7 +2749,7 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits => 1,
+            Prim::ParseF64 | Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits | Prim::Words => 1,
             Prim::Concat | Prim::MulHigh => 2,
             Prim::ReadText | Prim::Lines | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::ReadCsvF64 | Fallible::WriteBytes | Fallible::WriteText) => 2,
@@ -2755,7 +2758,7 @@ impl<'g> FnCx<'g> {
             Prim::Map | Prim::MapParallel | Prim::Zip | Prim::Filter | Prim::Window | Prim::Fill | Prim::WriteF64 | Prim::WriteF32 | Prim::WriteBytes | Prim::Bench => 2,
             Prim::Reduce | Prim::Fold | Prim::Scan => 3,
             Prim::ToUpper | Prim::ToLower | Prim::ArgSort | Prim::JsNumber | Prim::ParseFloat | Prim::ToBigInt | Prim::Group | Prim::GroupCounts | Prim::HashIndex => 1,
-            Prim::HashFind | Prim::ReadWord | Prim::Panic => 3,
+            Prim::HashFind | Prim::ReadWord | Prim::Panic | Prim::WithText => 3,
             Prim::TextTail => 5,
             Prim::DecimalText => 6,
             Prim::ParseInt => {
@@ -3197,6 +3200,27 @@ impl<'g> FnCx<'g> {
                         3 | 4 => Ty::Int(IntKind::I64),
                         _ => Ty::Bool,
                     };
+                    let x = self.check(a, Some(&t))?;
+                    self.unify(&t, &x.ty, x.span)?;
+                    parts.push(x);
+                }
+                Ok(mk(parts, Ty::Str, self))
+            }
+            // `$words("...")`: a literal of hexadecimal digits, 16 a word:
+            // an array of as many `u64`
+            Prim::Words => {
+                let digits = match &args[0].kind {
+                    ExprKind::Str(t) if t.len() % 16 == 0 && t.bytes().all(|b| b.is_ascii_hexdigit()) => t.len(),
+                    _ => return err(args[0].span, "`$words` takes a literal of hexadecimal digits, 16 a word"),
+                };
+                let x = self.check(&args[0], Some(&Ty::Str))?;
+                Ok(mk(vec![x], Ty::Array(Size::Poly(Poly::constant((digits / 16) as i64)), Box::new(Ty::Int(IntKind::U64))), self))
+            }
+            // `$withText(t, at, piece)`: a text, a place and a text, a text
+            Prim::WithText => {
+                let mut parts = Vec::new();
+                for (k, a) in args.iter().enumerate() {
+                    let t = if k == 1 { Ty::Int(IntKind::I64) } else { Ty::Str };
                     let x = self.check(a, Some(&t))?;
                     self.unify(&t, &x.ty, x.span)?;
                     parts.push(x);

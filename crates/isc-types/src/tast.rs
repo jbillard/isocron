@@ -180,6 +180,18 @@ pub enum Prim {
     /// `d`, an `n` or a `point` out of their bounds or a byte not ASCII;
     /// the prelude alone can name it
     DecimalText,
+    /// `$withText(t, at, piece)`: the text `t` whose bytes from `at` are
+    /// those of the text `piece` (as many of them replaced); a panic unless
+    /// they lie in `t` and both their ends are between two characters of
+    /// `t`, so that the result is a text; `t` given at its last use is
+    /// written where it is; the prelude alone can name it
+    WithText,
+    /// `$words("...")`: the array of the `u64` whose hexadecimal digits the
+    /// literal holds, 16 a word, its size known to the types: data of the
+    /// program written as one literal (a table of the prelude costs each
+    /// compilation its tokens: one, where an array literal has one a word);
+    /// the prelude alone can name it
+    Words,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// A primitive of the kernel of the runtime (D601), named by the

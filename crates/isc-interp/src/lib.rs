@@ -448,6 +448,20 @@ impl Interp<'_> {
                     None => return panic_at(e, "decimalText: a digit and 16 bytes of ASCII, 1 to 17 of them written, the point within 400 digits".to_string()),
                 }
             }
+            // `$withText(t, at, piece)`: the bytes of `piece` over those of
+            // `t` from `at`, both ends between two characters of `t`
+            S::WithText => {
+                let (t, piece) = (s(&vs[0]), s(&vs[2]));
+                let at = match &vs[1] {
+                    Value::Int(at) => *at,
+                    v => panic!("an integer expected, got {:?}", v),
+                };
+                let end = at.saturating_add(piece.len() as i64);
+                if at < 0 || end > t.len() as i64 || !t.is_char_boundary(at as usize) || !t.is_char_boundary(end as usize) {
+                    return panic_at(e, "withText: a text written outside another or inside one of its characters".to_string());
+                }
+                Value::Str(Rc::from(std::format!("{}{}{}", &t[..at as usize], piece, &t[end as usize..])))
+            }
             // `$panic(a, b, c)` (D582): the three texts one after the other
             S::Panic =>return panic_at(e, std::format!("{}{}{}", s(&vs[0]), s(&vs[1]), s(&vs[2]))),
             // `readWord` (D580): the code of the runtime core
