@@ -1,0 +1,30 @@
+// The mathematical functions of the prelude (D626) on values of each of
+// their paths, as values and called: tests/math.rs (compiled, interpreted,
+// under iscc run) and tests/windows.rs (built for both targets of Windows).
+action main(args: string[k]): i32 {
+    const xs = [0.0, -0.0, 0.5, -0.75, 1.0, 2.5, -3.25, 10.0, 100.5, -1000.25, 1e6 + 0.5, 1e10, -1e22, 1e300, 5e-324, 2.2250738585072014e-308, 709.0, 710.0, -745.0, -746.0, parseF64("inf"), parseF64("-inf"), parseF64("NaN")];
+    const ys = map(xs, (x) => f32(x));
+    print(map(xs, exp));
+    print(map(xs, (x) => log(x)));
+    print(map(xs, sin));
+    print(map(xs, (x) => cos(x)));
+    print(map(xs, tan));
+    print(map(xs, (x) => asin(x / 1000.0)));
+    print(map(xs, (x) => acos(x / 1000.0)));
+    print(map(xs, atan));
+    print(map(xs, (x) => atan2(x, 0.75)));
+    print(map(xs, (x) => pow(x, 0.75)));
+    print(map(xs, (x) => x ** -2.5));
+    print(map(ys, exp));
+    print(map(ys, (y) => log(y)));
+    print(map(ys, sin));
+    print(map(ys, (y) => cos(y)));
+    print(map(ys, tan));
+    print(map(ys, (y) => asin(y / 1000.0f32)));
+    print(map(ys, (y) => acos(y / 1000.0f32)));
+    print(map(ys, atan));
+    print(map(ys, (y) => atan2(y, -0.75f32)));
+    print(map(ys, (y) => y ** 1.5f32));
+    print(fold(iota(50), 0.5, (acc, i) => sin(acc) + cos(f64(i)) * exp(-acc)));
+    return 0;
+}

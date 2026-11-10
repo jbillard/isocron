@@ -19,6 +19,15 @@
   reading of CSV are compiled once in the module of the prelude, whose
   tasks and loops are now named the same in every program (D6xx (texts,
   compile)).
+- `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and
+  `pow` (and `x ** y` of a floating `y`), of `f64` and `f32`, are written in
+  Isocron: musl's algorithms, the same bits as before for every input
+  (every input of each function of one `f32` compared), their common path
+  inline where they are called, no longer a call of the runtime: 2 to
+  58 % fewer instructions a call, up to 73 % fewer cycles; a chain of
+  calls of `exp` or `log`, each on the result of the one before, 0.6 to
+  1.8 % slower (D626). A program that uses them takes longer to compile,
+  and the prelude makes every compilation about 20 % longer (D626).
 
 ## 0.6.0 — 2026-11-10
 

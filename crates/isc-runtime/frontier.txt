@@ -23,28 +23,6 @@ isc_panic_text_slice
 isc_panic_window
 isc_panic_word
 
-# the mathematical functions (v1: moving now, D108): 20
-isc_acos
-isc_acosf
-isc_asin
-isc_asinf
-isc_atan
-isc_atan2
-isc_atan2f
-isc_atanf
-isc_cos
-isc_cosf
-isc_exp
-isc_expf
-isc_log
-isc_logf
-isc_pow
-isc_powf
-isc_sin
-isc_sinf
-isc_tan
-isc_tanf
-
 # the big integers: 11
 isc_big_cmp
 isc_big_from_i64

@@ -14,3 +14,8 @@ isc-types = { path = "../isc-types" }
 isc-ir = { path = "../isc-ir" }
 isc-interp = { path = "../isc-interp" }
 isc-codegen = { path = "../isc-codegen" }
+
+[dev-dependencies]
+# the mathematical functions of `libm`, the reference of those of the
+# prelude (tests/math.rs, D626)
+isc-runtime-core = { path = "../isc-runtime-core" }

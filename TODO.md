@@ -529,7 +529,7 @@ v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest
 
 ### v1 (2 to 3 days from 2026-11-10)
 
-- [ ] The 20 mathematical functions (`exp`, `log`, `sin`, `cos`, `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, `f64` and `f32`) in Isocron, the same bits as libm, at least as fast (an agent)
+- [x] The 20 mathematical functions (`exp`, `log`, `sin`, `cos`, `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, `f64` and `f32`) in Isocron, the same bits as libm, fewer instructions everywhere, fewer cycles but for the chains of `exp` and `log` (each call on the result of the one before), 0.6 to 1.8 % slower (D626)
 - [ ] `lastIndexOf`, `replace` and `replaceAll`, `Number`, the floats of the CSV readers in Isocron (an agent)
 - [ ] The measurable costs of the two allocators side by side (D605, D609): the start of a small program +14 %, `maps.get.i64` +20 % at 200 rounds, `json.decode` +2.5 %: fixed or explained, one day at most
 - [x] The frontier written and its ratchet test (D622)

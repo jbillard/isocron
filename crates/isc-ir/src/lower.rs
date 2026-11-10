@@ -2199,6 +2199,9 @@ impl<'p> Lower<'p> {
                         Arg::Func(_) => return internal(span, "bad primitive argument"),
                     }
                 }
+                if !f.instruction() && matches!(ret, Type::F64 | Type::F32) {
+                    return self.math_fn(*f, xs, ret, span);
+                }
                 Ok(Expr::new(ExprKind::Math(*f, xs), ret.clone(), span))
             }
             // the functions of strings used as values (D135)
@@ -2255,6 +2258,46 @@ impl<'p> Lower<'p> {
                 }
             }
         }
+    }
+
+    /// A mathematical function that is no instruction (`exp`, `log`,
+    /// `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pow`; D626):
+    /// the function of the prelude `$<name>F64` or `$<name>F32`, written in
+    /// Isocron as musl's algorithm (the same bits as the crate `libm` of
+    /// before), inlined where it is called as any function of the prelude;
+    /// its rare paths are `@cold` functions, compiled once (D611). Its
+    /// value goes through `$bitsFloat($floatBits(…))`, which costs no
+    /// instruction: the operations inside it are not relaxed by an
+    /// `@allowReassoc` around them (the same bits wherever it is called).
+    /// The arguments are computed before, outside that barrier, as the
+    /// function's own code. Under `iscc run` the function has a native
+    /// form (`native:` before its name, D616).
+    fn math_fn(&mut self, f: MathFn, xs: Vec<Expr>, ty: &Type, span: Span) -> R<Expr> {
+        let name = format!("${}{}", f.name(), if *ty == Type::F32 { "F32" } else { "F64" });
+        let found = self.p.fns.iter().position(|g| g.from_prelude && (g.name == name || g.name.strip_prefix("native:") == Some(name.as_str())));
+        let Some(id) = found else {
+            return internal(span, &format!("no `{}` in the prelude", name));
+        };
+        // (its native form: a call of the interpreter's function, nothing
+        // around it)
+        if self.p.fns[id].name.starts_with("native:") {
+            return self.inline_fn(id, vec![], xs.into_iter().map(Arg::Val).collect(), &[], span);
+        }
+        let mut lets = Vec::new();
+        let mut args = Vec::new();
+        for x in xs {
+            let v = self.new_var("m", ty.clone());
+            args.push(Arg::Val(Expr::var(v, ty.clone(), span)));
+            lets.push((v, x));
+        }
+        let body = self.inline_fn(id, vec![], args, &[], span)?;
+        let bits = Expr::new(ExprKind::StrOp(StrOp::FloatBits, vec![body]), Type::Int(IntKind::U64), span);
+        let op = if *ty == Type::F32 { StrOp::BitsFloat32 } else { StrOp::BitsFloat };
+        let mut out = Expr::new(ExprKind::StrOp(op, vec![bits]), ty.clone(), span);
+        for (v, x) in lets.into_iter().rev() {
+            out = self.let_(v, x, out, false, span);
+        }
+        Ok(out)
     }
 
     fn inline_fn(&mut self, id: FnId, type_args: Vec<Ty>, args: Vec<Arg<'p>>, checks: &[usize], span: Span) -> R<Expr> {
@@ -2684,6 +2727,7 @@ impl<'p> Lower<'p> {
             | Prim::TextTail
             | Prim::FloatBits
             | Prim::BitsFloat
+            | Prim::BitsFloat32
             | Prim::MulHigh
             | Prim::DecimalText
             | Prim::WithText
@@ -2703,6 +2747,7 @@ impl<'p> Lower<'p> {
                     Prim::TextTail => StrOp::TextTail,
                     Prim::FloatBits => StrOp::FloatBits,
                     Prim::BitsFloat => StrOp::BitsFloat,
+                    Prim::BitsFloat32 => StrOp::BitsFloat32,
                     Prim::MulHigh => StrOp::MulHigh,
                     Prim::DecimalText => StrOp::DecimalText,
                     Prim::WithText => StrOp::WithText,
@@ -3004,6 +3049,9 @@ impl<'p> Lower<'p> {
                 let mut xs = Vec::new();
                 for a in args {
                     xs.push(self.expr(env, a)?);
+                }
+                if !f.instruction() && matches!(ty, Type::F64 | Type::F32) {
+                    return self.math_fn(f, xs, &ty, span);
                 }
                 ExprKind::Math(f, xs)
             }

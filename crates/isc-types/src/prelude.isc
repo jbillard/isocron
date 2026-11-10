@@ -4303,3 +4303,1687 @@ action $kSpill(class: i64, h: u64): i64 {
     $zoneStore16(128 + class * 2, 1u64);
     return 1;
 }
+
+// ---------------------------------------------------------------------
+// The mathematical functions (D108, D626): `exp`, `log`, `sin`, `cos`,
+// `tan`, `asin`, `acos`, `atan`, `atan2` and `pow` of a `f64` and of a
+// `f32`. Each is musl's algorithm (FreeBSD's, from Sun's fdlibm) as the
+// crate `libm` 0.2.16 writes it, operation for operation: the same bits as
+// the runtime in Rust gave, for every input (operations of IEEE 754 rounded
+// to nearest, never a product and a sum fused; the lowering puts the value
+// of each behind `$floatBits`, so that `@allowReassoc` around a call relaxes
+// none of them). The lowering inlines `$expF64`, ... where `exp` is called:
+// the common path inline, the rare ones (the special values, the results
+// out of range, the reduction of a large argument of the trigonometric
+// functions) in `@cold` functions, compiled once (D611). Where libm tests a
+// case whose result its common path gives with the same bits (`log(1)`),
+// the test is left out. The names in the comments are libm's.
+
+// The high and the low word of the bits of a `f64`.
+function $mHi(x: f64): u32 {
+    return u32($floatBits(x) >> 32u64);
+}
+
+function $mLo(x: f64): u32 {
+    return u32($floatBits(x));
+}
+
+// `x` with the low word of its bits 0 (`with_set_low_word(x, 0)`).
+function $mHigh(x: f64): f64 {
+    return $bitsFloat($floatBits(x) & 0xFFFFFFFF00000000u64);
+}
+
+// `x` with the high word `h` (`with_set_high_word`).
+function $mWithHi(x: f64, h: u32): f64 {
+    return $bitsFloat(($floatBits(x) & 0xFFFFFFFFu64) | (u64(h) << 32u64));
+}
+
+// The bits of a `f32`, and the `f32` of bits.
+function $mBits32(x: f32): u32 {
+    return u32($floatBits(x));
+}
+
+function $mFloat32(w: u32): f32 {
+    return $bitsFloat32(u64(w));
+}
+
+// 2^n, `n` from -1022 to 1023; from -126 to 127 for a `f32`.
+function $mPow2(n: i32): f64 {
+    return $bitsFloat(u64(i64(n) + 1023) << 52u64);
+}
+
+function $mPow2F32(n: i32): f32 {
+    return $bitsFloat32(u64(i64(n) + 127) << 23u64);
+}
+
+// `scalbn(x, n)`: x 2^n rounded once, by steps of 2^1023 or 2^-969 when
+// 2^n is no float.
+function $mScalbn(x: f64, n: i32): f64 {
+    if (n > 1023) {
+        const y = x * $mPow2(1023);
+        if (n - 1023 > 1023) {
+            const m = n - 2046;
+            return y * $mPow2(1023) * $mPow2(m > 1023 ? 1023i32 : m);
+        }
+        return y * $mPow2(n - 1023);
+    }
+    if (n < -1022) {
+        const y = x * $mPow2(-969);
+        if (n + 969 < -1022) {
+            const m = n + 1938;
+            return y * $mPow2(-969) * $mPow2(m < -1022 ? -1022i32 : m);
+        }
+        return y * $mPow2(n + 969);
+    }
+    return x * $mPow2(n);
+}
+
+// `scalbnf(x, n)`, by steps of 2^127 or 2^-102.
+function $mScalbnF32(x: f32, n: i32): f32 {
+    if (n > 127) {
+        const y = x * $mPow2F32(127);
+        if (n - 127 > 127) {
+            const m = n - 254;
+            return y * $mPow2F32(127) * $mPow2F32(m > 127 ? 127i32 : m);
+        }
+        return y * $mPow2F32(n - 127);
+    }
+    if (n < -126) {
+        const y = x * $mPow2F32(-102);
+        if (n + 102 < -126) {
+            const m = n + 204;
+            return y * $mPow2F32(-102) * $mPow2F32(m < -126 ? -126i32 : m);
+        }
+        return y * $mPow2F32(n + 102);
+    }
+    return x * $mPow2F32(n);
+}
+
+// `exp`: |x| > ln2/2 reduced to r = x - k ln2 (k from -1022 to 1022 below
+// 708.39, 2^k a float made of its bits), then 1 + r + r c(r) / (2 - c(r)).
+function $expF64(x: f64): f64 {
+    const hx = $mHi(x) & 0x7FFFFFFFu32;
+    if (hx >= 0x4086232Bu32) {
+        return $expRareF64(x);
+    }
+    if (hx <= 0x3E300000u32) {
+        return 1.0 + x;
+    }
+    if (hx <= 0x3FD62E42u32) {
+        return $expPoly(x, x, 0.0);
+    }
+    const neg = $mHi(x) >= 0x80000000u32;
+    const k = hx >= 0x3FF0A2B2u32 ? i32(1.44269504088896338700e+00 * x + (neg ? -0.5 : 0.5)) : neg ? -1i32 : 1i32;
+    const [hi, lo] = $expSplit(x, k);
+    return $expPoly(hi - lo, hi, lo) * $mPow2(k);
+}
+
+// x - k ln2 as hi - lo (k ln2hi is exact).
+function $expSplit(x: f64, k: i32): [f64, f64] {
+    const kf = f64(k);
+    return [x - kf * 6.93147180369123816490e-01, kf * 1.90821492927058770002e-10];
+}
+
+function $expPoly(x: f64, hi: f64, lo: f64): f64 {
+    const xx = x * x;
+    const c = x - xx * (1.66666666666666019037e-01 + xx * (-2.77777777770155933842e-03 + xx * (6.61375632143793436117e-05 + xx * (-1.65339022054652515390e-06 + xx * 4.13813679705723846039e-08))));
+    return 1.0 + (x * c / (2.0 - c) - lo + hi);
+}
+
+// |x| >= 708.39 or NaN: the overflow, the underflow, and the results near
+// them through `scalbn`.
+@cold
+function $expRareF64(x: f64): f64 {
+    if (x != x) {
+        return x;
+    }
+    if (x > 709.782712893383973096) {
+        return x * $mPow2(1023);
+    }
+    if (x < -745.13321910194110842) {
+        return 0.0;
+    }
+    const k = i32(1.44269504088896338700e+00 * x + (x < 0.0 ? -0.5 : 0.5));
+    const [hi, lo] = $expSplit(x, k);
+    return $mScalbn($expPoly(hi - lo, hi, lo), k);
+}
+
+// `expf`.
+function $expF32(x: f32): f32 {
+    const hx = $mBits32(x) & 0x7FFFFFFFu32;
+    if (hx >= 0x42AEAC50u32) {
+        return $expRareF32(x);
+    }
+    if (hx <= 0x39000000u32) {
+        return 1.0f32 + x;
+    }
+    if (hx <= 0x3EB17218u32) {
+        return $expPolyF32(x, x, 0.0f32);
+    }
+    const neg = $mBits32(x) >= 0x80000000u32;
+    const k = hx > 0x3F851592u32 ? i32(1.4426950216e+00f32 * x + (neg ? -0.5f32 : 0.5f32)) : neg ? -1i32 : 1i32;
+    const [hi, lo] = $expSplitF32(x, k);
+    return $expPolyF32(hi - lo, hi, lo) * $mPow2F32(k);
+}
+
+function $expSplitF32(x: f32, k: i32): [f32, f32] {
+    const kf = f32(k);
+    return [x - kf * 6.9314575195e-01f32, kf * 1.4286067653e-06f32];
+}
+
+function $expPolyF32(x: f32, hi: f32, lo: f32): f32 {
+    const xx = x * x;
+    const c = x - xx * (1.6666625440e-1f32 + xx * (-2.7667332906e-3f32));
+    return 1.0f32 + (x * c / (2.0f32 - c) - lo + hi);
+}
+
+@cold
+function $expRareF32(x: f32): f32 {
+    const hx = $mBits32(x) & 0x7FFFFFFFu32;
+    const neg = $mBits32(x) >= 0x80000000u32;
+    if (hx > 0x7F800000u32) {
+        return x;
+    }
+    if (hx >= 0x42B17218u32 && !neg) {
+        return x * $mPow2F32(127);
+    }
+    if (neg && hx >= 0x42CFF1B5u32) {
+        return 0.0f32;
+    }
+    const k = i32(1.4426950216e+00f32 * x + (neg ? -0.5f32 : 0.5f32));
+    const [hi, lo] = $expSplitF32(x, k);
+    return $mScalbnF32($expPolyF32(hi - lo, hi, lo), k);
+}
+
+// `log`: x = 2^k (1 + f), 1 + f in [sqrt(2)/2, sqrt(2)], log(1 + f) by
+// s = f / (2 + f). (libm's test of x = 1 is left out: this gives +0 too.)
+function $logF64(x: f64): f64 {
+    // (one test for the rare ones: below the least normal, of the sign set,
+    // infinite or NaN)
+    const ui = $floatBits(x);
+    if (u32(ui >> 32u64) - 0x00100000u32 >= 0x7FE00000u32) {
+        return $logRareF64(x);
+    }
+    return $logMain(ui, 0i32);
+}
+
+// (the bits of a positive normal x; `k0` -54 for a subnormal made normal)
+function $logMain(ui: u64, k0: i32): f64 {
+    const hx = u32(ui >> 32u64) + 0x95F62u32;
+    const k = k0 + i32(hx >> 20u32) - 1023i32;
+    const x = $bitsFloat((u64((hx & 0x000FFFFFu32) + 0x3FE6A09Eu32) << 32u64) | (ui & 0xFFFFFFFFu64));
+    const f = x - 1.0;
+    const hfsq = 0.5 * f * f;
+    const s = f / (2.0 + f);
+    const z = s * s;
+    const w = z * z;
+    const t1 = w * (3.999999999940941908e-01 + w * (2.222219843214978396e-01 + w * 1.531383769920937332e-01));
+    const t2 = z * (6.666666666666735130e-01 + w * (2.857142874366239149e-01 + w * (1.818357216161805012e-01 + w * 1.479819860511658591e-01)));
+    const r = t2 + t1;
+    const dk = f64(k);
+    return s * (hfsq + r) + dk * 1.90821492927058770002e-10 - hfsq + f + dk * 6.93147180369123816490e-01;
+}
+
+// x <= 0, subnormal or a NaN with its sign set.
+@cold
+function $logRareF64(x: f64): f64 {
+    const ui = $floatBits(x);
+    if (ui >= 0x7FF0000000000000u64 && ui < 0x8000000000000000u64) {
+        return x;
+    }
+    if (ui << 1u64 == 0u64) {
+        return -1.0 / (x * x);
+    }
+    if (ui >= 0x8000000000000000u64) {
+        return (x - x) / 0.0;
+    }
+    return $logMain($floatBits(x * $mPow2(54)), -54i32);
+}
+
+// `logf`.
+function $logF32(x: f32): f32 {
+    const ix = $mBits32(x);
+    if (ix - 0x00800000u32 >= 0x7F000000u32) {
+        return $logRareF32(x);
+    }
+    return $logMainF32(ix, 0i32);
+}
+
+function $logMainF32(ix0: u32, k0: i32): f32 {
+    const ix = ix0 + 0x4AFB0Du32;
+    const k = k0 + i32(ix >> 23u32) - 127i32;
+    const x = $mFloat32((ix & 0x007FFFFFu32) + 0x3F3504F3u32);
+    const f = x - 1.0f32;
+    const s = f / (2.0f32 + f);
+    const z = s * s;
+    const w = z * z;
+    const t1 = w * (0.40000972152f32 + w * 0.24279078841f32);
+    const t2 = z * (0.66666662693f32 + w * 0.28498786688f32);
+    const r = t2 + t1;
+    const hfsq = 0.5f32 * f * f;
+    const dk = f32(k);
+    return s * (hfsq + r) + dk * 9.0580006145e-06f32 - hfsq + f + dk * 6.9313812256e-01f32;
+}
+
+@cold
+function $logRareF32(x: f32): f32 {
+    const ix = $mBits32(x);
+    if (ix >= 0x7F800000u32 && ix < 0x80000000u32) {
+        return x;
+    }
+    if (ix << 1u32 == 0u32) {
+        return -1.0f32 / (x * x);
+    }
+    if (ix >= 0x80000000u32) {
+        return (x - x) / 0.0f32;
+    }
+    return $logMainF32($mBits32(x * $mPow2F32(25)), -25i32);
+}
+
+// `pow`: the special values of C99 and IEEE 754 (`$powRareF64`); inline,
+// y = 0, and the common case: |x| normal and not 1, x > 0 or y an integer,
+// y finite with |y| <= 2^31: log2|x| in two parts, times y in two parts,
+// then 2^ of that; or y -1, 1, 2 or 1/2, which libm takes apart.
+function $powF64(x: f64, y: f64): f64 {
+    const bx = $floatBits(x);
+    const by = $floatBits(y);
+    const hx = i32(bx >> 32u64);
+    const ix = hx & 0x7FFFFFFF;
+    const hy = i32(by >> 32u64);
+    const iy = hy & 0x7FFFFFFF;
+    const ly = u32(by);
+    if (by << 1u64 == 0u64) {
+        return 1.0;
+    }
+    const xok = ix >= 0x00100000 && ix < 0x7FF00000 && bx << 1u64 != 0x7FE0000000000000u64;
+    const yok = iy <= 0x41E00000;
+    const plain = ly != 0u32 || iy != 0x3FF00000 && hy != 0x40000000 && hy != 0x3FE00000;
+    if (xok && yok && plain && hx >= 0i32) {
+        return $powCore(x, ix, y, 1.0);
+    }
+    // y -1, 1, 2 or 1/2 of such an x: as libm takes them apart
+    if (xok && yok && !plain) {
+        if (iy == 0x3FF00000) {
+            return hy >= 0i32 ? x : 1.0 / x;
+        }
+        if (hy == 0x40000000) {
+            return x * x;
+        }
+        return hx >= 0i32 ? Math.sqrt(x) : $powRareF64(x, y);
+    }
+    const yi = xok && yok && plain ? $powIsInt(iy, ly) : 0i32;
+    if (yi != 0i32) {
+        return $powCore(-x, ix, y, yi == 1i32 ? -1.0 : 1.0);
+    }
+    return $powRareF64(x, y);
+}
+
+// y an even integer: 2, an odd one: 1, no integer: 0 (`yisint`).
+function $powIsInt(iy: i32, ly: u32): i32 {
+    if (iy >= 0x43400000) {
+        return 2i32;
+    }
+    if (iy < 0x3FF00000) {
+        return 0i32;
+    }
+    const k = (iy >> 20) - 0x3FF;
+    if (k > 20) {
+        const j = i32(ly >> u32(52 - k));
+        return j << (52 - k) == i32(ly) ? 2i32 - (j & 1i32) : 0i32;
+    }
+    if (ly != 0u32) {
+        return 0i32;
+    }
+    const j = iy >> (20 - k);
+    return j << (20 - k) == iy ? 2i32 - (j & 1i32) : 0i32;
+}
+
+// |x| normal (`ix` its high word), `s` the sign of the result.
+function $powCore(ax: f64, ix: i32, y: f64, s: f64): f64 {
+    const [t1, t2] = $powLog2(ax, ix, 0i32);
+    return $powExp2(y, t1, t2, s);
+}
+
+// log2(ax) = t1 + t2, t1 of 21 bits; `n0` -53 for a subnormal made normal.
+function $powLog2(ax0: f64, ix0: i32, n0: i32): [f64, f64] {
+    const j = ix0 & 0x000FFFFF;
+    const k = j <= 0x3988E ? 0i32 : j < 0xBB67A ? 1i32 : 0i32;
+    const up = j >= 0xBB67A;
+    const n = n0 + (ix0 >> 20) - 0x3FF + (up ? 1i32 : 0i32);
+    const ix = (j | 0x3FF00000) - (up ? 0x00100000 : 0i32);
+    const ax = $mWithHi(ax0, u32(ix));
+    const bp = k == 0i32 ? 1.0 : 1.5;
+    const u = ax - bp;
+    const v = 1.0 / (ax + bp);
+    const ss = u * v;
+    const sh = $mHigh(ss);
+    const th = $bitsFloat(u64(((u32(ix) >> 1u32) | 0x20000000u32) + 0x00080000u32 + (u32(k) << 18u32)) << 32u64);
+    const tl = ax - (th - bp);
+    const sl = v * ((u - sh * th) - sh * tl);
+    const s2 = ss * ss;
+    const r = s2 * s2 * (5.99999999999994648725e-01 + s2 * (4.28571428578550184252e-01 + s2 * (3.33333329818377432918e-01 + s2 * (2.72728123808534006489e-01 + s2 * (2.30660745775561754067e-01 + s2 * 2.06975017800338417784e-01))))) + sl * (sh + ss);
+    const sh2 = sh * sh;
+    const th2 = $mHigh(3.0 + sh2 + r);
+    const tl2 = r - ((th2 - 3.0) - sh2);
+    const uu = sh * th2;
+    const vv = sl * th2 + tl2 * ss;
+    const ph = $mHigh(uu + vv);
+    const pl = vv - (ph - uu);
+    const zh = 9.61796700954437255859e-01 * ph;
+    const zl = (-7.02846165095275826516e-09) * ph + pl * 9.61796693925975554329e-01 + (k == 0i32 ? 0.0 : 1.35003920212974897128e-08);
+    const t = f64(n);
+    const dh = k == 0i32 ? 0.0 : 5.84962487220764160156e-01;
+    const t1 = $mHigh(((zh + zl) + dh) + t);
+    return [t1, zl - (((t1 - t) - dh) - zh)];
+}
+
+// 2^(y (t1 + t2)) s; z of 1024 and more, or of -1075 and less: `$powEdge`.
+function $powExp2(y: f64, t1: f64, t2: f64, s: f64): f64 {
+    const y1 = $mHigh(y);
+    const pl = (y - y1) * t1 + y * t2;
+    const ph = y1 * t1;
+    const z = pl + ph;
+    const j = i32($floatBits(z) >> 32u64);
+    if (j >= 0x40900000 || (j & 0x7FFFFFFF) >= 0x4090CC00) {
+        return $powEdge(pl, ph, z, s);
+    }
+    return $powFinish(pl, ph, j, s);
+}
+
+// The overflow and the underflow, or z exactly 1024 or -1075 within them.
+@cold
+function $powEdge(pl: f64, ph: f64, z: f64, s: f64): f64 {
+    const j = i32($floatBits(z) >> 32u64);
+    const i = i32($floatBits(z));
+    if (j >= 0x40900000) {
+        if (((j - 0x40900000) | i) != 0i32 || pl + 8.0085662595372944372e-017 > z - ph) {
+            return s * 1.0e300 * 1.0e300;
+        }
+        return $powFinish(pl, ph, j, s);
+    }
+    if (((u32(j) - 0xC090CC00u32) | u32(i)) != 0u32 || pl <= z - ph) {
+        return s * 1.0e-300 * 1.0e-300;
+    }
+    return $powFinish(pl, ph, j, s);
+}
+
+// 2^(pl + ph) s: n the nearest integer when |z| > 1/2, the rest by the
+// polynomial of `exp`; a subnormal result through `scalbn`.
+function $powFinish(pl: f64, ph0: f64, j: i32, s: f64): f64 {
+    const [n, ph] = $powRound(j, ph0);
+    const t = $mHigh(pl + ph);
+    const u = t * 6.93147182464599609375e-01;
+    const v = (pl - (t - ph)) * 6.93147180559945286227e-01 + t * (-1.90465429995776804525e-09);
+    const z = u + v;
+    const w = v - (z - u);
+    const tt = z * z;
+    const t1 = z - tt * (1.66666666666666019037e-01 + tt * (-2.77777777770155933842e-03 + tt * (6.61375632143793436117e-05 + tt * (-1.65339022054652515390e-06 + tt * 4.13813679705723846039e-08))));
+    const r = (z * t1) / (t1 - 2.0) - (w + z * w);
+    const z2 = 1.0 - (r - z);
+    const jj = i32($floatBits(z2) >> 32u64) + (n << 20);
+    if (jj >> 20 <= 0i32) {
+        return s * $powTiny(z2, n);
+    }
+    return s * $mWithHi(z2, u32(jj));
+}
+
+function $powRound(j: i32, ph: f64): [i32, f64] {
+    const i = j & 0x7FFFFFFF;
+    if (i <= 0x3FE00000) {
+        return [0i32, ph];
+    }
+    const k = (i >> 20) - 0x3FF;
+    const n = j + (0x00100000 >> (k + 1));
+    const k2 = ((n & 0x7FFFFFFF) >> 20) - 0x3FF;
+    const t = $bitsFloat(u64(u32(n & ((0x000FFFFF >> k2) ^ -1i32))) << 32u64);
+    const m = ((n & 0x000FFFFF) | 0x00100000) >> (20 - k2);
+    return [j < 0i32 ? -m : m, ph - t];
+}
+
+@cold
+function $powTiny(z: f64, n: i32): f64 {
+    return $mScalbn(z, n);
+}
+
+// The whole of libm's `pow`, for what the inline case leaves.
+@cold
+function $powRareF64(x: f64, y: f64): f64 {
+    const bx = $floatBits(x);
+    const by = $floatBits(y);
+    const hx = i32(bx >> 32u64);
+    const lx = u32(bx);
+    const hy = i32(by >> 32u64);
+    const ly = u32(by);
+    const ix = hx & 0x7FFFFFFF;
+    const iy = hy & 0x7FFFFFFF;
+    if ((u32(iy) | ly) == 0u32) {
+        return 1.0;
+    }
+    if (hx == 0x3FF00000 && lx == 0u32) {
+        return 1.0;
+    }
+    if (ix > 0x7FF00000 || (ix == 0x7FF00000 && lx != 0u32) || iy > 0x7FF00000 || (iy == 0x7FF00000 && ly != 0u32)) {
+        // (libm's `x + y`: the NaN of x if it is one, else that of y; the
+        // order of the operands of `+` is the code generator's, not ours)
+        return x != x ? x + x : y + y;
+    }
+    const yisint = hx < 0i32 ? $powIsInt(iy, ly) : 0i32;
+    if (ly == 0u32 && iy == 0x7FF00000) {
+        if (((ix - 0x3FF00000) | i32(lx)) == 0i32) {
+            return 1.0;
+        }
+        if (ix >= 0x3FF00000) {
+            return hy >= 0i32 ? y : 0.0;
+        }
+        return hy >= 0i32 ? 0.0 : -y;
+    }
+    if (ly == 0u32 && iy == 0x3FF00000) {
+        return hy >= 0i32 ? x : 1.0 / x;
+    }
+    if (ly == 0u32 && hy == 0x40000000) {
+        return x * x;
+    }
+    if (ly == 0u32 && hy == 0x3FE00000 && hx >= 0i32) {
+        return Math.sqrt(x);
+    }
+    const ax = Math.abs(x);
+    if (lx == 0u32 && (ix == 0x7FF00000 || ix == 0i32 || ix == 0x3FF00000)) {
+        const z = hy < 0i32 ? 1.0 / ax : ax;
+        if (hx >= 0i32) {
+            return z;
+        }
+        if (((ix - 0x3FF00000) | yisint) == 0i32) {
+            return (z - z) / (z - z);
+        }
+        return yisint == 1i32 ? -z : z;
+    }
+    if (hx < 0i32 && yisint == 0i32) {
+        return (x - x) / (x - x);
+    }
+    const s = hx < 0i32 && yisint == 1i32 ? -1.0 : 1.0;
+    // |y| > 2^64: an overflow or an underflow whatever the sign
+    if (iy > 0x43F00000 && ix <= 0x3FEFFFFF) {
+        return hy < 0i32 ? 1.0e300 * 1.0e300 : 1.0e-300 * 1.0e-300;
+    }
+    if (iy > 0x43F00000 && ix >= 0x3FF00000) {
+        return hy > 0i32 ? 1.0e300 * 1.0e300 : 1.0e-300 * 1.0e-300;
+    }
+    if (iy > 0x41E00000) {
+        if (ix < 0x3FEFFFFF) {
+            return hy < 0i32 ? s * 1.0e300 * 1.0e300 : s * 1.0e-300 * 1.0e-300;
+        }
+        if (ix > 0x3FF00000) {
+            return hy > 0i32 ? s * 1.0e300 * 1.0e300 : s * 1.0e-300 * 1.0e-300;
+        }
+        // |1 - x| <= 2^-20: log(x) by x - x^2/2 + x^3/3 - x^4/4
+        const t = ax - 1.0;
+        const w = (t * t) * (0.5 - t * (0.3333333333333333333333 - t * 0.25));
+        const u = 1.44269502162933349609e+00 * t;
+        const v = t * 1.92596299112661746887e-08 - w * 1.44269504088896338700e+00;
+        const t1 = $mHigh(u + v);
+        return $powExp2(y, t1, v - (t1 - u), s);
+    }
+    if (ix < 0x00100000) {
+        const a = ax * 9007199254740992.0;
+        const [t1, t2] = $powLog2(a, i32($floatBits(a) >> 32u64), -53i32);
+        return $powExp2(y, t1, t2, s);
+    }
+    return $powCore(ax, ix, y, s);
+}
+
+// `powf`, the same way.
+function $powF32(x: f32, y: f32): f32 {
+    const hx = i32($mBits32(x));
+    const hy = i32($mBits32(y));
+    const ix = hx & 0x7FFFFFFF;
+    const iy = hy & 0x7FFFFFFF;
+    if (iy == 0i32) {
+        return 1.0f32;
+    }
+    const xok = ix >= 0x00800000 && ix < 0x7F800000 && ix != 0x3F800000;
+    const yok = iy <= 0x4D000000;
+    const plain = iy != 0x3F800000 && hy != 0x40000000 && hy != 0x3F000000;
+    if (xok && yok && plain && hx >= 0i32) {
+        return $powCoreF32(x, ix, y, 1.0f32);
+    }
+    if (xok && yok && !plain) {
+        if (iy == 0x3F800000) {
+            return hy >= 0i32 ? x : 1.0f32 / x;
+        }
+        if (hy == 0x40000000) {
+            return x * x;
+        }
+        return hx >= 0i32 ? Math.sqrt(x) : $powRareF32(x, y);
+    }
+    const yi = xok && yok && plain ? $powIsIntF32(iy) : 0i32;
+    if (yi != 0i32) {
+        return $powCoreF32(-x, ix, y, yi == 1i32 ? -1.0f32 : 1.0f32);
+    }
+    return $powRareF32(x, y);
+}
+
+function $powIsIntF32(iy: i32): i32 {
+    if (iy >= 0x4B800000) {
+        return 2i32;
+    }
+    if (iy < 0x3F800000) {
+        return 0i32;
+    }
+    const k = (iy >> 23) - 0x7F;
+    const j = iy >> (23 - k);
+    return j << (23 - k) == iy ? 2i32 - (j & 1i32) : 0i32;
+}
+
+function $powCoreF32(ax: f32, ix: i32, y: f32, sn: f32): f32 {
+    const [t1, t2] = $powLog2F32(ax, ix, 0i32);
+    return $powExp2F32(y, t1, t2, sn);
+}
+
+// `x` with the low 12 bits of its bits 0.
+function $mHighF32(x: f32): f32 {
+    return $mFloat32($mBits32(x) & 0xFFFFF000u32);
+}
+
+function $powLog2F32(ax0: f32, ix0: i32, n0: i32): [f32, f32] {
+    const j = ix0 & 0x007FFFFF;
+    const k = j <= 0x1CC471 ? 0i32 : j < 0x5DB3D7 ? 1i32 : 0i32;
+    const up = j >= 0x5DB3D7;
+    const n = n0 + (ix0 >> 23) - 0x7F + (up ? 1i32 : 0i32);
+    const ix = (j | 0x3F800000) - (up ? 0x00800000 : 0i32);
+    const ax = $mFloat32(u32(ix));
+    const bp = k == 0i32 ? 1.0f32 : 1.5f32;
+    const u = ax - bp;
+    const v = 1.0f32 / (ax + bp);
+    const s = u * v;
+    const sh = $mHighF32(s);
+    const th = $mFloat32((((u32(ix) >> 1u32) & 0xFFFFF000u32) | 0x20000000u32) + 0x00400000u32 + (u32(k) << 21u32));
+    const tl = ax - (th - bp);
+    const sl = v * ((u - sh * th) - sh * tl);
+    const s2 = s * s;
+    const r = s2 * s2 * (6.0000002384e-01f32 + s2 * (4.2857143283e-01f32 + s2 * (3.3333334327e-01f32 + s2 * (2.7272811532e-01f32 + s2 * (2.3066075146e-01f32 + s2 * 2.0697501302e-01f32))))) + sl * (sh + s);
+    const sh2 = sh * sh;
+    const th2 = $mHighF32(3.0f32 + sh2 + r);
+    const tl2 = r - ((th2 - 3.0f32) - sh2);
+    const uu = sh * th2;
+    const vv = sl * th2 + tl2 * s;
+    const ph = $mHighF32(uu + vv);
+    const pl = vv - (ph - uu);
+    const zh = 9.6191406250e-01f32 * ph;
+    const zl = (-1.1736857402e-04f32) * ph + pl * 9.6179670095e-01f32 + (k == 0i32 ? 0.0f32 : 1.56322085e-06f32);
+    const t = f32(n);
+    const dh = k == 0i32 ? 0.0f32 : 5.84960938e-01f32;
+    const t1 = $mHighF32(((zh + zl) + dh) + t);
+    return [t1, zl - (((t1 - t) - dh) - zh)];
+}
+
+function $powExp2F32(y: f32, t1: f32, t2: f32, sn: f32): f32 {
+    const y1 = $mHighF32(y);
+    const pl = (y - y1) * t1 + y * t2;
+    const ph = y1 * t1;
+    const z = pl + ph;
+    const j = i32($mBits32(z));
+    if (j >= 0x43000000 || (j & 0x7FFFFFFF) > 0x43160000 || u32(j) == 0xC3160000u32) {
+        return $powEdgeF32(pl, ph, z, sn);
+    }
+    return $powFinishF32(pl, ph, j, sn);
+}
+
+@cold
+function $powEdgeF32(pl: f32, ph: f32, z: f32, sn: f32): f32 {
+    const j = i32($mBits32(z));
+    if (j > 0x43000000) {
+        return sn * 1.0e30f32 * 1.0e30f32;
+    }
+    if (j == 0x43000000) {
+        return pl + 4.2995665694e-08f32 > z - ph ? sn * 1.0e30f32 * 1.0e30f32 : $powFinishF32(pl, ph, j, sn);
+    }
+    if ((j & 0x7FFFFFFF) > 0x43160000) {
+        return sn * 1.0e-30f32 * 1.0e-30f32;
+    }
+    return pl <= z - ph ? sn * 1.0e-30f32 * 1.0e-30f32 : $powFinishF32(pl, ph, j, sn);
+}
+
+function $powFinishF32(pl: f32, ph0: f32, j: i32, sn: f32): f32 {
+    const [n, ph] = $powRoundF32(j, ph0);
+    const t = $mFloat32($mBits32(pl + ph) & 0xFFFF8000u32);
+    const u = t * 6.93145752e-01f32;
+    const v = (pl - (t - ph)) * 6.9314718246e-01f32 + t * 1.42860654e-06f32;
+    const z = u + v;
+    const w = v - (z - u);
+    const tt = z * z;
+    const t1 = z - tt * (1.6666667163e-01f32 + tt * (-2.7777778450e-03f32 + tt * (6.6137559770e-05f32 + tt * (-1.6533901999e-06f32 + tt * 4.1381369442e-08f32))));
+    const r = (z * t1) / (t1 - 2.0f32) - (w + z * w);
+    const z2 = 1.0f32 - (r - z);
+    const jj = i32($mBits32(z2)) + (n << 23);
+    if (jj >> 23 <= 0i32) {
+        return sn * $powTinyF32(z2, n);
+    }
+    return sn * $mFloat32(u32(jj));
+}
+
+function $powRoundF32(j: i32, ph: f32): [i32, f32] {
+    const i = j & 0x7FFFFFFF;
+    if (i <= 0x3F000000) {
+        return [0i32, ph];
+    }
+    const k = (i >> 23) - 0x7F;
+    const n = j + (0x00800000 >> (k + 1));
+    const k2 = ((n & 0x7FFFFFFF) >> 23) - 0x7F;
+    const t = $mFloat32(u32(n) & ((0x007FFFFFu32 >> u32(k2)) ^ 0xFFFFFFFFu32));
+    const m = ((n & 0x007FFFFF) | 0x00800000) >> (23 - k2);
+    return [j < 0i32 ? -m : m, ph - t];
+}
+
+@cold
+function $powTinyF32(z: f32, n: i32): f32 {
+    return $mScalbnF32(z, n);
+}
+
+@cold
+function $powRareF32(x: f32, y: f32): f32 {
+    const hx = i32($mBits32(x));
+    const hy = i32($mBits32(y));
+    const ix = hx & 0x7FFFFFFF;
+    const iy = hy & 0x7FFFFFFF;
+    if (iy == 0i32) {
+        return 1.0f32;
+    }
+    if (hx == 0x3F800000) {
+        return 1.0f32;
+    }
+    if (ix > 0x7F800000 || iy > 0x7F800000) {
+        // (libm's `x + y`: the NaN of x if it is one, else that of y; the
+        // order of the operands of `+` is the code generator's, not ours)
+        return x != x ? x + x : y + y;
+    }
+    const yisint = hx < 0i32 ? $powIsIntF32(iy) : 0i32;
+    if (iy == 0x7F800000) {
+        if (ix == 0x3F800000) {
+            return 1.0f32;
+        }
+        if (ix > 0x3F800000) {
+            return hy >= 0i32 ? y : 0.0f32;
+        }
+        return hy >= 0i32 ? 0.0f32 : -y;
+    }
+    if (iy == 0x3F800000) {
+        return hy >= 0i32 ? x : 1.0f32 / x;
+    }
+    if (hy == 0x40000000) {
+        return x * x;
+    }
+    if (hy == 0x3F000000 && hx >= 0i32) {
+        return Math.sqrt(x);
+    }
+    const ax = Math.abs(x);
+    if (ix == 0x7F800000 || ix == 0i32 || ix == 0x3F800000) {
+        const z = hy < 0i32 ? 1.0f32 / ax : ax;
+        if (hx >= 0i32) {
+            return z;
+        }
+        if (((ix - 0x3F800000) | yisint) == 0i32) {
+            return (z - z) / (z - z);
+        }
+        return yisint == 1i32 ? -z : z;
+    }
+    if (hx < 0i32 && yisint == 0i32) {
+        return (x - x) / (x - x);
+    }
+    const sn = hx < 0i32 && yisint == 1i32 ? -1.0f32 : 1.0f32;
+    if (iy > 0x4D000000) {
+        if (ix < 0x3F7FFFF8) {
+            return hy < 0i32 ? sn * 1.0e30f32 * 1.0e30f32 : sn * 1.0e-30f32 * 1.0e-30f32;
+        }
+        if (ix > 0x3F800007) {
+            return hy > 0i32 ? sn * 1.0e30f32 * 1.0e30f32 : sn * 1.0e-30f32 * 1.0e-30f32;
+        }
+        const t = ax - 1.0f32;
+        const w = (t * t) * (0.5f32 - t * (0.333333333333f32 - t * 0.25f32));
+        const u = 1.4426879883e+00f32 * t;
+        const v = t * 7.0526075433e-06f32 - w * 1.4426950216e+00f32;
+        const t1 = $mHighF32(u + v);
+        return $powExp2F32(y, t1, v - (t1 - u), sn);
+    }
+    if (ix < 0x00800000) {
+        const a = ax * 16777216.0f32;
+        const [t1, t2] = $powLog2F32(a, i32($mBits32(a)), -24i32);
+        return $powExp2F32(y, t1, t2, sn);
+    }
+    return $powCoreF32(ax, ix, y, sn);
+}
+
+// `k_sin(x, y, iy)`: sin(x + y) for |x| <= pi/4, `y` the tail of x (none:
+// `tail` false).
+function $mSinK(x: f64, y: f64, tail: boolean): f64 {
+    const z = x * x;
+    const w = z * z;
+    const r = 8.33333333332248946124e-03 + z * (-1.98412698298579493134e-04 + z * 2.75573137070700676789e-06) + z * w * (-2.50507602534068634195e-08 + z * 1.58969099521155010221e-10);
+    const v = z * x;
+    if (!tail) {
+        return x + v * (-1.66666666666666324348e-01 + z * r);
+    }
+    return x - ((z * (0.5 * y - v * r) - y) - v * (-1.66666666666666324348e-01));
+}
+
+// `k_cos(x, y)`: cos(x + y) for |x| <= pi/4.
+function $mCosK(x: f64, y: f64): f64 {
+    const z = x * x;
+    const w = z * z;
+    const r = z * (4.16666666666666019037e-02 + z * (-1.38888888888741095749e-03 + z * 2.48015872894767294178e-05)) + w * w * (-2.75573143513906633035e-07 + z * (2.08757232129817482790e-09 + z * (-1.13596475577881948265e-11)));
+    const hz = 0.5 * z;
+    const ww = 1.0 - hz;
+    return ww + (((1.0 - ww) - hz) + (z * r - x * y));
+}
+
+// `k_tan(x, y, odd)`: tan(x + y) for |x| <= pi/4, or -1/tan(x + y) (odd).
+function $mTanK(x0: f64, y0: f64, odd: boolean): f64 {
+    const hx = $mHi(x0);
+    const big = (hx & 0x7FFFFFFFu32) >= 0x3FE59428u32;
+    const neg = hx >= 0x80000000u32;
+    const x = big ? (7.85398163397448278999e-01 - (neg ? -x0 : x0)) + (3.06161699786838301793e-17 - (neg ? -y0 : y0)) : x0;
+    const y = big ? 0.0 : y0;
+    const z = x * x;
+    const w = z * z;
+    const r = 1.33333333333201242699e-01 + w * (2.18694882948595424599e-02 + w * (3.59207910759131235356e-03 + w * (5.88041240820264096874e-04 + w * (7.81794442939557092300e-05 + w * (-1.85586374855275456654e-05)))));
+    const v = z * (5.39682539762260521377e-02 + w * (8.86323982359930005737e-03 + w * (1.45620945432529025516e-03 + w * (2.46463134818469906812e-04 + w * (7.14072491382608190305e-05 + w * 2.59073051863633712884e-05)))));
+    const s = z * x;
+    const r2 = y + z * (s * (r + v) + y) + s * 3.33333333333334091986e-01;
+    const w2 = x + r2;
+    if (big) {
+        const sg = odd ? -1.0 : 1.0;
+        const v2 = sg - 2.0 * (x + (r2 - w2 * w2 / (w2 + sg)));
+        return neg ? -v2 : v2;
+    }
+    if (!odd) {
+        return w2;
+    }
+    // -1/(x + r2) to the last bit
+    const w0 = $mHigh(w2);
+    const v3 = r2 - (w0 - x);
+    const a = -1.0 / w2;
+    const a0 = $mHigh(a);
+    return a0 + a * (1.0 + a0 * w0 + a0 * v3);
+}
+
+// `sin`: |x| <= pi/4 by `k_sin`, otherwise n and y0 + y1 = x - n pi/2.
+function $sinF64(x: f64): f64 {
+    const ix = $mHi(x) & 0x7FFFFFFFu32;
+    if (ix <= 0x3FE921FBu32) {
+        return ix < 0x3E500000u32 ? x : $mSinK(x, 0.0, false);
+    }
+    if (ix >= 0x7FF00000u32) {
+        return x - x;
+    }
+    const [n, y0, y1] = $mRemPio2(x, ix);
+    const v = (n & 1i32) == 0i32 ? $mSinK(y0, y1, true) : $mCosK(y0, y1);
+    return (n & 2i32) == 0i32 ? v : -v;
+}
+
+// `cos` (below 2^-27 sqrt(2), libm's `x as i32 == 0` holds for all: 1).
+function $cosF64(x: f64): f64 {
+    const ix = $mHi(x) & 0x7FFFFFFFu32;
+    if (ix <= 0x3FE921FBu32) {
+        return ix < 0x3E46A09Eu32 ? 1.0 : $mCosK(x, 0.0);
+    }
+    if (ix >= 0x7FF00000u32) {
+        return x - x;
+    }
+    const [n, y0, y1] = $mRemPio2(x, ix);
+    const v = (n & 1i32) == 0i32 ? $mCosK(y0, y1) : $mSinK(y0, y1, true);
+    return ((n + 1i32) & 2i32) == 0i32 ? v : -v;
+}
+
+// `tan`.
+function $tanF64(x: f64): f64 {
+    const ix = $mHi(x) & 0x7FFFFFFFu32;
+    if (ix <= 0x3FE921FBu32) {
+        return ix < 0x3E400000u32 ? x : $mTanK(x, 0.0, false);
+    }
+    if (ix >= 0x7FF00000u32) {
+        return x - x;
+    }
+    const [n, y0, y1] = $mRemPio2(x, ix);
+    return $mTanK(y0, y1, (n & 1i32) != 0i32);
+}
+
+// `rem_pio2(x)`: n and y0 + y1 = x - n pi/2, |y0 + y1| <= pi/4; x finite
+// and above pi/4 (`ix` its high word without its sign). Near the first
+// four multiples of pi/2 by their own subtractions; up to 2^20 pi/2, n
+// from x 2/pi rounded, in up to three rounds; above, `rem_pio2_large`.
+function $mRemPio2(x: f64, ix: u32): [i32, f64, f64] {
+    const neg = $mHi(x) >= 0x80000000u32;
+    if (ix <= 0x400F6A7Au32) {
+        if ((ix & 0xFFFFFu32) == 0x921FBu32) {
+            return $mRemMedium(x, ix);
+        }
+        if (ix <= 0x4002D97Cu32) {
+            return $mRemNear(x, neg, 1i32, 1.57079632673412561417e+00, 6.07710050650619224932e-11);
+        }
+        return $mRemNear(x, neg, 2i32, 2.0 * 1.57079632673412561417e+00, 2.0 * 6.07710050650619224932e-11);
+    }
+    if (ix <= 0x401C463Bu32) {
+        if (ix <= 0x4015FDBCu32) {
+            if (ix == 0x4012D97Cu32) {
+                return $mRemMedium(x, ix);
+            }
+            return $mRemNear(x, neg, 3i32, 3.0 * 1.57079632673412561417e+00, 3.0 * 6.07710050650619224932e-11);
+        }
+        if (ix == 0x401921FBu32) {
+            return $mRemMedium(x, ix);
+        }
+        return $mRemNear(x, neg, 4i32, 4.0 * 1.57079632673412561417e+00, 4.0 * 6.07710050650619224932e-11);
+    }
+    if (ix < 0x413921FBu32) {
+        return $mRemMedium(x, ix);
+    }
+    return $mRemLarge(x);
+}
+
+// x - n pi/2 for n from 1 to 4: `a` n pio2_1, `b` n pio2_1t.
+function $mRemNear(x: f64, neg: boolean, n: i32, a: f64, b: f64): [i32, f64, f64] {
+    if (neg) {
+        const z = x + a;
+        const y0 = z + b;
+        return [-n, y0, (z - y0) + b];
+    }
+    const z = x - a;
+    const y0 = z - b;
+    return [n, y0, (z - y0) - b];
+}
+
+// The biased exponent of a `f64`.
+function $mExpOf(y: f64): i32 {
+    return i32(($floatBits(y) >> 52u64) & 0x7FFu64);
+}
+
+function $mRemMedium(x: f64, ix: u32): [i32, f64, f64] {
+    const nf = x * 6.36619772367581382433e-01 + 6755399441055744.0 - 6755399441055744.0;
+    const r = x - nf * 1.57079632673412561417e+00;
+    const w = nf * 6.07710050650619224932e-11;
+    const y0 = r - w;
+    const ex = i32(ix >> 20u32);
+    if (ex - $mExpOf(y0) > 16i32) {
+        return $mRemRounds(nf, r, ex);
+    }
+    return [i32(nf), y0, (r - y0) - w];
+}
+
+// The second round (good to 118 bits), and the third (151 bits).
+function $mRemRounds(nf: f64, t: f64, ex: i32): [i32, f64, f64] {
+    const w0 = nf * 6.07710050630396597660e-11;
+    const r = t - w0;
+    const w = nf * 2.02226624879595063154e-21 - ((t - r) - w0);
+    const y0 = r - w;
+    if (ex - $mExpOf(y0) > 49i32) {
+        const w3 = nf * 2.02226624871116645580e-21;
+        const r3 = r - w3;
+        const ww = nf * 8.47842766036889956997e-32 - ((r - r3) - w3);
+        const y3 = r3 - ww;
+        return [i32(nf), y3, (r3 - y3) - ww];
+    }
+    return [i32(nf), y0, (r - y0) - w];
+}
+
+// |x| >= 2^20 pi/2: its 53 bits in three chunks of 24 bits for
+// `rem_pio2_large`.
+@cold
+function $mRemLarge(x: f64): [i32, f64, f64] {
+    const b = $floatBits(x);
+    const m = (b & 0x000FFFFFFFFFFFFFu64) | 0x0010000000000000u64;
+    const e0 = i32((b >> 52u64) & 0x7FFu64) - 1046i32;
+    const [n, y0, y1] = $mRp(i64(m >> 29u64), i64((m >> 5u64) & 0xFFFFFFu64), i64((m & 31u64) << 19u64), e0, 4, true);
+    return b >= 0x8000000000000000u64 ? [-n, -y0, -y1] : [n, y0, y1];
+}
+
+// `rem_pio2_large` for one double, x = (t0 + t1 2^-24 + t2 2^-48) 2^e0: n
+// mod 8 and y0 + y1 = x - n pi/2 (y1 0 without `two`, the precision of a
+// `f32`); `jk` libm's INIT_JK of its precision, 4 or 3. libm's chunks of
+// x 2/pi are integers held in floats; here they are integers, computed as
+// libm computes them, exactly; the sums that round are libm's, in its
+// order. The common cases: the chunks of jk + 1 products, or of one more
+// when the fraction starts with a chunk of zeros (libm's recomputation,
+// once); any other (a chunk of zeros more): `$mRpGeneral`, libm's loop.
+function $mRp(t0: i64, t1: i64, t2: i64, e0: i32, jk: i64, two: boolean): [i32, f64, f64] {
+    const jv0 = i64(e0 - 3i32) / 24;
+    const jv = jv0 < 0 ? 0 : jv0;
+    const q0 = i64(e0) - 24 * (jv + 1);
+    const [c0, c1, c2, c3, c4, c5] = $mRpChunks(t0, t1, t2, jv, jk);
+    const [n, ih, d1, d2, d3, d4, d5, zf] = $mRpFix(c0, c1, c2, c3, c4, c5, q0);
+    if (q0 < 0 && zf != 0) {
+        if (zf >= 0x1000000) {
+            return $mRpSums(n, ih, zf >> 24, zf & 0xFFFFFF, d1, d2, d3, d4, jk + 1, q0 + 24, jk, two);
+        }
+        return $mRpSums(n, ih, zf, d1, d2, d3, d4, d5, jk, q0, jk, two);
+    }
+    if (d1 == 0) {
+        return $mRpGeneral(t0, t1, t2, jv, q0, jk, two);
+    }
+    return $mRpOnce(t0, t1, t2, jv, q0, jk, two);
+}
+
+// libm's recomputation once (the top chunk of the fraction not 0, `k` 1):
+// one product more; the zero chunk above the fraction dropped (its `jz`
+// one less, its `q0` 24 less) when nothing carries into it.
+function $mRpOnce(t0: i64, t1: i64, t2: i64, jv: i64, q0: i64, jk: i64, two: boolean): [i32, f64, f64] {
+    const [c0, c1, c2, c3, c4, c5] = $mRpChunks(t0, t1, t2, jv, jk + 1);
+    const [n, ih, f1, f2, f3, f4, f5, zf] = $mRpFix(c0, c1, c2, c3, c4, c5, q0);
+    if ((q0 >= 0 || zf == 0) && f1 != 0) {
+        return $mRpSums(n, ih, f1, f2, f3, f4, f5, 0, jk, q0 - 24, jk, two);
+    }
+    return $mRpGeneral(t0, t1, t2, jv, q0, jk, two);
+}
+
+// The chunk `i` of 24 bits of 2/pi (libm's `IPIO2`: the first 66 of its
+// 690, which are all a double reaches; 0 before the first).
+function $mPio2Chunk(i: i64): i64 {
+    const g = [0xA2F983, 0x6E4E44, 0x1529FC, 0x2757D1, 0xF534DD, 0xC0DB62, 0x95993C, 0x439041, 0xFE5163, 0xABDEBB, 0xC561B7, 0x246E3A, 0x424DD2, 0xE00649, 0x2EEA09, 0xD1921C,
+        0xFE1DEB, 0x1CB129, 0xA73EE8, 0x8235F5, 0x2EBB44, 0x84E99C, 0x7026B4, 0x5F7E41, 0x3991D6, 0x398353, 0x39F49C, 0x845F8B, 0xBDF928, 0x3B1FF8, 0x97FFDE, 0x05980F,
+        0xEF2F11, 0x8B5A0A, 0x6D1F6D, 0x367ECF, 0x27CB09, 0xB74F46, 0x3F669E, 0x5FEA2D, 0x7527BA, 0xC7EBE5, 0xF17B3D, 0x0739F7, 0x8A5292, 0xEA6BFB, 0x5FB11F, 0x8D5D08,
+        0x560330, 0x46FC7B, 0x6BABF0, 0xCFBC20, 0x9AF436, 0x1DA9E3, 0x91615E, 0xE61B08, 0x659985, 0x5F14A0, 0x68408D, 0xFFD880, 0x4D7327, 0x310606, 0x1556CA, 0x73A8C9,
+        0x60E27B, 0xC08C6B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    return i < 0 ? 0 : g[i & 127];
+}
+
+// libm's q[i]: the chunk `i` of x 2/pi before its carries, the products of
+// the chunks of x and of 2/pi of the same place (below 3 2^48: exact in
+// libm's floats too).
+function $mRpQ(t0: i64, t1: i64, t2: i64, i: i64): i64 {
+    return t0 * $mPio2Chunk(i) + t1 * $mPio2Chunk(i - 1) + t2 * $mPio2Chunk(i - 2);
+}
+
+// The q[i] for i from 0 to jz (3 to 5) with their carries, in chunks of 24
+// bits from the top (libm's iq[jz - 1] to iq[0]): c0 the top (with the
+// integer part), c1 to c5 (0 below jz).
+function $mRpChunks(t0: i64, t1: i64, t2: i64, jv: i64, jz: i64): [i64, i64, i64, i64, i64, i64] {
+    const s5 = jz >= 5 ? $mRpQ(t0, t1, t2, jv + 5) : 0;
+    const s4 = (jz >= 4 ? $mRpQ(t0, t1, t2, jv + 4) : 0) + (s5 >> 24);
+    const s3 = $mRpQ(t0, t1, t2, jv + 3) + (s4 >> 24);
+    const s2 = $mRpQ(t0, t1, t2, jv + 2) + (s3 >> 24);
+    const s1 = $mRpQ(t0, t1, t2, jv + 1) + (s2 >> 24);
+    return [$mRpQ(t0, t1, t2, jv) + (s1 >> 24), s1 & 0xFFFFFF, s2 & 0xFFFFFF, s3 & 0xFFFFFF, s4 & 0xFFFFFF, s5 & 0xFFFFFF];
+}
+
+// libm's n, ih and chunks: the integer part taken out (n its value mod 8,
+// one more when the fraction is half or more: ih), and then the chunks
+// made 1 minus the fraction (from the bottom, the first chunk not 0 from
+// 2^24, the next ones from 2^24 - 1); `zf` the bits of the fraction above
+// the chunks when q0 < 0 (libm's z, in units of 2^q0).
+function $mRpFix(c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, q0: i64): [i64, i64, i64, i64, i64, i64, i64, i64] {
+    const n0 = q0 >= 0 ? (c0 << q0) & 7 : (c0 >> -q0) & 7;
+    const zf = q0 >= 0 ? 0 : c0 & ((1 << -q0) - 1);
+    const ib = q0 > 0 ? c1 >> (24 - q0) : 0;
+    const b1 = q0 > 0 ? c1 - (ib << (24 - q0)) : c1;
+    const ih = q0 > 0 ? b1 >> (23 - q0) : q0 == 0 ? c1 >> 23 : zf >= 1 << (-q0 - 1) ? 2 : 0;
+    if (ih == 0) {
+        return [n0 + ib, 0, b1, c2, c3, c4, c5, zf];
+    }
+    const e5 = c5 == 0 ? 0 : 0x1000000 - c5;
+    const k4 = c5 != 0;
+    const e4 = k4 ? 0xFFFFFF - c4 : c4 == 0 ? 0 : 0x1000000 - c4;
+    const k3 = k4 || c4 != 0;
+    const e3 = k3 ? 0xFFFFFF - c3 : c3 == 0 ? 0 : 0x1000000 - c3;
+    const k2 = k3 || c3 != 0;
+    const e2 = k2 ? 0xFFFFFF - c2 : c2 == 0 ? 0 : 0x1000000 - c2;
+    const k1 = k2 || c2 != 0;
+    const e1 = k1 ? 0xFFFFFF - b1 : b1 == 0 ? 0 : 0x1000000 - b1;
+    const carry = k1 || b1 != 0;
+    const m1 = q0 == 1 ? e1 & 0x7FFFFF : q0 == 2 ? e1 & 0x3FFFFF : e1;
+    return [n0 + ib + 1, ih, m1, e2, e3, e4, e5, ih == 2 ? (1 << -q0) - zf - (carry ? 1 : 0) : zf];
+}
+
+// PIO2[k]: pi/2 in pieces of 24 bits.
+function $mPio2Part(k: i64): f64 {
+    const p = [1.57079625129699707031e+00, 7.54978941586159635335e-08, 5.39030252995776476554e-15, 3.28200341580791294123e-22,
+        1.27065575308067607349e-29, 1.22933308981111328932e-36, 2.73370053816464559624e-44, 2.16741683877804819444e-51];
+    return p[k & 7];
+}
+
+// libm's last sums, the chunks d0 (the top) to d5 of the fraction (0 below
+// jz), d_t worth d_t 2^(q0 - 24 t) (q[jz - t], exact): fq[m] the products
+// PIO2[k] q of d_(m - k), k from 0 to min(jp, m); y0 the fq from fq[jz] to
+// fq[0], from 0; y1 fq[0] - y0, then fq[1] to fq[jz]. An fq beyond jz is 0
+// here, which changes no sum (none of them can be -0).
+function $mRpSums(n: i64, ih: i64, d0: i64, d1: i64, d2: i64, d3: i64, d4: i64, d5: i64, jz: i64, q0: i64, jp: i64, two: boolean): [i32, f64, f64] {
+    const p0 = f64(d0) * $mPow2(i32(q0));
+    const p1 = f64(d1) * $mPow2(i32(q0 - 24));
+    const p2 = f64(d2) * $mPow2(i32(q0 - 48));
+    const p3 = f64(d3) * $mPow2(i32(q0 - 72));
+    const p4 = f64(d4) * $mPow2(i32(q0 - 96));
+    const p5 = f64(d5) * $mPow2(i32(q0 - 120));
+    const a = 1.57079625129699707031e+00;
+    const b = 7.54978941586159635335e-08;
+    const c = 5.39030252995776476554e-15;
+    const d = 3.28200341580791294123e-22;
+    const e = 1.27065575308067607349e-29;
+    const f0 = a * p0;
+    const f1 = a * p1 + b * p0;
+    const f2 = a * p2 + b * p1 + c * p0;
+    const f3 = a * p3 + b * p2 + c * p1 + d * p0;
+    const g4 = a * p4 + b * p3 + c * p2 + d * p1;
+    const f4 = jz < 4 ? 0.0 : jp >= 4 ? g4 + e * p0 : g4;
+    const g5 = a * p5 + b * p4 + c * p3 + d * p2;
+    const f5 = jz < 5 ? 0.0 : jp >= 4 ? g5 + e * p1 : g5;
+    const y0 = 0.0 + f5 + f4 + f3 + f2 + f1 + f0;
+    const y1 = two ? f0 - y0 + f1 + f2 + f3 + f4 + f5 : 0.0;
+    return ih == 0 ? [i32(n & 7), y0, y1] : [i32(n & 7), -y0, -y1];
+}
+
+// libm's iq of twenty chunks, two in each word (the chunk i in the word
+// i / 2, in its low half when i is even): the rare reductions only.
+function $mIqGet(w: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], i: i64): i64 {
+    const [w0, w1, w2, w3, w4, w5, w6, w7, w8, w9] = w;
+    const h = i >> 1;
+    const v = h == 0 ? w0 : h == 1 ? w1 : h == 2 ? w2 : h == 3 ? w3 : h == 4 ? w4 : h == 5 ? w5 : h == 6 ? w6 : h == 7 ? w7 : h == 8 ? w8 : w9;
+    return i64((v >> u64((i & 1) * 32)) & 0xFFFFFFFFu64);
+}
+
+function $mIqSet(w: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], i: i64, x: i64): [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64] {
+    const [w0, w1, w2, w3, w4, w5, w6, w7, w8, w9] = w;
+    const h = i >> 1;
+    const sh = u64((i & 1) * 32);
+    const keep = (0xFFFFFFFFu64 << sh) ^ 0xFFFFFFFFFFFFFFFFu64;
+    const put = u64(x) << sh;
+    return [h == 0 ? (w0 & keep) | put : w0, h == 1 ? (w1 & keep) | put : w1, h == 2 ? (w2 & keep) | put : w2, h == 3 ? (w3 & keep) | put : w3,
+        h == 4 ? (w4 & keep) | put : w4, h == 5 ? (w5 & keep) | put : w5, h == 6 ? (w6 & keep) | put : w6, h == 7 ? (w7 & keep) | put : w7,
+        h == 8 ? (w8 & keep) | put : w8, h == 9 ? (w9 & keep) | put : w9];
+}
+
+// libm's loop, line by line, for the reductions the common cases leave (a
+// fraction that starts with two chunks of zeros, or a carry up to z).
+@cold
+function $mRpGeneral(t0: i64, t1: i64, t2: i64, jv: i64, q0: i64, jk: i64, two: boolean): [i32, f64, f64] {
+    return $mRpLoop(t0, t1, t2, jv, q0, jk, two, jk);
+}
+
+// One round of libm's `'recompute` for jz products.
+@cold
+function $mRpLoop(t0: i64, t1: i64, t2: i64, jv: i64, q0: i64, jk: i64, two: boolean, jz: i64): [i32, f64, f64] {
+    const zero = [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64] as const;
+    const [iq0, top] = $mRpDistill(t0, t1, t2, jv, jz, 0, 0, zero);
+    const n0 = q0 >= 0 ? (top << q0) & 7 : (top >> -q0) & 7;
+    const zf = q0 >= 0 ? 0 : top & ((1 << -q0) - 1);
+    const hi = $mIqGet(iq0, jz - 1);
+    const ib = q0 > 0 ? hi >> (24 - q0) : 0;
+    const iq1 = q0 > 0 ? $mIqSet(iq0, jz - 1, hi - (ib << (24 - q0))) : iq0;
+    const ih = q0 > 0 ? $mIqGet(iq1, jz - 1) >> (23 - q0) : q0 == 0 ? hi >> 23 : zf >= 1 << (-q0 - 1) ? 2 : 0;
+    const [iq2, carry] = ih > 0 ? $mRpOne(iq1, jz, 0, 0) : [iq1, 0] as const;
+    const h2 = $mIqGet(iq2, jz - 1);
+    const iq = ih > 0 && q0 == 1 ? $mIqSet(iq2, jz - 1, h2 & 0x7FFFFF) : ih > 0 && q0 == 2 ? $mIqSet(iq2, jz - 1, h2 & 0x3FFFFF) : iq2;
+    const n = n0 + ib + (ih > 0 ? 1 : 0);
+    const z = ih == 2 ? (1 << -q0) - zf - carry : zf;
+    if (z == 0 && $mRpOr(iq, jk, jz - 1, 0) == 0) {
+        return $mRpLoop(t0, t1, t2, jv, q0, jk, two, jz + $mRpZeros(iq, jk, 1));
+    }
+    if (z == 0) {
+        const [jt, qt] = $mRpTop(iq, jz - 1, q0 - 24);
+        return $mRpEnd(n, ih, iq, jt, qt, jk, two);
+    }
+    if (z >= 0x1000000) {
+        return $mRpEnd(n, ih, $mIqSet($mIqSet(iq, jz, z & 0xFFFFFF), jz + 1, z >> 24), jz + 1, q0 + 24, jk, two);
+    }
+    return $mRpEnd(n, ih, $mIqSet(iq, jz, z), jz, q0, jk, two);
+}
+
+// iq[i] the low 24 bits of q[jz - i] and the carry from below, i from `i`
+// on; then the top, q[0] and its carry.
+@cold
+function $mRpDistill(t0: i64, t1: i64, t2: i64, jv: i64, jz: i64, i: i64, carry: i64, iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64]): [[u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], i64] {
+    if (i == jz) {
+        return [iq, $mRpQ(t0, t1, t2, jv) + carry];
+    }
+    const s = $mRpQ(t0, t1, t2, jv + jz - i) + carry;
+    return $mRpDistill(t0, t1, t2, jv, jz, i + 1, s >> 24, $mIqSet(iq, i, s & 0xFFFFFF));
+}
+
+// 1 - q from iq[i] on, `c` the carry.
+@cold
+function $mRpOne(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jz: i64, i: i64, c: i64): [[u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], i64] {
+    if (i == jz) {
+        return [iq, c];
+    }
+    const j = $mIqGet(iq, i);
+    if (c == 0) {
+        return j == 0 ? $mRpOne(iq, jz, i + 1, 0) : $mRpOne($mIqSet(iq, i, 0x1000000 - j), jz, i + 1, 1);
+    }
+    return $mRpOne($mIqSet(iq, i, 0xFFFFFF - j), jz, i + 1, 1);
+}
+
+// The chunks iq[i] to iq[to] put together by `|`.
+@cold
+function $mRpOr(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], i: i64, to: i64, acc: i64): i64 {
+    return i > to ? acc : $mRpOr(iq, i + 1, to, acc | $mIqGet(iq, i));
+}
+
+// libm's k: 1 and the chunks of zeros from iq[jk - 1] down.
+@cold
+function $mRpZeros(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jk: i64, k: i64): i64 {
+    return $mIqGet(iq, jk - k) == 0 ? $mRpZeros(iq, jk, k + 1) : k;
+}
+
+// The top chunk that is not 0, from iq[jz] down, and its q0.
+@cold
+function $mRpTop(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jz: i64, q0: i64): [i64, i64] {
+    return $mIqGet(iq, jz) == 0 ? $mRpTop(iq, jz - 1, q0 - 24) : [jz, q0] as const;
+}
+
+// The sums of libm for any jz.
+@cold
+function $mRpEnd(n: i64, ih: i64, iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jz: i64, q0: i64, jp: i64, two: boolean): [i32, f64, f64] {
+    const y0 = $mRpY0(iq, jz, q0, jp, jz, 0.0);
+    const y1 = two ? $mRpY1(iq, jz, q0, jp, 1, $mRpFq(iq, jz, q0, jp, 0, 0, 0.0) - y0) : 0.0;
+    return ih == 0 ? [i32(n & 7), y0, y1] : [i32(n & 7), -y0, -y1];
+}
+
+// fq[m], from the term k with `acc` the sum of those before.
+@cold
+function $mRpFq(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jz: i64, q0: i64, jp: i64, m: i64, k: i64, acc: f64): f64 {
+    if (k > jp || k > m) {
+        return acc;
+    }
+    const i = jz - m + k;
+    const q = f64($mIqGet(iq, i)) * $mPow2(i32(q0 - 24 * (jz - i)));
+    return $mRpFq(iq, jz, q0, jp, m, k + 1, acc + $mPio2Part(k) * q);
+}
+
+@cold
+function $mRpY0(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jz: i64, q0: i64, jp: i64, i: i64, acc: f64): f64 {
+    return i < 0 ? acc : $mRpY0(iq, jz, q0, jp, i - 1, acc + $mRpFq(iq, jz, q0, jp, i, 0, 0.0));
+}
+
+@cold
+function $mRpY1(iq: [u64, u64, u64, u64, u64, u64, u64, u64, u64, u64], jz: i64, q0: i64, jp: i64, i: i64, acc: f64): f64 {
+    return i > jz ? acc : $mRpY1(iq, jz, q0, jp, i + 1, acc + $mRpFq(iq, jz, q0, jp, i, 0, 0.0));
+}
+
+// `k_sinf`, `k_cosf`, `k_tanf`: on a `f64`, rounded once to `f32`.
+function $mSinKF(x: f64): f32 {
+    const z = x * x;
+    const w = z * z;
+    const r = -0.000198393348360966317347 + z * 0.0000027183114939898219064;
+    const s = z * x;
+    return f32((x + s * (-0.166666666416265235595 + z * 0.0083333293858894631756)) + s * w * r);
+}
+
+function $mCosKF(x: f64): f32 {
+    const z = x * x;
+    const w = z * z;
+    const r = -0.00138867637746099294692 + z * 0.0000243904487962774090654;
+    return f32(((1.0 + z * (-0.499999997251031003120)) + w * 0.0416666233237390631894) + (w * z) * r);
+}
+
+function $mTanKF(x: f64, odd: boolean): f32 {
+    const z = x * x;
+    const r = 0.00297435743359967304927 + z * 0.00946564784943673166728;
+    const t = 0.0533812378445670393523 + z * 0.0245283181166547278873;
+    const w = z * z;
+    const s = z * x;
+    const u = 0.333331395030791399758 + z * 0.133392002712976742718;
+    const r2 = (x + s * u) + (s * w) * (t + w * r);
+    return f32(odd ? -1.0 / r2 : r2);
+}
+
+// `sinf`: near the first multiples of pi/2 by their own subtractions in
+// `f64`; above, `rem_pio2f`.
+function $sinF32(x: f32): f32 {
+    const ix = $mBits32(x) & 0x7FFFFFFFu32;
+    const neg = $mBits32(x) >= 0x80000000u32;
+    const a = f64(x);
+    if (ix <= 0x3F490FDAu32) {
+        return ix < 0x39800000u32 ? x : $mSinKF(a);
+    }
+    if (ix <= 0x407B53D1u32) {
+        if (ix <= 0x4016CBE3u32) {
+            return neg ? -$mCosKF(a + 1.57079632679489661923) : $mCosKF(a - 1.57079632679489661923);
+        }
+        return $mSinKF(neg ? -(a + 2.0 * 1.57079632679489661923) : -(a - 2.0 * 1.57079632679489661923));
+    }
+    if (ix <= 0x40E231D5u32) {
+        if (ix <= 0x40AFEDDFu32) {
+            return neg ? $mCosKF(a + 3.0 * 1.57079632679489661923) : -$mCosKF(a - 3.0 * 1.57079632679489661923);
+        }
+        return $mSinKF(neg ? a + 4.0 * 1.57079632679489661923 : a - 4.0 * 1.57079632679489661923);
+    }
+    if (ix >= 0x7F800000u32) {
+        return x - x;
+    }
+    // (a branch for each quadrant, as libm: the sign of a result chosen
+    // without a branch took longer, D626)
+    const [n, y] = $mRemPio2F(x, ix);
+    const q = n & 3i32;
+    if (q == 0i32) {
+        return $mSinKF(y);
+    }
+    if (q == 1i32) {
+        return $mCosKF(y);
+    }
+    if (q == 2i32) {
+        return $mSinKF(-y);
+    }
+    return -$mCosKF(y);
+}
+
+// `cosf`.
+function $cosF32(x: f32): f32 {
+    const ix = $mBits32(x) & 0x7FFFFFFFu32;
+    const neg = $mBits32(x) >= 0x80000000u32;
+    const a = f64(x);
+    if (ix <= 0x3F490FDAu32) {
+        return ix < 0x39800000u32 ? 1.0f32 : $mCosKF(a);
+    }
+    if (ix <= 0x407B53D1u32) {
+        if (ix > 0x4016CBE3u32) {
+            return -$mCosKF(neg ? a + 2.0 * 1.57079632679489661923 : a - 2.0 * 1.57079632679489661923);
+        }
+        return neg ? $mSinKF(a + 1.57079632679489661923) : $mSinKF(1.57079632679489661923 - a);
+    }
+    if (ix <= 0x40E231D5u32) {
+        if (ix > 0x40AFEDDFu32) {
+            return $mCosKF(neg ? a + 4.0 * 1.57079632679489661923 : a - 4.0 * 1.57079632679489661923);
+        }
+        return neg ? $mSinKF(-a - 3.0 * 1.57079632679489661923) : $mSinKF(a - 3.0 * 1.57079632679489661923);
+    }
+    if (ix >= 0x7F800000u32) {
+        return x - x;
+    }
+    const [n, y] = $mRemPio2F(x, ix);
+    const q = n & 3i32;
+    if (q == 0i32) {
+        return $mCosKF(y);
+    }
+    if (q == 1i32) {
+        return $mSinKF(-y);
+    }
+    if (q == 2i32) {
+        return -$mCosKF(y);
+    }
+    return $mSinKF(y);
+}
+
+// `tanf`.
+function $tanF32(x: f32): f32 {
+    const ix = $mBits32(x) & 0x7FFFFFFFu32;
+    const neg = $mBits32(x) >= 0x80000000u32;
+    const a = f64(x);
+    if (ix <= 0x3F490FDAu32) {
+        return ix < 0x39800000u32 ? x : $mTanKF(a, false);
+    }
+    if (ix <= 0x407B53D1u32) {
+        if (ix <= 0x4016CBE3u32) {
+            return $mTanKF(neg ? a + 1.57079632679489661923 : a - 1.57079632679489661923, true);
+        }
+        return $mTanKF(neg ? a + 2.0 * 1.57079632679489661923 : a - 2.0 * 1.57079632679489661923, false);
+    }
+    if (ix <= 0x40E231D5u32) {
+        if (ix <= 0x40AFEDDFu32) {
+            return $mTanKF(neg ? a + 3.0 * 1.57079632679489661923 : a - 3.0 * 1.57079632679489661923, true);
+        }
+        return $mTanKF(neg ? a + 4.0 * 1.57079632679489661923 : a - 4.0 * 1.57079632679489661923, false);
+    }
+    if (ix >= 0x7F800000u32) {
+        return x - x;
+    }
+    const [n, y] = $mRemPio2F(x, ix);
+    return $mTanKF(y, (n & 1i32) != 0i32);
+}
+
+// `rem_pio2f`: n and y = x - n pi/2 in `f64`, x finite above 9 pi/4.
+function $mRemPio2F(x: f32, ix: u32): [i32, f64] {
+    if (ix < 0x4DC90FDBu32) {
+        const a = f64(x);
+        const nf = a * 6.36619772367581382433e-01 + 6755399441055744.0 - 6755399441055744.0;
+        return [i32(nf), a - nf * 1.57079631090164184570e+00 - nf * 1.58932547735281966916e-08];
+    }
+    return $mRemLargeF(x);
+}
+
+// |x| >= 2^28 pi/2: its 24 bits, one chunk, for `rem_pio2_large`.
+@cold
+function $mRemLargeF(x: f32): [i32, f64] {
+    const ix = $mBits32(x) & 0x7FFFFFFFu32;
+    const [n, y0, y1] = $mRp(i64((ix & 0x007FFFFFu32) | 0x00800000u32), 0, 0, i32(ix >> 23u32) - 150i32, 3, false);
+    return $mBits32(x) >= 0x80000000u32 ? [-n, -y0] : [n, y0];
+}
+
+// R(z) of `asin` and `acos`.
+function $mAsinR(z: f64): f64 {
+    const p = z * (1.66666666666666657415e-01 + z * (-3.25565818622400915405e-01 + z * (2.01212532134862925881e-01 + z * (-4.00555345006794114027e-02 + z * (7.91534994289814532176e-04 + z * 3.47933107596021167570e-05)))));
+    const q = 1.0 + z * (-2.40339491173441421878e+00 + z * (2.02094576023350569471e+00 + z * (-6.88283971605453293030e-01 + z * 7.70381505559019352791e-02)));
+    return p / q;
+}
+
+// `asin`.
+function $asinF64(x: f64): f64 {
+    const hx = $mHi(x);
+    const ix = hx & 0x7FFFFFFFu32;
+    if (ix >= 0x3FF00000u32) {
+        return $asinRareF64(x);
+    }
+    if (ix < 0x3FE00000u32) {
+        if (ix >= 0x00100000u32 && ix < 0x3E500000u32) {
+            return x;
+        }
+        return x + x * $mAsinR(x * x);
+    }
+    const z = (1.0 - Math.abs(x)) * 0.5;
+    const s = Math.sqrt(z);
+    const r = $mAsinR(z);
+    const y = ix >= 0x3FEF3333u32 ? 1.57079632679489655800e+00 - (2.0 * (s + s * r) - 6.12323399573676603587e-17) : $mAsinMid(z, s, r);
+    return hx >= 0x80000000u32 ? -y : y;
+}
+
+// 0.5 <= |x| <= 0.975: sqrt(z) = f + c.
+function $mAsinMid(z: f64, s: f64, r: f64): f64 {
+    const f = $mHigh(s);
+    const c = (z - f * f) / (s + f);
+    return 0.5 * 1.57079632679489655800e+00 - (2.0 * s * r - (6.12323399573676603587e-17 - 2.0 * c) - (0.5 * 1.57079632679489655800e+00 - 2.0 * f));
+}
+
+@cold
+function $asinRareF64(x: f64): f64 {
+    if ((($mHi(x) & 0x7FFFFFFFu32) - 0x3FF00000u32 | $mLo(x)) == 0u32) {
+        return x * 1.57079632679489655800e+00 + $mPow2(-120);
+    }
+    return 0.0 / (x - x);
+}
+
+// `acos`.
+function $acosF64(x: f64): f64 {
+    const hx = $mHi(x);
+    const ix = hx & 0x7FFFFFFFu32;
+    if (ix >= 0x3FF00000u32) {
+        return $acosRareF64(x);
+    }
+    if (ix < 0x3FE00000u32) {
+        if (ix <= 0x3C600000u32) {
+            return 1.57079632679489655800e+00 + $mPow2(-120);
+        }
+        return 1.57079632679489655800e+00 - (x - (6.12323399573676603587e-17 - x * $mAsinR(x * x)));
+    }
+    if (hx >= 0x80000000u32) {
+        const z = (1.0 + x) * 0.5;
+        const s = Math.sqrt(z);
+        const w = $mAsinR(z) * s - 6.12323399573676603587e-17;
+        return 2.0 * (1.57079632679489655800e+00 - (s + w));
+    }
+    const z = (1.0 - x) * 0.5;
+    const s = Math.sqrt(z);
+    const df = $mHigh(s);
+    const c = (z - df * df) / (s + df);
+    const w = $mAsinR(z) * s + c;
+    return 2.0 * (df + w);
+}
+
+@cold
+function $acosRareF64(x: f64): f64 {
+    const hx = $mHi(x);
+    if (((hx & 0x7FFFFFFFu32) - 0x3FF00000u32 | $mLo(x)) == 0u32) {
+        return hx >= 0x80000000u32 ? 2.0 * 1.57079632679489655800e+00 + $mPow2(-120) : 0.0;
+    }
+    return 0.0 / (x - x);
+}
+
+// x (s1 + s2) of `atan`: the odd and the even halves of its polynomial.
+function $mAtanSum(x: f64): f64 {
+    const z = x * x;
+    const w = z * z;
+    const s1 = z * (3.33333333333329318027e-01 + w * (1.42857142725034663711e-01 + w * (9.09088713343650656196e-02 + w * (6.66107313738753120669e-02 + w * (4.97687799461593236017e-02 + w * 1.62858201153657823623e-02)))));
+    const s2 = w * (-1.99999999998764832476e-01 + w * (-1.11111104054623557880e-01 + w * (-7.69187620504482999495e-02 + w * (-5.83357013379057348645e-02 + w * (-3.65315727442169155270e-02)))));
+    return x * (s1 + s2);
+}
+
+// `atan`: |x| reduced around 0.5, 1, 1.5 or infinity (id), atan(x) =
+// atan(id) + atan(t).
+function $atanF64(x: f64): f64 {
+    const hx = $mHi(x);
+    const ix = hx & 0x7FFFFFFFu32;
+    if (ix >= 0x44100000u32) {
+        return $atanRareF64(x);
+    }
+    if (ix < 0x3FDC0000u32) {
+        return ix < 0x3E400000u32 ? x : x - $mAtanSum(x);
+    }
+    // (libm's `id` 0 to 3: t, atan(id) in two parts; the sign of x put
+    // back on the bits)
+    const a = Math.abs(x);
+    const [t, hi, lo] = ix < 0x3FF30000u32
+        ? (ix < 0x3FE60000u32
+            ? [(2.0 * a - 1.0) / (2.0 + a), 4.63647609000806093515e-01, 2.26987774529616870924e-17] as const
+            : [(a - 1.0) / (a + 1.0), 7.85398163397448278999e-01, 3.06161699786838301793e-17] as const)
+        : ix < 0x40038000u32
+            ? [(a - 1.5) / (1.0 + 1.5 * a), 9.82793723247329054082e-01, 1.39033110312309984516e-17] as const
+            : [-1.0 / a, 1.57079632679489655800e+00, 6.12323399573676603587e-17] as const;
+    const z = hi - ($mAtanSum(t) - lo - t);
+    return $bitsFloat($floatBits(z) ^ ($floatBits(x) & 0x8000000000000000u64));
+}
+
+@cold
+function $atanRareF64(x: f64): f64 {
+    if (x != x) {
+        return x;
+    }
+    const z = 1.57079632679489655800e+00 + $bitsFloat(0x03800000u64);
+    return $mHi(x) >= 0x80000000u32 ? -z : z;
+}
+
+// `atan2`: NaN, the infinities, the zeros and x = 1 in `$atan2RareF64`.
+function $atan2F64(y: f64, x: f64): f64 {
+    const bx = $floatBits(x);
+    const by = $floatBits(y);
+    const ix = u32(bx >> 32u64) & 0x7FFFFFFFu32;
+    const iy = u32(by >> 32u64) & 0x7FFFFFFFu32;
+    if (ix >= 0x7FF00000u32 || iy >= 0x7FF00000u32 || bx << 1u64 == 0u64 || by << 1u64 == 0u64 || bx == 0x3FF0000000000000u64) {
+        return $atan2RareF64(y, x);
+    }
+    return $mAtan2Rest(y, x, ix, iy, u32(by >> 63u64) | (u32(bx >> 62u64) & 2u32));
+}
+
+// |y/x| > 2^64, or atan(|y/x|) by the quadrant (`m`: 2 sign(x) + sign(y)).
+function $mAtan2Rest(y: f64, x: f64, ix: u32, iy: u32, m: u32): f64 {
+    if (ix + 0x04000000u32 < iy || iy == 0x7FF00000u32) {
+        return (m & 1u32) != 0u32 ? -3.1415926535897931160E+00 / 2.0 : 3.1415926535897931160E+00 / 2.0;
+    }
+    const z = (m & 2u32) != 0u32 && iy + 0x04000000u32 < ix ? 0.0 : $atanF64(Math.abs(y / x));
+    if (m == 0u32) {
+        return z;
+    }
+    if (m == 1u32) {
+        return -z;
+    }
+    return m == 2u32 ? 3.1415926535897931160E+00 - (z - 1.2246467991473531772E-16) : (z - 1.2246467991473531772E-16) - 3.1415926535897931160E+00;
+}
+
+@cold
+function $atan2RareF64(y: f64, x: f64): f64 {
+    if (x != x || y != y) {
+        // (libm's `x + y`, as built: the NaN of y if it is one, else that
+        // of x; the order of the operands of `+` is the code generator's)
+        return y != y ? y + y : x + x;
+    }
+    const bx = $floatBits(x);
+    const by = $floatBits(y);
+    if (bx == 0x3FF0000000000000u64) {
+        return $atanF64(y);
+    }
+    const m = u32(by >> 63u64) | (u32(bx >> 62u64) & 2u32);
+    const ix = u32(bx >> 32u64) & 0x7FFFFFFFu32;
+    const iy = u32(by >> 32u64) & 0x7FFFFFFFu32;
+    if (by << 1u64 == 0u64) {
+        return m <= 1u32 ? y : m == 2u32 ? 3.1415926535897931160E+00 : -3.1415926535897931160E+00;
+    }
+    if (bx << 1u64 == 0u64) {
+        return (m & 1u32) != 0u32 ? -3.1415926535897931160E+00 / 2.0 : 3.1415926535897931160E+00 / 2.0;
+    }
+    if (ix == 0x7FF00000u32) {
+        if (iy == 0x7FF00000u32) {
+            return m == 0u32 ? 3.1415926535897931160E+00 / 4.0 : m == 1u32 ? -3.1415926535897931160E+00 / 4.0 : m == 2u32 ? 3.0 * 3.1415926535897931160E+00 / 4.0 : -3.0 * 3.1415926535897931160E+00 / 4.0;
+        }
+        return m == 0u32 ? 0.0 : m == 1u32 ? -0.0 : m == 2u32 ? 3.1415926535897931160E+00 : -3.1415926535897931160E+00;
+    }
+    return $mAtan2Rest(y, x, ix, iy, m);
+}
+
+// `asinf`, `acosf`: R(z) of `f32`.
+function $mAsinRF(z: f32): f32 {
+    const p = z * (1.6666586697e-01f32 + z * (-4.2743422091e-02f32 + z * (-8.6563630030e-03f32)));
+    const q = 1.0f32 + z * (-7.0662963390e-01f32);
+    return p / q;
+}
+
+function $asinF32(x: f32): f32 {
+    const hx = $mBits32(x);
+    const ix = hx & 0x7FFFFFFFu32;
+    if (ix >= 0x3F800000u32) {
+        return $asinRareF32(x);
+    }
+    if (ix < 0x3F000000u32) {
+        if (ix >= 0x00800000u32 && ix < 0x39800000u32) {
+            return x;
+        }
+        return x + x * $mAsinRF(x * x);
+    }
+    const z = (1.0f32 - Math.abs(x)) * 0.5f32;
+    const s = Math.sqrt(f64(z));
+    const y = f32(1.570796326794896558e+00 - 2.0 * (s + s * f64($mAsinRF(z))));
+    return hx >= 0x80000000u32 ? -y : y;
+}
+
+@cold
+function $asinRareF32(x: f32): f32 {
+    if (($mBits32(x) & 0x7FFFFFFFu32) == 0x3F800000u32) {
+        return f32(f64(x) * 1.570796326794896558e+00 + $mPow2(-120));
+    }
+    return 0.0f32 / (x - x);
+}
+
+function $acosF32(x: f32): f32 {
+    const hx = $mBits32(x);
+    const ix = hx & 0x7FFFFFFFu32;
+    if (ix >= 0x3F800000u32) {
+        return $acosRareF32(x);
+    }
+    if (ix < 0x3F000000u32) {
+        if (ix <= 0x32800000u32) {
+            return 1.5707962513e+00f32 + $mPow2F32(-120);
+        }
+        return 1.5707962513e+00f32 - (x - (7.5497894159e-08f32 - x * $mAsinRF(x * x)));
+    }
+    if (hx >= 0x80000000u32) {
+        const z = (1.0f32 + x) * 0.5f32;
+        const s = Math.sqrt(z);
+        const w = $mAsinRF(z) * s - 7.5497894159e-08f32;
+        return 2.0f32 * (1.5707962513e+00f32 - (s + w));
+    }
+    const z = (1.0f32 - x) * 0.5f32;
+    const s = Math.sqrt(z);
+    const df = $mHighF32(s);
+    const c = (z - df * df) / (s + df);
+    const w = $mAsinRF(z) * s + c;
+    return 2.0f32 * (df + w);
+}
+
+@cold
+function $acosRareF32(x: f32): f32 {
+    const hx = $mBits32(x);
+    if ((hx & 0x7FFFFFFFu32) == 0x3F800000u32) {
+        return hx >= 0x80000000u32 ? 2.0f32 * 1.5707962513e+00f32 + $mPow2F32(-120) : 0.0f32;
+    }
+    return 0.0f32 / (x - x);
+}
+
+function $mAtanSumF32(x: f32): f32 {
+    const z = x * x;
+    const w = z * z;
+    const s1 = z * (3.3333328366e-01f32 + w * (1.4253635705e-01f32 + w * 6.1687607318e-02f32));
+    const s2 = w * (-1.9999158382e-01f32 + w * (-1.0648017377e-01f32));
+    return x * (s1 + s2);
+}
+
+// `atanf`.
+function $atanF32(x: f32): f32 {
+    const hx = $mBits32(x);
+    const ix = hx & 0x7FFFFFFFu32;
+    if (ix >= 0x4C800000u32) {
+        return $atanRareF32(x);
+    }
+    if (ix < 0x3EE00000u32) {
+        return ix < 0x39800000u32 ? x : x - $mAtanSumF32(x);
+    }
+    const a = Math.abs(x);
+    const [t, hi, lo] = ix < 0x3F980000u32
+        ? (ix < 0x3F300000u32
+            ? [(2.0f32 * a - 1.0f32) / (2.0f32 + a), 4.6364760399e-01f32, 5.0121582440e-09f32] as const
+            : [(a - 1.0f32) / (a + 1.0f32), 7.8539812565e-01f32, 3.7748947079e-08f32] as const)
+        : ix < 0x401C0000u32
+            ? [(a - 1.5f32) / (1.0f32 + 1.5f32 * a), 9.8279368877e-01f32, 3.4473217170e-08f32] as const
+            : [-1.0f32 / a, 1.5707962513e+00f32, 7.5497894159e-08f32] as const;
+    const z = hi - (($mAtanSumF32(t) - lo) - t);
+    return $bitsFloat32(u64($mBits32(z) ^ (hx & 0x80000000u32)));
+}
+
+@cold
+function $atanRareF32(x: f32): f32 {
+    if (x != x) {
+        return x;
+    }
+    const z = 1.5707962513e+00f32 + $mPow2F32(-120);
+    return $mBits32(x) >= 0x80000000u32 ? -z : z;
+}
+
+// `atan2f`.
+function $atan2F32(y: f32, x: f32): f32 {
+    const ix0 = $mBits32(x);
+    const iy0 = $mBits32(y);
+    const ix = ix0 & 0x7FFFFFFFu32;
+    const iy = iy0 & 0x7FFFFFFFu32;
+    if (ix >= 0x7F800000u32 || iy >= 0x7F800000u32 || ix == 0u32 || iy == 0u32 || ix0 == 0x3F800000u32) {
+        return $atan2RareF32(y, x);
+    }
+    return $mAtan2RestF32(y, x, ix, iy, (iy0 >> 31u32) | ((ix0 >> 30u32) & 2u32));
+}
+
+function $mAtan2RestF32(y: f32, x: f32, ix: u32, iy: u32, m: u32): f32 {
+    if (ix + 0x0D000000u32 < iy || iy == 0x7F800000u32) {
+        return (m & 1u32) != 0u32 ? -3.1415927410e+00f32 / 2.0f32 : 3.1415927410e+00f32 / 2.0f32;
+    }
+    const z = (m & 2u32) != 0u32 && iy + 0x0D000000u32 < ix ? 0.0f32 : $atanF32(Math.abs(y / x));
+    if (m == 0u32) {
+        return z;
+    }
+    if (m == 1u32) {
+        return -z;
+    }
+    return m == 2u32 ? 3.1415927410e+00f32 - (z - (-8.7422776573e-08f32)) : (z - (-8.7422776573e-08f32)) - 3.1415927410e+00f32;
+}
+
+@cold
+function $atan2RareF32(y: f32, x: f32): f32 {
+    if (x != x || y != y) {
+        // (libm's `x + y`, as built: the NaN of y if it is one, else that
+        // of x; the order of the operands of `+` is the code generator's)
+        return y != y ? y + y : x + x;
+    }
+    const ix0 = $mBits32(x);
+    const iy0 = $mBits32(y);
+    if (ix0 == 0x3F800000u32) {
+        return $atanF32(y);
+    }
+    const m = (iy0 >> 31u32) | ((ix0 >> 30u32) & 2u32);
+    const ix = ix0 & 0x7FFFFFFFu32;
+    const iy = iy0 & 0x7FFFFFFFu32;
+    if (iy == 0u32) {
+        return m <= 1u32 ? y : m == 2u32 ? 3.1415927410e+00f32 : -3.1415927410e+00f32;
+    }
+    if (ix == 0u32) {
+        return (m & 1u32) != 0u32 ? -3.1415927410e+00f32 / 2.0f32 : 3.1415927410e+00f32 / 2.0f32;
+    }
+    if (ix == 0x7F800000u32) {
+        if (iy == 0x7F800000u32) {
+            return m == 0u32 ? 3.1415927410e+00f32 / 4.0f32 : m == 1u32 ? -3.1415927410e+00f32 / 4.0f32 : m == 2u32 ? 3.0f32 * 3.1415927410e+00f32 / 4.0f32 : -3.0f32 * 3.1415927410e+00f32 / 4.0f32;
+        }
+        return m == 0u32 ? 0.0f32 : m == 1u32 ? -0.0f32 : m == 2u32 ? 3.1415927410e+00f32 : -3.1415927410e+00f32;
+    }
+    return $mAtan2RestF32(y, x, ix, iy, m);
+}

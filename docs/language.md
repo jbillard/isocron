@@ -3403,10 +3403,13 @@ action main(args: string[k]): i32 {
   reassociation, no algebraic simplification, subnormals kept, `sqrt`
   correctly rounded. `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`,
   `atan`, `atan2` and `pow` (also written `x ** y` with a floating-point
-  `y`), for `f64` and `f32`, come from the
-  runtime of Isocron: the same code on every target and in the
-  interpreter, so that their results are the same bits everywhere (they are
-  within one unit in the last place, not always correctly rounded).
+  `y`), for `f64` and `f32`, are written in Isocron in the standard
+  library (musl's algorithms, operation for operation): the same code on
+  every target and in the interpreter, so that their results are the same
+  bits everywhere (they are within one unit in the last place, not always
+  correctly rounded). Their common path is compiled where they are called,
+  without a call; an `@allowReassoc` around them relaxes none of their
+  operations.
 
 ```isc
 action main(args: string[k]): i32 {

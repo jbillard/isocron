@@ -37,8 +37,9 @@ pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String
     // (a text of the source, or of a module it imports, names one: by its
     // public name, which the functions of the prelude that call them have)
     // (`indexOf` in `lastIndexOf`, `replace` in `replaceAll`, `Csv` in the
-    // readers of CSV: D6xx (texts))
-    let named = ["parseF64", "parseI64", "trim", "indexOf", "includes", "Number", "replace", "Csv", "import "].iter().any(|n| src.contains(n));
+    // readers of CSV: D6xx (texts); the mathematical functions by theirs,
+    // `pow` by `**` too: D626)
+    let named = ["parseF64", "parseI64", "trim", "indexOf", "includes", "Number", "replace", "Csv", "import ", "exp", "log", "sin", "cos", "tan", "atan", "pow", "**"].iter().any(|n| src.contains(n));
     let native: Vec<usize> = t.fns.iter().enumerate().filter(|(_, f)| f.from_prelude && isc_interp::native_form(&f.name)).map(|(i, _)| i).collect();
     if !named || native.is_empty() {
         return Ok(p);
@@ -79,7 +80,9 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
 /// those of `lastIndexOf`, `Number`, `replace` and `replaceAll`, and the
 /// reading of CSV (`@noInline`) too (D6xx (texts), D6xx (texts, compile):
 /// the tasks of `replace` named from their function, not in the order of
-/// the module, which made the rest of `toFixed` differ before).
+/// the module, which made the rest of `toFixed` differ before), and of the
+/// mathematical functions (D626: the reduction of a large argument of
+/// `sin`, the results out of range of `exp` and `pow`, ...).
 /// The module compiled once is made from it; a function it does not reach
 /// stays in the programs that do.
 const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
@@ -95,6 +98,8 @@ const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
     print(args[0].replace(args[1], args[n - 1]) + args[0].replaceAll(args[1], args[n - 1]));
     print(parseCsvF64(args[0], 1));
     print(match (tryReadCsvF64(args[0], 1)) { Ok(m) => m.length, Err(e) => 0 });
+    print([exp(x), log(x), sin(x), cos(x), tan(x), asin(x), acos(x), atan(x), atan2(x, x), x ** x]);
+    print([exp(y), log(y), sin(y), cos(y), tan(y), asin(y), acos(y), atan(y), atan2(y, y), y ** y]);
     return 0;
 }
 ";

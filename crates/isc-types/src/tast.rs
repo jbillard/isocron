@@ -169,6 +169,10 @@ pub enum Prim {
     /// `$bitsFloat(w)`: the `f64` whose bits are those of the `u64` `w`
     /// (the reverse of `$floatBits`); the prelude alone can name it
     BitsFloat,
+    /// `$bitsFloat32(w)`: the `f32` whose bits are the low 32 bits of the
+    /// `u64` `w` (the reverse of `$floatBits` of a `f32`); the prelude
+    /// alone can name it (the mathematical functions of `f32`, D626)
+    BitsFloat32,
     /// `$mulHigh(a, b)`: the high 64 bits of the product of two `u64` (128
     /// bits); the prelude alone can name it
     MulHigh,

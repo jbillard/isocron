@@ -15242,3 +15242,59 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Left: a pattern known at compilation still has all its paths emitted
     (`if`s on a constant length kept until LLVM); the module's functions
     are lowered and written by each program to be compared (TODO, D611 (d)).
+- **D626 (math) — The mathematical functions written in Isocron
+  (2026-11-10).** `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`,
+  `atan`, `atan2`, `pow` of `f64` and `f32` (`x ** y` of a float `y`) were
+  calls of the runtime (the crate `libm` 0.2.16, D108). They are functions
+  of the prelude (`$expF64` ... `$powF32`), musl's code operation for
+  operation, inlined by the lowering where the primitive is called or used
+  as a value, behind `$bitsFloat($floatBits(…))` (no instruction; an
+  `@allowReassoc` around relaxes none of their operations); their rare
+  paths `@cold`, in the module of D611 (the special values, the results out
+  of range, libm's `rem_pio2_large`: its chunks as integers, its common
+  cases inline, its loop with `iq` in ten words for the others). New:
+  `$bitsFloat32`. Out of the runtime and of the frontier (now 135):
+  `isc_exp` ... `isc_powf`, 20 functions; `iscc run` keeps libm as their
+  native form (D616), found once per function.
+  - **The same bits** as `libm` (`tests/math.rs`): every input of each
+    function of one `f32`, natively and as WebAssembly (68 719 476 736
+    results); 10^7 inputs of each function of `f64` and of `atan2f`, `powf`
+    (whole range by exponent, each one's range, special values and pairs,
+    branch boundaries, 16 384 arguments near multiples of pi/2 down to
+    2^-61) natively and as WebAssembly (400 000 000); 107 137 interpreted;
+    NaN included (libm's `x + y` of two NaNs keeps its first operand as
+    LLVM built it: `x` in `pow`, `y` in `atan2`, written so).
+  - **Speed** against the compiler of `main` (a2b48b2,
+    `bench/replace/math.forms`, 62 forms): 2.2 to 58.3 % fewer instructions
+    an element (`pow32.neg` the least, the large arguments of `sin`, `cos`,
+    `tan` the most; `exp` 9.7 to 19.9 %, `asin`, `acos` 48 to 55 %); the
+    other forms files, 91 forms: none above +0.3 %, the same outputs.
+    Cycles (median of 9): 54 forms of 62 fewer, −1.0 to −72.8 %
+    (`sin.big`; `exp.map` −2.8 %, `pow32.neg` −5.8 %). **Slower**: the
+    chains of `exp` and `log` (each call on the result of the one before),
+    in every run, +0.6 to +1.8 % (`log32.chain` 83.8 → 84.8, nine runs);
+    in this run only `log32.map` +1.9 %, `cos32.sum` +2.7 %, `cos32.mid`
+    +1.3 %, `tan32.mid` +1.0 %, below in the others (−0.2 to −2.7 %, −9.1
+    to −9.7 %, −0.6 to −4.0 %, −0.8 to −10.2 %; `tan32.sum` +5.7 % once,
+    −2.9 to −7.2 % six times). The chains: the same instructions on the
+    dependency as libm's, at the latency of the machine (84 cycles for
+    `logf`); in assembly alone, the loop at each of 8 offsets in a line of
+    64 bytes, the inline form takes 84.4 to 85.0 cycles (from the loop
+    stream detector or not), the call of libm 83.2 to 86.1 by its offset;
+    on average the same (84.57 and 84.57, 84.68 and 84.68, two runs); the
+    pilot of before, 83.6 to 83.9, has its call where it is fast. `log`:
+    one comparison for its rare cases (16 % fewer instructions, `log.sum`
+    −7.2 %). Not kept: the quadrant of `sinf` without a branch (+28 % of
+    cycles), or on one branch (+6.9 %). `iscc run`: 0.97 to 1.03 times its
+    time before (`cos.map` 1.14 and `pow32.chain` 1.11 once, 0.99 to 1.00
+    twice again).
+  - **Costs** against `main`: every compilation checks 1684 lines more of
+    prelude: a hello 227.4 → 273.6 million instructions (+20.3 %), one
+    `sin` 341.2 → 604.9 (+77.3 %), the pilot 12 902 → 20 147 (+56.1 %);
+    the peak memory of a compilation 84 → 87 to 89 MB; sizes 67 096 =
+    67 096, 95 096 → 97 432, 345 576 → 464 232 bytes. The rare paths of
+    the module have no tables of jumps (`"no-jump-tables"`): LLVM put those
+    of all functions in one section, which kept all of them in a program
+    linked with the module (16 KB of mathematical functions in the program
+    of texts of `pre.rs`); that program is 198 680 bytes with the module,
+    202 376 with `main`'s compiler (glibc: 235 848, 239 944).

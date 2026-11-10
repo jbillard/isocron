@@ -240,6 +240,8 @@ pub enum StrOp {
     FloatBits,
     /// `$bitsFloat(w)`: the `f64` of the bits of a `u64`.
     BitsFloat,
+    /// `$bitsFloat32(w)`: the `f32` of the low 32 bits of a `u64`.
+    BitsFloat32,
     /// `$mulHigh(a, b)`: the high half of the product of two `u64`.
     MulHigh,
     /// `$decimalText(d, w1, w2, n, point, minus)`: a decimal number of 17
@@ -642,12 +644,13 @@ impl Expr {
     }
 
     /// Marks this expression and all inside it `reassoc`, but for a float
-    /// whose bits are read or made (`$floatBits`, `$bitsFloat`): the
-    /// operations that compute it stay as the prelude writes them (the
-    /// reading of a float gives the same bits wherever it is called).
+    /// whose bits are read or made (`$floatBits`, `$bitsFloat`,
+    /// `$bitsFloat32`): the operations that compute it stay as the prelude
+    /// writes them (the reading of a float, and the mathematical functions,
+    /// D626, give the same bits wherever they are called).
     pub fn mark_reassoc(&mut self) {
         self.reassoc = true;
-        if matches!(self.kind, ExprKind::StrOp(StrOp::FloatBits | StrOp::BitsFloat, _)) {
+        if matches!(self.kind, ExprKind::StrOp(StrOp::FloatBits | StrOp::BitsFloat | StrOp::BitsFloat32, _)) {
             return;
         }
         for c in self.children_mut() {

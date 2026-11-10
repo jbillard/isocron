@@ -1,0 +1,121 @@
+// The pilot of the mathematical functions written in Isocron (D626): `exp`,
+// `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and `pow` of
+// a `f64` and of a `f32`, one form a run, so that the cycles and the
+// instructions of an element are read with `perf stat` as the difference
+// between two numbers of rounds. Its line: the form, the nanoseconds of an
+// element (the mean over the rounds, `bench`) and the sum of the results
+// (the last one of an array kept). The Rust version (the runtime's
+// `isc_exp`, ..., musl's functions of the crate `libm`) is measured by
+// building this file with a compiler that still has it. The forms, 4096
+// values each by default: `<function>.<shape>`, `<function>32.<shape>` for
+// `f32`, the shapes:
+//   sum     the results of a `map` summed: a call an element, independent
+//   map     the array of the results kept
+//   chain   each call on the result of the one before (`fold`): the time of
+//           one call after another
+//   mid     `sin`, `cos`, `tan` up to 10^5 (the second round of their
+//           reduction), summed; `big`: of 10^12 (the reduction of a large
+//           argument); the other forms of them up to 10
+//   neg     `pow` of negative bases and integers, summed
+// The values of each function where it computes: `exp` from -20 to 20,
+// `log` from 10^-6 to 10^6, `asin` and `acos` from -1 to 1, `atan` from
+// -100 to 100, `atan2` from -10 to 10 both, `pow` a base from 0.01 to 100
+// and an exponent from -10 to 10.
+// usage: math_pilot <form> <rounds> [values]
+
+function u(i: i64): f64 {
+    return f64((i * 7919) % 4096) / 4096.0;
+}
+
+function v(i: i64): f64 {
+    return f64((i * 104729 + 17) % 4093) / 4093.0;
+}
+
+// the first argument for the value `i`, in the domain `d`
+function first(d: string, i: i64): f64 {
+    return d == "exp" ? 40.0 * u(i) - 20.0
+        : d == "log" ? (u(i) + 0.001) * [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6][i % 13]
+        : d == "trig" ? 20.0 * u(i) - 10.0
+        : d == "mid" ? 2e5 * u(i) - 1e5
+        : d == "big" ? (u(i) + 1.0) * 1e12
+        : d == "unit" ? 2.0 * u(i) - 1.0
+        : d == "atan" ? 200.0 * u(i) - 100.0
+        : d == "atan2" ? 20.0 * u(i) - 10.0
+        : d == "pow" ? 100.0 * u(i) + 0.01
+        : -(10.0 * u(i) + 0.5);
+}
+
+// the second argument (`atan2`, `pow`)
+function second(d: string, i: i64): f64 {
+    return d == "pow" ? 20.0 * v(i) - 10.0 : d == "neg" ? f64(i % 17 - 8) : 20.0 * v(i) - 10.0;
+}
+
+// one form of a function of `f64`
+action run(form: string, shape: string, r: i64, xs: f64[n], ys: f64[n], f: (x: f64, y: f64) => f64): void {
+    const each = f64(r * n);
+    if (shape == "map") {
+        // (the array kept: every element made, one array a round)
+        const [a, t] = bench(r, () => map(iota(n), (i) => f(xs[i], ys[i])));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a[n - 1]}`);
+    } else if (shape == "chain") {
+        const [a, t] = bench(r, () => fold(iota(n), 0.0, (acc, i) => f(xs[i] + acc * 1e-30, ys[i])));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    } else {
+        const [a, t] = bench(r, () => sum(map(iota(n), (i) => f(xs[i], ys[i]))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+}
+
+// the same of `f32`
+action run32(form: string, shape: string, r: i64, xs: f32[n], ys: f32[n], f: (x: f32, y: f32) => f32): void {
+    const each = f64(r * n);
+    if (shape == "map") {
+        const [a, t] = bench(r, () => map(iota(n), (i) => f(xs[i], ys[i])));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a[n - 1]}`);
+    } else if (shape == "chain") {
+        const [a, t] = bench(r, () => fold(iota(n), 0.0f32, (acc, i) => f(xs[i] + acc * 1e-30f32, ys[i])));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    } else {
+        const [a, t] = bench(r, () => sum(map(iota(n), (i) => f(xs[i], ys[i]))));
+        print(`${form} ${(f64(t) / each).toFixed(3)} ${a}`);
+    }
+}
+
+action main(args: string[k]): i32 {
+    const form = args[0];
+    const r = parseI64(args[1]);
+    const n = args.length > 2 ? parseI64(args[2]) : 4096;
+    const parts = split(form, ".");
+    const name = parts[0];
+    const shape = parts[1];
+    const base = name.endsWith("32") ? name.slice(0, name.length - 2) : name;
+    const d = base == "exp" || base == "log" || base == "atan" || base == "atan2" ? base
+        : base == "asin" || base == "acos" ? "unit"
+        : base == "pow" ? (shape == "neg" ? "neg" : "pow")
+        : shape == "mid" || shape == "big" ? shape : "trig";
+    const xs = map(iota(n), (i) => first(d, i));
+    const ys = map(iota(n), (i) => second(d, i));
+    const xf = map(xs, (x) => f32(x));
+    const yf = map(ys, (y) => f32(y));
+    if (name == "exp") { run(form, shape, r, xs, ys, (x, y) => exp(x)); }
+    if (name == "log") { run(form, shape, r, xs, ys, (x, y) => log(x)); }
+    if (name == "sin") { run(form, shape, r, xs, ys, (x, y) => sin(x)); }
+    if (name == "cos") { run(form, shape, r, xs, ys, (x, y) => cos(x)); }
+    if (name == "tan") { run(form, shape, r, xs, ys, (x, y) => tan(x)); }
+    if (name == "asin") { run(form, shape, r, xs, ys, (x, y) => asin(x)); }
+    if (name == "acos") { run(form, shape, r, xs, ys, (x, y) => acos(x)); }
+    if (name == "atan") { run(form, shape, r, xs, ys, (x, y) => atan(x)); }
+    if (name == "atan2") { run(form, shape, r, xs, ys, (x, y) => atan2(x, y)); }
+    if (name == "pow") { run(form, shape, r, xs, ys, (x, y) => pow(x, y)); }
+    if (name == "exp32") { run32(form, shape, r, xf, yf, (x, y) => exp(x)); }
+    if (name == "log32") { run32(form, shape, r, xf, yf, (x, y) => log(x)); }
+    if (name == "sin32") { run32(form, shape, r, xf, yf, (x, y) => sin(x)); }
+    if (name == "cos32") { run32(form, shape, r, xf, yf, (x, y) => cos(x)); }
+    if (name == "tan32") { run32(form, shape, r, xf, yf, (x, y) => tan(x)); }
+    if (name == "asin32") { run32(form, shape, r, xf, yf, (x, y) => asin(x)); }
+    if (name == "acos32") { run32(form, shape, r, xf, yf, (x, y) => acos(x)); }
+    if (name == "atan32") { run32(form, shape, r, xf, yf, (x, y) => atan(x)); }
+    if (name == "atan232") { run32(form, shape, r, xf, yf, (x, y) => atan2(x, y)); }
+    if (name == "pow32") { run32(form, shape, r, xf, yf, (x, y) => pow(x, y)); }
+    return 0;
+}

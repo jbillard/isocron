@@ -209,6 +209,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$textTail" => Prim::TextTail,
         "$floatBits" => Prim::FloatBits,
         "$bitsFloat" => Prim::BitsFloat,
+        "$bitsFloat32" => Prim::BitsFloat32,
         "$mulHigh" => Prim::MulHigh,
         "$decimalText" => Prim::DecimalText,
         "$withText" => Prim::WithText,
@@ -2752,7 +2753,7 @@ impl<'g> FnCx<'g> {
             Prim::Zeros | Prim::Clock | Prim::ReadStdin | Prim::ReadStdinText | Prim::ReadStdinLines => 0,
             Prim::Iota | Prim::Sqrt | Prim::Convert(_) | Prim::ReadF64 | Prim::ReadF32 | Prim::ReadBytes | Prim::Print | Prim::IsPure => 1,
             Prim::Math(f) => f.arity(),
-            Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits | Prim::BitsFloat | Prim::Words => 1,
+            Prim::StrLen | Prim::Bytes | Prim::StringOf | Prim::ToString | Prim::LeadingZeros | Prim::FloatBits | Prim::BitsFloat | Prim::BitsFloat32 | Prim::Words => 1,
             Prim::Concat | Prim::MulHigh => 2,
             Prim::ReadText | Prim::Lines | Prim::PrintBytes => 1,
             Prim::OrError(Fallible::WriteBytes | Fallible::WriteText) => 2,
@@ -3175,6 +3176,13 @@ impl<'g> FnCx<'g> {
                 let x = self.check(&args[0], Some(&t))?;
                 self.unify(&t, &x.ty, x.span)?;
                 Ok(mk(vec![x], Ty::F64, self))
+            }
+            // `$bitsFloat32(w)`: a `u64`, a `f32`
+            Prim::BitsFloat32 => {
+                let t = Ty::Int(IntKind::U64);
+                let x = self.check(&args[0], Some(&t))?;
+                self.unify(&t, &x.ty, x.span)?;
+                Ok(mk(vec![x], Ty::F32, self))
             }
             // `$mulHigh(a, b)`: two `u64`, a `u64`
             Prim::MulHigh => {

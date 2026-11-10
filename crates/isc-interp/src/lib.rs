@@ -49,7 +49,9 @@ pub enum Value {
 /// to the prelude's, run node by node.
 pub const NATIVE: &str = "native:";
 
-/// The function of the prelude `name` has a native form.
+/// The function of the prelude `name` has a native form: the readings of
+/// numbers, `trim`, `indexOf`, `includes` (D616), those of D6xx (texts), and
+/// the mathematical functions (`$expF64`, ..., D626).
 pub fn native_form(name: &str) -> bool {
     matches!(
         name,
@@ -66,8 +68,14 @@ pub fn native_form(name: &str) -> bool {
             | "$replaceEvery"
             | "$csvParse"
             | "$csvOrError"
-    )
+    ) || MATH_NAMES.contains(&name)
 }
+
+/// The mathematical functions of the prelude that have a native form.
+const MATH_NAMES: [&str; 20] = [
+    "$expF64", "$logF64", "$sinF64", "$cosF64", "$tanF64", "$asinF64", "$acosF64", "$atanF64", "$atan2F64", "$powF64", "$expF32", "$logF32", "$sinF32", "$cosF32", "$tanF32", "$asinF32", "$acosF32", "$atanF32",
+    "$atan2F32", "$powF32",
+];
 
 /// The value of the function `name` of the prelude for these arguments, or
 /// the message of its panic; none: no native form.
@@ -521,6 +529,11 @@ impl Interp<'_> {
                 Value::Int(w) => Value::F64(f64::from_bits(*w as u64)),
                 v => panic!("an integer expected, got {:?}", v),
             },
+            // `$bitsFloat32(w)`: the `f32` of the low half of these bits
+            S::BitsFloat32 => match &vs[0] {
+                Value::Int(w) => Value::F32(f32::from_bits(*w as u32)),
+                v => panic!("an integer expected, got {:?}", v),
+            },
             // `$mulHigh(a, b)`: the high half of the product of 128 bits
             S::MulHigh => match (&vs[0], &vs[1]) {
                 (Value::Int(a), Value::Int(b)) => Value::Int(((*a as u64 as u128 * *b as u64 as u128) >> 64) as i64),
@@ -683,6 +696,10 @@ pub struct Interp<'a> {
     pending_tail: Option<(u32, Vec<Value>)>,
     /// The `extern` functions and their addresses (D125).
     externs: Rc<Vec<(isc_ir::ExternFn, usize)>>,
+    /// For each function, the mathematical function of the prelude it is in
+    /// its native form (an index of `MATH_NAMES`, D626): found once, not by
+    /// its name at each call.
+    math_natives: Rc<Vec<Option<usize>>>,
 }
 
 /// The calls of function `fi` to itself in tail position: through the body
@@ -788,6 +805,7 @@ fn run_in(p: &Program, args: &[String], out: &mut dyn Write, lanes: usize) -> R<
         running: Vec::new(),
         pending_tail: None,
         externs: Rc::new(Vec::new()),
+        math_natives: Rc::new(fns.iter().map(|f| f.name.strip_prefix(NATIVE).and_then(|n| MATH_NAMES.iter().position(|m| *m == n))).collect()),
     };
     // the C functions, found before the program starts (a compiled program
     // does not link without them)
@@ -1252,6 +1270,10 @@ impl<'a> Interp<'a> {
                     vals.push(self.eval(a)?);
                 }
                 let fi = *f as usize;
+                // a mathematical function in its native form (D626)
+                if let Some(k) = self.math_natives[fi] {
+                    return Ok(native_math(k, &vals));
+                }
                 // a function of the prelude in its native form (`iscc run`,
                 // D616): its value, not its body run node by node
                 match self.fns[fi].name.strip_prefix(NATIVE).and_then(|name| native_call(name, &vals)) {
@@ -1813,42 +1835,64 @@ fn zero_value(t: &Type) -> Value {
     }
 }
 
-/// A mathematical function: the code of the runtime (D108).
+/// A mathematical function that is an instruction of the compiled code
+/// (`fma`, the roundings, `abs`: D108, D613). The others are functions of
+/// the prelude (D626), run node by node, or in their native form under
+/// `iscc run` (`native_math`).
 fn math(f: MathFn, vs: &[Value]) -> Value {
     use isc_runtime_core as m;
     match (f, vs) {
-        (MathFn::Exp, [Value::F64(x)]) => Value::F64(m::exp_f64(*x)),
-        (MathFn::Log, [Value::F64(x)]) => Value::F64(m::log_f64(*x)),
-        (MathFn::Sin, [Value::F64(x)]) => Value::F64(m::sin_f64(*x)),
-        (MathFn::Cos, [Value::F64(x)]) => Value::F64(m::cos_f64(*x)),
-        (MathFn::Pow, [Value::F64(x), Value::F64(y)]) => Value::F64(m::pow_f64(*x, *y)),
         (MathFn::Fma, [Value::F64(a), Value::F64(b), Value::F64(c)]) => Value::F64(m::fma_f64(*a, *b, *c)),
-        (MathFn::Tan, [Value::F64(x)]) => Value::F64(m::tan_f64(*x)),
-        (MathFn::Asin, [Value::F64(x)]) => Value::F64(m::asin_f64(*x)),
-        (MathFn::Acos, [Value::F64(x)]) => Value::F64(m::acos_f64(*x)),
-        (MathFn::Atan, [Value::F64(x)]) => Value::F64(m::atan_f64(*x)),
-        (MathFn::Atan2, [Value::F64(y), Value::F64(x)]) => Value::F64(m::atan2_f64(*y, *x)),
         (MathFn::Floor, [Value::F64(x)]) => Value::F64(m::floor_f64(*x)),
         (MathFn::Ceil, [Value::F64(x)]) => Value::F64(m::ceil_f64(*x)),
         (MathFn::Trunc, [Value::F64(x)]) => Value::F64(m::trunc_f64(*x)),
         (MathFn::Round, [Value::F64(x)]) => Value::F64(m::round_f64(*x)),
         (MathFn::Abs, [Value::F64(x)]) => Value::F64(m::abs_f64(*x)),
-        (MathFn::Tan, [Value::F32(x)]) => Value::F32(m::tan_f32(*x)),
-        (MathFn::Asin, [Value::F32(x)]) => Value::F32(m::asin_f32(*x)),
-        (MathFn::Acos, [Value::F32(x)]) => Value::F32(m::acos_f32(*x)),
-        (MathFn::Atan, [Value::F32(x)]) => Value::F32(m::atan_f32(*x)),
-        (MathFn::Atan2, [Value::F32(y), Value::F32(x)]) => Value::F32(m::atan2_f32(*y, *x)),
         (MathFn::Floor, [Value::F32(x)]) => Value::F32(m::floor_f32(*x)),
         (MathFn::Ceil, [Value::F32(x)]) => Value::F32(m::ceil_f32(*x)),
         (MathFn::Trunc, [Value::F32(x)]) => Value::F32(m::trunc_f32(*x)),
         (MathFn::Round, [Value::F32(x)]) => Value::F32(m::round_f32(*x)),
         (MathFn::Abs, [Value::F32(x)]) => Value::F32(m::abs_f32(*x)),
-        (MathFn::Exp, [Value::F32(x)]) => Value::F32(m::exp_f32(*x)),
-        (MathFn::Log, [Value::F32(x)]) => Value::F32(m::log_f32(*x)),
-        (MathFn::Sin, [Value::F32(x)]) => Value::F32(m::sin_f32(*x)),
-        (MathFn::Cos, [Value::F32(x)]) => Value::F32(m::cos_f32(*x)),
-        (MathFn::Pow, [Value::F32(x), Value::F32(y)]) => Value::F32(m::pow_f32(*x, *y)),
         (MathFn::Fma, [Value::F32(a), Value::F32(b), Value::F32(c)]) => Value::F32(m::fma_f32(*a, *b, *c)),
         (f, vs) => panic!("{} of {:?}", f.name(), vs),
+    }
+}
+
+/// The mathematical functions of the prelude in their native form (D616,
+/// D626), `k` their index in `MATH_NAMES`: the code of the crate `libm`
+/// that the runtime called before they were written in Isocron, the same
+/// bits (a test holds them equal).
+fn native_math(k: usize, vs: &[Value]) -> Value {
+    use isc_runtime_core as m;
+    let d = |i: usize| match vs[i] {
+        Value::F64(x) => x,
+        ref v => panic!("a f64 expected, got {:?}", v),
+    };
+    let s = |i: usize| match vs[i] {
+        Value::F32(x) => x,
+        ref v => panic!("a f32 expected, got {:?}", v),
+    };
+    match k {
+        0 => Value::F64(m::exp_f64(d(0))),
+        1 => Value::F64(m::log_f64(d(0))),
+        2 => Value::F64(m::sin_f64(d(0))),
+        3 => Value::F64(m::cos_f64(d(0))),
+        4 => Value::F64(m::tan_f64(d(0))),
+        5 => Value::F64(m::asin_f64(d(0))),
+        6 => Value::F64(m::acos_f64(d(0))),
+        7 => Value::F64(m::atan_f64(d(0))),
+        8 => Value::F64(m::atan2_f64(d(0), d(1))),
+        9 => Value::F64(m::pow_f64(d(0), d(1))),
+        10 => Value::F32(m::exp_f32(s(0))),
+        11 => Value::F32(m::log_f32(s(0))),
+        12 => Value::F32(m::sin_f32(s(0))),
+        13 => Value::F32(m::cos_f32(s(0))),
+        14 => Value::F32(m::tan_f32(s(0))),
+        15 => Value::F32(m::asin_f32(s(0))),
+        16 => Value::F32(m::acos_f32(s(0))),
+        17 => Value::F32(m::atan_f32(s(0))),
+        18 => Value::F32(m::atan2_f32(s(0), s(1))),
+        19 => Value::F32(m::pow_f32(s(0), s(1))),
+        _ => panic!("no mathematical function {}", k),
     }
 }

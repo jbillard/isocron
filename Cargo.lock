@@ -87,6 +87,7 @@ dependencies = [
  "isc-codegen",
  "isc-interp",
  "isc-ir",
+ "isc-runtime-core",
  "isc-syntax",
  "isc-types",
 ]

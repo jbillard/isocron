@@ -1947,6 +1947,13 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
                     let at = line[params..end].rfind(" align ").map(|a| params + a).unwrap_or(end);
                     let kind = if line[params..end].contains(" cold") { ".text.unlikely" } else { ".text" };
                     out.push_str(&line[..at]);
+                    // (a rare path without a table of jumps: LLVM puts those of
+                    // every function in one section of data, whose addresses
+                    // of code would keep in a program every function that has
+                    // one, reached or not, D626)
+                    if kind == ".text.unlikely" {
+                        out.push_str(" \"no-jump-tables\"=\"true\"");
+                    }
                     out.push_str(&place(kind, name, " "));
                     out.push_str(&line[at..]);
                 }
@@ -5446,17 +5453,9 @@ impl<'p> Gen<'p> {
                 };
                 Ok(V { r, t, uni: uni(&xv) })
             }
-            // a function of the runtime, the same everywhere (D108)
-            Math(f, xs) => {
-                let vs: Vec<V> = xs.iter().map(|x| self.ex(x, 1)).collect::<R<_>>()?;
-                let (s, suffix) = if e.ty == Type::F32 { ("float", "f") } else { ("double", "") };
-                let name = format!("isc_{}{}", f.name(), suffix);
-                let ps = vec![s; vs.len()].join(", ");
-                self.decls.insert(format!("declare {} @{}({})", s, name, ps));
-                let args: Vec<String> = vs.iter().map(|x| format!("{} {}", s, x.r)).collect();
-                let r = self.ins(format!("call {} @{}({})", s, name, args.join(", ")));
-                Ok(V { r, t: s.to_string(), uni: vs.iter().all(uni) })
-            }
+            // the other functions are functions of the prelude, inlined by the
+            // lowering (D626): none is left here
+            Math(f, _) => Err(format!("internal error: `{}` not lowered to its function of the prelude (D626)", f.name())),
             Sqrt(x) => {
                 let xv = self.ex(x, w)?;
                 let ww = if uni(&xv) { 1 } else { w };
@@ -15352,6 +15351,11 @@ impl<'p> Gen<'p> {
             }
             // `$bitsFloat(w)`: the float of these bits
             S::BitsFloat => v(self.ins(format!("bitcast i64 {} to double", vals[0].r)), "double"),
+            // `$bitsFloat32(w)`: the `f32` of the low half of these bits
+            S::BitsFloat32 => {
+                let b = self.ins(format!("trunc i64 {} to i32", vals[0].r));
+                v(self.ins(format!("bitcast i32 {} to float", b)), "float")
+            }
             // `$mulHigh(a, b)`: the high half of the product of 128 bits,
             // one instruction of x86-64; WebAssembly has no such product
             // (LLVM would call a function of a C library there): the four
