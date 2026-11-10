@@ -15056,3 +15056,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - `bench/replace.py` (D617 too): the checks of a part of the runtime
     that moves, one command each, the same for an agent and its review;
     forms of three families in `bench/replace/`.
+- **D619 — Two places for the heavy jobs of the machine (2026-11-10).**
+  One heavy job at a time since the freeze of 2026-11-06 and the shortage
+  of memory of 2026-11-09, both made by two of my jobs together (the
+  suite with the virtual machine of Windows, then with the build of an
+  agent), not by the services of the owner, measured at rest today: 1.6
+  GiB for their 29 containers, 0.4 for nginx, 0.1 for Plex (two of them,
+  `rahma` and `remnance`, stopped at the author's word). With two agents
+  and me building, the agents waited for each other. `tools/heavy.sh one
+  LABEL COMMAND` takes one of two places (`target/heavy.lock`,
+  `target/heavy.lock.2`) and runs the command capped at 6 GiB (the kernel
+  stops it alone past its cap): a build, one test file, counts of
+  instructions; `tools/heavy.sh all LABEL COMMAND` takes both and waits
+  for no build of another: the suite, a measure of cycles, the images of
+  a release, the virtual machine. Each place taken in one step and given
+  back only by its job. The suite on cb6c74a: 9.6 minutes (D617), against
+  17 to 19.
