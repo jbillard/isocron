@@ -374,6 +374,14 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
       - [ ] The thread of the large stack only for a program whose functions can nest (today: any function lowered, the text of an integer among them)
       - [x] A test of the suite that bounds the memory of each family of loops (D615: ten loops, 60 and 600 rounds, with the module and whole; built by the compiler of the first wiring, five of them grow tenfold)
     - [ ] 4. The slow paths one at a time (lists refilled, medium blocks, large blocks, memory given back, the end of a thread); then the pool, files and `print`, the start and the panics, the copies of blocks, Windows and WebAssembly, regular expressions and big integers
+      - [ ] 4a. The blocks of 1 KiB to 256 KiB (classes 16 to 79, `alloc_class` of `isc-runtime-core`: 8 a power of two) from the allocator in Isocron, the first step of 4. Read in `heap.rs` (lines 976 to 1440), to be kept equal or better:
+        - a thread keeps 128 KiB of free blocks a class (1 to 256 blocks: 64 here up to 2 KiB, then fewer, 1 from 128 KiB on) and takes half of it at a refill; the classes from 16 on have no batch in reserve, their blocks go to the shared list one by one under one lock
+        - the count of a class kept as the room left (0: full, or not set yet, which the rare path sets): the limit of each class without an instruction more on the fast paths
+        - an array of 16 KiB or more starts 64 or 2112 bytes after a page boundary (two arrays 0 or 2048 bytes apart modulo 4096: no 4K aliasing, D83); blocks cut in two groups by size, each with its place
+        - the first 4 MiB in pages of 4 KiB, the next in huge pages; a span for each thread once the first chunk is full (D294)
+        - a block new from the system is known to be zeros (`contents`): `alloc_zeroed` clears nothing then
+        - the zone of the thread: 80 heads, 80 rooms, the batches in reserve of the 16 first classes; the shared lists at the start of the arena: 80 pairs, the first block after them
+        - measures before any change: `floor.map` and `round.map` of `round_forms.isc` (an array of 32 KiB a round), `joinmap`, the ten programs, `bounded.rs` (D615)
 - [x] A tuple literal first in a choice (`c ? [0u64, 1u64] : f()`) is typed as an array (D582): type it from the other branch, or say so in the message (D585; `match` arms still in the order of the arms)
 - [ ] Step 7, next pure functions in Isocron (SPEC section 17, order 2): `split`, lines, `replace`, sort, the writing of numbers; each at least as fast as its Rust version (principle 6), and the checks of bounds proven needless removed in loops
   - [x] The text of an integer (D588: 10 to 21 % faster than Rust; the digit pairs from a table of proven bounds, the digits written into their block)
