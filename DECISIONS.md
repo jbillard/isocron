@@ -15298,3 +15298,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     linked with the module (16 KB of mathematical functions in the program
     of texts of `pre.rs`); that program is 198 680 bytes with the module,
     202 376 with `main`'s compiler (glibc: 235 848, 239 944).
+- **D629 — A compilation reads and checks the prelude it reaches
+  (2026-11-10).** Every compilation parsed the 5989 lines of the prelude
+  and checked the body of each of its 374 functions (12.1 ms of 14 for an
+  empty program; 3727 lines in 0.6.0). Now: the places of its
+  declarations are found once, when iscc is built (`isc-types/build.rs`,
+  `parser::outline`); a compilation parses the headers of its functions
+  (every signature known: the same names, the same ids, the same errors)
+  and the bodies of those the program reaches (`Bodies`), through its
+  calls and the functions of the prelude that the lowering calls for its
+  primitives (`check::needs`: the mathematical functions, `replace`, CSV,
+  `Number`, `map` of an action, the texts of the numbers and the cases,
+  the allocator); the others keep their signature (`TProgram::checked`).
+  A lowering that would need one more is an error under debug assertions
+  (the tests find it), else the program is checked again whole
+  (`lower::check_and_lower`). The requirements of the functions of the
+  prelude that are not generic, which do not depend on the program, are
+  checked when it is checked whole (`the_whole_prelude_checks`); the
+  places against a whole parse: `the_places_of_the_prelude_parse_it_whole`.
+  The parser no longer copies a token at each step. Measured (release
+  builds of development, `own.sh`: the instructions of iscc alone; 23.5 M
+  of them its start with LLVM as a shared library): `iscc check` of an
+  empty program 183.0 → 49.2 M; check 12.06 → 1.77 ms, lowering 1.55 →
+  0.10 ms; `bench/replace.py compile` (iscc and its linker): hello 273.6 →
+  139.7 M (−48.9 %), one `sin` 603.7 → 496.7, one `Number` 1432.9 →
+  1347.8; the LLVM IR of the 129 programs of the repository that build,
+  byte for byte the same. Left: programs of `json` and `http`, 26 to 73 G
+  instructions each (`std_json_decode.isc` 9.1 s: O3 4.1 s, code
+  generation 4.3 s, a module of 196 492 lines; 0.6.0: 8.8 s), the volume
+  of the code LLVM is given.

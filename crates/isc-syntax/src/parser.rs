@@ -4,7 +4,7 @@
 //! type checker and everything after it see one form.
 
 use crate::ast::*;
-use crate::lexer::{describe, lex, Scalar, Tok, S, T};
+use crate::lexer::{describe, lex, lex_at, Scalar, Tok, S, T};
 use crate::{Diagnostic, Result, Span};
 
 /// Words that cannot name a variable or a function.
@@ -28,17 +28,125 @@ enum Stm {
 
 pub fn parse(src: &str, file: u32) -> Result<Program> {
     let toks = lex(src, file)?;
-    let mut p = P { toks, pos: 0, modules: Vec::new(), in_action: false };
+    let mut p = P { toks: &toks, pos: 0, modules: Vec::new(), in_action: false, lazy: None, places: None, body_at: None };
     p.program()
 }
 
-struct P {
-    toks: Vec<Tok>,
+/// The place of a declaration in a source (D629), in bytes: from its first
+/// token (`start`, at `line`:`col`) to the first token of the next one
+/// (`end`); for a function (not a constant), the place of the `{` of its
+/// body, its line and its column.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub start: u32,
+    pub line: u32,
+    pub col: u32,
+    pub body: Option<(u32, u32, u32)>,
+    pub end: u32,
+}
+
+/// The places of the declarations of `src` (D629), made once, when iscc
+/// is built (the prelude, by the build script of `isc-types`).
+pub fn outline(src: &str, file: u32) -> Result<Vec<Place>> {
+    let toks = lex(src, file)?;
+    let mut p = P { toks: &toks, pos: 0, modules: Vec::new(), in_action: false, lazy: Some(Default::default()), places: Some(Vec::new()), body_at: None };
+    p.program()?;
+    let places = p.places.take().unwrap_or_default();
+    // (a position, line and column in characters, in bytes)
+    let lines: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let byte = |sp: Span| -> u32 {
+        let l = lines[sp.line as usize - 1];
+        (l + src[l..].char_indices().nth(sp.col as usize - 1).map_or(src.len() - l, |(b, _)| b)) as u32
+    };
+    let mut out = Vec::new();
+    for (k, &(first, body)) in places.iter().enumerate() {
+        let end = places.get(k + 1).map_or(src.len() as u32, |&(next, _)| byte(toks[next].span));
+        let sp = toks[first].span;
+        let body = body.map(|b| (byte(toks[b].span), toks[b].span.line, toks[b].span.col));
+        out.push(Place { start: byte(sp), line: sp.line, col: sp.col, body, end });
+    }
+    Ok(out)
+}
+
+/// Where the body of a function is: its text, from its `{`, at its line and
+/// column; whether it is an action, whether it returns `void`; the place of
+/// its name.
+#[derive(Clone, Copy)]
+struct BodyAt {
+    from: u32,
+    to: u32,
+    line: u32,
+    col: u32,
+    is_action: bool,
+    void: bool,
+    span: Span,
+}
+
+/// The bodies of the functions of a source parsed by `parse_outlined`
+/// (D629), parsed when they are asked.
+pub struct Bodies<'s> {
+    src: &'s str,
+    file: u32,
+    at: std::collections::HashMap<String, BodyAt>,
+}
+
+impl Bodies<'_> {
+    /// The body of the function `name`, parsed now, as `parse` gives it;
+    /// none for a function whose body was parsed with its declaration (a
+    /// constant, whose type may be that of its value).
+    pub fn body(&self, name: &str) -> Option<Result<Expr>> {
+        let b = *self.at.get(name)?;
+        Some(lex_at(&self.src[b.from as usize..b.to as usize], self.file, b.line, b.col).and_then(|toks| {
+            let mut p = P { toks: &toks, pos: 0, modules: Vec::new(), in_action: b.is_action, lazy: None, places: None, body_at: None };
+            p.fn_body(name, b.span, b.is_action, b.void)
+        }))
+    }
+}
+
+/// `parse` of a source whose places `outline` gave (D629): the headers of
+/// its functions parsed, each body an expression `()` at the place of its
+/// `{`, parsed when it is asked of `Bodies` (the prelude, of which a
+/// program reaches a few functions); its other declarations parsed whole.
+pub fn parse_outlined<'s>(src: &'s str, file: u32, places: &[Place]) -> Result<(Program, Bodies<'s>)> {
+    let mut program = Program { decls: Vec::new(), exports: Vec::new(), imported: Vec::new() };
+    let mut at = std::collections::HashMap::new();
+    for pl in places {
+        let (to, lazy) = match pl.body {
+            Some((b, _, _)) => (b, Some(Default::default())),
+            None => (pl.end, None),
+        };
+        let mut toks = lex_at(&src[pl.start as usize..to as usize], file, pl.line, pl.col)?;
+        if let Some((_, line, col)) = pl.body {
+            // (the body: `{}`, skipped as `parse_lazy` skips it)
+            let sp = Span::new(file, line, col);
+            toks.pop();
+            toks.extend([T::Sym(S::LBrace), T::Sym(S::RBrace), T::Eof].map(|t| Tok { t, span: sp }));
+        }
+        let mut p = P { toks: &toks, pos: 0, modules: Vec::new(), in_action: false, lazy, places: None, body_at: None };
+        let one = p.program()?;
+        program.decls.extend(one.decls);
+        program.exports.extend(one.exports);
+        if let (Some(found), Some((b, line, col))) = (p.lazy.take(), pl.body) {
+            for (name, (_, is_action, void, span)) in found {
+                at.insert(name, BodyAt { from: b, to: pl.end, line, col, is_action, void, span });
+            }
+        }
+    }
+    Ok((program, Bodies { src, file, at }))
+}
+
+struct P<'a> {
+    toks: &'a [Tok],
     pos: usize,
     /// The prefixes `m` of `import * as m from "..."`: `m.x` is a qualified
     /// name, resolved when the modules are loaded (D150).
     modules: Vec<String>,
     in_action: bool,
+    /// The bodies of the functions skipped (D629), their places in `toks`.
+    lazy: Option<std::collections::HashMap<String, (usize, bool, bool, Span)>>,
+    /// `outline`: the first token of each declaration, and of its body.
+    places: Option<Vec<(usize, Option<usize>)>>,
+    body_at: Option<usize>,
 }
 
 // precedence levels (higher binds tighter), as in JavaScript
@@ -53,7 +161,7 @@ const L_SHIFT: u8 = 9;
 const L_ADD: u8 = 10;
 const L_MUL: u8 = 11;
 
-impl P {
+impl P<'_> {
     fn peek(&self) -> &T {
         &self.toks[self.pos].t
     }
@@ -63,12 +171,13 @@ impl P {
     fn span(&self) -> Span {
         self.toks[self.pos].span
     }
-    fn bump(&mut self) -> Tok {
-        let t = self.toks[self.pos].clone();
+    /// The place of the token passed (its token is read by `peek`).
+    fn bump(&mut self) -> Span {
+        let sp = self.toks[self.pos].span;
         if self.pos + 1 < self.toks.len() {
             self.pos += 1;
         }
-        t
+        sp
     }
     fn is(&self, s: S) -> bool {
         *self.peek() == T::Sym(s)
@@ -97,14 +206,14 @@ impl P {
     }
     fn expect(&mut self, s: S) -> Result<Span> {
         if self.is(s) {
-            Ok(self.bump().span)
+            Ok(self.bump())
         } else {
             self.error(format!("expected `{}`, found {}", s.text(), describe(self.peek())))
         }
     }
     fn expect_word(&mut self, w: &str) -> Result<Span> {
         if self.is_word(w) {
-            Ok(self.bump().span)
+            Ok(self.bump())
         } else {
             self.error(format!("expected `{}`, found {}", w, describe(self.peek())))
         }
@@ -112,7 +221,7 @@ impl P {
     fn ident(&mut self, what: &str) -> Result<(String, Span)> {
         match self.peek().clone() {
             T::Ident(s) if !RESERVED.contains(&s.as_str()) => {
-                let sp = self.bump().span;
+                let sp = self.bump();
                 Ok((s, sp))
             }
             t => self.error(format!("expected {}, found {}", what, describe(&t))),
@@ -130,6 +239,8 @@ impl P {
         let mut decls = Vec::new();
         let mut exports = Vec::new();
         while *self.peek() != T::Eof {
+            let first = self.pos;
+            self.body_at = None;
             if self.is_word("import") {
                 if !decls.iter().all(|d| matches!(d, Decl::Import(..))) {
                     return self.error("`import` comes before the other declarations");
@@ -190,6 +301,9 @@ impl P {
                 }
             }
             decls.push(decl);
+            if let Some(places) = &mut self.places {
+                places.push((first, self.body_at.take()));
+            }
         }
         Ok(Program { decls, exports, imported: Vec::new() })
     }
@@ -290,18 +404,51 @@ impl P {
         let params = self.params()?;
         self.expect(S::Colon)?;
         let ret = self.ty()?;
+        let void = matches!(ret.kind, TypeKind::Unit);
+        if let Some(at) = &mut self.lazy {
+            // (the body skipped to the `}` that closes it, parsed when
+            // asked, D629)
+            let lb = self.toks[self.pos].span;
+            at.insert(name.clone(), (self.pos, is_action, void, span));
+            self.body_at = Some(self.pos);
+            self.skip_body()?;
+            let body = Expr { kind: ExprKind::Unit, span: lb };
+            return Ok(FnDecl { is_action, name, span, generics, params, ret, modifiers, body, is_const: false });
+        }
         let saved = self.in_action;
         self.in_action = is_action;
+        let body = self.fn_body(&name, span, is_action, void);
+        self.in_action = saved;
+        Ok(FnDecl { is_action, name, span, generics, params, ret, modifiers, body: body?, is_const: false })
+    }
+
+    /// The body of the function `name` (at `span`), from its `{`.
+    fn fn_body(&mut self, name: &str, span: Span, is_action: bool, void: bool) -> Result<Expr> {
         let lb = self.span();
         let stmts = self.block()?;
         // as in TypeScript, a value is given by `return`: an action whose
         // result is not `void` ends with `return` on every path
-        if is_action && !matches!(ret.kind, TypeKind::Unit) && !Self::returns(&stmts) {
+        if is_action && !void && !Self::returns(&stmts) {
             return Err(Diagnostic::new(span, format!("the action `{}` returns a value: its body ends with `return` on every path", name)));
         }
-        let body = self.lower(&stmts, is_action, lb);
-        self.in_action = saved;
-        Ok(FnDecl { is_action, name, span, generics, params, ret, modifiers, body: body?, is_const: false })
+        self.lower(&stmts, is_action, lb)
+    }
+
+    /// Passes a body: from its `{` to the `}` that closes it (the `${` and
+    /// `}` of a template are tokens of their own).
+    fn skip_body(&mut self) -> Result<()> {
+        self.expect(S::LBrace)?;
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.peek() {
+                T::Sym(S::LBrace) => depth += 1,
+                T::Sym(S::RBrace) => depth -= 1,
+                T::Eof => return self.error("expected `}`, found the end of the file"),
+                _ => {}
+            }
+            self.bump();
+        }
+        Ok(())
     }
 
     fn type_decl(&mut self) -> Result<TypeDecl> {
@@ -740,7 +887,7 @@ impl P {
         // a lambda: `(a, b) => ...`, `x => ...`
         if let T::Ident(n) = self.peek().clone() {
             if *self.peek_at(1) == T::Sym(S::FatArrow) && !RESERVED.contains(&n.as_str()) {
-                let span = self.bump().span;
+                let span = self.bump();
                 self.bump();
                 return self.lambda_body(vec![(n, span)], Vec::new(), span);
             }
@@ -767,7 +914,7 @@ impl P {
         if !self.is(S::QuestionQuestion) {
             return Ok(a);
         }
-        let span = self.bump().span;
+        let span = self.bump();
         let b = self.coalesce()?;
         let pat = |kind| Pattern { kind, span };
         let var = || Expr { kind: ExprKind::Var("$some".into()), span };
@@ -888,7 +1035,7 @@ impl P {
             if p < min {
                 break;
             }
-            let span = self.bump().span;
+            let span = self.bump();
             if len == 2 {
                 self.bump();
             }
@@ -918,7 +1065,7 @@ impl P {
             if matches!(self.toks[start].t, T::Sym(S::Minus) | T::Sym(S::Bang)) {
                 return self.error("parenthesize the left side of `**` (`-x ** 2` is `-(x ** 2)` or `(-x) ** 2`)");
             }
-            let span = self.bump().span;
+            let span = self.bump();
             let exp = self.power_right()?;
             return Ok(Expr { kind: ExprKind::Pow(Box::new(base), Box::new(exp)), span });
         }
@@ -928,7 +1075,7 @@ impl P {
     fn power_right(&mut self) -> Result<Expr> {
         let base = self.unary()?;
         if self.is(S::StarStar) {
-            let span = self.bump().span;
+            let span = self.bump();
             let exp = self.power_right()?;
             return Ok(Expr { kind: ExprKind::Pow(Box::new(base), Box::new(exp)), span });
         }
@@ -978,7 +1125,7 @@ impl P {
             // closed by `>` and followed by `(`, else a comparison (D336)
             if self.is(S::Lt) && matches!(e.kind, ExprKind::Var(_)) {
                 let save = self.pos;
-                let span = self.bump().span;
+                let span = self.bump();
                 let mut ts = Vec::new();
                 let ok = loop {
                     match self.ty() {
@@ -996,19 +1143,19 @@ impl P {
                 self.pos = save;
             }
             if self.is(S::LParen) {
-                let span = self.bump().span;
+                let span = self.bump();
                 let args = self.args(S::RParen)?;
                 e = Expr { kind: ExprKind::Call(Box::new(e), args), span };
             } else if self.is(S::LBracket) {
-                let span = self.bump().span;
+                let span = self.bump();
                 let i = self.expr()?;
                 self.expect(S::RBracket)?;
                 e = Expr { kind: ExprKind::Index(Box::new(e), Box::new(i)), span };
             } else if self.is(S::Dot) {
-                let span = self.bump().span;
+                let span = self.bump();
                 let (f, fsp) = match self.peek().clone() {
                     T::Ident(f) => {
-                        let sp = self.bump().span;
+                        let sp = self.bump();
                         (f, sp)
                     }
                     t => return self.error(format!("expected a field or a method, found {}", describe(&t))),
@@ -1039,7 +1186,7 @@ impl P {
                     }
                     // `x.slice(a, b)`: the slice `x[a..b]`
                     "slice" if self.is(S::LParen) => {
-                        let sp = self.bump().span;
+                        let sp = self.bump();
                         let mut a = self.args(S::RParen)?;
                         if a.len() != 2 {
                             return Err(Diagnostic::new(sp, "`slice` takes a start and an end"));
@@ -1050,7 +1197,7 @@ impl P {
                     }
                     // `x.with(i, v)`: the update `x with [i] = v`
                     "with" if self.is(S::LParen) => {
-                        let sp = self.bump().span;
+                        let sp = self.bump();
                         let mut a = self.args(S::RParen)?;
                         if a.len() != 2 {
                             return Err(Diagnostic::new(sp, "`with` takes an index and a value"));
@@ -1073,7 +1220,7 @@ impl P {
                 }
             } else if self.is_word("as") && matches!(self.peek_at(1), T::Ident(c) if c == "const") {
                 // `[a, b] as const`: a tuple
-                let sp = self.bump().span;
+                let sp = self.bump();
                 self.bump();
                 match e.kind {
                     ExprKind::Array(es) => e = Expr { kind: ExprKind::Tuple(es), span: e.span },
@@ -1185,7 +1332,7 @@ impl P {
         let mut parts: Vec<Expr> = Vec::new();
         loop {
             let (text, sp) = match self.peek().clone() {
-                T::Str(t) => (t, self.bump().span),
+                T::Str(t) => (t, self.bump()),
                 t => return self.error(format!("expected the text of a template literal, found {}", describe(&t))),
             };
             if !text.is_empty() {

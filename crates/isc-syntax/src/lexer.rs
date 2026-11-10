@@ -181,11 +181,16 @@ pub(crate) fn describe(t: &T) -> String {
 /// The tokens of a file and their positions (1-based line and column, in
 /// characters); comments `//` and `/* */` are skipped.
 pub(crate) fn lex(src: &str, file: u32) -> Result<Vec<Tok>> {
+    lex_at(src, file, 1, 1)
+}
+
+/// `lex` of a part of a file that starts at `line`:`col` (D629).
+pub(crate) fn lex_at(src: &str, file: u32, line: u32, col: u32) -> Result<Vec<Tok>> {
     // (a file of ASCII, as the prelude, which every program reads: each
     // byte a character, without decoding)
     let chars: Vec<char> = if src.is_ascii() { src.bytes().map(char::from).collect() } else { src.chars().collect() };
     let mut toks = Vec::new();
-    let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
+    let (mut i, mut line, mut col) = (0usize, line, col);
     // the open insertions `${` of template literals, each with its depth of
     // braces
     let mut tpl: Vec<u32> = Vec::new();

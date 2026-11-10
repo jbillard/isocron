@@ -27,6 +27,22 @@ const DOT: &str = include_str!("../../../examples/poc/dot.isc");
 const HIST: &str = include_str!("../../../examples/poc/histogram.isc");
 const STD: &str = include_str!("../../../examples/poc/std_dev.isc");
 
+/// The prelude checked and lowered whole (D629): a program checks the
+/// bodies of the functions of the prelude it reaches, and not the
+/// requirements of those that are not generic, which do not depend on it;
+/// here every body and every requirement of the prelude is checked.
+#[test]
+fn the_whole_prelude_checks() {
+    let user = isc_syntax::parse("action main(args: string[k]): i32 { return 0; }", isc_types::USER_FILE).unwrap();
+    let t = isc_types::check_parsed_whole(&user).unwrap_or_else(|e| panic!("{}", e));
+    assert!(t.whole());
+    lower(&t).unwrap_or_else(|e| panic!("{}", e));
+    // (a program checks a few of them)
+    let t = isc_types::check_parsed(&user).unwrap();
+    let checked = t.checked.iter().filter(|&&c| c).count();
+    assert!(checked * 4 < t.fns.len(), "{} bodies of {} checked", checked, t.fns.len());
+}
+
 #[test]
 fn dump() {
     for src in [SUM, DOT, HIST, STD] {

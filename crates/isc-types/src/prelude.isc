@@ -947,7 +947,7 @@ function $noDigits(): [u64, i64, u64] {
 }
 
 // The digits and the point of 21 to 40 bytes of `b` from `at`: a number
-// written without exponent after zeros (`0.000…`): the point in its first
+// written without exponent after zeros (`0.000...`): the point in its first
 // 8 bytes and before its last 19 bytes, every other byte before those 19
 // a `0`. Its integer is that of its last 19 bytes, digits (`$digitsRun`);
 // the bytes before them: the first word without its point, then up to two
@@ -1942,7 +1942,7 @@ function $replaceOne(s: string, from: string, to: string): string {
 // cycles, +3.4 to +6.7 % instructions as the code of its rare paths
 // changed), principle 6 of SPEC section 17. Otherwise a text without the
 // first byte of `from` is itself, nothing made (looking for its places at
-// once there: a line of 60 bytes 140 → 506 instructions, the runtime 288);
+// once there: a line of 60 bytes 140 -> 506 instructions, the runtime 288);
 // with it, the places looked for from there (`f`).
 function $replaceEvery(s: string, from: string, to: string): string {
     const b = bytes(s);

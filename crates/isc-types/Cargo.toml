@@ -6,3 +6,8 @@ license.workspace = true
 
 [dependencies]
 isc-syntax = { path = "../isc-syntax" }
+
+[build-dependencies]
+# the places of the declarations of the prelude, found when it is built
+# (D629)
+isc-syntax = { path = "../isc-syntax" }

@@ -24,6 +24,49 @@ fn internal<T>(span: Span, what: &str) -> R<T> {
     Err(Diagnostic::new(span, format!("internal compiler error: {}", what)))
 }
 
+/// The start of the message of a lowering that needs the body of a
+/// function of the prelude that the checker did not check (D629): the
+/// program is then checked again whole (`lower_checked`).
+const UNCHECKED: &str = "internal compiler error: the body of a function of the prelude unchecked: ";
+
+/// The lowering of `p` needed a function of the prelude whose body the
+/// checker left out (D629).
+pub fn needs_whole(d: &Diagnostic) -> bool {
+    d.message.starts_with(UNCHECKED)
+}
+
+/// The function of the prelude `name` that the lowering calls itself (a
+/// primitive written in Isocron, the text of a number, the allocator): its
+/// id, none when the prelude has none; an error (`needs_whole`) when its
+/// body was not checked (D629).
+fn prelude_fn(p: &TProgram, name: &str, span: Span) -> R<Option<FnId>> {
+    let named = |f: &tast::TFn| f.name == name || f.name.strip_prefix("native:") == Some(name);
+    match p.fns.iter().position(|f| f.from_prelude && named(f)) {
+        Some(id) if !p.checked[id] => Err(Diagnostic::new(span, format!("{}`{}`", UNCHECKED, name))),
+        found => Ok(found),
+    }
+}
+
+/// Checks and lowers a parsed program (D629): with the bodies of the
+/// functions of the prelude it reaches, then, when the lowering needed
+/// one more (`needs_whole`, which `isc_types::check` should foresee), with
+/// all of them; the second is an error in a build with debug assertions,
+/// for the tests to find what the first missed.
+pub fn check_and_lower(user: &isc_syntax::ast::Program) -> R<(TProgram, Program)> {
+    let t = isc_types::check_parsed(user)?;
+    match lower(&t) {
+        Err(d) if needs_whole(&d) && !t.whole() => {
+            if cfg!(debug_assertions) {
+                return Err(d);
+            }
+            let t = isc_types::check_parsed_whole(user)?;
+            let p = lower(&t)?;
+            Ok((t, p))
+        }
+        r => Ok((t, r?)),
+    }
+}
+
 #[derive(Clone)]
 enum Binding<'p> {
     Var(VarId),
@@ -364,56 +407,61 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
     // generic, met or not
     let mut required = std::mem::take(&mut l.required);
     for (id, f) in p.fns.iter().enumerate() {
-        if has_alloc_requirement(f) && f.generics.is_empty() && !required.iter().any(|(i, _)| *i == id) {
+        // (those of a function of the prelude that is not generic do not
+        // depend on the program: checked when the prelude is checked whole,
+        // by its tests, D629)
+        if (!f.from_prelude || p.whole()) && has_alloc_requirement(f) && f.generics.is_empty() && !required.iter().any(|(i, _)| *i == id) {
             required.push((id, Vec::new()));
         }
     }
     crate::requirements::check(p, &required)?;
     // the functions lowered from here on are those of the texts
     let text_fns = l.fns.len() as u32;
+    // (a function of the prelude looked up when it is needed: its body is
+    // then checked, D629)
+    let named = |want: bool, name: &str| if want { prelude_fn(p, name, sp) } else { Ok(None) };
     // the text of an integer written by the prelude (D588): its functions
     // lowered when the program writes one
     let writes = writes_int_text(&body) || l.fns.iter().flatten().any(|f| writes_int_text(&f.body));
-    let named = |name: &str| p.fns.iter().position(|f| f.name == name && f.from_prelude);
-    let int_text = match (writes, named("$rtIntText"), named("$rtUintText")) {
-        (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
+    let int_text = match (named(writes, "$rtIntText")?, named(writes, "$rtUintText")?) {
+        (Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
         _ => None,
     };
     // the digits of an integer for its padded text (D606): lowered when the
     // program pads a text too
     let pads = pads_text(&body) || l.fns.iter().flatten().any(|f| pads_text(&f.body));
-    let digit_words = match (writes && pads, named("$rtDigitWords")) {
-        (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None], vec![None], sp)?),
-        _ => None,
+    let digit_words = match named(writes && pads, "$rtDigitWords")? {
+        Some(a) => Some(l.lower_fn(a, vec![], vec![None], vec![None], sp)?),
+        None => None,
     };
     // `toFixed`, the same way: `$rtFixedText`
     let writes = writes_fixed_text(&body) || l.fns.iter().flatten().any(|f| writes_fixed_text(&f.body));
-    let fixed_text = match (writes, named("$rtFixedText")) {
-        (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
-        _ => None,
+    let fixed_text = match named(writes, "$rtFixedText")? {
+        Some(a) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
+        None => None,
     };
     // the text of a float, the same way: `$rtF64Text` and `$rtF32Text`,
     // for `toString` and for `print`
     let writes = writes_float_text(&body) || l.fns.iter().flatten().any(|f| writes_float_text(&f.body));
-    let float_text = match (writes, named("$rtF64Text"), named("$rtF32Text")) {
-        (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
+    let float_text = match (named(writes, "$rtF64Text")?, named(writes, "$rtF32Text")?) {
+        (Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
         _ => None,
     };
     // and the names of what is not a number, for `print`: `$rtFloatName`
-    let float_name = match (float_text, named("$rtFloatName")) {
-        (Some(_), Some(a)) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
-        _ => None,
+    let float_name = match named(float_text.is_some(), "$rtFloatName")? {
+        Some(a) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
+        None => None,
     };
     // the text in another case, the same way: `$caseText`, for the texts
     // that are not ASCII
     let writes = writes_case_text(&body) || l.fns.iter().flatten().any(|f| writes_case_text(&f.body));
-    let case_text = match (writes, named("$caseText")) {
-        (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None; 6], vec![None; 6], sp)?),
-        _ => None,
+    let case_text = match named(writes, "$caseText")? {
+        Some(a) => Some(l.lower_fn(a, vec![], vec![None; 6], vec![None; 6], sp)?),
+        None => None,
     };
     // the allocator of the small blocks (D605): its three entries, called
     // by the generated code alone
-    let kernel = match (named("$kStart"), named("$kAlloc"), named("$kFree")) {
+    let kernel = match (named(true, "$kStart")?, named(true, "$kAlloc")?, named(true, "$kFree")?) {
         (Some(a), Some(b), Some(c)) => Some((l.lower_fn(a, vec![], vec![], vec![], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?, l.lower_fn(c, vec![], vec![None], vec![None], sp)?)),
         _ => None,
     };
@@ -2069,8 +2117,7 @@ impl<'p> Lower<'p> {
     fn prelude_call(&mut self, name: &str, args: Vec<Expr>, ret: &Type, span: Span) -> R<Expr> {
         // (under `iscc run`, the name of its native form: `native:` and its
         // name, D616)
-        let named = |f: &tast::TFn| f.name == name || f.name.strip_suffix(name) == Some("native:");
-        let Some(id) = self.p.fns.iter().position(|f| f.from_prelude && named(f)) else {
+        let Some(id) = prelude_fn(self.p, name, span)? else {
             return internal(span, &format!("`{}` is not in the prelude", name));
         };
         self.apply(&FuncVal::Global { id: id as FnId, type_args: Vec::new() }, args.into_iter().map(Arg::Val).collect(), ret, span)
@@ -2274,8 +2321,7 @@ impl<'p> Lower<'p> {
     /// form (`native:` before its name, D616).
     fn math_fn(&mut self, f: MathFn, xs: Vec<Expr>, ty: &Type, span: Span) -> R<Expr> {
         let name = format!("${}{}", f.name(), if *ty == Type::F32 { "F32" } else { "F64" });
-        let found = self.p.fns.iter().position(|g| g.from_prelude && (g.name == name || g.name.strip_prefix("native:") == Some(name.as_str())));
-        let Some(id) = found else {
+        let Some(id) = prelude_fn(self.p, &name, span)? else {
             return internal(span, &format!("no `{}` in the prelude", name));
         };
         // (its native form: a call of the interpreter's function, nothing
@@ -2841,7 +2887,7 @@ impl<'p> Lower<'p> {
                 // an action: applied in order, once each, by `mapInOrder` of
                 // the prelude (D387)
                 if !self.fn_pure(&fv) {
-                    let Some(id) = self.p.fns.iter().position(|f| f.from_prelude && f.name == "mapInOrder") else {
+                    let Some(id) = prelude_fn(self.p, "mapInOrder", span)? else {
                         return internal(span, "`mapInOrder` is not in the prelude");
                     };
                     let elem = |t: Ty| match t {

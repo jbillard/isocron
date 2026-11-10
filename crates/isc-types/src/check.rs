@@ -3934,7 +3934,7 @@ fn contains_fn(t: &Ty) -> bool {
 /// Isocron; user declarations shadow prelude declarations of the same name.
 /// The prefix of the functions of the prelude that a program declares again,
 /// kept for the modules of the standard library (D337).
-const PRELUDE_KEPT: &str = "std:prelude.";
+pub(crate) const PRELUDE_KEPT: &str = "std:prelude.";
 
 /// The name of the placeholders `decode` and `encode` of the module `json`
 /// (D336).
@@ -3942,7 +3942,24 @@ const DECODE: &str = "std:json.decode";
 const ENCODE: &str = "std:json.encode";
 
 pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TProgram> {
-    let first = check_program_with(user, prelude, &HashMap::new())?;
+    check_program_lazy(user, prelude, &|_| None, false)
+}
+
+/// `check_program` with the body of every function of the prelude checked,
+/// those the program does not reach too (D629): for the tests of the
+/// prelude itself.
+pub fn check_program_whole(user: &ast::Program, prelude: &ast::Program) -> Result<TProgram> {
+    check_program_lazy(user, prelude, &|_| None, true)
+}
+
+/// The body of a function of the prelude by its name, when the prelude
+/// was parsed without it (D629): none, its body is in its declaration.
+pub type Bodies<'a> = dyn Fn(&str) -> Option<Result<ast::Expr>> + 'a;
+
+/// `check_program` of a prelude whose bodies `bodies` gives (`whole`:
+/// every body checked, D629).
+pub fn check_program_lazy(user: &ast::Program, prelude: &ast::Program, bodies: &Bodies, whole: bool) -> Result<TProgram> {
+    let first = check_program_with(user, prelude, &HashMap::new(), bodies, whole)?;
     // `json.decode<T>` and `json.encode(x)` (D325, D336): the functions of
     // each `T`, written in the module `json`, then the program checked again
     // with them, each call given those of its type
@@ -3984,10 +4001,10 @@ pub fn check_program(user: &ast::Program, prelude: &ast::Program) -> Result<TPro
             with.decls.push(ast::Decl::Fn(f));
         }
     }
-    check_program_with(&with, prelude, &keys)
+    check_program_with(&with, prelude, &keys, bodies, whole)
 }
 
-fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &HashMap<String, usize>) -> Result<TProgram> {
+fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &HashMap<String, usize>, bodies_of: &Bodies, whole: bool) -> Result<TProgram> {
     // the types of the prelude (`Result`, D138) after those of the program,
     // unless the program declares one of their names: then they, and the
     // functions of the prelude whose signature mentions them, are left out
@@ -4129,10 +4146,42 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
     }
     let placeholders = (names.get(DECODE).copied(), names.get(ENCODE).copied());
     let globals = Globals { sigs, names, first_extern, sums, heads, ctors, imports, codecs: codec_ids, placeholders };
-    let mut fns = Vec::new();
+    // the bodies (D629): those of the program, in their order (its first
+    // error first, as before), then those of the prelude it reaches, through
+    // its calls and the functions of the prelude that the lowering calls for
+    // its primitives (`needs`); the others keep their signature alone
+    let mut bodies: Vec<Option<TFn>> = (0..decls.len()).map(|_| None).collect();
+    let mut todo: Vec<FnId> = Vec::new();
+    // (a function of the prelude parsed now, its body given by `bodies_of`)
+    let full = |d: &ast::FnDecl| -> Result<Option<ast::FnDecl>> {
+        match bodies_of(&d.name) {
+            Some(b) => Ok(Some(ast::FnDecl { body: b?, ..d.clone() })),
+            None => Ok(None),
+        }
+    };
     for (id, (d, from_prelude)) in decls.iter().enumerate() {
-        fns.push(check_fn(&globals, id, d, *from_prelude)?);
+        if !*from_prelude || whole {
+            let parsed = if *from_prelude { full(d)? } else { None };
+            let f = check_fn(&globals, id, parsed.as_ref().unwrap_or(d), *from_prelude)?;
+            needs(&globals, &f.body, &mut todo);
+            bodies[id] = Some(f);
+        }
     }
+    // the allocator of the small blocks (D605), which every program calls
+    todo.extend(ALWAYS_NEEDED.iter().filter_map(|n| globals.names.get(*n).copied()));
+    while let Some(id) = todo.pop() {
+        // (an `extern` function: no body)
+        if id >= bodies.len() || bodies[id].is_some() {
+            continue;
+        }
+        let (d, from_prelude) = decls[id];
+        let parsed = if from_prelude { full(d)? } else { None };
+        let f = check_fn(&globals, id, parsed.as_ref().unwrap_or(d), from_prelude)?;
+        needs(&globals, &f.body, &mut todo);
+        bodies[id] = Some(f);
+    }
+    let checked: Vec<bool> = bodies.iter().map(|b| b.is_some()).collect();
+    let fns: Vec<TFn> = bodies.into_iter().enumerate().map(|(id, b)| b.unwrap_or_else(|| signature_fn(&globals, id, decls[id].0))).collect();
     // main
     let main = match globals.names.get("main") {
         Some(&m) => m,
@@ -4170,7 +4219,83 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
             return err(f.span, format!("the constant `{}` depends on itself", f.name));
         }
     }
-    Ok(TProgram { fns, main, sums: globals.sums, externs, recursive })
+    Ok(TProgram { fns, main, sums: globals.sums, externs, recursive, checked })
+}
+
+/// The functions of the prelude every program needs, called by the code
+/// generator alone: the allocator of the small blocks (D605).
+const ALWAYS_NEEDED: &[&str] = &["$kStart", "$kAlloc", "$kFree"];
+
+/// The functions that the checked expression `e` needs (D629): those it
+/// calls or names, and those of the prelude that the lowering calls in the
+/// place of its primitives (`isc_ir::lower`: `math_fn`, `prelude_call`,
+/// `mapInOrder`, the texts of the numbers and the cases); more than the
+/// lowering takes, never less (a function it would need unchecked is an
+/// error of the compiler, which checks the program again whole).
+fn needs(g: &Globals, e: &TExpr, out: &mut Vec<FnId>) {
+    match &e.kind {
+        TExprKind::FnRef { id, .. } | TExprKind::Call { callee: Callee::Fn { id, .. }, .. } => out.push(*id),
+        TExprKind::Call { callee: Callee::Prim(p), args, .. } => prim_needs(*p, args.first().map(|a| &a.ty), &e.ty, &mut |n| out.extend(g.names.get(n).copied())),
+        TExprKind::PrimRef(p) => prim_needs(*p, None, &Ty::Unit, &mut |n| out.extend(g.names.get(n).copied())),
+        _ => {}
+    }
+    for_each_child(e, &mut |c| needs(g, c, out));
+}
+
+/// The functions of the prelude that the lowering of the primitive `p`
+/// calls (its first argument of type `arg`, its result of type `ret`; none
+/// known: all it may call).
+fn prim_needs(p: Prim, arg: Option<&Ty>, ret: &Ty, named: &mut dyn FnMut(&str)) {
+    // a value of this type may hold a float (`print` writes it with the
+    // text of the prelude)
+    fn float_free(t: &Ty) -> bool {
+        match t {
+            Ty::Int(_) | Ty::Bool | Ty::Str | Ty::Unit | Ty::BigInt => true,
+            Ty::Array(_, e) => float_free(e),
+            Ty::Tuple(ts) => ts.iter().all(float_free),
+            _ => false,
+        }
+    }
+    let float_text = |named: &mut dyn FnMut(&str)| ["$rtF64Text", "$rtF32Text", "$rtFloatName"].iter().for_each(|n| named(n));
+    let int_text = |named: &mut dyn FnMut(&str)| ["$rtIntText", "$rtUintText"].iter().for_each(|n| named(n));
+    match p {
+        Prim::Math(f) if !f.instruction() => {
+            let (f64, f32) = match ret {
+                Ty::F64 => (true, false),
+                Ty::F32 => (false, true),
+                _ => (true, true),
+            };
+            if f64 {
+                named(&format!("${}F64", f.name()));
+            }
+            if f32 {
+                named(&format!("${}F32", f.name()));
+            }
+        }
+        Prim::Replace => named("$replaceOne"),
+        Prim::ReplaceAll => named("$replaceEvery"),
+        Prim::ParseCsvF64 | Prim::ReadCsvF64 => named("$csvParse"),
+        Prim::JsNumber => named("$jsNumber"),
+        Prim::Map => named("mapInOrder"),
+        Prim::ToString => match arg {
+            Some(Ty::Int(_)) => int_text(named),
+            Some(Ty::F64 | Ty::F32) => float_text(named),
+            Some(Ty::Bool | Ty::Str | Ty::BigInt) => {}
+            _ => {
+                int_text(named);
+                float_text(named);
+            }
+        },
+        Prim::Print => {
+            if !arg.is_some_and(float_free) {
+                float_text(named);
+            }
+        }
+        Prim::PadStart | Prim::PadEnd => named("$rtDigitWords"),
+        Prim::ToFixed => named("$rtFixedText"),
+        Prim::ToUpper | Prim::ToLower => named("$caseText"),
+        _ => {}
+    }
 }
 
 /// The types an `extern` function may take and return (D125): scalars,
@@ -4463,6 +4588,17 @@ fn check_type_decls(p: &ast::Program, imports: &Imports) -> Result<(Vec<SumDef>,
 }
 
 fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Result<TFn> {
+    check_fn_body(g, id, d, from_prelude, true)
+}
+
+/// A function of the prelude that the program does not reach (D629): its
+/// signature and its parameters, as `check_fn` gives them, its body not
+/// checked (`()`, never lowered).
+fn signature_fn(g: &Globals, id: FnId, d: &ast::FnDecl) -> TFn {
+    check_fn_body(g, id, d, true, false).expect("a signature checked once already")
+}
+
+fn check_fn_body(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool, with_body: bool) -> Result<TFn> {
     let sig = &g.sigs[id];
     let mut cx = FnCx {
         method_call: false,
@@ -4492,6 +4628,23 @@ fn check_fn(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool) -> Resul
         params.push(cx.add_local(name, t.clone(), *sp));
     }
     let ret = sig.ret.clone();
+    if !with_body {
+        let body = TExpr { kind: TExprKind::Lit(Lit::Unit), ty: Ty::Unit, span: d.body.span };
+        return Ok(TFn {
+            name: sig.name.clone(),
+            span: sig.span,
+            is_action: sig.is_action,
+            from_prelude,
+            generics: sig.generics.clone(),
+            syms: cx.syms.clone(),
+            params,
+            param_tys: sig.param_tys.clone(),
+            ret,
+            locals: cx.locals,
+            body,
+            requires: d.modifiers.clone(),
+        });
+    }
     // the existential sizes of the result are fixed by the body: open, they
     // unify with the size of what the body computes
     let opened = cx.open_existentials(&ret);

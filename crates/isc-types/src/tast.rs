@@ -866,4 +866,16 @@ pub struct TProgram {
     /// `recursive[f]`: `f` can call itself (it is not inlined, SPEC section
     /// 11).
     pub recursive: Vec<bool>,
+    /// `checked[f]`: the body of `f` is checked (D629); a function of the
+    /// prelude that the program does not reach keeps its signature alone,
+    /// its body `()`.
+    pub checked: Vec<bool>,
+}
+
+impl TProgram {
+    /// Every body is checked: the program does not lack a function of the
+    /// prelude that the lowering may call (D629).
+    pub fn whole(&self) -> bool {
+        self.checked.iter().all(|&c| c)
+    }
 }

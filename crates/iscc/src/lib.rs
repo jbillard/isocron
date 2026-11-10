@@ -10,8 +10,7 @@ pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     let loaded = isc_types::modules::load_modules(&mut user, Path::new(path), &mut files);
     let render = |d: isc_syntax::Diagnostic| d.render(&files);
     loaded.map_err(render)?;
-    let t = isc_types::check_parsed(&user).map_err(render)?;
-    let mut p = isc_ir::lower::lower(&t).map_err(render)?;
+    let (_, mut p) = isc_ir::lower::check_and_lower(&user).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
     Ok(p)
 }
@@ -31,8 +30,7 @@ pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String
     let loaded = isc_types::modules::load_modules(&mut user, Path::new(path), &mut files);
     let render = |d: isc_syntax::Diagnostic| d.render(&files);
     loaded.map_err(render)?;
-    let t = isc_types::check_parsed(&user).map_err(render)?;
-    let mut p = isc_ir::lower::lower(&t).map_err(render)?;
+    let (t, mut p) = isc_ir::lower::check_and_lower(&user).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
     // (a text of the source, or of a module it imports, names one: by its
     // public name, which the functions of the prelude that call them have)
@@ -65,8 +63,7 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
     let files = isc_types::source_files(path);
     let user = isc_syntax::parse(src, isc_types::PRELUDE_FILE).map_err(|d| d.render(&files))?;
     let render = |d: isc_syntax::Diagnostic| d.render(&files);
-    let t = isc_types::check_parsed(&user).map_err(render)?;
-    let mut p = isc_ir::lower::lower(&t).map_err(render)?;
+    let (_, mut p) = isc_ir::lower::check_and_lower(&user).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
     Ok(p)
 }

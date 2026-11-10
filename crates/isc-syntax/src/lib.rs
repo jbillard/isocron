@@ -100,3 +100,9 @@ impl SourceFiles {
 pub fn parse(source: &str, file: u32) -> Result<ast::Program> {
     parser::parse(source, file)
 }
+
+/// `parse` with the bodies of the functions parsed when asked, from the
+/// places of its declarations (`parser::outline`, D629).
+pub fn parse_outlined<'s>(source: &'s str, file: u32, places: &[parser::Place]) -> Result<(ast::Program, parser::Bodies<'s>)> {
+    parser::parse_outlined(source, file, places)
+}
