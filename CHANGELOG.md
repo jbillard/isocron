@@ -73,6 +73,12 @@
 - `indexOf` and `includes` are written in Isocron: 12 to 76 % faster in a
   line of 60 bytes, 25 to 83 % faster in a long text, in linear time
   whatever the texts (D596).
+- The text of a float (`toString` of a `f64` or a `f32`, templates, the
+  numbers of `json`) is written in Isocron: the same texts with 48 to 87 %
+  fewer instructions (D597).
+- Fixed: the memory report listed the inside of functions of the prelude
+  at the line of their call (`bounds b[0]` and a call of `$parseRest` for
+  `parseI64("12")`); it lists again only what the program does (D598).
 - `@cold`: a decorator for a function rarely called, compiled once and
   called, its calls unlikely (D584).
 - A recursive or called function tests its stack without calling

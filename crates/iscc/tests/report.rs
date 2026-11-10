@@ -373,3 +373,42 @@ fn arrays_made_by_parts_are_reported_so() {
     assert!(!find(&es, "windows", bases).is_empty(), "{}", dump(&es));
     assert!(find(&es, "alloc", lines).is_empty() && find(&es, "alloc", bases).is_empty(), "{}", dump(&es));
 }
+
+/// D598: what a function of the prelude does inside itself is not in the
+/// report of the program, as the functions of the runtime it replaces were
+/// not: neither the checks of its own arrays (`b[0]` of `parseI64`, the
+/// bytes of the needle of `indexOf`), nor its calls of functions that only
+/// the prelude can name (`$parseRest`, `$findOne`). The checks of the
+/// program stay, also those of its code run by a function of the prelude
+/// (the predicate of `findIndex`), and its own calls.
+#[test]
+fn the_inside_of_the_prelude_is_not_in_the_report() {
+    let es = report(
+        "action main(args: string[k]): i32 {
+    print(parseI64(\"12\") + 1);
+    return 0;
+}
+",
+    );
+    assert!(es.is_empty(), "{}", dump(&es));
+    let es = report(
+        "function depth(n: i64): i64 {
+    return n == 0 ? 0 : 1 + depth(n - 1);
+}
+
+action main(args: string[k]): i32 {
+    const ys = map(iota(4), (i) => i + depth(1));
+    print(args[0].indexOf(\"ab\") + f64(args.length).toString().length);
+    print(findIndex(iota(3), (j) => { const t = ys.slice(j, 4); return t[1] > 2; }));
+    print(args[0].trim().includes(\"a long needle of 20\") ? 1 : 0);
+    return 0;
+}
+",
+    );
+    let d = dump(&es);
+    assert!(es.iter().all(|e| !e.what.contains('$')), "a name of the prelude: {}", d);
+    let bounds: Vec<(u32, &str)> = es.iter().filter(|e| e.kind == "bounds").map(|e| (e.line, e.what.as_str())).collect();
+    assert_eq!(bounds, vec![(7, "args[0]"), (8, "t[1]"), (9, "args[0]")], "{}", d);
+    let stack: Vec<(u32, &str)> = es.iter().filter(|e| e.kind == "stack").map(|e| (e.line, e.what.as_str())).collect();
+    assert_eq!(stack, vec![(2, "`depth`"), (6, "`depth`")], "{}", d);
+}

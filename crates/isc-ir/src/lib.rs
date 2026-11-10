@@ -476,6 +476,9 @@ pub struct Function {
 pub struct VarInfo {
     pub name: String,
     pub ty: Type,
+    /// Bound by code of the prelude inlined into the program (D598): its
+    /// checks are not in the report of the program.
+    pub prelude: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

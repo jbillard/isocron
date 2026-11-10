@@ -208,6 +208,20 @@ fn show(e: &Expr, p: &Program) -> String {
 }
 
 impl<'p> Walk<'p> {
+    /// A variable of the prelude's own code is read somewhere in `e` (D598).
+    fn mentions_prelude(&self, e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::Var(v, _) if self.p.vars[*v as usize].prelude) || e.children().into_iter().any(|c| self.mentions_prelude(c))
+    }
+
+    /// `a` is read from a variable of the prelude's own code (D598).
+    fn of_prelude(&self, a: &Expr) -> bool {
+        match &a.kind {
+            ExprKind::Var(v, _) => self.p.vars[*v as usize].prelude,
+            ExprKind::Proj(x, _) | ExprKind::Slice(x, _, _) | ExprKind::Index(x, _) | ExprKind::Unbox(x) => self.of_prelude(x),
+            _ => false,
+        }
+    }
+
     fn len_of(&self, e: &Expr) -> Option<u64> {
         use ExprKind::*;
         let lit = |n: &Expr| match n.kind {
@@ -469,6 +483,9 @@ impl<'p> Walk<'p> {
                     self.push(e, "copy", what, bytes, why, None);
                 }
             }
+            // (not the checks of the arrays of the prelude's own code
+            // inlined here, D598: nothing of the program to change)
+            Index(a, _) | Update { target: a, .. } if self.of_prelude(a) => {}
             Index(a, i) => {
                 let shown = format!("{}[{}]", show(a, self.p), show(i, self.p));
                 self.push(e, "bounds", shown, None, "checked at run time".into(), None);
@@ -477,6 +494,9 @@ impl<'p> Walk<'p> {
                 let shown = format!("{}.with({}, …)", show(target, self.p), show(index, self.p));
                 self.push(e, "bounds", shown, None, "checked at run time".into(), None);
             }
+            // (not the sizes of the prelude's own code, D598)
+            CheckSize(a, b, _) if self.mentions_prelude(a) || self.mentions_prelude(b) => {}
+            CheckNonNegative(a, _) if self.mentions_prelude(a) => {}
             CheckSize(a, b, _) => {
                 let shown = format!("{} = {}", show(a, self.p), show(b, self.p));
                 self.push(e, "size", shown, None, "sizes not proved equal: checked at run time".into(), None);
@@ -494,7 +514,12 @@ impl<'p> Walk<'p> {
             Call(f, _) => {
                 let name = self.p.fns[*f as usize].name.clone();
                 let tail = self.tails.contains(&(e as *const Expr));
-                if tail {
+                // (a function that only the prelude can name, D598: a part
+                // of a function of the language, as the functions of the
+                // runtime it replaces, which were never listed)
+                let internal = name.starts_with('$') && self.p.fns[*f as usize].span.file == isc_types::PRELUDE_FILE;
+                if internal {
+                } else if tail {
                     self.push(e, "loop", format!("`{}`", name), None, "a direct tail call: compiled as a loop".into(), None);
                 } else if self.others.contains(&(e as *const Expr)) {
                     self.push(e, "tail", format!("`{}`", name), None, "a tail call: its frame replaces the frame of the caller".into(), None);

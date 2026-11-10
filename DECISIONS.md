@@ -14010,3 +14010,78 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     operations of the IR, of the interpreter and of the code generator.
     `lastIndexOf` stays in the runtime until a search from the end is made
     by vectors (TODO).
+- **D597 — The text of a float written in Isocron: `toString` of a `f64`
+  and of a `f32` (2026-11-10).** Two functions of the runtime less (D589).
+  Written by an agent in its own copy of the repository from the need
+  alone, read, merged and checked here.
+  - `$rtF64Text` and `$rtF32Text` of the prelude, called by the code
+    generator as the text of an integer is (D588: the node of the IR
+    kept, the functions lowered when a program writes the text of a
+    float); `toString`, the templates and the numbers of `json` go through
+    them. The interpreter keeps the text of the runtime core.
+  - Schubfach, as `f64text` of the runtime core: an integer below 2^53
+    (2^24 for a `f32`) and zero by `$digitsText` (D588); otherwise the
+    digits by `$scaled`, `$rop` and `$nearest`, chosen without a branch;
+    16 or 17 digits (7 to 9) made 17, a first digit and two words of 8
+    (`$asciiWord8`), laid out by `$decimalText`. NaN, the infinities and
+    the subnormals in a cold function; a subnormal shortened by comparing
+    with the ends of its interval where the runtime read each candidate
+    back with `str::parse`. The table of the powers of ten (617 pairs)
+    written by `tools/gen_pow10_rs.py --isc`.
+  - Three primitives that only the prelude can name: `$floatBits(x)` (the
+    bits of a float as a `u64`; those of a NaN are the target's),
+    `$mulHigh(a, b)` (the high half of a product of two `u64`: one
+    multiplication on x86-64, four products of halves in WebAssembly,
+    without a function of a C library), `$decimalText(d, w1, w2, n, point,
+    minus)` (17 digits laid out without exponent in a block of at least 64
+    bytes, its words stored past the text and inside the block). Its three
+    tests of entry (a digit below 10 and 16 bytes of ASCII, 1 to 17 of
+    them written, the point within 400 digits) bound every store: read
+    store by store before the merge.
+  - The same texts as the runtime's. By the agent: 1.1 billion doubles
+    (500000 random mantissas an exponent, both signs; every mantissa of
+    14 high or 14 low bits of every exponent; 10 million structured and
+    random ones) and every finite `f32`, by sums of hashes of the texts
+    of both compilers. Here, apart: 1.2 million doubles and 600000 `f32`
+    of another generator, the same sums; the interpreter the same.
+  - Instructions a text (counted here, the difference of two round
+    counts, the same texts): 16 or 17 digits 842.4 → 344.1 (−59 %),
+    thousandths 696.1 → 343.8 (−51 %), integers 490.9 → 187.3 (−62 %),
+    subnormals 3542.7 → 474.9 (−87 %), halves 485.4 → 253.0 (−48 %);
+    `f32`: 1189.0 → 335.5 (−72 %), integers 735.7 → 162.8 (−78 %). Times
+    by the agent, beside a transcoder of the machine (indicative):
+    `toString` of a `f64` 41.04 → 22.63 ns (−45 %), `json.stringify`
+    −16.5 %, `json.encode` −23.5 %. To measure on a quiet machine: TODO.
+  - Tests: `float_text_written_in_isocron` (`strings`: about 73000 floats
+    as texts against Rust's, interpreted, compiled, with the allocator
+    checked, in WebAssembly; sums of hashes of 5 million more). The pilot
+    `bench/primitives/float_pilot.isc`.
+  - Removed: `isc_to_string_f64`, `isc_to_string_f32` and their buffers.
+    `f64text.rs` and its table stay for `print` of a float and the
+    interpreter: a program that prints a float and writes its text holds
+    the table twice (9.9 KB each) until `print` goes through the prelude
+    (TODO).
+  - Seen by the agent, checked here: the report listed the inside of the
+    prelude (D598). Seen by the agent, not checked: `shortest_as_display`
+    of `f64text.rs` builds its powers of two with `powi`, zero for the
+    exponents −1074 to −1024 (those subnormals tested as zeros);
+    `bench/primitives/run.py` without a group asks a `.c` for each
+    `.isc`, which the pilots do not have.
+- **D598 — The inside of the prelude out of the memory report
+  (2026-11-10).** Since `parseI64` (D582), the code of the prelude inlined
+  into a program was in its report, at the line of the call: `bounds b[0]`
+  and `` stack `$parseRest` `` for `parseI64("12")`, where the report of
+  before said « no allocation, no copy, no run-time test »; nine lines
+  for one `indexOf` after D596 (`p[2 - 2 - i]`, `` `$findOne` ``). Nothing
+  there is the program's to change, and the functions of the runtime
+  these replace were never listed.
+  - A variable bound while an expression of the prelude is lowered is
+    marked (`VarInfo::prelude`; the parameters of a function of the
+    prelude too). An expression of the program met inside (the predicate
+    given to `findIndex`) binds variables of the program.
+  - The report leaves out the checks of bounds of the arrays read from
+    such a variable, the checks of sizes whose expressions read one, and
+    the calls of functions that only the prelude can name (`$…`). The
+    allocations and the copies stay, as the checks and the calls of the
+    program, those of its code run by a function of the prelude too.
+  - Test `the_inside_of_the_prelude_is_not_in_the_report` (`report`).

@@ -601,7 +601,7 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let mut comps = Vec::new();
     for (k, t) in &heap {
         let v = vars.len() as VarId;
-        vars.push(VarInfo { name: format!("{}.{}", vars[r as usize].name, k), ty: t.clone() });
+        vars.push(VarInfo { name: format!("{}.{}", vars[r as usize].name, k), ty: t.clone(), prelude: false });
         comps.push((*k, v, t.clone()));
     }
     let pairs: Vec<(u32, VarId)> = comps.iter().map(|(k, v, _)| (*k, *v)).collect();
@@ -660,7 +660,7 @@ fn iota_vars(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         if let ExprKind::Iota(n) = &mut init.kind {
             if read_in_place(body, *var) {
                 let len = vars.len() as VarId;
-                vars.push(VarInfo { name: "length".into(), ty: Type::Int(IntKind::I64) });
+                vars.push(VarInfo { name: "length".into(), ty: Type::Int(IntKind::I64), prelude: false });
                 let ty = init.ty.clone();
                 iota_of_var(body, *var, len, &ty);
                 let n = take(n);
@@ -1141,7 +1141,7 @@ fn combine(e: &mut Expr, vars: &mut Vec<VarInfo>, base: VarId, sites: &[(usize, 
     // the tuple variable and its components
     let mut reduces: Vec<Expr> = Vec::new();
     let mut tys: Vec<Type> = Vec::new();
-    let rr_info = VarInfo { name: "reduced".into(), ty: Type::Unit };
+    let rr_info = VarInfo { name: "reduced".into(), ty: Type::Unit, prelude: false };
     vars.push(rr_info);
     let rr = (vars.len() - 1) as VarId;
     for (k, (s, path)) in sites.iter().enumerate() {
@@ -1163,11 +1163,11 @@ fn combine(e: &mut Expr, vars: &mut Vec<VarInfo>, base: VarId, sites: &[(usize, 
     vars[rr as usize].ty = tt.clone();
     fix_rr_type(e, rr, &tt);
     // map: (v) -> (f_1(v), ..., f_k(v)); operator component by component
-    vars.push(VarInfo { name: "v".into(), ty: et.clone() });
+    vars.push(VarInfo { name: "v".into(), ty: et.clone(), prelude: false });
     let v = (vars.len() - 1) as VarId;
-    vars.push(VarInfo { name: "a".into(), ty: tt.clone() });
+    vars.push(VarInfo { name: "a".into(), ty: tt.clone(), prelude: false });
     let a = (vars.len() - 1) as VarId;
-    vars.push(VarInfo { name: "b".into(), ty: tt.clone() });
+    vars.push(VarInfo { name: "b".into(), ty: tt.clone(), prelude: false });
     let b = (vars.len() - 1) as VarId;
     let bind = |var: VarId, init: Expr, body: Expr| {
         let ty = body.ty.clone();
@@ -1369,7 +1369,7 @@ fn masked_reductions(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let src = (**src).clone();
     let et = src.ty.elem().clone();
     let sp = x.span;
-    vars.push(VarInfo { name: vars[pred.params[0] as usize].name.clone(), ty: et.clone() });
+    vars.push(VarInfo { name: vars[pred.params[0] as usize].name.clone(), ty: et.clone(), prelude: false });
     let p = (vars.len() - 1) as VarId;
     let bind = |var: VarId, init: Expr, body: Expr| {
         let ty = body.ty.clone();
@@ -1425,7 +1425,7 @@ fn place_streams(e: &mut Expr, vars: &mut Vec<VarInfo>, mode: Mode) -> Vec<(VarI
     for (c, m) in e.children_mut().into_iter().zip(modes) {
         let mut sub = place_streams(c, vars, m);
         if m == Mode::Indexed && matches!(c.kind, ExprKind::Filter(..)) {
-            vars.push(VarInfo { name: "filtered".into(), ty: c.ty.clone() });
+            vars.push(VarInfo { name: "filtered".into(), ty: c.ty.clone(), prelude: false });
             let t = (vars.len() - 1) as VarId;
             let (ty, sp) = (c.ty.clone(), c.span);
             sub.push((t, std::mem::replace(c, Expr::var(t, ty, sp))));
@@ -1750,7 +1750,7 @@ fn table_function(m: &Expr, vars: &mut Vec<VarInfo>, lens: &HashMap<VarId, i64>)
     if let ExprKind::Map(ins, _) = &mut m.kind {
         if let ExprKind::Iota(n) = &mut ins[0].kind {
             if !matches!(n.kind, ExprKind::Var(..) | ExprKind::Lit(_)) {
-                vars.push(VarInfo { name: "length".into(), ty: Type::Int(IntKind::I64) });
+                vars.push(VarInfo { name: "length".into(), ty: Type::Int(IntKind::I64), prelude: false });
                 let nv = (vars.len() - 1) as VarId;
                 let value = std::mem::replace(&mut **n, Expr::var(nv, Type::Int(IntKind::I64), m.span));
                 bind_len = Some((nv, value));
@@ -1777,7 +1777,7 @@ fn table_function(m: &Expr, vars: &mut Vec<VarInfo>, lens: &HashMap<VarId, i64>)
         let mut fi = HashSet::new();
         free_in(&idx, &mut Vec::new(), &mut fi);
         let elem = vars[t as usize].ty.elem().clone();
-        vars.push(VarInfo { name: "elem".into(), ty: elem.clone() });
+        vars.push(VarInfo { name: "elem".into(), ty: elem.clone(), prelude: false });
         let ev = (vars.len() - 1) as VarId;
         let hole = Expr::var(ev, elem.clone(), sp);
         // the highest node holding the read that depends on nothing else
@@ -1811,7 +1811,7 @@ fn table_function(m: &Expr, vars: &mut Vec<VarInfo>, lens: &HashMap<VarId, i64>)
         let mut h = h;
         rename_bound(&mut h, vars);
         let hty = Type::Array(Box::new(h.ty.clone()), crate::Fixed::ANY);
-        vars.push(VarInfo { name: "table".into(), ty: hty.clone() });
+        vars.push(VarInfo { name: "table".into(), ty: hty.clone(), prelude: false });
         let hv = (vars.len() - 1) as VarId;
         let tvar = Expr::var(t, vars[t as usize].ty.clone(), sp);
         let table = Expr::new(ExprKind::Map(vec![tvar.clone()], Lambda { params: vec![ev], body: Box::new(h), drop_params: vec![false] }), hty.clone(), sp);
@@ -2031,7 +2031,7 @@ fn inline_zips(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     if let ExprKind::Map(ins, _) = &mut zip.kind {
         for i in ins.iter_mut() {
             if !is_view_input(i) {
-                vars.push(VarInfo { name: "zip_in".into(), ty: i.ty.clone() });
+                vars.push(VarInfo { name: "zip_in".into(), ty: i.ty.clone(), prelude: false });
                 let t = (vars.len() - 1) as VarId;
                 let (ty, sp) = (i.ty.clone(), i.span);
                 lets.push((t, std::mem::replace(i, Expr::var(t, ty, sp))));
@@ -2215,7 +2215,7 @@ fn bind_temporaries(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         if fusable.contains(&i) && ((is_producer(c) && !owns_elems(c) && !computes_rows(c)) || matches!(c.kind, ExprKind::Filter(..))) {
             continue;
         }
-        vars.push(VarInfo { name: "tmp".into(), ty: c.ty.clone() });
+        vars.push(VarInfo { name: "tmp".into(), ty: c.ty.clone(), prelude: false });
         let t = (vars.len() - 1) as VarId;
         let sp = c.span;
         let ty = c.ty.clone();
@@ -3229,7 +3229,7 @@ fn own_states(p: &mut Program) {
             let mut parts = Vec::new();
             for (j, t) in ts.iter().enumerate() {
                 let c = p.vars.len() as VarId;
-                p.vars.push(VarInfo { name: format!("{}.{}", name, j), ty: t.clone() });
+                p.vars.push(VarInfo { name: format!("{}.{}", name, j), ty: t.clone(), prelude: false });
                 parts.push((c, t.clone()));
             }
             let f = &mut p.fns[fi];
@@ -3647,7 +3647,7 @@ fn payload_branches(e: Expr, m: VarId, tt: &Type, ts: &[Type], heap: &[usize], v
             let mut out = take(k);
             for &j in heap.iter().filter(|&&j| j != k as usize) {
                 let v = vars.len() as VarId;
-                vars.push(VarInfo { name: "unused".into(), ty: ts[j].clone() });
+                vars.push(VarInfo { name: "unused".into(), ty: ts[j].clone(), prelude: false });
                 out = Expr::new(ExprKind::Let { var: v, init: Box::new(take(j as u32)), body: Box::new(out), stmt: false, drop: true }, ty.clone(), span);
             }
             (out, true)

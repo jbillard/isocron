@@ -113,6 +113,8 @@ struct Env<'p> {
 pub struct Lower<'p> {
     p: &'p TProgram,
     vars: Vec<VarInfo>,
+    /// The expression being lowered is of the prelude (`VarInfo::prelude`).
+    in_prelude: bool,
     shapes: Vec<Shape>,
     copy_reasons: Vec<(Span, String)>,
     /// The recursive functions lowered so far, by function and type
@@ -191,6 +193,7 @@ impl<'p> Lower<'p> {
         Lower {
             p,
             vars: Vec::new(),
+            in_prelude: false,
             shapes: Vec::new(),
             copy_reasons: Vec::new(),
             specs: HashMap::new(),
@@ -807,7 +810,7 @@ impl<'p> Lower<'p> {
     }
 
     fn new_var(&mut self, name: &str, ty: Type) -> VarId {
-        self.vars.push(VarInfo { name: name.to_string(), ty });
+        self.vars.push(VarInfo { name: name.to_string(), ty, prelude: self.in_prelude });
         (self.vars.len() - 1) as VarId
     }
 
@@ -1002,7 +1005,13 @@ impl<'p> Lower<'p> {
 
     fn expr(&mut self, env: &mut Env<'p>, e: &'p TExpr) -> R<Expr> {
         let mark = self.hoisted.len();
-        let mut out = self.expr_here(env, e)?;
+        // (the variables bound while an expression of the prelude is
+        // lowered are the prelude's, D598; an expression of the program
+        // met inside it, a lambda given to `findIndex`, is the program's)
+        let outer = std::mem::replace(&mut self.in_prelude, e.span.file == isc_types::PRELUDE_FILE);
+        let lowered = self.expr_here(env, e);
+        self.in_prelude = outer;
+        let mut out = lowered?;
         // the values read by the functions returned by functions met in `e`
         // (D152): computed once, around `e`
         while self.hoisted.len() > mark {
@@ -2172,7 +2181,10 @@ impl<'p> Lower<'p> {
             return self.call_recursive(id, type_args, args, span);
         }
         let f = &self.p.fns[id];
+        // (the parameters of a function of the prelude are its variables)
+        let outer = std::mem::replace(&mut self.in_prelude, f.from_prelude);
         let (env, lets, pvars, size_params) = self.callee_env_full(id, type_args, args, span);
+        self.in_prelude = outer;
         let mut env = env;
         let mut body = self.expr(&mut env, &f.body)?;
         // a size is positive or zero (SPEC section 4)
