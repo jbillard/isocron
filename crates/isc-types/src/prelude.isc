@@ -732,7 +732,7 @@ function $rtF64Text(x: f64): string {
     // the binary digits of `c` after the point
     const up = 1075 - bq;
     if (bq == 0 || bq == 2047) {
-        return bq == 0 && t == 0u64 ? $digitsText(0u64, neg) : $rareFloatText(t, bq != 0, -1074, neg);
+        return bq == 0 && t == 0u64 ? $digitsText(0u64, neg) : $rareF64Text(t, bq != 0, neg);
     }
     if (up > 0 && up < 53 && (c & ((1u64 << u64(up)) - 1u64)) == 0u64) {
         return $digitsText(c >> u64(up), neg);
@@ -760,7 +760,7 @@ function $rtF32Text(x: f32): string {
     const c = t | 0x800000u64;
     const up = 150 - bq;
     if (bq == 0 || bq == 255) {
-        return bq == 0 && t == 0u64 ? $digitsText(0u64, neg) : $rareFloatText(t, bq != 0, -149, neg);
+        return bq == 0 && t == 0u64 ? $digitsText(0u64, neg) : $rareF32Text(t, bq != 0, neg);
     }
     if (up > 0 && up < 24 && (c & ((1u64 << u64(up)) - 1u64)) == 0u64) {
         return $digitsText(c >> u64(up), neg);
@@ -845,10 +845,18 @@ function $digits17Text(f: u64, point: i64, neg: boolean): string {
 }
 
 // The texts of the floats that are no number (`top`: `t` 0 for an
-// infinity) and of the subnormal ones (`t` 2^`q`).
+// infinity) and of the subnormal ones (`t` 2^-1074 for 64 bits, 2^-149 for
+// 32). One function for each width: the exponent is a constant in each,
+// whatever the program prints (these functions are compiled once, without
+// the code that calls them, D611).
 @cold
-function $rareFloatText(t: u64, top: boolean, q: i64, neg: boolean): string {
-    return top ? $rtFloatName(t != 0u64, neg) : $subnormalText(t, q, neg);
+function $rareF64Text(t: u64, top: boolean, neg: boolean): string {
+    return top ? $rtFloatName(t != 0u64, neg) : $subnormalText(t, -1074, neg);
+}
+
+@cold
+function $rareF32Text(t: u64, top: boolean, neg: boolean): string {
+    return top ? $rtFloatName(t != 0u64, neg) : $subnormalText(t, -149, neg);
 }
 
 // The name of a float that is no number: `nan`, or an infinity and its
@@ -1004,7 +1012,11 @@ function $fixedWhole(m: u64, e: i64, d: i64, neg: boolean): string {
 // the first is whole. Below 2^-333 a float times 10^100 is below a half:
 // zeros. The text: the whole part and three blocks, then three blocks at a
 // time.
-function $fixedLong(m: u64, s: i64, d: i64, neg: boolean): string {
+function $fixedLong(m: u64, s: i64, decimals: i64, neg: boolean): string {
+    // (0 to 100 decimals, which the code of `toFixed` tested: said again
+    // here, for this function is compiled once, without the code that calls
+    // it, D611)
+    const d = decimals < 0 ? 0 : decimals > 100 ? 100 : decimals;
     const whole = s < 53 ? m >> u64(s) : 0u64;
     const tiny = s > 386;
     const f = tiny ? 0u64 : s < 53 ? m & ((1u64 << u64(s)) - 1u64) : m;
@@ -2064,7 +2076,10 @@ action $kFree(p: u64): i64 {
     }
     const held = $zoneLoad16(128 + class * 2);
     if (held >= 64u64) {
-        return $kSpill(class, h);
+        // (given back whatever `$kSpill` did with the lists: said here, for
+        // the code that calls this one from another module, D611)
+        const spilled = $kSpill(class, h);
+        return 1;
     }
     $store8(h + 4u64, 0x5Au64);
     $store64(h + 8u64, $zoneLoad64(class * 8));
@@ -2079,6 +2094,12 @@ action $kFree(p: u64): i64 {
 // threads, under the lock of the class; `h` starts the list again.
 @cold
 action $kSpill(class: i64, h: u64): i64 {
+    // (a class, which `$kFree` tested: said again here, for this function is
+    // compiled once, without the code that calls it, D611; one test, and the
+    // words of the zone below are read without any)
+    if (class < 0 || class >= 16) {
+        return i64($kDamaged(0));
+    }
     const old = $zoneLoad64(160 + class * 8);
     if (old != 0u64) {
         const shared = $arenaBase() + 64u64 + u64(class) * 16u64;

@@ -3477,6 +3477,17 @@ iscc completions bash|zsh|fish              the completion of the shell
 * `build` writes a native executable for the host processor (default name:
   the source file without `.isc`), stripped unless `--debug` is given. The
   linker is `$ISC_CC` (default `cc`).
+* The first `build` of a compiler for a target takes about half a second
+  more: the parts of the runtime written in Isocron that no program
+  inlines (the rare paths of the allocator, of the texts of floats and of
+  `toFixed`) are compiled once, into a file of about 60 KiB kept in
+  `$ISC_CACHE_DIR` (by default `$XDG_CACHE_HOME/isocron`, or
+  `~/.cache/isocron`; `%LOCALAPPDATA%\isocron\cache` on Windows), and
+  every program is linked with what it reaches of it. The file is made
+  again when the compiler changes; those of other compilers are removed
+  after a week. Without a place to write, or with `ISC_PRE=inline`, each
+  program compiles these functions itself: the same program, a longer
+  build.
 * `build --target wasm32-wasi` writes a WebAssembly module for WASI preview 1
   (default name: `<file>.wasm`), with 128-bit SIMD. It runs with any WASI
   engine, for example `wasmtime run --dir=/::/ prog.wasm args...` (`--dir`

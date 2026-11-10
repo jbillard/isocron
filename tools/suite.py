@@ -16,7 +16,9 @@ failure.
     python3 tools/suite.py . target suite.log 6"""
 import json, os, subprocess, sys, time, concurrent.futures as cf
 wt, target, log, jobs = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-env = dict(os.environ, CARGO_TARGET_DIR=target)
+# the modules of the prelude compiled once (D611) by the compilers of the
+# tests: with the build, not in the cache of the user
+env = dict(os.environ, CARGO_TARGET_DIR=target, ISC_CACHE_DIR=os.path.join(os.path.abspath(target), "isc-cache"))
 out = open(log, "w", buffering=1)
 t0 = time.time()
 b = subprocess.run(["cargo", "test", "--no-run", "--message-format=json"], cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

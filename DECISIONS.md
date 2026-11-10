@@ -14660,3 +14660,124 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     program that reaches them). Their programs: 97 072 → 102 232 bytes and
     125 600 → 108 632. Taken with that cost, and the functions compiled
     once is the next thing to do (TODO), before another family moves.
+- **D611 — The functions of the prelude that are never inlined, compiled
+  once (2026-11-10).** The cost of D605 to D610 was the time of a
+  compilation: every program compiled the rare paths of the allocator and
+  of the texts of numbers it reached, thousands of lines of IR. They are
+  now compiled once for a compiler and a target, into an object kept in
+  the cache of the user, and every program is linked with what it reaches
+  of it.
+  - **What is shared: the functions LLVM never inlines** (`@cold`, and
+    the digits of a float printed, `noinline` by the code generator), of
+    the functions lowered for the code generator alone: `$kRefill`,
+    `$kCarve`, `$kSpill`, `$kDamaged`, `$rareF64Text`, `$rareF32Text`,
+    `$fixedRest`, the `_digits` of `$rtF64Text` and `$rtF32Text`, the
+    entries `isc.kernel.start`, `isc.kernel.free`, `isc.late.free_strs`,
+    and the two words of the allocator (the base of the arena, the zone of
+    the thread). The first version shared every such function: the `print`
+    of a float took 3 to 15 % more instructions (a function that was
+    inlined in the loop of the program, now called from another module).
+    With this rule the code of a program itself is the same with and
+    without the module (read in the assembly: equal but for a comparison
+    written the other way), and nothing but a rare path can differ.
+  - **Safe by construction, not by trust.** A program takes a function
+    from the module only when the text it would emit for it, and for all
+    it reaches in the module (functions, constants and words, under names
+    that do not depend on the program), is the text the module was made
+    from: a word of 128 bits for each, kept in the list beside the object.
+    A function that differs in anything is compiled in the program. The
+    allocator is taken whole or not at all (its words are the module's or
+    the program's, never both): a program whose allocator would differ is
+    emitted exactly as without the module (tested: the same text).
+  - The object: `pre-<key>.o` and its list `pre-<key>.txt` in
+    `$ISC_CACHE_DIR`, or `$XDG_CACHE_HOME/isocron`, or `~/.cache/isocron`
+    (`%LOCALAPPDATA%\isocron\cache` under Windows); the key: the file of
+    the compiler (its path, size and time), its version, its prelude and
+    its runtime, the target, the instruction set and the options of the
+    code generator. Written under another name and renamed; made once by
+    a process whose threads build at the same time; the files of other
+    compilers removed after a week. No place to write, or
+    `ISC_PRE=inline`: every program compiles what it reaches, as before
+    (`build_in(p, opts, None)` for the tests). The suite keeps its modules
+    with its build (`ISC_CACHE_DIR` in `tools/suite.py`).
+  - Each function and each constant of the module in a section of its own
+    (a group of its own in a Windows object, where a linker leaves out
+    nothing else; a `private` constant, which has no symbol to name its
+    group, is `internal` there): a program carries what it reaches. A
+    hello: 70 744 → 70 808 bytes; without the sections it carried the
+    whole module, 151 768. The large tables that are data alone have in
+    the module and in the program a name made from their value and a
+    group: the linker keeps one (declared in the program and defined in
+    the module alone, LLVM no longer read their values: tried, not kept).
+  - **A function compiled once knows nothing of its callers**, and three
+    things LLVM used to find across functions had to be said:
+    1. What LLVM proved of a function goes into its declaration: the
+       object is compiled, the module as optimized is read back
+       (`LLVMPrintModuleToString`, one declaration more of LLVM's C
+       interface in `backend.rs`), and each declaration takes the
+       attributes of its definition. Without it a panic of the allocator
+       was a call that returns, and the code that calls it kept what
+       follows.
+    2. `$kFree` returned what `$kSpill` returned, always 1, which LLVM
+       knew inside one module: it says 1 itself. Until then a block taken
+       and given back cost one instruction more (165.01 against 164.01:
+       the result tested, and a register read again on the way).
+    3. `$kSpill` read the words of the zone with a test each, the class
+       being below 16 for its callers only: it tests the class once (the
+       forms that keep their blocks: 0.17 instruction a text more without
+       that test, 0.04 with it). The subnormal floats had one function
+       for both widths, their exponent a parameter that was a constant
+       only in a program printing one width: one function for each
+       (`$rareF64Text`, `$rareF32Text`). `$fixedLong` bounds its decimals
+       (0 to 100, which the code of `toFixed` tested).
+  - **The time of a compilation**, instructions of the compiler (a debug
+    build of it; LLVM is the same): before the kernel → D610 → now. A
+    hello: 140.8 → 452.6 → **219.6** million; a program that prints a
+    float: 125.4 → 991.8 → **336.9**; one that calls `toFixed`: 126.8 →
+    1424.1 → **534.3**; the program of the tests (texts of floats,
+    `toFixed`, cases, pads): 1045.7 → 4322.2 → **2359.7**. 45 to 66 %
+    less than at D610; not back to where it was: the functions that LLVM
+    may inline (`$rtF64Text`, `$rtFixedText`, `$caseText`) are still
+    compiled in each program, and the prelude is read at each
+    compilation. The first build of a compiler makes the module: 3913
+    million instructions, 0.51 s against 0.05 s for the next hello; the
+    object, 61 048 bytes.
+  - **The programs.** The ten of the Benchmarks Game: instructions −0.011
+    to +0.001 %, the same outputs, the same memory, 0 to 128 bytes more
+    (k-nucleotide 6272). The 241 forms of the pilots (pads, `join`, cases,
+    `toFixed`, `print` and texts of floats): 196 within 0.02 %, 36 within
+    0.3 %, and:
+    - the subnormal floats 1.4 to 2.3 % **fewer** (the two functions);
+    - the forms that keep their blocks +0.04 to +0.05 % (0.04 instruction
+      a text: the test of the class in `$kSpill`, one spill in 64);
+    - `toFixed` of an integer from 2^52 on: +0.67 to +1.48 %, four
+      instructions (271.05 → 275.05 at 0 decimals; the runtime in Rust:
+      772.03). Its cause, read in the two listings: `$fixedRest`, 2334
+      instructions in the program and 2356 in the module, the same code
+      but for the registers, two of them saved on the way. Tried: the
+      three paths as three functions (+5 to +19 instructions, a non-number
+      14 fewer), the decimals bounded in the function (+6). Left open
+      (TODO).
+    The outputs of `toFixed` (2 333 505 bytes) and of `print` (363 129)
+    are the runtime in Rust's. The most memory of six loops at 200 and
+    2000 rounds, with and without the module: `joinmap` 20 532 and 20 676
+    KiB against 20 532 and 20 680; the five others below what the measure
+    can see (8980 KiB, the image of the process that measures) each
+    time.
+  - Windows (MinGW and MSVC targets, run in the virtual machine) and
+    WebAssembly (wasmtime): the same outputs as before and as Linux; the
+    allocator is the runtime's there, the module holds the rare paths of
+    the texts. Sizes: 153 088 → 154 112 bytes, 149 504 → 150 016, 101 018
+    → 101 745; a hello the same.
+  - Two errors of mine on the way. The reader of the names of the IR
+    read the rest of the text at each name: the time of a compilation
+    doubled (334 → 698 million) until it read in one pass. And a name of
+    the module written in a text of a program (`"@.pow10"`) would have
+    been renamed with the constants: the reader leaves the bytes of a
+    text constant alone, and a test prints such texts.
+  - Tests: `crates/iscc/tests/pre.rs` (the module made once and read
+    again, a program declaring and not defining; a hello not larger; a
+    text that holds a name; no place to write; a list that is not one; a
+    function that differs; four builds at once; WebAssembly), and the
+    test of the wiring of the kernel under the three settings of
+    `ISC_ALLOC`, with and without the module.

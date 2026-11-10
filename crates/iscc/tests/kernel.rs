@@ -189,7 +189,15 @@ fn the_generated_code_allocates_in_the_arena() {
     let linked_anyway = std::env::var("ISC_ALLOC").map(|v| v == "glibc").unwrap_or(false);
     let without = if linked_anyway { theirs } else { ours };
     let out = tmp("kernel_wired");
-    for (glibc, modes) in [(false, [(None, ours), (Some("glibc"), without), (Some("check"), theirs)]), (true, [(None, ours), (Some("glibc"), theirs), (Some("check"), theirs)])] {
+    // (linked with the module of the prelude compiled once, D611, whose
+    // words of the arena are then the program's; then whole, the program
+    // whose IR is read below)
+    for (cache, glibc, modes) in [
+        (iscc::pre_dir(), false, [(None, ours), (Some("glibc"), without), (Some("check"), theirs)]),
+        (iscc::pre_dir(), true, [(None, ours), (Some("glibc"), theirs), (Some("check"), theirs)]),
+        (None, false, [(None, ours), (Some("glibc"), without), (Some("check"), theirs)]),
+        (None, true, [(None, ours), (Some("glibc"), theirs), (Some("check"), theirs)]),
+    ] {
         let opts = iscc::BuildOptions {
             output: out.clone(),
             emit_llvm: Some(out.with_extension("ll")),
@@ -199,7 +207,7 @@ fn the_generated_code_allocates_in_the_arena() {
             link: Vec::new(),
             glibc,
         };
-        iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
+        iscc::build_in(&p, &opts, cache.as_deref()).unwrap_or_else(|e| panic!("{}", e));
         for (mode, first) in modes {
             let mut cmd = std::process::Command::new(&out);
             match mode {
@@ -210,7 +218,8 @@ fn the_generated_code_allocates_in_the_arena() {
             assert_eq!(
                 (r.status.code(), String::from_utf8_lossy(&r.stdout).as_ref()),
                 (Some(0), format!("{}{}", first, texts).as_str()),
-                "glibc {}, ISC_ALLOC={:?}: {}",
+                "the module of the prelude {}, glibc {}, ISC_ALLOC={:?}: {}",
+                cache.is_some(),
                 glibc,
                 mode,
                 String::from_utf8_lossy(&r.stderr)

@@ -29,6 +29,150 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
     Ok(p)
 }
 
+/// The program that reaches every function of the prelude the code
+/// generator calls itself (D611): the texts of the integers, padded or not,
+/// and of the floats, `toFixed`, the cases, the `print` of a float, and the
+/// allocator, which every program has. The module compiled once is made
+/// from it; a function it does not reach stays in the programs that do.
+const PRE_SOURCE: &str = "action main(args: string[k]): i32 {
+    const n = args.length;
+    const x = f64(n) * 1.5;
+    const y = f32(n) + 0.5f32;
+    print(toString(n).padStart(8, \"0\") + toString(u64(n)) + toString(x) + toString(y) + x.toFixed(2) + args[0].toUpperCase() + args[0].toLowerCase());
+    print(x);
+    print(y);
+    return 0;
+}
+";
+
+/// The program the module compiled once is made from (D611).
+pub fn pre_program() -> Result<isc_ir::Program, String> {
+    frontend("pre.isc", PRE_SOURCE).map_err(|e| format!("the module of the prelude compiled once: {}", e))
+}
+
+/// Where the modules compiled once are kept: `$ISC_CACHE_DIR`, or the cache
+/// of the user (`$XDG_CACHE_HOME/isocron`, `~/.cache/isocron`;
+/// `%LOCALAPPDATA%\isocron\cache` under Windows). None: no such place, or
+/// `ISC_PRE=inline` (every program compiles what it reaches, as when the
+/// place cannot be written).
+pub fn pre_dir() -> Option<PathBuf> {
+    if std::env::var("ISC_PRE").is_ok_and(|v| v == "inline") {
+        return None;
+    }
+    let var = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty()).map(PathBuf::from);
+    var("ISC_CACHE_DIR")
+        .or_else(|| var("XDG_CACHE_HOME").map(|d| d.join("isocron")))
+        .or_else(|| if cfg!(windows) { var("LOCALAPPDATA").map(|d| d.join("isocron").join("cache")) } else { var("HOME").map(|d| d.join(".cache").join("isocron")) })
+}
+
+/// What a module compiled once depends on, in a word: this compiler (its
+/// file: a compiler built again is another one), its version, the target
+/// and the options of the code generator.
+fn pre_key(codegen: &isc_codegen::Options) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let meta = std::fs::metadata(&exe).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let native = matches!(codegen.isa, isc_codegen::Isa::Native);
+    let word = |text: &str| text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let text = format!(
+        "{}|{}|{}|{}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+        env!("CARGO_PKG_VERSION"),
+        exe.display(),
+        meta.len(),
+        modified,
+        // (what a compiler built again at the same place, of the same size,
+        // would still differ by)
+        word(isc_types::PRELUDE),
+        RUNTIME.len(),
+        codegen.isa,
+        if native { isc_codegen::backend::host_features() } else { String::new() },
+        codegen.lanes,
+        codegen.stream_bytes,
+        codegen.stack_scratch,
+        codegen.windows,
+        codegen.msvc
+    );
+    // (FNV-1a on 64 bits, twice with two bases: a name, not a secret)
+    let hash = |seed: u64| text.bytes().fold(seed, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    Some(format!("{:016x}{:016x}", hash(0xcbf29ce484222325), hash(0x84222325cbf29ce4)))
+}
+
+/// The module compiled once for these options (D611): the path of its
+/// object and its manifest. Made at the first build that needs it, kept in
+/// `dir`, read at the next ones; none (each program then compiles what it
+/// reaches) when there is no such place or when it cannot be written. An
+/// error of its making is an error of the compiler, not hidden.
+fn pre_module(codegen: &isc_codegen::Options, dir: Option<&Path>) -> Result<Option<(PathBuf, isc_codegen::PreManifest)>, String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    let (Some(dir), Some(key)) = (dir, pre_key(codegen)) else { return Ok(None) };
+    // (a process that builds many programs reads it once, and makes it
+    // once: its threads wait for the one that does)
+    static KNOWN: OnceLock<Mutex<HashMap<PathBuf, isc_codegen::PreManifest>>> = OnceLock::new();
+    let mut known = KNOWN.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
+    let obj = dir.join(format!("pre-{}.o", key));
+    let list = dir.join(format!("pre-{}.txt", key));
+    if let Some(m) = known.get(&obj) {
+        if obj.is_file() {
+            return Ok(Some((obj, m.clone())));
+        }
+    }
+    if obj.is_file() {
+        // (a list that is not one: the module is made again)
+        if let Some(m) = std::fs::read_to_string(&list).ok().and_then(|text| isc_codegen::PreManifest::from_text(&text)) {
+            known.insert(obj.clone(), m.clone());
+            return Ok(Some((obj, m)));
+        }
+    }
+    if std::fs::create_dir_all(dir).is_err() {
+        return Ok(None);
+    }
+    let p = pre_program()?;
+    let (ir, mut manifest) = isc_codegen::emit_pre(&p, codegen)?;
+    let wasm = codegen.isa.is_wasm();
+    let (windows, msvc) = (codegen.windows && !wasm, codegen.windows && codegen.msvc && !wasm);
+    // written under another name, then named: a build beside this one
+    // never reads a half of it (the list last: an object without its list
+    // is made again)
+    let part = |kind: &str| dir.join(format!("pre-{}.{}.{}.part", key, kind, std::process::id()));
+    let (obj_part, list_part) = (part("o"), part("txt"));
+    // (a place that cannot be written: no module)
+    if std::fs::write(&list_part, "").is_err() {
+        return Ok(None);
+    }
+    match isc_codegen::backend::compile_pre(&ir, &obj_part, codegen.isa, windows, msvc) {
+        // what LLVM proved of each function, for the programs that call it
+        Ok(optimized) => isc_codegen::pre_declarations(&optimized, &mut manifest),
+        Err(e) => {
+            let _ = std::fs::remove_file(&list_part);
+            let _ = std::fs::remove_file(&obj_part);
+            return Err(format!("the module of the prelude compiled once: {}", e));
+        }
+    }
+    if std::fs::write(&list_part, manifest.to_text()).is_err() {
+        let _ = std::fs::remove_file(&list_part);
+        let _ = std::fs::remove_file(&obj_part);
+        return Ok(None);
+    }
+    if std::fs::rename(&obj_part, &obj).and_then(|_| std::fs::rename(&list_part, &list)).is_err() {
+        let _ = std::fs::remove_file(&list_part);
+        let _ = std::fs::remove_file(&obj_part);
+        return Ok(None);
+    }
+    // the modules of other compilers made a week ago or more: those of
+    // compilers that are gone, mostly (one still in use is made again)
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 7 * 86400);
+            if old && e.file_name().to_string_lossy().starts_with("pre-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    known.insert(obj.clone(), manifest.clone());
+    Ok(Some((obj, manifest)))
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct BuildOptions {
     pub output: PathBuf,
@@ -181,6 +325,12 @@ module asm "end_function"
 
 /// Compiles the IR to a native executable.
 pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
+    build_in(p, opts, pre_dir().as_deref())
+}
+
+/// `build`, the module of the prelude compiled once (D611) kept in `cache`;
+/// none: every function the program reaches is compiled in it.
+pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) -> Result<(), String> {
     // a primitive of the system that the target lacks (D324)
     if opts.codegen.isa.is_wasm() {
         if let Some((op, path, at)) = p.sys_paths.iter().find(|(op, _, _)| !op.on_wasi()) {
@@ -193,7 +343,14 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
             ));
         }
     }
-    let mut ir = isc_codegen::emit_with(p, &opts.codegen)?;
+    // the functions of the prelude compiled once (D611): the program
+    // declares them, and is linked with their module
+    let pre = pre_module(&opts.codegen, cache)?;
+    let (mut ir, using) = match &pre {
+        Some((_, manifest)) => isc_codegen::emit_using(p, &opts.codegen, manifest)?,
+        None => (isc_codegen::emit_with(p, &opts.codegen)?, false),
+    };
+    let pre = pre.as_ref().filter(|_| using).map(|(o, _)| o.as_path());
     // a program for Windows starts without a C library unless it calls C
     // (D541): what MinGW's start files gave it then comes with its code
     let own_start = opts.codegen.windows && !opts.codegen.isa.is_wasm() && !windows_c_runtime(p, opts);
@@ -256,15 +413,15 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
         }
     };
     let linked = if msvc {
-        link_windows_msvc(&obj, &rt, &opts.output, opts.debug, &opts.link, own_start)
+        link_windows_msvc(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start)
     } else if windows {
-        link_windows(&obj, &rt, &opts.output, opts.debug, &opts.link, own_start)
+        link_windows(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start)
     } else if wasm {
-        link_wasm(&obj, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
+        link_wasm(&obj, pre, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
     } else if !with_glibc(p, opts) {
-        link_linux_static(&obj, &rt, &opts.output, opts.debug)
+        link_linux_static(&obj, pre, &rt, &opts.output, opts.debug)
     } else {
-        link(&obj, &rt, &opts.output, opts.debug, &opts.link)
+        link(&obj, pre, &rt, &opts.output, opts.debug, &opts.link)
     };
     let _ = std::fs::remove_file(&obj);
     if temporary {
@@ -442,9 +599,9 @@ fn lib_arg(l: &str) -> std::ffi::OsString {
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
-fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
+fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
     if own_start {
-        return link_windows_alone(obj, rt, out, debug);
+        return link_windows_alone(obj, pre, rt, out, debug);
     }
     let tmp = out.with_extension("mingw");
     let (lib, gcc) = if MINGW_FILES.is_empty() {
@@ -458,6 +615,7 @@ fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String],
     a.push(lib.join("crt2.o").into());
     a.push(gcc.join("crtbegin.o").into());
     a.push(obj.into());
+    a.extend(pre.map(|p| p.into()));
     a.extend(libs.iter().map(|l| lib_arg(l)));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "-L".into(), gcc.clone().into(), "--start-group".into()]);
@@ -481,7 +639,7 @@ fn link_windows(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String],
 /// API set only (their import libraries, from MinGW-w64: no code of MinGW
 /// in the program); a console executable whose main thread has a stack of
 /// 8 MiB.
-fn link_windows_alone(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
+fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
     let tmp = out.with_extension("mingw");
     let lib = if MINGW_FILES.is_empty() {
         mingw_dirs()?.0
@@ -492,6 +650,7 @@ fn link_windows_alone(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<
     let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-e", "isc_win_start", "-o"].iter().map(|x| x.into()).collect();
     a.push(out.into());
     a.push(obj.into());
+    a.extend(pre.map(|p| p.into()));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "--start-group".into()]);
     // the DLLs of the network and of TLS loaded by the runtime at their
@@ -520,7 +679,7 @@ fn link_windows_alone(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<
 /// and those of the SDK found as Visual Studio's own tools find them, in
 /// the directories of `LIB` (set by a Developer Command Prompt): iscc never
 /// has them.
-fn link_windows_msvc(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
+fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
     let mut a: Vec<std::ffi::OsString> = vec!["/nologo".into(), "/subsystem:console".into(), "/stack:8388608".into(), "/opt:ref".into(), "/machine:x64".into()];
     a.push(format!("/out:{}", out.display()).into());
     if debug {
@@ -536,6 +695,7 @@ fn link_windows_msvc(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[Str
         };
         a.extend(["/entry:isc_win_start".into(), "/nodefaultlib".into()]);
         a.push(obj.into());
+        a.extend(pre.map(|p| p.into()));
         a.push(rt.into());
         for l in ["kernel32", "synchronization"] {
             a.push(lib.join(format!("lib{}.a", l)).into());
@@ -545,6 +705,7 @@ fn link_windows_msvc(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[Str
             return Err("a program with C for x86_64-windows-msvc is linked with Microsoft's C runtime, which iscc does not have: build it from a Developer Command Prompt of Visual Studio, whose `LIB` names the directories of its libraries and of the Windows SDK".into());
         }
         a.push(obj.into());
+        a.extend(pre.map(|p| p.into()));
         for l in libs {
             a.push(if l.contains('/') || l.contains('\\') || l.ends_with(".lib") || l.ends_with(".a") || l.ends_with(".obj") { l.into() } else { format!("{}.lib", l).into() });
         }
@@ -582,9 +743,12 @@ fn rust_sysroot() -> Result<PathBuf, String> {
 /// the Rust sysroot): the result is a WASI command module, run by any WASI
 /// engine. With threads (wasi-threads), the memory is shared and imported,
 /// and `wasi_thread_start` is exported, as the proposal requires.
-fn link_wasm(obj: &Path, rt: &Path, out: &Path, debug: bool, triple: &str, threads: bool, libs: &[String], alone: bool) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn link_wasm(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, triple: &str, threads: bool, libs: &[String], alone: bool) -> Result<(), String> {
     if alone {
-        let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), obj.into(), rt.into()];
+        let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), obj.into()];
+        a.extend(pre.map(|p| p.into()));
+        a.push(rt.into());
         a.extend(["--gc-sections", "-z", "stack-size=8388608"].iter().map(|x| x.into()));
         if threads {
             a.extend(["--shared-memory", "--import-memory", "--export-memory", "--max-memory=4294967296", "--export=wasi_thread_start"].iter().map(|x| x.into()));
@@ -608,6 +772,7 @@ fn link_wasm(obj: &Path, rt: &Path, out: &Path, debug: bool, triple: &str, threa
         d
     };
     let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), libc_dir.join("crt1-command.o").into(), obj.into()];
+    a.extend(pre.map(|p| p.into()));
     // the libraries of the `extern` functions, then the runtime before the C
     // library: its functions of memory (`strlen`, `memcmp`, `bcmp`, D543)
     // are the only ones, as glibc's are not under Linux (D289)
@@ -646,7 +811,7 @@ fn glibc_libraries() -> Result<Vec<PathBuf>, String> {
 /// executable, the start files of glibc embedded in iscc, the `libc.so.6`
 /// and `libm.so.6` of this machine (no development files needed): the
 /// program uses the glibc of the system, as when linked by `cc`.
-fn link_linux_lld(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+fn link_linux_lld(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
     let sys = glibc_libraries()?;
     let tmp = out.with_extension("crt");
     write_files(&tmp, GLIBC_FILES)?;
@@ -656,6 +821,7 @@ fn link_linux_lld(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String
     a.push(tmp.join("Scrt1.o").into());
     a.push(tmp.join("crti.o").into());
     a.push(obj.into());
+    a.extend(pre.map(|p| p.into()));
     for d in ["/usr/local/lib", "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/lib64", "/usr/lib", "/lib"] {
         if Path::new(d).is_dir() {
             a.extend(["-L".into(), d.into()]);
@@ -694,7 +860,7 @@ fn link_linux_lld(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String
 /// its relocations and makes its thread-local storage, the functions of
 /// the runtime for its threads (`isc_os_own`); nothing else than its object
 /// and the runtime.
-fn link_linux_static(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
+fn link_linux_static(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
     let mut a: Vec<std::ffi::OsString> = [
         "-static",
         "-pie",
@@ -722,6 +888,7 @@ fn link_linux_static(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(
     .collect();
     a.push(out.into());
     a.push(obj.into());
+    a.extend(pre.map(|p| p.into()));
     a.push(rt.into());
     if !debug {
         a.push("-s".into());
@@ -738,7 +905,7 @@ fn link_linux_static(obj: &Path, rt: &Path, out: &Path, debug: bool) -> Result<(
 pub fn link_static_object(obj: &Path, out: &Path) -> Result<(), String> {
     let rt = out.with_extension("rt.a");
     std::fs::write(&rt, RUNTIME).map_err(|e| format!("cannot write `{}`: {}", rt.display(), e))?;
-    let r = link_linux_static(obj, &rt, out, false);
+    let r = link_linux_static(obj, None, &rt, out, false);
     let _ = std::fs::remove_file(&rt);
     r
 }
@@ -802,15 +969,19 @@ pub fn check_static_relocations(elf: &[u8]) -> Result<(usize, usize), String> {
 /// Links the program with the runtime (which needs only the C library, and
 /// `libm` for `fmod`). Unused sections are dropped and, unless `debug`, the
 /// symbols are stripped: the code that runs is the same, the file is smaller.
-fn link(obj: &Path, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+fn link(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
     // LLD in iscc and the start files of glibc: no compiler needed (D248);
     // `$ISC_CC` asks for a C compiler as the linker all the same
     if isc_codegen::lld::available() && !GLIBC_FILES.is_empty() && std::env::var("ISC_CC").is_err() {
-        return link_linux_lld(obj, rt, out, debug, libs);
+        return link_linux_lld(obj, pre, rt, out, debug, libs);
     }
     let cc = std::env::var("ISC_CC").unwrap_or_else(|_| "cc".into());
     let mut cmd = std::process::Command::new(&cc);
-    cmd.arg("-o").arg(out).arg(obj).arg("-Wl,--gc-sections").arg("-Wl,--defsym=isc_os=isc_os_glibc");
+    cmd.arg("-o").arg(out).arg(obj);
+    if let Some(p) = pre {
+        cmd.arg(p);
+    }
+    cmd.arg("-Wl,--gc-sections").arg("-Wl,--defsym=isc_os=isc_os_glibc");
     // the libraries of the `extern` functions, then the C library, before
     // the runtime: the runtime's archive holds weak copies of C functions
     // (Rust's `compiler_builtins`, `cbrt` among them) that would otherwise

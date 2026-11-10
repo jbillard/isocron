@@ -1147,6 +1147,278 @@ pub fn emit(p: &Program) -> R<String> {
 
 /// Emits the LLVM module of a program with explicit options.
 pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
+    emit_mode(p, opts, Pre::Inline).map(|(text, _, _)| text)
+}
+
+/// The functions of the prelude that the code generator calls itself (the
+/// allocator, the texts of numbers, the cases), compiled once for a
+/// compiler and a target and not in every program (D611). Their names in
+/// that module (`isc.pre.<name of the prelude><variant>`), each with a
+/// word for all it was made from (its text and the texts of what it names
+/// in the module) and with its declaration: a program declares one, and
+/// leaves its body out, when it would make it from the same texts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PreManifest {
+    /// name → (what it was made from, its declaration)
+    pub fns: std::collections::BTreeMap<String, (String, String)>,
+    /// The module holds the allocator: its words, its rare paths.
+    pub kernel: bool,
+}
+
+impl PreManifest {
+    /// The manifest as the text kept beside the module.
+    pub fn to_text(&self) -> String {
+        let mut out = format!("kernel\t{}\n", self.kernel);
+        for (name, (made, declaration)) in &self.fns {
+            out.push_str(&format!("fn\t{}\t{}\t{}\n", name, made, declaration));
+        }
+        out
+    }
+
+    /// The manifest of such a text (none: not one of this compiler's).
+    pub fn from_text(text: &str) -> Option<PreManifest> {
+        let mut m = PreManifest::default();
+        let mut lines = text.lines();
+        m.kernel = lines.next()?.strip_prefix("kernel\t")?.parse().ok()?;
+        for line in lines {
+            let mut parts = line.strip_prefix("fn\t")?.splitn(3, '\t');
+            let (name, made, declaration) = (parts.next()?, parts.next()?, parts.next()?);
+            m.fns.insert(name.to_string(), (made.to_string(), declaration.to_string()));
+        }
+        Some(m)
+    }
+}
+
+/// The declarations of the manifest, each made what LLVM wrote of the
+/// function once the module was optimized (`optimized`, its text then): its
+/// attributes and those of its parameters and of its result. A program
+/// that calls a function of the module knows of it what the module itself
+/// knew (it never returns, it writes nothing its caller reads, ...).
+pub fn pre_declarations(optimized: &str, m: &mut PreManifest) {
+    let mut groups: HashMap<&str, &str> = HashMap::new();
+    for line in optimized.lines() {
+        if let Some((n, body)) = line.strip_prefix("attributes #").and_then(|r| r.split_once(" = { ")) {
+            groups.insert(n, body.trim_end().trim_end_matches('}').trim_end());
+        }
+    }
+    for line in optimized.lines() {
+        let Some(rest) = line.strip_prefix("define ") else { continue };
+        let Some(name) = ir_defined(rest) else { continue };
+        let Some(entry) = m.fns.get_mut(name) else { continue };
+        let Some(open) = rest.find(&format!("@{}(", name)) else { continue };
+        let close = ir_close(rest, open + name.len() + 1);
+        let attrs: Vec<&str> = rest[close..].split_whitespace().filter_map(|t| t.strip_prefix('#')).filter_map(|n| groups.get(n).copied()).collect();
+        entry.1 = format!("declare {} {}", &rest[..close], attrs.join(" ")).trim_end().to_string();
+    }
+}
+
+/// A word for a text: equal texts, equal words (FNV-1a from two bases).
+fn text_word(text: &str) -> String {
+    let hash = |seed: u64| text.bytes().fold(seed, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    format!("{:016x}{:016x}", hash(0xcbf29ce484222325), hash(0x84222325cbf29ce4))
+}
+
+/// What the functions of a module are made from (D611): the text of each
+/// under the names every program gives (`canon`), the constants and the
+/// words it names written as words for their values, and the functions of
+/// the module it names.
+struct PreMade<'a> {
+    /// The functions of the module, by those names.
+    texts: &'a HashMap<String, &'a str>,
+    /// The constants and the words of the module: their values.
+    values: &'a HashMap<&'a str, &'a str>,
+    canon: &'a dyn Fn(&str) -> String,
+    /// name → (its text so written, the functions of the module it names)
+    seen: HashMap<String, (String, Vec<String>)>,
+}
+
+impl PreMade<'_> {
+    /// `text` so written, and the functions of the module it names.
+    fn written(&self, text: &str, depth: usize) -> (String, Vec<String>) {
+        let mut calls: Vec<String> = Vec::new();
+        let out = ir_names(text, |n, out| {
+            if let Some(value) = self.values.get(n).filter(|_| depth < 8) {
+                let (v, more) = self.written(value, depth + 1);
+                out.push_str("K.");
+                out.push_str(&text_word(&v));
+                calls.extend(more);
+            } else {
+                let c = (self.canon)(n);
+                if self.texts.contains_key(&c) {
+                    calls.push(c.clone());
+                }
+                out.push_str(&c);
+            }
+        });
+        (out, calls)
+    }
+
+    /// The word for all the function `name` is made from: its text and the
+    /// texts of the functions of the module it reaches.
+    fn hash(&mut self, name: &str) -> String {
+        let mut reached: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut todo = vec![name.to_string()];
+        while let Some(n) = todo.pop() {
+            if !reached.insert(n.clone()) {
+                continue;
+            }
+            if !self.seen.contains_key(&n) {
+                let w = self.texts.get(&n).map(|t| self.written(t, 0)).unwrap_or_default();
+                self.seen.insert(n.clone(), w);
+            }
+            todo.extend(self.seen[&n].1.iter().cloned());
+        }
+        let mut all = String::new();
+        for n in &reached {
+            all.push_str(n);
+            all.push('\n');
+            all.push_str(&self.seen[n].0);
+        }
+        text_word(&all)
+    }
+}
+
+/// How a module stands to those functions.
+#[derive(Clone, Copy)]
+enum Pre<'a> {
+    /// Each one the program reaches is emitted in its module (no module
+    /// compiled once at hand).
+    Inline,
+    /// The module compiled once itself, from a program that reaches them
+    /// all: they are its exported functions; it has no `main`.
+    Make,
+    /// A program linked with that module.
+    Use(&'a PreManifest),
+}
+
+/// The module compiled once (D611), from the program that uses every
+/// function of the prelude the code generator calls, and its manifest.
+pub fn emit_pre(p: &Program, opts: &Options) -> R<(String, PreManifest)> {
+    emit_mode(p, opts, Pre::Make).map(|(text, manifest, _)| (text, manifest))
+}
+
+/// The module of a program to be linked with the module compiled once, and
+/// whether it takes anything from it (no: the program is whole without it).
+pub fn emit_using(p: &Program, opts: &Options, pre: &PreManifest) -> R<(String, bool)> {
+    emit_mode(p, opts, Pre::Use(pre)).map(|(text, _, using)| (text, using))
+}
+
+/// The definitions of a text of LLVM IR, one after the other: each function
+/// (from its line `define` to its line `}`) alone, the lines between them
+/// kept together.
+fn ir_parts(text: &str) -> Vec<(bool, String)> {
+    let mut out: Vec<(bool, String)> = Vec::new();
+    let mut inside = false;
+    for line in text.split_inclusive('\n') {
+        if !inside && line.starts_with("define ") {
+            inside = true;
+            out.push((true, String::new()));
+        } else if !inside && !matches!(out.last(), Some((false, _))) {
+            out.push((false, String::new()));
+        }
+        out.last_mut().unwrap().1.push_str(line);
+        if inside && line.trim_end() == "}" {
+            inside = false;
+        }
+    }
+    out
+}
+
+/// A name of LLVM IR after its sigil: quoted when it is not a plain one.
+fn ir_quoted(name: &str) -> String {
+    let plain = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '$' || c == '-') && !name.starts_with(|c: char| c.is_ascii_digit());
+    if plain || name.starts_with('"') { name.to_string() } else { format!("\"{}\"", name) }
+}
+
+/// The end of the parenthesis opened at `open` of a line (after it).
+fn ir_close(line: &str, open: usize) -> usize {
+    let mut depth = 0usize;
+    for (i, b) in line.bytes().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    line.len()
+}
+
+/// `text` with each name it refers to (`@name`) written by `name`, which is
+/// given the name and writes it or another. The bytes of a constant text
+/// (`c"…"`) are no names: a text of a program may hold an `@`.
+fn ir_names(text: &str, mut name: impl FnMut(&str, &mut String)) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + 256);
+    // (one pass: `done` what is written, `i` what is read)
+    let (mut done, mut i) = (0, 0);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'@' => {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'_' | b'.' | b'$')) {
+                    end += 1;
+                }
+                out.push_str(&text[done..start]);
+                name(&text[start..end], &mut out);
+                done = end;
+                i = end;
+            }
+            // (to the quote that closes it: one inside is written `\22`)
+            b'"' if i >= 2 && bytes[i - 1] == b'c' && bytes[i - 2] == b' ' => {
+                i = text[i + 1..].find('"').map(|e| i + 1 + e + 1).unwrap_or(bytes.len());
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&text[done..]);
+    out
+}
+
+/// `text` with each `@name` of `names` written as its other name.
+fn ir_named(text: &str, names: &HashMap<String, String>) -> String {
+    if names.is_empty() {
+        return text.to_string();
+    }
+    ir_names(text, |n, out| out.push_str(names.get(n).map(|x| x.as_str()).unwrap_or(n)))
+}
+
+/// The name of the function a line `define` defines.
+fn ir_defined(header: &str) -> Option<&str> {
+    let at = header.find('@')? + 1;
+    let rest = &header[at..];
+    Some(&rest[..rest.find('(')?])
+}
+
+/// `isc_fn_<i><variant>`: the function `i` of the program and its variant
+/// (`_buf`, `_print`, ...), or nothing for another name.
+fn lowered_name(name: &str) -> Option<(usize, &str)> {
+    let rest = name.strip_prefix("isc_fn_")?;
+    let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 {
+        return None;
+    }
+    Some((rest[..digits].parse().ok()?, &rest[digits..]))
+}
+
+/// `text` with each `@isc_fn_<i><variant>` of `names` written as its name
+/// in the module compiled once.
+fn ir_renamed(text: &str, names: &HashMap<(usize, String), String>) -> String {
+    if names.is_empty() {
+        return text.to_string();
+    }
+    ir_names(text, |n, out| match lowered_name(n).and_then(|(i, variant)| names.get(&(i, variant.to_string()))) {
+        Some(stable) => out.push_str(stable),
+        None => out.push_str(n),
+    })
+}
+
+fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, bool)> {
     if !opts.lanes.is_power_of_two() || opts.lanes < 2 || BLOCK % opts.lanes as i64 != 0 {
         return Err(format!("--lanes {}: V must be a power of two dividing {}", opts.lanes, BLOCK));
     }
@@ -1377,6 +1649,291 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
             strs = free_strs_text(free)
         );
     }
+    // The functions compiled once (D611). In the module that holds them,
+    // each function lowered for the code generator alone (`text_fns` on,
+    // a name of the prelude that no other of them has, not one inlined
+    // everywhere) is exported under that name; in a program linked with
+    // that module, the same function is declared and its body left out.
+    // "The same": what the program would emit for it and for all it is
+    // made of (the functions it calls in the module, the constants and the
+    // words it names) is, text for text, what the module was made from;
+    // a function that differs in anything stays in the program. The
+    // allocator the same way, all of it or none: its words and its
+    // functions that are not inlined are the module's, and a program whose
+    // allocator would differ takes nothing from the module.
+    let mut manifest = PreManifest::default();
+    let mut using = false;
+    if !matches!(mode, Pre::Inline) {
+        let wired = !(opts.isa.is_wasm() || opts.windows) && p.kernel.is_some();
+        let kernel = p.kernel_fns();
+        let mut named: HashMap<&str, usize> = HashMap::new();
+        for f in p.fns.iter().skip(p.text_fns as usize) {
+            *named.entry(f.name.as_str()).or_default() += 1;
+        }
+        // the name of the function `i` that every program gives it
+        let stable = |i: usize| -> Option<String> {
+            let f = p.fns.get(i)?;
+            let ours = i as u32 >= p.text_fns && f.name.starts_with('$') && named.get(f.name.as_str()) == Some(&1);
+            ours.then(|| format!("isc.pre.{}", &f.name[1..]))
+        };
+        let canon = |name: &str| -> String { lowered_name(name).and_then(|(i, variant)| stable(i).map(|n| format!("{}{}", n, variant))).unwrap_or_else(|| name.to_string()) };
+        let entries = ["isc.kernel.start", "isc.kernel.free", "isc.late.free_strs"];
+        let fn_parts = ir_parts(&(g.funcs.join("\n") + "\n"));
+        let kernel_parts = ir_parts(&kernel_text);
+        let mut texts: HashMap<String, &str> = HashMap::new();
+        for (is_fn, text) in fn_parts.iter().chain(kernel_parts.iter()) {
+            if let Some(name) = text.lines().next().filter(|_| *is_fn).and_then(ir_defined) {
+                texts.insert(canon(name), text.as_str());
+            }
+        }
+        let mut values: HashMap<&str, &str> = HashMap::new();
+        for d in g.globals.iter().chain(g.decls.iter()) {
+            if let Some((name, value)) = d.strip_prefix('@').and_then(|r| r.split_once(" = ")) {
+                values.insert(name, value);
+            }
+        }
+        // the functions that may be the module's: (part, function, variant, name)
+        let candidate = |is_fn: bool, text: &str| -> Option<(usize, String, String)> {
+            let header = text.lines().next()?;
+            // one that is never inlined: called the same way from another
+            // module (one that LLVM may inline into its callers stays with
+            // them, in each program)
+            if !is_fn || !header.starts_with("define internal ") || !header.contains(" noinline") {
+                return None;
+            }
+            let (i, variant) = lowered_name(ir_defined(header)?)?;
+            let name = stable(i).filter(|_| wired || !kernel.contains(&(i as u32)))?;
+            Some((i, variant.to_string(), format!("{}{}", name, variant)))
+        };
+        let mut made = PreMade { texts: &texts, values: &values, canon: &canon, seen: HashMap::new() };
+        let mut hashes: HashMap<String, String> = HashMap::new();
+        let mut group: Vec<String> = Vec::new();
+        for (is_fn, text) in &fn_parts {
+            if let Some((i, _, symbol)) = candidate(*is_fn, text) {
+                hashes.insert(symbol.clone(), made.hash(&symbol));
+                if kernel.contains(&(i as u32)) {
+                    group.push(symbol);
+                }
+            }
+        }
+        if wired {
+            for e in entries.iter().filter(|e| texts.contains_key(**e)) {
+                hashes.insert(e.to_string(), made.hash(e));
+                group.push(e.to_string());
+            }
+        }
+        // what this module takes from the one compiled once
+        let same = |symbol: &str| -> bool {
+            match mode {
+                Pre::Make => true,
+                Pre::Use(m) => m.fns.get(symbol).map(|e| &e.0) == hashes.get(symbol),
+                Pre::Inline => false,
+            }
+        };
+        let whole = match mode {
+            Pre::Use(m) => !wired || (m.kernel && group.len() >= entries.len() && group.iter().all(|s| same(s))),
+            _ => true,
+        };
+        let declaration = |symbol: &str| -> Option<String> {
+            match mode {
+                Pre::Use(m) => m.fns.get(symbol).map(|e| e.1.clone()),
+                _ => None,
+            }
+        };
+        if whole {
+            let mut names: HashMap<(usize, String), String> = HashMap::new();
+            let mut declared: Vec<String> = Vec::new();
+            let mut kept = String::new();
+            for (is_fn, text) in &fn_parts {
+                let Some((i, variant, symbol)) = candidate(*is_fn, text).filter(|c| same(&c.2)) else {
+                    kept.push_str(text);
+                    continue;
+                };
+                names.insert((i, variant.clone()), symbol.clone());
+                if matches!(mode, Pre::Make) {
+                    // (declared so until LLVM has said more of it:
+                    // `pre_declarations`)
+                    let header = text.lines().next().unwrap_or("");
+                    let signature = header["define internal ".len()..].trim_end_matches(" {").replacen(&format!("@isc_fn_{}{}(", i, variant), &format!("@{}(", symbol), 1);
+                    manifest.fns.insert(symbol.clone(), (hashes[&symbol].clone(), format!("declare hidden {}", signature)));
+                    kept.push_str(&text.replacen("define internal ", "define hidden ", 1));
+                } else {
+                    declared.extend(declaration(&symbol));
+                }
+            }
+            if wired {
+                let mut text = String::new();
+                for (is_fn, part) in &kernel_parts {
+                    let name = part.lines().next().and_then(ir_defined).unwrap_or("");
+                    if !(*is_fn && entries.contains(&name)) {
+                        text.push_str(part);
+                    } else if matches!(mode, Pre::Make) {
+                        let header = part.lines().next().unwrap_or("");
+                        let signature = header["define internal ".len()..].trim_end_matches(" {");
+                        manifest.fns.insert(name.to_string(), (hashes[name].clone(), format!("declare hidden {}", signature)));
+                        text.push_str(&part.replacen("define internal ", "define hidden ", 1));
+                    } else {
+                        declared.extend(declaration(name));
+                    }
+                }
+                kernel_text = text;
+                let words: Vec<String> = g.decls.iter().filter(|d| d.starts_with("@isc_arena_base = ") || d.starts_with("@isc_kernel_zone = ")).cloned().collect();
+                for w in words {
+                    g.decls.remove(&w);
+                    g.decls.insert(match mode {
+                        Pre::Make => w.replacen("= internal ", "= hidden ", 1),
+                        // (declared: its value is the other module's)
+                        _ if w.starts_with("@isc_arena_base") => "@isc_arena_base = external hidden global i64".to_string(),
+                        _ => w.replacen("= internal ", "= external hidden ", 1).replacen(" zeroinitializer", "", 1),
+                    });
+                }
+                manifest.kernel = true;
+            }
+            // The large constants that are data alone (tables: no name in
+            // them), under a name made from their value, in the module and
+            // in the program alike, each in a group of its own: the linker
+            // keeps one of the two. (Defined in both, not declared in the
+            // program: LLVM reads the values of a table it can see.)
+            let mut data_names: HashMap<String, String> = HashMap::new();
+            let mut held: HashSet<String> = HashSet::new();
+            let mut data_groups: Vec<String> = Vec::new();
+            for gl in g.globals.iter_mut() {
+                let Some((name, value)) = gl.strip_prefix('@').and_then(|r| r.split_once(" = ")) else { continue };
+                let Some(data) = value.strip_prefix("private unnamed_addr constant ").filter(|d| d.len() >= 256 && !d.contains('@')) else { continue };
+                let symbol = format!("isc.pre.k.{}", text_word(value));
+                let line = format!("@{} = linkonce_odr hidden unnamed_addr constant {}, comdat", symbol, data);
+                data_names.insert(name.to_string(), symbol.clone());
+                // (two of one value: one)
+                *gl = if held.insert(symbol.clone()) {
+                    data_groups.push(format!("${} = comdat any", symbol));
+                    line
+                } else {
+                    String::new()
+                };
+            }
+            for c in data_groups {
+                g.decls.insert(c);
+            }
+            using = !names.is_empty() || wired;
+            g.funcs = vec![ir_named(&ir_renamed(&kept, &names), &data_names)];
+            main = ir_named(&ir_renamed(&main, &names), &data_names);
+            kernel_text = ir_named(&ir_renamed(&kernel_text, &names), &data_names);
+            for gl in g.globals.iter_mut() {
+                *gl = ir_named(gl, &data_names);
+            }
+            for d in declared {
+                g.decls.insert(d);
+            }
+            if matches!(mode, Pre::Use(_)) {
+                // The functions that only those of the module called are no
+                // longer reached: left out here, not handed to LLVM to be
+                // read, simplified, then dropped.
+                let (fns, entries) = (ir_parts(&g.funcs.concat()), ir_parts(&kernel_text));
+                let mut bodies: HashMap<&str, &str> = HashMap::new();
+                let mut todo: Vec<&str> = vec![main.as_str()];
+                todo.extend(g.globals.iter().chain(g.decls.iter()).map(|d| d.as_str()));
+                for (is_fn, text) in fns.iter().chain(entries.iter()) {
+                    let header = text.lines().next().unwrap_or("");
+                    match ir_defined(header).filter(|_| *is_fn && header.starts_with("define internal ")) {
+                        Some(name) => {
+                            bodies.insert(name, text.as_str());
+                        }
+                        None => todo.push(text.as_str()),
+                    }
+                }
+                let mut reached: HashSet<&str> = HashSet::new();
+                // (inlined after the passes, by their names: D600)
+                for name in crate::backend::LATE_INLINE {
+                    if let Some((n, body)) = bodies.get_key_value(name) {
+                        reached.insert(*n);
+                        todo.push(*body);
+                    }
+                }
+                while let Some(text) = todo.pop() {
+                    let mut rest = text;
+                    while let Some(at) = rest.find('@') {
+                        let name = &rest[at + 1..];
+                        let end = name.bytes().position(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'$')).unwrap_or(name.len());
+                        if let Some((n, body)) = bodies.get_key_value(&name[..end]) {
+                            if reached.insert(*n) {
+                                todo.push(*body);
+                            }
+                        }
+                        rest = &name[end..];
+                    }
+                }
+                let live = |parts: &[(bool, String)]| -> String {
+                    let mut out = String::new();
+                    for (is_fn, text) in parts {
+                        let header = text.lines().next().unwrap_or("");
+                        let dead = *is_fn && header.starts_with("define internal ") && ir_defined(header).is_some_and(|n| !reached.contains(n));
+                        if !dead {
+                            out.push_str(text);
+                        }
+                    }
+                    out
+                };
+                let (kept, kept_entries) = (live(&fns), live(&entries));
+                g.funcs = vec![kept];
+                kernel_text = kept_entries;
+            }
+        }
+        if matches!(mode, Pre::Make) {
+            // (no program in it: no `main`, no start of the code)
+            main = String::new();
+            // Each function and each constant in a section of its own: the
+            // linker keeps what a program reaches and nothing else of the
+            // module. In a Windows object, a group of its own, the only
+            // sections a linker leaves out there; a group is named by a
+            // symbol, which a `private` constant has not: `internal` there.
+            let coff = opts.windows && !opts.isa.is_wasm();
+            let mut groups: Vec<String> = Vec::new();
+            let mut place = |kind: &str, name: &str, sep: &str| -> String {
+                if coff {
+                    groups.push(format!("${} = comdat nodeduplicate", ir_quoted(name)));
+                    format!("{}comdat", sep)
+                } else {
+                    let plain: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' { c } else { '_' }).collect();
+                    format!("{}section \"{}.{}\"", sep, kind, plain.trim_start_matches('.'))
+                }
+            };
+            let mut placed = |text: &str| -> String {
+                let mut out = String::with_capacity(text.len() + 4096);
+                for line in text.split_inclusive('\n') {
+                    let name = line.starts_with("define ").then(|| ir_defined(line)).flatten();
+                    let Some(name) = name.filter(|_| !line.contains(" alwaysinline")) else {
+                        out.push_str(line);
+                        continue;
+                    };
+                    // after the attributes of the function, before its alignment
+                    let end = line.rfind(" {").unwrap_or(line.len());
+                    let params = line.find('(').map(|open| ir_close(line, open)).unwrap_or(end);
+                    let at = line[params..end].rfind(" align ").map(|a| params + a).unwrap_or(end);
+                    let kind = if line[params..end].contains(" cold") { ".text.unlikely" } else { ".text" };
+                    out.push_str(&line[..at]);
+                    out.push_str(&place(kind, name, " "));
+                    out.push_str(&line[at..]);
+                }
+                out
+            };
+            g.funcs = vec![placed(&g.funcs.concat())];
+            kernel_text = placed(&kernel_text);
+            for gl in g.globals.iter_mut() {
+                let name = gl.strip_prefix('@').and_then(|r| r.split_once(" = ")).map(|(n, _)| n.to_string());
+                if let Some(name) = name.filter(|_| gl.contains(" constant ") && !gl.ends_with(", comdat")) {
+                    let at = place(".rodata", &name, ", ");
+                    if coff {
+                        *gl = gl.replacen(" = private ", " = internal ", 1);
+                    }
+                    gl.push_str(&at);
+                }
+            }
+            for c in groups {
+                g.decls.insert(c);
+            }
+        }
+    }
+    let making = matches!(mode, Pre::Make);
     let mut out = String::new();
     out.push_str("; Isocron module\n\n");
     for d in RUNTIME_DECLS {
@@ -1399,7 +1956,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     // of the runtime moved binary-trees by 848 bytes and made it 5 % slower,
     // the same instructions, D188, D211). A first function, empty and kept
     // (not internal), aligned; the others follow it in the same section.
-    if !opts.isa.is_wasm() {
+    if !opts.isa.is_wasm() && !making {
         out.push_str("define hidden void @isc_code_start() align 4096 {\nentry:\n  ret void\n}\n\n");
     }
     for f in &g.funcs {
@@ -1408,7 +1965,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     }
     out.push_str(&main);
     out.push_str(&kernel_text);
-    if opts.isa == Isa::Wasm32Threads {
+    if opts.isa == Isa::Wasm32Threads && !making {
         // the waits of the thread pool of the runtime (unstable in Rust)
         out.push_str(
             "\ndeclare i32 @llvm.wasm.memory.atomic.wait32(ptr, i32, i64)\n\
@@ -1451,7 +2008,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         out.push_str("\nattributes #1 = { \"min-legal-vector-width\"=\"512\" \"prefer-vector-width\"=\"512\" }\n");
     }
 
-    Ok(out)
+    Ok((out, manifest, using))
 }
 
 /// The texts of an array freed by the module itself (D605): each a block of

@@ -18,6 +18,7 @@ extern "C" {
     fn LLVMDisposeMessage(msg: *mut c_char);
     fn LLVMDisposeModule(m: Ref);
     fn LLVMCloneModule(m: Ref) -> Ref;
+    fn LLVMPrintModuleToString(m: Ref) -> *mut c_char;
     fn LLVMInitializeX86TargetInfo();
     fn LLVMInitializeX86Target();
     fn LLVMInitializeX86TargetMC();
@@ -185,6 +186,20 @@ pub const WINDOWS_MSVC_TRIPLE: &str = "x86_64-pc-windows-msvc";
 /// `compile_with` for Windows too (`windows`: the object of
 /// `x86_64-pc-windows-gnu`, for the CPU that `isa` names).
 pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<(), String> {
+    compile_text(ir, obj, asm, isa, windows, msvc, None)
+}
+
+/// `compile_for` of the module compiled once (D611), which also gives the
+/// text of the module as LLVM optimized it: what it proved of each function
+/// (one that never returns, what one reads and writes) is written there,
+/// for the programs that will declare these functions.
+pub fn compile_pre(ir: &str, obj: &Path, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<String, String> {
+    let mut optimized = String::new();
+    compile_text(ir, obj, None, isa, windows, msvc, Some(&mut optimized))?;
+    Ok(optimized)
+}
+
+fn compile_text(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>) -> Result<(), String> {
     init_llvm();
     unsafe {
         let wasm = isa.is_wasm();
@@ -270,6 +285,9 @@ pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::I
                 LLVMDisposeErrorMessage(em);
                 return Err(format!("LLVM late inlining failed: {}", s));
             }
+        }
+        if let Some(text) = optimized {
+            *text = take_msg(LLVMPrintModuleToString(m));
         }
         let mut result = Ok(());
         if let Some(a) = asm {
