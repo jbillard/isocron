@@ -1,0 +1,9 @@
+# the texts moved to the prelude (D606 to D610)
+keep.start 4096 100 400 bench/primitives/pad_forms.isc keep.start ROUNDS * ''
+int.u8 4096 100 400 bench/primitives/pad_forms.isc int.u8 ROUNDS * ''
+join.pair 4096 100 400 bench/primitives/join_forms.isc join.pair ROUNDS ; 65536
+joinmap 4096 100 400 bench/primitives/join_forms.isc joinmap ROUNDS ; 65536
+word.upper.keep 4096 60 240 bench/primitives/case_pilot.isc word upper keep ROUNDS
+thirds.2 4096 60 240 bench/primitives/fixed_pilot.isc thirds 2 ROUNDS
+big.2 4096 60 240 bench/primitives/fixed_pilot.isc big 2 ROUNDS
+thirds.lines 4096 60 240 bench/primitives/print_pilot.isc thirds lines ROUNDS

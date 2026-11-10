@@ -1,0 +1,5 @@
+# the roundings (D613)
+floor.sum 4096 200 1200 bench/primitives/round_forms.isc floor.sum ROUNDS
+round.sum 4096 200 1200 bench/primitives/round_forms.isc round.sum ROUNDS
+floor.map 4096 200 1200 bench/primitives/round_forms.isc floor.map ROUNDS
+round32.sum 4096 200 1200 bench/primitives/round_forms.isc round32.sum ROUNDS

@@ -1,0 +1,9 @@
+# name n r1 r2 pilot args (ROUNDS: the rounds) — the reading of floats (D614)
+decimals 4096 30 130 bench/primitives/parse_float_pilot.isc decimals ROUNDS
+short 4096 30 130 bench/primitives/parse_float_pilot.isc short ROUNDS
+ints 4096 30 130 bench/primitives/parse_float_pilot.isc ints ROUNDS
+thirds 4096 30 130 bench/primitives/parse_float_pilot.isc thirds ROUNDS
+exps 4096 30 130 bench/primitives/parse_float_pilot.isc exps ROUNDS
+sci 4096 30 130 bench/primitives/parse_float_pilot.isc sci ROUNDS
+long 4096 30 130 bench/primitives/parse_float_pilot.isc long ROUNDS
+ties 4096 30 130 bench/primitives/parse_float_pilot.isc ties ROUNDS
