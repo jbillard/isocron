@@ -899,7 +899,10 @@ Le runtime des programmes compilés (allocateur, pool de threads, démarrage, en
 3. L'allocateur (`isocron:heap`) sur les régions et les blocs, ses métadonnées dans ses régions, ses caches dans les régions locales des threads. Fait (D602, D603, D605) : sous Linux, les blocs de 1 à 1024 octets du code généré viennent de l'allocateur écrit en Isocron (dans le prélude), dont les chemins rapides sont intégrés au code généré après l'optimisation du module ; les blocs plus grands, Windows et WebAssembly restent à l'allocateur en Rust.
 4. Le pool (`isocron:pool`) sur `Shared`, `wait`, `wake` et `spawn`.
 5. Les entrées et sorties (fichiers, entrée standard projetée).
-6. Restent en Rust en v1 (section 16, D329) : le moteur des expressions régulières (aujourd'hui `regex-automata`, en Rust) et les grands entiers (`num-bigint`).
+6. Les versions (décision de l'auteur, 2026-11-10, D622) :
+   - **v1** : est en Isocron toute partie dont la version Isocron est au moins aussi rapide que celle de Rust (principe 6) : l'allocateur des petits blocs sous Linux, les textes et les lectures et écritures des nombres, les fonctions mathématiques, la recherche et le remplacement dans les textes, les CSV. Le reste du runtime reste en Rust ; sa liste exacte est la frontière de la v1, `crates/isc-runtime/frontier.txt` : les expressions régulières, les grands entiers, la couche système (fichiers, entrée standard, affichage, réseau et TLS, modules système, démarrage, threads, pannes) et la fin de l'allocateur (blocs moyens et grands, Windows, WebAssembly). Le test `frontier.rs` la tient égale aux fonctions qu'exporte le runtime : elle ne fait que diminuer, et aucune fonction nouvelle n'est écrite en Rust ; toute fonction nouvelle de la bibliothèque s'écrit en Isocron.
+   - **v2** : cette couche réécrite en Isocron ; plus de Rust dans le runtime.
+   - **v3** : le compilateur compilé par lui-même (`iscc` écrit en Isocron), après la v2. À trancher alors : LLVM (une bibliothèque C++, appelée par son interface C) ou un générateur de code propre.
 
 ## 18. La bibliothèque standard
 

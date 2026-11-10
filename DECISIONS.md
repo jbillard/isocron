@@ -15104,3 +15104,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   same; no name removed: 0.6.0 for the size of the change of the runtime.
   The steps of 0.4.3 (D449), the commit of the release the last of `main`
   (D486).
+- **D622 — v1, v2, v3 (the author's decision, 2026-11-10).** Asked to
+  finish much sooner, without giving up the runtime without Rust: **v1**
+  puts in Isocron every part where Isocron is at least as fast as Rust
+  (what is done, the 20 mathematical functions, the remaining searches and
+  replacements in texts, the CSV readers) and writes down the rest of the
+  runtime as its frontier, `crates/isc-runtime/frontier.txt` (159
+  functions today: regular expressions, big integers, the system layer,
+  the rest of the allocator); the test `frontier.rs` holds it equal to the
+  functions the runtime exports, so that it only shrinks and no new Rust
+  is written. **v2** empties it. **v3** is `iscc` compiled by itself
+  (step 8), after v2. With it, the method: the bar of a replacement is its
+  count of instructions (`bench/replace.py counts`), its cycles only under
+  a margin of 3 %; the work of an agent checked by its own commands run
+  again; one suite for a batch of merges; entries of about ten lines.

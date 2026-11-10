@@ -1,0 +1,192 @@
+# The functions of the runtime still written in Rust (SPEC section 17, D622):
+# the frontier of v1. v2 moves every one of them to Isocron. The test
+# crates/iscc/tests/frontier.rs holds this list equal to the functions the
+# runtime exports: a function added in Rust fails it (no new Rust, ever), a
+# function moved to Isocron is removed from here in the same commit.
+
+# the panics: 17
+isc_panic_bench
+isc_panic_boundary
+isc_panic_bounds
+isc_panic_div0
+isc_panic_fixed
+isc_panic_negexp
+isc_panic_negsize
+isc_panic_repeat
+isc_panic_size
+isc_panic_slice
+isc_panic_stack
+isc_panic_str_slice
+isc_panic_tail
+isc_panic_text
+isc_panic_text_slice
+isc_panic_window
+isc_panic_word
+
+# the mathematical functions (v1: moving now, D108): 20
+isc_acos
+isc_acosf
+isc_asin
+isc_asinf
+isc_atan
+isc_atan2
+isc_atan2f
+isc_atanf
+isc_cos
+isc_cosf
+isc_exp
+isc_expf
+isc_log
+isc_logf
+isc_pow
+isc_powf
+isc_sin
+isc_sinf
+isc_tan
+isc_tanf
+
+# the big integers: 11
+isc_big_cmp
+isc_big_from_i64
+isc_big_from_u64
+isc_big_muladd
+isc_big_muladd_div
+isc_big_op
+isc_big_parse
+isc_big_to_f64
+isc_big_to_i64
+isc_big_to_string
+isc_print_big
+
+# the regular expressions: 4
+isc_rx_int
+isc_rx_matches
+isc_rx_new
+isc_rx_replace
+
+# print and the buffer of the output: 11
+isc_flush
+isc_main_end
+isc_print_bool
+isc_print_bytes
+isc_print_i64
+isc_print_i64_line
+isc_print_newline
+isc_print_str
+isc_print_u64
+isc_print_u64_line
+isc_put_int
+
+# files, standard input, CSV: 19
+isc_lines
+isc_lines_view
+isc_parse_csv_f64
+isc_read_bytes
+isc_read_csv_f64
+isc_read_f32
+isc_read_f64
+isc_read_stdin
+isc_read_stdin_text
+isc_read_text
+isc_try_read_bytes
+isc_try_read_csv_f64
+isc_try_read_f64
+isc_try_read_text
+isc_try_write_bytes
+isc_write_bytes
+isc_write_f32
+isc_write_f64
+isc_write_text
+
+# texts: 12
+isc_cstr
+isc_free_strs
+isc_js_number
+isc_last_index_of
+isc_replace_all
+isc_split
+isc_split_view
+isc_str_adopt_bytes
+isc_str_append
+isc_str_append_n
+isc_str_from_bytes
+isc_str_reserve
+
+# collections: sort, hashes, groups: 8
+isc_argsort
+isc_group
+isc_group_parts
+isc_groups_add
+isc_groups_end
+isc_groups_new
+isc_hash_find
+isc_hash_index
+
+# the allocator and its regions: 10
+isc_alloc
+isc_alloc_zeroed
+isc_arena_commit
+isc_arena_reserve
+isc_free
+isc_node_alloc
+isc_node_free
+isc_region_free
+isc_region_new
+isc_region_refill
+
+# threads and parallel loops: 9
+isc_loops_alone
+isc_parallel_actions
+isc_parallel_for
+isc_parallel_for_dynamic
+isc_parallel_for_fill
+isc_parallel_for_site
+isc_run_big_stack
+isc_stack_floor
+isc_thread_count
+
+# start, clock, arguments, environment: 3
+isc_args
+isc_clock_ns
+isc_sys_getenv
+
+# the network and TLS (std:net, std:http, std:https): 22
+isc_sys_accept
+isc_sys_close
+isc_sys_closelistener
+isc_sys_connect
+isc_sys_listen
+isc_sys_listenshared
+isc_sys_localport
+isc_sys_platform
+isc_sys_recv
+isc_sys_resolve
+isc_sys_send
+isc_sys_serverclose
+isc_sys_serverdrop
+isc_sys_serveropen
+isc_sys_serveropentls
+isc_sys_serversend
+isc_sys_serverwait
+isc_sys_settimeout
+isc_sys_shutdown
+isc_sys_threads
+isc_sys_tlsstart
+isc_sys_udpquery
+
+# the system modules (std:sys, std:time, std:path): 11
+isc_sys_cwd
+isc_sys_environ
+isc_sys_mkdir
+isc_sys_now
+isc_sys_readdir
+isc_sys_readfile
+isc_sys_removedir
+isc_sys_removefile
+isc_sys_rename
+isc_sys_stat
+isc_sys_writefile
+
+# WebAssembly: 2
+isc_wasi_start
+isc_wasi_thread

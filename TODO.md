@@ -518,3 +518,28 @@ ARM64 set aside; the targets before the rest of this list, in this order:
 - [x] (Done, D542: `--target x86_64-windows-msvc`, a static library of Visual Studio linked and run in the machine) 2. The target `x86_64-pc-windows-msvc` (the item of the performance section): the runtime of step 1, linked by LLD as COFF, the static libraries of Visual Studio, the helpers they need without a C runtime (`__security_check_cookie`, `__chkstk`, `_fltused`) from the runtime; Microsoft's C runtime linked only when a library given by `--link` needs it, from the Build Tools of the machine (never shipped)
 - [x] (Done, D543 and D544: no program for WebAssembly links wasi-libc unless it declares C functions) 3. WASI without wasi-libc: the functions of WASI preview 1 called directly, the runtime's own `_start`, its heap over `memory.grow`, the threads of wasi-threads without pthread
 - [x] (Done, D545 and D546) 4. Linux: a static program checked at its build for its relocations (the item of the trusted base), a mode of checks of the allocator (the item of its tests in C)
+
+## The versions of the runtime (the author's decision, 2026-11-10, D622)
+
+v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest of the runtime written down as its frontier (`crates/isc-runtime/frontier.txt`, held by `frontier.rs`); v2: that frontier emptied; v3: `iscc` compiled by itself. The items of the kernel and of the pure functions above that are not in v1 belong to v2.
+
+### v1 (2 to 3 days from 2026-11-10)
+
+- [ ] The 20 mathematical functions (`exp`, `log`, `sin`, `cos`, `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, `f64` and `f32`) in Isocron, the same bits as libm, at least as fast (an agent)
+- [ ] `lastIndexOf`, `replace` and `replaceAll`, `Number`, the floats of the CSV readers in Isocron (an agent)
+- [ ] The measurable costs of the two allocators side by side (D605, D609): the start of a small program +14 %, `maps.get.i64` +20 % at 200 rounds, `json.decode` +2.5 %: fixed or explained, one day at most
+- [x] The frontier written and its ratchet test (D622)
+- [ ] Release 1.0? (to propose to the author when the items above are done)
+
+### v2: the runtime without Rust
+
+- [ ] The rest of the allocator: medium and large blocks, the blocks of a thread that ends, Windows, WebAssembly
+- [ ] Threads and parallel loops, the start, the arguments, the clock, the environment
+- [ ] Print and the buffer of the output; files, standard input, CSV; the panics
+- [ ] Texts that remain (`split`, `lines` and their views, the building of texts); collections (sort, hashes, groups)
+- [ ] The system modules, the network, TLS (OpenSSL and SChannel are C: to discuss with the author before)
+- [ ] The big integers (pidigits at least as fast), the regular expressions (regex-redux at least as fast)
+
+### v3: the compiler compiled by itself
+
+- [ ] `iscc` written in Isocron, built by the `iscc` of Rust, then rebuilding itself identically. Stop and discuss with the author before starting (LLVM through its C API, or a code generator of our own)
