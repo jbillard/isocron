@@ -107,7 +107,17 @@ fn a_program_carries_what_it_reaches() {
     let (with, _) = built(src, "pre_size_with", Some(&dir));
     let (without, _) = built(src, "pre_size_without", None);
     let (a, b) = (std::fs::metadata(&with).unwrap().len(), std::fs::metadata(&without).unwrap().len());
-    assert!(a <= b + 4096, "{} bytes with the module, {} without", a, b);
+    // (seen once, in the pass of glibc of a suite, D623: 182 600 bytes
+    // against 112 968, not again in 16 runs; what the module was then)
+    let state = || -> String {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| format!("{} {} bytes", e.file_name().to_string_lossy(), e.metadata().map(|m| m.len()).unwrap_or(0)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    assert!(a <= b + 4096, "{} bytes with the module, {} without; the directory of the module: {}; ISC_ALLOC {:?}", a, b, state(), std::env::var("ISC_ALLOC"));
     // the tables of the texts of floats: the module's, not twice
     let (with, ir) = built(TEXTS, "pre_size_texts", Some(&dir));
     let (without, _) = built(TEXTS, "pre_size_texts_whole", None);

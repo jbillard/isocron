@@ -15118,3 +15118,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   count of instructions (`bench/replace.py counts`), its cycles only under
   a margin of 3 %; the work of an agent checked by its own commands run
   again; one suite for a batch of merges; entries of about ten lines.
+- **D623 — The costs of the two allocators side by side, measured again
+  (2026-11-10).** The item of v1. The start of a hello: its own work the
+  same, 3990 → 4037 instructions and about 23 000 cycles; the kernel of the
+  system about 30 000 cycles more (190 000 → 225 000 to 240 000), the two
+  calls that reserve the arena (1 TiB, nothing usable) and make its first
+  MiB usable: about 10 µs a start, explained; reserving it at the first
+  block of the arena belongs to the rest of the allocator (v2). The forms
+  of `maps` and `json`, 0.6.0 against the compiler of before the kernel
+  (270baa9), on a quiet machine, median of 9: `maps.get.i64` +0.0 % (the
+  +20 % of D609 is gone), `json.decode` +1.9 %, `maps.get.string` +2.3 %,
+  `maps.Map.build.i64` +1.3 %; `json.stringify` −15.7 %, `json.encode`
+  −8.1 %, `json.parse` −3.1 %. The two left in TODO.
