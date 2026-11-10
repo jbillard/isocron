@@ -1479,16 +1479,6 @@ fn signed_decimal(v: i64, buf: &mut [u8; 20]) -> &[u8] {
 }
 
 #[no_mangle]
-pub extern "C" fn isc_print_f64(v: f64) {
-    let _ = sem::write_f64(&mut Stdout, v);
-}
-
-#[no_mangle]
-pub extern "C" fn isc_print_f32(v: f32) {
-    let _ = sem::write_f32(&mut Stdout, v);
-}
-
-#[no_mangle]
 pub extern "C" fn isc_print_bool(b: i32) {
     out(if b != 0 { b"true" } else { b"false" })
 }
@@ -3298,23 +3288,6 @@ pub unsafe extern "C" fn isc_panic_text_slice(p: *const u8, n: i64, a: i64, b: i
     match sem::slice_str(s, a, b) {
         Err(e) => die(line, col, &e),
         Ok(_) => die(line, col, &Panic::StrSlice { a, b, len: n }),
-    }
-}
-
-///
-/// # Safety
-/// `out` the place of the result (C1).
-#[no_mangle]
-pub unsafe extern "C" fn isc_to_fixed(out: *mut IscStr, x: f64, d: i64, line: i32, col: i32) {
-    // SAFETY: `out` the place of the result (C1)
-    unsafe {
-        if !(0..=100).contains(&d) {
-            die(line, col, &Panic::FixedDigits(d))
-        }
-        *out = written(&|w| {
-            let _ = sem::write_fixed(w, x, d);
-            Ok(())
-        });
     }
 }
 
@@ -5310,6 +5283,13 @@ pub unsafe extern "C" fn isc_panic_text(a: *const u8, na: i64, b: *const u8, nb:
 #[no_mangle]
 pub extern "C" fn isc_panic_repeat(count: i64, line: i32, col: i32) -> ! {
     die(line, col, &Panic::RepeatNegative(count))
+}
+
+/// `x.toFixed(d)` with `d` out of 0 ..= 100: the text is made by the
+/// prelude (`$rtFixedText`), the count checked by the generated code.
+#[no_mangle]
+pub extern "C" fn isc_panic_fixed(d: i64, line: i32, col: i32) -> ! {
+    die(line, col, &Panic::FixedDigits(d))
 }
 
 /// `s.slice(a, b)` out of the bytes of `s` (D590): the slice is made by the

@@ -3258,6 +3258,13 @@ pub fn ownership(p: &mut Program) -> R<()> {
     // start-up), defined in the outermost region
     p.drop_args = ownership_body(&mut p.body, &p.vars, Some(p.args), &mut p.copy_reasons)?;
     for fi in 0..p.fns.len() {
+        // the reasons of the copies are those of the memory report, which
+        // never shows the inside of the functions lowered for the texts of
+        // the prelude (`Program::text_fns`: called by `toString`, `toFixed`
+        // and `print` of the code generator, as the runtime's were): theirs
+        // are not kept (a program that prints a float has no copy of its
+        // own for it)
+        let reported = (fi as u32) < p.text_fns;
         // its accumulators owned (D351), kept only when the memory check of
         // the function holds (each moved on every path); otherwise borrowed
         let acc = accumulators(p, fi);
@@ -3271,7 +3278,9 @@ pub fn ownership(p: &mut Program) -> R<()> {
                     p.fns[fi].consumed[k] = true;
                 }
                 if crate::verify::verify_fn(p, &p.fns[fi]).is_ok() {
-                    p.copy_reasons.extend(reasons);
+                    if reported {
+                        p.copy_reasons.extend(reasons);
+                    }
                     continue;
                 }
                 for &k in &acc {
@@ -3281,7 +3290,11 @@ pub fn ownership(p: &mut Program) -> R<()> {
             p.fns[fi].body = saved;
         }
         let f = &mut p.fns[fi];
-        ownership_body(&mut f.body, &p.vars, None, &mut p.copy_reasons)?;
+        let mut reasons = Vec::new();
+        ownership_body(&mut f.body, &p.vars, None, &mut reasons)?;
+        if reported {
+            p.copy_reasons.extend(reasons);
+        }
     }
     take_payloads(p);
     Ok(())

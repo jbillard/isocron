@@ -11,6 +11,9 @@
   fewer instructions a text (D606, D607, D608).
 - Fixed: under `iscc run`, a padding to a width near the least `i64`
   overflowed (D606).
+- `toFixed` and `print` of a float are written in Isocron: 19 to 95 % fewer
+  instructions; a program that uses them is built more slowly for now
+  (D610).
 - `iscc ir` does not show the functions of the allocator of the runtime,
   present in every program (D605).
 - `@requireTail`, `@requireNoAlloc` and `@cold` are accepted before an

@@ -1,0 +1,119 @@
+// The pilot of `print` of floats written in Isocron (SPEC section 17,
+// order 2): floats printed in bulk by kinds of values and by forms, one
+// kind and one form a run, so that the cycles and the instructions of a
+// float are read with `perf stat` as the difference between two numbers
+// of rounds, the standard output a file or `/dev/null`. No line of result:
+// the output is what is measured, and compared between two compilers. The
+// Rust version (the runtime's `isc_print_f64` and `isc_print_f32`) is
+// measured by building this file with a compiler that still has it. The
+// kinds, 4096 values each by default, are those of `float_pilot.isc`:
+//   thirds     16 or 17 digits, the point inside
+//   decimals   thousandths, 1 to 6 digits
+//   ints       integers below 2^53
+//   digit      integers of one digit
+//   small      16 or 17 digits after `0.` and zeros
+//   large      16 or 17 digits and zeros before the point
+//   huge tiny  about 200 zeros after or before the digits
+//   sub        subnormal doubles
+//   zero half  0, and halves (an integer or a point, in turn)
+//   nan        what is not a number: NaN, inf and -inf in turn
+//   mixed      20 digits before the point to 20 zeros after it, in a cycle
+//   thirds32 decimals32 ints32 small32 large32 nan32 mixed32: the same
+//              for `f32`
+// The forms:
+//   array      `print(xs)`: one line of all the values a round
+//   lines      `print(x)` of each value: a line a value
+//   pairs      `print` of an array of tuples of two floats
+//   rows       `print` of an array of rows of 4 floats
+// usage: print_pilot <kind> <form> <rounds> [values]
+
+function pick(kind: string, i: i64): f64 {
+    const third = (i % 2 == 0 ? 1.0 : -1.0) * f64(i * i * 7 + 1) / 3.0;
+    return kind == "thirds" ? third
+        : kind == "decimals" ? f64((i * 7919) % 1000003 - 500000) / 1000.0
+        : kind == "ints" ? f64((i * 7919 * 104729) % 1000000007 - 500000000)
+        : kind == "digit" ? f64(i % 10)
+        : kind == "small" ? third * 1e-12
+        : kind == "large" ? third * 1e15
+        : kind == "huge" ? third * 1e200
+        : kind == "tiny" ? third * 1e-200
+        : kind == "sub" ? f64(i * i * i * 7919 + 1) * 5e-324
+        : kind == "zero" ? 0.0
+        : kind == "half" ? f64(i % 64) * 0.5
+        : kind == "nan" ? (i % 3 == 0 ? parseF64("NaN") : i % 3 == 1 ? parseF64("inf") : parseF64("-inf"))
+        : third * 10.0 ** f64((i * 7919) % 41 - 20);
+}
+
+function pick32(kind: string, i: i64): f32 {
+    const third = f32((i % 2 == 0 ? 1.0 : -1.0) * f64(i * i * 7 + 1) / 3.0);
+    return kind == "thirds32" ? third
+        : kind == "decimals32" ? f32(f64((i * 7919) % 100003 - 50000) / 100.0)
+        : kind == "ints32" ? f32((i * 7919) % 1000003 - 500000)
+        : kind == "small32" ? third * 1e-12f32
+        : kind == "large32" ? third * 1e15f32
+        : kind == "nan32" ? f32(i % 3 == 0 ? parseF64("NaN") : i % 3 == 1 ? parseF64("inf") : parseF64("-inf"))
+        : third * f32(10.0 ** f64((i * 7919) % 41 - 20));
+}
+
+action main(args: string[k]): i32 {
+    const kind = args[0];
+    const form = args[1];
+    const r = parseI64(args[2]);
+    const n = args.length > 3 ? parseI64(args[3]) : 4096;
+    if (kind.endsWith("32")) {
+        const ys = map(iota(n), (i) => pick32(kind, i));
+        if (form == "lines") {
+            forEach(iota(r), (j) => {
+                forEach(ys, (y) => {
+                    print(y);
+                });
+            });
+        } else {
+            if (form == "array") {
+                forEach(iota(r), (j) => {
+                    print(ys);
+                });
+            } else {
+                if (form == "pairs") {
+                    const pairs = map(iota(n / 2), (i) => [ys[2 * i], ys[2 * i + 1]] as const);
+                    forEach(iota(r), (j) => {
+                        print(pairs);
+                    });
+                } else {
+                    const rows = map(iota(n / 4), (i) => [ys[4 * i], ys[4 * i + 1], ys[4 * i + 2], ys[4 * i + 3]]);
+                    forEach(iota(r), (j) => {
+                        print(rows);
+                    });
+                }
+            }
+        }
+        return 0;
+    }
+    const xs = map(iota(n), (i) => pick(kind, i));
+    if (form == "lines") {
+        forEach(iota(r), (j) => {
+            forEach(xs, (x) => {
+                print(x);
+            });
+        });
+    } else {
+        if (form == "array") {
+            forEach(iota(r), (j) => {
+                print(xs);
+            });
+        } else {
+            if (form == "pairs") {
+                const pairs = map(iota(n / 2), (i) => [xs[2 * i], xs[2 * i + 1]] as const);
+                forEach(iota(r), (j) => {
+                    print(pairs);
+                });
+            } else {
+                const rows = map(iota(n / 4), (i) => [xs[4 * i], xs[4 * i + 1], xs[4 * i + 2], xs[4 * i + 3]]);
+                forEach(iota(r), (j) => {
+                    print(rows);
+                });
+            }
+        }
+    }
+    return 0;
+}

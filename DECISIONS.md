@@ -14597,3 +14597,66 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     process cannot be pinned on a CPU of the benchmarks (`taskset`
     refused): the forms run in a scope of the slice of the benchmarks,
     as the groups do.
+- **D610 — `toFixed` and the `print` of a float out of the runtime
+  (2026-11-10).** The work of an agent in its own tree (seven commits,
+  taken as one: two defects of the first five are fixed by the last two),
+  merged over D605 to D608 and checked again here.
+  - `toFixed` is `$rtFixedText(x, d)` of the prelude: below 2^52 and up to
+    18 decimals, the whole part and the fraction times 10^d on 128 bits
+    (`$mulHigh`), written by `$fixedText` (a new primitive of the prelude:
+    two groups of three words of digits, a point, a sign, into one block);
+    the rest in `@cold` functions (NaN and the infinities, from 1e21 on by
+    the shortest text, any count of decimals up to 100 exactly, by limbs
+    of 32 bits). The code generator keeps the check of `d` (0 to 100: a
+    panic, `isc_panic_fixed`).
+  - `print` of a float: a function of the module that writes its text into
+    a buffer of 448 bytes of the stack through a variant of `$rtF64Text` /
+    `$rtF32Text`, then one write; the names of what is not a number first.
+    No allocation. The separator before a float of an array, of a tuple or
+    of a value of a sum type is written with it.
+  - The functions that the prelude lowers for texts (`Program::text_fns`:
+    from that index on) are emitted only when the program reaches them;
+    the digits of a padded integer (D606), the cases (D608) and the entries
+    of the allocator (D605), lowered after them and called by the code
+    generator itself, are roots of that reach (added at the merge: without
+    it they were not emitted). Their reasons of copies are not those of
+    the program and are not kept.
+  - Two extractions of the same function met at the merge: the digits of
+    an integer in three words were `$rtDigitWords` for D606 and
+    `$digitWords` here: one name, the first.
+  - Found by the agent, and true before as after: a program that declares
+    a function named as one the prelude calls without `$` (`repeat`,
+    `scan`, `fold`, `iota`, ...) is refused inside the prelude; its first
+    version called `repeat` and `scan` there and broke two tests of the
+    guide. The new code of the prelude calls no such name that the prelude
+    did not call already (TODO: the prelude names its own).
+  - Removed from the runtime: `isc_to_fixed`, `isc_print_f64`,
+    `isc_print_f32`, their writers, `f64text.rs` and its table (1208 lines;
+    the interpreter keeps them as its reference). No new `unsafe`.
+  - Checked here, with values of mine (12 kinds: tenths, inverses, halves
+    at several scales, 1e15 and a quarter, powers of ten and of two, from
+    1e21 on, past 2^53, the smallest, 1.005 and its multiples; 17 special
+    values): `toFixed` with 14 counts of decimals from 0 to 100 on 6000
+    values, 2 333 505 bytes the same with the compiler before D580, with
+    this one on 3 threads and under the checked allocator; `print` of the
+    values alone, in arrays, in tuples and as `f32`, 363 129 bytes the
+    same; the interpreter the same on 600 values of each.
+  - Instructions, one thread, counted here, the runtime in Rust → this
+    (on the allocator of D605). `toFixed`: thirds to 2 decimals 667.32 →
+    220.80, to 18 decimals 1122.46 → 298.80, to 19 decimals 22 271 → 1098,
+    to 100 decimals 24 870 → 4057; integers to 0 decimals 595.74 → 233.05;
+    large values 919.55 → 282.05; NaN 236.06 → 102.06. `print`, a float:
+    thirds in an array 804.40 → 336.05, alone on a line 820.39 → 392.02,
+    in a tuple 853.90 → 408.04; integers 450.90 → 185.85; zeros 226.03 →
+    110.04; subnormals 3433.77 → 552.00; `f32` 1191.33 → 334.53; one
+    digit on a line 289.71 → 218.21; NaN of `f32` in a tuple 164.53 →
+    132.71. Seventeen forms: 19 to 95 % fewer. The most memory of a loop
+    of each: the same at 20 and at 400 rounds (11.2 MiB).
+  - **Its cost is the time of a compilation**, with D609's: a program of
+    three lines that prints a float, 125.1 million instructions of the
+    compiler before the step of the kernel, 278.8 at D608, **991.8** now;
+    one that calls `toFixed`, 126.4, 284.4, **1424.5** (the functions of
+    the texts, thousands of lines of IR, optimized by LLVM in each
+    program that reaches them). Their programs: 97 072 → 102 232 bytes and
+    125 600 → 108 632. Taken with that cost, and the functions compiled
+    once is the next thing to do (TODO), before another family moves.

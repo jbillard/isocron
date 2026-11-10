@@ -211,6 +211,7 @@ fn prim_by_name(name: &str) -> Option<Prim> {
         "$decimalText" => Prim::DecimalText,
         "$withText" => Prim::WithText,
         "$words" => Prim::Words,
+        "$fixedText" => Prim::FixedText,
         "$mapParts" => Prim::MapParts,
         "test" => Prim::RxTest,
         "search" => Prim::RxSearch,
@@ -2761,6 +2762,7 @@ impl<'g> FnCx<'g> {
             Prim::HashFind | Prim::ReadWord | Prim::Panic | Prim::WithText => 3,
             Prim::TextTail => 5,
             Prim::DecimalText => 6,
+            Prim::FixedText => 9,
             Prim::ParseInt => {
                 if args.len() == 1 {
                     1
@@ -3199,6 +3201,22 @@ impl<'g> FnCx<'g> {
                         0..=2 => Ty::Int(IntKind::U64),
                         3 | 4 => Ty::Int(IntKind::I64),
                         _ => Ty::Bool,
+                    };
+                    let x = self.check(a, Some(&t))?;
+                    self.unify(&t, &x.ty, x.span)?;
+                    parts.push(x);
+                }
+                Ok(mk(parts, Ty::Str, self))
+            }
+            // `$fixedText(i0, i1, i2, ni, f0, f1, f2, nf, minus)`: twice
+            // three words and a count, a sign, a string
+            Prim::FixedText => {
+                let mut parts = Vec::new();
+                for (k, a) in args.iter().enumerate() {
+                    let t = match k {
+                        3 | 7 => Ty::Int(IntKind::I64),
+                        8 => Ty::Bool,
+                        _ => Ty::Int(IntKind::U64),
                     };
                     let x = self.check(a, Some(&t))?;
                     self.unify(&t, &x.ty, x.span)?;

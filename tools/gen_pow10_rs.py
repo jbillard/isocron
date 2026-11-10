@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The table of `crates/isc-runtime-core/src/pow10_g.rs` (D467): for each k
+"""The table of `crates/isc-interp/src/pow10_g.rs` (D467): for each k
 from K_MIN to K_MAX, the 126 bits of 10^-k for Schubfach (R. Giulietti, "The
 Schubfach way to render doubles"): with 10^-k = beta 2^r and
 2^125 <= beta < 2^126, g = floor(beta) + 1, written as its high 63 bits and
 its low 63 bits. Computed exactly with integers.
-    tools/gen_pow10_rs.py > crates/isc-runtime-core/src/pow10_g.rs
+    tools/gen_pow10_rs.py > crates/isc-interp/src/pow10_g.rs
 With `--isc`, the same table as the function `$pow10G` of the prelude
 (`crates/isc-types/src/prelude.isc`: the text between its two marks), the
 high and the low bits of each g one after the other."""

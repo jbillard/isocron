@@ -324,7 +324,8 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, digit_words: None, case_text: None, kernel: None })
+    let text_fns = fns.len() as u32;
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -368,6 +369,8 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         }
     }
     crate::requirements::check(p, &required)?;
+    // the functions lowered from here on are those of the texts
+    let text_fns = l.fns.len() as u32;
     // the text of an integer written by the prelude (D588): its functions
     // lowered when the program writes one
     let writes = writes_int_text(&body) || l.fns.iter().flatten().any(|f| writes_int_text(&f.body));
@@ -383,10 +386,22 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None], vec![None], sp)?),
         _ => None,
     };
-    // the text of a float, the same way: `$rtF64Text` and `$rtF32Text`
+    // `toFixed`, the same way: `$rtFixedText`
+    let writes = writes_fixed_text(&body) || l.fns.iter().flatten().any(|f| writes_fixed_text(&f.body));
+    let fixed_text = match (writes, named("$rtFixedText")) {
+        (true, Some(a)) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
+        _ => None,
+    };
+    // the text of a float, the same way: `$rtF64Text` and `$rtF32Text`,
+    // for `toString` and for `print`
     let writes = writes_float_text(&body) || l.fns.iter().flatten().any(|f| writes_float_text(&f.body));
     let float_text = match (writes, named("$rtF64Text"), named("$rtF32Text")) {
         (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
+        _ => None,
+    };
+    // and the names of what is not a number, for `print`: `$rtFloatName`
+    let float_name = match (float_text, named("$rtFloatName")) {
+        (Some(_), Some(a)) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
         _ => None,
     };
     // the text in another case, the same way: `$caseText`, for the texts
@@ -421,8 +436,11 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         views: Default::default(),
         int_text,
         float_text,
+        float_name,
+        fixed_text,
         digit_words,
         case_text,
+        text_fns,
         kernel,
     })
 }
@@ -432,9 +450,31 @@ fn writes_int_text(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::StrOp(StrOp::ToString, xs) if matches!(xs[0].ty, Type::Int(_))) || e.children().into_iter().any(writes_int_text)
 }
 
-/// `e` writes the text of a float (`toString`).
+/// `e` writes the text of a float: `toString` of one, or `print` of a
+/// value that holds one.
 fn writes_float_text(e: &Expr) -> bool {
-    matches!(&e.kind, ExprKind::StrOp(StrOp::ToString, xs) if matches!(xs[0].ty, Type::F64 | Type::F32)) || e.children().into_iter().any(writes_float_text)
+    let here = match &e.kind {
+        ExprKind::StrOp(StrOp::ToString, xs) => matches!(xs[0].ty, Type::F64 | Type::F32),
+        ExprKind::Action(ActionOp::Print(_), xs) => holds_float(&xs[0].ty),
+        _ => false,
+    };
+    here || e.children().into_iter().any(writes_float_text)
+}
+
+/// A value of the type `t` holds a float that `print` writes (a node of a
+/// recursive type is counted as one that may).
+fn holds_float(t: &Type) -> bool {
+    match t {
+        Type::F64 | Type::F32 | Type::Rec(_) => true,
+        Type::Array(e, _) => holds_float(e),
+        Type::Tuple(ts) => ts.iter().any(holds_float),
+        _ => false,
+    }
+}
+
+/// `e` calls `toFixed`.
+fn writes_fixed_text(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::StrOp(StrOp::ToFixed, _)) || e.children().into_iter().any(writes_fixed_text)
 }
 
 /// `e` pads a text (`padStart`, `padEnd`).
@@ -2613,6 +2653,7 @@ impl<'p> Lower<'p> {
             | Prim::MulHigh
             | Prim::DecimalText
             | Prim::WithText
+            | Prim::FixedText
             | Prim::ParseFloat
             | Prim::ParseInt
             | Prim::StrSlice => {
@@ -2630,6 +2671,7 @@ impl<'p> Lower<'p> {
                     Prim::MulHigh => StrOp::MulHigh,
                     Prim::DecimalText => StrOp::DecimalText,
                     Prim::WithText => StrOp::WithText,
+                    Prim::FixedText => StrOp::FixedText,
                     Prim::ParseFloat => StrOp::JsParseFloat,
                     Prim::ParseInt => StrOp::JsParseInt,
                     Prim::ReplaceAll if self.conc(env, &args[1].ty) == Ty::RegExp => StrOp::Rx(RxOp::ReplaceAll),

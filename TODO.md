@@ -367,7 +367,7 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
       - [ ] n-body +0.71 % of cycles with 2.8 % fewer instructions (+0.17 % in another series): more runs, then the place of its loop
       - [ ] A join read by a `map`: the block it takes again and again in step with the buffer of a text on the stack (D609, +21 % against the same code on the allocator in Rust): a place for the first blocks of a class, or for that buffer, that cannot fall in step
       - [ ] The start of a small program: a hello 181 → 207 thousand cycles, +14 % (D609; two heaps start: 1 page fault and 2 calls of the system more), until the runtime's allocator no longer serves the arguments and the larger blocks
-      - [ ] **The time of a compilation** (D609): a hello 140 → 447 million instructions of the compiler, the suite 15.5 → 18.9 minutes; the functions of the allocator and of the texts of the prelude compiled once for a compiler and a target (an object kept beside the runtime's), each program keeping the fast paths that are inlined in it
+      - [ ] **Next: the time of a compilation** (D609, D610): a hello 140 → 452 million instructions of the compiler, a program that prints a float 125 → 992, one that calls `toFixed` 126 → 1425, the suite 15.5 → 18.9 minutes and more; the functions of the allocator and of the texts of the prelude compiled once for a compiler and a target (an object kept beside the runtime's), each program keeping the fast paths that are inlined in it; no other family moves before
       - [ ] The blocks of the list of a thread that ends (lost today: the threads of the pool live as long as the program)
       - [ ] The arena under Windows and in WebAssembly (the entries are not emitted there)
       - [ ] The thread of the large stack only for a program whose functions can nest (today: any function lowered, the text of an integer among them)
@@ -384,12 +384,13 @@ Every form of the IR (40), every primitive (73: 32 operations of strings, 19 act
   - [x] `padStart`, `padEnd` and the padded text of an integer made by the code generator (D606: 26 to 85 % fewer instructions)
   - [x] `join` made by the code generator (D607: 21 to 68 % fewer)
   - [x] `toUpperCase` and `toLowerCase`: ASCII by vectors in the generated code, the rest in the prelude (D608: 35 to 85 % fewer)
+  - [x] `toFixed` and the `print` of a float written in Isocron (D610: 19 to 95 % fewer instructions)
   - [ ] `isc_put_int` (the padded integers inside a template, D363) is still in the runtime
   - [ ] `toLowerCase` has no rule of the final sigma, which TypeScript has (`docs/language.md` says the functions of texts mean what they mean there): decide and say
   - [ ] A program that declares a function named as one the prelude uses (`findIndex`, `iota`) fails inside the prelude: the prelude should name its own (`$stringOf` does, D608)
   - [x] (D604: the same ratios within 2 points) The measures of D596 again on a quiet machine (taken beside a transcoder, 2026-11-10 00:32 to 00:40): `srch.isc` and the group strings against the compiler before D580, the groups json, maps, numbers, control and arrays before and after
   - [x] The text of a float in the prelude (D597: `toString` of a `f64` and of a `f32`, 48 to 87 % fewer instructions; `$floatBits`, `$mulHigh`, `$decimalText`)
-  - [ ] (the times on a quiet machine: D604, `toString` of a `f64` 58.570 → 32.505 ns, −44.5 %) `print` of a float through the prelude, so that `f64text.rs` and its table leave the runtime (a program that prints a float and writes its text holds the table of the powers of ten twice)
+  - [x] (D610: `print` of a float by the prelude, `f64text.rs` and its table out of the runtime) (the times on a quiet machine: D604, `toString` of a `f64` 58.570 → 32.505 ns, −44.5 %) `print` of a float through the prelude, so that `f64text.rs` and its table leave the runtime (a program that prints a float and writes its text holds the table of the powers of ten twice)
   - [ ] Seen while D597 was made, not checked: `shortest_as_display` of `f64text.rs` builds its powers of two with `powi`, zero for the exponents −1074 to −1024; `bench/primitives/run.py` without a group asks a `.c` for each `.isc`, which the pilots do not have
   - [ ] A search from the end by vectors (`findIndex(iota(n), (j) => p(b[n - 1 - j]))`: one index at a time today, 5 instructions a byte): what `lastIndexOf` written in Isocron needs, and `trimEnd` of long runs of spaces
 - [x] (D598) The memory report listed the inside of the prelude inlined into a program (the checks of its arrays, its calls of `$` functions), at the line of the call: left out, as the functions of the runtime it replaces were

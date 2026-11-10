@@ -1772,15 +1772,19 @@ fn float_texts_by_prelude(e: &mut isc_ir::Expr, f64_text: u32, f32_text: u32) ->
 ///   and decimals of 1 to 17 digits at every place of the point (where the
 ///   layout changes: the point at the ends of the digits, 16 and 17 zeros
 ///   after `0.`, 33 and 34 digits before the point), integers and halves
-///   around 2^53; the same for `f32`. Interpreted (the runtime core's text),
+///   around 2^53; the same for `f32`. Interpreted (the interpreter's text),
 ///   compiled, in WebAssembly, and interpreted with each `toString` made a
 ///   call of the function of the prelude (its primitives `$floatBits`,
 ///   `$mulHigh` and `$decimalText` as the interpreter has them); all of
 ///   them with the checked allocator and a part under Valgrind (the words
 ///   written past the end of a text stay inside its block).
+/// - `print` of the same floats, in an array and alone (the same functions
+///   of the prelude, their text written in a buffer of the stack): the
+///   same texts, interpreted, compiled, in WebAssembly, with the allocator
+///   checked, a part under Valgrind.
 /// - By sums of hashes of 4096 texts, compiled: the 100000 least subnormal
 ///   doubles, two million doubles of random bits (those of the test of the
-///   runtime core, `shortest_as_display`), a million of random mantissas
+///   interpreter, `shortest_as_display`), a million of random mantissas
 ///   between 2^-70 and 2^70, the 100000 least subnormal `f32` and two
 ///   million `f32` of random bits.
 #[test]
@@ -1934,6 +1938,51 @@ fn float_text_written_in_isocron() {
         }
         None => eprintln!("wasmtime not installed: the texts of floats in WebAssembly skipped"),
     }
+    // `print` of the same floats, in arrays and alone: the same texts, by
+    // the same functions of the prelude, written in a buffer of the stack
+    // and not in a block (`floats_printed_by_the_prelude` of `output`)
+    let prints = r#"action main(args: string[k]): i32 {
+    const xs = readF64(args[0]);
+    const ys = readF32(args[1]);
+    print(xs);
+    print(ys);
+    forEach(xs, (x) => {
+        print(x);
+    });
+    forEach(ys, (y) => {
+        print(y);
+    });
+    return 0;
+}
+"#;
+    let (a, b): (Vec<String>, Vec<String>) = (d.iter().map(|&v| display64(v)).collect(), s.iter().map(|&v| display32(v)).collect());
+    let printed = format!("[{}]\n[{}]\n{}\n{}\n", a.join(", "), b.join(", "), a.join("\n"), b.join("\n"));
+    assert!(interp_ok(prints, &args) == printed, "interpreted: the floats printed differ from `Display`");
+    let bin = compile(prints, "float_print_isocron");
+    let run = run_bin(&bin, &args);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    for (i, (got, exp)) in run.stdout.lines().skip(2).zip(printed.lines().skip(2)).enumerate() {
+        assert_eq!(got, exp, "compiled, the float {} printed (after {} doubles)", i, d.len());
+    }
+    assert!(run.stdout == printed, "compiled: the floats printed differ from `Display`");
+    checked_clean_bin(&bin, &args, None);
+    let (few64, few32) = (file64("float_print_part.f64", &d[..d.len().min(4000)]), file32("float_print_part.f32", &s[..s.len().min(4000)]));
+    if let Some(runner) = wasi_runner() {
+        // (the arrays: `forEach` is there a recursion as deep as its array;
+        // alone, 300 of each)
+        let arrays = "action main(args: string[k]): i32 {\n    print(readF64(args[0]));\n    print(readF32(args[1]));\n    return 0;\n}\n";
+        let wasm = compile_wasm(arrays, "float_print_arrays");
+        let run = run_wasm(&runner, &wasm, &args);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(run.stdout == format!("[{}]\n[{}]\n", a.join(", "), b.join(", ")), "WebAssembly: the floats printed differ from `Display`");
+        let (f64s, f32s) = (file64("float_print_few.f64", &d[..300]), file32("float_print_few.f32", &s[..300]));
+        let wasm = compile_wasm(prints, "float_print_isocron");
+        let run = run_wasm(&runner, &wasm, &[&f64s, &f32s]);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        let few = format!("[{}]\n[{}]\n{}\n{}\n", a[..300].join(", "), b[..300].join(", "), a[..300].join("\n"), b[..300].join("\n"));
+        assert!(run.stdout == few, "WebAssembly: the floats printed alone differ from `Display`");
+    }
+    valgrind_clean(prints, "float_print_isocron", &[&few64, &few32]);
     // the functions of the prelude interpreted: each `toString` their call
     let mut p = iscc::frontend("test.isc", texts).unwrap_or_else(|e| panic!("{}", e));
     let (f64_text, f32_text) = p.float_text.expect("the functions of the prelude lowered");
@@ -2008,6 +2057,260 @@ action main(args: string[k]): i32 {
         assert_eq!(got.next(), Some(sum.to_string().as_str()), "the texts of the `f32` {} to {}", c * 4096, c * 4096 + 4095);
     }
     assert_eq!(got.next(), None);
+}
+
+/// Every `toFixed` of `e` made a call of the function of the prelude that
+/// the code generator calls for it (without its check of the count); the
+/// number replaced.
+fn fixed_texts_by_prelude(e: &mut isc_ir::Expr, fixed_text: u32) -> usize {
+    let mut n: usize = e.children_mut().into_iter().map(|c| fixed_texts_by_prelude(c, fixed_text)).sum();
+    if matches!(&e.kind, isc_ir::ExprKind::StrOp(isc_ir::StrOp::ToFixed, _)) {
+        let isc_ir::ExprKind::StrOp(_, xs) = std::mem::replace(&mut e.kind, isc_ir::ExprKind::Zero) else { unreachable!() };
+        e.kind = isc_ir::ExprKind::Call(fixed_text, xs);
+        n += 1;
+    }
+    n
+}
+
+/// `toFixed` written in Isocron (`$rtFixedText` of the prelude, called by
+/// the code generator in place of the runtime's `isc_to_fixed`, removed):
+/// the texts of `write_fixed` of the interpreter.
+/// - Texts computed apart, with exact decimals: halves at the last decimal
+///   kept, nines that round up to the next integer, more decimals than a
+///   double has, numbers below any decimal kept.
+/// - The edges, as texts, with each count of decimals from 0 to 100: zeros,
+///   what is not a number, the subnormal doubles of few bits, every power
+///   of two with the ends of its mantissas, powers of ten and decimals
+///   around them, the halves of each binary place (halfway between two
+///   texts) and their neighbours, the bounds of the paths of the prelude
+///   (2^52, 1e21, 2^-11, a half of the last of 18 and of 100 decimals).
+///   Interpreted (the interpreter's own text), compiled, in WebAssembly, with
+///   the allocator checked, a part under Valgrind, and a part interpreted
+///   with each `toFixed` made a call of the function of the prelude (its
+///   primitive `$fixedText` as the interpreter has it).
+/// - By sums of hashes of 4096 texts, compiled, on 4 threads: doubles of
+///   random bits, of random mantissas between 2^-340 and 2^70, decimals of
+///   up to 11 places and binary fractions (exact halves), with 0 to 18
+///   decimals, and a part of them with 19 to 100.
+/// - The counts refused, at the place of the call.
+#[test]
+fn to_fixed_written_in_isocron() {
+    // texts computed with exact decimals (a half away from zero)
+    let huge = format!("-15{}", "0".repeat(299));
+    let known = [
+        ("(1.0 / 3.0).toFixed(25)", "0.3333333333333333148296163"),
+        ("(2.0 / 3.0).toFixed(100)", "0.6666666666666666296592325124947819858789443969726562500000000000000000000000000000000000000000000000"),
+        ("(1e20).toFixed(30)", "100000000000000000000.000000000000000000000000000000"),
+        ("(0.999999).toFixed(2)", "1.00"),
+        ("(5e-324).toFixed(100)", "0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
+        ("(123456789.987654321).toFixed(50)", "123456789.98765432834625244140625000000000000000000000000000"),
+        ("(0.5).toFixed(0)", "1"),
+        ("(1.5).toFixed(0)", "2"),
+        ("(2.5).toFixed(0)", "3"),
+        ("(-2.5).toFixed(0)", "-3"),
+        ("(8.345).toFixed(2)", "8.35"),
+        ("(1.005).toFixed(2)", "1.00"),
+        ("(1e-10).toFixed(18)", "0.000000000100000000"),
+        ("(0.000001).toFixed(7)", "0.0000010"),
+        ("(9007199254740992.0).toFixed(3)", "9007199254740992.000"),
+        ("(590295810358705651712.0).toFixed(0)", "590295810358705651712"),
+        ("(0.1).toFixed(55)", "0.1000000000000000055511151231257827021181583404541015625"),
+        ("(0.1).toFixed(54)", "0.100000000000000005551115123125782702118158340454101563"),
+        ("(0.1).toFixed(19)", "0.1000000000000000056"),
+        ("(-0.0001).toFixed(3)", "-0.000"),
+        ("(0.0001).toFixed(6)", "0.000100"),
+        ("(999.9999999).toFixed(3)", "1000.000"),
+        ("(-99999999.999999999).toFixed(5)", "-100000000.00000"),
+        ("(1e-30).toFixed(40)", "0.0000000000000000000000000000010000000000"),
+        ("(1e-101).toFixed(100)", "0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
+        ("(6e-101).toFixed(100)", "0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"),
+        ("(4503599627370495.5).toFixed(0)", "4503599627370496"),
+        ("(4503599627370495.5).toFixed(1)", "4503599627370495.5"),
+        ("(0.000030517578125).toFixed(14)", "0.00003051757813"),
+        ("(0.000030517578125).toFixed(15)", "0.000030517578125"),
+        ("(123.456).toFixed(18)", "123.456000000000003070"),
+        ("(123.456).toFixed(19)", "123.4560000000000030695"),
+        ("(999999999999999900000.0).toFixed(24)", "999999999999999868928.000000000000000000000000"),
+        ("(0.3).toFixed(100)", "0.2999999999999999888977697537484345957636833190917968750000000000000000000000000000000000000000000000"),
+        ("(1.0000000000000002).toFixed(52)", "1.0000000000000002220446049250313080847263336181640625"),
+        ("(1.0000000000000002).toFixed(51)", "1.000000000000000222044604925031308084726333618164063"),
+        // from 1e21 on, the text of `print`; what is not a number; -0; a `f32`
+        ("(1e21).toFixed(5)", "1000000000000000000000"),
+        ("(-1.5e300).toFixed(0)", huge.as_str()),
+        ("(999999999999999900000.0 + 131072.0).toFixed(1)", "1000000000000000000000"),
+        ("(0.0 / (f64(args.length) * 0.0)).toFixed(3)", "NaN"),
+        ("(1e300 * 1e300).toFixed(100)", "Infinity"),
+        ("(-1e300 * 1e300).toFixed(0)", "-Infinity"),
+        ("(-0.0).toFixed(2)", "0.00"),
+        ("(-0.0).toFixed(30)", "0.000000000000000000000000000000"),
+        ("(0.1f32).toFixed(20)", "0.10000000149011611938"),
+        ("(16777216.0f32).toFixed(1)", "16777216.0"),
+    ];
+    let lines: Vec<String> = known.iter().map(|(call, _)| format!("    print({});\n", call)).collect();
+    let src = format!("action main(args: string[k]): i32 {{\n{}    return 0;\n}}\n", lines.concat());
+    let want: String = known.iter().map(|(_, text)| format!("{}\n", text)).collect();
+    agree(&src, "to_fixed_known", &[], &want);
+    // a program may give the names `repeat` and `scan` to functions of its
+    // own, which then take their place in the prelude too: the functions
+    // of `toFixed` use neither (zeros 24 at a time, a `fold` over the limbs)
+    let own = "function repeat(x: f64): f64 {\n    return x + x;\n}\n\nfunction scan(s: string): i64 {\n    return s.length;\n}\n\naction main(args: string[k]): i32 {\n    print([(1e20).toFixed(args.length + 30), (0.1).toFixed(args.length + 30), `${repeat(0.75)} ${scan(\"abc\")}`]);\n    return 0;\n}\n";
+    agree(own, "to_fixed_own_names", &[], "[100000000000000000000.000000000000000000000000000000, 0.100000000000000005551115123126, 1.5 3]\n");
+
+    // the edges, with 0 to 100 decimals
+    let texts = r#"action main(args: string[k]): i32 {
+    const xs = readF64(args[0]);
+    print(join(map(iota(101), (d) => join(map(xs, (x) => x.toFixed(d)), "\n")), "\n"));
+    return 0;
+}
+"#;
+    let top = (1u64 << 52) - 1;
+    let sign = 1u64 << 63;
+    let mut bits: Vec<u64> = Vec::new();
+    for s in [0, sign] {
+        bits.extend([s, s | 1, s | 2, s | 3, s | 0x7ff0_0000_0000_0000, s | 0x7ff8_0000_0000_0000, s | 0x7ff0_0000_0000_0001, s | (u64::MAX >> 1)]);
+    }
+    let mut r = Rng(0x9e37_79b9_7f4a_7c15);
+    for be in 0..2047u64 {
+        // every exponent of the numbers `toFixed` writes digits of (2^-340
+        // to 2^70), one in 16 of the others
+        if (683..=1094).contains(&be) || be % 16 == 0 {
+            bits.extend([be << 52, be << 52 | 1, be << 52 | top, be << 52 | (r.next() & top), sign | be << 52 | (r.next() & top)]);
+        }
+    }
+    let around = |v: f64, bits: &mut Vec<u64>| {
+        let b = v.to_bits();
+        bits.extend([b, b + 1, b.wrapping_sub(1) & (sign - 1), sign | b]);
+    };
+    for e in -110..=22 {
+        for digits in ["1", "5", "9.5", "2.5", "4.5", "1.2345678901234567", "4.9999999999999999", "9.9999999999999999999"] {
+            around(format!("{}e{}", digits, e).parse().unwrap(), &mut bits);
+        }
+    }
+    // the halves of each binary place and their neighbours
+    for j in 1..60 {
+        for k in [1u64, 3, 5, 101, 12345, (1 << j) - 1, (1 << j) + 1] {
+            around(k as f64 / 2f64.powi(j), &mut bits);
+        }
+    }
+    for n in ["0", "9", "99", "999999", "99999999", "999999999", "999999999999999", "4503599627370495"] {
+        for frac in ["5", "05", "0005", "49999999", "50000001", "95", "9995", "99999995", "999999995", "9999999999999995"] {
+            around(format!("{}.{}", n, frac).parse().unwrap(), &mut bits);
+        }
+    }
+    for v in [1e21, 1e20, 2f64.powi(52), 2f64.powi(53), 2f64.powi(64), 2f64.powi(69), 1e18, 1e19, 2f64.powi(-11), 2f64.powi(-12), 2f64.powi(-64), 2f64.powi(-65), 2f64.powi(-113), 2f64.powi(-114), 5e-19, 5e-101, 2f64.powi(-333), 2f64.powi(-334), 2f64.powi(-386), 2f64.powi(-387), 1.005, 0.125, 99.995, 1.45, 123.456] {
+        for k in 0..7u64 {
+            bits.extend([v.to_bits() + k - 3, sign | (v.to_bits() + k - 3)]);
+        }
+    }
+    let file = |name: &str, bits: &[u64]| -> String {
+        let p = tmp(name);
+        std::fs::write(&p, bits.iter().flat_map(|b| b.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let fixed = |b: u64, d: i64| isc_interp::rt::format_fixed(f64::from_bits(b), d).unwrap();
+    let want = |bits: &[u64]| -> String { (0..=100).flat_map(|d| bits.iter().map(move |&b| fixed(b, d) + "\n")).collect() };
+    let same = |got: &str, expected: &str, bits: &[u64], how: &str| {
+        for (i, (g, e)) in got.lines().zip(expected.lines()).enumerate() {
+            assert_eq!(g, e, "{}: toFixed({}) of the double of bits {:#018x}", how, i / bits.len(), bits[i % bits.len()]);
+        }
+        assert!(got == expected, "{}: the texts differ", how);
+    };
+    let edges = file("to_fixed_edges.f64", &bits);
+    let expected = want(&bits);
+    assert!(interp_ok(texts, &[&edges]) == expected, "interpreted: the texts of {} doubles differ", bits.len());
+    let bin = compile(texts, "to_fixed_isocron");
+    let run = run_bin(&bin, &[&edges]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    same(&run.stdout, &expected, &bits, "compiled");
+    // every layout with the allocator checked: nothing written past a block
+    checked_clean_bin(&bin, &[&edges], None);
+    match wasi_runner() {
+        Some(runner) => {
+            let wasm = compile_wasm(texts, "to_fixed_isocron");
+            let run = run_wasm(&runner, &wasm, &[&edges]);
+            assert_eq!(run.code, 0, "{}", run.stderr);
+            same(&run.stdout, &expected, &bits, "WebAssembly");
+        }
+        None => eprintln!("wasmtime not installed: `toFixed` in WebAssembly skipped"),
+    }
+    // a part under Valgrind, and with the function of the prelude
+    // interpreted: each `toFixed` its call
+    let part: Vec<u64> = bits.iter().copied().step_by(11).collect();
+    let part_file = file("to_fixed_part.f64", &part);
+    valgrind_clean(texts, "to_fixed_isocron", &[&part_file]);
+    let mut p = iscc::frontend("test.isc", texts).unwrap_or_else(|e| panic!("{}", e));
+    let fixed_text = p.fixed_text.expect("the function of the prelude lowered");
+    assert_eq!(fixed_texts_by_prelude(&mut p.body, fixed_text), 1);
+    let mut out = Vec::new();
+    let code = isc_interp::run(&p, &[part_file.clone()], &mut out).unwrap_or_else(|e| panic!("the prelude interpreted: {}", e));
+    assert_eq!(code, 0);
+    same(&String::from_utf8(out).unwrap(), &want(&part), &part, "the prelude interpreted");
+
+    // the sums of the hashes of 4096 texts
+    let sums = r#"function hash(s: string): u64 {
+    return fold(bytes(s), 0xcbf29ce484222325u64, (h, b) => (h ^ u64(b)) * 0x100000001b3u64);
+}
+
+action main(args: string[k]): i32 {
+    const xs = readF64(args[0]);
+    const first = parseI64(args[1]);
+    const count = parseI64(args[2]);
+    print(join(map(iota(count), (j) => join(map(iota(xs.length / 4096), (c) => toString(sum(map(iota(4096), (i) => hash(xs[c * 4096 + i].toFixed(first + j)))))), " ")), "\n"));
+    return 0;
+}
+"#;
+    let hash = |t: &str| t.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    // a twentieth of them under Valgrind (`ISC_TEST_MEMCHECK`, D578)
+    let scale = if memcheck() { 20 } else { 1 };
+    let mut many: Vec<u64> = Vec::new();
+    for _ in 0..40_000 / scale {
+        let (a, b, c) = (r.next(), r.next(), r.next());
+        many.push(a);
+        many.push((b & sign) | (683 + b % 412) << 52 | (c & top));
+        let places = (a >> 8) % 12;
+        let n = (b >> 12) % 10u64.pow(1 + (c % 15) as u32);
+        many.push((n as f64 / 10f64.powi(places as i32)).to_bits() | (c & sign));
+        many.push((((a >> 11) % (1 << (1 + b % 52))) as f64 / 2f64.powi(1 + (c % 39) as i32)).to_bits() | (a & sign));
+    }
+    many.truncate(many.len() / 4096 * 4096);
+    let bin = compile(sums, "to_fixed_sums");
+    let check = |values: &[u64], first: i64, count: i64, name: &str| {
+        let f = file(name, values);
+        let run = run_bin_threads(&bin, &[&f, &first.to_string(), &count.to_string()], Some(4));
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        let mut got = run.stdout.lines();
+        for d in first..first + count {
+            let line: Vec<String> = values.chunks(4096).map(|chunk| chunk.iter().fold(0u64, |a, &b| a.wrapping_add(hash(&fixed(b, d)))).to_string()).collect();
+            let row = got.next().unwrap_or("");
+            for (c, (g, e)) in row.split(' ').zip(&line).enumerate() {
+                assert_eq!(g, e, "toFixed({}) of the doubles {} to {} of {}", d, c * 4096, c * 4096 + 4095, name);
+            }
+            assert_eq!(row, line.join(" "), "toFixed({})", d);
+        }
+        assert_eq!(got.next(), None);
+    };
+    check(&many, 0, 19, "to_fixed_many.f64");
+    check(&many[..many.len().min(3 * 4096)], 19, 82, "to_fixed_long.f64");
+
+    // the counts refused: the panic of the runtime at the place of the call
+    for (body, got) in [
+        ("print((1.5).toFixed(args.length - 1))", "-1"),
+        ("print((1e30).toFixed(args.length + 101))", "101"),
+        ("print(map([0.5, 1.5], (x) => x.toFixed(args.length + 4611686018427387904)))", "4611686018427387904"),
+        ("print(\"|\" + (0.0 / (f64(args.length) * 0.0)).toFixed(args.length - 9223372036854775807 - 1))", "-9223372036854775808"),
+    ] {
+        let src = format!("action main(args: string[k]): i32 {{\n    {};\n    return 0;\n}}\n", body);
+        // the place of the call: its parenthesis
+        let col = 4 + body.find(".toFixed(").unwrap() + ".toFixed(".len();
+        let want = format!("panic at line 2, column {}: toFixed: the number of digits must be between 0 and 100, got {}", col, got);
+        let m = interp_panic(&src, &[]);
+        assert!(m.starts_with(&want), "{}: {}", body, m);
+        let bin = compile(&src, "to_fixed_panic");
+        let run = run_bin(&bin, &[]);
+        assert_eq!(run.code, 101, "{}", body);
+        assert!(run.stderr.starts_with(&want), "{}: {}", body, run.stderr);
+        assert_eq!(run.stdout, "", "{}", body);
+    }
 }
 
 /// D590: `trim`, `trimStart` and `trimEnd` written in Isocron (the

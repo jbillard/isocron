@@ -249,6 +249,10 @@ pub enum StrOp {
     /// `$withText(t, at, piece)`: `t` with the bytes of `piece` from `at`,
     /// written in `t` itself when it is given (a variable at its last use).
     WithText,
+    /// `$fixedText(i0, i1, i2, ni, f0, f1, f2, nf, minus)`: the last `ni`
+    /// bytes of three words, then a point and the last `nf` bytes of three
+    /// others when `nf` is not 0, a `-` before them when `minus`.
+    FixedText,
     /// An operation of `bigint` (D156).
     Big(BigOp),
     /// A regular expression (D157); a `RegExp` is the string `flags/source`.
@@ -286,6 +290,7 @@ impl StrOp {
                 | StrOp::TextTail
                 | StrOp::DecimalText
                 | StrOp::WithText
+                | StrOp::FixedText
                 | StrOp::Big(BigOp::Div | BigOp::Rem | BigOp::Pow | BigOp::Parse)
                 | StrOp::Rx(RxOp::New | RxOp::Replace | RxOp::ReplaceAll)
         )
@@ -532,8 +537,24 @@ pub struct Program {
     pub int_text: Option<(u32, u32)>,
     /// The functions of the prelude that write the text of a `f64` and of
     /// a `f32` (`$rtF64Text`, `$rtF32Text`), lowered when the program
-    /// writes one: the code generator calls them for `toString` of a float.
+    /// writes one: the code generator calls them for `toString` of a float,
+    /// and for `print` of one, their text then written in a buffer of the
+    /// stack.
     pub float_text: Option<(u32, u32)>,
+    /// The function of the prelude that gives the name of a float that is
+    /// no number (`$rtFloatName`), lowered with those of `float_text`: the
+    /// code generator calls it for `print` of such a float, which writes no
+    /// digit.
+    pub float_name: Option<u32>,
+    /// The function of the prelude that writes `x.toFixed(d)`
+    /// (`$rtFixedText`), lowered when the program calls `toFixed`: the code
+    /// generator calls it after its check of `d`.
+    pub fixed_text: Option<u32>,
+    /// The functions from this one on were lowered for the texts above
+    /// (`int_text`, `float_text`, `float_name`, `fixed_text`) and are
+    /// called by them alone, never by the program. The code generator
+    /// emits those the program reaches only.
+    pub text_fns: u32,
     /// The function of the prelude that gives the digits of a `u64` in three
     /// words and their number (`$rtDigitWords`, D606), lowered when the
     /// program writes the text of an integer and pads a text: the code

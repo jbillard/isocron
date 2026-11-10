@@ -710,11 +710,12 @@ function $sameAt(b: u8[k], i: i64, p: u8[m]): boolean {
 }
 
 // The text of a float written in Isocron (SPEC section 17, order 2):
-// `toString` of a `f64` or of a `f32`, lowered once when a program writes
-// one and called by the code generator in place of the runtime's
-// `isc_to_string_f64` and `isc_to_string_f32`. The shortest decimal that
+// `toString` and `print` of a `f64` or of a `f32`, lowered once when a
+// program writes one and called by the code generator in place of the
+// runtime's `isc_to_string_f64`, `isc_to_string_f32`, `isc_print_f64` and
+// `isc_print_f32` (for `print`, its text in a buffer of the stack). The shortest decimal that
 // reads back to the float (Schubfach: R. Giulietti, "The Schubfach way to
-// render doubles", as `f64text` of the runtime core, D467), written as
+// render doubles", as `f64text` of the interpreter, D467), written as
 // Rust's `Display` writes it: no exponent, `-0`, `NaN`, `inf`, `-inf`.
 // An integer below 2^53 (2^24 for a `f32`) is its own digits, written as
 // the integer (`$digitsText`), zero too; the other floats of the common
@@ -736,7 +737,15 @@ function $rtF64Text(x: f64): string {
     if (up > 0 && up < 53 && (c & ((1u64 << u64(up)) - 1u64)) == 0u64) {
         return $digitsText(c >> u64(up), neg);
     }
-    const [f, k] = $shortest(0 - up, c, t != 0u64 || bq == 1);
+    return $shortestText(0 - up, c, t != 0u64 || bq == 1, neg);
+}
+
+// The text of the shortest decimal that reads back to the double `c`
+// 2^`q` (`$shortest`): its 16 or 17 digits made 17. For `$rtF64Text`, and
+// for `toFixed` from 1e21 on (`$fixedRest`), which so has no use of the
+// whole function.
+function $shortestText(q: i64, c: u64, regular: boolean, neg: boolean): string {
+    const [f, k] = $shortest(q, c, regular);
     const wide = f >= 10000000000000000u64;
     return $digits17Text(wide ? f : f * 10u64, k + (wide ? 17 : 16), neg);
 }
@@ -762,7 +771,7 @@ function $rtF32Text(x: f32): string {
 }
 
 // The digits and the power of ten of the shortest decimal that reads back
-// to `c` 2^`q` (`decimal` of the runtime core): `regular` when the float
+// to `c` 2^`q` (`decimal` of the interpreter): `regular` when the float
 // below it is as far as the one above (not the first of its power of two).
 function $shortest(q: i64, c: u64, regular: boolean): [u64, i64] {
     const [vb, vbl, vbr, k] = $scaled(q, c, regular);
@@ -839,7 +848,16 @@ function $digits17Text(f: u64, point: i64, neg: boolean): string {
 // infinity) and of the subnormal ones (`t` 2^`q`).
 @cold
 function $rareFloatText(t: u64, top: boolean, q: i64, neg: boolean): string {
-    return top ? (t != 0u64 ? "NaN" : neg ? "-inf" : "inf") : $subnormalText(t, q, neg);
+    return top ? $rtFloatName(t != 0u64, neg) : $subnormalText(t, q, neg);
+}
+
+// The name of a float that is no number: `nan`, or an infinity and its
+// sign. Lowered with `$rtF64Text` and `$rtF32Text`: `print` of a float
+// tests what is not a number before any digit and writes its name from
+// here, without the buffer of the digits (the code generator calls it with
+// constants: each name is data of the program at the place of its test).
+function $rtFloatName(nan: boolean, neg: boolean): string {
+    return nan ? "NaN" : neg ? "-inf" : "inf";
 }
 
 // A subnormal float `c` 2^`q`: of few bits, so that Schubfach, which tries
@@ -858,7 +876,7 @@ function $subnormalText(c: u64, q: i64, neg: boolean): string {
 // reads back to the same float, that is, lies between its ends (`low` and
 // `high`, times 4, in units of the first exponent; `p` the power of ten of
 // `e` in those units): the one that does, the nearer of `f` when both do,
-// the one above when as near (`shorter` of the runtime core, which read
+// the one above when as near (`shorter` of the interpreter, which reads
 // the decimals back with `str::parse`).
 function $fewerDigits(f: u64, p: u64, low: u64, high: u64, e: i64): [u64, i64] {
     const lo = f / 10u64;
@@ -889,9 +907,171 @@ function $digitCount(v: u64): i64 {
     return t + ((v | 1u64) >= $pow10(t) ? 1 : 0);
 }
 
+// `x.toFixed(d)` written in Isocron (SPEC section 17, order 2): lowered
+// once when a program calls `toFixed` and called by the code generator,
+// after its check of `d` (0 to 100), in place of the runtime's
+// `isc_to_fixed`. `d` decimals, the exact value of `x` rounded to the
+// nearest, a half away from zero, the texts of `write_fixed` of the
+// interpreter (D155, D487). A float below 2^52 is `m` / 2^`s`: its whole
+// part, and for at most 18 decimals its fraction times 10^`d` in 128 bits,
+// rounded (`$roundShift`), one more in the whole part when the fraction
+// rounds to 1; the digits of both in words, laid out by `$fixedText`. The
+// rest out of the way (`$fixedRest`, `@cold`): more decimals, the integers
+// from 2^52 on, the numbers from 1e21 on, what is not a number.
+function $rtFixedText(x: f64, d: i64): string {
+    const bits = $floatBits(x);
+    const mag = bits & 0x7FFFFFFFFFFFFFFFu64;
+    const bq = i64(mag >> 52u64);
+    if (bq >= 1075 || d < 0 || d > 18) {
+        return $fixedRest(x, d);
+    }
+    const t = mag & 0xFFFFFFFFFFFFFu64;
+    const m = bq == 0 ? t : t | 0x10000000000000u64;
+    const s = bq == 0 ? 1074 : 1075 - bq;
+    const whole = s < 53 ? m >> u64(s) : 0u64;
+    const f = s < 53 ? m & ((1u64 << u64(s)) - 1u64) : m;
+    const p = $pow10(d);
+    const q = $roundShift(f, p, s);
+    const up = q == p;
+    const [hi, mid, lo, n] = $rtDigitWords(up ? whole + 1u64 : whole);
+    // the decimals: one word up to 8 (a word of 4 up to 4), two up to 16
+    const r = up ? 0u64 : q;
+    const rh = r / 100000000u64;
+    const f2 = d <= 4 ? $asciiWord4(r) : d <= 8 ? $asciiWord8(r) : $asciiWord8(r - rh * 100000000u64);
+    const f1 = d <= 8 ? 0u64 : d <= 16 ? $asciiWord8(rh) : $asciiWord8(rh % 100000000u64);
+    const f0 = d <= 16 ? 0u64 : $asciiWord4(rh / 100000000u64);
+    // a `-` for a number below zero, even one written as zeros; none for -0
+    return $fixedText(hi, mid, lo, n, f0, f1, f2, d, bits > 0x8000000000000000u64);
+}
+
+// `f` `p` / 2^`s` rounded to the nearest integer, a half up (`s` from 1
+// on): the product in 128 bits (below 2^113: `f` below 2^53, `p` at most
+// 10^18), half of 2^`s` added before the shift; from 2^114 on, zero.
+function $roundShift(f: u64, p: u64, s: i64): u64 {
+    const lo = f * p;
+    const hi = $mulHigh(f, p);
+    if (s < 64) {
+        const l = lo + (1u64 << u64(s - 1));
+        const h = hi + (l < lo ? 1u64 : 0u64);
+        return (h << u64(64 - s)) | (l >> u64(s));
+    }
+    return s == 64 ? hi + (lo >> 63u64) : s < 114 ? (hi + (1u64 << u64(s - 65))) >> u64(s - 64) : 0u64;
+}
+
+// What `$rtFixedText` leaves: what is not a number, a number from 1e21 on
+// (the text of `print`, as the runtime: `$shortestText`), an integer from 2^52 on
+// (`$fixedWhole`), more than 18 decimals (`$fixedLong`).
+@cold
+function $fixedRest(x: f64, d: i64): string {
+    const bits = $floatBits(x);
+    const mag = bits & 0x7FFFFFFFFFFFFFFFu64;
+    const neg = bits > 0x8000000000000000u64;
+    if (mag >= 0x7FF0000000000000u64) {
+        return mag > 0x7FF0000000000000u64 ? "NaN" : neg ? "-Infinity" : "Infinity";
+    }
+    const bq = i64(mag >> 52u64);
+    const t = mag & 0xFFFFFFFFFFFFFu64;
+    const m = bq == 0 ? t : t | 0x10000000000000u64;
+    // from 1e21 on: the text of `print`, the shortest decimal of an integer
+    // of 70 bits or more
+    if (mag >= 0x444B1AE4D6E2EF50u64) {
+        return $shortestText(bq - 1075, m, t != 0u64, neg);
+    }
+    return bq >= 1075 ? $fixedWhole(m, bq - 1075, d, neg) : $fixedLong(m, bq == 0 ? 1074 : 1075 - bq, d, neg);
+}
+
+// The integer `m` 2^`e` below 1e21 (`e` from 0 to 17) with `d` zeros after
+// its point: its last 8 digits and the ones before (below 2^64 both, where
+// the integer is not), then the zeros, those past 24 added 24 at a time
+// (not by `repeat`: a program may give that name to a function of its own,
+// which then takes its place here too).
+function $fixedWhole(m: u64, e: i64, d: i64, neg: boolean): string {
+    const a = m / 100000000u64;
+    const b = (m - a * 100000000u64) << u64(e);
+    const top = (a << u64(e)) + b / 100000000u64;
+    const th = top / 100000000u64;
+    const zeros = 0x3030303030303030u64;
+    const head = $fixedText($asciiWord8(th), $asciiWord8(top - th * 100000000u64), $asciiWord8(b % 100000000u64),
+        8 + $digitCount(top), zeros, zeros, zeros, d < 24 ? d : 24, neg);
+    return d <= 24 ? head : fold(iota((d - 1) / 24), head, (acc, g) => acc + $textTail(zeros, zeros, zeros, d - 24 * (g + 1) < 24 ? d - 24 * (g + 1) : 24, false));
+}
+
+// `d` decimals of `m` / 2^`s` (`s` from 1 to 1074), exactly, whatever `d`:
+// the fraction as limbs of 32 bits (a word each, the lowest first, the
+// point above the last), times 10^8 for each block of 8 decimals, what
+// passes the point the block (`$fixedBlocks`); the first block the
+// decimals that are not a multiple of 8, so that every word of digits but
+// the first is whole. Below 2^-333 a float times 10^100 is below a half:
+// zeros. The text: the whole part and three blocks, then three blocks at a
+// time.
+function $fixedLong(m: u64, s: i64, d: i64, neg: boolean): string {
+    const whole = s < 53 ? m >> u64(s) : 0u64;
+    const tiny = s > 386;
+    const f = tiny ? 0u64 : s < 53 ? m & ((1u64 << u64(s)) - 1u64) : m;
+    const sc = tiny ? 32 : s;
+    const l = (sc + 31) / 32;
+    const off = 32 * l - sc;
+    const low = f << u64(off);
+    const high = off == 0 ? 0u64 : f >> u64(64 - off);
+    const limbs = map(iota(l), (i) => i == 0 ? low & 0xFFFFFFFFu64 : i == 1 ? low >> 32u64 : i == 2 ? high : 0u64);
+    const k = (d + 7) / 8;
+    const b = $fixedBlocks(limbs, fill(k + 1, 0u64), 1, d);
+    const [hi, mid, lo, n] = $rtDigitWords(whole + b[0]);
+    const zeros = 0x3030303030303030u64;
+    const h = k < 3 ? k : 3;
+    const head = $fixedText(hi, mid, lo, n,
+        h == 3 ? $asciiWord8(b[1]) : zeros,
+        h >= 2 ? $asciiWord8(b[h - 1]) : zeros,
+        h >= 1 ? $asciiWord8(b[h]) : zeros,
+        d - 8 * (k - h), neg);
+    return fold(iota((k - h + 2) / 3), head, (acc, g) => acc + $fixedGroup(b, 4 + 3 * g));
+}
+
+// The blocks of decimals from the `j`-th on (`blocks[0]` is what they
+// carry into the whole part): the fraction times 10^8 (for the first
+// block, the power of ten of its decimals), each limb with the carry of
+// the one below, the carry of the last the block. After the last block,
+// a fraction left of a half or more: one added to the decimals
+// (`$fixedUp`).
+function $fixedBlocks(limbs: u64[l], blocks: u64[k], j: i64, d: i64): u64[k] {
+    if (j == k) {
+        return (limbs[l - 1] & 0x80000000u64) != 0u64 ? $fixedUp(blocks, k - 1, d) : blocks;
+    }
+    const mult = j == 1 ? $pow10(d - 8 * (k - 2)) : 100000000u64;
+    // (a `fold` that writes each limb in place, the one below already
+    // written, and not a `scan`, which says the same in half an instruction
+    // less a limb: the prelude calls no name that it did not call before,
+    // since a program may give any of them to a function of its own, which
+    // then takes its place here too; a recursion over the limbs with the
+    // carry as an argument was measured slower than this `fold`)
+    const next = fold(iota(l), limbs, (acc, i) => acc.with(i, (acc[i] & 0xFFFFFFFFu64) * mult + (i == 0 ? 0u64 : acc[i - 1] >> 32u64)));
+    return $fixedBlocks(next, blocks.with(j, next[l - 1] >> 32u64), j + 1, d);
+}
+
+// One added to the decimals at the block `j`: a block of nines made
+// zeros and one added to the block before; before the first, the whole
+// part.
+function $fixedUp(blocks: u64[k], j: i64, d: i64): u64[k] {
+    if (j == 0) {
+        return blocks.with(0, 1u64);
+    }
+    const base = j == 1 ? $pow10(d - 8 * (k - 2)) : 100000000u64;
+    if (blocks[j] + 1u64 < base) {
+        return blocks.with(j, blocks[j] + 1u64);
+    }
+    return $fixedUp(blocks.with(j, 0u64), j - 1, d);
+}
+
+// The text of up to three blocks of 8 decimals from the `at`-th.
+function $fixedGroup(b: u64[k], at: i64): string {
+    const c = k - at < 3 ? k - at : 3;
+    const zeros = 0x3030303030303030u64;
+    return $textTail(c == 3 ? $asciiWord8(b[at]) : zeros, c >= 2 ? $asciiWord8(b[at + c - 2]) : zeros, $asciiWord8(b[at + c - 1]), 8 * c, false);
+}
+
 // The powers of ten of Schubfach: for `k` from -324 to 292, the 126 bits
 // of 10^-`k` rounded up, its high 63 bits then its low 63 (the table of
-// the runtime core, `pow10_g.rs`, D467).
+// the interpreter, `pow10_g.rs`, D467).
 // Generated by tools/gen_pow10_rs.py --isc: do not edit.
 function $pow10G(k: i64): [u64, u64] {
     const g = [

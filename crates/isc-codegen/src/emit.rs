@@ -114,6 +114,67 @@ const STREAM_LEVELS: i64 = 5;
 const PAD_BLOCKS: i64 = 32;
 /// The LLVM type of an array of arrays (D95).
 const NESTED: &str = "{ ptr, i64, i64, i64 }";
+/// The bytes of the buffer of the stack where `print` has the prelude
+/// write the text of a float (`emit_text_print`): the 2 of a separator and
+/// the most `$decimalText` writes, 420 (a sign, `0.`, 400 zeros and 17
+/// digits), on a multiple of 64.
+const TEXT_BUF: usize = 448;
+
+/// The functions lowered for the texts of the prelude (from
+/// `Program::text_fns` on) that the program reaches: by `toString` of an
+/// integer or of a float, by `toFixed`, by a call, from its body, from its
+/// own functions and from those reached. (`print` of a float calls
+/// variants of them, and what those call, emitted when they are.)
+fn text_fns_reached(p: &Program) -> HashSet<u32> {
+    fn scan(p: &Program, e: &Expr, out: &mut HashSet<u32>, todo: &mut Vec<u32>) {
+        let mut reach = |f: u32| {
+            if f >= p.text_fns && out.insert(f) {
+                todo.push(f);
+            }
+        };
+        match &e.kind {
+            ExprKind::Call(f, _) => reach(*f),
+            ExprKind::StrOp(isc_ir::StrOp::ToString, xs) => match (&xs[0].ty, p.int_text, p.float_text) {
+                (Type::Int(_), Some((signed, unsigned)), _) => {
+                    reach(signed);
+                    reach(unsigned);
+                }
+                (Type::F64, _, Some((double, _))) => reach(double),
+                (Type::F32, _, Some((_, single))) => reach(single),
+                _ => {}
+            },
+            ExprKind::StrOp(isc_ir::StrOp::ToFixed, _) => {
+                if let Some(f) = p.fixed_text {
+                    reach(f);
+                }
+            }
+            _ => {}
+        }
+        for c in e.children() {
+            scan(p, c, out, todo);
+        }
+    }
+    let (mut out, mut todo) = (HashSet::new(), Vec::new());
+    scan(p, &p.body, &mut out, &mut todo);
+    for f in p.fns.iter().take(p.text_fns as usize) {
+        scan(p, &f.body, &mut out, &mut todo);
+    }
+    // the functions lowered after those of the texts that the code
+    // generator calls itself: the digits of a padded integer (D606, lowered
+    // when the program pads one), the cases of a text that is not ASCII
+    // (D608, lowered when the program changes a case), the entries of the
+    // allocator (D605, in every program)
+    let kernel = p.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
+    for f in p.digit_words.into_iter().chain(p.case_text).chain(kernel) {
+        if f >= p.text_fns && out.insert(f) {
+            todo.push(f);
+        }
+    }
+    while let Some(f) = todo.pop() {
+        scan(p, &p.fns[f as usize].body, &mut out, &mut todo);
+    }
+    out
+}
 
 /// The lambda of a `scan` is a predefined associative operator of SPEC
 /// section 6 on integers (`+`, `*`, `min`, `max`) or booleans (`and`, `or`,
@@ -606,6 +667,25 @@ pub struct Gen<'p> {
     count_needed: BTreeSet<u32>,
     /// In such a variant: the lambda whose counts its parameter `%sm` gives.
     count_param: Option<(String, &'p Lambda)>,
+    /// The functions of the prelude whose text `print` writes
+    /// (`$rtF64Text`, `$rtF32Text`): their functions `isc_fn_{f}_print` and
+    /// `isc_fn_{f}_digits` to emit, which call the variant `isc_fn_{f}_buf`.
+    text_prints: BTreeSet<u32>,
+    /// The functions whose variant `isc_fn_{f}_buf` is called: the texts it
+    /// gives as its result written in a buffer of its caller (its first
+    /// parameter) and not in a block, or data of the program; its result
+    /// is not freed.
+    buf_needed: BTreeSet<u32>,
+    /// In such a variant: the register of the buffer.
+    text_buf: Option<String>,
+    /// The functions of the texts of the prelude (`Program::text_fns`)
+    /// whose code is called, and those emitted: one called and not reached
+    /// before (`text_fns_reached`) is emitted at the end.
+    text_called: BTreeSet<u32>,
+    text_emitted: HashSet<u32>,
+    /// The texts that such a variant writes in its buffer and its calls of
+    /// other such variants (`buffered_texts`).
+    buf_texts: HashSet<*const Expr>,
     /// The arrays whose counts by blocks are made, while they are in scope:
     /// the block of the counts (`[base, length, count of block 0, ...]`,
     /// `base` null when they were not made).
@@ -973,8 +1053,6 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_write_bytes(ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_print_i64(i64)",
     "declare void @isc_print_u64(i64)",
-    "declare void @isc_print_f64(double)",
-    "declare void @isc_print_f32(float)",
     "declare void @isc_print_bool(i32)",
     "declare void @isc_print_str(ptr, i64)",
     "declare void @isc_print_newline()",
@@ -1016,7 +1094,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare i64 @isc_last_index_of(ptr, i64, ptr, i64)",
     "declare void @isc_hash_index(ptr, ptr, i64, i32)",
     "declare i64 @isc_hash_find(ptr, i64, ptr, i64, i32, i64, ptr, i64)",
-    "declare void @isc_to_fixed(ptr, double, i64, i32, i32)",
+    "declare void @isc_panic_fixed(i64, i32, i32) noreturn",
     "declare void @isc_read_stdin(ptr, i32, i32)",
     "declare void @isc_argsort(ptr, ptr, i64, i32)",
     "declare void @isc_group(ptr, ptr, i64, i32)",
@@ -1109,6 +1187,12 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         count_users: count_users(p),
         count_needed: BTreeSet::new(),
         count_param: None,
+        text_prints: BTreeSet::new(),
+        buf_needed: BTreeSet::new(),
+        text_buf: None,
+        buf_texts: HashSet::new(),
+        text_called: BTreeSet::new(),
+        text_emitted: HashSet::new(),
         counts: HashMap::new(),
         count_req: None,
         prechecked: HashSet::new(),
@@ -1159,9 +1243,16 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         wide_task: false,
         wide_used: false,
     };
-    // the recursive functions (D102)
+    // the recursive functions (D102); of those of the texts of the prelude,
+    // the ones the program reaches (a program that writes the text of a
+    // `f64` has no use of the function of a `f32`: 3700 lines of LLVM IR
+    // read for nothing)
+    let reached = text_fns_reached(p);
     for i in 0..p.fns.len() {
-        g.emit_fn(i, false, false)?;
+        if (i as u32) < p.text_fns || reached.contains(&(i as u32)) {
+            g.text_emitted.insert(i as u32);
+            g.emit_fn(i, false, false, false)?;
+        }
     }
     let slot = g.alloca("{ ptr, i64 }");
     g.emit(format!("call void @isc_args(ptr {}, i32 %argc, ptr %argv)", slot));
@@ -1197,15 +1288,35 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     loop {
         if let Some(f) = g.rg_needed.iter().copied().find(|f| !done.contains(f)) {
             done.insert(f);
-            g.emit_fn(f as usize, true, false)?;
+            g.emit_fn(f as usize, true, false, false)?;
         } else if let Some(f) = g.count_needed.iter().copied().find(|f| !done_counted.contains(f)) {
             done_counted.insert(f);
-            g.emit_fn(f as usize, false, true)?;
+            g.emit_fn(f as usize, false, true, false)?;
         } else {
             break;
         }
     }
     g.emit_rec_helpers()?;
+    // `print` of a float: its functions, and the variants of the functions
+    // of the prelude that write its text in their buffer, each of which
+    // may ask for others
+    let mut done_prints: HashSet<u32> = HashSet::new();
+    let mut done_buffered: HashSet<u32> = HashSet::new();
+    loop {
+        if let Some(f) = g.text_prints.iter().copied().find(|f| !done_prints.contains(f)) {
+            done_prints.insert(f);
+            g.emit_text_print(f)?;
+        } else if let Some(f) = g.buf_needed.iter().copied().find(|f| !done_buffered.contains(f)) {
+            done_buffered.insert(f);
+            g.emit_fn(f as usize, false, false, true)?;
+        } else if let Some(f) = g.text_called.iter().copied().find(|f| !g.text_emitted.contains(f)) {
+            // called by a function of `print` or by a variant `_buf` alone
+            g.text_emitted.insert(f);
+            g.emit_fn(f as usize, false, false, false)?;
+        } else {
+            break;
+        }
+    }
     if big_stack {
         g.decls.insert("declare i32 @isc_run_big_stack(ptr, i32, ptr)".into());
         main.push_str(&format!(
@@ -2735,8 +2846,16 @@ impl<'p> Gen<'p> {
 
     /// A recursive function: `define internal <result> @isc_fn_<i>(<params>)`
     /// (D102). Its parameters are borrowed, its result is new.
-    fn emit_fn(&mut self, i: usize, in_region: bool, counted: bool) -> R<()> {
+    ///
+    /// `buffered`: its variant `isc_fn_<i>_buf`, for a function of the
+    /// prelude that makes a text: the buffer of its caller its first
+    /// parameter, the texts of its result written there (`buffered_texts`).
+    fn emit_fn(&mut self, i: usize, in_region: bool, counted: bool, buffered: bool) -> R<()> {
         let f = &self.p.fns[i];
+        let saved_text_buf = std::mem::replace(&mut self.text_buf, if buffered { Some("%tb".to_string()) } else { None });
+        if buffered {
+            self.buffered_texts(&f.body)?;
+        }
         // the variant of a builder (D200): its nodes cut from the region of
         // its first parameter
         let saved_region = std::mem::replace(&mut self.region, if in_region { Some("%rg".to_string()) } else { None });
@@ -2757,6 +2876,9 @@ impl<'p> Gen<'p> {
         if in_region {
             ps.push("ptr %rg".to_string());
         }
+        if buffered {
+            ps.push("ptr %tb".to_string());
+        }
         // the variant given the counts of a caller (D426): the block of
         // the counts of its parameter, or null
         if counted {
@@ -2772,11 +2894,12 @@ impl<'p> Gen<'p> {
         }
         // the text of an integer (D588): a leaf of a frame of 24 bytes, no
         // test of the stack, copied into its callers
-        // (and the digits of a padded one, D606)
-        let int_text = self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) || self.p.digit_words == Some(i as u32);
-        // the text of a float: a small frame too, its rare paths `@cold`
-        // functions that test the stack themselves
-        let float_text = self.p.float_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
+        // (and the digits of a padded one, D606; the name of a float that
+        // is no number too: two choices of data)
+        let int_text = self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) || self.p.digit_words == Some(i as u32) || self.p.float_name == Some(i as u32);
+        // the text of a float and `toFixed`: a small frame too, their rare
+        // paths `@cold` functions that test the stack themselves
+        let float_text = self.p.float_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) || self.p.fixed_text == Some(i as u32);
         // the fast paths of the allocator (D605): leaves, copied into the
         // entries of the generated code; their rare paths are `@cold`
         // functions that test the stack themselves
@@ -2802,8 +2925,9 @@ impl<'p> Gen<'p> {
         // an array (it must free it after such a call)
         let moves = calls.values().any(|c| !c.moved.is_empty());
         // (WebAssembly: no other calling convention than C's, so no such call)
+        // (nor in a variant `_buf`, whose calls are those of such variants)
         let others =
-            if moves || self.opts.isa.is_wasm() { HashMap::new() } else { isc_ir::passes::other_tail_calls(i as u32, f) };
+            if moves || buffered || self.opts.isa.is_wasm() { HashMap::new() } else { isc_ir::passes::other_tail_calls(i as u32, f) };
         let saved_others = std::mem::replace(&mut self.other_tails, others);
         let saved_tail = self.tail.take();
         if !calls.is_empty() {
@@ -2865,6 +2989,8 @@ impl<'p> Gen<'p> {
             format!("{}_rg", i)
         } else if counted {
             format!("{}_sm", i)
+        } else if buffered {
+            format!("{}_buf", i)
         } else {
             i.to_string()
         };
@@ -2891,8 +3017,91 @@ impl<'p> Gen<'p> {
         self.counts = saved_counts;
         self.count_param = saved_count_param;
         self.stack_strs = saved_stack_strs;
+        self.text_buf = saved_text_buf;
         r?;
         self.funcs.push(text);
+        Ok(())
+    }
+
+    /// The texts that the variant `_buf` of a function gives as its result,
+    /// noted in `buf_texts`: every text its body ends with must be one the
+    /// buffer of the caller can hold (`$textTail`, 25 bytes; `$decimalText`,
+    /// at most `TEXT_BUF`), a literal (data of the program, read where it
+    /// is), or the result of another function, called by its own variant.
+    /// The caller does not free the result: any other text, which a block
+    /// would hold, is refused here, when the compiler is built and tested.
+    fn buffered_texts(&mut self, e: &Expr) -> R<()> {
+        use isc_ir::StrOp as S;
+        match &e.kind {
+            ExprKind::If(_, a, b) => {
+                self.buffered_texts(a)?;
+                self.buffered_texts(b)
+            }
+            ExprKind::Let { body, .. } | ExprKind::Free(_, body) | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => self.buffered_texts(body),
+            ExprKind::StrOp(S::TextTail | S::DecimalText, _) | ExprKind::Call(..) if e.ty == Type::Str => {
+                self.buf_texts.insert(e as *const Expr);
+                Ok(())
+            }
+            ExprKind::Copy(x) if matches!(x.kind, ExprKind::StrLit(_)) && x.ty == Type::Str => Ok(()),
+            ExprKind::StrLit(_) if e.ty == Type::Str => Ok(()),
+            ExprKind::StrOp(S::Panic, _) => Ok(()),
+            _ => Err("codegen: a text of the prelude that `print` cannot write in its buffer".into()),
+        }
+    }
+
+    /// The buffer of the variant `_buf` being emitted, for a text that it
+    /// writes there (`buffered_texts`).
+    fn text_buffer(&self, e: &Expr) -> Option<String> {
+        self.text_buf.clone().filter(|_| self.buf_texts.contains(&(e as *const Expr)))
+    }
+
+    /// `void @isc_fn_<f>_print(x, pre)`: `print` of a float, without its
+    /// newline, after `pre` bytes of the separator `, ` (0, or 2 after an
+    /// element of an array, of a tuple or of a value of a sum type: one
+    /// copy into the buffer of the standard output for both, where the
+    /// separator was a call of its own, 46 instructions). What is not a
+    /// number first, by
+    /// two tests (a NaN, then an infinity, whose difference with itself is
+    /// a NaN): its name, from `$rtFloatName` of the prelude called with
+    /// constants, with no digit made and no frame of the digits (the
+    /// runtime's `isc_print_f32` wrote a NaN in 15 instructions before the
+    /// buffer: through the function of the digits, their frame and their
+    /// rare path, it was 27 to 55 % more instructions than before); after
+    /// a separator, both in 16 bytes of the stack. A number:
+    /// `isc_fn_<f>_digits`, never inlined here (its frame would be made
+    /// before the tests): its text written by the variant `_buf` of the
+    /// function `f` of the prelude in a buffer of its frame (no block of
+    /// the heap), after the separator, then copied into the buffer of the
+    /// standard output. The buffer on 64 bytes: the stores of a short text
+    /// never cross a line of the cache.
+    fn emit_text_print(&mut self, f: u32) -> R<()> {
+        let Some(name) = self.p.float_name else {
+            return Err("codegen: print of a float, the function of the prelude of its names not lowered".into());
+        };
+        self.buf_needed.insert(f);
+        self.text_called.insert(name);
+        self.decls.insert("declare i1 @llvm.expect.i1(i1, i1)".to_string());
+        let t = lt(&self.p.vars[self.p.fns[f as usize].params[0] as usize].ty);
+        let (cc, attrs) = (self.fn_cc(), self.attrs());
+        // the name of a float that is no number, written: alone; after the
+        // separator, both from `%nb` (a name of at most 14 bytes: its
+        // length is a constant here); else one after the other
+        let named = |l: &str, nan: bool, neg: bool| {
+            format!(
+                "{l}:\n  %r.{l} = call {cc}{{ ptr, i64 }} @isc_fn_{name}(i1 {nan}, i1 {neg})\n  %p.{l} = extractvalue {{ ptr, i64 }} %r.{l}, 0\n  %n.{l} = extractvalue {{ ptr, i64 }} %r.{l}, 1\n  %alone.{l} = icmp eq i64 %pre, 0\n  br i1 %alone.{l}, label %{l}.alone, label %{l}.after\n{l}.alone:\n  call void @isc_print_str(ptr %p.{l}, i64 %n.{l})\n  ret void\n{l}.after:\n  store i16 8236, ptr %nb, align 16\n  %short.{l} = icmp ule i64 %n.{l}, 14\n  br i1 %short.{l}, label %{l}.one, label %{l}.two\n{l}.one:\n  %to.{l} = getelementptr inbounds i8, ptr %nb, i64 2\n  call void @llvm.memcpy.p0.p0.i64(ptr %to.{l}, ptr %p.{l}, i64 %n.{l}, i1 false)\n  %len.{l} = add i64 %n.{l}, 2\n  call void @isc_print_str(ptr %nb, i64 %len.{l})\n  ret void\n{l}.two:\n  call void @isc_print_str(ptr %nb, i64 2)\n  call void @isc_print_str(ptr %p.{l}, i64 %n.{l})\n  ret void\n"
+            )
+        };
+        let (nan, minus, plus) = (named("Lnan", true, false), named("Lminus", false, true), named("Lplus", false, false));
+        self.funcs.push(format!(
+            "define internal {cc}void @isc_fn_{f}_print({t} %x, i64 %pre){attrs} {{\nentry:\n  %nb = alloca [16 x i8], align 16\n  %nan0 = fcmp uno {t} %x, 0.0\n  %nan = call i1 @llvm.expect.i1(i1 %nan0, i1 false)\n  br i1 %nan, label %Lnan, label %Lnum\n{nan}Lnum:\n  %d = fsub {t} %x, %x\n  %inf0 = fcmp uno {t} %d, 0.0\n  %inf = call i1 @llvm.expect.i1(i1 %inf0, i1 false)\n  br i1 %inf, label %Linf, label %Ldigits\nLinf:\n  %neg = fcmp olt {t} %x, 0.0\n  br i1 %neg, label %Lminus, label %Lplus\n{minus}{plus}Ldigits:\n  call {cc}void @isc_fn_{f}_digits({t} %x, i64 %pre)\n  ret void\n}}\n"
+        ));
+        // the separator at the start of the buffer, the text after it: one
+        // copy from where the bytes asked start; a text that is not in the
+        // buffer (data of the program: none for a number today) after the
+        // separator
+        self.funcs.push(format!(
+            "define internal {cc}void @isc_fn_{f}_digits({t} %x, i64 %pre) noinline{attrs} {{\nentry:\n  %tb = alloca [{TEXT_BUF} x i8], align 64\n  store i16 8236, ptr %tb, align 64\n  %at = getelementptr inbounds i8, ptr %tb, i64 2\n  %r = call {cc}{{ ptr, i64 }} @isc_fn_{f}_buf(ptr %at, {t} %x)\n  %p = extractvalue {{ ptr, i64 }} %r, 0\n  %n = extractvalue {{ ptr, i64 }} %r, 1\n  %here = icmp eq ptr %p, %at\n  br i1 %here, label %Lone, label %Ltwo\nLone:\n  %skip = sub i64 2, %pre\n  %from = getelementptr inbounds i8, ptr %tb, i64 %skip\n  %len = add i64 %n, %pre\n  call void @isc_print_str(ptr %from, i64 %len)\n  ret void\nLtwo:\n  call void @isc_print_str(ptr %tb, i64 %pre)\n  call void @isc_print_str(ptr %p, i64 %n)\n  ret void\n}}\n"
+        ));
         Ok(())
     }
 
@@ -5014,15 +5223,19 @@ impl<'p> Gen<'p> {
                         let x = self.env[var].clone();
                         self.drop_var(*var, &x);
                     }
+                    self.text_called.insert(*f);
                     let r = self.ins(format!("tail call tailcc {} @isc_fn_{}({})", ret, f, vals.join(", ")));
                     self.emit(format!("ret {} {}", ret, r));
                     let dead = self.label();
                     self.block(&dead);
                     return Ok(V { r: "poison".into(), t: ret, uni: true });
                 }
+                // the result written in the buffer of the variant `_buf`
+                // being emitted: the variant of the callee
+                let buffer = self.text_buffer(e);
                 // the base case of the callee here, the call only for the
                 // other branch (D202)
-                let inline_base = self.base_cases.get(f).copied();
+                let inline_base = if buffer.is_some() { None } else { self.base_cases.get(f).copied() };
                 let mut base_join = None;
                 if let Some((c, base, then_base)) = inline_base {
                     let params = self.p.fns[*f as usize].params.clone();
@@ -5060,7 +5273,10 @@ impl<'p> Gen<'p> {
                 }
                 let cc = self.fn_cc();
                 // a builder called while a region is made: its variant
-                let r = if let (Some(rg), true) = (self.region.clone(), self.builders.contains(f)) {
+                let r = if let Some(tb) = buffer {
+                    self.buf_needed.insert(*f);
+                    self.ins(format!("call {}{} @isc_fn_{}_buf(ptr {}, {})", cc, ret, f, tb, vals.join(", ")))
+                } else if let (Some(rg), true) = (self.region.clone(), self.builders.contains(f)) {
                     self.rg_needed.insert(*f);
                     self.ins(format!("call {}{} @isc_fn_{}_rg(ptr {}, {})", cc, ret, f, rg, vals.join(", ")))
                 } else if let Some(sm) = self.count_arg(*f, args) {
@@ -5068,6 +5284,7 @@ impl<'p> Gen<'p> {
                     self.count_needed.insert(*f);
                     self.ins(format!("call {}{} @isc_fn_{}_sm(ptr {}, {})", cc, ret, f, sm, vals.join(", ")))
                 } else {
+                    self.text_called.insert(*f);
                     self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")))
                 };
                 if let Some((bv, bend, lj)) = base_join {
@@ -13763,8 +13980,52 @@ impl<'p> Gen<'p> {
         let Some((s, u)) = self.p.int_text else {
             return Err("codegen: the text of an integer, its function of the prelude not lowered".into());
         };
+        self.text_called.insert(if signed { s } else { u });
         let call = format!("call {}{{ ptr, i64 }} @isc_fn_{}(i64 {})", self.fn_cc(), if signed { s } else { u }, x);
         Ok(v(self.ins(call), "{ ptr, i64 }"))
+    }
+
+    /// The last `n` bytes (1 to 24) of the 24 bytes of three words written
+    /// at `at` by whole words (`$fixedText`): the first word that holds
+    /// some of them shifted to its bytes, the words after it whole. Up to
+    /// 8 bytes, the word shifted writes 8: those past `n` are zeros.
+    fn words_tail(&mut self, at: &str, w: [&str; 3], n: &str) {
+        // `x` stored `off` bytes after `at`
+        let put = |g: &mut Self, off: &str, x: &str| {
+            let p = g.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", at, off));
+            g.emit(format!("store i64 {}, ptr {}, align 1", x, p));
+        };
+        // `x` without its first `bytes - n` bytes
+        let shifted = |g: &mut Self, x: &str, bytes: u32| {
+            let s = g.ins(format!("sub i64 {}, {}", bytes, n));
+            let b = g.ins(format!("shl i64 {}, 3", s));
+            g.ins(format!("lshr i64 {}, {}", x, b))
+        };
+        let (lbig, lsmall, l16, l9, lpair, ljoin) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        let gt8 = self.ins(format!("icmp sgt i64 {}, 8", n));
+        self.cbr(&gt8, &lbig, &lsmall);
+        self.block(&lbig);
+        let gt16 = self.ins(format!("icmp sgt i64 {}, 16", n));
+        self.cbr(&gt16, &l16, &l9);
+        self.block(&l16);
+        let h = shifted(self, w[0], 24);
+        put(self, "0", &h);
+        let at16 = self.ins(format!("sub i64 {}, 16", n));
+        put(self, &at16, w[1]);
+        self.br(&lpair);
+        self.block(&l9);
+        let m = shifted(self, w[1], 16);
+        put(self, "0", &m);
+        self.br(&lpair);
+        self.block(&lpair);
+        let at8 = self.ins(format!("sub i64 {}, 8", n));
+        put(self, &at8, w[2]);
+        self.br(&ljoin);
+        self.block(&lsmall);
+        let t = shifted(self, w[2], 8);
+        put(self, "0", &t);
+        self.br(&ljoin);
+        self.block(&ljoin);
     }
 
     fn str_op(&mut self, e: &Expr, op: isc_ir::StrOp, es: &[Expr]) -> R<V> {
@@ -13914,6 +14175,7 @@ impl<'p> Gen<'p> {
                             return Err("codegen: the text of a float, its function of the prelude not lowered".into());
                         };
                         let (i, lty) = if *t == Type::F64 { (d, "double") } else { (f, "float") };
+                        self.text_called.insert(i);
                         let call = format!("call {}{{ ptr, i64 }} @isc_fn_{}({} {})", self.fn_cc(), i, lty, x.r);
                         return Ok(v(self.ins(call), "{ ptr, i64 }"));
                     }
@@ -14270,8 +14532,12 @@ impl<'p> Gen<'p> {
                 let off = self.ins(format!("zext i1 {} to i64", minus));
                 let total = self.ins(format!("add i64 {}, {}", n, off));
                 // a block of 25 bytes whatever `n` (the class of 3 as well):
-                // the allocation does not wait for the count of the digits
-                let dst = self.ins("call noalias ptr @isc_alloc(i64 25)".to_string());
+                // the allocation does not wait for the count of the digits;
+                // or the buffer of the caller (`buffered_texts`)
+                let dst = match self.text_buffer(e) {
+                    Some(tb) => tb,
+                    None => self.ins("call noalias ptr @isc_alloc(i64 25)".to_string()),
+                };
                 self.emit(format!("store i8 45, ptr {}, align 1", dst));
                 let d = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
                 self.put_tail(&d, &w0, &w1, &w2, &n, &nm1);
@@ -14357,10 +14623,17 @@ impl<'p> Gen<'p> {
                 let before = self.ins(format!("icmp sgt i64 {}, 0", point));
                 let z = self.ins(format!("sub i64 0, {}", point));
                 let mag = self.ins(format!("select i1 {}, i64 {}, i64 {}", before, point, z));
-                let need = self.ins(format!("add i64 {}, 20", mag));
-                let big = self.ins(format!("icmp ugt i64 {}, 64", need));
-                let size = self.ins(format!("select i1 {}, i64 {}, i64 64", big, need));
-                let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", size));
+                // (or the buffer of the caller, `buffered_texts`: the point
+                // within 400 digits, so at most 420 bytes of `TEXT_BUF`)
+                let dst = match self.text_buffer(e) {
+                    Some(tb) => tb,
+                    None => {
+                        let need = self.ins(format!("add i64 {}, 20", mag));
+                        let big = self.ins(format!("icmp ugt i64 {}, 64", need));
+                        let size = self.ins(format!("select i1 {}, i64 {}, i64 64", big, need));
+                        self.ins(format!("call noalias ptr @isc_alloc(i64 {})", size))
+                    }
+                };
                 self.emit(format!("store i8 45, ptr {}, align 1", dst));
                 let p = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
                 let d8 = self.ins(format!("trunc i64 {} to i8", d));
@@ -14526,6 +14799,54 @@ impl<'p> Gen<'p> {
                 self.block(&ldone);
                 self.arr(&base, &n)
             }
+            // `$fixedText(i0, i1, i2, ni, f0, f1, f2, nf, minus)`: one check
+            // (`ni` in 1 to 24, `nf` in 0 to 24, every byte ASCII), a block
+            // of 64 bytes (a `-`, 24 bytes, a point and 24 bytes are 50),
+            // the `-` written first (the digits over it when there is
+            // none), then the bytes of each part from the registers by
+            // whole words (`words_tail`): what the first word of the whole
+            // part writes past its bytes is written again by the point and
+            // the fraction, what the first word of the fraction writes
+            // past its bytes lies past the text and inside the block
+            S::FixedText => {
+                let (ni, nf, minus) = (vals[3].r.clone(), vals[7].r.clone(), vals[8].r.clone());
+                let mut all = vals[0].r.clone();
+                for k in [1, 2, 4, 5, 6] {
+                    all = self.ins(format!("or i64 {}, {}", all, vals[k].r));
+                }
+                let hi = self.ins(format!("and i64 {}, -9187201950435737472", all));
+                let ascii = self.ins(format!("icmp eq i64 {}, 0", hi));
+                let nim1 = self.ins(format!("sub i64 {}, 1", ni));
+                let iok = self.ins(format!("icmp ult i64 {}, 24", nim1));
+                let fok = self.ins(format!("icmp ult i64 {}, 25", nf));
+                let ok1 = self.ins(format!("and i1 {}, {}", ascii, iok));
+                let ok = self.ins(format!("and i1 {}, {}", ok1, fok));
+                let (msg, mlen) = self.str_const("fixedText: twice 24 bytes of ASCII, the last 1 to 24 of the first written, the last 0 to 24 of the others");
+                let (none, _) = self.str_const("");
+                self.guard(&ok, format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 0, ptr {}, i64 0, {})", msg, mlen, none, none, Self::pos(e.span)));
+                let off = self.ins(format!("zext i1 {} to i64", minus));
+                let dst = self.ins("call noalias ptr @isc_alloc(i64 64)".to_string());
+                self.emit(format!("store i8 45, ptr {}, align 1", dst));
+                let p = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", dst, off));
+                self.words_tail(&p, [&vals[0].r, &vals[1].r, &vals[2].r], &ni);
+                let (lfrac, ljoin) = (self.label(), self.label());
+                let lfrom = self.current_label("entry");
+                let whole = self.ins(format!("icmp eq i64 {}, 0", nf));
+                self.cbr(&whole, &ljoin, &lfrac);
+                self.block(&lfrac);
+                let q = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", p, ni));
+                self.emit(format!("store i8 46, ptr {}, align 1", q));
+                let r = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 1", q));
+                self.words_tail(&r, [&vals[4].r, &vals[5].r, &vals[6].r], &nf);
+                let nf1 = self.ins(format!("add i64 {}, 1", nf));
+                let lend = self.current_label(&lfrac);
+                self.br(&ljoin);
+                self.block(&ljoin);
+                let after = self.ins(format!("phi i64 [ 0, %{} ], [ {}, %{} ]", lfrom, nf1, lend));
+                let len = self.ins(format!("add i64 {}, {}", ni, off));
+                let total = self.ins(format!("add i64 {}, {}", len, after));
+                self.arr(&dst, &total)
+            }
             // `$panic(a, b, c)` (D582): the call that does not return, then
             // a block no path reaches, where the value of its type is zero
             S::Panic => {
@@ -14615,9 +14936,19 @@ impl<'p> Gen<'p> {
                 };
                 new_str(self, format!("call void @isc_argsort(ptr OUT, ptr {}, i64 {}, i32 {})", p, n, kind))
             }
+            // `x.toFixed(d)`: `d` in 0 to 100 (the panic of the runtime
+            // otherwise, at the place of the call), then the function of
+            // the prelude that writes the text
             S::ToFixed => {
-                let pos = Self::pos(e.span);
-                new_str(self, format!("call void @isc_to_fixed(ptr OUT, double {}, i64 {}, {})", vals[0].r, vals[1].r, pos))
+                let Some(f) = self.p.fixed_text else {
+                    return Err("codegen: toFixed, its function of the prelude not lowered".into());
+                };
+                let d = vals[1].r.clone();
+                let ok = self.ins(format!("icmp ule i64 {}, 100", d));
+                self.guard(&ok, format!("call void @isc_panic_fixed(i64 {}, {})", d, Self::pos(e.span)));
+                self.text_called.insert(f);
+                let call = format!("call {}{{ ptr, i64 }} @isc_fn_{}(double {}, i64 {})", self.fn_cc(), f, vals[0].r, d);
+                v(self.ins(call), "{ ptr, i64 }")
             }
             // made here (`join_text`, D607)
             S::Join => {
@@ -14699,6 +15030,19 @@ impl<'p> Gen<'p> {
         })
     }
 
+    /// `print` of a float: the text of the function of the prelude, written
+    /// in a buffer of the stack (`emit_text_print`), after `pre` bytes of
+    /// the separator `, ` (0 or 2).
+    fn print_float(&mut self, x: &V, t: &Type, pre: &str) -> R<()> {
+        let Some((d, f)) = self.p.float_text else {
+            return Err("codegen: print of a float, the function of the prelude of its text not lowered".into());
+        };
+        let i = if *t == Type::F64 { d } else { f };
+        self.text_prints.insert(i);
+        self.emit(format!("call {}void @isc_fn_{}_print({} {}, i64 {})", self.fn_cc(), i, lt(t), x.r, pre));
+        Ok(())
+    }
+
     fn print_value(&mut self, x: &V, t: &Type, shape: &Shape) -> R<()> {
         match t {
             // refused by the checker (D339)
@@ -14713,8 +15057,7 @@ impl<'p> Gen<'p> {
                 let f = if k.signed() { "isc_print_i64" } else { "isc_print_u64" };
                 self.emit(format!("call void @{}(i64 {})", f, w));
             }
-            Type::F64 => self.emit(format!("call void @isc_print_f64(double {})", x.r)),
-            Type::F32 => self.emit(format!("call void @isc_print_f32(float {})", x.r)),
+            Type::F64 | Type::F32 => self.print_float(x, t, "0")?,
             Type::Bool => {
                 let b = self.ins(format!("zext i1 {} to i32", x.r));
                 self.emit(format!("call void @isc_print_bool(i32 {})", b));
@@ -14751,11 +15094,16 @@ impl<'p> Gen<'p> {
                     if !slots.is_empty() {
                         self.print_lit("(");
                         for (i, (&slot, sh)) in slots.iter().zip(shapes.iter()).enumerate() {
+                            let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, slot));
+                            let ct = ts[slot as usize].clone();
+                            // a float after a separator: both written at once
+                            if i > 0 && matches!(ct, Type::F64 | Type::F32) {
+                                self.print_float(&v(f, lt(&ct)), &ct, "2")?;
+                                continue;
+                            }
                             if i > 0 {
                                 self.print_lit(", ");
                             }
-                            let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, slot));
-                            let ct = ts[slot as usize].clone();
                             self.print_value(&v(f, lt(&ct)), &ct, sh)?;
                         }
                         self.print_lit(")");
@@ -14774,13 +15122,19 @@ impl<'p> Gen<'p> {
                 };
                 self.print_lit(open);
                 for (i, c) in ts.iter().enumerate() {
+                    let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+                    // a float after a separator (not the name of a field):
+                    // both written at once
+                    if i > 0 && names.is_none() && matches!(c, Type::F64 | Type::F32) {
+                        self.print_float(&v(f, lt(c)), c, "2")?;
+                        continue;
+                    }
                     if i > 0 {
                         self.print_lit(", ");
                     }
                     if let Some(ns) = &names {
                         self.print_lit(&format!("{}: ", ns[i]));
                     }
-                    let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
                     let sub = subs.as_ref().map(|ss| ss[i].clone()).unwrap_or(Shape::Plain);
                     self.print_value(&v(f, lt(c)), c, &sub)?;
                 }
@@ -14819,6 +15173,12 @@ impl<'p> Gen<'p> {
                 };
                 self.for_range("0", &n, 1, &mut |g, i| {
                     let first = g.ins(format!("icmp eq i64 {}, 0", i));
+                    // a float: its separator written with it
+                    if matches!(et, Type::F64 | Type::F32) {
+                        let pre = g.ins(format!("select i1 {}, i64 0, i64 2", first));
+                        let el = g.load_elem(&p, &n, i, &et, 1);
+                        return g.print_float(&el, &et, &pre);
+                    }
                     let lsep = g.label();
                     let lel = g.label();
                     g.cbr(&first, &lel, &lsep);

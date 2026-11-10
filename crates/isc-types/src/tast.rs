@@ -192,6 +192,15 @@ pub enum Prim {
     /// compilation its tokens: one, where an array literal has one a word);
     /// the prelude alone can name it
     Words,
+    /// `$fixedText(i0, i1, i2, ni, f0, f1, f2, nf, minus)`: a decimal
+    /// number without exponent as a string, its digits given as bytes: the
+    /// last `ni` bytes (1 to 24) of the 24 bytes of the words `i0`, `i1`,
+    /// `i2` (ASCII, the first at the lowest place), then, when `nf` is not
+    /// 0, a point and the last `nf` bytes (1 to 24) of the words `f0`,
+    /// `f1`, `f2`; a `-` first when `minus`; a panic for an `ni` or an `nf`
+    /// out of their bounds or a byte not ASCII; the prelude alone can name
+    /// it
+    FixedText,
     /// A primitive of the system (D322), called by the standard modules only.
     Sys(SysOp),
     /// A primitive of the kernel of the runtime (D601), named by the

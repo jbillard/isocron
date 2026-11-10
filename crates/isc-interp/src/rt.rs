@@ -1,6 +1,7 @@
 //! The interpreter's side of the runtime: file I/O with the standard library,
-//! and every message and number printed through `isc-runtime-core`, exactly
-//! like compiled programs.
+//! every message written through `isc-runtime-core`, exactly like compiled
+//! programs, and the texts of floats (`floats`), those of the prelude that
+//! compiled programs run.
 
 use isc_runtime_core::{self as sem, Panic};
 pub use isc_runtime_core::{maximum_f32, maximum_f64, minimum_f32, minimum_f64, CANONICAL_NAN_BITS, PANIC_EXIT_CODE};
@@ -12,7 +13,7 @@ pub fn text(p: &Panic) -> String {
 /// Shortest decimal form that reads back to the same value; NaN without sign.
 pub fn format_f64(v: f64) -> String {
     let mut s = String::new();
-    let _ = sem::write_f64(&mut s, v);
+    let _ = crate::floats::write_f64(&mut s, v);
     s
 }
 
@@ -46,6 +47,43 @@ pub fn decimal_text(d: u64, w1: u64, w2: u64, n: i64, point: i64, minus: bool) -
         let p = point as usize;
         t.extend_from_slice(&digits[..p.min(17)]);
         t.resize(t.len() + p.saturating_sub(17), b'0');
+    }
+    String::from_utf8(t).ok()
+}
+
+/// `x.toFixed(d)` (D155): the text, or the message of the panic for a `d`
+/// out of 0 to 100.
+pub fn format_fixed(x: f64, d: i64) -> Result<String, String> {
+    let mut s = String::new();
+    match crate::floats::write_fixed(&mut s, x, d) {
+        Ok(()) => Ok(s),
+        Err(p) => Err(text(&p)),
+    }
+}
+
+/// The message of `$fixedText` for arguments out of their bounds, as the
+/// compiled code writes it.
+pub const FIXED_TEXT_PANIC: &str = "fixedText: twice 24 bytes of ASCII, the last 1 to 24 of the first written, the last 0 to 24 of the others";
+
+/// `$fixedText(i0, i1, i2, ni, f0, f1, f2, nf, minus)`, as the compiled
+/// code writes it: the last `ni` bytes of the words of `whole`, then, when
+/// `nf` is not 0, a point and the last `nf` bytes of the words of
+/// `fraction`, a `-` first when `minus`; `None` for arguments out of
+/// their bounds.
+pub fn fixed_text(whole: [u64; 3], ni: i64, fraction: [u64; 3], nf: i64, minus: bool) -> Option<String> {
+    let ascii = whole.iter().chain(&fraction).all(|w| w & 0x8080_8080_8080_8080 == 0);
+    if !ascii || !(1..=24).contains(&ni) || !(0..=24).contains(&nf) {
+        return None;
+    }
+    let bytes = |w: [u64; 3]| -> Vec<u8> { w.iter().flat_map(|x| x.to_le_bytes()).collect() };
+    let mut t = Vec::new();
+    if minus {
+        t.push(b'-');
+    }
+    t.extend_from_slice(&bytes(whole)[24 - ni as usize..]);
+    if nf > 0 {
+        t.push(b'.');
+        t.extend_from_slice(&bytes(fraction)[24 - nf as usize..]);
     }
     String::from_utf8(t).ok()
 }
@@ -191,7 +229,7 @@ pub fn write_f32_file(path: &str, xs: &[f32]) -> Result<(), String> {
 
 pub fn format_f32(v: f32) -> String {
     let mut s = String::new();
-    let _ = sem::write_f32(&mut s, v);
+    let _ = crate::floats::write_f32(&mut s, v);
     s
 }
 

@@ -11,8 +11,11 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use isc_ir::*;
+mod f64text;
 pub mod ffi;
+pub mod floats;
 pub mod handles;
+mod pow10_g;
 pub mod rt;
 
 /// Reduction parameters of SPEC section 10.
@@ -462,6 +465,20 @@ impl Interp<'_> {
                 }
                 Value::Str(Rc::from(std::format!("{}{}{}", &t[..at as usize], piece, &t[end as usize..])))
             }
+            // `$fixedText(i0, i1, i2, ni, f0, f1, f2, nf, minus)`
+            S::FixedText => {
+                let int = |v: &Value| match v {
+                    Value::Int(x) => *x,
+                    v => panic!("an integer expected, got {:?}", v),
+                };
+                let minus = matches!(vs[8], Value::Bool(true));
+                let whole = [int(&vs[0]) as u64, int(&vs[1]) as u64, int(&vs[2]) as u64];
+                let fraction = [int(&vs[4]) as u64, int(&vs[5]) as u64, int(&vs[6]) as u64];
+                match rt::fixed_text(whole, int(&vs[3]), fraction, int(&vs[7]), minus) {
+                    Some(t) => Value::Str(Rc::from(t)),
+                    None => return panic_at(e, rt::FIXED_TEXT_PANIC.to_string()),
+                }
+            }
             // `$panic(a, b, c)` (D582): the three texts one after the other
             S::Panic =>return panic_at(e, std::format!("{}{}{}", s(&vs[0]), s(&vs[1]), s(&vs[2]))),
             // `readWord` (D580): the code of the runtime core
@@ -520,15 +537,14 @@ impl Interp<'_> {
                 Value::Array(Rc::new(Array::Int(idx.into_iter().map(|i| i as i64).collect())))
             }
             S::ToFixed => {
-                let mut out = String::new();
                 let (x, d) = match (&vs[0], &vs[1]) {
                     (Value::F64(x), Value::Int(d)) => (*x, *d),
                     _ => (0.0, 0),
                 };
-                if let Err(p) = isc_runtime_core::write_fixed(&mut out, x, d) {
-                    return panic_at(e, std::format!("{}", p));
+                match rt::format_fixed(x, d) {
+                    Ok(out) => Value::Str(Rc::from(out)),
+                    Err(m) => return panic_at(e, m),
                 }
-                Value::Str(Rc::from(out))
             }
             S::Join => {
                 let parts: Vec<Rc<str>> = match &vs[0] {

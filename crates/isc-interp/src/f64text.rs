@@ -258,8 +258,10 @@ mod tests {
     fn shortest_as_display() {
         let mut edges: Vec<f64> = alloc::vec![0.0, -0.0, f64::MIN_POSITIVE, f64::MAX, f64::MIN, f64::EPSILON, 0.1, 0.2, 0.3, 1.0 / 3.0, 5e-324, 1e-323, 1.5e-323, 2.2250738585072009e-308, 9007199254740992.0, 9007199254740993.0, 123456789012345680.0, 1e21, 1e22, 1e23, 0.5, 1.5, 100.0, 1234.5678];
         for e in (-1074..1024).step_by(if cfg!(miri) { 41 } else { 1 }) {
-            edges.push(2f64.powi(e));
-            edges.push(-(2f64.powi(e)));
+            // (a subnormal power by its bit: `powi` gives zero below 2^-1023)
+            let p = if e < -1022 { f64::from_bits(1u64 << (e + 1074)) } else { 2f64.powi(e) };
+            edges.push(p);
+            edges.push(-p);
         }
         for e in (-323..309).step_by(if cfg!(miri) { 23 } else { 1 }) {
             edges.push(format!("1e{}", e).parse().unwrap());
