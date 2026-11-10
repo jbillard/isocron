@@ -14116,3 +14116,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     thread; then the pool, the files and `print`, the start and the
     panics, the copies of blocks, Windows and WebAssembly, the regular
     expressions and the big integers, as the proposal lists them.
+- **D600 — The kernel, step 0: without `noalias` on its allocations,
+  `nbody` runs 72 % more instructions; the nine other programs none
+  (2026-11-10).** The first risk of an allocator inlined into the program
+  (D599), measured before its design.
+  - Today an allocation is a call of a function declared `noalias`: LLVM
+    knows that its result is memory that nothing else names. Inlined, the
+    result is a value read from the list of free blocks of the thread:
+    that knowledge is lost for every pass after the inlining.
+  - Measured: the ten programs of the benchmarks built twice by the same
+    compiler, the second time with `noalias` taken out of the
+    declarations and the calls of `isc_alloc` and `isc_alloc_zeroed`
+    (an experiment, not kept in the code); instructions of one thread on
+    small inputs, the same outputs. `nbody` (300000 steps): 84443307 →
+    145043650 (+71.76 %). binary-trees, fannkuch-redux, spectral-norm,
+    mandelbrot, pidigits, fasta, reverse-complement, k-nucleotide,
+    regex-redux: within 0.003 %.
+  - What it decides for the design. The allocator written in Isocron
+    cannot be inlined before the passes that use that knowledge. The
+    module is optimized first with the allocations as calls of functions
+    declared `noalias` and without a body, as today; the bodies of the
+    fast paths (written in Isocron, optimized apart) are joined to the
+    module after that, inlined, and the code around them cleaned by a
+    short second run of passes. The backend already runs its passes
+    through `LLVMRunPasses` (`default<O3>`): a second run is a change of
+    the backend alone. To measure when the fast paths exist: that this
+    late inlining keeps the gain of D594 (12 to 19 %) and the instructions
+    of `nbody`.
