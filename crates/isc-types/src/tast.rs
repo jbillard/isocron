@@ -280,8 +280,9 @@ impl MathFn {
 /// same in the interpreter, over an arena and a zone of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KernelOp {
-    /// `$arenaReserve(bytes) => base`: the one range of addresses of the
-    /// heap, none of its pages usable yet; 0 when the system has none.
+    /// `$arenaReserve() => base`: the one range of addresses of the heap,
+    /// `KERNEL_ARENA` bytes, none of its pages usable yet; 0 when the
+    /// system has none.
     ArenaReserve,
     /// `$arenaCommit(a, bytes) => code`: the pages of `bytes` bytes from
     /// `a`, inside the arena, readable and writable (zeros); 0, or the
@@ -290,6 +291,15 @@ pub enum KernelOp {
     /// `$arenaBase()`, `$arenaSize()`: the arena reserved (0 before).
     ArenaBase,
     ArenaSize,
+    /// `$arenaHas(a, bytes)`: whether the `bytes` bytes at `a` are inside
+    /// the arena (never before it is reserved). The size of the arena is a
+    /// constant: after this test, the generated code knows that the words
+    /// of those bytes are inside, and tests none of them again (D605).
+    ArenaHas,
+    /// `$runtimeAlloc(bytes)`: a block of the allocator of the runtime,
+    /// for what the kernel does not allocate (transitional: while that
+    /// allocator exists, D605). A panic when interpreted.
+    RuntimeAlloc,
     /// `$load8(a)`, `$load16`, `$load32`, `$load64`: the bytes at `a` as an
     /// unsigned word; a panic when they are not inside the arena.
     Load(u8),
@@ -318,6 +328,10 @@ pub enum KernelOp {
 
 /// The bytes of the zone of a thread (`KernelOp::ZoneLoad`).
 pub const KERNEL_ZONE: u64 = 4096;
+/// The bytes of the arena (`KernelOp::ArenaReserve`): addresses only, 1 TiB;
+/// a constant, so that a test of a range of the arena is one comparison
+/// and the tests of the words inside that range fold (D605).
+pub const KERNEL_ARENA: u64 = 1 << 40;
 
 impl KernelOp {
     /// The primitive of a name of the prelude.
@@ -327,6 +341,8 @@ impl KernelOp {
             "$arenaCommit" => KernelOp::ArenaCommit,
             "$arenaBase" => KernelOp::ArenaBase,
             "$arenaSize" => KernelOp::ArenaSize,
+            "$arenaHas" => KernelOp::ArenaHas,
+            "$runtimeAlloc" => KernelOp::RuntimeAlloc,
             "$load8" => KernelOp::Load(1),
             "$load16" => KernelOp::Load(2),
             "$load32" => KernelOp::Load(4),
@@ -351,9 +367,9 @@ impl KernelOp {
 
     pub fn arity(self) -> usize {
         match self {
-            KernelOp::ArenaBase | KernelOp::ArenaSize | KernelOp::SpinHint => 0,
-            KernelOp::ArenaReserve | KernelOp::Load(_) | KernelOp::ZoneLoad(_) | KernelOp::AtomicLoad => 1,
-            KernelOp::ArenaCommit | KernelOp::Store(_) | KernelOp::ZoneStore(_) | KernelOp::AtomicStore => 2,
+            KernelOp::ArenaReserve | KernelOp::ArenaBase | KernelOp::ArenaSize | KernelOp::SpinHint => 0,
+            KernelOp::RuntimeAlloc | KernelOp::Load(_) | KernelOp::ZoneLoad(_) | KernelOp::AtomicLoad => 1,
+            KernelOp::ArenaHas | KernelOp::ArenaCommit | KernelOp::Store(_) | KernelOp::ZoneStore(_) | KernelOp::AtomicStore => 2,
             KernelOp::Cas => 3,
         }
     }

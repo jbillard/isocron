@@ -749,11 +749,11 @@ pub fn kernel(op: isc_ir::KernelOp, a: &[u64]) -> Result<Option<u64>, &'static s
         };
         Ok(match op {
             K::ArenaReserve => {
-                if k.size == 0 {
-                    k.size = a[0];
-                }
-                Some(if k.size == 0 { 0 } else { ARENA_BASE })
+                k.size = isc_ir::KERNEL_ARENA;
+                Some(ARENA_BASE)
             }
+            K::ArenaHas => Some((k.size != 0 && inside(k.size, a[0], a[1]).is_some()) as u64),
+            K::RuntimeAlloc => return Err("the allocator of the runtime is not the interpreter's"),
             K::ArenaBase => Some(if k.size == 0 { 0 } else { ARENA_BASE }),
             K::ArenaSize => Some(k.size),
             K::ArenaCommit => match inside(k.size, a[0], a[1]) {

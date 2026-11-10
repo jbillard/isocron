@@ -1,4 +1,4 @@
-// The test of the small blocks of `kernel_alloc.isc` on one thread (D602).
+// The test of the small blocks of the prelude on one thread (D602).
 
 // the bytes asked for the block `i`
 function wanted(i: i64): i64 {

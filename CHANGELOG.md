@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- On Linux, the blocks of 1 to 1024 bytes of a compiled program come from an
+  allocator written in Isocron (in the prelude), its fast paths inlined in
+  the generated code: a block taken and given back runs 10 % fewer
+  instructions; larger blocks, Windows and WebAssembly as before (D605).
+- `@requireTail`, `@requireNoAlloc` and `@cold` are accepted before an
+  `action` (D605).
 - `sort` and `sortBy` of texts whose source is read again after them, and the
   other arrays of texts made of texts that live longer, no longer copy their
   texts: `sortBy` of short texts 2.6 times faster, `sort` of texts 17 %

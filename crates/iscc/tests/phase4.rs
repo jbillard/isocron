@@ -292,15 +292,91 @@ action main(args: string[k]): i32 {
     );
 }
 
+/// D605: an action may be a loop (`@requireTail`), without allocation
+/// (`@requireNoAlloc`) or kept out of the hot code (`@cold`), as a function
+/// may: the allocator written in Isocron is made of such actions. The same
+/// refusals as for a function.
+#[test]
+fn requirements_on_actions() {
+    accepted(
+        "@requireTail
+action countdown(n: i64, acc: i64): i64 {
+    if (n == 0) {
+        return acc;
+    }
+    if (n % 250000 == 0) {
+        print(n);
+    }
+    return countdown(n - 1, acc + n);
+}
+
+@requireNoAlloc
+action show(x: f64[n]): f64 {
+    print(x.length);
+    return sum(x) + x[0];
+}
+
+@cold
+action rare(code: i64): i64 {
+    print(code);
+    return code + 1;
+}
+
+action main(args: string[k]): i32 {
+    print(countdown(1000000, 0));
+    print(show([1.0, 4.0, 2.0]));
+    print(rare(41));
+    return 0;
+}
+",
+        "req_actions_ok",
+    );
+    rejected(
+        "@requireTail
+action down(n: i64): i64 {
+    if (n == 0) {
+        return 0;
+    }
+    const r = down(n - 1);
+    print(r);
+    return r + 1;
+}
+
+action main(args: string[k]): i32 {
+    print(down(3));
+    return 0;
+}
+",
+        &["requireTail not satisfied (line 2)", "the call of `down` at line 6 is not in tail position"],
+    );
+    rejected(
+        "@requireNoAlloc
+action build(x: f64[n]): f64 {
+    print(x.length);
+    return sum(x) + sum([x[0], 2.0]);
+}
+
+action main(args: string[k]): i32 {
+    print(build([1.0]));
+    return 0;
+}
+",
+        &["requireNoAlloc not satisfied (line 2)", "line 4: 16 bytes an array literal"],
+    );
+}
+
+/// The two decorators about the values of a function (`@requireFused`,
+/// `@allowReassoc`) are not an action's.
 #[test]
 fn requirements_are_for_functions() {
+    rejected("@allowReassoc\naction main(args: string[k]): i32 {\n    return 0;\n}\n", &["this decorator goes on a `function`, not on an `action`"]);
     rejected(
         "@requireFused
 action main(args: string[k]): i32 {
     return 0;
 }
 ",
-        &["a decorator goes on a `function`, not on an `action`"],
+        &["this decorator goes on a `function`, not on an `action`"],
     );
 }
 

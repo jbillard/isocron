@@ -661,10 +661,31 @@ pub extern "C" fn isc_arena_commit(a: i64, bytes: i64, base: i64, size: i64) -> 
     // alone, whose pages hold nothing or blocks of the kernel that asks
     let p = unsafe { mmap(a as *mut c_void, bytes as usize, PROT_READ_WRITE, MAP_PRIVATE_ANONYMOUS | MAP_FIXED, -1, 0) };
     if p as isize == -1 {
-        -12
-    } else {
-        0
+        return -12;
     }
+    // The first 4 MiB of the arena in pages of 4 KiB, the rest in huge
+    // pages, as the chunks of the small blocks of this allocator
+    // (`chunk_start`, D289): where the kernel gives huge pages to any
+    // mapping, the first fault of one clears 2 MiB, which a small program
+    // that touches a few pages would pay at its start (D605). Pages that
+    // end within the first 2 MiB need no advice (the first commit of the
+    // kernel, 1 MiB: a mapping that does not hold a whole huge page is
+    // never given one), so a small program makes one call less.
+    let end = a + bytes;
+    if end - base > HUGE as u64 {
+        let small_end = (base + CHUNK as u64).clamp(a, end);
+        // SAFETY: two parts of the pages just mapped; an advice changes no
+        // contents
+        unsafe {
+            if small_end > a {
+                madvise(a as *mut c_void, (small_end - a) as usize, MADV_NOHUGEPAGE);
+            }
+            if small_end < end {
+                madvise(small_end as *mut c_void, (end - small_end) as usize, MADV_HUGEPAGE);
+            }
+        }
+    }
+    0
 }
 
 /// Under Windows the arena is not reserved yet (the `mmap` of `windows.rs`

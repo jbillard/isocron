@@ -14266,3 +14266,108 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     instructions a call both, 25.29 and 25.17 cycles: its place in the
     program of the bench, not its code. `less` is not touched by these
     changes.
+- **D605 — The small blocks of the generated code taken from the
+  allocator written in Isocron (2026-11-10).** Step 3 of the kernel
+  (D599), its wiring. On Linux, every allocation and every free of a
+  compiled program goes through an entry of its own module
+  (`isc.late.alloc`, `isc.late.alloc_zeroed`, `isc.late.free`): a block
+  of 1 to 1024 bytes is the kernel's (`$kAlloc`), a larger one the
+  runtime's; a block given back is the kernel's when it is in the arena
+  (`$kFree` says so), the runtime's otherwise. The two allocators lay a
+  block out the same way (D601): a block one of them made may be freed
+  or given again by the other (the lists of small blocks of the
+  runtime's are lists only: no address of a chunk computed from a
+  block). Under Windows and in WebAssembly the entries are not emitted:
+  the runtime's allocator as before.
+  - The entries are functions of the module declared as the runtime's
+    were (`noalias`), not inlined while the module is optimized, inlined
+    after by a second run of passes (D600). `main` starts the arena after
+    its arguments are recorded, when the allocator of Isocron is the one
+    in use; with `ISC_ALLOC=check`, or `glibc` in a program linked with
+    the C library, no arena is reserved and every block is the runtime's
+    (`$kRefill` asks it: `$runtimeAlloc`, a primitive for the time the
+    runtime's allocator exists).
+  - The measure: one block taken and given back in a loop (the text of
+    an integer and a letter), instructions of one thread, the difference
+    of two counts of rounds. The allocator in Rust: 182.01 a round. The
+    kernel wired as it was written: 269. Four causes, each read in the
+    assembly and removed:
+    1. The statements of the kernel's actions were kept behind the
+       barrier of the statements of a program (SPEC section 12), which
+       also made every word of the module be read again. Inside a
+       function of the prelude named `$…`, the generated code no longer
+       puts it: the effects keep their order, their pure parts are
+       optimized as those of a function. (The mark of a statement stays
+       in the IR, whose passes read it.)
+    2. The fast paths were not inlined (the rare ones were lowered
+       inside them), and each tested the stack. `$kAlloc` and `$kFree`
+       are inlined into the entries without that test; `$kRefill`,
+       `$kCarve`, `$kFlush` and the panics (`$kDamaged`) are `@cold`
+       functions. With 1: 211.
+    3. Each word of a header had its test, and the size of the arena was
+       a word read at each. The size is a constant, 1 TiB
+       (`$arenaReserve()` takes none); `$arenaHas(a, bytes)` tests the 64
+       bytes of a header once (the word 0 of an empty list is not in the
+       arena: one test for both), and the generated code computes the
+       offset of a word at `x + c` as the offset of `x` plus `c`, so that
+       the tests of the words are comparisons of one offset with
+       constants, which LLVM folds: 170.
+    4. A store to the arena made LLVM read the base again and test again.
+       The base, the words of the arena and those of the zone are three
+       kinds of memory that are never one another, which LLVM is told
+       (`!tbaa`): 164.01, 9.9 % fewer than with the allocator in Rust.
+       An allocation: the head of the list, one test of the arena, the
+       state of the block, three stores. A free: one test of the arena,
+       its alignment, its state and its class, four stores, the count.
+  - Before the reservation the base is an address no program has (2^62,
+    which the processor refuses): every test fails without a second
+    word. A word of the kernel in the 2^40 addresses from it would pass
+    the test and be refused by the processor, a fault and not a panic,
+    no memory read or written; no path of the kernel makes one.
+  - The ten programs, instructions of one thread (their small arguments),
+    before → after: binary-trees 258 207 463 → 258 203 604, fannkuch-redux
+    46 008 684 → 46 030 083 (+0.05 %), n-body 84 442 456 → 82 342 377
+    (−2.49 %), spectral-norm −0.02 %, mandelbrot +0.00 %, pidigits
+    −0.17 %, fasta −0.06 %, reverse-complement −0.07 %, k-nucleotide
+    −0.00 %, regex-redux +0.00 %; the same outputs. The two that move
+    do not allocate in their loops: n-body makes 12 allocations whatever
+    its steps, and a step is 243.00 → 236.00 instructions with the same
+    14 stores and the same branch, 29 → 27 loads (the registers of the
+    loop, allocated otherwise now that no call is around it);
+    fannkuch-redux makes 182 allocations for 10 elements, and the only
+    function whose assembly differs is the task that holds them, by its
+    saves on the stack.
+  - What it costs. The start of a program: a hello, 3 990 → 4 199
+    instructions of the program, 18.8 → 22.8 thousand cycles of it, 162
+    → 193 thousand cycles of the system, 20 → 25 page faults, two calls
+    of the system more (the reservation, the first megabyte). Two heaps
+    start while the runtime's allocator serves the rest. The first
+    megabyte of the arena is asked alone: a mapping that holds no whole
+    huge page is never given one, and the first 4 MiB are in pages of 4
+    KiB as the first chunk of the runtime's (D289); committed as 2 MiB
+    without that, the same hello took 0.29 ms against 0.05. An arena
+    readable and writable from its reservation was tried: 762 to 825
+    thousand cycles of the system, a huge page cleared. The size of a
+    program: n-body 133 248 → 145 672 bytes, binary-trees 84 496 → 95
+    192, k-nucleotide 345 728 → 372 392 (the kernel's functions, once
+    in a program, and its fast paths at each allocation and each free;
+    the two parts not measured apart).
+  - Found on the way. (a) The first wiring looked green and measured
+    nothing: the runtime reads `ISC_ALLOC` at its first allocation, the
+    mode was not read yet at the start of `main`, and no arena was
+    started; seen in the words of the arena of a running program, not in
+    the tests. (b) Started before `isc_args`, the arena was reserved
+    before a program without the C library knew its environment, and
+    `ISC_ALLOC=check` was not seen: found by the test of the three
+    settings. (c) Every program ran its `main` on the thread of the
+    large stack, because that choice was "the program has functions" and
+    the kernel's are in every program: twice the time of the start of a
+    hello; the kernel's functions no longer count.
+  - `@requireTail`, `@requireNoAlloc` and `@cold` are accepted on an
+    action (a loop of the kernel is a tail call: its code builds no
+    array, an array would call it); `@requireFused` and `@allowReassoc`
+    stay a function's.
+  - Not measured: times. A transcoder of the machine ran during the whole
+    step; the times of the loop and of the ten programs are to be taken
+    on a quiet machine. Left: the blocks of a thread that ends, the
+    larger blocks, Windows and WebAssembly, the start of a small program.

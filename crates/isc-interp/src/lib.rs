@@ -1341,6 +1341,7 @@ impl<'a> Interp<'a> {
             }
         }
         match rt::kernel(op, &vs) {
+            Ok(Some(x)) if op == isc_ir::KernelOp::ArenaHas => Ok(Value::Bool(x != 0)),
             Ok(Some(x)) => Ok(Value::Int(x as i64)),
             Ok(None) => Ok(Value::Unit),
             Err(msg) => panic_at(e, msg.to_string()),

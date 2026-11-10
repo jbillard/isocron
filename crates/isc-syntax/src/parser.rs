@@ -154,8 +154,11 @@ impl P {
             let exported = self.eat_word("export");
             let decl = if self.is_word("function") || self.is_word("action") {
                 let is_action = self.is_word("action");
-                if is_action && !modifiers.is_empty() {
-                    return Err(Diagnostic::new(modifiers[0].1, "a decorator goes on a `function`, not on an `action`"));
+                // (an action may be a loop, cold, or without allocation, as
+                // the code of the kernel must be, D605; the two other
+                // decorators are about values, a function's)
+                if let Some((_, sp)) = modifiers.iter().find(|(m, _)| is_action && matches!(m, Modifier::RequireFused | Modifier::AllowReassoc)) {
+                    return Err(Diagnostic::new(*sp, "this decorator goes on a `function`, not on an `action`"));
                 }
                 Decl::Fn(self.function(is_action, modifiers)?)
             } else if !modifiers.is_empty() {

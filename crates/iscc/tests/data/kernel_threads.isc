@@ -1,4 +1,4 @@
-// The test of the small blocks of `kernel_alloc.isc` on several threads
+// The test of the small blocks of the prelude on several threads
 // (D603): each task takes blocks, marks them with its number, checks its
 // marks and gives the blocks back, many times; a part of the blocks of each
 // round is kept and freed at the next, so that the lists of the threads

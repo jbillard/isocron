@@ -476,9 +476,9 @@ fn sig_of(d: &ast::FnDecl, heads: &[(String, usize)], imports: &Imports) -> Resu
         let classes = if d.name == DECODE || d.name == ENCODE { 0 } else { class_bits(g.class) };
         generics.push((g.name.clone(), classes));
     }
-    for (_, sp) in &d.modifiers {
-        if d.is_action {
-            return err(*sp, "a decorator goes on a `function`, not on an `action`".to_string());
+    for (m, sp) in &d.modifiers {
+        if d.is_action && matches!(m, isc_syntax::ast::Modifier::RequireFused | isc_syntax::ast::Modifier::AllowReassoc) {
+            return err(*sp, "this decorator goes on a `function`, not on an `action`".to_string());
         }
     }
     let mut syms = Vec::new();
@@ -2702,7 +2702,9 @@ impl<'g> FnCx<'g> {
             self.note_effect();
             let (u64t, i64t) = (Ty::Int(IntKind::U64), Ty::Int(IntKind::I64));
             let (params, result): (Vec<Ty>, Ty) = match op {
-                KernelOp::ArenaReserve => (vec![u64t.clone()], u64t.clone()),
+                KernelOp::ArenaReserve => (vec![], u64t.clone()),
+                KernelOp::ArenaHas => (vec![u64t.clone(), u64t.clone()], Ty::Bool),
+                KernelOp::RuntimeAlloc => (vec![i64t.clone()], u64t.clone()),
                 KernelOp::ArenaCommit => (vec![u64t.clone(), u64t.clone()], i64t.clone()),
                 KernelOp::ArenaBase | KernelOp::ArenaSize => (vec![], u64t.clone()),
                 KernelOp::Load(_) => (vec![u64t.clone()], u64t.clone()),

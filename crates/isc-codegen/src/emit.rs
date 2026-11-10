@@ -177,6 +177,18 @@ const STREAM_UNROLL: i64 = 4;
 const UNROLL_FULL: i64 = 16;
 /// The first identifier of their metadata, after those of the scalar loops.
 const UNROLL_IDS: u64 = 1 << 20;
+/// The numbers of the metadata of the kernel's memory (D605): the base of
+/// the arena, the words of the arena and those of the zone of the thread
+/// are three kinds of memory that are never one another (the arena is not
+/// where the words of the module are), which LLVM is told (`!tbaa`): a
+/// store to a word of the arena does not make it read the base again, and
+/// the tests of the words of a header stay folded after the first store.
+/// The accesses of a program to its own blocks carry no such mark: they
+/// may be any memory.
+const KERNEL_IDS: u64 = 1 << 21;
+const TBAA_BASE: u64 = KERNEL_IDS + 4;
+const TBAA_ARENA: u64 = KERNEL_IDS + 5;
+const TBAA_ZONE: u64 = KERNEL_IDS + 6;
 /// Width of the element-wise loops (speed only, never results).
 pub const MAP_WIDTH: u32 = 16;
 
@@ -498,6 +510,15 @@ pub struct Gen<'p> {
     vregs: (u32, u32),
     /// Inside a task of a parallel loop: nested loops stay sequential.
     in_task: bool,
+    /// Inside a function of the prelude named `$…` (the kernel, D605): the
+    /// statements of its actions are those of the runtime, not of a
+    /// program. They run in their order, as every effect does, but their
+    /// values are not kept behind a barrier (SPEC section 12 is the rule of
+    /// the actions of a program): LLVM merges and removes their pure parts
+    /// as it does those of a function.
+    kernel_fn: bool,
+    /// A primitive of the kernel was emitted: its metadata are the module's.
+    kernel_used: bool,
     /// The quotients and remainders of the index of the loop being emitted
     /// by constants, carried from one iteration to the next (D180).
     divmod: Vec<DivMod>,
@@ -1077,6 +1098,8 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         spmd_cond: None,
         vregs: opts.isa.vector_registers(),
         in_task: false,
+        kernel_fn: false,
+        kernel_used: false,
         task_shared: None,
         stream: None,
         scalar_loops: 0,
@@ -1159,7 +1182,10 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
     let main_name = if opts.isa.is_wasm() { "__main_argc_argv" } else { "main" };
     // with recursive functions, the body of `main` runs on a thread with a
     // large stack (`isc_run_big_stack`, D102)
-    let big_stack = !p.fns.is_empty() && !opts.isa.is_wasm();
+    // (the functions of the allocator written in Isocron are in every
+    // program, D605, and none nests: they do not make a program one with
+    // recursive functions)
+    let big_stack = (0..p.fns.len()).any(|i| !kernel_fns(p).contains(&(i as u32))) && !opts.isa.is_wasm();
     let body_name = if big_stack { "isc_main_body" } else { main_name };
     let mut main = g.finish(&format!("define i32 @{}(i32 %argc, ptr %argv){}", body_name, attrs));
     // the variants of the builders whose trees are made in a region (D200),
@@ -1185,6 +1211,54 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
             "\ndefine i32 @{}(i32 %argc, ptr %argv) {{\nentry:\n  %r = call i32 @isc_run_big_stack(ptr @isc_main_body, i32 %argc, ptr %argv)\n  ret i32 %r\n}}\n",
             main_name
         ));
+    }
+    // The allocator written in Isocron (D605): every allocation and every
+    // free of the module goes through an entry of the module itself. A
+    // block of 1 to 1024 bytes is the kernel's (`$kAlloc`, which asks the
+    // runtime when the arena is not reserved), a larger one the runtime's;
+    // a block given back is the kernel's when it is in the arena (`$kFree`
+    // says so), the runtime's otherwise. The entries are declared as the
+    // runtime's were (`noalias`) and not inlined while the module is
+    // optimized; the backend inlines them after (D600, `LATE_INLINE`).
+    // `main` starts the arena when the allocator of Isocron is the one in
+    // use (`isc_heap_mode` 2): the runtime reads `ISC_ALLOC` at its first
+    // allocation (D81), so a first block is taken from it and given back
+    // before the mode is read.
+    let mut kernel_text = String::new();
+    // (on Linux: the arena is not reserved under Windows nor in WebAssembly
+    // yet, where the generated code calls the runtime as before)
+    if let (Some((start, alloc, free)), false) = (p.kernel, opts.isa.is_wasm() || opts.windows) {
+        let late = |text: &str| -> String {
+            text.replace("call noalias ptr @isc_alloc(", "call noalias ptr @isc.late.alloc(")
+                .replace("call ptr @isc_alloc(", "call noalias ptr @isc.late.alloc(")
+                .replace("call noalias ptr @isc_alloc_zeroed(", "call noalias ptr @isc.late.alloc_zeroed(")
+                .replace("call ptr @isc_alloc_zeroed(", "call noalias ptr @isc.late.alloc_zeroed(")
+                .replace("call void @isc_free(ptr ", "call void @isc.late.free(ptr ")
+        };
+        for f in g.funcs.iter_mut() {
+            *f = late(f);
+        }
+        // (after `isc_args`: a program without the C library reads its
+        // environment, `ISC_ALLOC`, through what that call recorded)
+        main = late(&main);
+        let args_call = main.find("call void @isc_args(").expect("the arguments of `main` recorded");
+        let after = args_call + main[args_call..].find('\n').expect("a line") + 1;
+        main.insert_str(after, "  call void @isc.kernel.start()\n");
+        g.decls.insert("@isc_heap_mode = external global i8".into());
+        g.decls.insert("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)".into());
+        let small = format!(
+            "entry:\n  %m = add i64 %n, -1\n  %small = icmp ult i64 %m, {}\n  br i1 %small, label %fast, label %slow\nfast:\n  %a = call tailcc i64 @isc_fn_{}(i64 %n)\n  %p = inttoptr i64 %a to ptr\n",
+            KERNEL_SMALL, alloc
+        );
+        kernel_text = format!(
+            "\ndefine internal void @isc.kernel.start() noinline nounwind {{\nentry:\n  %first = call ptr @isc_alloc(i64 1)\n  call void @isc_free(ptr %first)\n  %mode = load i8, ptr @isc_heap_mode\n  %on = icmp eq i8 %mode, 2\n  br i1 %on, label %go, label %done\ngo:\n  %b = call tailcc i64 @isc_fn_{start}()\n  br label %done\ndone:\n  ret void\n}}\n\
+             \ndefine internal noalias ptr @isc.late.alloc(i64 %n) noinline nounwind {{\n{small}  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc(i64 %n)\n  ret ptr %q\n}}\n\
+             \ndefine internal noalias ptr @isc.late.alloc_zeroed(i64 %n) noinline nounwind {{\n{small}  call void @llvm.memset.p0.i64(ptr %p, i8 0, i64 %n, i1 false)\n  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc_zeroed(i64 %n)\n  ret ptr %q\n}}\n\
+             \ndefine internal void @isc.late.free(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n",
+            start = start,
+            small = small,
+            free = free
+        );
     }
     let mut out = String::new();
     out.push_str("; Isocron module\n\n");
@@ -1216,6 +1290,7 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         out.push('\n');
     }
     out.push_str(&main);
+    out.push_str(&kernel_text);
     if opts.isa == Isa::Wasm32Threads {
         // the waits of the thread pool of the runtime (unstable in Rust)
         out.push_str(
@@ -1243,12 +1318,57 @@ pub fn emit_with(p: &Program, opts: &Options) -> R<String> {
         // explicit 512-bit vectors stay in zmm registers instead of being split
         out.push_str("\nattributes #0 = { \"min-legal-vector-width\"=\"512\" \"prefer-vector-width\"=\"512\" }\n");
     }
+    if g.kernel_used {
+        out.push_str(&format!(
+            "\n!{0} = !{{!\"isc kernel\"}}\n!{1} = !{{!\"arena base\", !{0}, i64 0}}\n!{2} = !{{!\"arena word\", !{0}, i64 0}}\n!{3} = !{{!\"zone word\", !{0}, i64 0}}\n!{4} = !{{!{1}, !{1}, i64 0}}\n!{5} = !{{!{2}, !{2}, i64 0}}\n!{6} = !{{!{3}, !{3}, i64 0}}\n",
+            KERNEL_IDS,
+            KERNEL_IDS + 1,
+            KERNEL_IDS + 2,
+            KERNEL_IDS + 3,
+            TBAA_BASE,
+            TBAA_ARENA,
+            TBAA_ZONE
+        ));
+    }
     if g.wide_used {
         out.push_str("\nattributes #1 = { \"min-legal-vector-width\"=\"512\" \"prefer-vector-width\"=\"512\" }\n");
     }
 
     Ok(out)
 }
+
+/// The functions of the allocator written in Isocron (D605): its three
+/// entries and what they call.
+fn kernel_fns(p: &Program) -> HashSet<u32> {
+    fn calls(e: &Expr, out: &mut Vec<u32>) {
+        if let ExprKind::Call(f, _) = &e.kind {
+            out.push(*f);
+        }
+        for c in e.children() {
+            calls(c, out);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut todo: Vec<u32> = p.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
+    while let Some(f) = todo.pop() {
+        if seen.insert(f) {
+            calls(&p.fns[f as usize].body, &mut todo);
+        }
+    }
+    seen
+}
+
+/// The base of the arena before it is reserved (D605): an address where a
+/// program has no memory (it is not one the processor accepts, with 48 or
+/// with 57 bits of addresses), so that no address of the program is at an
+/// offset below the size of the arena from it: every test of the arena
+/// fails. (A word of the `KERNEL_ARENA` addresses from it would pass the
+/// test and be refused by the processor: a fault, no memory read or
+/// written.)
+const NO_ARENA: u64 = 1 << 62;
+/// The bytes of the largest block of the kernel written in Isocron (16
+/// classes of 64 bytes); a larger one is the runtime's (D605).
+const KERNEL_SMALL: u64 = 1024;
 
 /// The text of an integer not made (D348, D359): the integer (an `i64`), its
 /// sign, and its padding (the length, the byte of the fill, `padStart`).
@@ -2599,6 +2719,7 @@ impl<'p> Gen<'p> {
         let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
+        let saved_kernel = std::mem::replace(&mut self.kernel_fn, f.name.starts_with('$'));
         let saved_counts = std::mem::take(&mut self.counts);
         let saved_count_param = self.count_param.take();
         // the texts on the stack, by the names of the registers of a
@@ -2627,7 +2748,11 @@ impl<'p> Gen<'p> {
         // the text of a float: a small frame too, its rare paths `@cold`
         // functions that test the stack themselves
         let float_text = self.p.float_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b);
-        if !self.opts.isa.is_wasm() && !int_text && !float_text {
+        // the fast paths of the allocator (D605): leaves, copied into the
+        // entries of the generated code; their rare paths are `@cold`
+        // functions that test the stack themselves
+        let kernel_entry = self.p.kernel.is_some_and(|(_, a, b)| i as u32 == a || i as u32 == b);
+        if !self.opts.isa.is_wasm() && !int_text && !float_text && !kernel_entry {
             self.stack_check(&f.name, f.span);
         }
         // the state of a loop (D206): lent by the caller, copied once here;
@@ -2719,7 +2844,7 @@ impl<'p> Gen<'p> {
         // `@cold` (D584): never inlined back by LLVM, its calls unlikely
         let cold = if self.p.fns[i].cold {
             " cold noinline"
-        } else if self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) {
+        } else if self.p.int_text.is_some_and(|(a, b)| i as u32 == a || i as u32 == b) || self.p.kernel.is_some_and(|(_, a, b)| i as u32 == a || i as u32 == b) {
             " alwaysinline"
         } else {
             ""
@@ -2733,6 +2858,7 @@ impl<'p> Gen<'p> {
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
+        self.kernel_fn = saved_kernel;
         self.counts = saved_counts;
         self.count_param = saved_count_param;
         self.stack_strs = saved_stack_strs;
@@ -4208,7 +4334,7 @@ impl<'p> Gen<'p> {
                     self.part_values.insert(iv.r.clone());
                 }
                 self.bind(*var, iv.clone());
-                if *stmt && w == 1 {
+                if *stmt && w == 1 && !self.kernel_fn {
                     self.black_box(&iv);
                 }
                 // a value the rest never reads is freed at once, not at the
@@ -13817,87 +13943,133 @@ impl<'p> Gen<'p> {
         Ok(())
     }
 
-    /// A primitive of the kernel (D601). The arena: its base and its size
-    /// in two words of the program, written once by `$arenaReserve`; an
-    /// address is tested to be inside it (`at - base` and the width below
-    /// the size: one comparison, false while nothing is reserved) before
-    /// its bytes are read or written. The zone of the thread: 4096 bytes of
-    /// its thread-local storage, an offset tested against its end.
-    fn kernel(&mut self, op: isc_ir::KernelOp, vals: &[V], pos: &str) -> V {
+    /// A primitive of the kernel (D601, D605). The arena: its base in a
+    /// word of the module, written once by `$arenaReserve`, its size a
+    /// constant; an address is tested to be inside it (`at - base` and the
+    /// width below the size: one comparison, false while nothing is
+    /// reserved) before its bytes are read or written. The zone of the
+    /// thread: 4096 bytes of its thread-local storage, an offset tested
+    /// against its end.
+    /// `at`, for a primitive that takes an address: the address is `x + c`,
+    /// `c` a constant; its offset in the arena is computed as the offset of
+    /// `x` plus `c`, so that the tests of the words of a range tested once
+    /// from `x` (`$arenaHas`) are comparisons of that one offset, which
+    /// LLVM folds.
+    fn kernel(&mut self, op: isc_ir::KernelOp, vals: &[V], at: Option<(String, i64)>, pos: &str) -> V {
         use isc_ir::KernelOp as K;
-        self.decls.insert("@isc_arena_base = global i64 0".into());
-        self.decls.insert("@isc_arena_size = global i64 0".into());
+        self.kernel_used = true;
+        // The base of the arena: a word of the module that only its code
+        // reads and writes (`internal`: LLVM knows that no store through an
+        // address changes it), `NO_ARENA` until the arena is reserved. Its
+        // size is a constant (`KERNEL_ARENA`): the test of a range is one
+        // comparison of an offset with a constant, and LLVM folds the tests
+        // of the words inside a range already tested (D605).
+        self.decls.insert(format!("@isc_arena_base = internal global i64 {}", NO_ARENA));
+        let arena = isc_ir::KERNEL_ARENA;
         let fail = |g: &mut Self, ok: &str, msg: &str| {
             let (m, n) = g.str_const(msg);
             let (none, _) = g.str_const("");
             g.guard(ok, format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 0, ptr {}, i64 0, {})", m, n, none, none, pos));
         };
+        // the offset of `a` in the arena (not one of it when it is not below
+        // the size: before the reservation, no address of the program is)
+        let offset = |g: &mut Self, a: &str| -> String {
+            let base = g.ins(format!("load i64, ptr @isc_arena_base, !tbaa !{}", TBAA_BASE));
+            match &at {
+                Some((x, c)) if *c != 0 => {
+                    let off = g.ins(format!("sub i64 {}, {}", x, base));
+                    g.ins(format!("add i64 {}, {}", off, c))
+                }
+                _ => g.ins(format!("sub i64 {}, {}", a, base)),
+            }
+        };
         // the address of the `w` bytes at `a`, tested inside the arena
         let place = |g: &mut Self, a: &str, w: u8| -> String {
-            let base = g.ins("load i64, ptr @isc_arena_base".to_string());
-            let size = g.ins("load i64, ptr @isc_arena_size".to_string());
-            g.decls.insert("declare i64 @llvm.usub.sat.i64(i64, i64)".into());
-            let off = g.ins(format!("sub i64 {}, {}", a, base));
-            let lim = g.ins(format!("call i64 @llvm.usub.sat.i64(i64 {}, i64 {})", size, w - 1));
-            let ok = g.ins(format!("icmp ult i64 {}, {}", off, lim));
+            let off = offset(g, a);
+            let ok = g.ins(format!("icmp ult i64 {}, {}", off, arena - (w as u64 - 1)));
             fail(g, &ok, "the kernel reached outside its arena");
             g.ins(format!("inttoptr i64 {} to ptr", a))
         };
+        // the base and the size of the arena for the program: 0 before it is
+        // reserved
+        let reserved = |g: &mut Self, size: bool| -> String {
+            let base = g.ins(format!("load i64, ptr @isc_arena_base, !tbaa !{}", TBAA_BASE));
+            let none = g.ins(format!("icmp eq i64 {}, {}", base, NO_ARENA));
+            g.ins(format!("select i1 {}, i64 0, i64 {}", none, if size { arena.to_string() } else { base }))
+        };
         let zone = |g: &mut Self, at: &str, w: u8| -> String {
-            g.decls.insert(format!("@isc_kernel_zone = thread_local(localexec) global [{} x i8] zeroinitializer, align 64", isc_ir::KERNEL_ZONE));
+            let model = if g.opts.windows { "" } else { "(localexec)" };
+            g.decls.insert(format!("@isc_kernel_zone = internal thread_local{} global [{} x i8] zeroinitializer, align 64", model, isc_ir::KERNEL_ZONE));
             let ok = g.ins(format!("icmp ule i64 {}, {}", at, isc_ir::KERNEL_ZONE - w as u64));
             fail(g, &ok, "the kernel reached outside the zone of its thread");
             g.ins(format!("getelementptr inbounds i8, ptr @isc_kernel_zone, i64 {}", at))
         };
-        let read = |g: &mut Self, p: &str, w: u8| -> V {
+        let read = |g: &mut Self, p: &str, w: u8, kind: u64| -> V {
             if w == 8 {
-                return v(g.ins(format!("load i64, ptr {}, align 1", p)), "i64");
+                return v(g.ins(format!("load i64, ptr {}, align 1, !tbaa !{}", p, kind)), "i64");
             }
-            let x = g.ins(format!("load i{}, ptr {}, align 1", w * 8, p));
+            let x = g.ins(format!("load i{}, ptr {}, align 1, !tbaa !{}", w * 8, p, kind));
             v(g.ins(format!("zext i{} {} to i64", w * 8, x)), "i64")
         };
-        let write = |g: &mut Self, p: &str, w: u8, x: &str| -> V {
+        let write = |g: &mut Self, p: &str, w: u8, x: &str, kind: u64| -> V {
             if w == 8 {
-                g.emit(format!("store i64 {}, ptr {}, align 1", x, p));
+                g.emit(format!("store i64 {}, ptr {}, align 1, !tbaa !{}", x, p, kind));
             } else {
                 let t = g.ins(format!("trunc i64 {} to i{}", x, w * 8));
-                g.emit(format!("store i{} {}, ptr {}, align 1", w * 8, t, p));
+                g.emit(format!("store i{} {}, ptr {}, align 1, !tbaa !{}", w * 8, t, p, kind));
             }
             v("0".to_string(), "i8")
         };
         match op {
             K::ArenaReserve => {
                 self.decls.insert("declare i64 @isc_arena_reserve(i64)".into());
-                let base = self.ins(format!("call i64 @isc_arena_reserve(i64 {})", vals[0].r));
+                let base = self.ins(format!("call i64 @isc_arena_reserve(i64 {})", arena));
                 let got = self.ins(format!("icmp ne i64 {}, 0", base));
-                let size = self.ins(format!("select i1 {}, i64 {}, i64 0", got, vals[0].r));
-                self.emit(format!("store i64 {}, ptr @isc_arena_base", base));
-                self.emit(format!("store i64 {}, ptr @isc_arena_size", size));
+                let word = self.ins(format!("select i1 {}, i64 {}, i64 {}", got, base, NO_ARENA));
+                self.emit(format!("store i64 {}, ptr @isc_arena_base, !tbaa !{}", word, TBAA_BASE));
                 v(base, "i64")
             }
-            K::ArenaBase => v(self.ins("load i64, ptr @isc_arena_base".to_string()), "i64"),
-            K::ArenaSize => v(self.ins("load i64, ptr @isc_arena_size".to_string()), "i64"),
+            K::ArenaBase => v(reserved(self, false), "i64"),
+            K::ArenaSize => v(reserved(self, true), "i64"),
             K::ArenaCommit => {
                 self.decls.insert("declare i64 @isc_arena_commit(i64, i64, i64, i64)".into());
-                let base = self.ins("load i64, ptr @isc_arena_base".to_string());
-                let size = self.ins("load i64, ptr @isc_arena_size".to_string());
+                let base = reserved(self, false);
+                let size = reserved(self, true);
                 v(self.ins(format!("call i64 @isc_arena_commit(i64 {}, i64 {}, i64 {}, i64 {})", vals[0].r, vals[1].r, base, size)), "i64")
+            }
+            // `bytes` at most the arena, and the offset at most what is left
+            // after them
+            K::ArenaHas => {
+                let off = offset(self, &vals[0].r);
+                let fits = self.ins(format!("icmp ule i64 {}, {}", vals[1].r, arena));
+                let left = self.ins(format!("sub i64 {}, {}", arena, vals[1].r));
+                let within = self.ins(format!("icmp ule i64 {}, {}", off, left));
+                v(self.ins(format!("and i1 {}, {}", fits, within)), "i1")
+            }
+            // (a function of the module, which the allocations of the
+            // generated code, redirected to the kernel, are not: `late`)
+            K::RuntimeAlloc => {
+                self.decls.insert(
+                    "define internal i64 @isc.runtime.alloc(i64 %n) nounwind {\nentry:\n  %p = call noalias ptr @isc_alloc(i64 %n)\n  %a = ptrtoint ptr %p to i64\n  ret i64 %a\n}"
+                        .into(),
+                );
+                v(self.ins(format!("call i64 @isc.runtime.alloc(i64 {})", vals[0].r)), "i64")
             }
             K::Load(w) => {
                 let p = place(self, &vals[0].r, w);
-                read(self, &p, w)
+                read(self, &p, w, TBAA_ARENA)
             }
             K::Store(w) => {
                 let p = place(self, &vals[0].r, w);
-                write(self, &p, w, &vals[1].r)
+                write(self, &p, w, &vals[1].r, TBAA_ARENA)
             }
             K::ZoneLoad(w) => {
                 let p = zone(self, &vals[0].r, w);
-                read(self, &p, w)
+                read(self, &p, w, TBAA_ZONE)
             }
             K::ZoneStore(w) => {
                 let p = zone(self, &vals[0].r, w);
-                write(self, &p, w, &vals[1].r)
+                write(self, &p, w, &vals[1].r, TBAA_ZONE)
             }
             // a word of 8 bytes of the arena, on 8 bytes (an atomic
             // operation of LLVM needs its alignment): tested with the place
@@ -13908,12 +14080,12 @@ impl<'p> Gen<'p> {
                 fail(self, &ok, "the kernel reached outside its arena");
                 match op {
                     K::Cas => {
-                        let r = self.ins(format!("cmpxchg ptr {}, i64 {}, i64 {} seq_cst seq_cst", p, vals[1].r, vals[2].r));
+                        let r = self.ins(format!("cmpxchg ptr {}, i64 {}, i64 {} seq_cst seq_cst, !tbaa !{}", p, vals[1].r, vals[2].r, TBAA_ARENA));
                         v(self.ins(format!("extractvalue {{ i64, i1 }} {}, 0", r)), "i64")
                     }
-                    K::AtomicLoad => v(self.ins(format!("load atomic i64, ptr {} seq_cst, align 8", p)), "i64"),
+                    K::AtomicLoad => v(self.ins(format!("load atomic i64, ptr {} seq_cst, align 8, !tbaa !{}", p, TBAA_ARENA)), "i64"),
                     _ => {
-                        self.emit(format!("store atomic i64 {}, ptr {} seq_cst, align 8", vals[1].r, p));
+                        self.emit(format!("store atomic i64 {}, ptr {} seq_cst, align 8, !tbaa !{}", vals[1].r, p, TBAA_ARENA));
                         v("0".to_string(), "i8")
                     }
                 }
@@ -13929,13 +14101,36 @@ impl<'p> Gen<'p> {
     }
 
     fn action(&mut self, op: ActionOp, args: &[Expr], e: &Expr) -> R<V> {
+        // a word of the arena at `x + c` or `x - c`, `c` a constant (D605)
+        if let ActionOp::Kernel(o) = op {
+            use isc_ir::KernelOp as K;
+            if matches!(o, K::Load(_) | K::Store(_) | K::Cas | K::AtomicLoad | K::AtomicStore | K::ArenaHas) {
+                let lit = |k: &Expr| match k.kind {
+                    ExprKind::Lit(isc_ir::Lit::Int(c)) => Some(c),
+                    _ => None,
+                };
+                let (x, c) = match &args[0].kind {
+                    ExprKind::Binary(BinOp::Add, x, k) if lit(k).is_some() => (&**x, lit(k).unwrap()),
+                    ExprKind::Binary(BinOp::Sub, x, k) if lit(k).is_some() => (&**x, lit(k).unwrap().wrapping_neg()),
+                    _ => (&args[0], 0),
+                };
+                let xv = self.ex(x, 1)?;
+                let a = if c == 0 { xv.r.clone() } else { self.ins(format!("add i64 {}, {}", xv.r, c)) };
+                let mut vals = vec![v(a, "i64")];
+                for a in &args[1..] {
+                    vals.push(self.ex(a, 1)?);
+                }
+                let pos = Self::pos(e.span);
+                return Ok(self.kernel(o, &vals, Some((xv.r, c)), &pos));
+            }
+        }
         let mut vals = Vec::new();
         for a in args {
             vals.push(self.ex(a, 1)?);
         }
         let pos = Self::pos(e.span);
         Ok(match op {
-            ActionOp::Kernel(o) => self.kernel(o, &vals, &pos),
+            ActionOp::Kernel(o) => self.kernel(o, &vals, None, &pos),
             // the standard input (D155)
             ActionOp::ReadStdin | ActionOp::ReadStdinText => {
                 let f = if op == ActionOp::ReadStdin { "isc_read_stdin" } else { "isc_read_stdin_text" };

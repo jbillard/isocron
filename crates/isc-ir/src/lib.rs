@@ -11,7 +11,7 @@
 //! results (`Use::Move`, `drop` flags, `Copy` nodes) drive the code
 //! generator. The interpreter ignores them.
 
-pub use isc_types::tast::{Fallible, KernelOp, MathFn, SysOp, KERNEL_ZONE};
+pub use isc_types::tast::{Fallible, KernelOp, MathFn, SysOp, KERNEL_ARENA, KERNEL_ZONE};
 
 pub mod blocks;
 pub mod lower;
@@ -529,6 +529,9 @@ pub struct Program {
     /// a `f32` (`$rtF64Text`, `$rtF32Text`), lowered when the program
     /// writes one: the code generator calls them for `toString` of a float.
     pub float_text: Option<(u32, u32)>,
+    /// The entries of the allocator written in Isocron (D605), lowered for
+    /// every program: `$kStart`, `$kAlloc`, `$kFree`.
+    pub kernel: Option<(u32, u32, u32)>,
 }
 
 /// What `print` shows beyond the IR type of a value: the names of the

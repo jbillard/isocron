@@ -324,7 +324,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let body = fns[idx as usize].body.clone();
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None })
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None , kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -382,6 +382,12 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         (true, Some(a), Some(b)) => Some((l.lower_fn(a, vec![], vec![None], vec![None], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?)),
         _ => None,
     };
+    // the allocator of the small blocks (D605): its three entries, called
+    // by the generated code alone
+    let kernel = match (named("$kStart"), named("$kAlloc"), named("$kFree")) {
+        (Some(a), Some(b), Some(c)) => Some((l.lower_fn(a, vec![], vec![], vec![], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?, l.lower_fn(c, vec![], vec![None], vec![None], sp)?)),
+        _ => None,
+    };
     let fns = std::mem::take(&mut l.fns).into_iter().map(|f| f.expect("a recursive function lowered")).collect();
     let recs = std::mem::take(&mut *l.recs.borrow_mut()).into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     Ok(Program {
@@ -401,6 +407,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         views: Default::default(),
         int_text,
         float_text,
+        kernel,
     })
 }
 

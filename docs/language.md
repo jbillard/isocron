@@ -2325,7 +2325,9 @@ reported at the line that calls it.
 
 A requirement, written as a decorator before `function`, is a guarantee: if
 the compiler cannot keep it, the program does not compile, and the error
-says why.
+says why. `requireTail` and `requireNoAlloc` are also accepted before
+`action` (an action that loops, an action that builds nothing);
+`requireFused` is about the arrays of a function.
 
 * `requireTail`: every recursive call of the function is a tail call,
   compiled as a loop (a call whose result is used, a call through another
@@ -2419,8 +2421,8 @@ action main(args: string[k]): i32 {
 11
 ```
 
-`@cold`, at the same place, tells where the code goes, not what it
-computes: the function is rarely called (the text of an error, a rare
+`@cold`, at the same place (before a function or an action), tells where
+the code goes, not what it computes: the function is rarely called (the text of an error, a rare
 case), so it is compiled once and called, never copied into the
 functions that call it, and its calls are taken as unlikely; a loop that
 may call it keeps its registers for the common case. The results are

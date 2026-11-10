@@ -1508,3 +1508,236 @@ function $pow10G(k: i64): [u64, u64] {
     return [g[i], g[i + 1]];
 }
 // End of the generated table.
+
+// ---------------------------------------------------------------------
+// The kernel of the runtime (SPEC section 17, D599): the small blocks of
+// the allocator (D602, D603, D605). The generated code calls `$kStart` at
+// the start of `main`, `$kAlloc` for a block of 1 to 1024 bytes and `$kFree`
+// for every block it gives back; a larger block is the runtime's.
+//
+// The arena. Its first 512 bytes: at 0 the next byte never given, at 8 the
+// end of its committed bytes, at 16 the lock of both; from 64, for each class
+// c, at 64 + 16 * c the list of its free blocks shared by the threads, at 72
+// + 16 * c the lock of that list. A block of the class c (64 * (c + 1) bytes, 16
+// classes) is 64 bytes after its header: at 0 its class (4 bytes), at 4 its
+// state (1 byte: in use or free), at 8 the next block of its list.
+// The zone of the thread: at 8 * c the list of its free blocks of the class
+// c, at 128 + 2 * c their count (at most 64: beyond, half of them go to the
+// shared list).
+//
+// A header is tested once to be in the arena, its 64 bytes (`$arenaHas`);
+// the tests of its words then fold in the generated code. The statements of
+// these actions are not those of a program: the generated code moves and
+// merges them as it does those of a function.
+
+@requireNoAlloc
+action $kStart(): u64 {
+    // (once: a program that calls it again keeps its arena)
+    if ($arenaBase() != 0u64) {
+        return $arenaBase();
+    }
+    const base = $arenaReserve();
+    if (base == 0u64) {
+        return 0u64;
+    }
+    // (1 MiB first: pages the system cannot make a huge one of, which a
+    // small program would pay to have cleared; the blocks start in the
+    // page of these words)
+    const code = $arenaCommit(base, 1048576u64);
+    if (code != 0) {
+        return 0u64;
+    }
+    $store64(base, base + 512u64);
+    $store64(base + 8u64, base + 1048576u64);
+    return base;
+}
+
+// The panics of the fast paths, in one place (their texts and their places
+// are not copied at every allocation and every free of a program): a block
+// given back that is not one in use (0), a block of a free list that is not
+// free (1), a word of a free list that is not a block of the arena (2).
+@cold
+action $kDamaged(what: i64): u64 {
+    if (what == 0) {
+        $panic("invalid free (a block freed twice or not allocated by the runtime)", "", "");
+    }
+    if (what == 1) {
+        $panic("the heap is damaged (a block of a free list is not free)", "", "");
+    }
+    $panic("the heap is damaged (a free block that is not in the arena)", "", "");
+    return 0u64;
+}
+
+// The lock at `a` taken: the word 0 made 1 in one step, tried again while
+// another thread holds it.
+@requireTail
+action $kLock(a: u64): i64 {
+    if ($cas64(a, 0u64, 1u64) == 0u64) {
+        return 0;
+    }
+    $spinHint();
+    return $kLock(a);
+}
+
+action $kUnlock(a: u64): i64 {
+    $atomicStore64(a, 0u64);
+    return 0;
+}
+
+// A block of `bytes` bytes (1 to 1024): the first of the list of the
+// thread, or blocks from the shared list, or new ones.
+@requireNoAlloc
+action $kAlloc(bytes: i64): u64 {
+    const class = (bytes + 63) / 64 - 1;
+    const head = $zoneLoad64(class * 8);
+    // (no block, the word 0, is not in the arena: one test for both)
+    if (!$arenaHas(head, 64u64)) {
+        return $kRefill(class, bytes);
+    }
+    if ($load8(head + 4u64) != 0x5Au64) {
+        return $kDamaged(1);
+    }
+    $zoneStore64(class * 8, $load64(head + 8u64));
+    $zoneStore16(128 + class * 2, $zoneLoad16(128 + class * 2) - 1u64);
+    $store8(head + 4u64, 0xA5u64);
+    return head + 64u64;
+}
+
+// The list of the thread is empty: up to 32 blocks of the shared list of
+// the class, under its lock; none there, 32 new ones. The first is given.
+// Without an arena (the allocator of the system asked for by `ISC_ALLOC`, or
+// no range of addresses to reserve), the block is the runtime's.
+@cold
+action $kRefill(class: i64, bytes: i64): u64 {
+    const base = $arenaBase();
+    if (base == 0u64) {
+        return $runtimeAlloc(bytes);
+    }
+    if ($zoneLoad64(class * 8) != 0u64) {
+        return $kDamaged(2);
+    }
+    const shared = base + 64u64 + u64(class) * 16u64;
+    const l = $kLock(shared + 8u64);
+    const first = $load64(shared);
+    if (first == 0u64) {
+        const u = $kUnlock(shared + 8u64);
+        return $kCarve(class);
+    }
+    // the 32nd block of the shared list, or its last
+    const tail = $kWalk(first, 31);
+    $store64(shared, $load64(tail + 8u64));
+    const u = $kUnlock(shared + 8u64);
+    $store64(tail + 8u64, 0u64);
+    const taken = $kCount(first, 0);
+    $zoneStore64(class * 8, $load64(first + 8u64));
+    $zoneStore16(128 + class * 2, u64(taken - 1));
+    $store8(first + 4u64, 0xA5u64);
+    return first + 64u64;
+}
+
+// The block `steps` after `h` in its list, or the last of the list.
+@requireTail
+action $kWalk(h: u64, steps: i64): u64 {
+    const next = $load64(h + 8u64);
+    if (steps == 0 || next == 0u64) {
+        return h;
+    }
+    return $kWalk(next, steps - 1);
+}
+
+// The blocks of the list from `h`, after `n` of them.
+@requireTail
+action $kCount(h: u64, n: i64): i64 {
+    if (h == 0u64) {
+        return n;
+    }
+    return $kCount($load64(h + 8u64), n + 1);
+}
+
+// 32 new blocks of the class cut after the last byte given, under the lock
+// of that byte (their pages committed by 2 MiB): the first one given, the
+// others the list of the thread.
+@cold
+action $kCarve(class: i64): u64 {
+    const base = $arenaBase();
+    const step = u64(class + 1) * 64u64 + 64u64;
+    const count = 32;
+    const l = $kLock(base + 16u64);
+    const start = $load64(base);
+    const end = start + step * u64(count);
+    const committed = $load64(base + 8u64);
+    if (end > committed) {
+        // (up to a multiple of 2 MiB from the base)
+        const more = (end - base + 2097151u64) / 2097152u64 * 2097152u64 - (committed - base);
+        const code = $arenaCommit(committed, more);
+        if (code != 0) {
+            $panic("out of memory", "", "");
+        }
+        $store64(base + 8u64, committed + more);
+    }
+    $store64(base, end);
+    const u = $kUnlock(base + 16u64);
+    const linked = $kLink(start + step, step, class, count - 1);
+    $zoneStore64(class * 8, start + step);
+    $zoneStore16(128 + class * 2, u64(count - 1));
+    $store32(start, u64(class));
+    $store8(start + 4u64, 0xA5u64);
+    return start + 64u64;
+}
+
+// `left` blocks from `h`, each `step` bytes after the one before, made free
+// blocks of the class, each the next of the one before, the last the end of
+// their list. (A loop written as a tail call: the code of the allocator
+// builds no array, it would call itself.)
+@requireTail
+action $kLink(h: u64, step: u64, class: i64, left: i64): i64 {
+    $store32(h, u64(class));
+    $store8(h + 4u64, 0x5Au64);
+    if (left <= 1) {
+        $store64(h + 8u64, 0u64);
+        return 0;
+    }
+    $store64(h + 8u64, h + step);
+    return $kLink(h + step, step, class, left - 1);
+}
+
+// The block `p` given back: 1, the block the first of the list of its
+// class (that list past 64 blocks, its first 32 go to the shared list); or
+// 0, nothing done, when `p` is not a block of the arena (the runtime's, or
+// no block).
+@requireNoAlloc
+action $kFree(p: u64): i64 {
+    const h = p - 64u64;
+    if (!$arenaHas(h, 64u64)) {
+        return 0;
+    }
+    const class = i64($load32(h));
+    if ($load8(h + 4u64) != 0xA5u64 || class >= 16 || p % 64u64 != 0u64) {
+        return i64($kDamaged(0));
+    }
+    $store8(h + 4u64, 0x5Au64);
+    $store64(h + 8u64, $zoneLoad64(class * 8));
+    $zoneStore64(class * 8, h);
+    const held = $zoneLoad16(128 + class * 2) + 1u64;
+    $zoneStore16(128 + class * 2, held);
+    if (held > 64u64) {
+        return $kFlush(class);
+    }
+    return 1;
+}
+
+// The first 32 blocks of the list of the thread given to the shared list of
+// the class, under its lock.
+@cold
+action $kFlush(class: i64): i64 {
+    const first = $zoneLoad64(class * 8);
+    const tail = $kWalk(first, 31);
+    $zoneStore64(class * 8, $load64(tail + 8u64));
+    $zoneStore16(128 + class * 2, $zoneLoad16(128 + class * 2) - 32u64);
+    const shared = $arenaBase() + 64u64 + u64(class) * 16u64;
+    const l = $kLock(shared + 8u64);
+    $store64(tail + 8u64, $load64(shared));
+    $store64(shared, first);
+    const u = $kUnlock(shared + 8u64);
+    return 1;
+}

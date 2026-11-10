@@ -50,12 +50,30 @@ extern "C" {
     fn LLVMCreatePassBuilderOptions() -> Ref;
     fn LLVMDisposePassBuilderOptions(o: Ref);
     fn LLVMRunPasses(m: Ref, passes: *const c_char, tm: Ref, o: Ref) -> Ref;
+    fn LLVMGetNamedFunction(m: Ref, name: *const c_char) -> Ref;
+    fn LLVMGetEnumAttributeKindForName(name: *const c_char, len: usize) -> u32;
+    fn LLVMCreateEnumAttribute(ctx: Ref, kind: u32, val: u64) -> Ref;
+    fn LLVMAddAttributeAtIndex(f: Ref, idx: u32, attr: Ref);
+    fn LLVMRemoveEnumAttributeAtIndex(f: Ref, idx: u32, kind: u32);
     fn LLVMGetErrorMessage(e: Ref) -> *mut c_char;
     fn LLVMDisposeErrorMessage(m: *mut c_char);
     fn LLVMTargetMachineEmitToFile(tm: Ref, m: Ref, file: *const c_char, kind: i32, msg: *mut *mut c_char) -> i32;
 }
 
 const RETURN_STATUS: i32 = 2;
+
+/// The functions of the generated code inlined after the optimization of
+/// the module (D600): the entries of the allocator written in Isocron.
+pub const LATE_INLINE: [&str; 3] = ["isc.late.alloc", "isc.late.alloc_zeroed", "isc.late.free"];
+/// The index of the attributes of a function itself (LLVM's
+/// `LLVMAttributeFunctionIndex`).
+const FUNCTION_INDEX: u32 = u32::MAX;
+
+/// The number LLVM gives the attribute `name`.
+fn attribute_kind(name: &str) -> u32 {
+    // SAFETY: the name and its length, read by LLVM during the call
+    unsafe { LLVMGetEnumAttributeKindForName(name.as_ptr() as *const c_char, name.len()) }
+}
 const OPT_AGGRESSIVE: i32 = 3;
 const RELOC_STATIC: i32 = 1;
 const RELOC_PIC: i32 = 2;
@@ -225,6 +243,33 @@ pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::I
             let s = CStr::from_ptr(em).to_string_lossy().to_string();
             LLVMDisposeErrorMessage(em);
             return Err(format!("LLVM optimization failed: {}", s));
+        }
+        // the functions inlined after the optimization of the module (D600):
+        // called until here as functions declared `noalias` that LLVM does
+        // not look into (`noinline`), so that every pass above knew that an
+        // allocation names memory nothing else does; now inlined into their
+        // callers, and the code around them cleaned
+        let (noinline, always) = (attribute_kind("noinline"), attribute_kind("alwaysinline"));
+        let mut late = false;
+        for name in LATE_INLINE {
+            let f = LLVMGetNamedFunction(m, cstr(name).as_ptr());
+            if !f.is_null() {
+                LLVMRemoveEnumAttributeAtIndex(f, FUNCTION_INDEX, noinline);
+                LLVMAddAttributeAtIndex(f, FUNCTION_INDEX, LLVMCreateEnumAttribute(ctx, always, 0));
+                late = true;
+            }
+        }
+        if late {
+            let opts = LLVMCreatePassBuilderOptions();
+            let passes = cstr("always-inline,function(sroa,early-cse,instcombine,simplifycfg,adce),globaldce");
+            let err = LLVMRunPasses(m, passes.as_ptr(), tm, opts);
+            LLVMDisposePassBuilderOptions(opts);
+            if !err.is_null() {
+                let em = LLVMGetErrorMessage(err);
+                let s = CStr::from_ptr(em).to_string_lossy().to_string();
+                LLVMDisposeErrorMessage(em);
+                return Err(format!("LLVM late inlining failed: {}", s));
+            }
         }
         let mut result = Ok(());
         if let Some(a) = asm {

@@ -1061,7 +1061,9 @@ fn integers_written_in_the_block_of_their_template() {
     assert!(!ll.contains("call void @isc_to_string_i64("), "a text of an integer made by the runtime");
     let texts: Vec<&str> = ll
         .lines()
-        .filter(|l| l.starts_with("define internal") && l.contains(" alwaysinline "))
+        // (the functions that return a text: the fast paths of the
+        // allocator, inlined too, return a word, D605)
+        .filter(|l| l.starts_with("define internal") && l.contains(" alwaysinline ") && l.contains("{ ptr, i64 } @"))
         .filter_map(|l| l.split('@').nth(1).and_then(|r| r.split('(').next()))
         .collect();
     let calls: usize = texts.iter().map(|f| ll.matches(&format!("call tailcc {{ ptr, i64 }} @{}(", f)).count()).sum();
@@ -1348,7 +1350,7 @@ action main(args: string[k]): i32 {
     // of `isc_free`
     let lines: Vec<&str> = ll.lines().collect();
     let tested = lines.iter().enumerate().any(|(k, l)| {
-        l.contains("call void @isc_free(ptr") && lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4"))
+        l.contains("call void @isc.late.free(ptr") && lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4"))
     });
     assert!(tested, "a text freed without the test of a literal");
     for n in ["0", "1", "10", "1000"] {
@@ -1393,7 +1395,7 @@ action main(args: string[k]): i32 {
     let start = ll.find(&format!("@isc_fn_{}(", wi)).expect("no function walk in the LLVM");
     let body = &ll[start..start + ll[start..].find("\n}\n").unwrap()];
     let lines: Vec<&str> = body.lines().collect();
-    let frees: Vec<usize> = (0..lines.len()).filter(|&k| lines[k].contains("call void @isc_free(ptr")).collect();
+    let frees: Vec<usize> = (0..lines.len()).filter(|&k| lines[k].contains("call void @isc.late.free(ptr")).collect();
     assert!(!frees.is_empty(), "no text freed in walk");
     for k in frees {
         assert!(lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4")), "a text of walk freed without the test of a literal: {}", lines[k]);
