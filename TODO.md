@@ -530,7 +530,8 @@ v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest
 - [ ] The measurable costs of the two allocators side by side (D605, D609): the start of a small program +14 %, `maps.get.i64` +20 % at 200 rounds, `json.decode` +2.5 %: fixed or explained, one day at most
 - [x] The frontier written and its ratchet test (D622)
 - [x] (D623) The start of a small program: its own work the same (3990 → 4037 instructions), 30 000 cycles more in the kernel (the reservation of the arena and its first part, two calls of the system): explained, the reservation made lazily belongs to the rest of the allocator (v2); `maps.get.i64` +0.0 % on a quiet machine (was +20 %), `json.decode` +1.9 % (was +2.5 to 3.4 %), `maps.get.string` +2.3 %, `maps.Map.build.i64` +1.3 %; `json.stringify` −15.7 %, `json.parse` −3.1 %, `json.encode` −8.1 %
-- [ ] `json.decode` +1.9 % and `maps.get.string` +2.3 % against the compiler of before the kernel: find the cause (counts of instructions first)
+- [x] (D625) `json.decode` +3.3 % of cycles with 2.5 % fewer instructions against the compiler of before the kernel: the front of the processor (misses of the cache of instructions +57 %, of branches +18 % a record), the code of the program larger; `maps.get.string` the same instructions, −2.4 % to +2.3 % of cycles from a measure to the next: noise
+- [ ] (v2) The place of the code of a program: `json.decode` loses 3 % to the front of the processor since the prelude inlines more (D625): hot and cold parts of functions apart, the order of the functions
 - [ ] `a_program_carries_what_it_reaches` (`pre.rs`) failed once in the pass of glibc of suite 429: a hello linked with the module 182 600 bytes against 112 968 without; not again in 16 runs; its message now gives the state of the module
 - [ ] Release 1.0? (to propose to the author when the items above are done)
 

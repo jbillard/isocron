@@ -15138,3 +15138,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`target/heavy.want`, one at a time, removed when its process is gone),
   and no job of one place starts while it is there. The script replaced
   by a rename: the jobs running kept the file they had opened.
+- **D625 — The two forms left by D623, by the counters of the processor
+  (2026-11-10).** Two programs alone (`json.decode`, `maps.get.string`),
+  built by the compiler of before the kernel and by 0.6.0, the difference
+  of two numbers of rounds, the pinned core, median of 7. `json.decode`, a
+  record: 3530.6 → 3443.5 instructions (−2.5 %), 778.1 → 804.1 cycles
+  (+3.3 %), misses of the cache of instructions 0.202 → 0.318 (+57 %),
+  of branches 0.118 → 0.140 (+18 %), of data the same: the front of the
+  processor, the code of the program larger since the prelude makes more
+  of its texts (D609 saw it frontend-bound, 12.5 → 14.9 %). `maps.get
+  .string`: 146.58 → 146.57 instructions, 42.9 → 41.9 cycles here, +2.3 %
+  in D623: noise. The place of the code (hot and cold parts apart, the
+  order of the functions) left to v2.
