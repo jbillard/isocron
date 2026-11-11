@@ -15697,3 +15697,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   after the author's `Illegal instruction`: native code had AVX-512).
   Test (`windows.rs`, `a_program_of_windows_without_a_console`): the field
   `Subsystem` of the PE header (2, 3), alone and with MinGW's C runtime.
+- **D641 — A thread for each window of `win32` (2026-11-11).** At the
+  author's word: on his Windows, the counter of the library did not lay
+  its view out again while its window was resized by hand, and the part
+  of the window uncovered stayed black. While a hand resizes or moves a
+  window, Windows holds a loop of its own inside `DispatchMessageW`: the
+  program, which read its messages in `sysWinEvents`, was held there until
+  the button was released; and the procedure answered `WM_ERASEBKGND`
+  without painting.
+  - Each window has a thread of its own (`isc.win.thread`, started by
+    `sysWinOpen`, which waits for the window made or the code of its
+    failure): the window made there, its messages read by `GetMessageW`
+    and given to the procedure on that thread. The procedure puts the
+    events in the queue under a lock (a `CRITICAL_SECTION`) and signals
+    them (an event of Windows); `sysWinEvents` waits for that signal (at
+    most `ms`), then posts `WM_APP + 1` and waits for the procedure to see
+    it (a second at most), so that every message posted before (the input
+    a test plays) has been given to the procedure: the events since the
+    last call, as before. `sysWinShow` keeps a copy of the image (under
+    the lock); the procedure paints it again on `WM_PAINT` (the part of
+    the window it does not cover in the colour of its last pixel, white
+    before any image). `sysWinClose` posts `WM_APP` (the window destroyed
+    on its thread, `PostQuitMessage`), waits for the thread, then gives
+    back the signals, the lock, the queue, the image and the block.
+    `post`, `clientSize`, `capture` and the drawing of `show` act from the
+    thread of the program (allowed by Windows on the window of another
+    thread). No function of the runtime runs on the thread of a window.
+  - Checked in the machine of Windows: the counter of the library resized
+    by a drag of its corner (`SetCursorPos` and `mouse_event`, the button
+    held): during the drag, the window 856 by 599, its card laid out in its
+    middle, no part black; the test file of Windows whole (20 tests, the
+    window of `a_window_of_windows` with both ABIs). The guide (`win32`).

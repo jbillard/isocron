@@ -3505,7 +3505,12 @@ the inside shows; `post(w, message, wparam, lparam)` puts a message of
 Windows in the queue of the window (a loop woken, an input played in a
 test). A `Window` is closed exactly once, by `close(w)`. The compiled
 program calls `user32` and `gdi32` itself; the procedure of the window is
-written by the compiler. A program whose only face is its window is built
+written by the compiler. Each window has a thread of its own that reads
+its messages (D641): while a hand resizes or moves the window (a loop of
+Windows of its own), its events keep coming, so a program lays its view
+out again and shows it at each size; when Windows asks for a part of the
+window again, the procedure paints the last image shown itself, the part
+it does not cover in the colour of its last pixel. A program whose only face is its window is built
 with `--subsystem windows`: started from the explorer, it opens no console.
 To run on other machines than the one that builds it, give the
 instruction set (`--isa avx2`, `--isa sse`): native code is for the CPU
