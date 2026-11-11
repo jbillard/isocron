@@ -368,7 +368,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
     let text_fns = fns.len() as u32;
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Vec::new(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
+    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -479,7 +479,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         choices: std::mem::take(&mut l.choices),
         reassoc_fns: std::mem::take(&mut l.reassoc_fns),
         externs: extern_fns(p),
-        sys_paths: isc_types::check::system_paths(p),
+        sys_paths: [0, 1, 2].map(|k| isc_types::check::system_paths(p, k)),
         sum_slots: sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow()),
         views: Default::default(),
         int_text,

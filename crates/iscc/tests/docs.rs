@@ -135,7 +135,7 @@ fn every_example_of_the_guide_works() {
                 // a program that reaches what WASI lacks (sockets): refused
                 // when built for it (D324)
                 let p = iscc::frontend("doc.isc", &ex.src).unwrap_or_else(|e| panic!("{}: {}", at, e));
-                if p.sys_paths.iter().any(|(op, _, _)| !op.on_wasi()) {
+                if p.sys_paths[2].iter().any(|(op, _, _)| !op.on_wasi()) {
                     let o = isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() };
                     let opts = iscc::BuildOptions { output: tmp(&format!("doc_{}.wasm", n)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
                     let e = iscc::build(&p, &opts).expect_err("a program that WASI cannot run, built for it");

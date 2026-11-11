@@ -521,7 +521,10 @@ pub struct Program {
     /// The primitives of the system that `main` reaches, each with a path of
     /// calls to it and the place of the call in the program (D324): a target
     /// that lacks one refuses the program.
-    pub sys_paths: Vec<(SysOp, Vec<String>, isc_syntax::Span)>,
+    /// The primitives of the system the program reaches when built for each
+    /// system (D324, D635): Linux, Windows, WebAssembly (`sysPlatform()`),
+    /// each with the path of the calls that reach it first.
+    pub sys_paths: [Vec<(SysOp, Vec<String>, isc_syntax::Span)>; 3],
     /// The tuples of sum types told apart by their type alone, with the
     /// slots of each variant (D448): a value of one frees the fields of its
     /// variant only.

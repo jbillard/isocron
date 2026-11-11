@@ -254,7 +254,7 @@ pub struct BuildOptions {
 /// without a C library.
 fn with_glibc(p: &isc_ir::Program, opts: &BuildOptions) -> bool {
     // TLS: the library of the system loaded at run time (D343)
-    p.sys_paths.iter().any(|(op, _, _)| op.is_tls())
+    p.sys_paths[0].iter().any(|(op, _, _)| op.is_tls())
         || !p.externs.is_empty()
         || !opts.link.is_empty()
         || opts.glibc
@@ -390,13 +390,13 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
     // a primitive of the system that the target lacks (D324)
     let reached = |path: &[String]| path.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(" -> ");
     if opts.codegen.isa.is_wasm() {
-        if let Some((op, path, at)) = p.sys_paths.iter().find(|(op, _, _)| !op.on_wasi()) {
+        if let Some((op, path, at)) = p.sys_paths[2].iter().find(|(op, _, _)| !op.on_wasi()) {
             let why = if op.is_unix() { "the module `unix` is Linux only" } else { "no sockets" };
             return Err(format!("{}:{}: the target WebAssembly (WASI preview 1) has no `{}` ({}): reached by {}", at.line, at.col, op.name(), why, reached(path)));
         }
     } else if opts.codegen.windows {
         // the module `unix` (D632)
-        if let Some((op, path, at)) = p.sys_paths.iter().find(|(op, _, _)| !op.on_windows()) {
+        if let Some((op, path, at)) = p.sys_paths[1].iter().find(|(op, _, _)| !op.on_windows()) {
             return Err(format!("{}:{}: the target Windows has no `{}` (the module `unix` is Linux only): reached by {}", at.line, at.col, op.name(), reached(path)));
         }
     }

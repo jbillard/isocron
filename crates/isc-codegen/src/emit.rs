@@ -16335,6 +16335,12 @@ impl<'p> Gen<'p> {
             // pointers, then the pair
             // the module `unix` (D632): its calls of the system in the program
             ActionOp::Sys(o) if o.is_unix() => self.unix_op(o, &vals),
+            // the system of the target, a constant (D635): LLVM drops the
+            // branches of the other systems
+            ActionOp::Sys(isc_ir::SysOp::Platform) => {
+                let k = if self.opts.isa.is_wasm() { 2 } else if self.opts.windows { 1 } else { 0 };
+                v(k.to_string(), "i64")
+            }
             // a primitive of the system (D322): its arguments by their
             // parts, its tuple written by the runtime at OUT
             ActionOp::Sys(o) => {

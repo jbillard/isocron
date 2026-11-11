@@ -975,6 +975,9 @@ Sous Linux, une primitive est un appel direct du système (D287), sauf TLS. Sous
 | `rename(from, to)` | `action (string, string) => Result<void, IoError>` |
 | `readFile(path)`, `readText(path)` | `action (string) => Result<u8[k], IoError>`, `Result<string, IoError>` |
 | `writeFile(path, x)`, `appendFile(path, x)` | `action (string, u8[n]) => Result<void, IoError>` (et leurs formes `string`) |
+| `platform()` | `action () => string` : `"linux"`, `"windows"` ou `"wasi"` (D635) |
+
+`platform()` est connue à la compilation. Une condition d'un programme sur elle (`sys.platform() == "windows"`, `!=`, leur négation, `&&` et `||` de telles conditions), ou une condition d'un module standard sur `sysPlatform()`, ne garde pour chaque cible que la branche de son système : une branche d'un autre système n'est pas construite pour celle-ci, et les primitives qu'elle seule atteint n'entrent pas dans la règle 5 (D324). Une bibliothèque pour plusieurs systèmes s'écrit ainsi.
 
 Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) sont `join(a, b)`, `dirname(p)`, `basename(p)`, `extension(p)`, `normalize(p)` et `isAbsolute(p)`. Le séparateur est `/` sur toutes les cibles (Windows l'accepte aussi), et `C:/` ou `C:\` est une racine partout (D333). `normalize` retire les `.` et les `x/..` sans lire le disque. Leur résultat ne dépend que du texte et de la cible.
 

@@ -106,3 +106,31 @@ fn unix_refused_for_windows_and_wasi() {
     let r = run_bin(&compile(src, "unix_linux"), &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "1\n"));
 }
+
+/// D635: a program for several systems: the module `unix` called in a
+/// branch of `sys.platform() == "linux"` alone builds for Windows and for
+/// WebAssembly (the branch, known when the program is built, reaches
+/// nothing there), and runs under Linux, interpreted and compiled; the
+/// same call outside such a branch is still refused.
+#[test]
+fn a_branch_of_another_system_reaches_nothing() {
+    let src = "import * as unix from \"unix\";\nimport * as net from \"net\";\nimport * as sys from \"sys\";\n\naction local(): void {\n    match (unix.connect(\"@isocron-no-one-here\")) {\n        Ok(c) => net.close(c),\n        Err(e) => print(\"no peer\"),\n    };\n}\n\naction main(args: string[k]): i32 {\n    print(sys.platform());\n    if (sys.platform() == \"linux\") {\n        local();\n    }\n    if (sys.platform() != \"linux\" && args.length > 99) {\n        print(\"elsewhere\");\n    }\n    return 0;\n}\n";
+    assert_eq!(interp_ok(src, &[]), "linux\nno peer\n", "interpreter");
+    let r = run_bin(&compile(src, "platform_linux"), &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "linux\nno peer\n"), "compiled: {}", r.stderr);
+    let p = iscc::frontend("platforms.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    assert!(p.sys_paths[0].iter().any(|(op, _, _)| op.is_unix()), "Linux reaches the module unix");
+    assert!(!p.sys_paths[1].iter().any(|(op, _, _)| op.is_unix()) && !p.sys_paths[2].iter().any(|(op, _, _)| op.is_unix()), "Windows and WASI reach none of it");
+    // built for WebAssembly (no C library needed)
+    let opts = iscc::BuildOptions { output: tmp("platform_wasi.wasm"), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false };
+    iscc::build(&p, &opts).unwrap_or_else(|e| panic!("built for WASI: {}", e));
+    // and for Windows, when its libraries are here
+    if std::env::var_os("ISC_MINGW_DIR").is_some() || std::path::Path::new("/usr/x86_64-w64-mingw32/lib").is_dir() {
+        let opts = iscc::BuildOptions { output: tmp("platform_windows.exe"), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false };
+        iscc::build(&p, &opts).unwrap_or_else(|e| panic!("built for Windows: {}", e));
+    }
+    // outside a test of the system: refused for Windows
+    let outside = src.replace("    if (sys.platform() == \"linux\") {\n        local();\n    }\n", "    local();\n");
+    let q = iscc::frontend("outside.isc", &outside).unwrap_or_else(|e| panic!("{}", e));
+    assert!(q.sys_paths[1].iter().any(|(op, _, _)| op.is_unix()), "reached outside the branch");
+}

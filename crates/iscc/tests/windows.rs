@@ -853,7 +853,7 @@ fn programs_build_for_windows() {
         // a program that reaches the module `unix` (Linux only, D632):
         // refused for Windows, the primitive named
         let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
-        if p.sys_paths.iter().any(|(op, _, _)| !op.on_windows()) {
+        if p.sys_paths[1].iter().any(|(op, _, _)| !op.on_windows()) {
             let o = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
             let opts = iscc::BuildOptions { output: tmp(&format!("built_{}.exe", name)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
             let e = iscc::build(&p, &opts).expect_err("a program of the module unix built for Windows");

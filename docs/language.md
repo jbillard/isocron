@@ -2600,6 +2600,31 @@ the runtime, which a program cannot call itself.
 | `readFile(p)`, `readText(p)` | `action (string) => Result<u8[k], IoError>`, `Result<string, IoError>` |
 | `writeFile(p, x)`, `appendFile(p, x)`, `writeText(p, s)`, `appendText(p, s)` | `action => Result<void, IoError>` |
 | `message(e)` | `(IoError) => string` |
+| `platform()` | `action () => string`: `"linux"`, `"windows"` or `"wasi"` |
+
+`platform()` is known when the program is built: a condition on it
+(`sys.platform() == "windows"`, `!=`, `!`, `&&` and `||` of such) keeps,
+for each target, the branch of that system alone. A branch for another
+system is not built for this one, and the functions only it calls (those
+of the module `unix` in a branch for Linux) do not stop the program from
+being built for Windows or WebAssembly.
+
+```isc
+import * as sys from "sys";
+
+action main(args: string[k]): i32 {
+    if (sys.platform() == "windows") {
+        print("C:/Windows/Fonts");
+    } else {
+        print("/usr/share/fonts");
+    }
+    return 0;
+}
+```
+
+```output
+/usr/share/fonts
+```
 
 An error of the system is a value: `IoError = NotFound(string) |
 PermissionDenied(string) | AlreadyExists(string) | NotEmpty(string) |

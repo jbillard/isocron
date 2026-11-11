@@ -5062,23 +5062,88 @@ fn recursive_fns(fns: &[TFn]) -> Vec<bool> {
 /// path (outside the standard modules): a target that lacks one refuses
 /// the program, naming them. Through every call of a reached function, a
 /// function value too (more than run time takes, never less).
-pub fn system_paths(p: &TProgram) -> Vec<(SysOp, Vec<String>, Span)> {
-    fn prims(e: &TExpr, out: &mut Vec<(SysOp, Span)>) {
-        if let TExprKind::Call { callee: Callee::Prim(Prim::Sys(op)), .. } = &e.kind {
-            out.push((*op, e.span));
+/// The names of the systems of `sys.platform()` (D635), by the numbers of
+/// `sysPlatform()`: 0 Linux, 1 Windows, 2 WebAssembly (WASI).
+pub const PLATFORMS: [&str; 3] = ["linux", "windows", "wasi"];
+
+/// The value of the condition `c` for a program built for `platform`, when
+/// it tests the system (D635): `sysPlatform() == k` (or `!=`) in the
+/// standard modules, `sys.platform() == "windows"` (or `!=`) in a program,
+/// their negation, `&&` and `||` of them. None: a condition of another kind.
+pub fn platform_test(p: &TProgram, c: &TExpr, platform: i64) -> Option<bool> {
+    enum V {
+        Num(i64),
+        Name(String),
+    }
+    let value = |x: &TExpr| -> Option<V> {
+        match &x.kind {
+            TExprKind::Call { callee: Callee::Prim(Prim::Sys(SysOp::Platform)), .. } => Some(V::Num(platform)),
+            TExprKind::Call { callee: Callee::Fn { id, .. }, args, .. } if args.is_empty() && p.fns[*id].name == format!("{}sys.platform", crate::modules::STD_KEY) => {
+                Some(V::Name(PLATFORMS.get(platform as usize).copied().unwrap_or("").to_string()))
+            }
+            TExprKind::Lit(Lit::Int(k)) => Some(V::Num(*k as i64)),
+            TExprKind::Lit(Lit::Str(s)) => Some(V::Name(s.clone())),
+            _ => None,
         }
-        for_each_child(e, &mut |c| prims(c, out));
+    };
+    match &c.kind {
+        TExprKind::Binary { op: op @ (BinOp::Eq | BinOp::Ne), lhs, rhs, .. } => {
+            let calls = |x: &TExpr| matches!(x.kind, TExprKind::Call { .. });
+            if !calls(lhs) && !calls(rhs) {
+                return None;
+            }
+            let same = match (value(lhs)?, value(rhs)?) {
+                (V::Num(a), V::Num(b)) => a == b,
+                (V::Name(a), V::Name(b)) => a == b,
+                _ => return None,
+            };
+            Some(same == (*op == BinOp::Eq))
+        }
+        TExprKind::Unary(ast::UnOp::Not, x) => platform_test(p, x, platform).map(|b| !b),
+        TExprKind::Binary { op: BinOp::And, lhs, rhs, .. } => match (platform_test(p, lhs, platform), platform_test(p, rhs, platform)) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        },
+        TExprKind::Binary { op: BinOp::Or, lhs, rhs, .. } => match (platform_test(p, lhs, platform), platform_test(p, rhs, platform)) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The primitives of the system a program reaches when built for
+/// `platform` (D324), each with the path of the calls that reach it first;
+/// a branch of a test of the system that cannot run there (D635) reaches
+/// nothing.
+pub fn system_paths(p: &TProgram, platform: i64) -> Vec<(SysOp, Vec<String>, Span)> {
+    // the primitives and the calls of `e` that can run on `platform`
+    fn live(p: &TProgram, e: &TExpr, platform: i64, prims: &mut Vec<(SysOp, Span)>, calls: &mut Vec<(FnId, Span)>) {
+        match &e.kind {
+            TExprKind::Call { callee: Callee::Prim(Prim::Sys(op)), .. } => prims.push((*op, e.span)),
+            TExprKind::Call { callee: Callee::Fn { id, .. }, .. } | TExprKind::FnRef { id, .. } => calls.push((*id, e.span)),
+            _ => {}
+        }
+        if let TExprKind::If(c, t, f) = &e.kind {
+            if let Some(b) = platform_test(p, c, platform) {
+                live(p, c, platform, prims, calls);
+                live(p, if b { t } else { f }, platform, prims, calls);
+                return;
+            }
+        }
+        for_each_child(e, &mut |c| live(p, c, platform, prims, calls));
     }
     let n = p.fns.len();
-    let calls: Vec<Vec<(FnId, Span)>> = p
-        .fns
-        .iter()
-        .map(|f| {
-            let mut v = Vec::new();
-            collect_calls(&f.body, &mut v);
-            v
-        })
-        .collect();
+    let mut prims_of: Vec<Vec<(SysOp, Span)>> = Vec::new();
+    let mut calls: Vec<Vec<(FnId, Span)>> = Vec::new();
+    for f in &p.fns {
+        let (mut ps, mut cs) = (Vec::new(), Vec::new());
+        live(p, &f.body, platform, &mut ps, &mut cs);
+        prims_of.push(ps);
+        calls.push(cs);
+    }
     // breadth first from `main`: the parent of each function and the place
     // of the call that reached it
     let mut parent: Vec<Option<(FnId, Span)>> = vec![None; n];
@@ -5087,9 +5152,7 @@ pub fn system_paths(p: &TProgram) -> Vec<(SysOp, Vec<String>, Span)> {
     seen[p.main] = true;
     let mut out: Vec<(SysOp, Vec<String>, Span)> = Vec::new();
     while let Some(f) = queue.pop_front() {
-        let mut ps = Vec::new();
-        prims(&p.fns[f].body, &mut ps);
-        for (op, sp) in ps {
+        for &(op, sp) in &prims_of[f] {
             if out.iter().any(|(o, _, _)| *o == op) {
                 continue;
             }

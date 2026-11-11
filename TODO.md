@@ -540,7 +540,8 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [ ] The mouse and the keyboard under Wayland (its seat, the table of the keyboard in XKB text); then X11 (Xvfb)
 - [ ] The text: a font read, its glyphs drawn, a line shaped and cut
 - [ ] The layout (flexbox), the elements, the style, the events, the focus, the model of Elm
-- [ ] Windows (`user32`, `gdi32`): after the author's word
+- [x] The system known when a program is built: `sys.platform()`, a branch of another system reaching nothing (D635)
+- [ ] Windows (`user32`, `gdi32`, the author's word read in D635): a module of the system, a window, its messages, an image shown; tested in the machine of Windows
 
 ## The versions of the runtime (the author's decision, 2026-11-10, D622)
 

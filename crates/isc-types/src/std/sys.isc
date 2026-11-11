@@ -56,6 +56,15 @@ function done(code: i64, what: string): Result<void, IoError> {
 }
 
 // the variable `name` of the environment
+// the system the program runs on: "linux", "windows" or "wasi" (D635). A
+// condition of a program on it (`sys.platform() == "windows"`) is known
+// when the program is built: a branch for another system is never built for
+// this one, and the primitives it reaches are not those of this system.
+export action platform(): string {
+    const p = sysPlatform();
+    return p == 0 ? "linux" : (p == 1 ? "windows" : "wasi");
+}
+
 export action env(name: string): Option<string> {
     const [value, found] = sysGetenv(name);
     if (found == 0) {

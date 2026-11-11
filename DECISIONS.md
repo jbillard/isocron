@@ -15486,3 +15486,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     in vector code (a call for each element today: the library replaced
     `exp` of its gaussian by `(1 + x/1024)^1024`), `flatMap` (missing from
     the library, found by the library).
+- **D635 — Windows in the library of D631, and the system known when a
+  program is built (2026-11-11).** The author: « j'ai l'impression que tu
+  te focalises sur l'affichage sous Linux, mais il faut prendre aussi en
+  compte l'affichage sous windows ». Read from it (the author can say
+  otherwise): the question 2 of `docs/proposals/gui.md` answered, the calls
+  of `user32`, `gdi32` and `dwmapi` admitted as those of `kernel32` (D599):
+  under Windows a window, its messages and the display of an image have no
+  other way. What the two systems share is written once (the renderer, the
+  same pixels on both; the fonts, those of `C:\Windows\Fonts` of the same
+  format; the layout and the elements); what they do not, a module of the
+  system for each.
+  - A library for several systems needs the system known when the program
+    is built: a program for Windows that reached a primitive of `unix`, in
+    a branch that only runs under Linux, was refused (D324). Now
+    `sys.platform()` (`"linux"`, `"windows"`, `"wasi"`; an action, in the
+    module `sys`), and a condition on it (`==`, `!=`, `!`, `&&`, `||`; in
+    the standard modules, on `sysPlatform()`) keeps for each target the
+    branch of its system alone: `check::platform_test`, `system_paths(p,
+    platform)`; `Program::sys_paths` holds the primitives reached for each
+    system (Linux, Windows, WASI), the refusals of D324 read the list of
+    their target. The code generator writes `sysPlatform()` as the constant
+    of its target (LLVM drops the other branches); the interpreter answers
+    the system it runs on.
+  - Tests (`a_branch_of_another_system_reaches_nothing`): the module `unix`
+    in a branch for Linux builds for Windows and WASI, runs under Linux
+    interpreted and compiled; outside such a branch still reached. The
+    guide (its example), SPEC section 18.
+  - Next: a module of the system for Windows (a window, its procedure
+    written by the compiler and its messages read by the program, an image
+    shown by `SetDIBitsToDevice`), its tests in the machine of Windows.

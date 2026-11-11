@@ -93,5 +93,5 @@ GPUI repose sur ce qu'Isocron n'a pas : un état modifiable partagé (`Rc<RefCel
 ## 6. Questions pour l'auteur
 
 1. Le nom du dépôt de la bibliothèque (provisoire : `isocron-ui`), et sa publication sur GitHub.
-2. Windows : les appels à `user32` et `gdi32` sont-ils admis comme ceux de `kernel32` ?
+2. Windows : les appels à `user32` et `gdi32` sont-ils admis comme ceux de `kernel32` ? Lu comme oui du message de l'auteur du 2026-11-11 (« il faut prendre aussi en compte l'affichage sous windows », D635).
 3. Le GPU : le rendu sur le processeur est proposé parce qu'il n'exige aucun C. Un rendu sur le GPU plus tard voudrait dire `libvulkan` et le pilote (du C) sous Linux, Direct3D (COM) sous Windows.
