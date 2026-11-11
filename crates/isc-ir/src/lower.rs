@@ -1312,6 +1312,26 @@ impl<'p> Lower<'p> {
                 let body = Expr::new(ExprKind::Tuple(fields), ty.clone(), span);
                 Ok(self.let_(r, t, body, false, span))
             }
+            // `~x` (D633): `x ^ m`, `m` every bit of its type set (-1 for a
+            // signed integer, the largest value for an unsigned one), element
+            // by element for an array; nothing new for the code generator nor
+            // the interpreter
+            TExprKind::Unary(UnOp::BitNot, x) => {
+                let x = self.expr(env, x)?;
+                let ones = |k: IntKind| Expr::lit(Lit::Int(canon(k, -1)), Type::Int(k), span);
+                match x.ty.clone() {
+                    Type::Int(k) => self.binary(BinOp::BitXor, x, ones(k), span),
+                    Type::Array(..) if matches!(x.ty.elem(), Type::Int(_)) => {
+                        let et = x.ty.elem().clone();
+                        let Type::Int(k) = et else { unreachable!() };
+                        let p = self.new_var("x", et.clone());
+                        let body = self.binary(BinOp::BitXor, Expr::var(p, et.clone(), span), ones(k), span)?;
+                        let ty = x.ty.clone();
+                        Ok(self.map1(x, p, body, ty, span))
+                    }
+                    _ => Err(Diagnostic::new(span, "`~` applies to the integers of a fixed size, not to a `bigint`")),
+                }
+            }
             TExprKind::Unary(op, x) => {
                 let x = self.expr(env, x)?;
                 if x.ty == Type::Big {

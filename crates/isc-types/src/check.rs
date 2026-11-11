@@ -1494,6 +1494,18 @@ impl<'g> FnCx<'g> {
                 let x = self.check(x, expected)?;
                 match op {
                     UnOp::Not => self.unify(&Ty::Bool, &x.ty, x.span)?,
+                    // the integers only, element by element for an array,
+                    // as the bitwise operators (D136, D633)
+                    UnOp::BitNot => {
+                        let t = self.shallow(&x.ty);
+                        match t {
+                            Ty::Array(_, e) => self.require(&e, class::INTEGRAL | class::SCALAR, x.span)?,
+                            _ => {
+                                self.require(&t, class::INTEGRAL | class::SCALAR, x.span)?;
+                                self.deferred_scalar.push((x.ty.clone(), x.span));
+                            }
+                        }
+                    }
                     UnOp::Neg => {
                         let t = self.shallow(&x.ty);
                         match t {

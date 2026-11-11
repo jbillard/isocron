@@ -529,6 +529,7 @@ ARM64 set aside; the targets before the rest of this list, in this order:
 After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`isocron-ui`, local until the author's word), what touches the system in Isocron, with the same requirements as the rest.
 
 - [x] The module `unix` (Linux): Unix sockets, descriptors passed, memory shared, `poll`; realized by the compiler; 0.9 to 1.06 times the floor (D632)
+- [x] `~` (D633), found missing by the library
 - [ ] The library, its first part: the primitives of the scene drawn on the processor into an image, compared with images of reference, measured
 - [ ] A window under Wayland, then X11, in a display server without a screen (Weston `headless`, Xvfb, in Docker): an image shown, the mouse and the keyboard received
 - [ ] The text: a font read, its glyphs drawn, a line shaped and cut

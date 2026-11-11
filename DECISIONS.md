@@ -15429,3 +15429,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     array of the events made and freed). The same cost on every call of
     the system on a descriptor of every such program (the round trip of
     64 bytes, four calls: +2.8 %): the start of v2 (TODO).
+- **D633 — `~`, the complement of the bits of an integer (2026-11-11).**
+  Missing from the operators of TypeScript that Isocron has (D136): found by
+  the library of D631 (the CRC-32 of its PNG files, `~crc`). Prefix `~x`,
+  at the level of `-` and `!`; the integers of a fixed size, element by
+  element for an array (the class of `^`, so not in a function whose type
+  parameter is not an integer, as `^`); `~x ** 2` refused as `-x ** 2`; on a
+  `bigint`, an error of compilation, as the other bitwise operators.
+  Lowered to `x ^ m`, `m` every bit of the type set (`canon(k, -1)`: -1 for
+  a signed type, the largest value of an unsigned one), a `map` for an
+  array: nothing new in the code generator nor in the interpreter. Tests
+  (`bitwise_not`, `bitwise_not_errors`), the guide (its example), SPEC
+  section 3.
+  - With it, `programs_build_for_windows` (D621) checks that a program of
+    the tests that reaches the module `unix` is refused for Windows, the
+    primitive named, instead of building it (suite 437: its one failure).

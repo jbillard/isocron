@@ -243,6 +243,8 @@ impl BinOp {
 pub enum UnOp {
     Neg,
     Not,
+    /// `~x`: the bits of an integer complemented, as in TypeScript (D633)
+    BitNot,
 }
 
 #[derive(Clone, Debug, PartialEq)]

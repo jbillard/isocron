@@ -185,12 +185,12 @@ Les niveaux sont ceux de TypeScript (norme ECMAScript).
 | 10 | `<<` `>>` | gauche |
 | 11 | `+` `-` | gauche |
 | 12 | `*` `/` `%` | gauche |
-| 13 | `-` unaire, `!` | — |
+| 13 | `-` unaire, `!`, `~` (complément des bits d'un entier, D633) | — |
 | 14 | `**` (puissance) | droite |
 | 15 (le plus fort) | appel, indice, `.`, `as const` | gauche |
 
 Décisions :
-- comme en TypeScript, `-x ** 2` est refusé : il faut écrire `-(x ** 2)` ou `(-x) ** 2` ; `2 ** -1` est accepté ;
+- comme en TypeScript, `-x ** 2` est refusé : il faut écrire `-(x ** 2)` ou `(-x) ** 2` ; `2 ** -1` est accepté ; de même `~x ** 2` et `!x ** 2` ;
 - les comparaisons ne s'enchaînent pas : `a < b < c` est une erreur (en TypeScript, elle compare un booléen à `c`) ;
 - `===` et `!==` sont `==` et `!=` : l'égalité porte toujours sur les valeurs, tableaux compris ;
 - `&`, `|` et `^` sont sous les comparaisons, comme en TypeScript : `a & b == c` est `a & (b == c)`, une erreur de type pour des entiers.

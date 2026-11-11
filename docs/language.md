@@ -872,7 +872,7 @@ From lowest to highest precedence, as in TypeScript (the ECMAScript standard):
 | `<<` `>>` | left |
 | `+` `-` | left |
 | `*` `/` `%` | left |
-| prefix `-`, `!` | — |
+| prefix `-`, `!`, `~` | — |
 | `**` (power) | right |
 | calls `f(x)`, indexing `x[i]`, `.` (field, method), `as const` | left |
 
@@ -899,13 +899,18 @@ From lowest to highest precedence, as in TypeScript (the ECMAScript standard):
   TypeScript: `x & 1 == 0` is `x & (1 == 0)`, a type error; write
   `(x & 1) == 0`. `>>` is arithmetic on signed types and
   logical on unsigned ones; the shift amount is taken modulo the number of
-  bits (`1 << 65` is `2` on `i64`).
+  bits (`1 << 65` is `2` on `i64`). Prefix `~` complements every bit of an
+  integer (`~x` is `x ^ -1`, or `x` exclusive-or its largest value when it
+  is unsigned), element-wise on arrays too; as with `-`, `~x ** 2` is an
+  error. None of them applies to a `bigint`.
 
 ```isc
 action main(args: string[k]): i32 {
     print([12 & 10, 12 | 10, 12 ^ 10] as const);
     print([1u8 << 7, -128i8 >> 7, 128u8 >> 7] as const);
     print(fold([true, false, true], 0u8, (acc, b) => acc << 1 | (b ? 1u8 : 0u8)));
+    print([~0, ~5i32, ~0u8, ~0xFFFF0000u32] as const);
+    print(~[1u16, 2u16, 65535u16]);
     return 0;
 }
 ```
@@ -914,6 +919,8 @@ action main(args: string[k]): i32 {
 (8, 14, 6)
 (128, -1, 1)
 5
+(-1, -6, 255, 65535)
+[65534, 65533, 0]
 ```
 
 ```isc

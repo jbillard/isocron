@@ -91,6 +91,8 @@ pub(crate) enum S {
     BarBar,
     Caret,
     Bang,
+    /// `~`, the complement of the bits of an integer (D633)
+    Tilde,
     At,
     /// The delimiters of a template literal (D150): `` ` ``, `${` and the
     /// `}` that closes an insertion.
@@ -137,6 +139,7 @@ impl S {
             S::BarBar => "||",
             S::Caret => "^",
             S::Bang => "!",
+            S::Tilde => "~",
             S::At => "@",
             S::Backtick => "`",
             S::TplOpen => "${",
@@ -356,6 +359,7 @@ pub(crate) fn lex_at(src: &str, file: u32, line: u32, col: u32) -> Result<Vec<To
                 ('|', ..) => (S::Bar, 1),
                 ('^', ..) => (S::Caret, 1),
                 ('!', ..) => (S::Bang, 1),
+                ('~', ..) => (S::Tilde, 1),
                 ('@', ..) => (S::At, 1),
                 _ => return Err(Diagnostic::new(span, format!("unexpected character `{}`", c))),
             };

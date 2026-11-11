@@ -1062,7 +1062,7 @@ impl P<'_> {
         let start = self.pos;
         let base = self.unary()?;
         if self.is(S::StarStar) {
-            if matches!(self.toks[start].t, T::Sym(S::Minus) | T::Sym(S::Bang)) {
+            if matches!(self.toks[start].t, T::Sym(S::Minus) | T::Sym(S::Bang) | T::Sym(S::Tilde)) {
                 return self.error("parenthesize the left side of `**` (`-x ** 2` is `-(x ** 2)` or `(-x) ** 2`)");
             }
             let span = self.bump();
@@ -1100,6 +1100,10 @@ impl P<'_> {
         if self.eat(S::Bang) {
             let e = self.unary()?;
             return Ok(Expr { kind: ExprKind::Unary(UnOp::Not, Box::new(e)), span });
+        }
+        if self.eat(S::Tilde) {
+            let e = self.unary()?;
+            return Ok(Expr { kind: ExprKind::Unary(UnOp::BitNot, Box::new(e)), span });
         }
         self.postfix()
     }

@@ -90,6 +90,28 @@ fn bitwise_errors() {
     assert!(iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(8 > > 1);\n    return 0;\n}\n").is_err());
 }
 
+/// D633: `~x`, every bit of an integer complemented: signed and unsigned
+/// of each size, a value known only at run time, arrays element by element
+/// (a fused `map`), in a function of an array; interpreted and compiled the
+/// same.
+#[test]
+fn bitwise_not() {
+    let src = "function flip(x: u8[n]): u8[n] {\n    return ~x;\n}\n\naction main(args: string[k]): i32 {\n    const n = i64(args.length);\n    print([~0, ~n, ~5i32, ~(-1i16), ~0i8, ~127i8] as const);\n    print([~0u8, ~1u16, ~0xFFFF0000u32, ~0u64] as const);\n    print(~[1u16, 2u16, 65535u16]);\n    print(flip([0u8, 15u8, 255u8]));\n    print(sum(~iota(1000)));\n    print(~~(n + 41));\n    print(map(iota(4), (i) => u32(i) ^ ~0u32));\n    return 0;\n}\n";
+    agree(src, "bitwise_not", &["a", "b"], "(-1, -3, -6, 0, -1, -128)\n(255, 65534, 65535, 18446744073709551615)\n[65534, 65533, 0]\n[255, 240, 0]\n-500500\n43\n[4294967295, 4294967294, 4294967293, 4294967292]\n");
+}
+
+/// D633: `~` on what is not an integer, on a `bigint`, before `**` without
+/// parentheses: errors of compilation.
+#[test]
+fn bitwise_not_errors() {
+    let bad = |body: &str| iscc::frontend("t.isc", &format!("action main(args: string[k]): i32 {{\n    {}\n    return 0;\n}}\n", body)).map(|_| ()).unwrap_err().to_string();
+    assert!(bad("print(~1.5);").contains("integer"), "{}", bad("print(~1.5);"));
+    assert!(bad("print(~true);").contains("integer"), "{}", bad("print(~true);"));
+    assert!(bad("print(~5n);").contains("`~` applies to the integers of a fixed size"), "{}", bad("print(~5n);"));
+    assert!(bad("print(~2 ** 2);").contains("parenthesize the left side of `**`"), "{}", bad("print(~2 ** 2);"));
+    assert_eq!(interp_ok("action main(args: string[k]): i32 {\n    print((~2) ** 2);\n    print(~(2 ** 2));\n    return 0;\n}\n", &[]), "9\n-5\n");
+}
+
 const CONCAT: &str = r#"function both(a: i64[n], b: i64[m]): i64[n + m] {
     return concat(a, b);
 }
