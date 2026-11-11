@@ -1401,3 +1401,43 @@ fn concat_moves_the_elements_of_arrays_that_die() {
     }
     clean(src, "concat_moves_vg", &["1"]);
 }
+
+#[test]
+fn a_value_freed_at_once_is_not_freed_again_by_a_tail_call() {
+    // D639: a value the rest of its scope never reads is freed at once
+    // (D117); a tail call of the function to itself, or to another one,
+    // after it freed it again before its jump (the temporaries of the scope,
+    // D102): a block freed twice. Found by the library of graphical
+    // interfaces (the descriptors of a read of Wayland closed by a `map`
+    // whose result was not read, in its loop). An array new or empty, in a
+    // loop and before a tail call to another function; the results of the
+    // interpreter, nothing lost or freed twice.
+    let src = "@noInline
+function other(n: i64): i64 {
+    return n * 2;
+}
+action loop(round: i64, total: i64): i64 {
+    if (round >= 4) {
+        return total;
+    }
+    const fds = round == 1 ? [1000i32, 1001i32] : [];
+    const closed = map(fds, (fd) => fd + 1i32);
+    return loop(round + 1, total + 1);
+}
+function hop(n: i64): i64 {
+    const unused = map(iota(n), (i) => i * 3);
+    return other(n + 1);
+}
+action main(args: string[k]): i32 {
+    print(loop(0, 0));
+    print(hop(parseI64(args[0])));
+    return 0;
+}
+";
+    let want = interp_ok(src, &["5"]);
+    assert_eq!(want, "4\n12\n");
+    let bin = compile(src, "freed_once");
+    let r = run_bin(&bin, &["5"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    clean(src, "freed_once_vg", &["5"]);
+}

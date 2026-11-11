@@ -15664,3 +15664,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Not done: one side moved and the other copied (a side read again, or
     a literal array), a `concat` whose result is read by one element or
     its length alone (never made: nothing to move).
+- **D639 — A value freed at once is not freed again before a tail call
+  (2026-11-11).** Found by the library of graphical interfaces: its counter
+  under Wayland stopped at its first event (`invalid free (a block freed
+  twice or not allocated by the runtime)`, the check of the kernel of
+  D605). Its loop closed the descriptors of a read by `const closed =
+  map(r.fds, ...)`, never read, then called itself. The code generator
+  frees at once a value the rest of its scope never reads (D117); the jump
+  of a tail call (D102: to the function itself; D113: to another one)
+  freed again the temporaries of its scope, that one among them. Reduced to
+  eleven lines (an array made in a loop, mapped, not read, a tail call),
+  older than D637 and D638. Now the variables freed at once are kept in
+  `freed_early` while their scope is generated, and neither jump frees
+  them. Test (`memory.rs`, `a_value_freed_at_once_is_not_freed_again_by_a_tail_call`):
+  a loop and a tail call to another function, the results of the
+  interpreter, Valgrind.

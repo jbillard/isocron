@@ -606,6 +606,9 @@ pub struct Gen<'p> {
     /// alone, then freed (D638): their elements moved into it when both
     /// sides are, each side then bound to its block alone.
     giving: HashSet<VarId>,
+    /// The variables freed at once, the rest of their scope not reading
+    /// them (D117): not freed again before the jump of a tail call (D639).
+    freed_early: HashSet<VarId>,
     /// The `lines` and `split` whose parts are views of their text (D555):
     /// the values of the variables of `Program::views`, whatever path of
     /// the generated code binds them.
@@ -1577,6 +1580,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         taking: HashSet::new(),
         moving: HashSet::new(),
         giving: HashSet::new(),
+        freed_early: HashSet::new(),
         view_parts: view_parts(p),
         part_values: HashSet::new(),
         split_vars: HashMap::new(),
@@ -3832,7 +3836,8 @@ impl<'p> Gen<'p> {
         let tl = self.tail.take().unwrap();
         let tc = &tl.calls[&(e as *const Expr)];
         for var in &tc.free_first {
-            if self.stack_vars.contains(var) {
+            // (one freed already, D117: D639)
+            if self.stack_vars.contains(var) || self.freed_early.contains(var) {
                 continue;
             }
             if let Some(rg) = self.region_vars.get(var).cloned() {
@@ -5321,6 +5326,7 @@ impl<'p> Gen<'p> {
                 let early = *drop && w == 1 && !mentions(body, &HashSet::from([*var])) && !frees(body, *var);
                 if early {
                     self.drop_var(*var, &iv);
+                    self.freed_early.insert(*var);
                 }
                 if let Some((a, block)) = &made {
                     self.counts.insert(*a, block.clone());
@@ -5350,6 +5356,7 @@ impl<'p> Gen<'p> {
                 }
                 let r = self.ex(body, w);
                 self.moving.remove(var);
+                self.freed_early.remove(var);
                 let iv = if takes || gives {
                     self.taking.remove(var);
                     self.giving.remove(var);
@@ -6031,6 +6038,10 @@ impl<'p> Gen<'p> {
                 // one (D113)
                 if let Some(first) = self.other_tails.get(&key).cloned() {
                     for var in &first {
+                        // (one freed already, D117: D639)
+                        if self.freed_early.contains(var) {
+                            continue;
+                        }
                         // (an array on the stack is never freed, D191; a tree
                         // of a region with its region, D200)
                         if self.stack_vars.contains(var) {
