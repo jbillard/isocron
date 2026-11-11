@@ -71,6 +71,19 @@ pub fn sys(o: S, _vs: &[Value]) -> Value {
 #[cfg(target_os = "linux")]
 pub use linux::{sys, Mapping};
 
+/// A primitive of the module `win32` (D636): not run by the interpreter yet
+/// (a program reaches it in a branch for Windows, `sys.platform()`, which
+/// the interpreter does not take on Linux): the code of `ENOSYS`.
+pub fn win32(o: S, _vs: &[Value]) -> Value {
+    match o {
+        S::WinOpen => tuple(vec![handle(None), Value::Int(-38)]),
+        S::WinEvents | S::WinCapture => tuple(vec![int_array(Vec::new()), Value::Int(-38)]),
+        S::WinSize => tuple(vec![Value::Int(0), Value::Int(0)]),
+        S::WinClose => Value::Int(0),
+        _ => Value::Int(-38),
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;

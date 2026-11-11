@@ -381,6 +381,8 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
         TypeKind::Named(name, args) if name == "sysServer" && args.is_empty() => Ty::Handle(crate::types::Handle::Server),
         // and by the module `unix` (D632)
         TypeKind::Named(name, args) if name == "sysShared" && args.is_empty() => Ty::Handle(crate::types::Handle::Shared),
+        // and by the module `win32` (D636)
+        TypeKind::Named(name, args) if name == "sysWindow" && args.is_empty() => Ty::Handle(crate::types::Handle::Window),
         TypeKind::Named(name, args) => {
             if let Some(i) = cx.generics.iter().position(|g| &g.0 == name) {
                 if !args.is_empty() {
@@ -2714,6 +2716,23 @@ impl<'g> FnCx<'g> {
             }
             SysOp::SharedRead => (vec![Ty::Handle(Handle::Shared), i64t.clone(), i64t.clone()], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()])),
             SysOp::SharedFd | SysOp::SharedSize | SysOp::SharedClose => (vec![Ty::Handle(Handle::Shared)], i64t.clone()),
+            // the module `win32` (D636)
+            SysOp::WinOpen => (vec![Ty::Str, i64t.clone(), i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Window), i64t.clone()])),
+            SysOp::WinEvents => {
+                let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
+                (vec![Ty::Handle(Handle::Window), i64t.clone()], Ty::Tuple(vec![own(i64t.clone()), i64t.clone()]))
+            }
+            SysOp::WinShow => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Window), Ty::Array(s, Box::new(Ty::Int(IntKind::U32))), i64t.clone(), i64t.clone()], i64t.clone())
+            }
+            SysOp::WinSize => (vec![Ty::Handle(Handle::Window)], Ty::Tuple(vec![i64t.clone(), i64t.clone()])),
+            SysOp::WinPost => (vec![Ty::Handle(Handle::Window), i64t.clone(), i64t.clone(), i64t.clone()], i64t.clone()),
+            SysOp::WinCapture => {
+                let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
+                (vec![Ty::Handle(Handle::Window)], Ty::Tuple(vec![own(Ty::Int(IntKind::U32)), i64t.clone()]))
+            }
+            SysOp::WinClose => (vec![Ty::Handle(Handle::Window)], i64t.clone()),
         };
         if args.len() != params.len() {
             return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));

@@ -203,6 +203,8 @@ pub enum Handle {
     /// A memory shared with another process, projected into this one
     /// (`unix.Shared`, D632).
     Shared,
+    /// A window of Windows (`win32.Window`, D636).
+    Window,
 }
 
 impl Handle {
@@ -212,6 +214,7 @@ impl Handle {
             Handle::Listener => "Listener",
             Handle::Server => "Server",
             Handle::Shared => "Shared",
+            Handle::Window => "Window",
         }
     }
 }

@@ -548,10 +548,28 @@ pub enum SysOp {
     /// `sysSharedClose(shared) => code`: consumes it; the projection
     /// undone, the file of `sysSharedOpen` closed
     SharedClose,
+    // The module `win32` (D636): Windows only, realized by the compiler
+    // (calls of `user32`, `gdi32`, `kernel32`).
+    /// `sysWinOpen(title, width, height) => [window, code]`
+    WinOpen,
+    /// `sysWinEvents(window, ms) => [words, code]`: the events of the
+    /// window, four words each (kind, three numbers), waited for `ms` ms at
+    /// most when there are none (below 0: no limit)
+    WinEvents,
+    /// `sysWinShow(window, pixels, width, height) => code`
+    WinShow,
+    /// `sysWinSize(window) => [width, height]`: of its inside
+    WinSize,
+    /// `sysWinPost(window, message, wparam, lparam) => code`
+    WinPost,
+    /// `sysWinCapture(window) => [pixels, code]`: what its inside shows
+    WinCapture,
+    /// `sysWinClose(window) => code`: consumes it
+    WinClose,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 50] = [
+    pub const ALL: [SysOp; 57] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -602,12 +620,19 @@ impl SysOp {
         SysOp::SharedFd,
         SysOp::SharedSize,
         SysOp::SharedClose,
+        SysOp::WinOpen,
+        SysOp::WinEvents,
+        SysOp::WinShow,
+        SysOp::WinSize,
+        SysOp::WinPost,
+        SysOp::WinCapture,
+        SysOp::WinClose,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
     /// D339).
     pub fn consumes(self) -> bool {
-        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose | SysOp::ServerOpenTls | SysOp::SharedClose)
+        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose | SysOp::ServerOpenTls | SysOp::SharedClose | SysOp::WinClose)
     }
 
     /// The module `unix` (D632): Linux only, realized by the compiler.
@@ -638,6 +663,16 @@ impl SysOp {
         !self.is_unix()
     }
 
+    /// The module `win32` (D636): Windows only, realized by the compiler.
+    pub fn is_win32(self) -> bool {
+        matches!(self, SysOp::WinOpen | SysOp::WinEvents | SysOp::WinShow | SysOp::WinSize | SysOp::WinPost | SysOp::WinCapture | SysOp::WinClose)
+    }
+
+    /// The target Linux has it (D324): not the module `win32`.
+    pub fn on_linux(self) -> bool {
+        !self.is_win32()
+    }
+
     /// TLS (D343): the programs that reach it are linked with the C
     /// library of the system, which loads the library of TLS.
     pub fn is_tls(self) -> bool {
@@ -647,6 +682,7 @@ impl SysOp {
     /// The target WebAssembly (WASI preview 1) has it (D324): no sockets.
     pub fn on_wasi(self) -> bool {
         !self.is_unix()
+            && !self.is_win32()
             && !matches!(
                 self,
                 SysOp::Connect
@@ -725,6 +761,13 @@ impl SysOp {
             SysOp::SharedFd => "sysSharedFd",
             SysOp::SharedSize => "sysSharedSize",
             SysOp::SharedClose => "sysSharedClose",
+            SysOp::WinOpen => "sysWinOpen",
+            SysOp::WinEvents => "sysWinEvents",
+            SysOp::WinShow => "sysWinShow",
+            SysOp::WinSize => "sysWinSize",
+            SysOp::WinPost => "sysWinPost",
+            SysOp::WinCapture => "sysWinCapture",
+            SysOp::WinClose => "sysWinClose",
         }
     }
 }

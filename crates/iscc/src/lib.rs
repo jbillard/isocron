@@ -399,6 +399,9 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
         if let Some((op, path, at)) = p.sys_paths[1].iter().find(|(op, _, _)| !op.on_windows()) {
             return Err(format!("{}:{}: the target Windows has no `{}` (the module `unix` is Linux only): reached by {}", at.line, at.col, op.name(), reached(path)));
         }
+    } else if let Some((op, path, at)) = p.sys_paths[0].iter().find(|(op, _, _)| !op.on_linux()) {
+        // the module `win32` (D636)
+        return Err(format!("{}:{}: the target Linux has no `{}` (the module `win32` is Windows only): reached by {}", at.line, at.col, op.name(), reached(path)));
     }
     // the functions of the prelude compiled once (D611): the program
     // declares them, and is linked with their module
@@ -676,7 +679,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bo
     a.extend(libs.iter().map(|l| lib_arg(l)));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "-L".into(), gcc.clone().into(), "--start-group".into()]);
-    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization", "ws2_32", "secur32", "crypt32", "ncrypt"] {
+    for l in ["mingw32", "gcc", "gcc_eh", "mingwex", "msvcrt", "moldname", "kernel32", "synchronization", "ws2_32", "secur32", "crypt32", "ncrypt", "user32", "gdi32"] {
         a.push(format!("-l{}", l).into());
     }
     a.push("--end-group".into());
@@ -711,8 +714,9 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, deb
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "--start-group".into()]);
     // the DLLs of the network and of TLS loaded by the runtime at their
-    // first use (`isc_runtime_core::winload`)
-    for l in ["kernel32", "synchronization"] {
+    // first use (`isc_runtime_core::winload`); `user32` and `gdi32` for the
+    // module `win32` (D636: only what a program calls is imported)
+    for l in ["kernel32", "synchronization", "user32", "gdi32"] {
         a.push(format!("-l{}", l).into());
     }
     a.push("--end-group".into());
@@ -754,7 +758,7 @@ fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debu
         a.push(obj.into());
         a.extend(pre.map(|p| p.into()));
         a.push(rt.into());
-        for l in ["kernel32", "synchronization"] {
+        for l in ["kernel32", "synchronization", "user32", "gdi32"] {
             a.push(lib.join(format!("lib{}.a", l)).into());
         }
     } else {
@@ -767,7 +771,7 @@ fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debu
             a.push(if l.contains('/') || l.contains('\\') || l.ends_with(".lib") || l.ends_with(".a") || l.ends_with(".obj") { l.into() } else { format!("{}.lib", l).into() });
         }
         a.push(rt.into());
-        for l in ["libcmt", "libvcruntime", "libucrt", "kernel32", "synchronization"] {
+        for l in ["libcmt", "libvcruntime", "libucrt", "kernel32", "synchronization", "user32", "gdi32"] {
             a.push(format!("/defaultlib:{}", l).into());
         }
     }

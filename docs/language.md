@@ -2613,17 +2613,18 @@ being built for Windows or WebAssembly.
 import * as sys from "sys";
 
 action main(args: string[k]): i32 {
-    if (sys.platform() == "windows") {
-        print("C:/Windows/Fonts");
-    } else {
-        print("/usr/share/fonts");
-    }
+    // the folder of the fonts of the system, on each
+    const fonts = sys.platform() == "windows" ? "C:/Windows/Fonts" : "/usr/share/fonts";
+    print(fonts.toLowerCase().endsWith("/fonts"));
+    const p = sys.platform();
+    print(count(["linux", "windows", "wasi"], (n) => n == p));
     return 0;
 }
 ```
 
 ```output
-/usr/share/fonts
+true
+1
 ```
 
 An error of the system is a value: `IoError = NotFound(string) |
@@ -3475,6 +3476,61 @@ Ok(())
 Ok([105, 109, 97, 103, 101])
 Ok(())
 false
+```
+
+### Windows: `win32`
+
+Windows only: a program for Linux or WebAssembly that reaches the module
+is refused when built for them, unless it reaches it in a branch for
+Windows (`sys.platform() == "windows"`). A window, the events it receives
+and the image it shows. `open(title, width, height)` makes a `Window` whose
+inside has that size (Windows makes a window at least as wide as its title
+bar needs: `clientSize(w)` tells the size it has), shown.
+`events(w, ms)` gives the events since the last call, waiting at most `ms`
+milliseconds when there are none (-1: without limit): `Close` (closing
+asked; the window stays until `close`), `Resize(width, height)`,
+`Pointer(x, y)`, `Button(b, down)` (0 left, 1 right, 2 middle),
+`Wheel(delta)` (120 a notch), `Key(code, down, scan)` (a virtual key),
+`Char(c)` (a unit of UTF-16: Windows makes one of a key pressed),
+`Paint` (a part to draw again), `Dpi(d)` (96: a scale of 1),
+`Focus(on)`. `show(w, px, width, height)` draws pixels `0xAARRGGBB`
+(rows from the top) at the top left of the inside; `capture(w)` reads what
+the inside shows; `post(w, message, wparam, lparam)` puts a message of
+Windows in the queue of the window (a loop woken, an input played in a
+test). A `Window` is closed exactly once, by `close(w)`. The compiled
+program calls `user32` and `gdi32` itself; the procedure of the window is
+written by the compiler.
+
+```isc-check
+import * as win from "win32";
+import * as sys from "sys";
+
+// the window drawn again until closing is asked
+action run(w: win.Window): void {
+    const [width, height] = win.clientSize(w);
+    const px = map(iota(width * height), (i) => i % width < width / 2 ? 0xFF3B82F6u32 : 0xFFF3F4F6u32);
+    const shown = win.show(w, px, width, height);
+    const closing = match (win.events(w, -1)) {
+        Ok(evs) => count(evs, (e) => e == win.Close) > 0,
+        Err(e) => true,
+    };
+    if (!closing) {
+        run(w);
+    }
+}
+
+action main(args: string[k]): i32 {
+    if (sys.platform() == "windows") {
+        match (win.open("Isocron", 640, 400)) {
+            Ok(w) => {
+                run(w);
+                win.close(w);
+            },
+            Err(e) => print(sys.message(e)),
+        };
+    }
+    return 0;
+}
 ```
 
 ## Performance model

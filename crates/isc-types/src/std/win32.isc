@@ -1,0 +1,89 @@
+// The module `win32` of the standard library (D636): Windows only (a
+// program for Linux or WebAssembly that reaches it is refused at compile
+// time, D324, unless it reaches it in a branch for Windows, D635). A window
+// of Windows, the events it receives, the image it shows: what a library of
+// interfaces needs of the system. Its primitives are calls of `user32` and
+// `gdi32` made by the compiled program itself; the procedure of the window
+// is written by the compiler and queues the events, read by `events`. A
+// `Window` is unique as a `Conn` (D339): closed once by `close`.
+import { IoError, ioError } from "sys";
+
+export type Window = sysWindow;
+
+// what happened to a window: closing asked (the window stays until
+// `close`); its inside resized; the pointer at (x, y) of its inside; a
+// button (0 left, 1 right, 2 middle) pressed or released, at the place of
+// the pointer just before; the wheel turned (120 a notch, forwards
+// positive); a key (its virtual code, pressed or released, its scan code);
+// a character typed (a unit of UTF-16); a part of the window to draw
+// again; its dots per inch (96: a scale of 1); the focus taken or lost
+export type Event = Close | Resize(i64, i64) | Pointer(i64, i64) | Button(i64, boolean) | Wheel(i64) | Key(i64, boolean, i64) | Char(i64) | Paint | Dpi(i64) | Focus(boolean) | Unknown(i64);
+
+// a window titled `title` whose inside has `width` by `height` pixels,
+// shown
+export action open(title: string, width: i64, height: i64): Result<Window, IoError> {
+    const [w, code] = sysWinOpen(title, width, height);
+    if (code == 0) {
+        return Ok(w);
+    }
+    sysWinClose(w);
+    return Err(ioError(code, title));
+}
+
+// the event of the four words from `at`
+function eventAt(x: i64[n], at: i64): Event {
+    const k = x[at];
+    const a = x[at + 1];
+    const b = x[at + 2];
+    return k == 1 ? Close
+        : (k == 2 ? Resize(a, b)
+        : (k == 3 ? Pointer(a, b)
+        : (k == 4 ? Button(a, b != 0)
+        : (k == 5 ? Wheel(a)
+        : (k == 6 ? Key(a, b != 0, x[at + 3])
+        : (k == 7 ? Char(a)
+        : (k == 8 ? Paint
+        : (k == 9 ? Dpi(a)
+        : (k == 10 ? Focus(a != 0) : Unknown(k))))))))));
+}
+
+// the events of `w` since the last call, in their order; when there are
+// none, waiting for one at most `ms` milliseconds (-1: without limit)
+export action events(w: Window, ms: i64): Result<Event[], IoError> {
+    const [words, code] = sysWinEvents(w, ms);
+    if (code != 0) {
+        return Err(ioError(code, "events"));
+    }
+    return Ok(map(iota(words.length / 4), (i) => eventAt(words, 4 * i)));
+}
+
+// the `width` by `height` pixels `px` (`0xAARRGGBB`, rows from the top)
+// shown at the top left of the inside of `w`
+export action show(w: Window, px: u32[n], width: i64, height: i64): Result<void, IoError> {
+    const code = sysWinShow(w, px, width, height);
+    return code == 0 ? Ok(()) : Err(ioError(code, "show"));
+}
+
+// the size of the inside of `w`: [width, height]
+export action clientSize(w: Window): [i64, i64] {
+    return sysWinSize(w);
+}
+
+// the message `message` of Windows put in the queue of `w` with its two
+// numbers (`PostMessageW`): what wakes a loop, or plays an input in a test
+export action post(w: Window, message: i64, wparam: i64, lparam: i64): Result<void, IoError> {
+    const code = sysWinPost(w, message, wparam, lparam);
+    return code == 0 ? Ok(()) : Err(ioError(code, "post"));
+}
+
+// what the inside of `w` shows: its pixels, `0xAARRGGBB`, rows from the
+// top, its size that of `clientSize(w)`
+export action capture(w: Window): Result<u32[], IoError> {
+    const [px, code] = sysWinCapture(w);
+    return code == 0 ? Ok(px) : Err(ioError(code, "capture"));
+}
+
+// the window closed: it cannot be used after
+export action close(w: Window): void {
+    const code = sysWinClose(w);
+}

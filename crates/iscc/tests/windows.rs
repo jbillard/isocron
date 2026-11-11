@@ -665,6 +665,15 @@ fn the_guide_on_windows() {
         if next != "output" || lines[end + 1..nline - 1].iter().any(|l| !l.trim().is_empty()) {
             continue;
         }
+        // an example of the module `unix` (Linux only, D632): refused for
+        // Windows, the primitive named
+        let p = iscc::frontend("guide.isc", src).unwrap_or_else(|e| panic!("docs/language.md:{}: {}", line, e));
+        if p.sys_paths[1].iter().any(|(op, _, _)| !op.on_windows()) {
+            let opts = iscc::BuildOptions { output: tmp(&format!("win_guide_{}.exe", k)), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false };
+            let e = iscc::build(&p, &opts).expect_err("an example of the module unix built for Windows");
+            assert!(e.contains("(the module `unix` is Linux only)"), "docs/language.md:{}: {}", line, e);
+            continue;
+        }
         let exe = compile_windows(src, &format!("win_guide_{}", k));
         let w = run_windows(&runner, &exe, &d, &[], None, 1);
         assert_eq!(w.0, 0, "docs/language.md:{}: exit code on Windows; stderr: {}", line, String::from_utf8_lossy(&w.2));
@@ -866,4 +875,49 @@ fn programs_build_for_windows() {
             assert!(head.starts_with(b"MZ"), "{} (msvc {}): not an executable of Windows", name, msvc);
         }
     }
+}
+
+/// D636: the module `win32` in the machine of Windows, run in the session on
+/// its screen (`run.py --interactive`): a window of 320 by 200 pixels, an
+/// image shown (fewer pixels than its size: refused), input played by
+/// messages posted to it (the pointer, a click, a key and the character
+/// Windows makes of it, a character, closing asked) read back in their
+/// order as events, a wait without events that ends after its delay, what
+/// the window shows captured: the image drawn, pixel for pixel; built with
+/// both ABIs of Windows.
+#[test]
+fn a_window_of_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let src = include_str!("data/std_win32.isc");
+    let want = "(320, 200)\nOk(())\nErr(std:sys.Other(22, show))\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\n[std:win32.Pointer(10, 20), std:win32.Pointer(11, 21), std:win32.Button(0, true), std:win32.Pointer(11, 21), std:win32.Button(0, false), std:win32.Key(65, true, 30), std:win32.Char(233), std:win32.Close, std:win32.Char(97)]\n0\n(64000, 64000)\n";
+    for msvc in [false, true] {
+        let exe = compile_windows_with(src, &format!("std_win32_{}", if msvc { "msvc" } else { "gnu" }), msvc);
+        let d = dir("win32");
+        let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg("--interactive").arg(&exe).output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n")), (Some(0), want.to_string()), "msvc {}: {}", msvc, String::from_utf8_lossy(&o.stderr));
+    }
+}
+
+/// D636, D324: the module `win32` is Windows only: a program that reaches it
+/// is refused when built for Linux and for WebAssembly, the path of its
+/// calls named; in a branch for Windows (D635), it builds for them.
+#[test]
+fn win32_refused_for_linux_and_wasi() {
+    let src = "import * as win from \"win32\";\n\naction shown(): void {\n    match (win.open(\"x\", 320, 200)) {\n        Ok(w) => win.close(w),\n        Err(e) => print(0),\n    };\n}\n\naction main(args: string[k]): i32 {\n    if (args.length > 99) {\n        shown();\n    }\n    print(1);\n    return 0;\n}\n";
+    let p = iscc::frontend("w.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    for (target, codegen) in [
+        ("Linux", isc_codegen::Options::default()),
+        ("WebAssembly (WASI preview 1)", isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() }),
+    ] {
+        let opts = iscc::BuildOptions { output: tmp("win32_other"), emit_llvm: None, emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false };
+        let e = iscc::build(&p, &opts).expect_err("the module win32 built for another system");
+        assert!(e.contains(&format!("the target {} has no `sysWinOpen`", target)) && e.contains("reached by `main` -> `shown` -> `win32.open`"), "{}: {}", target, e);
+    }
+    let branch = src.replace("    if (args.length > 99) {", "    if (sys.platform() == \"windows\" && args.length > 99) {").replace("import * as win from \"win32\";\n", "import * as win from \"win32\";\nimport * as sys from \"sys\";\n");
+    assert_eq!(interp_ok(&branch, &[]), "1\n");
+    let r = run_bin(&compile(&branch, "win32_branch_linux"), &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "1\n"));
 }

@@ -1,0 +1,55 @@
+import * as win from "win32";
+import { message } from "sys";
+
+// the events that input makes, without those the system sends on its own
+// (sizes, focus, parts to draw again)
+function input(e: win.Event): boolean {
+    return match (e) {
+        win.Pointer(x, y) => true,
+        win.Button(b, d) => true,
+        win.Key(k, d, s) => true,
+        win.Char(c) => true,
+        win.Close => true,
+        _ => false,
+    };
+}
+
+action main(args: string[k]): i32 {
+    match (win.open("Isocron: a window", 320, 200)) {
+        Ok(w) => {
+            print(win.clientSize(w));
+            // two halves, red and blue
+            const px = map(iota(320 * 200), (i) => i % 320 < 160 ? 0xFFFF0000u32 : 0xFF0000FFu32);
+            print(win.show(w, px, 320, 200));
+            print(win.show(w, px, 320, 201));
+            // the events of its opening, then input played: the pointer
+            // moved, a click of the left button, a key, a character, closing
+            // asked
+            const opening = win.events(w, 200);
+            print(win.post(w, 512, 0, 10 + 20 * 65536));
+            print(win.post(w, 513, 1, 11 + 21 * 65536));
+            print(win.post(w, 514, 0, 11 + 21 * 65536));
+            print(win.post(w, 256, 65, 1 + 30 * 65536));
+            print(win.post(w, 258, 233, 0));
+            print(win.post(w, 16, 0, 0));
+            match (win.events(w, 1000)) {
+                Ok(evs) => print(filter(evs, input)),
+                Err(e) => print(message(e)),
+            };
+            // nothing more: the wait ends after its delay
+            match (win.events(w, 50)) {
+                Ok(evs) => print(filter(evs, input).length),
+                Err(e) => print(message(e)),
+            };
+            // what the window shows: the image drawn, when the session has
+            // a desktop that keeps it
+            match (win.capture(w)) {
+                Ok(shot) => print([shot.length, count(iota(min(shot.length, px.length)), (i) => (shot[i] & 0xFFFFFFu32) == (px[i] & 0xFFFFFFu32))] as const),
+                Err(e) => print(message(e)),
+            };
+            win.close(w);
+        },
+        Err(e) => print(message(e)),
+    };
+    return 0;
+}

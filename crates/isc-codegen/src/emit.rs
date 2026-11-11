@@ -21,8 +21,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use isc_ir::*;
 use isc_ir::blocks::{free_vars, inner_loop, mentions, print_stream_ok, stream_map_ok, windowed_filter};
 
-// the primitives of the module `unix`, realized here (D632)
+// the primitives of the modules `unix` and `win32`, realized here (D632,
+// D636)
 mod unix;
+mod win32;
 use isc_syntax::Span;
 
 /// V, the number of interleaved accumulators of the fixed reduction form
@@ -16335,6 +16337,8 @@ impl<'p> Gen<'p> {
             // pointers, then the pair
             // the module `unix` (D632): its calls of the system in the program
             ActionOp::Sys(o) if o.is_unix() => self.unix_op(o, &vals),
+            // the module `win32` (D636): its calls of `user32` and `gdi32`
+            ActionOp::Sys(o) if o.is_win32() => self.win32_op(o, &vals),
             // the system of the target, a constant (D635): LLVM drops the
             // branches of the other systems
             ActionOp::Sys(isc_ir::SysOp::Platform) => {

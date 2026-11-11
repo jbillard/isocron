@@ -15516,3 +15516,53 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Next: a module of the system for Windows (a window, its procedure
     written by the compiler and its messages read by the program, an image
     shown by `SetDIBitsToDevice`), its tests in the machine of Windows.
+- **D636 — The module `win32`: a window of Windows, its events, the image
+  it shows; its primitives realized by the compiler (2026-11-11).** The
+  part of Windows of the library of D631 (D635: the author's word, the
+  calls of `user32` and `gdi32` admitted).
+  - The module (`std/win32.isc`): `open(title, width, height)` (a
+    `Window`, linear as a `Conn`: `Handle::Window`, the name `sysWindow`),
+    `events(w, ms)` (the events since the last call, `Event = Close |
+    Resize | Pointer | Button | Wheel | Key | Char | Paint | Dpi | Focus |
+    Unknown`, a wait of `ms` at most when there are none), `show(w, px,
+    width, height)` (`SetDIBitsToDevice`, pixels `0xAARRGGBB`: the order of
+    the bytes of Windows), `clientSize(w)` (`size` is a word of the
+    language), `post(w, message, wparam, lparam)`, `capture(w)` (`BitBlt`
+    into a bitmap of memory, `GetDIBits`), `close(w)`.
+  - 7 primitives (`SysOp::is_win32`), realized by the compiler
+    (`isc-codegen/src/emit/win32.rs`): LLVM IR calling `user32`, `gdi32` and
+    `kernel32` (the ABI of Windows x64 the convention of the target), linked
+    by their import libraries (`libuser32.a`, `libgdi32.a`, now embedded in
+    iscc with the others of MinGW-w64: only the functions called are
+    imported). The procedure of the window is a function of the program,
+    registered with the class (`isocron`); it puts the events in the queue
+    of the window (four words each, 4096 at most), which `events` reads
+    after `MsgWaitForMultipleObjects` and `PeekMessageW` /
+    `DispatchMessageW`. The process aware of the density of each screen
+    (`SetProcessDpiAwarenessContext`, per monitor v2); a change of density
+    takes the size Windows proposes.
+  - Refused at compile time for Linux and WASI (`SysOp::on_linux`), but in
+    a branch for Windows (D635). The interpreter does not run it yet: the
+    code of `ENOSYS` (on Linux its branch is never taken; under Windows, a
+    program reaching it interpreted: to do, TODO).
+  - Tests in the machine of Windows (`a_window_of_windows`, both ABIs):
+    the size of the inside (Windows makes a window at least as wide as its
+    title bar: 64 asked, 120 given; 320 by 200 kept), an image shown, one
+    with fewer pixels refused, input played by messages posted (the
+    pointer, a click, a key and the character `TranslateMessage` makes of
+    it, a character, closing) read back in their order, a wait that ends,
+    the capture: the 64 000 pixels drawn. The capture needs the session on
+    the screen of the machine (in the session of SSH, without a desktop
+    shown, it reads none of them): `tools/windows/run.py --interactive`
+    runs a program there by a scheduled task (`/it`). Refusals:
+    `win32_refused_for_linux_and_wasi`. The guide (its example checked),
+    and run under Windows: an example of `unix` there refused, as one of
+    `win32` under Linux. SPEC section 18.
+  - The library (`isocron-ui`): its plate of 227 primitives shown in a
+    window of Windows 11 by `win32` (`examples/gallery_window.isc`, its
+    window 1280 by 781 on the screen of the machine), the same image as
+    under Linux; drawn there in 6.2 ms (4 processors of the machine, not
+    measured under the settings of measurement).
+  - Not done: the microbenchmark of `show` and its floor in C (to measure
+    in the machine of Windows, a virtual one), the interpreter under
+    Windows, the cursor, the clipboard, the input methods (IME).
