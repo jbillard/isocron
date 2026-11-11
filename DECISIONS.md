@@ -15337,3 +15337,95 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   call none of the functions moved since D618). The language the same; no
   name removed: 0.7.0, not 1.0, at the user's word. The steps of 0.4.3
   (D449), the commit of the release the last of `main` (D486).
+- **D631 — A library of graphical interfaces in Isocron, after GPUI: the
+  author's word (2026-11-11).** « peux tu regarder comment est construite
+  cette librairie graphique ? j'aimerais la reproduire mais avec isocron »
+  (GPUI, the library of Zed, which Discord builds its new client on), then
+  « s'il manque des parties à isocron, développe les, oui », and « attention
+  : memes exigences pour ces ajouts dans isocron que pour le reste hein ».
+  GPUI read (commit `cd4902bf` of Zed, 186 846 lines, its dependencies
+  counted) and the proposal written: `docs/proposals/gui.md`. What is
+  decided, and read from it:
+  - Two repositories, as advised to the author: what touches the system in
+    Isocron (only the standard modules call primitives, section 18), the
+    library itself in a repository of its own (`isocron-ui`, local; its
+    publication waits for the author's word), pure Isocron imported by
+    `$ISC_PATH`.
+  - The model of GPUI does not carry over as it is (shared mutable state,
+    closures stored in structures, destructors, asynchronous code, the GPU
+    through C): an architecture of Elm (a model, messages, a pure `update`
+    and a pure `view`), the rendering on the processor in Isocron (tiles in
+    parallel, the formulas of the shaders of GPUI, the same bits on every
+    target), Wayland and X11 spoken in Isocron over Unix sockets: no C
+    under Linux. Windows (`user32`, `gdi32`) and the GPU are questions for
+    the author before their step.
+  - The additions to Isocron meet the same requirements as the rest (the
+    author's word): tests, the same result interpreted and compiled, an
+    example of the guide, a microbenchmark and its floor in C, measured
+    against it; refused at compile time on a target without them (D324);
+    no function added to the runtime in Rust (D622): the new primitives are
+    realized by the compiler (their system calls emitted in the program, as
+    section 3.7 of the proposal of the kernel plans for v2).
+  - The first of them: the module `unix` (Linux): Unix sockets, descriptors
+    passed with the bytes, shared memory, the wait on several descriptors.
+- **D632 — The module `unix`: Unix sockets, descriptors passed, memory
+  shared, `poll`; its primitives realized by the compiler (2026-11-11).**
+  The first part of Isocron that the library of D631 needs (a client of
+  Wayland or X11 speaks over a Unix socket, gives the display server its
+  images in memory shared with it, receives its table of the keyboard as a
+  descriptor). Linux only.
+  - The module (`std/unix.isc`): `connect(path)`, `listen(path)`,
+    `accept(l)` (a path, or `@name` in the abstract space of Linux, at most
+    107 bytes; the connections are the `Conn` of `net`, read, written and
+    closed by it); `sendWithFds(c, x, fds)` (at least one byte with
+    descriptors, at most 253), `receiveWithFds(c, max, maxFds)` (a
+    `Received`: `bytes` and `fds`; more than `maxFds`: those received
+    closed, the code of `EMSGSIZE`); `fdOf(c)`, `poll(fds, ms)` and its
+    events (`readable`, `hungUp`, `failed`), `closeFd(fd)`; `Shared`, a
+    resource linear as a `Conn` (`Handle::Shared`, the name `sysShared`):
+    `shared(bytes)` (`memfd_create`, `ftruncate`, `mmap` shared),
+    `mapShared(fd, bytes, writable)` (shared and writable, or private and
+    read only), `sharedFd`, `sharedSize`, `writeShared`, `writeSharedU32`
+    (words in the order of the machine: pixels), `readShared` (past the
+    end: -22; a write to a projection read only: the code 2),
+    `closeShared`.
+  - 16 primitives (`SysOp::is_unix`), **realized by the compiler**: each a
+    function of the program (`isc-codegen/src/emit/unix.rs`, LLVM IR
+    written out, its calls of the system the instruction `syscall`), none
+    in the runtime (D622). With the functions of the program, not with
+    its declarations: their blocks then come from the allocator inlined
+    into it (D605); among the declarations they called the runtime's
+    through the PLT (the wait for one descriptor: 136 instructions of the
+    program a round instead of 104). A `Shared` is a block of 32 bytes
+    (the address of the projection, its bytes, its descriptor or -1, whether
+    it is writable). The `pollfd` of at most 64 descriptors on the stack.
+  - The interpreter (`isc-interp/src/unix.rs`): the standard library of
+    Rust where it has the call (a Unix connection held as a `TcpStream` of
+    its descriptor, so that `net` works on it), the C library otherwise
+    (`sendmsg`, `recvmsg`, `poll`, `memfd_create`, `mmap`, each `unsafe`
+    justified); the same codes.
+  - Refused at compile time for Windows and WebAssembly (D324, the path of
+    the calls named); `SysOp::on_windows`.
+  - Found by Valgrind: the padding of the message of control (20 bytes of
+    one descriptor, 24 sent) read by the kernel without being written:
+    zeros first.
+  - Tests (`std_unix.rs`): the sockets, the memory passed and projected on
+    the other side, `poll` (nothing within 20 ms, bytes, the peer gone),
+    the errors, interpreted and compiled (1 and 4 threads) the same, the
+    calls of the system in the IR, Valgrind; a `Shared` closed exactly
+    once (4 errors of compilation); Windows and WASI refused. The guide
+    (`docs/language.md`, its example run), SPEC section 18.
+  - Measured (`bench/primitives/unix.isc` against `unix.c`, the median of 5
+    runs of 200 rounds, `machine.sh apply parallel`): 0.9 to 1.0 times
+    the floor, but `poll.ready` 225.6 against 213.6 ns (+5.6 %). Explained:
+    a program with a recursive function runs `main` on a thread of its own
+    (the stack of 1 GiB, `isc_run_big_stack`), so its process has two
+    threads, and the kernel takes the path of a table of descriptors
+    shared at each call on a descriptor (a reference counted, `fget`,
+    instead of `fdget`'s light path): 849 instructions and 598 cycles of
+    the kernel a `poll` against 804 and 562 for the C floor; the same C
+    with one idle thread started: 849 and 598. The program's own part of a
+    round: 104 instructions and 115 cycles, the C floor's 41 and 109 (the
+    array of the events made and freed). The same cost on every call of
+    the system on a descriptor of every such program (the round trip of
+    64 bytes, four calls: +2.8 %): the start of v2 (TODO).

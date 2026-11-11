@@ -15,6 +15,10 @@ pub enum Resource {
     /// server of TLS (D343): its context and the session of each connection
     /// with whether its handshake is done.
     Server { listener: TcpListener, next: i64, conns: Vec<(i64, TcpStream)>, tls: usize, sessions: Vec<(i64, usize, bool)> },
+    /// A memory shared (`unix.Shared`, D632): its projection, undone when
+    /// it goes, and its file when it is its own.
+    #[cfg(target_os = "linux")]
+    Shared(crate::unix::Mapping),
 }
 
 /// TLS in the interpreter (D343): the code of the runtime

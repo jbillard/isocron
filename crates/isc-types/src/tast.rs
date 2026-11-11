@@ -496,10 +496,62 @@ pub enum SysOp {
     /// `sysServerOpenTls(listener, cert, key) => [server, text, code]`: a
     /// server whose connections speak TLS
     ServerOpenTls,
+    // The module `unix` (D632): Linux only, realized by the compiler (their
+    // calls of the system emitted in the program, no function of the
+    // runtime), the interpreter by the same calls.
+    /// `sysUnixConnect(path) => [conn, code]`: a Unix socket of stream
+    /// connected to `path`, or to the name after `@` in the abstract space
+    /// of Linux
+    UnixConnect,
+    /// `sysUnixListen(path) => [listener, code]`: a Unix socket bound to
+    /// `path` (or `@name`) that listens
+    UnixListen,
+    /// `sysUnixAccept(listener) => [conn, code]`
+    UnixAccept,
+    /// `sysSendFds(conn, bytes, fds) => code`: all the bytes, the
+    /// descriptors `fds` (`i32[m]`) given with the first of them
+    SendFds,
+    /// `sysRecvFds(conn, max, maxFds) => [bytes, fds, code]`: at most `max`
+    /// bytes (none at the end of the stream) and the descriptors that came
+    /// with them, at most `maxFds`
+    RecvFds,
+    /// `sysConnFd(conn) => fd`: the descriptor of a connection, for `sysPoll`
+    ConnFd,
+    /// `sysPoll(fds, ms) => [events, code]`: waits until one of the
+    /// descriptors `fds` (`i32[n]`) can be read, `ms` ms at most (below 0:
+    /// without limit); the events of each (1 readable, 8 an error, 16 its
+    /// peer gone, 32 not a descriptor)
+    Poll,
+    /// `sysCloseFd(fd) => code`
+    CloseFd,
+    /// `sysSharedOpen(bytes) => [shared, code]`: `bytes` bytes of memory of
+    /// a file of its own (`memfd_create`), zeros, projected readable and
+    /// writable; its descriptor `sysSharedFd`
+    SharedOpen,
+    /// `sysSharedMap(fd, bytes, writable) => [shared, code]`: the first
+    /// `bytes` bytes of the file `fd` projected, shared and writable, or a
+    /// private copy read only; `fd` stays the caller's
+    SharedMap,
+    /// `sysSharedWrite(shared, at, bytes) => code`: written from the byte
+    /// `at` (-22 past its end)
+    SharedWrite,
+    /// `sysSharedWrite32(shared, at, words) => code`: the `u32` words, in
+    /// the order of the machine (little-endian)
+    SharedWrite32,
+    /// `sysSharedRead(shared, at, n) => [bytes, code]`
+    SharedRead,
+    /// `sysSharedFd(shared) => fd`: the descriptor of the file of
+    /// `sysSharedOpen` (-1 for a projection of `sysSharedMap`)
+    SharedFd,
+    /// `sysSharedSize(shared) => bytes`
+    SharedSize,
+    /// `sysSharedClose(shared) => code`: consumes it; the projection
+    /// undone, the file of `sysSharedOpen` closed
+    SharedClose,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 34] = [
+    pub const ALL: [SysOp; 50] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -534,12 +586,56 @@ impl SysOp {
         SysOp::ServerClose,
         SysOp::TlsStart,
         SysOp::ServerOpenTls,
+        SysOp::UnixConnect,
+        SysOp::UnixListen,
+        SysOp::UnixAccept,
+        SysOp::SendFds,
+        SysOp::RecvFds,
+        SysOp::ConnFd,
+        SysOp::Poll,
+        SysOp::CloseFd,
+        SysOp::SharedOpen,
+        SysOp::SharedMap,
+        SysOp::SharedWrite,
+        SysOp::SharedWrite32,
+        SysOp::SharedRead,
+        SysOp::SharedFd,
+        SysOp::SharedSize,
+        SysOp::SharedClose,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
     /// D339).
     pub fn consumes(self) -> bool {
-        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose | SysOp::ServerOpenTls)
+        matches!(self, SysOp::Close | SysOp::CloseListener | SysOp::ServerOpen | SysOp::ServerClose | SysOp::ServerOpenTls | SysOp::SharedClose)
+    }
+
+    /// The module `unix` (D632): Linux only, realized by the compiler.
+    pub fn is_unix(self) -> bool {
+        matches!(
+            self,
+            SysOp::UnixConnect
+                | SysOp::UnixListen
+                | SysOp::UnixAccept
+                | SysOp::SendFds
+                | SysOp::RecvFds
+                | SysOp::ConnFd
+                | SysOp::Poll
+                | SysOp::CloseFd
+                | SysOp::SharedOpen
+                | SysOp::SharedMap
+                | SysOp::SharedWrite
+                | SysOp::SharedWrite32
+                | SysOp::SharedRead
+                | SysOp::SharedFd
+                | SysOp::SharedSize
+                | SysOp::SharedClose
+        )
+    }
+
+    /// The target Windows has it (D324): not the module `unix`.
+    pub fn on_windows(self) -> bool {
+        !self.is_unix()
     }
 
     /// TLS (D343): the programs that reach it are linked with the C
@@ -550,29 +646,30 @@ impl SysOp {
 
     /// The target WebAssembly (WASI preview 1) has it (D324): no sockets.
     pub fn on_wasi(self) -> bool {
-        !matches!(
-            self,
-            SysOp::Connect
-                | SysOp::Listen
-                | SysOp::Accept
-                | SysOp::Recv
-                | SysOp::Send
-                | SysOp::Close
-                | SysOp::CloseListener
-                | SysOp::SetTimeout
-                | SysOp::LocalPort
-                | SysOp::ListenShared
-                | SysOp::UdpQuery
-                | SysOp::Resolve
-                | SysOp::Shutdown
-                | SysOp::ServerOpen
-                | SysOp::ServerWait
-                | SysOp::ServerSend
-                | SysOp::ServerDrop
-                | SysOp::ServerClose
-                | SysOp::TlsStart
-                | SysOp::ServerOpenTls
-        )
+        !self.is_unix()
+            && !matches!(
+                self,
+                SysOp::Connect
+                    | SysOp::Listen
+                    | SysOp::Accept
+                    | SysOp::Recv
+                    | SysOp::Send
+                    | SysOp::Close
+                    | SysOp::CloseListener
+                    | SysOp::SetTimeout
+                    | SysOp::LocalPort
+                    | SysOp::ListenShared
+                    | SysOp::UdpQuery
+                    | SysOp::Resolve
+                    | SysOp::Shutdown
+                    | SysOp::ServerOpen
+                    | SysOp::ServerWait
+                    | SysOp::ServerSend
+                    | SysOp::ServerDrop
+                    | SysOp::ServerClose
+                    | SysOp::TlsStart
+                    | SysOp::ServerOpenTls
+            )
     }
 
     /// Its name in the modules.
@@ -612,6 +709,22 @@ impl SysOp {
             SysOp::ServerClose => "sysServerClose",
             SysOp::TlsStart => "sysTlsStart",
             SysOp::ServerOpenTls => "sysServerOpenTls",
+            SysOp::UnixConnect => "sysUnixConnect",
+            SysOp::UnixListen => "sysUnixListen",
+            SysOp::UnixAccept => "sysUnixAccept",
+            SysOp::SendFds => "sysSendFds",
+            SysOp::RecvFds => "sysRecvFds",
+            SysOp::ConnFd => "sysConnFd",
+            SysOp::Poll => "sysPoll",
+            SysOp::CloseFd => "sysCloseFd",
+            SysOp::SharedOpen => "sysSharedOpen",
+            SysOp::SharedMap => "sysSharedMap",
+            SysOp::SharedWrite => "sysSharedWrite",
+            SysOp::SharedWrite32 => "sysSharedWrite32",
+            SysOp::SharedRead => "sysSharedRead",
+            SysOp::SharedFd => "sysSharedFd",
+            SysOp::SharedSize => "sysSharedSize",
+            SysOp::SharedClose => "sysSharedClose",
         }
     }
 }

@@ -1,0 +1,121 @@
+import * as unix from "unix";
+import * as net from "net";
+import { message } from "sys";
+
+// a memory shared written on one side, its descriptor sent with a byte,
+// received on the other side, projected and read: the bytes written
+action passMemory(c: net.Conn, s: net.Conn): void {
+    match (unix.shared(8192)) {
+        Ok(m) => {
+            print(unix.sharedSize(m));
+            print(unix.writeShared(m, 4096, bytes("pixels")));
+            print(unix.writeSharedU32(m, 0, [0x11223344u32, 0xFF00FF00u32]));
+            // past the end: refused
+            print(unix.writeShared(m, 8190, bytes("abc")));
+            print(unix.sendWithFds(c, bytes("M"), [unix.sharedFd(m)]));
+            match (unix.receiveWithFds(s, 16, 4)) {
+                Ok(r) => {
+                    print(stringOf(r.bytes));
+                    print(r.fds.length);
+                    readThrough(r.fds[0]);
+                    print(unix.closeFd(r.fds[0]));
+                },
+                Err(e) => print(message(e)),
+            };
+            unix.closeShared(m);
+        },
+        Err(e) => print(message(e)),
+    };
+}
+
+// the memory of `fd` projected read only: its bytes, and a write refused
+action readThrough(fd: i32): void {
+    match (unix.mapShared(fd, 8192, false)) {
+        Ok(v) => {
+            print(unix.readShared(v, 4096, 6));
+            print(unix.readShared(v, 0, 8));
+            print(unix.writeShared(v, 0, [1u8]));
+            print(unix.readShared(v, 8000, 500));
+            unix.closeShared(v);
+        },
+        Err(e) => print(message(e)),
+    };
+}
+
+// the wait: nothing to read within 20 ms, then bytes, then the peer gone
+action waits(c: net.Conn, s: net.Conn): void {
+    const fds = [unix.fdOf(s)];
+    match (unix.poll(fds, 20)) {
+        Ok(ev) => print(ev),
+        Err(e) => print(message(e)),
+    };
+    print(net.writeText(c, "ping"));
+    match (unix.poll(fds, -1)) {
+        Ok(ev) => print([unix.readable(ev[0]), unix.hungUp(ev[0]), unix.failed(ev[0])] as const),
+        Err(e) => print(message(e)),
+    };
+    match (net.read(s, 100)) {
+        Ok(b) => print(stringOf(b)),
+        Err(e) => print(message(e)),
+    };
+}
+
+action main(args: string[k]): i32 {
+    // a name of the abstract space, of this run (no file to remove)
+    const path = args.length > 0 ? `@isocron-unix-test-${args[0]}` : "@isocron-unix-test";
+    match (unix.listen(path)) {
+        Ok(l) => {
+            match (unix.connect(path)) {
+                Ok(c) => {
+                    match (unix.accept(l)) {
+                        Ok(s) => {
+                            print(net.writeText(c, "hello"));
+                            match (net.read(s, 100)) {
+                                Ok(b) => print(stringOf(b)),
+                                Err(e) => print(message(e)),
+                            };
+                            passMemory(c, s);
+                            waits(c, s);
+                            net.close(c);
+                            match (unix.poll([unix.fdOf(s)], 1000)) {
+                                Ok(ev) => print([unix.readable(ev[0]), unix.hungUp(ev[0])] as const),
+                                Err(e) => print(message(e)),
+                            };
+                            match (net.read(s, 100)) {
+                                Ok(b) => print(b.length),
+                                Err(e) => print(message(e)),
+                            };
+                            net.close(s);
+                        },
+                        Err(e) => {
+                            print(message(e));
+                            net.close(c);
+                        },
+                    };
+                },
+                Err(e) => print(message(e)),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print(message(e)),
+    };
+    // nothing listens there
+    match (unix.connect("@isocron-nothing-listens-here")) {
+        Ok(c) => {
+            print("connected");
+            net.close(c);
+        },
+        Err(e) => print(message(e)),
+    };
+    // a path too long, a path with a zero byte
+    match (unix.connect("/tmp/" + "x".repeat(103))) {
+        Ok(c) => net.close(c),
+        Err(e) => print(message(e)),
+    };
+    match (unix.shared(0)) {
+        Ok(m) => unix.closeShared(m),
+        Err(e) => print(message(e)),
+    };
+    print(unix.closeFd(-1i32));
+    return 0;
+}

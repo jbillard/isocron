@@ -524,6 +524,17 @@ ARM64 set aside; the targets before the rest of this list, in this order:
 - [x] (Done, D543 and D544: no program for WebAssembly links wasi-libc unless it declares C functions) 3. WASI without wasi-libc: the functions of WASI preview 1 called directly, the runtime's own `_start`, its heap over `memory.grow`, the threads of wasi-threads without pthread
 - [x] (Done, D545 and D546) 4. Linux: a static program checked at its build for its relocations (the item of the trusted base), a mode of checks of the allocator (the item of its tests in C)
 
+## The library of graphical interfaces (the author's word, 2026-11-11, D631)
+
+After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`isocron-ui`, local until the author's word), what touches the system in Isocron, with the same requirements as the rest.
+
+- [x] The module `unix` (Linux): Unix sockets, descriptors passed, memory shared, `poll`; realized by the compiler; 0.9 to 1.06 times the floor (D632)
+- [ ] The library, its first part: the primitives of the scene drawn on the processor into an image, compared with images of reference, measured
+- [ ] A window under Wayland, then X11, in a display server without a screen (Weston `headless`, Xvfb, in Docker): an image shown, the mouse and the keyboard received
+- [ ] The text: a font read, its glyphs drawn, a line shaped and cut
+- [ ] The layout (flexbox), the elements, the style, the events, the focus, the model of Elm
+- [ ] Windows (`user32`, `gdi32`): after the author's word
+
 ## The versions of the runtime (the author's decision, 2026-11-10, D622)
 
 v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest of the runtime written down as its frontier (`crates/isc-runtime/frontier.txt`, held by `frontier.rs`); v2: that frontier emptied; v3: `iscc` compiled by itself. The items of the kernel and of the pure functions above that are not in v1 belong to v2.
@@ -549,6 +560,7 @@ v1: every part where Isocron is at least as fast as Rust is in Isocron, the rest
 
 - [ ] The rest of the allocator: medium and large blocks, the blocks of a thread that ends, Windows, WebAssembly
 - [ ] Threads and parallel loops, the start, the arguments, the clock, the environment
+- [ ] The stack of 1 GiB of `main` on the main thread itself (its stack switched) rather than on a thread of its own (`isc_run_big_stack`): a process of one thread, whose calls of the system on a descriptor take the light path of the kernel (D632: 44 cycles a call, `poll` +5.6 % against its floor)
 - [ ] Print and the buffer of the output; files, standard input, CSV; the panics
 - [ ] Texts that remain (`split`, `lines` and their views, the building of texts); collections (sort, hashes, groups)
 - [ ] The system modules, the network, TLS (OpenSSL and SChannel are C: to discuss with the author before)

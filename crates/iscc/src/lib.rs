@@ -388,15 +388,16 @@ pub fn build(p: &isc_ir::Program, opts: &BuildOptions) -> Result<(), String> {
 /// none: every function the program reaches is compiled in it.
 pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) -> Result<(), String> {
     // a primitive of the system that the target lacks (D324)
+    let reached = |path: &[String]| path.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(" -> ");
     if opts.codegen.isa.is_wasm() {
         if let Some((op, path, at)) = p.sys_paths.iter().find(|(op, _, _)| !op.on_wasi()) {
-            return Err(format!(
-                "{}:{}: the target WebAssembly (WASI preview 1) has no `{}` (no sockets): reached by {}",
-                at.line,
-                at.col,
-                op.name(),
-                path.iter().map(|n| format!("`{}`", n)).collect::<Vec<_>>().join(" -> ")
-            ));
+            let why = if op.is_unix() { "the module `unix` is Linux only" } else { "no sockets" };
+            return Err(format!("{}:{}: the target WebAssembly (WASI preview 1) has no `{}` ({}): reached by {}", at.line, at.col, op.name(), why, reached(path)));
+        }
+    } else if opts.codegen.windows {
+        // the module `unix` (D632)
+        if let Some((op, path, at)) = p.sys_paths.iter().find(|(op, _, _)| !op.on_windows()) {
+            return Err(format!("{}:{}: the target Windows has no `{}` (the module `unix` is Linux only): reached by {}", at.line, at.col, op.name(), reached(path)));
         }
     }
     // the functions of the prelude compiled once (D611): the program

@@ -1,0 +1,230 @@
+// The audit of every form against the machine (D301): the module `unix`
+// (D632) on one thread. A round trip of 64 bytes on a Unix socket (written,
+// read by the peer, written back, read); 64 bytes sent with a descriptor,
+// received with it, the descriptor closed; a connection made (`connect`,
+// `accept`, both closed); a listener made and closed; a wait for a socket
+// that has bytes (`poll`, no time waited); a memory shared of 64 KiB made
+// and given back; 64 KiB written into it as bytes, 1 MiB as words of 32
+// bits, 64 KiB read from it; a descriptor projected read only and given
+// back. Each line: a name, the nanoseconds of one (the mean over `rounds`),
+// a checksum; against `unix.c` (the floor: the same calls of the system).
+// usage: unix <rounds>
+import * as unix from "unix";
+import * as net from "net";
+
+// the bytes of `c` until `n` of them are read: their number
+action readN(c: net.Conn, n: i64, got: i64): i64 {
+    if (n <= 0) {
+        return got;
+    }
+    return match (net.read(c, n)) {
+        Ok(b) => b.length == 0 ? -1 : readN(c, n - b.length, got + b.length),
+        Err(e) => -1,
+    };
+}
+
+action trips(c: net.Conn, s: net.Conn, x: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const w = net.write(c, x);
+    const a = readN(s, x.length, 0);
+    const w2 = net.write(s, x);
+    const b = readN(c, x.length, 0);
+    return trips(c, s, x, r - 1, acc + a + b);
+}
+
+// `r` times 64 bytes and the descriptor `fd` sent, received, the copy of
+// the descriptor closed: the bytes and descriptors received
+action passes(c: net.Conn, s: net.Conn, x: u8[n], fd: i32, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const w = unix.sendWithFds(c, x, [fd]);
+    const got = match (unix.receiveWithFds(s, 64, 4)) {
+        Ok(m) => m.bytes.length + m.fds.length + (unix.closeFd(m.fds[0]) == Ok(()) ? 0 : 1000),
+        Err(e) => -1,
+    };
+    return passes(c, s, x, fd, r - 1, acc + got);
+}
+
+action connects(l: net.Listener, path: string, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return match (unix.connect(path)) {
+        Ok(c) => match (unix.accept(l)) {
+            Ok(s) => {
+                net.close(s);
+                net.close(c);
+                return connects(l, path, r - 1, acc + 1);
+            },
+            Err(e) => {
+                net.close(c);
+                return -1;
+            },
+        },
+        Err(e) => -1,
+    };
+}
+
+action listens(path: string, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return match (unix.listen(path)) {
+        Ok(l) => {
+            net.closeListener(l);
+            return listens(path, r - 1, acc + 1);
+        },
+        Err(e) => -1,
+    };
+}
+
+action polls(fds: i32[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const ready = match (unix.poll(fds, 0)) {
+        Ok(ev) => unix.readable(ev[0]) ? 1 : 0,
+        Err(e) => -1,
+    };
+    return polls(fds, r - 1, acc + ready);
+}
+
+action opens(bytes: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return match (unix.shared(bytes)) {
+        Ok(m) => {
+            const n = unix.sharedSize(m);
+            unix.closeShared(m);
+            return opens(bytes, r - 1, acc + n);
+        },
+        Err(e) => -1,
+    };
+}
+
+action writes(m: unix.Shared, x: u8[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const ok = unix.writeShared(m, 0, x) == Ok(()) ? 1 : 0;
+    return writes(m, x, r - 1, acc + ok);
+}
+
+action writes32(m: unix.Shared, x: u32[n], r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const ok = unix.writeSharedU32(m, 0, x) == Ok(()) ? 1 : 0;
+    return writes32(m, x, r - 1, acc + ok);
+}
+
+action reads(m: unix.Shared, n: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    const got = match (unix.readShared(m, 0, n)) {
+        Ok(b) => b.length + i64(b[100]),
+        Err(e) => -1,
+    };
+    return reads(m, n, r - 1, acc + got);
+}
+
+action maps(fd: i32, bytes: i64, r: i64, acc: i64): i64 {
+    if (r == 0) {
+        return acc;
+    }
+    return match (unix.mapShared(fd, bytes, false)) {
+        Ok(v) => {
+            const n = unix.sharedSize(v);
+            unix.closeShared(v);
+            return maps(fd, bytes, r - 1, acc + n);
+        },
+        Err(e) => -1,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const r = parseI64(args[0]);
+    // names of this run in the abstract space
+    const path = `@isocron-bench-unix-${clock()}`;
+    match (unix.listen(path)) {
+        Ok(l) => {
+            match (unix.connect(path)) {
+                Ok(c) => match (unix.accept(l)) {
+                    Ok(s) => {
+                        const small = map(iota(64), (i) => u8(i));
+                        const t0 = clock();
+                        const a = trips(c, s, small, r, 0);
+                        const t1 = clock();
+                        print(`roundtrip.64 ${f64(t1 - t0) / f64(r)} ${a / r}`);
+                        match (unix.shared(65536)) {
+                            Ok(m) => {
+                                const fd = unix.sharedFd(m);
+                                const t2 = clock();
+                                const p = passes(c, s, small, fd, r, 0);
+                                const t3 = clock();
+                                print(`sendWithFds.64 ${f64(t3 - t2) / f64(r)} ${p / r}`);
+                                unix.closeShared(m);
+                            },
+                            Err(e) => print("shared failed"),
+                        };
+                        const w = net.write(c, small);
+                        const fds = [unix.fdOf(s)];
+                        const t4 = clock();
+                        const q = polls(fds, r, 0);
+                        const t5 = clock();
+                        print(`poll.ready ${f64(t5 - t4) / f64(r)} ${q / r}`);
+                        net.close(s);
+                        net.close(c);
+                    },
+                    Err(e) => net.close(c),
+                },
+                Err(e) => print("connect failed"),
+            };
+            const t6 = clock();
+            const n = connects(l, path, r, 0);
+            const t7 = clock();
+            print(`connect ${f64(t7 - t6) / f64(r)} ${n / r}`);
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    const t8 = clock();
+    const o = listens(`${path}-l`, r, 0);
+    const t9 = clock();
+    print(`listen.close ${f64(t9 - t8) / f64(r)} ${o / r}`);
+    const t10 = clock();
+    const sh = opens(65536, r, 0);
+    const t11 = clock();
+    print(`shared.close.64k ${f64(t11 - t10) / f64(r)} ${sh / r}`);
+    match (unix.shared(1048576)) {
+        Ok(m) => {
+            const bytes64k = map(iota(65536), (i) => u8(i % 251));
+            const t12 = clock();
+            const wb = writes(m, bytes64k, r, 0);
+            const t13 = clock();
+            print(`writeShared.64k ${f64(t13 - t12) / f64(r)} ${wb / r}`);
+            const words = map(iota(262144), (i) => u32(i));
+            const t14 = clock();
+            const ww = writes32(m, words, r, 0);
+            const t15 = clock();
+            print(`writeSharedU32.1m ${f64(t15 - t14) / f64(r)} ${ww / r}`);
+            const t16 = clock();
+            const rd = reads(m, 65536, r, 0);
+            const t17 = clock();
+            print(`readShared.64k ${f64(t17 - t16) / f64(r)} ${rd / r}`);
+            const fd = unix.sharedFd(m);
+            const t18 = clock();
+            const mp = maps(fd, 1048576, r, 0);
+            const t19 = clock();
+            print(`mapShared ${f64(t19 - t18) / f64(r)} ${mp / r}`);
+            unix.closeShared(m);
+        },
+        Err(e) => print("shared failed"),
+    };
+    return 0;
+}

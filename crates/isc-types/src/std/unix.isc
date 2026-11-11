@@ -1,0 +1,159 @@
+// The module `unix` of the standard library (D632): Linux only (a program
+// for Windows or WebAssembly that reaches it is refused at compile time,
+// D324). Unix sockets, whose connections are the `Conn` of `net` (read,
+// written, closed by its functions), the descriptors of files passed with
+// bytes, a memory shared with another process, the wait for several
+// descriptors: what a display server asks of its clients (Wayland, X11).
+// Its primitives are calls of the system made by the compiled program
+// itself. A `Shared` is unique as a `Conn` (D339): never copied, closed
+// once by `closeShared`.
+import { IoError, ioError } from "sys";
+import { Conn, Listener } from "net";
+
+export type Shared = sysShared;
+// the bytes received and the descriptors that came with them
+export type Received = { bytes: u8[], fds: i32[] };
+
+// a connection to the Unix socket `path`, or to the name after `@` in the
+// abstract space of Linux (`@/tmp/.X11-unix/X0`): at most 107 bytes
+export action connect(path: string): Result<Conn, IoError> {
+    const [c, code] = sysUnixConnect(path);
+    if (code == 0) {
+        return Ok(c);
+    }
+    // the resource of a failure (none: closing it does nothing) closed too
+    sysClose(c);
+    return Err(ioError(code, path));
+}
+
+// a Unix socket bound to `path` (a file it makes, or `@name`) that listens
+export action listen(path: string): Result<Listener, IoError> {
+    const [l, code] = sysUnixListen(path);
+    if (code == 0) {
+        return Ok(l);
+    }
+    sysCloseListener(l);
+    return Err(ioError(code, path));
+}
+
+// the next connection to the Unix socket `l`
+export action accept(l: Listener): Result<Conn, IoError> {
+    const [c, code] = sysUnixAccept(l);
+    if (code == 0) {
+        return Ok(c);
+    }
+    sysClose(c);
+    return Err(ioError(code, "accept"));
+}
+
+// all the bytes `x` sent on `c`, the descriptors `fds` with them (at least
+// one byte when there are descriptors, at most 253 of them); the
+// descriptors stay this program's
+export action sendWithFds(c: Conn, x: u8[n], fds: i32[m]): Result<void, IoError> {
+    const code = sysSendFds(c, x, fds);
+    return code == 0 ? Ok(()) : Err(ioError(code, "sendWithFds"));
+}
+
+// at most `max` bytes that `c` has received (none: the end of the stream),
+// and the descriptors that came with them, at most `maxFds` (more: an
+// error, those received closed); each descriptor is this program's, to
+// close with `closeFd`
+export action receiveWithFds(c: Conn, max: i64, maxFds: i64): Result<Received, IoError> {
+    const [b, fds, code] = sysRecvFds(c, max, maxFds);
+    return code == 0 ? Ok({ bytes: b, fds: fds }) : Err(ioError(code, "receiveWithFds"));
+}
+
+// the descriptor of the connection `c`, for `poll`
+export action fdOf(c: Conn): i32 {
+    return i32(sysConnFd(c));
+}
+
+// waits until one of the descriptors `fds` can be read, at most `ms`
+// milliseconds (-1: without limit); the events of each: `readable`,
+// `hungUp`, `failed` tell them (none of them: the time passed)
+export action poll(fds: i32[n], ms: i64): Result<i32[n], IoError> {
+    const [events, code] = sysPoll(fds, ms);
+    return code == 0 ? Ok(events) : Err(ioError(code, "poll"));
+}
+
+// bytes can be read (or the end of the stream)
+export function readable(event: i32): boolean {
+    return (event & 1) != 0;
+}
+
+// the peer has closed its side
+export function hungUp(event: i32): boolean {
+    return (event & 16) != 0;
+}
+
+// an error on the descriptor, or not a descriptor
+export function failed(event: i32): boolean {
+    return (event & 40) != 0;
+}
+
+// the descriptor `fd` closed
+export action closeFd(fd: i32): Result<void, IoError> {
+    const code = sysCloseFd(fd);
+    return code == 0 ? Ok(()) : Err(ioError(code, "closeFd"));
+}
+
+// ----- memory shared ------------------------------------------------------
+
+// `bytes` bytes of memory of a file of their own, zeros, readable and
+// writable; `sharedFd` gives its descriptor to send to another process
+export action shared(bytes: i64): Result<Shared, IoError> {
+    const [m, code] = sysSharedOpen(bytes);
+    if (code == 0) {
+        return Ok(m);
+    }
+    sysSharedClose(m);
+    return Err(ioError(code, "shared"));
+}
+
+// the first `bytes` bytes of the file `fd` (received from another process):
+// shared and writable, or a private copy read only; `fd` stays this
+// program's, to close with `closeFd` (the memory stays after it)
+export action mapShared(fd: i32, bytes: i64, writable: boolean): Result<Shared, IoError> {
+    const [m, code] = sysSharedMap(fd, bytes, writable);
+    if (code == 0) {
+        return Ok(m);
+    }
+    sysSharedClose(m);
+    return Err(ioError(code, "mapShared"));
+}
+
+// the descriptor of the file of a memory of `shared` (-1 for `mapShared`),
+// closed with it
+export action sharedFd(m: Shared): i32 {
+    return i32(sysSharedFd(m));
+}
+
+// its bytes
+export action sharedSize(m: Shared): i64 {
+    return sysSharedSize(m);
+}
+
+// the bytes `x` written from the byte `at` (an error past the end, or in a
+// memory read only)
+export action writeShared(m: Shared, at: i64, x: u8[n]): Result<void, IoError> {
+    const code = sysSharedWrite(m, at, x);
+    return code == 0 ? Ok(()) : Err(ioError(code, "writeShared"));
+}
+
+// the words `x` written from the byte `at`, each in 4 bytes, the least
+// significant first (the pixels of an image)
+export action writeSharedU32(m: Shared, at: i64, x: u32[n]): Result<void, IoError> {
+    const code = sysSharedWrite32(m, at, x);
+    return code == 0 ? Ok(()) : Err(ioError(code, "writeSharedU32"));
+}
+
+// `n` bytes read from the byte `at`
+export action readShared(m: Shared, at: i64, n: i64): Result<u8[k], IoError> {
+    const [b, code] = sysSharedRead(m, at, n);
+    return code == 0 ? Ok(b) : Err(ioError(code, "readShared"));
+}
+
+// the memory given back: it cannot be used after; its file closed
+export action closeShared(m: Shared): void {
+    const code = sysSharedClose(m);
+}

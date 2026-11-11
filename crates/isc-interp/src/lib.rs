@@ -17,6 +17,7 @@ pub mod floats;
 pub mod handles;
 mod pow10_g;
 pub mod rt;
+pub mod unix;
 
 /// Reduction parameters of SPEC section 10.
 pub const LANES: usize = 32;

@@ -953,8 +953,9 @@ But : des programmes de calcul qui sortent de leur fichier d'entrée. Ils lisent
 | Sockets | `sysConnect(addr, port)`, `sysListen(addr, port)`, `sysAccept(l)`, `sysRecv(c, max)`, `sysSend(c, bytes)`, `sysShutdown(c)`, `sysClose(c)`, `sysCloseListener(l)`, `sysSetTimeout(c, ms)`, `sysLocalPort(l)`, `sysUdpQuery(addr, port, bytes, ms)` (D339) ; un serveur : `sysServerOpen(l) => [Server, code]` (l'écouteur pris), `sysServerWait(s, max, ms) => [ids, lens, bytes, code]` (les connexions en attente acceptées, puis au plus `max` octets de chaque connexion qui en a, 0 à sa fin), `sysServerSend(s, id, bytes)`, `sysServerDrop(s, id)`, `sysServerClose(s)` (D342 : `epoll` sous Linux, `WSAPoll` sous Windows) ; `sysListenShared(addr, port)`, un écouteur qui partage son port avec les autres du programme (`SO_REUSEPORT`, D374 ; sous Windows, l'erreur de `EOPNOTSUPP`) | Linux, Windows |
 | Noms | `sysResolve(host) => [string[k], i64]` | Windows (`GetAddrInfoW`) ; sous Linux, la résolution est écrite en Isocron (voir `net`) |
 | TLS | `sysTlsOpen(socket, host, ca, server, cert, key)`, `sysTlsSend`, `sysTlsRecv`, `sysTlsClose` | Linux (OpenSSL chargé à l'exécution), Windows (SChannel) |
+| Unix (D632) | `sysUnixConnect(path)`, `sysUnixListen(path)` (un chemin, ou `@nom` dans l'espace abstrait de Linux), `sysUnixAccept(l)` ; `sysSendFds(c, bytes, fds)` et `sysRecvFds(c, max, maxFds) => [bytes, fds, code]` (des descripteurs passés avec les octets, `SCM_RIGHTS`) ; `sysConnFd(c)`, `sysPoll(fds, ms) => [events, code]`, `sysCloseFd(fd)` ; une mémoire partagée : `sysSharedOpen(bytes)` (`memfd_create`), `sysSharedMap(fd, bytes, writable)`, `sysSharedWrite(m, at, bytes)`, `sysSharedWrite32(m, at, words)`, `sysSharedRead(m, at, n)`, `sysSharedFd(m)`, `sysSharedSize(m)`, `sysSharedClose(m)` | Linux |
 
-Sous Linux, une primitive est un appel direct du système (D287), sauf TLS. Sous Windows, c'est une fonction de `kernel32`, de `ws2_32` ou de `secur32`. Sous WASI, c'est une fonction de WASI. Une socket est un entier qui n'a de sens que pour ces primitives.
+Sous Linux, une primitive est un appel direct du système (D287), sauf TLS. Sous Windows, c'est une fonction de `kernel32`, de `ws2_32` ou de `secur32`. Sous WASI, c'est une fonction de WASI. Une socket est un entier qui n'a de sens que pour ces primitives. Les primitives de `unix` sont réalisées par le compilateur : leurs appels du système sont émis dans le programme (l'instruction `syscall`), sans fonction du runtime (D632).
 
 ### Modules et signatures
 
@@ -1017,6 +1018,14 @@ Les fonctions de chemins (`path`, fonctions pures, sans lecture du système) son
 
   Les tests de la résolution interrogent un serveur DNS écrit dans le test, sur la machine locale.
 
+#### `unix` : sockets Unix et mémoire partagée (Linux)
+
+- Ce qu'un serveur d'affichage demande à ses clients (Wayland, X11). Un programme pour Windows ou WebAssembly qui atteint le module est refusé à la compilation, le chemin de ses appels nommé (D324, D632).
+- `connect(path): action => Result<Conn, IoError>`, `listen(path): Result<Listener, IoError>`, `accept(l): Result<Conn, IoError>` : une socket Unix de flux à un chemin, ou au nom qui suit `@` dans l'espace abstrait de Linux (au plus 107 octets). Ses connexions sont les `Conn` de `net`, lues, écrites et fermées par ses fonctions.
+- `sendWithFds(c, bytes, fds: i32[m]): Result<void, IoError>` : tous les octets, les descripteurs avec eux (au moins un octet s'il y a des descripteurs, au plus 253). `receiveWithFds(c, max, maxFds): Result<Received, IoError>` : `{ bytes: u8[], fds: i32[] }`, chaque descripteur au programme, qui le ferme par `closeFd(fd)` ; plus de `maxFds` descripteurs : une erreur, ceux reçus fermés.
+- `poll(fds: i32[n], ms): Result<i32[n], IoError>` : l'attente qu'un des descripteurs puisse être lu, au plus `ms` millisecondes (-1 : sans limite) ; les événements de chacun, lus par `readable`, `hungUp` (le pair a fermé son côté) et `failed`. `fdOf(c)` est le descripteur d'une connexion.
+- `type Shared`, **linéaire** comme `Conn` : `shared(bytes)` (les octets d'un fichier à elle, des zéros, `memfd_create`), `mapShared(fd, bytes, writable)` (le fichier d'un descripteur reçu, partagé et modifiable, ou une copie privée en lecture seule), `sharedFd(m)` (son descripteur, -1 pour `mapShared`), `sharedSize(m)`, `writeShared(m, at, bytes)`, `writeSharedU32(m, at, words)` (chaque mot en 4 octets, le moins significatif d'abord : les pixels d'une image), `readShared(m, at, n)`, `closeShared(m)`. Au-delà de la fin, ou une écriture dans une mémoire en lecture seule : une erreur.
+
 #### `http` : client HTTP/1.1
 
 - `get(url): action => Result<Response, HttpError>` et `request(method, url, headers: [string, string][k], body: u8[n])`. `exchange(c, method, host, port, défaut, cible, headers, body)` fait l'échange sur une connexion déjà ouverte (c'est ce que `https` réutilise) ; `parseUrl(url)` donne le schéma, l'hôte, le port et la cible (D340).
@@ -1058,6 +1067,8 @@ Les modules sont faits dans cet ordre :
 8. `https`.
 
 Chacun a ses primitives, ses tests sous Linux et dans la machine virtuelle Windows, son refus sous WASI, son exemple, son microbenchmark et son plancher. La version 0.3.0 est publiée à la fin.
+
+Puis `unix` (D632), pour la bibliothèque d'interfaces graphiques (`docs/proposals/gui.md`) : ses primitives, ses tests sous Linux, son refus sous Windows et sous WASI, son exemple, son microbenchmark et son plancher.
 
 ## 19. Références
 

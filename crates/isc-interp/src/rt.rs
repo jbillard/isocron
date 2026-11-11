@@ -534,6 +534,8 @@ pub fn sys(o: isc_ir::SysOp, vs: &[crate::Value]) -> crate::Value {
         }
         S::Connect | S::Listen | S::Accept | S::Recv | S::Send | S::Close | S::CloseListener | S::SetTimeout | S::LocalPort | S::UdpQuery | S::Platform | S::Threads | S::ListenShared | S::Resolve | S::Shutdown | S::TlsStart => net(o, vs),
         S::ServerOpen | S::ServerWait | S::ServerSend | S::ServerDrop | S::ServerClose | S::ServerOpenTls => serve(o, vs),
+        // the module `unix` (D632)
+        _ => crate::unix::sys(o, vs),
     }
 }
 

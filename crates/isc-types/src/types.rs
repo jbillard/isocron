@@ -200,6 +200,9 @@ pub enum Handle {
     /// A listener and the connections it accepted, held by the runtime
     /// (`net.Server`, D342).
     Server,
+    /// A memory shared with another process, projected into this one
+    /// (`unix.Shared`, D632).
+    Shared,
 }
 
 impl Handle {
@@ -208,6 +211,7 @@ impl Handle {
             Handle::Conn => "Conn",
             Handle::Listener => "Listener",
             Handle::Server => "Server",
+            Handle::Shared => "Shared",
         }
     }
 }

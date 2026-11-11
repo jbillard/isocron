@@ -3352,6 +3352,99 @@ action main(args: string[k]): i32 {
 }
 ```
 
+### Unix sockets and shared memory: `unix`
+
+Linux only: a program for Windows or WebAssembly that reaches the module
+is refused when built for them. What a display server asks of its clients
+(Wayland, X11): `connect(path)` and `listen(path)` open a Unix socket of
+stream at a path, or at the name after `@` in the abstract space of Linux
+(`@/tmp/.X11-unix/X0`), at most 107 bytes; `accept(l)` the next
+connection. The connections are the `Conn` of `net`: `net.read`,
+`net.write`, `net.setTimeout` and `net.close` work on them.
+`sendWithFds(c, x, fds)` sends the bytes `x` and, with them, the
+descriptors of files `fds` (`i32`, at least one byte when there are
+descriptors, at most 253); `receiveWithFds(c, max, maxFds)` gives a
+`Received`: the bytes (`bytes`, none at the end of the stream) and the
+descriptors that came with them (`fds`, more than `maxFds`: an error), each
+the program's to close with `closeFd(fd)`. `poll(fds, ms)` waits until one
+of the descriptors can be read, at most `ms` milliseconds (-1: without
+limit), and gives the events of each: `readable(e)`, `hungUp(e)` (the peer
+has closed its side), `failed(e)`; none of them: the time passed.
+`fdOf(c)` is the descriptor of a connection.
+
+A `Shared` is memory shared with another process: `shared(bytes)` makes
+`bytes` bytes of a file of their own (zeros), `sharedFd(m)` its descriptor
+to send; `mapShared(fd, bytes, writable)` projects the file of a
+descriptor received (shared and writable, or a private copy read only).
+`writeShared(m, at, x)` and `writeSharedU32(m, at, words)` (each word in 4
+bytes, the least significant first: the pixels of an image) write from the
+byte `at`, `readShared(m, at, n)` reads, `sharedSize(m)` is its size; past
+its end, or a write to a memory read only, is an error. A `Shared` is
+closed exactly once, by `closeShared(m)`, as a connection. The compiled
+program makes these calls of the system itself.
+
+```isc
+import * as unix from "unix";
+import * as net from "net";
+
+action main(args: string[k]): i32 {
+    // a name of this run in the abstract space: no file to remove
+    const name = `@isocron-guide-${clock()}`;
+    match (unix.listen(name)) {
+        Ok(l) => {
+            match (unix.connect(name)) {
+                Ok(c) => {
+                    match (unix.accept(l)) {
+                        Ok(s) => {
+                            match (unix.shared(4096)) {
+                                Ok(m) => {
+                                    print(unix.writeShared(m, 0, bytes("image")));
+                                    print(unix.sendWithFds(c, bytes("!"), [unix.sharedFd(m)]));
+                                    match (unix.receiveWithFds(s, 16, 1)) {
+                                        Ok(r) => {
+                                            match (unix.mapShared(r.fds[0], 4096, false)) {
+                                                Ok(v) => {
+                                                    print(unix.readShared(v, 0, 5));
+                                                    unix.closeShared(v);
+                                                },
+                                                Err(e) => print("map failed"),
+                                            };
+                                            print(unix.closeFd(r.fds[0]));
+                                        },
+                                        Err(e) => print("receive failed"),
+                                    };
+                                    unix.closeShared(m);
+                                },
+                                Err(e) => print("shared failed"),
+                            };
+                            match (unix.poll([unix.fdOf(s)], 10)) {
+                                Ok(ev) => print(unix.readable(ev[0])),
+                                Err(e) => print("poll failed"),
+                            };
+                            net.close(s);
+                        },
+                        Err(e) => print("accept failed"),
+                    };
+                    net.close(c);
+                },
+                Err(e) => print("connect failed"),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}
+```
+
+```output
+Ok(())
+Ok(())
+Ok([105, 109, 97, 103, 101])
+Ok(())
+false
+```
+
 ## Performance model
 
 * **Fusion.** Element-wise operations, `map` and `iota` feeding a single

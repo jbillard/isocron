@@ -20,6 +20,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use isc_ir::*;
 use isc_ir::blocks::{free_vars, inner_loop, mentions, print_stream_ok, stream_map_ok, windowed_filter};
+
+// the primitives of the module `unix`, realized here (D632)
+mod unix;
 use isc_syntax::Span;
 
 /// V, the number of interleaved accumulators of the fixed reduction form
@@ -16251,6 +16254,8 @@ impl<'p> Gen<'p> {
             }
             // the fallible forms (D138): the value and the message through
             // pointers, then the pair
+            // the module `unix` (D632): its calls of the system in the program
+            ActionOp::Sys(o) if o.is_unix() => self.unix_op(o, &vals),
             // a primitive of the system (D322): its arguments by their
             // parts, its tuple written by the runtime at OUT
             ActionOp::Sys(o) => {

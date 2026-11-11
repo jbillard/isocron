@@ -379,6 +379,8 @@ fn type_from_ast(t: &ast::TypeExpr, cx: &mut SigCtx) -> Result<Ty> {
         TypeKind::Named(name, args) if name == "sysConn" && args.is_empty() => Ty::Handle(crate::types::Handle::Conn),
         TypeKind::Named(name, args) if name == "sysListener" && args.is_empty() => Ty::Handle(crate::types::Handle::Listener),
         TypeKind::Named(name, args) if name == "sysServer" && args.is_empty() => Ty::Handle(crate::types::Handle::Server),
+        // and by the module `unix` (D632)
+        TypeKind::Named(name, args) if name == "sysShared" && args.is_empty() => Ty::Handle(crate::types::Handle::Shared),
         TypeKind::Named(name, args) => {
             if let Some(i) = cx.generics.iter().position(|g| &g.0 == name) {
                 if !args.is_empty() {
@@ -2669,6 +2671,37 @@ impl<'g> FnCx<'g> {
             SysOp::Platform | SysOp::Threads => (vec![], i64t.clone()),
             SysOp::ListenShared => (vec![Ty::Str, i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Listener), i64t.clone()])),
             SysOp::Resolve => (vec![Ty::Str], Ty::Tuple(vec![exist(self, Ty::Str), i64t.clone()])),
+            // the module `unix` (D632)
+            SysOp::UnixConnect => (vec![Ty::Str], Ty::Tuple(vec![Ty::Handle(Handle::Conn), i64t.clone()])),
+            SysOp::UnixListen => (vec![Ty::Str], Ty::Tuple(vec![Ty::Handle(Handle::Listener), i64t.clone()])),
+            SysOp::UnixAccept => (vec![Ty::Handle(Handle::Listener)], Ty::Tuple(vec![Ty::Handle(Handle::Conn), i64t.clone()])),
+            SysOp::SendFds => {
+                let s = self.fresh_size(span);
+                let f = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Conn), Ty::Array(s, Box::new(Ty::Int(IntKind::U8))), Ty::Array(f, Box::new(Ty::Int(IntKind::I32)))], i64t.clone())
+            }
+            SysOp::RecvFds => {
+                let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
+                (vec![Ty::Handle(Handle::Conn), i64t.clone(), i64t.clone()], Ty::Tuple(vec![own(Ty::Int(IntKind::U8)), own(Ty::Int(IntKind::I32)), i64t.clone()]))
+            }
+            SysOp::ConnFd => (vec![Ty::Handle(Handle::Conn)], i64t.clone()),
+            SysOp::Poll => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Array(s.clone(), Box::new(Ty::Int(IntKind::I32))), i64t.clone()], Ty::Tuple(vec![Ty::Array(s, Box::new(Ty::Int(IntKind::I32))), i64t.clone()]))
+            }
+            SysOp::CloseFd => (vec![Ty::Int(IntKind::I32)], i64t.clone()),
+            SysOp::SharedOpen => (vec![i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Shared), i64t.clone()])),
+            SysOp::SharedMap => (vec![Ty::Int(IntKind::I32), i64t.clone(), Ty::Bool], Ty::Tuple(vec![Ty::Handle(Handle::Shared), i64t.clone()])),
+            SysOp::SharedWrite => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Shared), i64t.clone(), Ty::Array(s, Box::new(Ty::Int(IntKind::U8)))], i64t.clone())
+            }
+            SysOp::SharedWrite32 => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Shared), i64t.clone(), Ty::Array(s, Box::new(Ty::Int(IntKind::U32)))], i64t.clone())
+            }
+            SysOp::SharedRead => (vec![Ty::Handle(Handle::Shared), i64t.clone(), i64t.clone()], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()])),
+            SysOp::SharedFd | SysOp::SharedSize | SysOp::SharedClose => (vec![Ty::Handle(Handle::Shared)], i64t.clone()),
         };
         if args.len() != params.len() {
             return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));
