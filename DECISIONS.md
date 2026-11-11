@@ -15566,3 +15566,64 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Not done: the microbenchmark of `show` and its floor in C (to measure
     in the machine of Windows, a virtual one), the interpreter under
     Windows, the cursor, the clipboard, the input methods (IME).
+- **D637 — A parameter given to a function that is called (2026-11-11).**
+  Found by the library of graphical interfaces (D631), drawing its texts:
+  its rasterizer drew each part of a glyph row by row into a buffer of
+  areas, `drawRow(a, ...)` returning `requireUnique(a.with(...))`. A
+  program with a few lines of text compiled; the plate of the library,
+  with 35, was refused (`a` is shared, it is an input): past a size of
+  code, `outline_large` (D336) calls `drawRow` rather than inlining it,
+  and the parameters of a function called were all borrowed. Without
+  `requireUnique`, the same program compiled but copied the whole buffer
+  at each row. Whether a program compiled, and its cost, depended on a
+  choice of the compiler made from the size of the program.
+  - Rule G (SPEC section 8): a function called without being recursive
+    (not in a cycle of calls: too large to inline, `@noInline`, `@cold`;
+    not one of the functions of the texts the code generator calls) is
+    given each of its parameters that owns memory (an array, a string; not
+    a tuple, the states of D206; not one holding nodes, counted, D175) that
+    its body consumes on every path when it owns it (moved: the target of
+    `with`, the accumulator of a `fold`, its result, a part of a value, a
+    parameter given to another function; or taken apart; and freed on no
+    path). One consumed on some paths only stays lent, copied there alone:
+    given, its callers that keep their argument would copy it at each call
+    (suite 442: `$replaceSlow` and `$replaceLong` of `replaceAll`, D627,
+    give their text back only when nothing is replaced; given, a text read
+    after `replaceAll` was copied at each call, 8 copies in the program of
+    `literals_kept_without_a_copy` instead of 5). `decide_given`, the
+    callees first: the body made owning all its candidates, those it moves
+    kept, the memory check of the function (`verify_fn`, the parameter
+    owned, moved or freed on every path) on that body; otherwise borrowed,
+    as before. `Function::given`, and `Function::unique` for those the
+    body updates under `requireUnique`.
+  - At a call (`Rewriter`, the ownership pass): an argument at a given
+    place is a position that takes a value: moved at its last use when its
+    variable owns its value, copied otherwise (the reason in the memory
+    report: `y` is used again at line 8), refused when the place is unique
+    (`requireUnique not satisfied (line 7): y is used again at line 8`), as
+    the body inlined at the call is. The memory check (`verify`) consumes
+    such an argument. The code of the callee takes the parameter as it
+    comes (no copy on entry, unlike the states of D206); a tail call to
+    another function that reuses its frame (D113) is not made with a
+    parameter the function owns and does not give there; no base case of
+    such a function computed at its calls (D202: the call frees the
+    parameter).
+  - The same decisions for the requirements of a function
+    (`requirements.rs`, `requireNoAlloc`).
+  - Tests (`memory.rs`): `parameters_given_to_called_functions` (an update
+    under `requireUnique` in a `fold` of 1000 calls without a copy; a copy
+    at a call whose argument is read again, and in the tasks of a `map`
+    reading an outer array; a parameter given in a tail call to another
+    function given it; a string given to `+`; parameters only read, or
+    consumed on some paths only, stay lent; the results of the
+    interpreter; Valgrind), `require_unique_holds_through_a_call`. The
+    guide ("Reading and updating").
+  - The library keeps its rows drawn in lambdas of its `fold`: inlined, a
+    row costs no call (100 to 200 rows a glyph).
+  - One difference with the inlined body remains, for a parameter
+    consumed on some paths only: lent, the function copies it on those
+    paths even when its caller reads it for the last time, where the
+    inlined body would move it (`return i < 0 ? 0 : sum(a.with(i, 0))`);
+    and `requireUnique` of it is refused inside the function. A function
+    compiled once has one way to take its parameter; two variants are
+    left.

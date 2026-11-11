@@ -483,6 +483,17 @@ pub struct Function {
     /// state of a loop, D206); its caller lends it, so the generated code
     /// copies it once on entry.
     pub consumed: Vec<bool>,
+    /// Per parameter: given by the caller (D637), for a function that is
+    /// called without being recursive (too large to inline, `@noInline`,
+    /// `@cold`) and whose body consumes the parameter (updates it in place,
+    /// gives it back, keeps it in a value): the caller moves its argument
+    /// there at its last use and copies it otherwise, as the inlined body
+    /// would; the function owns it, moves it or frees it on every path.
+    pub given: Vec<bool>,
+    /// Per parameter: the body requires it unique (`requireUnique` of an
+    /// update of it in place, D637): a caller that would copy its argument
+    /// there is refused, as the inlined body would be.
+    pub unique: Vec<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

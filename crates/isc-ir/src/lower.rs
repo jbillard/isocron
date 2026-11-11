@@ -2690,9 +2690,11 @@ impl<'p> Lower<'p> {
         let require_tail = f.requires.iter().find(|(m, _)| *m == isc_syntax::ast::Modifier::RequireTail).map(|(_, s)| *s);
         self.reassoc_body(f, &mut body);
         let consumed = vec![false; params.len()];
+        let given = vec![false; params.len()];
+        let unique = vec![false; params.len()];
         let cold = f.requires.iter().any(|(m, _)| *m == isc_syntax::ast::Modifier::Cold);
         let no_inline = f.requires.iter().any(|(m, _)| *m == isc_syntax::ast::Modifier::NoInline);
-        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, cold, no_inline, consumed });
+        self.fns[idx as usize] = Some(Function { name: f.name.clone(), params, body, span: fspan, require_tail, cold, no_inline, consumed, given, unique });
         Ok(idx)
     }
 

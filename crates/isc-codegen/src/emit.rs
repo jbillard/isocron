@@ -2316,7 +2316,8 @@ fn fixed_lengths(t: &Type, path: &mut Vec<u32>, out: &mut Vec<(Vec<u32>, u32)>) 
 /// constructor without payload as result. A caller computes `c` and that
 /// branch itself and calls the function only for the other one: the leaves
 /// of a tree cost no call. The parameters of a recursive function are
-/// borrowed (its caller owns them), so nothing changes hands.
+/// borrowed (its caller owns them), so nothing changes hands (not a function
+/// given a parameter, D637).
 fn base_cases(p: &Program) -> HashMap<u32, (&Expr, &Expr, bool)> {
     fn payloadless(e: &Expr) -> bool {
         match &e.kind {
@@ -2351,6 +2352,11 @@ fn base_cases(p: &Program) -> HashMap<u32, (&Expr, &Expr, bool)> {
     }
     let mut out = HashMap::new();
     for (i, f) in p.fns.iter().enumerate() {
+        // (a parameter given, D637, is the function's to free: the call
+        // must be made)
+        if f.given.iter().any(|g| *g) {
+            continue;
+        }
         if let ExprKind::If(c, t, e) = &f.body.kind {
             if !simple(c) {
                 continue;

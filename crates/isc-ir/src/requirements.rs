@@ -24,9 +24,12 @@ fn allocations(p: &mut Program, with_callees: bool) -> R<Vec<Entry>> {
         crate::passes::optimize_body(&mut f.body, &mut p.vars);
     }
     let mut reasons = Vec::new();
-    crate::passes::ownership_body(&mut p.body, &p.vars, None, &mut reasons)?;
+    // the parameters given (D637), as the program decides them
+    crate::passes::decide_given(p);
+    let callees = crate::passes::Callees::of(p);
+    crate::passes::ownership_body(&mut p.body, &p.vars, None, &callees, &mut reasons)?;
     for f in p.fns.iter_mut() {
-        crate::passes::ownership_body(&mut f.body, &p.vars, None, &mut reasons)?;
+        crate::passes::ownership_fn(f, &p.vars, &callees, &mut reasons)?;
     }
     p.copy_reasons = reasons;
     Ok(entries_of(p, with_callees)

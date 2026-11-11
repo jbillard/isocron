@@ -1278,3 +1278,107 @@ fn scan_and_kept_filter_of_rows_refused() {
     let r = run_bin(&bin, &["x"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "3\n"), "{}", r.stderr);
 }
+
+#[test]
+fn parameters_given_to_called_functions() {
+    // D637: a function called rather than inlined (`@noInline` here; too
+    // large to inline in a program, D336) whose body consumes an array or a
+    // string parameter on every path is given it: its caller moves its
+    // argument at its last use, copies it otherwise (refused under
+    // `requireUnique`), as the inlined body would; a function that gives it
+    // in a tail call to another one given it too reuses its frame. One that
+    // consumes it on some paths only (a tail call lending it to another
+    // function, a scalar returned first) is lent it, as before: it copies
+    // it there alone. The results of the interpreter, nothing lost or
+    // freed twice.
+    let src = "@noInline
+function bump(a: i64[n], i: i64): i64[n] {
+    return requireUnique(a.with(i, a[i] + 1));
+}
+@noInline
+function plain(a: i64[n], i: i64): i64[n] {
+    return a.with(i, a[i] * 2);
+}
+@noInline
+function count(a: i64[n]): i64 {
+    return sum(a);
+}
+@noInline
+function touch(a: i64[n], c: boolean): i64 {
+    if (c) {
+        return sum(a.with(0, 100));
+    }
+    return count(a);
+}
+@noInline
+function firstOr(a: i64[n], i: i64): i64 {
+    if (i < 0) {
+        return 0;
+    }
+    return sum(a.with(i, 0));
+}
+@noInline
+function relay(a: i64[n], i: i64): i64[n] {
+    return bump(a, i);
+}
+@noInline
+function shout(s: string): string {
+    return s + \"!\";
+}
+@noInline
+function reads(a: i64[n]): i64 {
+    return a[0] + a.length;
+}
+action main(args: string[k]): i32 {
+    const x = fold(iota(1000), fill(10, 0), (acc, i) => bump(acc, i % 10));
+    print(x);
+    const y = fill(3, 7);
+    const z = plain(y, 0);
+    print([y[0], z[0]] as const);
+    print(touch(fill(4, 1), true));
+    print(touch(fill(4, 1), false));
+    print([firstOr(fill(3, 2), -1), firstOr(fill(3, 2), 1)] as const);
+    print(shout(\"hey\"));
+    print(relay(fill(2, 5), 1));
+    const w = fill(5, 3);
+    print(map(iota(4), (i) => sum(plain(w, i))));
+    print(reads(w) + reads(fill(2, 9)));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    assert_eq!(want, "[100, 100, 100, 100, 100, 100, 100, 100, 100, 100]\n(7, 14)\n103\n4\n(0, 4)\nhey!\n[5, 6]\n[18, 18, 18, 18]\n19\n");
+    let bin = compile(src, "given");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    let p = iscc::frontend("given.isc", src).unwrap();
+    let given = |n: &str| p.fns.iter().find(|f| f.name == n).map(|f| f.given.first() == Some(&true)).unwrap_or(false);
+    assert!(given("bump") && given("plain") && given("relay") && given("shout"), "{:?}", p.fns.iter().map(|f| (&f.name, &f.given)).collect::<Vec<_>>());
+    // read only, or consumed on some paths only: lent, as before
+    assert!(!given("count") && !given("reads") && !given("touch") && !given("firstOr"));
+    // the fold moves its accumulator into each call: no copy there; the
+    // copies: `y` read after its call, `w` read by every task
+    let copies: Vec<u32> = p.copy_reasons.iter().map(|(s, _)| s.line).collect();
+    assert!(!copies.contains(&40) && copies.contains(&43) && copies.contains(&51), "{:?}", p.copy_reasons);
+    clean(src, "given_vg", &[]);
+}
+
+#[test]
+fn require_unique_holds_through_a_call() {
+    // D637: `requireUnique` on a parameter of a function that is called:
+    // satisfied inside it, and refused at a call that would copy its
+    // argument, as when the function is inlined.
+    let head = "@noInline
+function bump(a: i64[n], i: i64): i64[n] {
+    return requireUnique(a.with(i, a[i] + 1));
+}
+";
+    let ok = format!("{}action main(args: string[k]): i32 {{\n    print(fold(iota(30), fill(3, 0), (acc, i) => bump(acc, i % 3)));\n    return 0;\n}}\n", head);
+    assert_eq!(interp_ok(&ok, &[]), "[10, 10, 10]\n");
+    let bin = compile(&ok, "unique_call");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[10, 10, 10]\n"), "{}", r.stderr);
+    let again = format!("{}action main(args: string[k]): i32 {{\n    const y = fill(3, 7);\n    const z = bump(y, 0);\n    print([y[0], z[0]] as const);\n    return 0;\n}}\n", head);
+    let e = iscc::frontend("again.isc", &again).err().expect("refused");
+    assert!(e.contains("requireUnique not satisfied (line 7): `y` is used again at line 8"), "{}", e);
+}

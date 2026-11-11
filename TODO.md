@@ -538,7 +538,11 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [ ] The renderer measured under the settings of measurement against a floor in C; its use of 16 threads (2.7 to 4 times one, the cores shared by two threads)
 - [x] A window under Wayland in a Weston without a screen (Docker): the scene shown, 120 frames at its pace (the library, 2026-11-11)
 - [ ] The mouse and the keyboard under Wayland (its seat, the table of the keyboard in XKB text); then X11 (Xvfb)
-- [ ] The text: a font read, its glyphs drawn, a line shaped and cut
+- [x] The text, its first part: a font of TrueType read, its glyphs drawn with an exact coverage (the accumulation of areas of font-rs), kerning, glyphs at a quarter of a pixel; the texts of the plate (518 glyphs), the same pixels under Windows
+- [ ] The text: 1.9 µs a glyph of 14 pixels on one thread against 0.99 for the same work in C (`bench/text.c`), a line 113 µs against 52: to the floor; the glyphs kept from one image to the next (the atlas of GPUI); lines cut; ligatures and complex scripts; colour emoji
+- [x] A parameter given to a function that is called (D637): found by the text of the library, a function updating its argument in place refused (or copying it at each call) once the compiler called it rather than inlining it
+- [ ] Arrays of arrays of records or of values of sum types (rows of different lengths: D154), found by the library (the texts of the plate, a list of lists of glyphs)
+- [ ] `concat` of arrays whose elements own memory copies each element (the mask of each glyph of the plate, at each of its 35 `concat`s): the elements moved when an input is read for the last time
 - [ ] The layout (flexbox), the elements, the style, the events, the focus, the model of Elm
 - [x] The system known when a program is built: `sys.platform()`, a branch of another system reaching nothing (D635)
 - [x] Windows (`user32`, `gdi32`, D635): the module `win32` (D636), a window, its events, an image shown and captured; tested in the machine of Windows; the plate of the library shown in a window of Windows 11

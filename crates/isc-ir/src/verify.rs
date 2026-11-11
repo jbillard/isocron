@@ -67,12 +67,14 @@ fn fail<T>(span: Span, msg: String) -> R<T> {
 }
 
 /// Checks the memory decisions of a recursive function: its parameters are
-/// borrowed (the state of a loop is owned, its copy made on entry, D206),
-/// its result is new memory or a scalar (D102).
+/// borrowed (the state of a loop is owned, its copy made on entry, D206; a
+/// parameter given is owned, D637), its result is new memory or a scalar
+/// (D102).
 pub(crate) fn verify_fn(p: &Program, f: &Function) -> R<()> {
     let mut c = Checker { p, st: vec![State::Unbound; p.vars.len()], region: 0, next_region: 0, taken: Default::default(), spines: Default::default(), log: Vec::new() };
+    let owns = |k: usize| f.consumed.get(k).copied().unwrap_or(false) || f.given.get(k).copied().unwrap_or(false);
     for (k, v) in f.params.iter().enumerate() {
-        c.st[*v as usize] = if f.consumed.get(k).copied().unwrap_or(false) {
+        c.st[*v as usize] = if owns(k) {
             State::Owned { moved: None, region: 0 }
         } else if p.vars[*v as usize].ty.has_heap() {
             State::View(Vec::new())
@@ -81,9 +83,10 @@ pub(crate) fn verify_fn(p: &Program, f: &Function) -> R<()> {
         };
     }
     let r = c.eval(&f.body)?;
-    // an owned parameter is moved or taken apart on every path (D206, D351)
+    // an owned parameter is moved or taken apart on every path (D206, D351,
+    // D637)
     for (k, v) in f.params.iter().enumerate() {
-        if f.consumed.get(k).copied().unwrap_or(false) && matches!(c.st[*v as usize], State::Owned { moved: None, .. }) {
+        if owns(k) && matches!(c.st[*v as usize], State::Owned { moved: None, .. }) {
             return fail(f.body.span, format!("`{}` owns `{}` and never frees it", f.name, p.vars[*v as usize].name));
         }
     }
@@ -737,11 +740,17 @@ impl<'p> Checker<'p> {
                 Val::Fresh => fail(e.span, "a new node is read and never freed".into()),
                 v => Ok(v),
             },
-            // the arguments are borrowed by the function; its result is new
-            Call(_, args) => {
-                for x in args {
+            // the arguments are borrowed by the function, but those it is
+            // given (D637); its result is new
+            Call(g, args) => {
+                let given = &self.p.fns[*g as usize].given;
+                for (k, x) in args.iter().enumerate() {
                     let v = self.eval(x)?;
-                    self.borrow(v, x)?;
+                    if given.get(k).copied().unwrap_or(false) {
+                        self.consume(v, x)?;
+                    } else {
+                        self.borrow(v, x)?;
+                    }
                 }
                 Ok(fresh(heap))
             }

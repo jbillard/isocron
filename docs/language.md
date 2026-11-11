@@ -1525,6 +1525,12 @@ fields) is a panic, `size mismatch`.
   the program does not compile if `x` is used elsewhere. "Elsewhere" means
   on the same path: in `c ? x.with(i, v) : x`, each branch is the last use
   of `x` on its path, so the update is in place.
+* A function that updates an array parameter in place (or gives it back,
+  or keeps it in a value) takes it from its caller when the argument is
+  read there for the last time, and gets a copy otherwise, whether the
+  compiler inlines the function or calls it (a large function, one called
+  in many places, `@noInline`: D637). `requireUnique` on such a parameter
+  is checked at each call.
 
 ```isc
 function setFirst(x: i64[n], v: i64): i64[n] {

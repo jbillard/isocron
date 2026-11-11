@@ -932,7 +932,12 @@ pub fn other_tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, Vec<VarId
                 pending.pop();
             }
             ExprKind::Call(g, args) if *g != fi => {
-                let ok = args.iter().all(|a| !a.ty.has_heap() || matches!(a.kind, ExprKind::Var(v, _) if f.params.contains(&v)));
+                // (a parameter `fi` is given, D637, it owns: freed after the
+                // call, unless given away to the callee there)
+                let ok = args.iter().all(|a| {
+                    !a.ty.has_heap()
+                        || matches!(a.kind, ExprKind::Var(v, u) if f.params.iter().position(|q| *q == v).is_some_and(|k| !f.given.get(k).copied().unwrap_or(false) || u == Use::Move))
+                });
                 if ok {
                     out.insert(e as *const Expr, pending.clone());
                 }
@@ -2464,6 +2469,8 @@ enum Own {
 struct Rewriter<'a> {
     info: &'a mut Info,
     vars: &'a [VarInfo],
+    /// The parameters each function is given (D637).
+    callees: &'a Callees,
     index: usize,
     copy_reasons: Vec<(Span, String)>,
     /// The branches of an `if` whose two branches borrow, with what each
@@ -2758,6 +2765,20 @@ impl<'a> Rewriter<'a> {
                 }
                 return Ok(Own::Fresh);
             }
+            // a parameter the function is given (D637): its argument moved
+            // at its last use, copied otherwise (refused when the function
+            // requires it unique), as the inlined body would take it
+            ExprKind::Call(g, args) => {
+                let g = *g as usize;
+                for (k, c) in args.iter_mut().enumerate() {
+                    let o = self.walk(c)?;
+                    if self.callees.given(g, k) && matches!(o, Own::Borrowed(..)) {
+                        let ru = self.callees.unique(g, k);
+                        self.make_fresh(c, o, ru)?;
+                    }
+                }
+                return Ok(if heap { Own::Fresh } else { Own::Scalar });
+            }
             _ => {}
         }
         for c in e.children_mut() {
@@ -3035,12 +3056,25 @@ fn split_tuples(e: &mut Expr, out: &mut Vec<VarId>) {
 /// `main`); the parameters of a recursive function are borrowed. A result
 /// that borrows is made new (copied), since the caller frees it (D102).
 /// Returns whether `owned` is still owned at the end (not moved).
-pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<VarId>, copy_reasons: &mut Vec<(Span, String)>) -> R<bool> {
-    ownership_body_with(body, vars, owned, &[], copy_reasons)
+pub(crate) fn ownership_body(body: &mut Expr, vars: &[VarInfo], owned: Option<VarId>, callees: &Callees, copy_reasons: &mut Vec<(Span, String)>) -> R<bool> {
+    ownership_body_with(body, vars, owned, &[], callees, copy_reasons)
 }
 
-/// `ownership_body` with the parameters `params` owned too (D351).
-fn ownership_body_with(body: &mut Expr, vars: &[VarInfo], owned: Option<VarId>, params: &[VarId], copy_reasons: &mut Vec<(Span, String)>) -> R<bool> {
+/// `ownership_body` of a function, the parameters it is given owned (D637).
+pub(crate) fn ownership_fn(f: &mut Function, vars: &[VarInfo], callees: &Callees, copy_reasons: &mut Vec<(Span, String)>) -> R<()> {
+    let given: Vec<VarId> = f.params.iter().zip(&f.given).filter(|(_, g)| **g).map(|(v, _)| *v).collect();
+    ownership_body_with(&mut f.body, vars, None, &given, callees, copy_reasons).map(|_| ())
+}
+
+/// `ownership_body` with the parameters `params` owned too (D351, D637).
+fn ownership_body_with(
+    body: &mut Expr,
+    vars: &[VarInfo],
+    owned: Option<VarId>,
+    params: &[VarId],
+    callees: &Callees,
+    copy_reasons: &mut Vec<(Span, String)>,
+) -> R<bool> {
     let n = vars.len();
     let mut info = Info {
         alias: vec![None; n],
@@ -3080,7 +3114,7 @@ fn ownership_body_with(body: &mut Expr, vars: &[VarInfo], owned: Option<VarId>, 
     }
     {
         let mut rw =
-            Rewriter { info: &mut info, vars, index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new() };
+            Rewriter { info: &mut info, vars, callees, index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new() };
         let o = rw.walk(body)?;
         if matches!(o, Own::Borrowed(..)) && body.ty.has_heap() {
             rw.make_fresh(body, o, false)?;
@@ -3252,11 +3286,143 @@ fn own_states(p: &mut Program) {
     }
 }
 
+/// The parameters each function is given (D637) and those it requires
+/// unique, read by the ownership pass at its calls.
+#[derive(Default)]
+pub(crate) struct Callees {
+    given: Vec<Vec<bool>>,
+    unique: Vec<Vec<bool>>,
+}
+
+impl Callees {
+    pub(crate) fn of(p: &Program) -> Callees {
+        Callees { given: p.fns.iter().map(|f| f.given.clone()).collect(), unique: p.fns.iter().map(|f| f.unique.clone()).collect() }
+    }
+
+    fn given(&self, f: usize, k: usize) -> bool {
+        self.given.get(f).and_then(|g| g.get(k)).copied().unwrap_or(false)
+    }
+
+    fn unique(&self, f: usize, k: usize) -> bool {
+        self.unique.get(f).and_then(|g| g.get(k)).copied().unwrap_or(false)
+    }
+}
+
+/// The parameters a function is given (D637): a function called without
+/// being recursive (too large to inline, `@noInline`, `@cold`, D336, D584),
+/// not one the code generator calls itself (the texts of the prelude), and
+/// a parameter that owns memory (an array or a string, not a tuple: those
+/// are the states of D206; not one that holds nodes, counted, D175) that
+/// its body consumes on every path when it owns it: updated in place, given
+/// back, kept in a value, given in turn to another function. Borrowed, the body copies
+/// it there at each call; given, the caller moves its argument at its last
+/// use and copies it only otherwise, as the body inlined at the call would
+/// (the result of a program no longer depends on whether a function is
+/// inlined: D637). The callees first: a parameter given in turn to another
+/// function is consumed there. Kept only when the memory check of the
+/// function holds.
+pub(crate) fn decide_given(p: &mut Program) {
+    let n = p.fns.len();
+    let in_cycle: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
+    // the order: a function after those it calls
+    let mut order = Vec::new();
+    let mut state = vec![0u8; n];
+    fn visit(p: &Program, f: usize, state: &mut Vec<u8>, order: &mut Vec<usize>) {
+        if state[f] != 0 {
+            return;
+        }
+        state[f] = 1;
+        let mut calls = Vec::new();
+        recursive_calls(&p.fns[f].body, true, &mut calls);
+        for (c, _) in calls {
+            if let ExprKind::Call(g, _) = c.kind {
+                visit(p, g as usize, state, order);
+            }
+        }
+        state[f] = 2;
+        order.push(f);
+    }
+    for f in 0..n {
+        visit(p, f, &mut state, &mut order);
+    }
+    for fi in order {
+        // (the functions from `text_fns` on are called by the code
+        // generator, which lends their arguments)
+        if in_cycle[fi] || (fi as u32) >= p.text_fns {
+            continue;
+        }
+        let f = &p.fns[fi];
+        let cands: Vec<usize> = (0..f.params.len())
+            .filter(|&k| {
+                let ty = &p.vars[f.params[k] as usize].ty;
+                !f.consumed[k] && ty.has_heap() && !ty.has_nodes() && !matches!(ty, Type::Tuple(_))
+            })
+            .collect();
+        if cands.is_empty() {
+            continue;
+        }
+        let callees = Callees::of(p);
+        // the parameters the body moves when it owns them all
+        let mut body = p.fns[fi].body.clone();
+        let params: Vec<VarId> = cands.iter().map(|&k| p.fns[fi].params[k]).collect();
+        if ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_err() {
+            continue;
+        }
+        // consumed on every path: none frees it (one that consumes it on
+        // some paths only, lent, copies it there alone: `$replaceSlow`
+        // gives its text back only when nothing is replaced)
+        let kept: Vec<usize> = cands
+            .iter()
+            .copied()
+            .filter(|&k| {
+                let v = p.fns[fi].params[k];
+                (moves_var(&body, v) || takes_var(&body, v)) && !frees_var(&body, v)
+            })
+            .collect();
+        if kept.is_empty() {
+            continue;
+        }
+        // those alone owned, the others borrowed: the check of the memory
+        // of the function on that body
+        let mut body = p.fns[fi].body.clone();
+        let params: Vec<VarId> = kept.iter().map(|&k| p.fns[fi].params[k]).collect();
+        if ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_err() {
+            continue;
+        }
+        let unique: Vec<bool> = (0..p.fns[fi].params.len()).map(|k| kept.contains(&k) && updates_unique(&p.fns[fi].body, p.fns[fi].params[k])).collect();
+        let saved = std::mem::replace(&mut p.fns[fi].body, body);
+        for &k in &kept {
+            p.fns[fi].given[k] = true;
+        }
+        let ok = crate::verify::verify_fn(p, &p.fns[fi]).is_ok();
+        p.fns[fi].body = saved;
+        if ok {
+            p.fns[fi].unique = unique;
+        } else {
+            for &k in &kept {
+                p.fns[fi].given[k] = false;
+            }
+        }
+    }
+}
+
+/// `e` updates `v` in place with `requireUnique` (D637).
+fn updates_unique(e: &Expr, v: VarId) -> bool {
+    if let ExprKind::Update { target, require_unique: true, .. } = &e.kind {
+        if matches!(target.kind, ExprKind::Var(w, _) if w == v) {
+            return true;
+        }
+    }
+    e.children().into_iter().any(|c| updates_unique(c, v))
+}
+
 pub fn ownership(p: &mut Program) -> R<()> {
     own_states(p);
+    decide_given(p);
+    let callees = Callees::of(p);
     // `main` owns the array of its arguments (allocated by the runtime at
     // start-up), defined in the outermost region
-    p.drop_args = ownership_body(&mut p.body, &p.vars, Some(p.args), &mut p.copy_reasons)?;
+    p.drop_args = ownership_body(&mut p.body, &p.vars, Some(p.args), &callees, &mut p.copy_reasons)?;
     for fi in 0..p.fns.len() {
         // the reasons of the copies are those of the memory report, which
         // never shows the inside of the functions lowered for the texts of
@@ -3273,7 +3439,7 @@ pub fn ownership(p: &mut Program) -> R<()> {
             let params: Vec<VarId> = acc.iter().map(|&k| p.fns[fi].params[k]).collect();
             let mut reasons = Vec::new();
             let f = &mut p.fns[fi];
-            if ownership_body_with(&mut f.body, &p.vars, None, &params, &mut reasons).is_ok() {
+            if ownership_body_with(&mut f.body, &p.vars, None, &params, &callees, &mut reasons).is_ok() {
                 for &k in &acc {
                     p.fns[fi].consumed[k] = true;
                 }
@@ -3289,9 +3455,8 @@ pub fn ownership(p: &mut Program) -> R<()> {
             }
             p.fns[fi].body = saved;
         }
-        let f = &mut p.fns[fi];
         let mut reasons = Vec::new();
-        ownership_body(&mut f.body, &p.vars, None, &mut reasons)?;
+        ownership_fn(&mut p.fns[fi], &p.vars, &callees, &mut reasons)?;
         if reported {
             p.copy_reasons.extend(reasons);
         }
