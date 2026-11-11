@@ -473,9 +473,9 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
         }
     };
     let linked = if msvc {
-        link_windows_msvc(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start)
+        link_windows_msvc(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
     } else if windows {
-        link_windows(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start)
+        link_windows(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
     } else if wasm {
         link_wasm(&obj, pre, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
     } else if !with_glibc(p, opts) {
@@ -651,6 +651,16 @@ fn lib_arg(l: &str) -> std::ffi::OsString {
     }
 }
 
+/// The subsystem of a program for Windows (D640): `windows` for one
+/// started without a console (`--subsystem windows`), `console` otherwise.
+fn subsystem(gui: bool) -> &'static str {
+    if gui {
+        "windows"
+    } else {
+        "console"
+    }
+}
+
 /// Links a program for Windows as the linker of MinGW (`-m i386pep`): the
 /// start files and the libraries of MinGW-w64 (`msvcrt`, `kernel32`,
 /// `synchronization` for `WaitOnAddress`, `ws2_32` for the sockets of
@@ -659,9 +669,9 @@ fn lib_arg(l: &str) -> std::ffi::OsString {
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
-fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
+fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
     if own_start {
-        return link_windows_alone(obj, pre, rt, out, debug);
+        return link_windows_alone(obj, pre, rt, out, debug, gui);
     }
     let tmp = out.with_extension("mingw");
     let (lib, gcc) = if MINGW_FILES.is_empty() {
@@ -670,7 +680,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bo
         write_files(&tmp, MINGW_FILES)?;
         (tmp.clone(), tmp.clone())
     };
-    let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-o"].iter().map(|x| x.into()).collect();
+    let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", subsystem(gui), "--stack", "8388608", "--gc-sections", "-o"].iter().map(|x| x.into()).collect();
     a.push(out.into());
     a.push(lib.join("crt2.o").into());
     a.push(gcc.join("crtbegin.o").into());
@@ -699,7 +709,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bo
 /// API set only (their import libraries, from MinGW-w64: no code of MinGW
 /// in the program); a console executable whose main thread has a stack of
 /// 8 MiB.
-fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
+fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, gui: bool) -> Result<(), String> {
     let tmp = out.with_extension("mingw");
     let lib = if MINGW_FILES.is_empty() {
         mingw_dirs()?.0
@@ -707,7 +717,7 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, deb
         write_files(&tmp, MINGW_FILES)?;
         tmp.clone()
     };
-    let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", "console", "--stack", "8388608", "--gc-sections", "-e", "isc_win_start", "-o"].iter().map(|x| x.into()).collect();
+    let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", subsystem(gui), "--stack", "8388608", "--gc-sections", "-e", "isc_win_start", "-o"].iter().map(|x| x.into()).collect();
     a.push(out.into());
     a.push(obj.into());
     a.extend(pre.map(|p| p.into()));
@@ -740,8 +750,8 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, deb
 /// and those of the SDK found as Visual Studio's own tools find them, in
 /// the directories of `LIB` (set by a Developer Command Prompt): iscc never
 /// has them.
-fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool) -> Result<(), String> {
-    let mut a: Vec<std::ffi::OsString> = vec!["/nologo".into(), "/subsystem:console".into(), "/stack:8388608".into(), "/opt:ref".into(), "/machine:x64".into()];
+fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
+    let mut a: Vec<std::ffi::OsString> = vec!["/nologo".into(), format!("/subsystem:{}", subsystem(gui)).into(), "/stack:8388608".into(), "/opt:ref".into(), "/machine:x64".into()];
     a.push(format!("/out:{}", out.display()).into());
     if debug {
         a.push("/debug:dwarf".into());

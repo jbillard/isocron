@@ -537,7 +537,8 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [x] The library, its first part: quads, borders, shadows drawn on the processor by tiles, compared with images of reference (interpreted = compiled)
 - [ ] The renderer measured under the settings of measurement against a floor in C; its use of 16 threads (2.7 to 4 times one, the cores shared by two threads)
 - [x] A window under Wayland in a Weston without a screen (Docker): the scene shown, 120 frames at its pace (the library, 2026-11-11)
-- [ ] The mouse and the keyboard under Wayland (its seat, the table of the keyboard in XKB text); then X11 (Xvfb)
+- [x] The mouse and the keyboard under Wayland: the seat, its pointer and its keyboard (the codes of evdev), played by a hand in the tests (Weston with its X11 backend in Xvfb, xdotool): the counter of the library, the same pixels as its image
+- [ ] The keyboard under Wayland as characters (its table in XKB text, read); then X11 (Xvfb, the same hand)
 - [x] The text, its first part: a font of TrueType read, its glyphs drawn with an exact coverage (the accumulation of areas of font-rs), kerning, glyphs at a quarter of a pixel; the texts of the plate (518 glyphs), the same pixels under Windows
 - [ ] The text: 1.56 µs a glyph of 14 pixels on one thread against 0.99 for the same work in C (`bench/text.c`), a line 91 µs against 53 (was 1.90 and 113): to the floor; 1.4 to 1.6 times its instructions, fewer a cycle (more misses of the cache of instructions); the glyphs kept from one image to the next (the atlas of GPUI); lines cut; ligatures and complex scripts; colour emoji
 - [ ] Found by the text of the library: `min(map(xs, f))` of `f32` over an array of records about 26 instructions an element (four such boxes of a glyph slower than one `fold` of a tuple: 641 against 502 million cycles); in the loops of the rasterizer, a check of bounds at each read and write, the conversions `i64(floor(x))` saturated, variables of the loop kept on the stack (v2: the code of the compiler)
@@ -545,7 +546,8 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [ ] Arrays of arrays of records or of values of sum types (rows of different lengths: D154), found by the library (the texts of the plate, a list of lists of glyphs)
 - [x] `concat` of arrays whose elements own memory copied each element (the mask of each glyph of the plate, at each of its 36 `concat`s): moved when both sides are read for the last time (D638), the plate made in 2.05 -> 1.44 ms
 - [ ] `concat` with one side read again: the other side's elements moved, its own copied (D638)
-- [ ] The layout (flexbox), the elements, the style, the events, the focus, the model of Elm
+- [x] The layout (a part of flexbox: rows, columns, gaps, padding, sizes fixed, as their content or sharing the room left, justification, alignment), elements (boxes, texts cut in lines), the places of clicks, an application in the manner of Elm (a counter) under Linux and Windows
+- [ ] The focus and the typing of text, scrolling, hovering, long lists, images; the glyphs kept from one image to the next
 - [x] The system known when a program is built: `sys.platform()`, a branch of another system reaching nothing (D635)
 - [x] Windows (`user32`, `gdi32`, D635): the module `win32` (D636), a window, its events, an image shown and captured; tested in the machine of Windows; the plate of the library shown in a window of Windows 11
 - [ ] `win32`: its microbenchmark and floor in C (`show` of an image of 1920 by 1080), the interpreter under Windows, the cursor, the clipboard, the input methods

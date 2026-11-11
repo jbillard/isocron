@@ -3505,7 +3505,11 @@ the inside shows; `post(w, message, wparam, lparam)` puts a message of
 Windows in the queue of the window (a loop woken, an input played in a
 test). A `Window` is closed exactly once, by `close(w)`. The compiled
 program calls `user32` and `gdi32` itself; the procedure of the window is
-written by the compiler.
+written by the compiler. A program whose only face is its window is built
+with `--subsystem windows`: started from the explorer, it opens no console.
+To run on other machines than the one that builds it, give the
+instruction set (`--isa avx2`, `--isa sse`): native code is for the CPU
+that compiles.
 
 ```isc-check
 import * as win from "win32";
@@ -3680,6 +3684,7 @@ iscc ir    <file.isc>                       print the optimized IR
 iscc run   <file.isc> [args...]             run with the reference interpreter
 iscc build <file.isc> [-o out] [--emit-llvm f.ll] [--emit-asm f.s] [--debug]
            [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows]
+           [--subsystem console|windows]
 iscc completions bash|zsh|fish              the completion of the shell
 ```
 
@@ -3731,7 +3736,11 @@ iscc completions bash|zsh|fish              the completion of the shell
   `rustup target add x86_64-pc-windows-gnu`) and the import libraries of
   MinGW-w64 (`$ISC_MINGW_DIR`, else `/usr`: Debian packages
   `mingw-w64-x86-64-dev` and `gcc-mingw-w64-x86-64-posix`); the program
-  needs no DLL beyond those of Windows.
+  needs no DLL beyond those of Windows. With `--subsystem windows`, it is
+  a program of the graphical subsystem: started from the explorer, it opens
+  no console (a window of `win32`); its standard output then goes nowhere
+  unless it is redirected, and `print` loses what it writes (D640). The
+  console subsystem is the default.
 * `build --target x86_64-windows-msvc` writes the same Windows program
   with Microsoft's ABI (D542), linked by LLD as Microsoft's `link`: without
   C, as above (`kernel32` alone, no C library); a program that declares C

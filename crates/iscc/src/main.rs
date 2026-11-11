@@ -6,6 +6,7 @@
 //! iscc run   [--lanes V] <file.isc> [args...]   run with the reference interpreter
 //! iscc build <file.isc> [-o out] [--emit-llvm f.ll] [--emit-asm f.s] [--debug] [--report]
 //!            [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows|x86_64-windows-msvc]
+//!            [--subsystem console|windows]
 //! ```
 //!
 //! `--lanes` changes V, the number of accumulators of the fixed reduction
@@ -40,6 +41,7 @@ _iscc() {
     case "$prev" in
         --isa) COMPREPLY=($(compgen -W "native sse avx avx2 avx512" -- "$cur")); return ;;
         --target) COMPREPLY=($(compgen -W "native wasm32-wasi wasm32-wasi-threads x86_64-windows x86_64-windows-msvc" -- "$cur")); return ;;
+        --subsystem) COMPREPLY=($(compgen -W "console windows" -- "$cur")); return ;;
         --color) COMPREPLY=($(compgen -W "auto always never" -- "$cur")); return ;;
         --lanes) COMPREPLY=($(compgen -W "2 4 8 16 32 64 128 256" -- "$cur")); return ;;
         -o|--emit-llvm|--emit-asm|--link) compopt -o filenames 2>/dev/null; COMPREPLY=($(compgen -f -- "$cur")); return ;;
@@ -57,7 +59,7 @@ _iscc() {
             check) COMPREPLY=($(compgen -W "--report --color" -- "$cur")) ;;
             ir) COMPREPLY=($(compgen -W "--color" -- "$cur")) ;;
             run) COMPREPLY=($(compgen -W "--lanes --link --color" -- "$cur")) ;;
-            build) COMPREPLY=($(compgen -W "-o --emit-llvm --emit-asm --debug --report --lanes --isa --target --link --color" -- "$cur")) ;;
+            build) COMPREPLY=($(compgen -W "-o --emit-llvm --emit-asm --debug --report --lanes --isa --target --subsystem --link --color" -- "$cur")) ;;
         esac
         return
     fi
@@ -92,6 +94,7 @@ complete -c iscc -n "__fish_seen_subcommand_from build" -l emit-asm -r -F
 complete -c iscc -n "__fish_seen_subcommand_from build" -l debug
 complete -c iscc -n "__fish_seen_subcommand_from build" -l isa -x -a "native sse avx avx2 avx512"
 complete -c iscc -n "__fish_seen_subcommand_from build" -l target -x -a "native wasm32-wasi wasm32-wasi-threads x86_64-windows x86_64-windows-msvc"
+complete -c iscc -n "__fish_seen_subcommand_from build" -l subsystem -x -a "console windows"
 "#;
 
 /// The colors of the messages of `iscc` (D231): ANSI codes, or nothing.
@@ -188,7 +191,7 @@ impl Style {
 
 fn usage() -> ! {
     eprintln!(
-        "usage (--color auto|always|never anywhere):\n  iscc --version\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows|x86_64-windows-msvc] [--link lib]..."
+        "usage (--color auto|always|never anywhere):\n  iscc --version\n  iscc completions bash|zsh|fish\n  iscc check <file.isc> [--report]\n  iscc ir <file.isc>\n  iscc run [--lanes V] [--link lib]... <file.isc> [args...]\n  iscc build <file.isc> [-o out] [--emit-llvm file.ll] [--emit-asm file.s] [--debug] [--report] [--lanes V] [--isa native|sse|avx|avx2|avx512] [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows|x86_64-windows-msvc] [--subsystem console|windows] [--link lib]..."
     );
     exit(2)
 }
@@ -304,6 +307,14 @@ fn main() {
                     }
                     "--emit-llvm" => opts.emit_llvm = Some(next().into()),
                     "--link" => opts.link.push(next()),
+                    // for Windows: a program without a console (D640)
+                    "--subsystem" => {
+                        opts.codegen.windows_gui = match next().as_str() {
+                            "windows" => true,
+                            "console" => false,
+                            _ => usage(),
+                        }
+                    }
                     "--emit-asm" => opts.emit_asm = Some(next().into()),
                     "--lanes" => opts.codegen.lanes = lanes_arg(&next()),
                     "--target" => match next().as_str() {

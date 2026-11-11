@@ -15679,3 +15679,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   them. Test (`memory.rs`, `a_value_freed_at_once_is_not_freed_again_by_a_tail_call`):
   a loop and a tail call to another function, the results of the
   interpreter, Valgrind.
+- **D640 — Programs of Windows without a console: `--subsystem windows`
+  (2026-11-11).** At the author's word: the counter of the library of
+  graphical interfaces, started on his Windows, opened a console beside
+  its window. The three links of a program for Windows (MinGW's C runtime,
+  the start of the runtime alone, Microsoft's linker) wrote the console
+  subsystem. `iscc build --subsystem windows` (or `console`, the default;
+  `isc_codegen::Options::windows_gui`, the code the same: the linker
+  writes the subsystem) makes a program of the graphical subsystem: from
+  the explorer, no console. Its standard streams are then none unless
+  they are redirected: the runtime's writes fail and `print` loses what it
+  writes, the program going on (checked in the machine of Windows: the
+  counter started by a task as from the explorer, without a console or a
+  redirection, closed, its capture written at its end). The completions
+  of the shells, the usage, the guide (the command, `win32`: the
+  subsystem, and `--isa` for other machines than the one that builds,
+  after the author's `Illegal instruction`: native code had AVX-512).
+  Test (`windows.rs`, `a_program_of_windows_without_a_console`): the field
+  `Subsystem` of the PE header (2, 3), alone and with MinGW's C runtime.

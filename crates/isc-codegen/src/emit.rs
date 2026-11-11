@@ -382,12 +382,16 @@ pub struct Options {
     /// same code, in objects that the static libraries of Visual Studio and
     /// Microsoft's C runtime agree with.
     pub msvc: bool,
+    /// For Windows, a program of the graphical subsystem (`--subsystem
+    /// windows`, D640): started without a console; the console subsystem
+    /// otherwise. The same code: the linker writes the subsystem.
+    pub windows_gui: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
         // native code of an iscc on Windows is for Windows (D247)
-        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: cfg!(windows), msvc: false }
+        Options { lanes: LANES, isa: Isa::Native, stream_bytes: STREAM_BYTES, stack_scratch: STACK_SCRATCH, windows: cfg!(windows), msvc: false, windows_gui: false }
     }
 }
 

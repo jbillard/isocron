@@ -921,3 +921,30 @@ fn win32_refused_for_linux_and_wasi() {
     let r = run_bin(&compile(&branch, "win32_branch_linux"), &[]);
     assert_eq!((r.code, r.stdout.as_str()), (0, "1\n"));
 }
+
+/// D640: `iscc build --subsystem windows`: a program of Windows of the
+/// graphical subsystem, started without a console (a window of `win32`
+/// launched from the explorer); the console subsystem by default. The
+/// field `Subsystem` of its PE header (2: windows, 3: console), with the
+/// start of the runtime and with MinGW's C runtime (a C function declared).
+#[test]
+fn a_program_of_windows_without_a_console() {
+    let alone = "action main(args: string[k]): i32 {\n    print(1);\n    return 0;\n}\n";
+    let with_c = "declare function abs(v: i32): i32;\n\naction main(args: string[k]): i32 {\n    print(abs(-1i32));\n    return 0;\n}\n";
+    for (name, src) in [("alone", alone), ("with_c", with_c)] {
+        let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
+        for gui in [false, true] {
+            let out = tmp(&format!("subsystem_{}_{}.exe", name, gui));
+            let codegen = isc_codegen::Options { windows: true, windows_gui: gui, ..isc_codegen::Options::default() };
+            let opts = iscc::BuildOptions { output: out.clone(), codegen, ..Default::default() };
+            iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{} {}: {}", name, gui, e));
+            let b = std::fs::read(&out).unwrap();
+            let pe = u32::from_le_bytes(b[0x3c..0x40].try_into().unwrap()) as usize;
+            assert_eq!(&b[pe..pe + 4], b"PE\0\0");
+            // the optional header (PE32+) after the 20 bytes of the COFF one
+            assert_eq!(u16::from_le_bytes(b[pe + 24..pe + 26].try_into().unwrap()), 0x20b);
+            let subsystem = u16::from_le_bytes(b[pe + 24 + 68..pe + 24 + 70].try_into().unwrap());
+            assert_eq!(subsystem, if gui { 2 } else { 3 }, "{} {}", name, gui);
+        }
+    }
+}
