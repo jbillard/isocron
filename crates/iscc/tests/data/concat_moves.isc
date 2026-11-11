@@ -1,0 +1,43 @@
+// concat of arrays whose elements own memory (D638)
+type Item = { name: string, xs: f32[] };
+type Shape = Dot(i64) | Mask(f32[]) | Label(string);
+
+function items(k: i64, n: i64): Item[] {
+    return map(iota(n), (i) => ({ name: `i${k}.${i}`, xs: fill(i + 1, f32(k)) }));
+}
+
+function shapes(k: i64): Shape[] {
+    return [Dot(k), Mask(fill(3, f32(k))), Label(`s${k}`)];
+}
+
+// an accumulator grown by concat (its calls tail calls: owned, D351)
+function grow(i: i64, n: i64, acc: Shape[]): Shape[] {
+    return i >= n ? acc : grow(i + 1, n, concat(acc, shapes(i)));
+}
+
+action main(args: string[k]): i32 {
+    const v = parseI64(args[0]);
+    const a = map(iota(3), (i) => `a${i + v}`);
+    const b = map(iota(2), (i) => `b${i}`);
+    const c = concat(a, b);
+    print(c);
+    const d = concat(items(1, 2), items(2, 3));
+    print(map(d, (it) => `${it.name}:${it.xs.length}`));
+    const kept = items(5, 2);
+    const e = concat(kept, items(6, 1));
+    print([kept.length, e.length, kept[1].xs.length] as const);
+    print(kept[0].name);
+    const g = grow(0, 4 + v, []);
+    print(g.length);
+    print(map(g, (s) => match (s) {
+        Dot(x) => x,
+        Mask(m) => m.length,
+        Label(t) => t.length,
+    }));
+    // a chain, as the texts of a plate
+    const t0 = concat(shapes(1), shapes(2));
+    const t1 = concat(t0, shapes(3));
+    const t2 = concat(t1, [Label("end")]);
+    print(t2.length);
+    return 0;
+}

@@ -1382,3 +1382,22 @@ function bump(a: i64[n], i: i64): i64[n] {
     let e = iscc::frontend("again.isc", &again).err().expect("refused");
     assert!(e.contains("requireUnique not satisfied (line 7): `y` is used again at line 8"), "{}", e);
 }
+
+#[test]
+fn concat_moves_the_elements_of_arrays_that_die() {
+    // D638: `concat` of arrays whose elements own memory (texts, records
+    // holding arrays, values of a sum type holding one), both sides read
+    // by it alone then freed: the elements moved (the columns copied by
+    // their bytes), each side's block given back alone; a side read again
+    // keeps its elements (copied); an accumulator grown by `concat` in a
+    // loop, a chain of `concat`s. The results of the interpreter, nothing
+    // lost or freed twice.
+    let src = include_str!("data/concat_moves.isc");
+    let bin = compile(src, "concat_moves");
+    for a in ["0", "1"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    }
+    clean(src, "concat_moves_vg", &["1"]);
+}

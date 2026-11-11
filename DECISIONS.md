@@ -15627,3 +15627,40 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     and `requireUnique` of it is refused inside the function. A function
     compiled once has one way to take its parameter; two variants are
     left.
+- **D638 — `concat` moves the elements of the arrays it reads for the last
+  time (2026-11-11).** Found by the library of graphical interfaces (TODO
+  of D637): its plate is made by a chain of 36 `concat`s of primitives
+  whose glyphs hold their masks; each `concat` copied every element whole
+  (a block and a copy for each mask, each text): quadratic in the length
+  of the chain. D533 grew the left side in place for arrays of scalars
+  only; arrays of tuples are laid out by columns (a column after the other
+  in one block), which cannot grow in place.
+  - In the code generator: a variable freed at the end of its scope (a
+    `let` or a `free`) of an array whose elements own memory (texts,
+    records or values of sum types holding arrays or texts, nodes; not
+    one of `Program::views`, not on the stack nor in a region) whose only
+    read on the straight path of that scope is the `concat` (D136: `if i <
+    l then copy(a[i]) else copy(b[i - l])`) of which it is a side gives
+    its elements to it (`giving`). When both sides do, and the lengths of
+    the `map` are those of the two arrays (each element read once, none
+    left behind: tested when the program runs), the `concat` is a new
+    block and each column of both sides copied by its bytes (the elements
+    moved, as the gather of a permutation moves them, D548); each side is
+    then bound to its block with no element, its free giving back the
+    block alone. Otherwise the `map`, its elements copied, as before.
+  - The straight path of D533 and D638 crosses the tests of sizes
+    (`check_non_negative` of `iota(n)`, `check_size`): an array made in a
+    `bench` or under a size was never taken before.
+  - Measured (one thread, not under the settings of measurement, 3 runs):
+    two arrays of 100000 texts made then joined and read by a function
+    called, 10.2 -> 5.1 ms a round (the same program with the left array
+    read after: 10.2, its elements copied); the plate of the library (940
+    primitives) made in 2.05 -> 1.44 ms.
+  - Test (`memory.rs`, `concat_moves_the_elements_of_arrays_that_die`):
+    texts, records holding arrays, values of a sum type holding an array
+    or a text; a side read again (copied); an accumulator grown in a loop
+    (D351: its `free` on the path of the `concat`); a chain; the results of
+    the interpreter, Valgrind.
+  - Not done: one side moved and the other copied (a side read again, or
+    a literal array), a `concat` whose result is read by one element or
+    its length alone (never made: nothing to move).

@@ -602,6 +602,10 @@ pub struct Gen<'p> {
     /// The owned arrays whose elements the gather of a permutation takes
     /// (D548): read without a copy, the array freed alone.
     moving: HashSet<VarId>,
+    /// The owned arrays of elements that own memory read by a `concat`
+    /// alone, then freed (D638): their elements moved into it when both
+    /// sides are, each side then bound to its block alone.
+    giving: HashSet<VarId>,
     /// The `lines` and `split` whose parts are views of their text (D555):
     /// the values of the variables of `Program::views`, whatever path of
     /// the generated code binds them.
@@ -827,6 +831,54 @@ fn concat_alone(e: &Expr, x: VarId) -> bool {
             !mentions(init, &only) && concat_alone(body, x)
         }
         ExprKind::Free(y, b) if *y != x => concat_alone(b, x),
+        // (the tests of sizes on the way, D638)
+        ExprKind::CheckNonNegative(k, b) => !mentions(k, &only) && concat_alone(b, x),
+        ExprKind::CheckSize(a, c, b) => !mentions(a, &only) && !mentions(c, &only) && concat_alone(b, x),
+        _ => false,
+    }
+}
+
+/// `m` is the `concat` of two arrays of elements that own memory (D136,
+/// D638): `map(iota(n), (i) -> if i < l then copy(a[i]) else copy(b[i -
+/// l]))`, `a` and `b` two variables: (`a`, `b`, the variables, `l`, `n`).
+fn concat_given_parts(m: &Expr) -> Option<(&Expr, &Expr, VarId, VarId, &Expr, &Expr)> {
+    use ExprKind::*;
+    let Map(ins, lam) = &m.kind else { return None };
+    if ins.len() != 1 || lam.params.len() != 1 {
+        return None;
+    }
+    let Iota(n) = &ins[0].kind else { return None };
+    let p = lam.params[0];
+    let is_p = |x: &Expr| matches!(x.kind, Var(v, _) if v == p);
+    let If(c, t, f) = &lam.body.kind else { return None };
+    let Binary(BinOp::Lt, i, l) = &c.kind else { return None };
+    let (Copy(t), Copy(f)) = (&t.kind, &f.kind) else { return None };
+    let (Index(a, i1), Index(b, j)) = (&t.kind, &f.kind) else { return None };
+    let Binary(BinOp::Sub, i2, l2) = &j.kind else { return None };
+    let (Var(va, _), Var(vb, _)) = (&a.kind, &b.kind) else { return None };
+    let et = m.ty.elem();
+    let fits = is_p(i) && is_p(i1) && is_p(i2) && va != vb && same_simple(l, l2) && simple_of(l, p) && simple_of(n, p);
+    let owns = !et.is_array() && holds_owned(et) && a.ty.elem() == et && b.ty.elem() == et;
+    (fits && owns).then(|| (&**a, &**b, *va, *vb, &**l, &**n))
+}
+
+/// The `concat` of `concat_given_parts` with `x` as one of its sides is the
+/// only read of `x` in `e`, on its straight path (`let`s, `free`s and tests
+/// of sizes, no loop, no branch), as for D533: its elements may be moved
+/// into it (D638).
+fn concat_gives(e: &Expr, x: VarId) -> bool {
+    let only = HashSet::from([x]);
+    match &e.kind {
+        ExprKind::Let { init, body, .. } => {
+            if concat_given_parts(init).is_some_and(|(_, _, a, b, _, _)| a == x || b == x) {
+                return !mentions(body, &only) && !frees(body, x);
+            }
+            !mentions(init, &only) && concat_gives(body, x)
+        }
+        ExprKind::Free(y, b) if *y != x => concat_gives(b, x),
+        // (the tests of sizes on the way: `n` of `iota(n)` not negative)
+        ExprKind::CheckNonNegative(k, b) => !mentions(k, &only) && concat_gives(b, x),
+        ExprKind::CheckSize(a, c, b) => !mentions(a, &only) && !mentions(c, &only) && concat_gives(b, x),
         _ => false,
     }
 }
@@ -1524,6 +1576,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         literal_test: false,
         taking: HashSet::new(),
         moving: HashSet::new(),
+        giving: HashSet::new(),
         view_parts: view_parts(p),
         part_values: HashSet::new(),
         split_vars: HashMap::new(),
@@ -5289,10 +5342,17 @@ impl<'p> Gen<'p> {
                 if moves {
                     self.moving.insert(*var);
                 }
+                // its elements to the `concat` that reads it alone (D638):
+                // its block alone freed after, when they were moved
+                let gives = *drop && !early && w == 1 && !moves && self.gives_to_concat(*var, &init.ty, body);
+                if gives {
+                    self.giving.insert(*var);
+                }
                 let r = self.ex(body, w);
                 self.moving.remove(var);
-                let iv = if takes {
+                let iv = if takes || gives {
                     self.taking.remove(var);
+                    self.giving.remove(var);
                     self.env.get(var).cloned().unwrap_or(iv)
                 } else {
                     iv
@@ -5899,8 +5959,15 @@ impl<'p> Gen<'p> {
                 if takes {
                     self.taking.insert(*var);
                 }
+                // its elements to the `concat` that reads it alone (D638)
+                let ty = self.p.vars[*var as usize].ty.clone();
+                let gives = w == 1 && self.gives_to_concat(*var, &ty, body);
+                if gives {
+                    self.giving.insert(*var);
+                }
                 let r = self.ex(body, w);
                 self.taking.remove(var);
+                self.giving.remove(var);
                 let r = r?;
                 let x = self.env[var].clone();
                 // (a text freed on the paths that do not move it: often a
@@ -6968,6 +7035,11 @@ impl<'p> Gen<'p> {
     }
 
     fn materialize(&mut self, e: &Expr) -> R<V> {
+        if let Some((a, b, va, vb, l, n)) = concat_given_parts(e) {
+            if self.giving.contains(&va) && self.giving.contains(&vb) {
+                return self.concat_move(e, (a, b, va, vb, l, n));
+            }
+        }
         if let Some(parts) = concat_parts(e) {
             if plain_columns(e.ty.elem()) {
                 return self.concat_copy(e, parts);
@@ -7057,6 +7129,77 @@ impl<'p> Gen<'p> {
         self.br(&ljoin);
         self.block(&ljoin);
         let r = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", fast.r, lfast_end, slow.r, lslow_end));
+        Ok(V { r, t: "{ ptr, i64 }".into(), uni: fast.uni && slow.uni })
+    }
+
+    /// `var`, an owned array of elements that own memory (not one of
+    /// `Program::views`, not on the stack nor in a region), is read by a
+    /// `concat` alone in `body` (D638).
+    fn gives_to_concat(&self, var: VarId, ty: &Type, body: &Expr) -> bool {
+        !self.p.views.contains(&var)
+            && !self.stack_vars.contains(&var)
+            && !self.region_vars.contains_key(&var)
+            && matches!(ty, Type::Array(e, _) if !e.is_array() && holds_owned(e))
+            && concat_gives(body, var)
+    }
+
+    /// `concat(a, b)` of arrays of elements that own memory, both read by it
+    /// alone then freed (D638): when its lengths are those of `a` and `b`
+    /// (each element read once), a new block and each column of both sides
+    /// copied by its bytes (the elements moved, as the gather of a
+    /// permutation moves them, D548), each side then bound to its block
+    /// with no element (its free gives back the block alone); otherwise the
+    /// `map`, its elements copied.
+    fn concat_move(&mut self, e: &Expr, (a, b, va, vb, l, n): (&Expr, &Expr, VarId, VarId, &Expr, &Expr)) -> R<V> {
+        let et = e.ty.elem().clone();
+        let nv = self.ex(n, 1)?;
+        let av = self.ex(a, 1)?;
+        let bv = self.ex(b, 1)?;
+        let lv = self.ex(l, 1)?;
+        let (pa, la) = self.str_parts(&av);
+        let (pb, lb) = self.str_parts(&bv);
+        let rest = self.ins(format!("sub i64 {}, {}", nv.r, lv.r));
+        let c1 = self.ins(format!("icmp eq i64 {}, {}", lv.r, la));
+        let c2 = self.ins(format!("icmp eq i64 {}, {}", rest, lb));
+        let ok = self.ins(format!("and i1 {}, {}", c1, c2));
+        let (lfast, lslow, ljoin) = (self.label(), self.label(), self.label());
+        self.cbr(&ok, &lfast, &lslow);
+        self.block(&lfast);
+        let dst = self.alloc_elems(&nv.r, &et);
+        let cols = |g: &mut Self, p: &str, len: &str| -> Vec<(Type, String)> {
+            if matches!(et, Type::Tuple(_)) {
+                g.columns(p, len, &et).into_iter().map(|(_, t, c)| (t, c)).collect()
+            } else {
+                vec![(et.clone(), p.to_string())]
+            }
+        };
+        let (ca, cb, cd) = (cols(self, &pa, &la), cols(self, &pb, &lb), cols(self, &dst, &nv.r));
+        for (((leaf, sa), (_, sb)), (_, d)) in ca.iter().zip(&cb).zip(&cd) {
+            let sz = esize(leaf);
+            let first = self.ins(format!("mul i64 {}, {}", la, sz));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, sa, first));
+            let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", d, first));
+            let second = self.ins(format!("mul i64 {}, {}", lb, sz));
+            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at, sb, second));
+        }
+        let fast = self.arr(&dst, &nv.r);
+        let ea = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 0, 1", av.r));
+        let eb = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 0, 1", bv.r));
+        let lfast_end = self.current_label(&lfast);
+        self.br(&ljoin);
+        self.block(&lslow);
+        let slow = self.materialize_general(e)?;
+        let lslow_end = self.current_label(&lslow);
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", fast.r, lfast_end, slow.r, lslow_end));
+        // the sides: their blocks alone when their elements were moved
+        let na = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", ea, lfast_end, av.r, lslow_end));
+        let nb = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", eb, lfast_end, bv.r, lslow_end));
+        self.giving.remove(&va);
+        self.giving.remove(&vb);
+        self.env.insert(va, v(na, "{ ptr, i64 }"));
+        self.env.insert(vb, v(nb, "{ ptr, i64 }"));
         Ok(V { r, t: "{ ptr, i64 }".into(), uni: fast.uni && slow.uni })
     }
 

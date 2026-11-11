@@ -543,7 +543,8 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [ ] Found by the text of the library: `min(map(xs, f))` of `f32` over an array of records about 26 instructions an element (four such boxes of a glyph slower than one `fold` of a tuple: 641 against 502 million cycles); in the loops of the rasterizer, a check of bounds at each read and write, the conversions `i64(floor(x))` saturated, variables of the loop kept on the stack (v2: the code of the compiler)
 - [x] A parameter given to a function that is called (D637): found by the text of the library, a function updating its argument in place refused (or copying it at each call) once the compiler called it rather than inlining it
 - [ ] Arrays of arrays of records or of values of sum types (rows of different lengths: D154), found by the library (the texts of the plate, a list of lists of glyphs)
-- [ ] `concat` of arrays whose elements own memory copies each element (the mask of each glyph of the plate, at each of its 35 `concat`s): the elements moved when an input is read for the last time
+- [x] `concat` of arrays whose elements own memory copied each element (the mask of each glyph of the plate, at each of its 36 `concat`s): moved when both sides are read for the last time (D638), the plate made in 2.05 -> 1.44 ms
+- [ ] `concat` with one side read again: the other side's elements moved, its own copied (D638)
 - [ ] The layout (flexbox), the elements, the style, the events, the focus, the model of Elm
 - [x] The system known when a program is built: `sys.platform()`, a branch of another system reaching nothing (D635)
 - [x] Windows (`user32`, `gdi32`, D635): the module `win32` (D636), a window, its events, an image shown and captured; tested in the machine of Windows; the plate of the library shown in a window of Windows 11
