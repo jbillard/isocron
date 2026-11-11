@@ -15444,3 +15444,45 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - With it, `programs_build_for_windows` (D621) checks that a program of
     the tests that reaches the module `unix` is refused for Windows, the
     primitive named, instead of building it (suite 437: its one failure).
+- **D634 — A tuple of scalars inside vector code, and a field of a value of
+  every lane (2026-11-11).** Found by the library of D631: the element
+  computation of a `map` that made a tuple and took it apart (a function
+  returning `[a, b]`, inlined; `const [a, b] = c ? f(x) : [y, z]`), or that
+  read a field of a record of the context (`q.background.a`, a record
+  being a tuple of the IR), stayed scalar code: `vec_ok` asked every node to
+  be a scalar. The pixels of a tile of its renderer were computed one at a
+  time.
+  - Now (`vec_ok_given`): a tuple whose parts are scalars (`flat_tuple`),
+    made (`Tuple`), bound (`Let`), chosen (`If`) and taken apart (`Proj`)
+    inside the element computation, is a vector of each part
+    (`{ <16 x float>, <16 x float> }`; `part` takes one, `If` chooses part by
+    part); a part of a value of every lane, of any type (`uniform_path`: a
+    variable bound outside, or a part of one), is a scalar of every lane.
+    Kept scalar, the paths not made for them: an element that is a tuple
+    (an array of tuples read, `tuple_param`), a result that is one, the
+    accumulator of a `fold` inside the element computation. `uni` no longer
+    takes a tuple of vectors for a scalar.
+  - The same bits: each part computed by the same operations, lane by lane.
+    The LLVM IR of the 131 programs of the repository: 113 the same, 18
+    changed (the servers of `http` and `https`, `json.decode`, `time`,
+    `mandelbrot.simple`), all built; the suite.
+  - Measured (`machine.sh apply parallel`, medians of 7 runs alternated):
+    `dateOf.daysOf` 19.13 → 5.88 ns (−69 %, now 0.3 times its floor), the
+    only function of `time` whose code changed (the others byte for byte
+    the same, but for the numbers of metadata); `format` +6.1 % and
+    `formatDateTime` +1 to 5 % with their code unchanged: the place of the
+    code, the program delivering its instructions through the decoders
+    instead of the cache of decoded instructions (`idq.mite_uops` 91–96 M →
+    164–177 M for the whole program, 99 M instructions fewer, its cycles
+    within 1 %), the item of v2 (D625); `http.header` +6.1 % in its group,
+    the same alone (18.2 ns with either compiler, 4 runs alternated): the
+    place of the code again; `get.small` +41 % in a first measure, −0.3 %
+    over 7 runs alternated (a first run of 62 989 ns: noise);
+    `mandelbrot.simple` the same instructions and time (198 ms).
+  - The renderer of the library: a list of 200 quads at 1920 by 1080 from
+    55.9 to 23.0 ms on one thread (not under the settings of measurement).
+  - Not done (TODO): an array of tuples read or written by vector code (its
+    columns loaded and stored), the mathematical functions of the prelude
+    in vector code (a call for each element today: the library replaced
+    `exp` of its gaussian by `(1 + x/1024)^1024`), `flatMap` (missing from
+    the library, found by the library).

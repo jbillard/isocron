@@ -401,9 +401,10 @@ pub struct V {
     pub uni: bool,
 }
 
-/// A scalar-typed value is the same in every lane of a vector loop.
+/// A scalar-typed value is the same in every lane of a vector loop; a
+/// tuple of vectors (D634) is not.
 fn uni(x: &V) -> bool {
-    !x.t.starts_with('<')
+    !x.t.starts_with('<') && !x.t.starts_with("{ <")
 }
 
 fn v(r: impl Into<String>, t: impl Into<String>) -> V {
@@ -2928,7 +2929,9 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
     if std::ptr::eq(e, given) {
         return true;
     }
-    if !e.ty.is_scalar() {
+    // a scalar, or a tuple of scalars made and read inside the element
+    // computation (a vector of each part, D634)
+    if !e.ty.is_scalar() && !(flat_tuple(&e.ty) && matches!(e.kind, ExprKind::Tuple(_) | ExprKind::Var(..) | ExprKind::Let { .. } | ExprKind::If(..) | ExprKind::Proj(..) | ExprKind::Take(..))) {
         return false;
     }
     let has_given = |x: &Expr| -> bool {
@@ -2949,6 +2952,14 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
             vec_ok_given(body, varying, given)
         }
         ExprKind::Unary(_, x) | ExprKind::Convert(x) | ExprKind::Sqrt(x) => vec_ok_given(x, varying, given),
+        // a tuple of scalars and its parts (D634)
+        ExprKind::Tuple(es) => es.iter().all(|x| vec_ok_given(x, varying, given)),
+        // a part of a value of every lane (a field of a record of the
+        // context, of any type) is one; of a tuple of scalars of the element
+        // computation, a vector
+        ExprKind::Proj(x, _) | ExprKind::Take(x, _) => {
+            (uniform_path(x, varying) && !has_given(x)) || (flat_tuple(&x.ty) && vec_ok_given(x, varying, given))
+        }
         // `fma` and the roundings are instructions (D613); the other
         // functions are calls of the runtime, one element at a time
         ExprKind::Math(f, xs) if f.instruction() => xs.iter().all(|x| vec_ok_given(x, varying, given)),
@@ -3017,6 +3028,7 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
         ExprKind::Fold(x, init, l) => {
             matches!(x.kind, ExprKind::Iota(_) | ExprKind::Var(..))
                 && x.ty.elem().is_scalar()
+                && init.ty.is_scalar()
                 && !mentions(x, varying)
                 && !has_given(x)
                 && vec_ok_given(init, varying, given)
@@ -3030,9 +3042,31 @@ fn vec_ok_given(e: &Expr, varying: &mut HashSet<VarId>, given: *const Expr) -> b
     }
 }
 
+/// A variable of every lane, or a part of one (D634).
+fn uniform_path(e: &Expr, varying: &HashSet<VarId>) -> bool {
+    match &e.kind {
+        ExprKind::Var(v, _) => !varying.contains(v),
+        ExprKind::Proj(x, _) | ExprKind::Take(x, _) => uniform_path(x, varying),
+        _ => false,
+    }
+}
+
+/// A tuple whose parts are scalars: in vector code, a vector of each part
+/// (D634).
+fn flat_tuple(t: &Type) -> bool {
+    matches!(t, Type::Tuple(ts) if !ts.is_empty() && ts.iter().all(|c| c.is_scalar()))
+}
+
 fn lam_ok(l: &Lambda) -> bool {
     let mut varying: HashSet<VarId> = l.params.iter().copied().collect();
-    vec_ok(&l.body, &mut varying)
+    // a tuple is a vector of each part only inside the element computation
+    // (D634): not an element read, nor the result
+    l.body.ty.is_scalar() && !tuple_param(&l.body, &l.params) && vec_ok(&l.body, &mut varying)
+}
+
+/// `e` reads one of `params` as a tuple (an element of an array of tuples).
+fn tuple_param(e: &Expr, params: &[VarId]) -> bool {
+    matches!(&e.kind, ExprKind::Var(v, _) if params.contains(v) && !e.ty.is_scalar()) || e.children().into_iter().any(|c| tuple_param(c, params))
 }
 
 /// `lam_ok` for vector code whose failed checks are replayed one element
@@ -3968,6 +4002,17 @@ impl<'p> Gen<'p> {
         }
         self.block(&exit);
         Ok(())
+    }
+
+    /// The part `i`, of type `ct`, of a tuple of scalars in vector code
+    /// (D634): a scalar of every lane when the tuple is one, else a vector.
+    fn part(&mut self, x: &V, i: usize, ct: &Type, w: u32) -> V {
+        let r = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+        if uni(x) && !x.t.contains('<') {
+            V { r, t: lt(ct), uni: true }
+        } else {
+            V { r, t: vt(ct, w), uni: false }
+        }
     }
 
     /// Repeats a uniform value in every lane.
@@ -5266,6 +5311,27 @@ impl<'p> Gen<'p> {
                 }
                 r
             }
+            // a tuple of scalars in vector code (D634): a vector of each part
+            // (the parts of every lane: the tuple itself)
+            Tuple(es) if w > 1 && flat_tuple(&e.ty) => {
+                let mut vals = Vec::new();
+                for x in es {
+                    vals.push(self.ex(x, w)?);
+                }
+                let all_uni = vals.iter().all(uni);
+                let Type::Tuple(ts) = &e.ty else { unreachable!() };
+                let t = if all_uni { lt(&e.ty) } else { format!("{{ {} }}", ts.iter().map(|c| vt(c, w)).collect::<Vec<_>>().join(", ")) };
+                let mut acc = "poison".to_string();
+                for (i, xv) in vals.iter().enumerate() {
+                    let xw = if all_uni { xv.clone() } else { self.widen(xv, w) };
+                    acc = self.ins(format!("insertvalue {} {}, {} {}, {}", t, acc, xw.t, xw.r, i));
+                }
+                Ok(V { r: acc, t, uni: all_uni })
+            }
+            Proj(x, i) | Take(x, i) if w > 1 && flat_tuple(&x.ty) => {
+                let xv = self.ex(x, w)?;
+                Ok(self.part(&xv, *i as usize, &e.ty, w))
+            }
             Tuple(es) => {
                 let t = lt(&e.ty);
                 let mut acc = "poison".to_string();
@@ -5489,9 +5555,22 @@ impl<'p> Gen<'p> {
                         let r = self.ins(format!("select i1 {}, {} {}, {} {}", cv.r, tv.t, tv.r, fv.t, fv.r));
                         return Ok(V { r, t: tv.t, uni: true });
                     }
+                    let cv = self.widen(&cv, w);
+                    // a tuple of scalars (D634): each part chosen lane by lane
+                    if let Type::Tuple(ts) = &e.ty {
+                        let t = format!("{{ {} }}", ts.iter().map(|c| vt(c, w)).collect::<Vec<_>>().join(", "));
+                        let mut acc = "poison".to_string();
+                        for (i, ct) in ts.iter().enumerate() {
+                            let a = self.part(&tv, i, ct, w);
+                            let b = self.part(&fv, i, ct, w);
+                            let (a, b) = (self.widen(&a, w), self.widen(&b, w));
+                            let r = self.ins(format!("select {} {}, {} {}, {} {}", cv.t, cv.r, a.t, a.r, b.t, b.r));
+                            acc = self.ins(format!("insertvalue {} {}, {} {}, {}", t, acc, a.t, r, i));
+                        }
+                        return Ok(V { r: acc, t, uni: false });
+                    }
                     let tv = self.widen(&tv, w);
                     let fv = self.widen(&fv, w);
-                    let cv = self.widen(&cv, w);
                     let r = self.ins(format!("select {} {}, {} {}, {} {}", cv.t, cv.r, tv.t, tv.r, fv.t, fv.r));
                     return Ok(V { r, t: tv.t, uni: false });
                 }

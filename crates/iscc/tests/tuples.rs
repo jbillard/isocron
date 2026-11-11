@@ -306,3 +306,22 @@ action main(args: string[k]): i32 {
         assert!(e.contains(want), "wanted `{}` in:\n{}", want, e);
     }
 }
+
+/// D634: a tuple of scalars made and read inside the element computation of
+/// a `map` (returned by a function inlined there, chosen by a condition,
+/// built and taken apart) no longer keeps the loop scalar: each part is a
+/// vector (the roots of the IR are vector instructions); the results are
+/// those of the interpreter, with 1 and 8 threads.
+#[test]
+fn tuples_inside_vector_code() {
+    let src = "function polar(x: f32, y: f32): [f32, f32] {\n    return [sqrt(x * x + y * y), min(x, y)] as const;\n}\n\naction main(args: string[k]): i32 {\n    const n = i64(args.length);\n    const r = map(iota(4096), (j) => {\n        const px = f32(j % 64 + n) + 0.5f32;\n        const py = f32(j / 64) + 0.25f32;\n        const [a, b] = px > 30.0f32 ? polar(px, py) : [py, 1.0f32] as const;\n        const t = [a * 2.0f32, b - 1.0f32, a > b] as const;\n        const [u, v, w] = t;\n        return w ? u + v : u - v;\n    });\n    print(sum(r));\n    print(r[4095]);\n    print(map(iota(8), (i) => r[i * 511]));\n    return 0;\n}\n";
+    let want = interp_ok(src, &["a"]);
+    let bin = compile(src, "tuples_vector");
+    for t in [1, 8] {
+        let r = run_bin_threads(&bin, &["a"], Some(t));
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "compiled, {} threads: {}", t, r.stderr);
+    }
+    let p = iscc::frontend("t.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let ir = isc_codegen::emit_with(&p, &isc_codegen::Options::default()).unwrap();
+    assert!(ir.contains("@llvm.sqrt.v") && ir.contains("x float> }"), "the tuple of the element computation in vectors");
+}

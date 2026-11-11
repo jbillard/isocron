@@ -530,8 +530,14 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 
 - [x] The module `unix` (Linux): Unix sockets, descriptors passed, memory shared, `poll`; realized by the compiler; 0.9 to 1.06 times the floor (D632)
 - [x] `~` (D633), found missing by the library
-- [ ] The library, its first part: the primitives of the scene drawn on the processor into an image, compared with images of reference, measured
-- [ ] A window under Wayland, then X11, in a display server without a screen (Weston `headless`, Xvfb, in Docker): an image shown, the mouse and the keyboard received
+- [x] A tuple of scalars inside vector code, a field of a record of the context (D634), found by the library: its renderer 55.9 → 23.0 ms
+- [ ] Vector code for arrays of tuples (their columns loaded and stored), for an element that is a tuple and for a result that is one (D634)
+- [ ] The mathematical functions of the prelude in vector code (`exp`, `log`, `sin`... a call for each element of a `map` today, D634)
+- [ ] `flatMap` of TypeScript, missing (found by the library)
+- [x] The library, its first part: quads, borders, shadows drawn on the processor by tiles, compared with images of reference (interpreted = compiled)
+- [ ] The renderer measured under the settings of measurement against a floor in C; its use of 16 threads (2.7 to 4 times one, the cores shared by two threads)
+- [x] A window under Wayland in a Weston without a screen (Docker): the scene shown, 120 frames at its pace (the library, 2026-11-11)
+- [ ] The mouse and the keyboard under Wayland (its seat, the table of the keyboard in XKB text); then X11 (Xvfb)
 - [ ] The text: a font read, its glyphs drawn, a line shaped and cut
 - [ ] The layout (flexbox), the elements, the style, the events, the focus, the model of Elm
 - [ ] Windows (`user32`, `gdi32`): after the author's word
