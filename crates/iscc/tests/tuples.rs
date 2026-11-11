@@ -325,3 +325,54 @@ fn tuples_inside_vector_code() {
     let ir = isc_codegen::emit_with(&p, &isc_codegen::Options::default()).unwrap();
     assert!(ir.contains("@llvm.sqrt.v") && ir.contains("x float> }"), "the tuple of the element computation in vectors");
 }
+
+/// D642: `{ ...r, f: v }` whose new array `v` has another length than the
+/// field of `r` (a record made by a function inlined, its array a literal
+/// whose length the types fixed, D204): the record holds `v` whole, read
+/// with its own length (the tuple of the update had the type of `r`, its
+/// length fixed: the new array read as one of the old length). A record of
+/// a variable, a literal of another length, a record of records, a record
+/// literal whose type has the length of its array (refused before: `size
+/// mismatch`), a tuple of arrays; the results of the interpreter, for
+/// lengths below, at and above the old one.
+#[test]
+fn a_field_replaced_by_an_array_of_another_length() {
+    let src = "type M = { items: i64[], draft: string, n: i64 };
+type Outer = { inner: M, tag: string };
+function initial(): M {
+    return { items: [1, 2], draft: \"\", n: 0 };
+}
+action main(args: string[k]): i32 {
+    const k = parseI64(args[0]);
+    const m = { ...initial(), items: map(iota(k), (i) => i * 10) };
+    print(m.items);
+    print(m.items.length);
+    const a = { ...initial(), items: [7, 8, 9] };
+    print(a.items);
+    const base = initial();
+    const b = { ...base, items: map(iota(k), (i) => i + 1) };
+    print([b.items.length, base.items.length] as const);
+    const o: Outer = { inner: initial(), tag: \"t\" };
+    const o2 = { ...o, inner: { ...o.inner, items: fill(k, 4) } };
+    print(o2.inner.items);
+    const r = { items: [1, 2], n: 0 };
+    const s = { ...r, items: [1, 2, 3] };
+    const t = { ...r, items: map(iota(k), (i) => i) };
+    print([s.items.length, t.items.length, r.items.length] as const);
+    const p = { pair: [r.items, [5, 6, 7]] as const, n: 1 };
+    const q = { ...p, pair: [[9], fill(k, 0)] as const };
+    print(q.pair);
+    return 0;
+}
+";
+    let bin = compile(src, "field_other_length");
+    for a in ["0", "1", "2", "5"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "k = {}: {}", a, r.stderr);
+    }
+    assert_eq!(
+        interp_ok(src, &["5"]),
+        "[0, 10, 20, 30, 40]\n5\n[7, 8, 9]\n(5, 2)\n[4, 4, 4, 4, 4]\n(3, 5, 2)\n([9], [0, 0, 0, 0, 0])\n"
+    );
+}

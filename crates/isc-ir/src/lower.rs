@@ -1309,7 +1309,12 @@ impl<'p> Lower<'p> {
                         }
                     })
                     .collect();
-                let body = Expr::new(ExprKind::Tuple(fields), ty.clone(), span);
+                // its type the target's, but for the field of `value` (D642:
+                // the target's, the lengths it fixed, D204, were those of the
+                // old field: the new array read as one of their length)
+                let mut nts = comps.clone();
+                nts[*index as usize] = v.ty.clone();
+                let body = Expr::new(ExprKind::Tuple(fields), Type::Tuple(nts), span);
                 Ok(self.let_(r, t, body, false, span))
             }
             // `~x` (D633): `x ^ m`, `m` every bit of its type set (-1 for a

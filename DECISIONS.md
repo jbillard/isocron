@@ -15728,3 +15728,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     held): during the drag, the window 856 by 599, its card laid out in its
     middle, no part black; the test file of Windows whole (20 tests, the
     window of `a_window_of_windows` with both ABIs). The guide (`win32`).
+- **D642 — A field replaced by an array of another length (2026-11-12).**
+  Found by the library of graphical interfaces: its scene of a list that
+  scrolls (`{ ...todo.initial(), items: ten }`) laid out 2 tasks compiled,
+  10 interpreted. `{ ...r, f: v }` was lowered to a new tuple typed as
+  `r`: when the type of `r` fixed the length of the field (D204: a record
+  made by a function inlined, its array a literal of 2 elements), the code
+  generator put that length into the new tuple, and `v` was read as an
+  array of 2 elements, whatever its own length (a silent truncation, no
+  check failed).
+  - The lowering types the new tuple by its components: the field replaced
+    has the type of `v` (`lower.rs`, `FieldUpdate`).
+  - The checker gives the value the shape of the field but for its sizes
+    (`sizes_renewed`: each size of an array in it a new variable, except a
+    size of its own, `Own`, D341, which already takes any length), and the
+    result the record with that shape: `{ ...r, items: [1, 2, 3] }` on a
+    record literal `r = { items: [1, 2] }` was refused (`size mismatch`),
+    it is accepted, its result an array of 3.
+  - Test (`tuples.rs`, `a_field_replaced_by_an_array_of_another_length`):
+    a record of a function, of a variable, of records, a record literal,
+    a tuple of arrays; the program compiled against the interpreter for
+    lengths below, at and above the old one.

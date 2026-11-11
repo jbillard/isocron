@@ -727,6 +727,25 @@ impl<'g> FnCx<'g> {
         format!("{}", TyDisplay { ty: &t, sym_name: &sym_name, param_name: &param_name, size_var: &size_var })
     }
 
+    /// `t` resolved, each size of an array in it (in its tuples, records and
+    /// arrays) that is not a size of its own (`Own`, D341) a new variable:
+    /// the shape of a value of `t` whose arrays may have other lengths
+    /// (D642).
+    fn sizes_renewed(&mut self, t: &Ty, span: Span) -> Ty {
+        match self.shallow(t) {
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.sizes_renewed(t, span)).collect()),
+            Ty::Record(fs) => Ty::Record(fs.iter().map(|(n, t)| (n.clone(), self.sizes_renewed(t, span))).collect()),
+            Ty::Array(s, e) => {
+                let s = match self.size_res(&s) {
+                    Size::Own => Size::Own,
+                    _ => self.fresh_size(span),
+                };
+                Ty::Array(s, Box::new(self.sizes_renewed(&e, span)))
+            }
+            t => t,
+        }
+    }
+
     /// Resolves variables as far as possible, leaving unbound ones.
     fn zonk_soft(&self, t: &Ty) -> Ty {
         match self.shallow(t) {
@@ -1468,9 +1487,23 @@ impl<'g> FnCx<'g> {
                         }
                         let t = self.check(target, None)?;
                         let (i, fty) = self.field_of(&t.ty, name, t.span)?;
-                        let v = self.check(value, Some(&fty))?;
-                        self.unify(&fty, &v.ty, v.span)?;
-                        let ty = t.ty.clone();
+                        // the new value of the field may have arrays of other
+                        // lengths than the old one (`{ ...initial(), items:
+                        // more }`): its type the field's but for its sizes,
+                        // the result the record with the field of the new
+                        // value (D642: unified with the old, its sizes were
+                        // the old ones, the new array read as one of their
+                        // length)
+                        let shape = self.sizes_renewed(&fty, value.span);
+                        let v = self.check(value, Some(&shape))?;
+                        self.unify(&shape, &v.ty, v.span)?;
+                        let ty = match self.shallow(&t.ty) {
+                            Ty::Record(mut fs) => {
+                                fs[i as usize].1 = shape;
+                                Ty::Record(fs)
+                            }
+                            other => other,
+                        };
                         return Ok(self.mk(TExprKind::FieldUpdate { target: Box::new(t), index: i, value: Box::new(v) }, ty, span));
                     }
                 };
