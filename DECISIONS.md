@@ -16086,3 +16086,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the forms above; 300 000 steps, the output of the interpreter, the
     copies of the report those of its log and of its first literal alone,
     Valgrind clean.
+
+- **D658 — The accumulator of a `fold` has the type of its result.** It had
+  the type of its first value: a record whose array starts empty (`{ ks:
+  [], n: 0 }`, the literal fixing the length 0, D204) and grows at each
+  step was read at each step with the length 0 (`fix_len` writes the
+  lengths a type fixes into each value of it), its elements lost: `[3]`
+  for `[0, 1, 2, 3]`, compiled; the interpreter was right. Found by the
+  compiler of Lua of isocron-ui (the constants of every function of a chunk
+  but the last lost). Now the accumulator, the parameter of the lambda and
+  the values read of it have the type the checker gives to the result of
+  the `fold` (the record of the program, its arrays of no fixed length).
+  - Test (`memory.rs`, `a_fold_whose_array_grows_from_an_empty_one`): a
+    record of integers and texts grown from empty records; the output of
+    the interpreter, Valgrind clean.

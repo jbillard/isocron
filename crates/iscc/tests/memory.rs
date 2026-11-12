@@ -1592,3 +1592,32 @@ fn a_state_given_through_functions_that_call_each_other() {
     assert!(copies.iter().all(|l| *l == 10 || *l == 64), "the lines whose values are copied: {:?}", copies);
     clean(src, "state_given_vg", &["300"]);
 }
+
+/// D658: the accumulator of a `fold` of the type of its result, not of its
+/// first value: a record whose array starts empty (`{ ks: [], n: 0 }`, its
+/// length fixed at 0 by the type of the literal, D204) and grows at each
+/// step was read at each step with that length, its elements lost
+/// (`[3]` for `[0, 1, 2, 3]`); the code of chunks of Lua compiled by
+/// isocron-ui lost the constants of all its functions but the last. The
+/// same output as the interpreter, Valgrind clean.
+#[test]
+fn a_fold_whose_array_grows_from_an_empty_one() {
+    let src = "type R = { ks: i64[], names: string[], n: i64 };
+function addRec(k0: R, m: i64): R {
+    return fold(iota(m), k0, (acc, j) => ({ ks: concat(acc.ks, [j]), names: concat(acc.names, [`n${j}`]), n: acc.n + 1 }));
+}
+function emptyR(): R {
+    return { ks: [], names: [], n: 0 };
+}
+action main(args: string[k]): i32 {
+    print(addRec(emptyR(), parseI64(args[0])));
+    return 0;
+}
+";
+    let want = "{ks: [0, 1, 2, 3], n: 4, names: [n0, n1, n2, n3]}\n";
+    assert_eq!(interp_ok(src, &["4"]), want);
+    let bin = compile(src, "fold_grows");
+    let r = run_bin(&bin, &["4"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
+    clean(src, "fold_grows_vg", &["4"]);
+}

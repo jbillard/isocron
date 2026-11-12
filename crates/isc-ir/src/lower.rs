@@ -3068,7 +3068,11 @@ impl<'p> Lower<'p> {
                 let init = self.expr(env, &args[1])?;
                 let fv = self.fn_value(env, &args[2])?;
                 let et = x.ty.elem().clone();
-                let at = init.ty.clone();
+                // the accumulator of the type of the result, not of `init`:
+                // the lengths `init` fixes (`{ ks: [], n: 0 }`, D204) are not
+                // those of the values after it (D658: each read of the
+                // accumulator was given the length 0 of its first array)
+                let at = self.ty(env, &e.ty, span)?;
                 let lam = self.lambda_of(&fv, &[at.clone(), et], &at, span)?;
                 ExprKind::Fold(Box::new(x), Box::new(init), lam)
             }
