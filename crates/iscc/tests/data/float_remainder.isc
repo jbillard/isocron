@@ -1,0 +1,46 @@
+// The remainders of floats (`%` of `f64` and `f32`): signed zeros,
+// infinities, NaN, subnormals, the largest and smallest values, quotients
+// of every size, pairs drawn at random over the exponents; on Windows
+// without a C library computed by the program's own `fmod` and `fmodf`
+// (D664), the same digits as on Linux.
+// usage: float_remainder N   (N pairs drawn at random)
+
+// the next state of a xorshift
+function next(s: i64): i64 {
+    const a = s ^ (s >> 12);
+    const b = a ^ (a << 25);
+    return b ^ (b >> 27);
+}
+
+// the powers of ten from 1e-320 to 1e300, 20 apart
+const SCALES: f64[] = [1.0e-320, 1.0e-300, 1.0e-280, 1.0e-260, 1.0e-240, 1.0e-220, 1.0e-200, 1.0e-180, 1.0e-160, 1.0e-140, 1.0e-120, 1.0e-100, 1.0e-80, 1.0e-60, 1.0e-40, 1.0e-20, 1.0, 1.0e20, 1.0e40, 1.0e60, 1.0e80, 1.0e100, 1.0e120, 1.0e140, 1.0e160, 1.0e180, 1.0e200, 1.0e220, 1.0e240, 1.0e260, 1.0e280, 1.0e300];
+
+// a float of the state `s`: a fraction of 53 bits, signed, at a scale
+function drawn(s: i64): f64 {
+    const unit = f64(u64(s) >> 11u64) / 9007199254740992.0;
+    const scale = SCALES[i64(u64(s) % u64(SCALES.length))];
+    return (s & 1024) == 0 ? unit * scale : -unit * scale;
+}
+
+// `k` states of the xorshift after `s`
+function statesFrom(s: i64, k: i64, acc: i64[]): i64[] {
+    return k == 0 ? acc : statesFrom(next(s), k - 1, concat(acc, [next(s)]));
+}
+
+action main(args: string[k]): i32 {
+    const n = args.length > 0 ? parseI64(args[0]) : 1000;
+    const inf = 1.0 / 0.0;
+    const special = [0.0, -0.0, 1.0, -1.0, 0.5, 3.0, -3.0, 7.5, 0.1, 1.0e-310, -4.9e-324, 2.2250738585072014e-308, 1.7976931348623157e308, -1.7976931348623157e308, inf, -inf, 0.0 / 0.0];
+    print(map(special, (x) => map(special, (y) => x % y)));
+    const fs = map(special, (x) => f32(x));
+    print(map(fs, (x) => map(fs, (y) => x % y)));
+    // pairs at random: each line a pair and its remainder in both widths
+    const states = statesFrom(12345678987654321, 2 * n, []);
+    const lines = map(iota(n), (i) => {
+        const x = drawn(states[2 * i]);
+        const y = drawn(states[2 * i + 1]);
+        return `${x} ${y} ${x % y} ${f64(f32(x) % f32(y))}`;
+    });
+    print(join(lines, "\n"));
+    return 0;
+}

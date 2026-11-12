@@ -16258,3 +16258,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     one at a time: its standard input is a global, and `fasta_programs`
     read the empty input of `computing_programs` running beside it (once,
     under glibc, where the binaries were already built).
+
+- **D664 — The remainders of floats of a program for Windows without a C
+  library.** `%` of `f64` and `f32` is `frem` for LLVM, which calls `fmod`
+  and `fmodf` for x86-64; a program for Windows starts without a C library
+  unless it calls C (D541), and none gave them: the program did not link
+  (`undefined symbol: fmod`; the generic application of isocron-ui, whose
+  machine of Lua computes `%` of floats). Linux has them from libm,
+  WebAssembly from the runtime. Now the program has its own, written in
+  the IR beside its start (`FMOD_IR` of iscc), exact as C's: the special
+  cases first (NaN, a division by zero, an infinite `x`, `|x| <= |y|`),
+  then the remainder of the significands, 11 bits at a time (8 for
+  `f32`), given the scale of `y` and the sign of `x`; nothing of C.
+  - Tests: `programs_build_for_windows` builds `tests/data/float_remainder.isc`
+    for both ABIs of Windows (in the suite, without the machine);
+    `float_remainders_on_windows` runs it there (signed zeros,
+    infinities, NaN, subnormals, 20 000 pairs drawn over the exponents):
+    the same digits as on Linux (glibc's `fmod`), with both ABIs.

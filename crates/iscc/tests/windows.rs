@@ -231,6 +231,25 @@ fn programs_on_windows() {
     same_on_windows(&runner, OVERFLOW, "overflow", &d, &[], None);
 }
 
+/// D664: the remainders of floats (`%`) of a program without a C library
+/// (LLVM calls `fmod` and `fmodf`, which no library gave it: the program
+/// did not link) computed by its own functions, exact: signed zeros,
+/// infinities, NaN, subnormals, 20 000 pairs drawn over the exponents; the
+/// same digits as on Linux (glibc's `fmod`), with both ABIs.
+#[test]
+fn float_remainders_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let src = include_str!("data/float_remainder.isc");
+    let d = dir("float_remainder");
+    let out = same_on_windows(&runner, src, "float_remainder", &d, &["20000"], None);
+    assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 20002);
+    let d = dir("float_remainder_msvc");
+    same_on_windows_with(&runner, src, "float_remainder", &d, &["20000"], None, true);
+}
+
 fn source(name: &str) -> String {
     let path = format!("{}/../../examples/benchmarks_game/{}.isc", env!("CARGO_MANIFEST_DIR"), name);
     std::fs::read_to_string(path).unwrap()

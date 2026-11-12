@@ -297,6 +297,161 @@ define void @_Unwind_Resume(ptr %e) noreturn nounwind {
 @llvm.used = appending global [1 x ptr] [ptr @_tls_used], section "llvm.metadata"
 "#;
 
+/// The remainders of floats (`%` of `f64` and `f32`: `frem` of LLVM, a call
+/// of `fmod` and `fmodf` on Windows) for a program without a C library
+/// (D664): exact, as C's. `|x|` above `|y|` (the cases of NaN, of a
+/// division by zero, of an infinite `x` and of `|x| <= |y|` first): the
+/// significands `mx` and `my` (that of a subnormal with an exponent of 1,
+/// the value of each `m * 2^(e - 1075)`), the remainder of `mx * 2^(ex -
+/// ey)` by `my` taken 11 bits at a time (below `my`, below `2^53`: a
+/// remainder shifted by 11 below `2^64`), then given the scale of `y`
+/// (exact: a multiple of `2^-1074` below `2^53` of them) and the sign of
+/// `x`. The same for `f32` (24 bits, 8 at a time, `2^-149`).
+const FMOD_IR: &str = r#"
+define double @fmod(double %x, double %y) nounwind {
+entry:
+  %ux = bitcast double %x to i64
+  %uy = bitcast double %y to i64
+  %ex.s = lshr i64 %ux, 52
+  %ex = and i64 %ex.s, 2047
+  %ey.s = lshr i64 %uy, 52
+  %ey = and i64 %ey.s, 2047
+  %ax = shl i64 %ux, 1
+  %ay = shl i64 %uy, 1
+  %yzero = icmp eq i64 %ay, 0
+  %ynan = fcmp uno double %y, %y
+  %xinf = icmp eq i64 %ex, 2047
+  %bad.a = or i1 %yzero, %ynan
+  %bad = or i1 %bad.a, %xinf
+  br i1 %bad, label %nan, label %ok
+nan:
+  %p = fmul double %x, %y
+  %q = fdiv double %p, %p
+  ret double %q
+ok:
+  %le = icmp ule i64 %ax, %ay
+  br i1 %le, label %small, label %work
+small:
+  %eq = icmp eq i64 %ax, %ay
+  %sx0 = and i64 %ux, -9223372036854775808
+  %z = bitcast i64 %sx0 to double
+  %r.small = select i1 %eq, double %z, double %x
+  ret double %r.small
+work:
+  %mx.f = and i64 %ux, 4503599627370495
+  %my.f = and i64 %uy, 4503599627370495
+  %xsub = icmp eq i64 %ex, 0
+  %ysub = icmp eq i64 %ey, 0
+  %mx.n = or i64 %mx.f, 4503599627370496
+  %my.n = or i64 %my.f, 4503599627370496
+  %mx = select i1 %xsub, i64 %mx.f, i64 %mx.n
+  %my = select i1 %ysub, i64 %my.f, i64 %my.n
+  %ex1 = select i1 %xsub, i64 1, i64 %ex
+  %ey1 = select i1 %ysub, i64 1, i64 %ey
+  %r0 = urem i64 %mx, %my
+  %d0 = sub i64 %ex1, %ey1
+  br label %loop
+loop:
+  %r = phi i64 [ %r0, %work ], [ %rn, %step ]
+  %d = phi i64 [ %d0, %work ], [ %dn, %step ]
+  %more = icmp sgt i64 %d, 0
+  br i1 %more, label %step, label %done
+step:
+  %few = icmp slt i64 %d, 11
+  %k = select i1 %few, i64 %d, i64 11
+  %rs = shl i64 %r, %k
+  %rn = urem i64 %rs, %my
+  %dn = sub i64 %d, %k
+  br label %loop
+done:
+  %rf = uitofp i64 %r to double
+  %big = icmp uge i64 %ey1, 53
+  %e.n = sub i64 %ey1, 52
+  %s.n = shl i64 %e.n, 52
+  %e.s = sub i64 %ey1, 1
+  %s.s = shl i64 1, %e.s
+  %sbits = select i1 %big, i64 %s.n, i64 %s.s
+  %scale = bitcast i64 %sbits to double
+  %m = fmul double %rf, %scale
+  %mb = bitcast double %m to i64
+  %sx = and i64 %ux, -9223372036854775808
+  %rb = or i64 %mb, %sx
+  %res = bitcast i64 %rb to double
+  ret double %res
+}
+define float @fmodf(float %x, float %y) nounwind {
+entry:
+  %ux = bitcast float %x to i32
+  %uy = bitcast float %y to i32
+  %ex.s = lshr i32 %ux, 23
+  %ex = and i32 %ex.s, 255
+  %ey.s = lshr i32 %uy, 23
+  %ey = and i32 %ey.s, 255
+  %ax = shl i32 %ux, 1
+  %ay = shl i32 %uy, 1
+  %yzero = icmp eq i32 %ay, 0
+  %ynan = fcmp uno float %y, %y
+  %xinf = icmp eq i32 %ex, 255
+  %bad.a = or i1 %yzero, %ynan
+  %bad = or i1 %bad.a, %xinf
+  br i1 %bad, label %nan, label %ok
+nan:
+  %p = fmul float %x, %y
+  %q = fdiv float %p, %p
+  ret float %q
+ok:
+  %le = icmp ule i32 %ax, %ay
+  br i1 %le, label %small, label %work
+small:
+  %eq = icmp eq i32 %ax, %ay
+  %sx0 = and i32 %ux, -2147483648
+  %z = bitcast i32 %sx0 to float
+  %r.small = select i1 %eq, float %z, float %x
+  ret float %r.small
+work:
+  %mx.f = and i32 %ux, 8388607
+  %my.f = and i32 %uy, 8388607
+  %xsub = icmp eq i32 %ex, 0
+  %ysub = icmp eq i32 %ey, 0
+  %mx.n = or i32 %mx.f, 8388608
+  %my.n = or i32 %my.f, 8388608
+  %mx = select i1 %xsub, i32 %mx.f, i32 %mx.n
+  %my = select i1 %ysub, i32 %my.f, i32 %my.n
+  %ex1 = select i1 %xsub, i32 1, i32 %ex
+  %ey1 = select i1 %ysub, i32 1, i32 %ey
+  %r0 = urem i32 %mx, %my
+  %d0 = sub i32 %ex1, %ey1
+  br label %loop
+loop:
+  %r = phi i32 [ %r0, %work ], [ %rn, %step ]
+  %d = phi i32 [ %d0, %work ], [ %dn, %step ]
+  %more = icmp sgt i32 %d, 0
+  br i1 %more, label %step, label %done
+step:
+  %few = icmp slt i32 %d, 8
+  %k = select i1 %few, i32 %d, i32 8
+  %rs = shl i32 %r, %k
+  %rn = urem i32 %rs, %my
+  %dn = sub i32 %d, %k
+  br label %loop
+done:
+  %rf = uitofp i32 %r to float
+  %big = icmp uge i32 %ey1, 24
+  %e.n = sub i32 %ey1, 23
+  %s.n = shl i32 %e.n, 23
+  %e.s = sub i32 %ey1, 1
+  %s.s = shl i32 1, %e.s
+  %sbits = select i1 %big, i32 %s.n, i32 %s.s
+  %scale = bitcast i32 %sbits to float
+  %m = fmul float %rf, %scale
+  %mb = bitcast float %m to i32
+  %sx = and i32 %ux, -2147483648
+  %rb = or i32 %mb, %sx
+  %res = bitcast i32 %rb to float
+  ret float %res
+}
+"#;
+
 /// `WINDOWS_START_IR` for Microsoft's ABI (D542): the directory of the
 /// thread-local storage; `_fltused`, which the objects that use floats
 /// refer to; `__chkstk`, which a function whose frame passes a page calls
@@ -421,6 +576,7 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
     let msvc = opts.codegen.windows && opts.codegen.msvc && !opts.codegen.isa.is_wasm();
     if own_start {
         ir.push_str(if msvc { WINDOWS_MSVC_START_IR } else { WINDOWS_START_IR });
+        ir.push_str(FMOD_IR);
     }
     // and a program for WASI without wasi-libc unless it calls C (D543)
     let wasi_alone = opts.codegen.isa.is_wasm() && p.externs.is_empty() && opts.link.is_empty();
