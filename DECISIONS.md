@@ -15974,6 +15974,10 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     processors of the machine): 293 µs a loop before, 17.4 after.
   - A share started and then interrupted by the system still holds the loop
     back (a thread cannot give part of its share).
+  - The ten programs of the Benchmarks Game, 8 threads on the processors
+    of the benchmarks, the lowest of 5 runs each, before and after: the
+    same outputs; eight within 0.4 %, fasta 7.7 % and revcomp 5.5 % faster
+    (short programs whose first loops waited for threads being created).
   - Found by suite 453: a thread that runs another's share holds the blocks
     of two shares at once, more than in the first rounds of a program; the
     test of D605 (nothing new cut from the arena after 40 rounds) failed 1
