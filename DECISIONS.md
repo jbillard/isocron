@@ -16001,3 +16001,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     other on 64 threads (tasks taken in turn, tasks by thread, ranges), and
     the programs of loops in tasks and of arrays filled by ranges: the
     results of the interpreter and of one thread.
+
+- **D652 — The locals the type checker makes for itself are found by no
+  name of the program.** A record whose fields are not written in the order
+  of their names has each field computed first in a local (D164), named
+  `$` and the name of the field for the reports. It was put in the scope:
+  the one of a field `text` took the place of `$text`, the name the parser
+  gives to the insertion of a template literal, so that an insertion after
+  such a record in the same function was refused ("this value of type
+  `string` is not a function"). Found by the reader of Lua of isocron-ui
+  (a token `{ kind, text: stringOf([c]), ... }` then a message
+  `` `... ${stringOf([c])}` ``), whose own code had first worked around it
+  (`isocron-ui/tools/defects/template_call.isc`, its reduced case).
+  - The change: `add_hidden_local` (the local made, not put in the scope),
+    used for those fields; `add_local` the same plus the scope.
+  - Test (`strings.rs`): a token made in a branch, then a template literal
+    in the same function and a record written out of order holding a
+    template; interpreted, compiled, valgrind clean.

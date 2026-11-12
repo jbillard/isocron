@@ -1138,13 +1138,21 @@ impl<'g> FnCx<'g> {
     // ----- scopes -------------------------------------------------------
 
     fn add_local(&mut self, name: &str, ty: Ty, span: Span) -> LocalId {
-        let ty = self.open_own(&ty, span);
-        self.locals.push(Local { name: name.to_string(), ty, span });
-        let id = (self.locals.len() - 1) as LocalId;
+        let id = self.add_hidden_local(name, ty, span);
         if name != "_" {
             self.scopes.last_mut().unwrap().insert(name.to_string(), id);
         }
         id
+    }
+
+    /// A local of the compiler alone, named for the reports but found by no
+    /// name of the program: one made `$text` for the field `text` and put
+    /// in the scope took the place of `$text`, the insertion of a template
+    /// literal, for the rest of the function (D652)
+    fn add_hidden_local(&mut self, name: &str, ty: Ty, span: Span) -> LocalId {
+        let ty = self.open_own(&ty, span);
+        self.locals.push(Local { name: name.to_string(), ty, span });
+        (self.locals.len() - 1) as LocalId
     }
 
     /// The size that an argument gives to a size of the callee: its own,
@@ -1385,7 +1393,7 @@ impl<'g> FnCx<'g> {
                             continue;
                         }
                         let (ty, sp) = (x.ty.clone(), x.span);
-                        let l = self.add_local(&format!("${}", n), ty.clone(), sp);
+                        let l = self.add_hidden_local(&format!("${}", n), ty.clone(), sp);
                         let value = std::mem::replace(x, self.mk(TExprKind::Local(l), ty, sp));
                         stmts.push(TStmt::Let(TPat::Bind(l), value));
                     }

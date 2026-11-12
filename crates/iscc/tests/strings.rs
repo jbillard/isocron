@@ -286,6 +286,38 @@ fn template_literals() {
     assert!(e.contains("unterminated template literal"), "{}", e);
 }
 
+/// D652: a record whose fields are not written in the order of their names
+/// keeps the value of each field computed in a local of the compiler alone;
+/// the one of a field `text` was named `$text` and found by that name, the
+/// insertion of a template literal: an insertion after such a record (here
+/// in the same function, after a branch that returns it) was refused, "this
+/// value of type `string` is not a function". Found by the reader of Lua of
+/// isocron-ui.
+#[test]
+fn template_after_a_record_with_a_field_text() {
+    let src = r#"type Token = { kind: i64, text: string, line: i64 };
+
+function lexed(c: u8, line: i64): [Token[], string] {
+    if (c == 43u8) {
+        return [[{ kind: 4, text: stringOf([c]), line: line }], ""] as const;
+    }
+    return [[], `a character unexpected: \`${stringOf([c])}\` at ${line}`] as const;
+}
+
+action main(args: string[k]): i32 {
+    const [a, x] = lexed(43u8, 1);
+    const [b, y] = lexed(63u8, 2);
+    print(a);
+    print(b.length);
+    print(y);
+    const t = { line: 3, text: `${x}${y.length}`, kind: 1 };
+    print(`${t.text} ${t.line}`);
+    return 0;
+}
+"#;
+    agree(src, "str_template_record", &[], "[{kind: 4, line: 1, text: +}]\n0\na character unexpected: `?` at 2\n32 3\n");
+}
+
 const ROWS: &str = r#"function shout(r: string[n]): string[n] {
     return r.map((s) => s + "!");
 }
