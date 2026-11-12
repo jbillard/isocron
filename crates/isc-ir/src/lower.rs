@@ -1289,31 +1289,52 @@ impl<'p> Lower<'p> {
                 Ok(Expr::new(ExprKind::Proj(Box::new(x), *i), ty, span))
             }
             TExprKind::FieldUpdate { target, index, value } => {
-                // a new tuple: the other fields of the target, and `value`
-                let t = self.expr(env, target)?;
-                let v = self.expr(env, value)?;
+                // the updates of one record one after the other (`{ ...t, a:
+                // x, b: y }`, each field once): one new tuple, the fields of
+                // the target and the new values (D655: a tuple made of the
+                // last made, the state of a program rebuilt field after field,
+                // read a part of it (a text, an element) before its first
+                // tuple and after it; its parts could not be taken for the
+                // first one, D653)
+                let mut chain = vec![(*index, &**value)];
+                let mut base = &**target;
+                while let TExprKind::FieldUpdate { target: t2, index: i2, value: v2 } = &base.kind {
+                    chain.push((*i2, &**v2));
+                    base = &**t2;
+                }
+                chain.reverse();
+                let mut seen = std::collections::HashSet::new();
+                if !chain.iter().all(|(i, _)| seen.insert(*i)) {
+                    chain = vec![(*index, &**value)];
+                    base = &**target;
+                }
+                let t = self.expr(env, base)?;
                 let ty = t.ty.clone();
                 let comps = match &ty {
                     Type::Tuple(ts) => ts.clone(),
                     _ => return internal(span, "record update of a non-record"),
                 };
                 let r = self.new_var("r", ty.clone());
+                // the new values in the order of the program
+                let mut news: Vec<(u32, Expr)> = Vec::new();
+                for (i, v) in &chain {
+                    news.push((*i, self.expr(env, v)?));
+                }
+                // its type the target's, but for the fields of the new values
+                // (D642: the target's, the lengths it fixed, D204, were those
+                // of the old field: the new array read as one of their length)
+                let mut nts = comps.clone();
+                for (i, v) in &news {
+                    nts[*i as usize] = v.ty.clone();
+                }
                 let fields: Vec<Expr> = comps
                     .iter()
                     .enumerate()
-                    .map(|(k, ct)| {
-                        if k as u32 == *index {
-                            v.clone()
-                        } else {
-                            Expr::new(ExprKind::Proj(Box::new(Expr::var(r, ty.clone(), span)), k as u32), ct.clone(), span)
-                        }
+                    .map(|(k, ct)| match news.iter().position(|(i, _)| *i == k as u32) {
+                        Some(j) => news[j].1.clone(),
+                        None => Expr::new(ExprKind::Proj(Box::new(Expr::var(r, ty.clone(), span)), k as u32), ct.clone(), span),
                     })
                     .collect();
-                // its type the target's, but for the field of `value` (D642:
-                // the target's, the lengths it fixed, D204, were those of the
-                // old field: the new array read as one of their length)
-                let mut nts = comps.clone();
-                nts[*index as usize] = v.ty.clone();
                 let body = Expr::new(ExprKind::Tuple(fields), Type::Tuple(nts), span);
                 Ok(self.let_(r, t, body, false, span))
             }

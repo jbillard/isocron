@@ -16018,3 +16018,71 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Test (`strings.rs`): a token made in a branch, then a template literal
     in the same function and a record written out of order holding a
     template; interpreted, compiled, valgrind clean.
+
+- **D653 — A tuple made anew from its parts where it is read for the last
+  time has its parts taken there.** The state of a program (a record of
+  arrays) passed from one function to the next and changed with `{ ...st,
+  f: g(st.f) }` became a tuple of the projections of `st`: each projection
+  but the last read of `st` was borrowed, so every array of the state but
+  one was copied at each step (a small interpreter of Lua written in
+  Isocron copied its whole state, 28 fields, at each operation: 75 µs a
+  turn of a loop). Now (`take_rebuilds`, before the ownership pass) such a
+  tuple, when `st` is owned (a new tuple, a value the ownership pass makes
+  new such as `c ? f(st) : st`, a part of a tuple taken apart at once by
+  `const [s, v] = f(st)`, D138, or a parameter given, D654) and is not read
+  after it, takes every part of `st` there (`let st.k = take k st`, the
+  projections in the tuple read through them): each array moved into the
+  new tuple, updated in place or freed. Not when a variable that borrows a
+  part of `st` (`const name = st.names[i]`) is read after it, unless the
+  parts it borrows are moved into the new tuple as they are (their views
+  stay good: `failAt` reads the name of a chunk then makes a state with
+  it); nor inside a lambda. A variable bound to a part (`let xs = st.f` of a
+  function inlined) is read as the part itself, which is then moved at its
+  last use rather than copied through a view. `consumes` counts a part
+  taken as the variable consumed (freed in the other branch).
+- **D654 — A tuple parameter is given when the function consumes it, and
+  the functions of a cycle are decided together.** D637 gave arrays and
+  strings only, to functions called without being recursive. A tuple is
+  now a candidate when the body makes it anew from its parts or gives it
+  whole to a call, and is given when the ownership pass of the body, the
+  parameter owned (its rebuilds taking its parts, D653), moves or takes it
+  on every path and never frees it (a function that only reads a state
+  frees it: lent, its callers do not copy their state for it). The
+  functions of a cycle (`eval` and `exec` of an interpreter) are decided
+  together, at its last member in the order of the callees (every function
+  they call outside the cycle decided before): each candidate given at
+  first, then those a body does not consume, or whose body fails the
+  ownership pass or the memory check of the round, lent, until nothing
+  changes. The arrays of a cycle stay those of D351 and D644 (a loop that
+  requires its array unique is not given it: its callers may copy).
+- **D655 — The updates of the fields of one record are one new tuple.**
+  `{ ...st, a: x, b: y }` was a tuple made from the tuple made by `{ ...st,
+  a: x }`: a part of `st` read by `y` (the name of a chunk in a message) was
+  read after the first tuple, which then could not take the parts of `st`
+  (D653). Now a chain of field updates of a record, each field once, is
+  one tuple: the fields of the target and the new values, computed in the
+  order of the program.
+- **D656 — A scalar of a variable given whole, read by a later argument or
+  component, is read before the call.** `hashSet(st, st.globals, ...)`,
+  `[st, st.flow != 0]`: the argument or component that reads a scalar of
+  `st` after `st` itself made `st` read after its move, so `st` was copied.
+  All the arguments of a call and the components of a tuple are computed
+  before it takes them: such a read (a projection, an operation of such
+  reads that cannot panic: no division) is bound before (`let g =
+  st.globals in hashSet(st, g, ...)`), the same value.
+- **D657 — The state of a loop is given by its callers.** The state of a
+  loop taken apart on entry (D206) was lent by its callers and copied once
+  on entry, at each call of the loop: a loop called once per insertion
+  into a table (moving the integer keys after the array part) copied the
+  whole state of the interpreter there, quadratic. It is a candidate to be
+  given (D644 already gives its arrays): given, it is taken as it comes.
+  - Measures (rough, outside the protocol of measures: the interpreter of
+    Lua of isocron-ui): a loop of Lua of 30 000 turns 2 264 ms before, 12 ms
+    after; `fib(18)` 1 053 ms, 13 ms; 4 000 keys set into a table 4 123 ms
+    (quadratic), 11 ms; the outputs the same as the reference interpreter's.
+  - Test (`memory.rs`, `a_state_given_through_functions_that_call_each_other`,
+    `data/state_given.isc`): a small evaluator whose state goes through
+    `eval` and `exec`, `requireUnique` on the update of its array, each of
+    the forms above; 300 000 steps, the output of the interpreter, the
+    copies of the report those of its log and of its first literal alone,
+    Valgrind clean.

@@ -1564,3 +1564,31 @@ action main(args: string[k]): i32 {
     }
     clean(src, "concat_one_branch_vg", &["40"]);
 }
+
+/// D653 to D657: the state of a program, a record of arrays, given from
+/// function to function through functions that call each other (a small
+/// evaluator: `eval` and `exec`), each of its arrays updated in place
+/// (`requireUnique` holds): a part of it read before it is made anew
+/// (D653), an `if` one branch of which is new (D653), two fields updated at
+/// once (D655), a scalar of it read by an argument or a component after it
+/// (D656), the state of a loop given by its caller (D657). A million steps
+/// in about 0.1 s (a copy of the state at each step was quadratic); the
+/// copies of the memory report are those of the texts of its log and of the
+/// literal of its start alone; the output of the interpreter, Valgrind
+/// clean.
+#[test]
+fn a_state_given_through_functions_that_call_each_other() {
+    let src = include_str!("data/state_given.isc");
+    let bin = compile(src, "state_given");
+    let r = run_bin(&bin, &["300000"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "(90000600000, 51, 50, 1)\n[machine: failed]\n"), "{}", r.stderr);
+    for a in ["10", "500"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("state_given.isc", src).unwrap();
+    let copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    assert!(copies.iter().all(|l| *l == 10 || *l == 64), "the lines whose values are copied: {:?}", copies);
+    clean(src, "state_given_vg", &["300"]);
+}

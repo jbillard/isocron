@@ -1,0 +1,69 @@
+// The state of a program (a record of arrays) given from function to
+// function, through functions that call each other, each of its arrays
+// updated in place (D653 to D657)
+type S = { store: i64[], log: string[], top: i64, flow: i64, name: string };
+type E = Num(i64) | Add(E, E) | Set(i64, E) | Seq(E, E) | Fail;
+
+// a part kept as it is read before the state is made anew (D653)
+function fail(st: S, msg: string): S {
+    const who = st.name;
+    return { ...st, flow: 1, log: concat(st.log, [`${who}: ${msg}`]) };
+}
+
+// an `if` one branch of which is new (D653), then two fields updated at
+// once (D655)
+function put(st: S, i: i64, v: i64): S {
+    const s1 = i < st.store.length ? st : { ...st, store: concat(st.store, fill(i + 1 - st.store.length, 0)) };
+    return { ...s1, store: requireUnique(s1.store.with(i, v)), top: max(s1.top, i) };
+}
+
+function eval(st: S, e: E): [S, i64] {
+    return match (e) {
+        Num(x) => [st, x] as const,
+        Add(a, b) => {
+            const [s1, x] = eval(st, a);
+            const [s2, y] = eval(s1, b);
+            return [s2, x + y] as const;
+        },
+        Set(i, a) => {
+            const [s1, x] = eval(st, a);
+            return [put(s1, i, x), x] as const;
+        },
+        Seq(a, b) => eval(exec(st, a), b),
+        Fail => [fail(st, "failed"), 0] as const,
+    };
+}
+
+// a scalar of the state read by an argument after the state (D656)
+function exec(st: S, e: E): S {
+    const [s1, x] = eval(st, e);
+    return settle(s1, s1.flow, x);
+}
+
+function settle(st: S, flow: i64, x: i64): S {
+    return flow == 0 ? put(st, 0, st.store[0] + x) : st;
+}
+
+// a tuple of the state and a scalar of it (D656)
+function step(st: S, k: i64): [S, boolean] {
+    const s1 = exec(st, Seq(Set(k % 50 + 1, Add(Num(k), Num(1))), Num(k)));
+    return [s1, s1.flow != 0] as const;
+}
+
+// the state of a loop given by its caller (D657)
+function run(st: S, k: i64): S {
+    if (k == 0) {
+        return st;
+    }
+    const [s1, stop] = step(st, k);
+    return stop ? s1 : run(s1, k - 1);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const s0 = run({ store: [0], log: [], top: 0, flow: 0, name: "machine" }, n);
+    const s1 = exec(s0, Fail);
+    print([s1.store[0], s1.store[1], s1.top, s1.flow] as const);
+    print(s1.log);
+    return 0;
+}

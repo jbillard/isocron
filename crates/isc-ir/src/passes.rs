@@ -454,6 +454,9 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     // a value read by several `reduce`s now grouped (F3) is read once: it
     // can be fused into the group
     fuse_fixpoint(body);
+    // the scalar parts of a variable given whole to a call, then read by a
+    // later argument of it, read before the call (D656)
+    hoist_scalar_args(body, vars);
     // the components of a new tuple read only by projections bound, so
     // that the ownership pass takes it apart (D434)
     bind_projections(body, vars);
@@ -593,13 +596,441 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
     let r = *var;
     let Type::Tuple(ts) = &init.ty else { return };
+    if !init.ty.has_heap() {
+        return;
+    }
+    // (a value the ownership pass makes new, not a new tuple: `cond ? f(s)
+    // : s`, an `if` one branch of which is new, D105: its parts taken where
+    // it is made anew, D653)
+    if !new_tuple(init) {
+        if borrowed_from(init, &|w| vec![w]).is_none() && !matches!(body.kind, ExprKind::Proj(..)) {
+            let rty = init.ty.clone();
+            take_rebuilds(body, r, &rty, vars);
+        }
+        return;
+    }
+    // a new tuple made anew from its parts where it is read for the last
+    // time (the state of a program between two of its functions inlined,
+    // D653): its parts taken there
+    if !matches!(body.kind, ExprKind::Proj(..)) {
+        let rty = init.ty.clone();
+        // a new tuple taken apart at once (`const [s, v] = f(s)`, D138): its
+        // components are owned, each one a tuple that may be made anew in
+        // the same way
+        let mut bound = vec![false; ts.len()];
+        let split = match proj_chain(body, r, &mut bound) {
+            Some(rest) => ts.iter().enumerate().all(|(k, t)| !t.has_heap() || bound[k]) && !reads_var(rest, r),
+            None => false,
+        };
+        if split {
+            let comps = chain_vars(body, r);
+            if let Some(rest) = chain_rest_mut(body, r) {
+                for c in comps {
+                    let cty = vars[c as usize].ty.clone();
+                    if matches!(cty, Type::Tuple(_)) && cty.has_heap() {
+                        take_rebuilds(rest, c, &cty, vars);
+                    }
+                }
+            }
+            return;
+        }
+        take_rebuilds(body, r, &rty, vars);
+        return;
+    }
     let ExprKind::Proj(x, k) = &body.kind else { return };
-    if !matches!(x.kind, ExprKind::Var(w, _) if w == r) || !ts[*k as usize].has_heap() || !new_tuple(init) {
+    if !matches!(x.kind, ExprKind::Var(w, _) if w == r) || !ts[*k as usize].has_heap() {
         return;
     }
     let heap: Vec<(u32, Type)> = ts.iter().enumerate().filter(|(_, t)| t.has_heap()).map(|(k, t)| (k as u32, t.clone())).collect();
+    bind_components(body, r, &init.ty, &heap, vars);
+}
+
+/// The variables of the lets of projections of `r` at the top of `e`
+/// (`proj_chain`).
+fn chain_vars(e: &Expr, r: VarId) -> Vec<VarId> {
+    let mut out = Vec::new();
+    let mut e = e;
+    while let ExprKind::Let { var, init, body, .. } = &e.kind {
+        match &init.kind {
+            ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == r) => out.push(*var),
+            _ => break,
+        }
+        e = body;
+    }
+    out
+}
+
+/// What follows the lets of projections of `r` at the top of `e`.
+fn chain_rest_mut(e: &mut Expr, r: VarId) -> Option<&mut Expr> {
+    let is_chain = match &e.kind {
+        ExprKind::Let { init, .. } => matches!(&init.kind, ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == r)),
+        _ => false,
+    };
+    if !is_chain {
+        return Some(e);
+    }
+    match &mut e.kind {
+        ExprKind::Let { body, .. } => chain_rest_mut(body, r),
+        _ => None,
+    }
+}
+
+/// `e` makes a new tuple of the type `rty` of `r` from components of `r`
+/// (`{ ...r, f: v }`: the state of a program made anew; not the payloads
+/// of a value of a sum type read by a `match`, taken out in its arms, D367)
+fn rebuilds(e: &Expr, r: VarId, rty: &Type) -> bool {
+    if let ExprKind::Tuple(cs) = &e.kind {
+        if &e.ty == rty && cs.iter().any(|c| matches!(&c.kind, ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == r))) {
+            return true;
+        }
+    }
+    e.children().into_iter().any(|c| rebuilds(c, r, rty))
+}
+
+/// A read of a scalar of variables (a part of a tuple, an element): its
+/// value is the same before the call it is an argument of.
+fn scalar_read(e: &Expr) -> bool {
+    e.ty.is_scalar()
+        && match &e.kind {
+            ExprKind::Var(..) | ExprKind::Lit(_) => true,
+            ExprKind::Proj(x, _) => matches!(x.kind, ExprKind::Var(..)) || scalar_or_view_read(x),
+            // (an operation of such reads that cannot panic: a comparison,
+            // `!`, a sum)
+            ExprKind::Unary(_, x) => scalar_read(x),
+            ExprKind::Binary(op, a, b) => !matches!(op, BinOp::Div | BinOp::Rem) && scalar_read(a) && scalar_read(b),
+            _ => false,
+        }
+}
+
+fn scalar_or_view_read(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Var(..) => true,
+        ExprKind::Proj(x, _) => scalar_or_view_read(x),
+        _ => false,
+    }
+}
+
+/// The variables `e` reads.
+fn vars_read(e: &Expr, out: &mut HashSet<VarId>) {
+    if let ExprKind::Var(w, _) = e.kind {
+        out.insert(w);
+    }
+    for c in e.children() {
+        vars_read(c, out);
+    }
+}
+
+/// `f(st, st.globals)`: an argument that reads a scalar of a variable given
+/// whole by an argument before it bound before the call (`let g =
+/// st.globals in f(st, g)`), so that the variable is given at its last use
+/// rather than copied (the arguments are all computed before the call
+/// takes them: the same value); the components of a tuple the same way
+/// (`[st, st.flow != 0]`). D656.
+fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
+    for c in e.children_mut() {
+        hoist_scalar_args(c, vars);
+    }
+    let args = match &mut e.kind {
+        ExprKind::Call(_, args) => args,
+        // (a tuple too: `[st, st.flow != 0]`, its components all computed
+        // before it holds them)
+        ExprKind::Tuple(cs) => cs,
+        _ => return,
+    };
+    let mut whole: HashSet<VarId> = HashSet::new();
+    let mut lets: Vec<(VarId, Expr)> = Vec::new();
+    for a in args.iter_mut() {
+        if !matches!(a.kind, ExprKind::Var(..)) && scalar_read(a) {
+            let mut rd = HashSet::new();
+            vars_read(a, &mut rd);
+            if rd.iter().any(|w| whole.contains(w)) {
+                let t = vars.len() as VarId;
+                vars.push(VarInfo { name: "arg".into(), ty: a.ty.clone(), prelude: false });
+                let (ty, sp) = (a.ty.clone(), a.span);
+                let read = std::mem::replace(a, Expr::var(t, ty, sp));
+                lets.push((t, read));
+                continue;
+            }
+        }
+        if let ExprKind::Var(w, _) = a.kind {
+            if a.ty.has_heap() {
+                whole.insert(w);
+            }
+        }
+    }
+    if lets.is_empty() {
+        return;
+    }
+    let span = e.span;
+    let mut body = take(e);
+    for (t, read) in lets.into_iter().rev() {
+        let ty = body.ty.clone();
+        body = Expr::new(ExprKind::Let { var: t, init: Box::new(read), body: Box::new(body), stmt: false, drop: false }, ty, span);
+    }
+    *e = body;
+}
+
+/// The tuple variable `v` (of the type `vty`, owned: a new tuple, a
+/// parameter given) made anew from its parts where it is read for the last
+/// time (`{ ...v, f: g(v.f) }`, D653, D654): there, every part of `v` taken
+/// (`let v.k = take k v`) and read through its variable, so that each part
+/// that owns memory is moved into the new value, updated in place, or
+/// freed, instead of copied. Elsewhere `v` is read as it is (a function
+/// that borrows it borrows it). Not when a variable aliases `v`, nor inside
+/// a lambda. Whether a tuple was so rewritten.
+fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) -> bool {
+    // (the variables that borrow memory of `v`, with the parts they borrow
+    // (None: any): read after it are reads of it, a part taken would leave
+    // them a view of what is moved or freed)
+    let mut comps: HashMap<VarId, Option<Vec<u32>>> = HashMap::new();
+    comps.insert(v, None);
+    aliases_of(e, v, &mut comps);
+    let al: HashSet<VarId> = comps.keys().copied().collect();
+    rebuild_at(e, v, &al, &comps, vty, false, vars)
+}
+
+/// The variables of the lets of `e` that borrow memory of `v` or of those
+/// of `al`, added to it with the parts of `v` they borrow.
+fn aliases_of(e: &Expr, v: VarId, al: &mut HashMap<VarId, Option<Vec<u32>>>) {
+    if let ExprKind::Let { var, init, .. } = &e.kind {
+        if init.ty.has_heap() {
+            if let Some(c) = borrowed_parts(init, v, al) {
+                al.insert(*var, c);
+            }
+        }
+    }
+    for c in e.children() {
+        aliases_of(c, v, al);
+    }
+}
+
+/// The parts of `v` that `e` borrows (None inside: any part; None: none),
+/// those of the variables of `al` counted as theirs.
+fn borrowed_parts(e: &Expr, v: VarId, al: &HashMap<VarId, Option<Vec<u32>>>) -> Option<Option<Vec<u32>>> {
+    if !e.ty.has_heap() {
+        return None;
+    }
+    let union = |a: Option<Option<Vec<u32>>>, b: Option<Option<Vec<u32>>>| match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(None), _) | (_, Some(None)) => Some(None),
+        (Some(Some(mut x)), Some(Some(y))) => {
+            x.extend(y);
+            Some(Some(x))
+        }
+    };
+    match &e.kind {
+        ExprKind::Var(w, _) => al.get(w).cloned(),
+        ExprKind::Proj(x, k) if matches!(x.kind, ExprKind::Var(w, _) if w == v) => Some(Some(vec![*k])),
+        ExprKind::Proj(x, _) | ExprKind::Unbox(x) | ExprKind::Window(x, _) | ExprKind::Index(x, _) => borrowed_parts(x, v, al),
+        ExprKind::Slice(x, _, _) if e.ty.slice_is_view() => borrowed_parts(x, v, al),
+        ExprKind::StrOp(op, es) if str_view(*op, es, &e.ty) => borrowed_parts(&es[0], v, al),
+        ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) | ExprKind::Free(_, b) => borrowed_parts(b, v, al),
+        ExprKind::Let { body, .. } => borrowed_parts(body, v, al),
+        // (an `if` one branch of which is new is new: the ownership pass
+        // makes the other one new too, D105, as `borrowed_from`)
+        ExprKind::If(_, t, f) => match (borrowed_parts(t, v, al), borrowed_parts(f, v, al)) {
+            (Some(a), Some(b)) => union(Some(a), Some(b)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn reads_any(e: &Expr, al: &HashSet<VarId>) -> bool {
+    matches!(e.kind, ExprKind::Var(w, _) if al.contains(&w)) || e.children().into_iter().any(|c| reads_any(c, al))
+}
+
+/// `rebuild_at` below `e`, `later`: whether `v` or one of its aliases may
+/// be read after `e`.
+fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId, Option<Vec<u32>>>, vty: &Type, later: bool, vars: &mut Vec<VarInfo>) -> bool {
+    if !later && &e.ty == vty && matches!(e.kind, ExprKind::Tuple(_)) && rebuilt_from(e, v) && aliases_kept(e, v, al, comps) {
+        take_parts_here(e, v, vty, vars);
+        return true;
+    }
+    if !reads_var(e, v) {
+        return false;
+    }
+    let lam = lambda_body_index(e);
+    match &mut e.kind {
+        ExprKind::Let { init, body, .. } => {
+            let after = later || reads_any(body, al);
+            let a = rebuild_at(init, v, al, comps, vty, after, vars);
+            let b = rebuild_at(body, v, al, comps, vty, later, vars);
+            a || b
+        }
+        ExprKind::If(c, t, f) => {
+            let after = later || reads_any(t, al) || reads_any(f, al);
+            let a = rebuild_at(c, v, al, comps, vty, after, vars);
+            let b = rebuild_at(t, v, al, comps, vty, later, vars);
+            let d = rebuild_at(f, v, al, comps, vty, later, vars);
+            a || b || d
+        }
+        _ => {
+            // (any other child that reads `v` counts as read after: the
+            // order of evaluation of a node is its own)
+            let mut children = e.children_mut();
+            let reads: Vec<bool> = children.iter().map(|c| reads_any(c, al)).collect();
+            let total = reads.iter().filter(|r| **r).count();
+            let mut any = false;
+            for (i, c) in children.iter_mut().enumerate() {
+                if Some(i) == lam || !reads[i] {
+                    continue;
+                }
+                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars);
+            }
+            any
+        }
+    }
+}
+
+/// The aliases of `v` bound outside the tuple `e` that `e` reads borrow
+/// only parts of `v` that `e` keeps as they are (a component of `e` that
+/// is `proj k v` and read nowhere else in it: moved into the new tuple,
+/// neither changed nor freed, so their views stay good; `failAt` reads the
+/// name of the chunk of the state and makes a new state with it). An alias
+/// bound inside `e` (`let xs = v.f` of a function inlined there) borrows
+/// the part taken.
+fn aliases_kept(e: &Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId, Option<Vec<u32>>>) -> bool {
+    let mut inside = HashSet::new();
+    bound_in(e, &mut inside);
+    let mut read = HashSet::new();
+    reads_outside(e, al, v, &inside, &mut read);
+    if read.is_empty() {
+        return true;
+    }
+    let ExprKind::Tuple(cs) = &e.kind else { return false };
+    // the parts kept as they are
+    let mut uses: HashMap<u32, usize> = HashMap::new();
+    count_projections(e, v, &mut uses);
+    let kept: HashSet<u32> = cs
+        .iter()
+        .enumerate()
+        .filter(|(k, c)| matches!(&c.kind, ExprKind::Proj(x, j) if *j as usize == *k && matches!(x.kind, ExprKind::Var(w, _) if w == v)) && uses.get(&(*k as u32)) == Some(&1))
+        .map(|(k, _)| k as u32)
+        .collect();
+    read.iter().all(|w| matches!(comps.get(w), Some(Some(parts)) if parts.iter().all(|p| kept.contains(p))))
+}
+
+fn reads_outside(e: &Expr, al: &HashSet<VarId>, v: VarId, inside: &HashSet<VarId>, out: &mut HashSet<VarId>) {
+    if let ExprKind::Var(w, _) = e.kind {
+        if w != v && al.contains(&w) && !inside.contains(&w) {
+            out.insert(w);
+        }
+    }
+    for c in e.children() {
+        reads_outside(c, al, v, inside, out);
+    }
+}
+
+/// The number of projections of each part of `v` in `e`.
+fn count_projections(e: &Expr, v: VarId, out: &mut HashMap<u32, usize>) {
+    if let ExprKind::Proj(x, k) = &e.kind {
+        if matches!(x.kind, ExprKind::Var(w, _) if w == v) {
+            *out.entry(*k).or_default() += 1;
+            return;
+        }
+    }
+    for c in e.children() {
+        count_projections(c, v, out);
+    }
+}
+
+
+/// The tuple `e` holds parts of `v` and reads `v` only through them, never
+/// inside a lambda.
+fn rebuilt_from(e: &Expr, v: VarId) -> bool {
+    fn ok(e: &Expr, v: VarId, seen: &mut bool) -> bool {
+        match &e.kind {
+            ExprKind::Var(w, _) if *w == v => false,
+            ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == v) => {
+                *seen = true;
+                true
+            }
+            _ => {
+                let lam = lambda_body_index(e);
+                e.children().into_iter().enumerate().all(|(i, c)| if Some(i) == lam { !reads_var(c, v) } else { ok(c, v, seen) })
+            }
+        }
+    }
+    let mut seen = false;
+    ok(e, v, &mut seen) && seen
+}
+
+/// Every part of `v` taken at `e`, its projections in `e` read through the
+/// variables of its parts.
+fn take_parts_here(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) {
+    let Type::Tuple(ts) = vty else { return };
+    let name = vars[v as usize].name.clone();
+    let mut parts = Vec::new();
+    for (j, t) in ts.iter().enumerate() {
+        let c = vars.len() as VarId;
+        vars.push(VarInfo { name: format!("{}.{}", name, j), ty: t.clone(), prelude: false });
+        parts.push((c, t.clone()));
+    }
+    let span = e.span;
+    let mut body = take(e);
+    rewrite_parts(&mut body, v, &parts);
+    // (`let xs = v.1` of a function inlined, now `let xs = part`: `xs` read
+    // as the part itself, which the ownership pass then moves at its last
+    // use; through the `let` it was a view, copied)
+    let set: HashSet<VarId> = parts.iter().map(|(c, _)| *c).collect();
+    same_as_parts(&mut body, &set);
+    for (j, (c, t)) in parts.iter().enumerate().rev() {
+        let bty = body.ty.clone();
+        let part = Expr::new(ExprKind::Take(Box::new(Expr::var(v, vty.clone(), span)), j as u32), t.clone(), span);
+        body = Expr::new(ExprKind::Let { var: *c, init: Box::new(part), body: Box::new(body), stmt: false, drop: false }, bty, span);
+    }
+    *e = body;
+}
+
+/// Each `let x = p in body` of `e` whose `p` is a variable of `parts`:
+/// `body` with `p` for `x`.
+fn same_as_parts(e: &mut Expr, parts: &HashSet<VarId>) {
+    loop {
+        let alias = match &e.kind {
+            ExprKind::Let { var, init, .. } => match init.kind {
+                ExprKind::Var(p, _) if parts.contains(&p) && init.ty == e_ty_of_var(e) => Some((*var, p)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((x, p)) = alias else { break };
+        let ExprKind::Let { body, .. } = &mut e.kind else { break };
+        let mut b = take(body);
+        rename_var(&mut b, x, p);
+        *e = b;
+    }
+    for c in e.children_mut() {
+        same_as_parts(c, parts);
+    }
+}
+
+/// Each read of `from` in `e` a read of `to`.
+fn rename_var(e: &mut Expr, from: VarId, to: VarId) {
+    if let ExprKind::Var(v, _) = &mut e.kind {
+        if *v == from {
+            *v = to;
+        }
+    }
+    for c in e.children_mut() {
+        rename_var(c, from, to);
+    }
+}
+
+/// The type of the variable a `let` binds (that of its value).
+fn e_ty_of_var(e: &Expr) -> Type {
+    match &e.kind {
+        ExprKind::Let { init, .. } => init.ty.clone(),
+        _ => e.ty.clone(),
+    }
+}
+
+/// The components `comps` of the tuple `r` (of type `rty`) bound at the top
+/// of `body` (`let r.k = proj k r`), each `proj k r` of it read through its
+/// variable.
+fn bind_components(body: &mut Box<Expr>, r: VarId, rty: &Type, bound: &[(u32, Type)], vars: &mut Vec<VarInfo>) {
     let mut comps = Vec::new();
-    for (k, t) in &heap {
+    for (k, t) in bound {
         let v = vars.len() as VarId;
         vars.push(VarInfo { name: format!("{}.{}", vars[r as usize].name, k), ty: t.clone(), prelude: false });
         comps.push((*k, v, t.clone()));
@@ -607,7 +1038,7 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let pairs: Vec<(u32, VarId)> = comps.iter().map(|(k, v, _)| (*k, *v)).collect();
     read_components(body, r, &pairs);
     let span = body.span;
-    let rty = init.ty.clone();
+    let rty = rty.clone();
     for (k, v, t) in comps.into_iter().rev() {
         let inner = std::mem::replace(&mut **body, Expr::new(ExprKind::Lit(Lit::Unit), Type::Unit, span));
         let ty = inner.ty.clone();
@@ -2941,6 +3372,8 @@ fn tail_var(e: &mut Expr) -> &mut Expr {
 fn consumes(e: &mut Expr, v: VarId) -> bool {
     match &mut e.kind {
         ExprKind::Var(w, Use::Move) => *w == v,
+        // (its parts taken where it is made anew, D654)
+        ExprKind::Take(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == v) => true,
         ExprKind::Free(w, body) => *w == v || consumes(body, v),
         ExprKind::If(c, t, f) => {
             if consumes(c, v) {
@@ -3145,6 +3578,15 @@ fn ownership_body_with(
         }
         copy_reasons.extend(rw.copy_reasons);
     }
+    // a variable owned whose parts are taken where it is made anew (D654):
+    // consumed there, freed in the branches that do not take it
+    let mut taken = HashSet::new();
+    taken_vars(body, &mut taken);
+    for v in taken {
+        if info.owned[v as usize] {
+            info.moved[v as usize] = true;
+        }
+    }
     set_drops(body, &info);
     // an owned parameter moved on some paths: freed at the end of the
     // branches that do not move it (D105, D351)
@@ -3240,6 +3682,49 @@ fn accumulators(p: &Program, fi: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Each `proj k pv` of `e` read through the variable of its part, `pv`
+/// itself through the tuple of its parts (D206, D654).
+fn rewrite_parts(e: &mut Expr, pv: VarId, parts: &[(VarId, Type)]) {
+    match &mut e.kind {
+        ExprKind::Proj(x, k) if matches!(x.kind, ExprKind::Var(v, _) if v == pv) => {
+            let (c, t) = parts[*k as usize].clone();
+            *e = Expr::var(c, t, e.span);
+        }
+        ExprKind::Var(v, _) if *v == pv => {
+            let es = parts.iter().map(|(c, t)| Expr::var(*c, t.clone(), e.span)).collect();
+            *e = Expr::new(ExprKind::Tuple(es), e.ty.clone(), e.span);
+        }
+        _ => {
+            for c in e.children_mut() {
+                rewrite_parts(c, pv, parts);
+            }
+        }
+    }
+}
+
+/// `body` with the tuple `pv` (of the type `ty`) taken apart at its top: a
+/// new variable for each of its parts (`let pv.j = take j pv`), its reads
+/// rewritten (`rewrite_parts`): each part then owned on its own (D206,
+/// D654).
+fn take_apart(vars: &mut Vec<VarInfo>, mut body: Expr, pv: VarId, ty: &Type) -> Expr {
+    let Type::Tuple(ts) = ty else { return body };
+    let name = vars[pv as usize].name.clone();
+    let mut parts = Vec::new();
+    for (j, t) in ts.iter().enumerate() {
+        let c = vars.len() as VarId;
+        vars.push(VarInfo { name: format!("{}.{}", name, j), ty: t.clone(), prelude: false });
+        parts.push((c, t.clone()));
+    }
+    let span = body.span;
+    rewrite_parts(&mut body, pv, &parts);
+    for (j, (c, t)) in parts.iter().enumerate().rev() {
+        let bty = body.ty.clone();
+        let take = Expr::new(ExprKind::Take(Box::new(Expr::var(pv, ty.clone(), span)), j as u32), t.clone(), span);
+        body = Expr::new(ExprKind::Let { var: *c, init: Box::new(take), body: Box::new(body), stmt: false, drop: false }, bty, span);
+    }
+    body
+}
+
 fn own_states(p: &mut Program) {
     // `pv` read only as `pv[k]`, or given back whole as a result
     fn fields_only(e: &Expr, pv: VarId, tail: bool) -> bool {
@@ -3251,23 +3736,6 @@ fn own_states(p: &mut Program) {
             ExprKind::CheckSize(a, b, body) => fields_only(a, pv, false) && fields_only(b, pv, false) && fields_only(body, pv, tail),
             ExprKind::CheckNonNegative(k, body) => fields_only(k, pv, false) && fields_only(body, pv, tail),
             _ => e.children().into_iter().all(|c| fields_only(c, pv, false)),
-        }
-    }
-    fn rewrite(e: &mut Expr, pv: VarId, parts: &[(VarId, Type)]) {
-        match &mut e.kind {
-            ExprKind::Proj(x, k) if matches!(x.kind, ExprKind::Var(v, _) if v == pv) => {
-                let (c, t) = parts[*k as usize].clone();
-                *e = Expr::var(c, t, e.span);
-            }
-            ExprKind::Var(v, _) if *v == pv => {
-                let es = parts.iter().map(|(c, t)| Expr::var(*c, t.clone(), e.span)).collect();
-                *e = Expr::new(ExprKind::Tuple(es), e.ty.clone(), e.span);
-            }
-            _ => {
-                for c in e.children_mut() {
-                    rewrite(c, pv, parts);
-                }
-            }
         }
     }
     for fi in 0..p.fns.len() {
@@ -3284,28 +3752,11 @@ fn own_states(p: &mut Program) {
             if !shape || tails == 0 || states == 0 || !fields_only(&f.body, pv, true) {
                 continue;
             }
-            let name = p.vars[pv as usize].name.clone();
-            let mut parts = Vec::new();
-            for (j, t) in ts.iter().enumerate() {
-                let c = p.vars.len() as VarId;
-                p.vars.push(VarInfo { name: format!("{}.{}", name, j), ty: t.clone(), prelude: false });
-                parts.push((c, t.clone()));
-            }
-            let f = &mut p.fns[fi];
-            let span = f.body.span;
-            let mut body = std::mem::replace(&mut f.body, Expr::new(ExprKind::Zero, Type::Unit, span));
-            rewrite(&mut body, pv, &parts);
-            for (j, (c, t)) in parts.iter().enumerate().rev() {
-                let bty = body.ty.clone();
-                let take = Expr::new(ExprKind::Take(Box::new(Expr::var(pv, ty.clone(), span)), j as u32), t.clone(), span);
-                body = Expr::new(
-                    ExprKind::Let { var: *c, init: Box::new(take), body: Box::new(body), stmt: false, drop: false },
-                    bty,
-                    span,
-                );
-            }
-            f.body = body;
-            f.consumed[k] = true;
+            let _ = ts;
+            let span = p.fns[fi].body.span;
+            let body = std::mem::replace(&mut p.fns[fi].body, Expr::new(ExprKind::Zero, Type::Unit, span));
+            p.fns[fi].body = take_apart(&mut p.vars, body, pv, &ty);
+            p.fns[fi].consumed[k] = true;
         }
     }
 }
@@ -3369,25 +3820,50 @@ pub(crate) fn decide_given(p: &mut Program) {
     for f in 0..n {
         visit(p, f, &mut state, &mut order);
     }
-    for fi in order {
+    let mut decided = vec![false; n];
+    let position: HashMap<usize, usize> = order.iter().enumerate().map(|(i, f)| (*f, i)).collect();
+    for fi in order.clone() {
         // (the functions from `text_fns` on are called by the code
         // generator, which lends their arguments)
-        if in_cycle[fi] || (fi as u32) >= p.text_fns {
+        if (fi as u32) >= p.text_fns {
             continue;
         }
-        let f = &p.fns[fi];
-        let cands: Vec<usize> = (0..f.params.len())
-            .filter(|&k| {
-                let ty = &p.vars[f.params[k] as usize].ty;
-                !f.consumed[k] && ty.has_heap() && !ty.has_nodes() && !matches!(ty, Type::Tuple(_))
-            })
-            .collect();
+        // the functions of a cycle decided together (D654)
+        if in_cycle[fi] {
+            if decided[fi] {
+                continue;
+            }
+            let reach = reachable(p, fi as u32);
+            let members: Vec<usize> = (0..n)
+                .filter(|&g| {
+                    in_cycle[g]
+                        && (g as u32) < p.text_fns
+                        && (g == fi || (reach.contains(&(g as u32)) && reachable(p, g as u32).contains(&(fi as u32))))
+                })
+                .collect();
+            // (decided at its last member in the order: every function
+            // its members call outside it decided before)
+            let last = members.iter().map(|g| position.get(g).copied().unwrap_or(0)).max().unwrap_or(0);
+            if position.get(&fi).copied().unwrap_or(0) < last {
+                continue;
+            }
+            for &g in &members {
+                decided[g] = true;
+            }
+            decide_cycle(p, &members);
+            continue;
+        }
+        // (a tuple too when the body makes it anew from its parts: the state
+        // of a program, taken apart on entry, each part owned, D654)
+        let cands = given_candidates(p, fi);
         if cands.is_empty() {
             continue;
         }
         let callees = Callees::of(p);
         // the parameters the body moves when it owns them all
-        let mut body = p.fns[fi].body.clone();
+        let original = p.fns[fi].body.clone();
+        let trial = apart(p, fi, &original, &cands);
+        let mut body = trial.clone();
         let params: Vec<VarId> = cands.iter().map(|&k| p.fns[fi].params[k]).collect();
         if ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_err() {
             continue;
@@ -3395,31 +3871,26 @@ pub(crate) fn decide_given(p: &mut Program) {
         // consumed on every path: none frees it (one that consumes it on
         // some paths only, lent, copies it there alone: `$replaceSlow`
         // gives its text back only when nothing is replaced)
-        let kept: Vec<usize> = cands
-            .iter()
-            .copied()
-            .filter(|&k| {
-                let v = p.fns[fi].params[k];
-                (moves_var(&body, v) || takes_var(&body, v)) && !frees_var(&body, v)
-            })
-            .collect();
+        let kept: Vec<usize> = cands.iter().copied().filter(|&k| consumed_param(p, fi, k, &body)).collect();
         if kept.is_empty() {
             continue;
         }
         // those alone owned, the others borrowed: the check of the memory
         // of the function on that body
-        let mut body = p.fns[fi].body.clone();
+        let chosen = apart(p, fi, &original, &kept);
+        let mut body = chosen.clone();
         let params: Vec<VarId> = kept.iter().map(|&k| p.fns[fi].params[k]).collect();
         if ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_err() {
             continue;
         }
-        let unique: Vec<bool> = (0..p.fns[fi].params.len()).map(|k| kept.contains(&k) && updates_unique(&p.fns[fi].body, p.fns[fi].params[k])).collect();
+        let unique: Vec<bool> = (0..p.fns[fi].params.len()).map(|k| kept.contains(&k) && updates_unique(&chosen, p.fns[fi].params[k])).collect();
         let saved = std::mem::replace(&mut p.fns[fi].body, body);
         for &k in &kept {
             p.fns[fi].given[k] = true;
         }
         let ok = crate::verify::verify_fn(p, &p.fns[fi]).is_ok();
-        p.fns[fi].body = saved;
+        // given, its tuples taken apart for good
+        p.fns[fi].body = if ok { chosen } else { saved };
         if ok {
             p.fns[fi].unique = unique;
         } else {
@@ -3428,6 +3899,141 @@ pub(crate) fn decide_given(p: &mut Program) {
             }
         }
     }
+}
+
+/// The parameters of a function that may be given (D637, D654): those that
+/// own memory, not the state of a loop (D206), an array or a string without
+/// nodes, or a tuple the body makes anew from its parts.
+fn given_candidates(p: &Program, fi: usize) -> Vec<usize> {
+    let f = &p.fns[fi];
+    (0..f.params.len())
+        .filter(|&k| {
+            let pv = f.params[k];
+            let ty = &p.vars[pv as usize].ty;
+            ty.has_heap()
+                && match ty {
+                    // the state of a loop, taken apart on entry (D206): given
+                    // by its callers rather than copied there (D644, D657)
+                    Type::Tuple(_) if f.consumed[k] => true,
+                    Type::Tuple(_) => rebuilds(&f.body, pv, ty) || passed_whole(&f.body, pv),
+                    _ => !f.consumed[k] && !ty.has_nodes(),
+                }
+        })
+        .collect()
+}
+
+/// `v` itself is an argument of a call in `e`
+fn passed_whole(e: &Expr, v: VarId) -> bool {
+    if let ExprKind::Call(_, args) = &e.kind {
+        if args.iter().any(|a| matches!(a.kind, ExprKind::Var(w, _) if w == v)) {
+            return true;
+        }
+    }
+    e.children().into_iter().any(|c| passed_whole(c, v))
+}
+
+/// The parameter `k` of the function `fi`, owned by the body `body` (after
+/// the ownership pass), is consumed on every path: moved or taken apart,
+/// never freed (a tuple that is only read: freed, so lent, D654).
+fn consumed_param(p: &Program, fi: usize, k: usize, body: &Expr) -> bool {
+    let v = p.fns[fi].params[k];
+    (moves_var(body, v) || takes_var(body, v)) && !frees_var(body, v)
+}
+
+/// The parameters given in the functions `members` of a cycle (D654): each
+/// candidate given at first, then those a body does not consume on every
+/// path (or whose body fails the ownership pass) lent, until nothing
+/// changes, each call in the cycle seeing the others' choices; the result
+/// checked by the memory check of each function, none given if one fails.
+/// (A function called by itself, or by functions it calls, was lent all
+/// its parameters: the state of an interpreter, passed down a recursive
+/// evaluation, was copied at each step.)
+fn decide_cycle(p: &mut Program, members: &[usize]) {
+    // (the tuples alone: the arrays of a loop are its own, D351, D644)
+    let cands: Vec<(usize, Vec<usize>)> = members
+        .iter()
+        .map(|&fi| (fi, given_candidates(p, fi).into_iter().filter(|&k| matches!(p.vars[p.fns[fi].params[k] as usize].ty, Type::Tuple(_))).collect::<Vec<usize>>()))
+        .filter(|(_, ks)| !ks.is_empty())
+        .collect();
+    if cands.is_empty() {
+        return;
+    }
+    let originals: Vec<Expr> = cands.iter().map(|(fi, _)| p.fns[*fi].body.clone()).collect();
+    let mut chosen: Vec<Vec<usize>> = cands.iter().map(|(_, ks)| ks.clone()).collect();
+    let set = |p: &mut Program, chosen: &Vec<Vec<usize>>| {
+        for (j, (fi, ks)) in cands.iter().enumerate() {
+            for &k in ks {
+                p.fns[*fi].given[k] = chosen[j].contains(&k);
+            }
+        }
+    };
+    loop {
+        set(p, &chosen);
+        let callees = Callees::of(p);
+        let mut changed = false;
+        for (j, (fi, _)) in cands.iter().enumerate() {
+            if chosen[j].is_empty() {
+                continue;
+            }
+            let mut body = apart(p, *fi, &originals[j], &chosen[j]);
+            let params: Vec<VarId> = chosen[j].iter().map(|&k| p.fns[*fi].params[k]).collect();
+            let res = ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new());
+            let mut keep: Vec<usize> = if res.is_err() { Vec::new() } else { chosen[j].iter().copied().filter(|&k| consumed_param(p, *fi, k, &body)).collect() };
+            // (the memory check of this round: a part given whole to a
+            // function that borrows it is lent at last)
+            if keep.len() == chosen[j].len() {
+                let saved = std::mem::replace(&mut p.fns[*fi].body, body);
+                if crate::verify::verify_fn(p, &p.fns[*fi]).is_err() {
+                    keep = Vec::new();
+                }
+                p.fns[*fi].body = saved;
+            }
+            if keep.len() != chosen[j].len() {
+                chosen[j] = keep;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    set(p, &chosen);
+    let callees = Callees::of(p);
+    let mut finals = Vec::new();
+    for (j, (fi, _)) in cands.iter().enumerate() {
+        if chosen[j].is_empty() {
+            continue;
+        }
+        let taken = apart(p, *fi, &originals[j], &chosen[j]);
+        let mut body = taken.clone();
+        let params: Vec<VarId> = chosen[j].iter().map(|&k| p.fns[*fi].params[k]).collect();
+        let owned = ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_ok();
+        let saved = std::mem::replace(&mut p.fns[*fi].body, body);
+        let ok = owned && crate::verify::verify_fn(p, &p.fns[*fi]).is_ok();
+        p.fns[*fi].body = saved;
+        if !ok {
+            set(p, &cands.iter().map(|_| Vec::new()).collect());
+            return;
+        }
+        finals.push((j, taken));
+    }
+    for (j, body) in finals {
+        p.fns[cands[j].0].body = body;
+    }
+}
+
+/// The body `body` of the function `fi` with those of its parameters `ks`
+/// that are tuples taken apart where they are made anew (D654).
+fn apart(p: &mut Program, fi: usize, body: &Expr, ks: &[usize]) -> Expr {
+    let mut b = body.clone();
+    for &k in ks {
+        let pv = p.fns[fi].params[k];
+        let ty = p.vars[pv as usize].ty.clone();
+        if matches!(ty, Type::Tuple(_)) {
+            take_rebuilds(&mut b, pv, &ty, &mut p.vars);
+        }
+    }
+    b
 }
 
 /// `e` updates `v` in place with `requireUnique` (D637).
@@ -3763,6 +4369,18 @@ fn moves_var(e: &Expr, v: VarId) -> bool {
 /// `e` frees `v` somewhere (`Free`, D105).
 fn frees_var(e: &Expr, v: VarId) -> bool {
     matches!(e.kind, ExprKind::Free(w, _) if w == v) || e.children().into_iter().any(|c| frees_var(c, v))
+}
+
+/// The variables whose parts are taken in `e` (`Take`).
+fn taken_vars(e: &Expr, out: &mut HashSet<VarId>) {
+    if let ExprKind::Take(x, _) = &e.kind {
+        if let ExprKind::Var(w, _) = x.kind {
+            out.insert(w);
+        }
+    }
+    for c in e.children() {
+        taken_vars(c, out);
+    }
 }
 
 /// A part of `v` is taken somewhere in `e` (`Take`, D138).
