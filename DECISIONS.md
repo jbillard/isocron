@@ -15833,6 +15833,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     calls, where they belong (`longest` of `views_of_texts.isc`: the
     literal at its call, line 65, and the text it chooses before its tail
     call, line 8, as many copies as before, 4: read in the code generated).
+  - The call of a loop to itself keeps its arguments as the loop takes
+    them: a new array moved at its place (`tmp (move)`, now that the place
+    is given) is the next iteration's, as one made there (suite 448: a loop
+    `steps(map(x, ...), k - 1)` was no longer one, `requireTail` refused,
+    and a loop of the module of the prelude grew its memory with its rounds
+    through its calls); a literal given to such a place is given as it is,
+    kept without a copy (D361: suite 448 counted one copy of a literal at
+    each call of `grow`, where its entry copied it once before; none now).
   - Test (`memory.rs`, `a_loop_given_its_array`): a loop called once per
     run of 7 places of an array of 300000 (42858 calls: a copy at each would
     write 100 GB), a caller reading its array again (its copy at the call,

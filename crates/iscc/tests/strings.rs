@@ -1094,14 +1094,15 @@ fn literals_kept_without_a_copy() {
     }
     valgrind_clean(src, "literals_kept", &["1"]);
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
-    // the copy left is not of a literal: the accumulator of `grow` at its
-    // entry (rule A, D351); the elements `sort` puts in its array are moved
-    // from its source, read for the last time (D548). And four of
-    // `replaceAll` of a text, written in Isocron since D626: the
+    // the start of the accumulator of `grow`, a literal, given to it as it
+    // is (D644: its loop owns its accumulator; copied at its entry before,
+    // rule A, D351); the elements `sort` puts in its array are moved from
+    // its source, read for the last time (D548). The four copies left are
+    // those of `replaceAll` of a text, written in Isocron since D626: the
     // block of the text replaced made by a copy where nothing is replaced,
     // one at each way out of its function, inlined (the runtime made that
     // block itself); the five of its rare paths are the module's (D627)
-    assert_eq!(ll.matches("; text copy").count(), 5, "a literal copied");
+    assert_eq!(ll.matches("; text copy").count(), 4, "a literal copied");
     // the literals of at most 12 bytes are values, their bytes in them
     // (D530); the one longer kept in the program's data
     assert!(ll.matches("@.olit.").count() >= 1, "the literals not kept where they are");

@@ -874,6 +874,11 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
                             }
                             ExprKind::Var(v, _) if self.pending.contains(&v) && !moved.iter().any(|(_, w)| *w == v) => moved.push((k, v)),
                             ExprKind::Var(v, _) if self.literals.contains(&v) => lent.push(k),
+                            // a new array moved at its place (a place the
+                            // function is given, D644: the argument moved
+                            // there at its last use): the next iteration's,
+                            // nothing to free
+                            ExprKind::Var(v, Use::Move) if !self.f.params.contains(&v) => {}
                             ExprKind::Var(v, _) if self.parts.iter().any(|(w, _)| *w == v) => {
                                 let (_, r) = self.parts.iter().rev().find(|(w, _)| *w == v).unwrap();
                                 roots.extend(r.iter().copied());
@@ -2471,6 +2476,9 @@ struct Rewriter<'a> {
     vars: &'a [VarInfo],
     /// The parameters each function is given (D637).
     callees: &'a Callees,
+    /// The variables bound to a string literal (D361): given to a place a
+    /// function is given as the literal itself, kept without a copy (D644).
+    literal_vars: HashMap<VarId, String>,
     index: usize,
     copy_reasons: Vec<(Span, String)>,
     /// The branches of an `if` whose two branches borrow, with what each
@@ -2501,6 +2509,11 @@ impl<'a> Rewriter<'a> {
             ExprKind::StrLit(_) if e.ty == Type::Str => return Ok(Own::Borrowed(Vec::new(), None)),
             ExprKind::Let { var, init, body, .. } => {
                 let v = *var;
+                if let ExprKind::StrLit(t) = &init.kind {
+                    if init.ty == Type::Str {
+                        self.literal_vars.insert(v, t.clone());
+                    }
+                }
                 self.walk(init)?;
                 self.reuse(init);
                 let o = self.walk(body)?;
@@ -2772,6 +2785,17 @@ impl<'a> Rewriter<'a> {
                 let g = *g as usize;
                 for (k, c) in args.iter_mut().enumerate() {
                     let o = self.walk(c)?;
+                    // a literal: the callee owns it as it is, never freed
+                    // nor written (D361), not a copy in a block
+                    if self.callees.given(g, k) {
+                        if let ExprKind::Var(v, _) = &c.kind {
+                            if let Some(t) = self.literal_vars.get(v) {
+                                let (ty, sp) = (c.ty.clone(), c.span);
+                                *c = Expr::new(ExprKind::Copy(Box::new(Expr::new(ExprKind::StrLit(t.clone()), ty.clone(), sp))), ty, sp);
+                                continue;
+                            }
+                        }
+                    }
                     if self.callees.given(g, k) && matches!(o, Own::Borrowed(..)) {
                         let ru = self.callees.unique(g, k);
                         self.make_fresh(c, o, ru)?;
@@ -3114,7 +3138,7 @@ fn ownership_body_with(
     }
     {
         let mut rw =
-            Rewriter { info: &mut info, vars, callees, index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new() };
+            Rewriter { info: &mut info, vars, callees, literal_vars: HashMap::new(), index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new() };
         let o = rw.walk(body)?;
         if matches!(o, Own::Borrowed(..)) && body.ty.has_heap() {
             rw.make_fresh(body, o, false)?;
