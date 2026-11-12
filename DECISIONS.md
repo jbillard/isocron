@@ -15942,8 +15942,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Measured (64 bytes to `/dev/null`, a million writes, indicative: a
     transcoding of Plex running): `writeFd` 335 ns a write, C with the same
     mask 329 ns, a plain `write` of C 105 ns: the difference is the mask,
-    paid once a call whatever the number of bytes; to be measured again on
-    a prepared machine.
+    paid once a call whatever the number of bytes.
+  - Again on the prepared machine (`machine.sh apply single`, fixed
+    frequency, the lowest of 7 runs of 2 million): `writeFd` 478.3 ns, C
+    with the mask 468.9 (2.0 % less), a plain `write` 150.0. Counted (`perf
+    stat`, the difference between 1 and 2 million writes): 158 instructions
+    of the program a write against 109 (the loop of the benchmark, the
+    result of the module), and 1777.4 of the kernel against 1731.4. The
+    kernel's 46 are those of a table of descriptors shared by two threads:
+    the program runs `main` on a thread of a large stack (D102) while the
+    first thread waits, so each call of the system on a descriptor takes a
+    reference to its file and gives it back (`fget`, `fput` in the profile
+    of the kernel); the program of C with a second thread asleep counts
+    1777.3. Every call on a descriptor of a program with recursive
+    functions pays it (TODO).
   - Tests (`std_unix.rs`): bytes written to the descriptor of a connection,
     read on the other side; written once it is closed: `Other(32)`, the
     program still running; an empty write; a descriptor that is none:
