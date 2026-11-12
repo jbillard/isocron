@@ -15948,3 +15948,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     read on the other side; written once it is closed: `Other(32)`, the
     program still running; an empty write; a descriptor that is none:
     `Other(9)`. Interpreted and compiled (1 and 4 threads), Valgrind.
+- **D651 — A parallel loop no longer waits for a thread that has not
+  started (2026-11-12).** Found by the library of graphical interfaces:
+  the layout of its list of tasks took 0.3 ms on one thread and 3.9 ms on
+  the 16 threads of the pool while a transcoding of Plex kept one processor
+  busy. Shown on the 8 processors of the benchmarks (`machine.sh run`), one
+  of them kept busy by a loop of the shell: the layout 0.28 ms on 7 threads,
+  4.04 ms on 8 (0.28 with all free). The end of a parallel loop waited for
+  every thread to finish its share: a thread whose processor another
+  process holds runs only when the system gives it back (milliseconds), and
+  every loop waited for it.
+  - Each share of a loop is taken once, by an exchange on a word of its own
+    (the generation of the loop it was last taken for, alone in its line):
+    by its thread when it starts, or by the caller, which after its own
+    share and 32 turns of waiting runs the shares no thread has started. A
+    share not started then would end later on its thread than on the
+    caller, free at that moment. A thread late by a loop or more finds its
+    share taken and reads the generation of the loop now (it counted one
+    more before: the caller waited for it).
+  - Loops of 16 tasks of 5 µs on 8 threads, one processor busy: 96.6 µs a
+    loop before, 27.1 when the caller waited 256 turns, 16.8 after 32, 16.5
+    at once; 11.7 µs before and after with the processors free (the same
+    within 0.5 %). The layout: median 0.298 ms over 200 frames on 8 threads
+    with a processor busy (0.278 on 7). On 64 threads (more than the 16
+    processors of the machine): 293 µs a loop before, 17.4 after.
+  - A share started and then interrupted by the system still holds the loop
+    back (a thread cannot give part of its share).
+  - Test (`parallel.rs`): small loops of the three kinds one after the
+    other on 64 threads (tasks taken in turn, tasks by thread, ranges), and
+    the programs of loops in tasks and of arrays filled by ranges: the
+    results of the interpreter and of one thread.

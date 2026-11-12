@@ -225,9 +225,10 @@ fn loops_in_tasks_are_shared_and_do_not_depend_on_threads() {
 /// range of their blocks (`isc_parallel_for_fill`); new arrays (the first
 /// round) and arrays from the cache of the allocator (the second); the
 /// same elements and output for any number of threads.
-#[test]
-fn arrays_filled_by_ranges_do_not_depend_on_threads() {
-    let src = r#"function round(r: i64): i64[3] {
+/// The program of `arrays_filled_by_ranges_do_not_depend_on_threads` and
+/// its output.
+fn new_arrays() -> (&'static str, String) {
+    let src: &str = r#"function round(r: i64): i64[3] {
     const n = 1500017 + r;
     const a = map(iota(n), (i) => (i * 7919 + r) % 1000003);
     const b = filter(a, (x) => x % 3 != 0);
@@ -254,6 +255,12 @@ action main(args: string[k]): i32 {
     }
     let text: Vec<u8> = (0..3000017i64).map(|i| if i % 61 == 60 { 10 } else { 65 + ((i * 7) % 26) as u8 }).collect();
     want += &String::from_utf8(text.iter().rev().copied().collect()).unwrap();
+    (src, want)
+}
+
+#[test]
+fn arrays_filled_by_ranges_do_not_depend_on_threads() {
+    let (src, want) = new_arrays();
     let bin = compile(src, "p_new_arrays");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     // a range of blocks for each thread: mode 2 of its site (D357)
@@ -508,4 +515,61 @@ action main(args: string[k]): i32 {
         let r = run_bin_threads(&bin, &[], Some(t));
         assert_eq!((r.code, r.stderr.trim_end()), (101, want.as_str()), "T={}", t);
     }
+}
+
+/// D651: the caller of a parallel loop, waiting for the others after its
+/// share, runs the shares no thread has started. With 64 threads on the
+/// processors of this machine many are not running when a loop starts:
+/// small loops of each kind (a map of tasks by thread, a fill by ranges,
+/// loops in tasks) one after the other, their shares run by whichever
+/// thread takes them; the same results as the interpreter and as one
+/// thread; the programs of loops in tasks and of arrays filled by ranges
+/// on 64 threads (the three modes of the loops).
+#[test]
+fn shares_of_threads_not_running_are_taken_by_the_caller() {
+    let src = r#"function work(i: i64, s: i64): i64 {
+    return fold(iota(300), s + i, (a, k) => (a * 31 + k) % 1000003);
+}
+
+function round(r: i64, acc: i64): i64 {
+    const ys = map(iota(16), (i) => work(i, acc));
+    const zs = map(iota(70000), (i) => (i * 7 + acc + r) % 101);
+    const ws = map(iota(12), (j) => sum(map(iota(j * 3), (i) => work(i, j + r))));
+    return (acc + sum(ys) + zs[r * 31 % 70000] + sum(ws)) % 1000003;
+}
+
+action rounds(r: i64, n: i64, acc: i64): i64 {
+    if (r == n) {
+        return acc;
+    }
+    return rounds(r + 1, n, round(r, acc));
+}
+
+action main(args: string[k]): i32 {
+    print(rounds(0, parseI64(args[0]), 7));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &["40"]);
+    let bin = compile(src, "p_shares_taken");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let sites = |mode: &str| ll.lines().filter(|l| l.contains("call void @isc_parallel_for_site(") && l.ends_with(&format!("i32 {})", mode))).count();
+    assert!(sites("1") >= 3, "the loops of the test are not parallel");
+    for t in [1, 64] {
+        let run = run_bin_threads(&bin, &["40"], Some(t));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{} threads: {}", t, run.stderr);
+    }
+    // loops of tasks by thread (mode 0) with loops in tasks (1), and with
+    // fills by ranges (2)
+    let (arrays, arrays_want) = new_arrays();
+    let mut modes = [sites("1") > 0, false, false];
+    for (src, want, name) in [(NESTED_SRC, interp_ok(NESTED_SRC, &[]), "p_nested_shares_taken"), (arrays, arrays_want, "p_arrays_shares_taken")] {
+        let bin = compile(src, name);
+        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        let has = |mode: &str| ll.lines().any(|l| l.contains("call void @isc_parallel_for_site(") && l.ends_with(&format!("i32 {})", mode)));
+        modes = [modes[0] || has("1"), modes[1] || has("0"), modes[2] || has("2")];
+        let run = run_bin_threads(&bin, &[], Some(64));
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}, 64 threads: {}", name, run.stderr);
+    }
+    assert_eq!(modes, [true, true, true], "the modes 1, 0 and 2 of the parallel loops not all run");
 }

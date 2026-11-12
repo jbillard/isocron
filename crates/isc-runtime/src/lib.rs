@@ -4359,6 +4359,42 @@ const RANGE_THREADS: usize = 64;
 /// search) is finished by them, from its other end.
 static RANGES: [AtomicU64; RANGE_THREADS] = [const { AtomicU64::new(0) }; RANGE_THREADS];
 
+/// The share of each thread in a job (D651): the generation of the job it
+/// was last taken for, alone in its line. The thread whose share it is
+/// takes it when it starts the job; the caller of a job, waiting for the
+/// others after its own share, takes those that no thread has started and
+/// runs them itself. A thread that is not running (its processor taken by
+/// another process, a thread just created) no longer holds the job back
+/// until the system gives it a processor: with one of the 8 processors of
+/// the benchmarks kept busy by another process, the layout of a list of
+/// tasks took 4.04 ms on 8 threads, 0.28 ms with them all free.
+#[repr(C, align(128))]
+struct ShareLine {
+    gen: AtomicU32,
+}
+
+static SHARES: [ShareLine; 256] = [const { ShareLine { gen: AtomicU32::new(0) } }; 256];
+
+/// The share `k` of the job of generation `gen` taken by this thread: true
+/// once for each share of each job. Every share of a job is taken before it
+/// ends, so a share free for `gen` holds `gen - 1`; a thread late by a job
+/// or more, which would take it for an earlier one, finds a later value.
+fn take_share(k: usize, gen: u32) -> bool {
+    let s = &SHARES[k].gen;
+    let before = gen.wrapping_sub(1);
+    s.load(Ordering::Relaxed) == before && s.compare_exchange(before, gen, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+}
+
+/// The turns the caller of a job waits for the others after its share
+/// before it takes the shares no thread has started (D651): a share not
+/// started then would end later on its thread than on the caller, free now;
+/// the turns spare it reading the lines of the shares when the others are
+/// about to end. Measured on loops of 16 tasks of 5 µs, 8 threads, one of
+/// the 8 processors kept busy by another process: 96.6 µs a loop before,
+/// 27.1 after 256 turns, 16.8 after 32, 16.5 at once; all 11.7 µs with the
+/// processors free.
+const TAKE_AFTER: u32 = 32;
+
 /// The next task of the range `r`: from its first (`front`) or its end.
 fn take_range(r: &AtomicU64, front: bool) -> Option<i64> {
     let mut v = r.load(Ordering::Acquire);
@@ -4428,7 +4464,12 @@ fn thread_count() -> usize {
         n = default_threads();
     }
     let n = n.clamp(1, 256);
-    SLEEP.start_gen.store(GEN.gen.load(Ordering::Acquire), Ordering::Release);
+    let gen = GEN.gen.load(Ordering::Acquire);
+    // the shares free for the next job (D651)
+    for s in &SHARES {
+        s.gen.store(gen, Ordering::Relaxed);
+    }
+    SLEEP.start_gen.store(gen, Ordering::Release);
     for k in 1..n {
         start_worker(k);
     }
@@ -4512,13 +4553,18 @@ extern "C" fn worker(arg: *mut c_void) -> *mut c_void {
                 SLEEP.sleepers.fetch_sub(1, Ordering::SeqCst);
             }
         }
-        seen = seen.wrapping_add(1);
+        // the generation now: a thread that was not running may find a job
+        // later than the one after `seen`, its share of those before taken
+        // by their callers (D651)
+        seen = GEN.gen.load(Ordering::Acquire);
         let threads = JOB.threads.load(Ordering::Acquire);
-        // SAFETY: the job of the generation seen, not ended before this
-        // thread counts itself in `finished` below
-        unsafe { run_share(k, threads) };
-        JOB.finished.fetch_add(1, Ordering::AcqRel);
-        help_until_done(seen, threads, true);
+        if take_share(k, seen) {
+            // SAFETY: the job of the generation seen, its share taken: not
+            // ended before this thread counts it in `finished` below
+            unsafe { run_share(k, threads) };
+            JOB.finished.fetch_add(1, Ordering::AcqRel);
+        }
+        help_until_done(seen, threads, true, false);
     }
 }
 
@@ -4609,14 +4655,29 @@ fn help_nested() -> bool {
 }
 
 /// After its share: the tasks of the loops opened by the tasks still
-/// running, until every thread has finished its share of the job of
-/// generation `gen`. A worker spins SPIN times without work, then sleeps by
-/// 50 µs; the caller of the job (`main`, which waits for it) only spins.
-fn help_until_done(gen: u32, threads: usize, sleep: bool) {
+/// running, until every share of the job of generation `gen` is finished.
+/// A worker spins SPIN times without work, then sleeps by 50 µs; the caller
+/// of the job (`main`, which waits for it) only spins, and after TAKE_AFTER
+/// turns runs the shares no thread has started (D651).
+fn help_until_done(gen: u32, threads: usize, sleep: bool, caller: bool) {
     let mut idle = 0u32;
+    let mut taken = !caller;
     while JOB.finished.load(Ordering::Acquire) < threads && GEN.gen.load(Ordering::Acquire) == gen {
         if help_nested() {
             idle = 0;
+            continue;
+        }
+        if !taken && idle >= TAKE_AFTER {
+            taken = true;
+            for j in 1..threads {
+                if take_share(j, gen) {
+                    // SAFETY: the job of generation `gen`, published by this
+                    // thread and not ended: its share `j` taken, counted in
+                    // `finished` below
+                    unsafe { run_share(j, threads) };
+                    JOB.finished.fetch_add(1, Ordering::AcqRel);
+                }
+            }
             continue;
         }
         if idle < SPIN || !sleep {
@@ -4925,7 +4986,7 @@ unsafe fn parallel_job(n: i64, task: Task, ctx: *mut c_void, ctx_bytes: i64, dyn
     unsafe { run_share(0, threads) };
     JOB.finished.fetch_add(1, Ordering::AcqRel);
     let gen = GEN.gen.load(Ordering::Relaxed);
-    help_until_done(gen, threads, sleep);
+    help_until_done(gen, threads, sleep, true);
     BUSY.store(false, Ordering::Release);
 }
 
