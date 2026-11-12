@@ -16188,3 +16188,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     data/state_grown.isc): a million steps in milliseconds, the copies of
     the report those of the literal of `main` alone, the output of the
     interpreter, Valgrind clean.
+
+- **D661 — The state of a loop taken apart computes its components before
+  its parts are moved.** The state of a loop taken apart on entry (D206)
+  whose new state reads a part that another of its components keeps as it
+  is (`{ ...s, z: s.z.with(k, s.b[j]) }`, `b` written before `z`) copied
+  that part at each step: the parts of D206 were not those of D653, whose
+  tuples compute their components first (D659). Now the same
+  (`bind_after_parts_in` in `take_apart`). The fast core of the machine of
+  Lua of isocron-ui (a loop of its frequent instructions) copied its cells
+  at each read of an upvalue: 20 000 closures made in 1 s, quadratic; now
+  in milliseconds.
+  - Tried and left again: a large state given to a function that gives it
+    back passed by its place, but for the functions that are loops (whose
+    state stays in their registers): every benchmark of the machine
+    slower (fib 367 to 557 ms under the protocol), the places of the calls
+    of `run` (some 1 KB each) in its frame weighing on its loop even where
+    no call is made. The machine instead keeps a small fast core that calls
+    no function given the state.
+  - Test (`memory.rs`, `a_loop_state_whose_new_state_reads_a_part_it_keeps`,
+    data/loop_state_parts.isc): a million steps in milliseconds, the copies
+    of the report that of the literal of `main` alone, the output of the
+    interpreter, Valgrind clean.

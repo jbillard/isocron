@@ -3988,6 +3988,9 @@ fn take_apart(vars: &mut Vec<VarInfo>, mut body: Expr, pv: VarId, ty: &Type) -> 
     // last use; through the `let` it was a view, copied, D660)
     let set: HashSet<VarId> = parts.iter().map(|(c, _)| *c).collect();
     same_as_parts(&mut body, &set);
+    // (a new state that reads a part another of its components moves: its
+    // components computed first, D659, D661)
+    bind_after_parts_in(&mut body, &set, vars);
     for (j, (c, t)) in parts.iter().enumerate().rev() {
         let bty = body.ty.clone();
         let take = Expr::new(ExprKind::Take(Box::new(Expr::var(pv, ty.clone(), span)), j as u32), t.clone(), span);

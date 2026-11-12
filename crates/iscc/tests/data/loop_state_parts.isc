@@ -1,0 +1,19 @@
+// The state of a loop taken apart (D206) whose new state reads a part that
+// another of its components keeps as it is (`b`, read by the update of
+// `z`, which comes after it): its components computed first, the parts
+// moved after them (D661).
+type S = { z: i64[], b: i64[], n: i64, name: string };
+
+function steps(s: S, i: i64, m: i64): S {
+    if (i >= m) {
+        return s;
+    }
+    return steps({ ...s, z: s.z.with(i % 8, s.z[i % 8] + s.b[i % 1000]), n: s.n + 1 }, i + 1, m);
+}
+
+action main(args: string[k]): i32 {
+    const m = parseI64(args[0]);
+    const s = steps({ z: fill(8, 0), b: map(iota(100000), (i) => i * 3), n: 0, name: "loop" }, 0, m);
+    print([s.n, s.z[0] + s.z[7], s.b.length]);
+    return 0;
+}

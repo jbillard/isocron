@@ -1681,3 +1681,32 @@ fn a_state_whose_array_is_grown_before_it_is_made_anew() {
     assert!(copies.iter().all(|l| *l == 28), "the lines whose values are copied: {:?}", copies);
     clean(src, "state_grown_vg", &["300"]);
 }
+
+/// D661: the state of a loop taken apart (D206) whose new state reads a
+/// part that another of its components keeps as it is (`z`, updated from
+/// `b[i % 1000]`, written after `b` in the tuple): its components computed
+/// first, the parts moved after them. Before, `b` (100 000 elements) was
+/// copied at each step (20 000 steps in 0.45 s; the fast core of the
+/// machine of Lua of isocron-ui copied its cells at each upvalue read). A
+/// million steps in milliseconds; the copies of the memory report those of
+/// the literal of `main` alone; the output of the interpreter, Valgrind
+/// clean.
+#[test]
+fn a_loop_state_whose_new_state_reads_a_part_it_keeps() {
+    let src = include_str!("data/loop_state_parts.isc");
+    let bin = compile(src, "loop_state_parts");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["1000000"]);
+    let took = start.elapsed();
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[1000000, 374625000, 100000]\n"), "{}", r.stderr);
+    assert!(took.as_secs() < 5, "a million steps in {:?}", took);
+    for a in ["1", "20"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("loop_state_parts.isc", src).unwrap();
+    let copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    assert!(copies.iter().all(|l| *l == 16), "the lines whose values are copied: {:?}", copies);
+    clean(src, "loop_state_parts_vg", &["50"]);
+}
