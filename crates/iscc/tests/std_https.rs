@@ -38,42 +38,10 @@ fn certificates(name: &str) -> Option<PathBuf> {
     Some(dir)
 }
 
-/// A free port of the local machine.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
-/// `openssl s_server` on a free port, serving the files of `dir/www`
-/// (`-WWW`), accepting connections until it is killed: its port once it
-/// accepts. A server that has not opened its port after 30 s or that
-/// stopped (its port taken by another test between `free_port` and its
-/// start) is started again on another port, five times at most; the test
-/// does not go on without it (suite 169: all the connections of the client
-/// refused, the file alone passing 6 times of 6).
+/// `openssl s_server` serving the files of `dir/www`, on a port of
+/// 127.0.0.1 it chooses itself (`common::s_server`).
 fn s_server(dir: &Path) -> (std::process::Child, u16) {
-    for _ in 0..5 {
-        let port = free_port();
-        let mut c = Command::new("openssl")
-            .args(["s_server", "-quiet", "-accept", &port.to_string(), "-cert", "../server.pem", "-key", "../server.key", "-WWW"])
-            .current_dir(dir.join("www"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        for _ in 0..3000 {
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return (c, port);
-            }
-            if let Ok(Some(_)) = c.try_wait() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let _ = c.kill();
-        let _ = c.wait();
-    }
-    panic!("openssl s_server did not open its port");
+    common::s_server(&dir.join("www"), "0", "../server.pem", "../server.key")
 }
 
 fn valgrind_bin() -> Option<PathBuf> {

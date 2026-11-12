@@ -316,3 +316,41 @@ pub fn checked_clean_bin(bin: &std::path::Path, args: &[&str], input: Option<&[u
     assert_eq!(o.status.code(), Some(0), "{:?} with the allocator checked: {}", bin, String::from_utf8_lossy(&o.stderr));
 }
 
+
+/// `openssl s_server` in `www` serving its files (`-WWW`) with the
+/// certificate `cert` and its key `key`, accepting connections until it is
+/// killed, on a port it chooses itself (`accept`: `0`, or `address:0`):
+/// that it prints once it listens (`ACCEPT [::]:port`), returned. A port
+/// chosen before it starts could be taken by another test meanwhile: its
+/// `bind` then failed and it stopped, while a test of the port reached the
+/// other test's listener and took the server as started (suite 451: all
+/// the connections of the client refused; suite 169 before it).
+pub fn s_server(www: &std::path::Path, accept: &str, cert: &str, key: &str) -> (std::process::Child, u16) {
+    use std::io::BufRead;
+    let mut c = std::process::Command::new("openssl")
+        .args(["s_server", "-accept", accept, "-cert", cert, "-key", key, "-WWW"])
+        .current_dir(www)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut lines = std::io::BufReader::new(c.stdout.take().unwrap()).lines();
+    let port = loop {
+        match lines.next() {
+            Some(Ok(l)) => {
+                if let Some(p) = l.strip_prefix("ACCEPT ").and_then(|a| a.rsplit(':').next()).and_then(|p| p.trim().parse::<u16>().ok()) {
+                    break p;
+                }
+            }
+            _ => {
+                let _ = c.kill();
+                let _ = c.wait();
+                panic!("openssl s_server did not open a port ({})", accept);
+            }
+        }
+    };
+    // what it prints after, read and dropped (a full pipe would stop it)
+    std::thread::spawn(move || lines.for_each(drop));
+    (c, port)
+}

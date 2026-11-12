@@ -432,27 +432,18 @@ fn https_client_on_windows() {
     for f in ["ca.pem", "other.pem"] {
         std::fs::copy(certs.join(f), d.join(f)).unwrap();
     }
-    // the two servers, on free ports of that address
-    let port = || std::net::TcpListener::bind((addr.as_str(), 0)).unwrap().local_addr().unwrap().port();
-    let (pa, pb) = (port(), port());
-    // stopped when the test ends, a failure included (two were found running
-    // hours after a run whose connection to the machine failed)
+    // the two servers, on ports of that address they choose themselves
+    // (`common::s_server`), stopped when the test ends, a failure included
+    // (two were found running hours after a run whose connection to the
+    // machine failed)
     let mut servers = Servers(Vec::new());
-    for (p, n) in [(pa, "ip"), (pb, "named")] {
-        servers.0.push(
-            std::process::Command::new("openssl")
-                .args(["s_server", "-quiet", "-accept", &format!("{}:{}", addr, p), "-cert", &format!("../{}.pem", n), "-key", &format!("../{}.key", n), "-WWW"])
-                .current_dir(certs.join("www"))
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .unwrap(),
-        );
-        while std::net::TcpStream::connect((addr.as_str(), p)).is_err() {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+    let mut ports = Vec::new();
+    for n in ["ip", "named"] {
+        let (c, p) = s_server(&certs.join("www"), &format!("{}:0", addr), &format!("../{}.pem", n), &format!("../{}.key", n));
+        servers.0.push(c);
+        ports.push(p);
     }
+    let (pa, pb) = (ports[0], ports[1]);
     let big: u64 = (0..3_000_000u64).map(|i| i % 253).sum();
     let want = format!("200 hello over tls\n200 3000000 {}\ntls certificate\ntls certificate\ntls no certificate in the PEM text\ntls certificate\nrefused\n", big);
     let (sa, sb) = (pa.to_string(), pb.to_string());
