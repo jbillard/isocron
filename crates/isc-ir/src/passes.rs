@@ -618,7 +618,7 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     // : s`, an `if` one branch of which is new, D105: its parts taken where
     // it is made anew, D653)
     if !new_tuple(init) {
-        if borrowed_from(init, &|w| vec![w]).is_none() && !matches!(body.kind, ExprKind::Proj(..)) {
+        if borrowed_from(init, &|w| vec![w]).is_none() && !node_view(init) && !matches!(body.kind, ExprKind::Proj(..)) {
             let rty = init.ty.clone();
             // (not surely owned: `borrowed_from` sees no view of a node)
             take_rebuilds(body, r, &rty, vars, false);
@@ -653,7 +653,10 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
             }
             return;
         }
-        take_rebuilds(body, r, &rty, vars, true);
+        // (surely owned unless it reads a node outside a call: the payload
+        // of a variant read out of its node is a view of it, D663)
+        let sure = !unboxes(init);
+        take_rebuilds(body, r, &rty, vars, sure);
         return;
     }
     let ExprKind::Proj(x, k) = &body.kind else { return };
@@ -1024,7 +1027,12 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
     // (not a value of a sum type, its tag first: one variant's fields alone
     // are its own, the others not to be freed one by one, D448)
     let tagged = matches!(vty, Type::Tuple(cs) if matches!(cs.first(), Some(Type::Int(crate::IntKind::U32))));
-    if !later && !tainted && matches!(e.kind, ExprKind::Let { .. } | ExprKind::Tuple(_) | ExprKind::If(..)) && reads_var(e, v) && only_parts(e, v) && ((sure && !tagged) || has_rebuild(e, v, vty)) && aliases_kept(e, v, al, comps) {
+    // (a tuple or an `if` for a value surely owned alone: a value made anew
+    // there that is not, a payload read out of a node, is taken where it is
+    // made anew, D653)
+    let owned = sure && !tagged;
+    let place = matches!(e.kind, ExprKind::Let { .. }) || (owned && matches!(e.kind, ExprKind::Tuple(_) | ExprKind::If(..)));
+    if !later && !tainted && place && reads_var(e, v) && only_parts(e, v) && (owned || has_rebuild(e, v, vty)) && aliases_kept(e, v, al, comps) {
         take_parts_here(e, v, vty, vars);
         return true;
     }
@@ -3713,6 +3721,31 @@ fn new_tuple(e: &Expr) -> bool {
         ExprKind::Let { body, .. } | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => new_tuple(body),
         ExprKind::If(_, t, f) => new_tuple(t) && new_tuple(f),
         _ => false,
+    }
+}
+
+/// Whether `e` is a view that `borrowed_from` takes for new memory: a let
+/// whose value borrows its own variable, itself a view (`let n = unbox x
+/// in proj 1 n`, the payload of a variant read out of its node, D663).
+fn node_view(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Let { var, init, body, .. } => match borrowed_from(body, &|w| vec![w]) {
+            Some(s) if s.contains(var) => borrowed_from(init, &|w| vec![w]).is_some() || node_view(init),
+            _ => node_view(body),
+        },
+        ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) | ExprKind::Free(_, b) => node_view(b),
+        ExprKind::If(_, t, f) => node_view(t) || node_view(f),
+        _ => false,
+    }
+}
+
+/// Whether `e` reads a node (`unbox`) of a type that owns memory outside
+/// the arguments of a call, an action or a `fold` (whose results are new).
+fn unboxes(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Unbox(_) if e.ty.has_heap() => true,
+        ExprKind::Call(..) | ExprKind::Action(..) | ExprKind::Fold(..) => false,
+        _ => e.children().into_iter().any(unboxes),
     }
 }
 

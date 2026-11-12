@@ -16236,3 +16236,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     data/hot_parts.isc): a million rounds over an array of 100 000
     elements in milliseconds (23 s before), the form of `anyReg` accepted,
     the output of the interpreter, Valgrind clean.
+
+- **D663 — The payload of a variant read out of its node is a view, not
+  a value of its own.** `Div(st, cs) => Div({ ...st, tip: text }, cs)`
+  (the tooltip of a component of isocron-ui, a recursive sum: its values
+  in nodes) was refused by the memory check since D660: `st`, read out of
+  the node (`let n = unbox e in proj 1 n`), was taken for new memory
+  (`borrowed_from` sees a let whose value borrows its own variable as
+  new), its parts taken where the block that rebuilds it begins. A value
+  so read is now left as it is (`node_view`), and a new tuple that reads
+  a node outside the arguments of a call (`unboxes`) is not surely owned:
+  its parts taken only where it is made anew. A new tuple made of the
+  parts of a parameter given keeps the rule of D662 (its parts owned once
+  the parameter is taken apart). The programs of the library compile
+  again; the machine of Lua is unchanged.
+  - Test (`memory.rs`, `the_payload_of_a_node_made_anew`,
+    data/node_payload.isc): a payload made anew with one field changed,
+    in a chain of calls of a `fold`, the node read again after; the
+    output of the interpreter, Valgrind clean.
+  - The tests of the programs of the Benchmarks Game run the interpreter
+    one at a time: its standard input is a global, and `fasta_programs`
+    read the empty input of `computing_programs` running beside it (once,
+    under glibc, where the binaries were already built).

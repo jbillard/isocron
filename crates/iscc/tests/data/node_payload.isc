@@ -1,0 +1,39 @@
+// The payload of a variant of a recursive sum, read out of its node (a
+// view of it), made anew with one field changed (`Div({ ...st, tip: t },
+// cs)`, the tooltip of a component of isocron-ui): copied, its parts not
+// taken as those of a value of its own (D663); a payload rebuilt in a
+// chain of such calls, and the node read again after.
+type St = { w: f32, tip: string, name: string };
+type El = Div(St, El[]) | Text(string);
+
+function withTip(e: El, text: string): El {
+    return match (e) {
+        Div(st, cs) => Div({ ...st, tip: text }, cs),
+        other => other,
+    };
+}
+
+function renamed(e: El, k: i64): El {
+    return match (e) {
+        Div(st, cs) => Div({ ...st, name: `${st.name}.${k}` }, map(cs, (c) => withTip(c, `c${k}`))),
+        other => other,
+    };
+}
+
+function show(e: El): string {
+    return match (e) {
+        Div(st, cs) => `${st.name}[${st.tip}](${join(map(cs, show), ",")})`,
+        Text(s) => s,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const leaf = Div({ w: 1.0, tip: "", name: `leaf${n}` }, [Text(`a${n}`)]);
+    const root = Div({ w: 2.0, tip: "", name: "root" }, [leaf, Text("b"), withTip(leaf, "own")]);
+    const t = fold(iota(n), root, (acc, k) => renamed(acc, k));
+    print(show(withTip(t, "top")));
+    print(show(root));
+    print(show(leaf));
+    return 0;
+}

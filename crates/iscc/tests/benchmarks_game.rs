@@ -51,12 +51,19 @@ fn valgrind_clean(bin: &std::path::Path, args: &[&str], input: &[u8]) {
 
 /// The program `name` with `arg` and `input`: the interpreter, the
 /// compiled program, Valgrind; its output.
+// (the standard input of the interpreter is a global: the tests that run
+// in parallel give it theirs one at a time)
+static INTERP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn output(name: &str, arg: &str, input: &[u8]) -> Vec<u8> {
     let src = source(name);
     let p = iscc::frontend(&format!("{}.isc", name), &src).unwrap();
-    *isc_interp::rt::STDIN.lock().unwrap() = Some(input.to_vec());
     let mut out = Vec::new();
-    assert_eq!(isc_interp::run(&p, &[arg.to_string()], &mut out).unwrap(), 0, "{}", name);
+    {
+        let _one = INTERP.lock().unwrap_or_else(|e| e.into_inner());
+        *isc_interp::rt::STDIN.lock().unwrap() = Some(input.to_vec());
+        assert_eq!(isc_interp::run(&p, &[arg.to_string()], &mut out).unwrap(), 0, "{}", name);
+    }
     let opts = isc_codegen::Options { isa: isc_codegen::Isa::Avx2, ..isc_codegen::Options::default() };
     let bin = compile_with(&src, &format!("bg_{}", name), opts.clone());
     assert_eq!(run(&bin, &[arg], input), out, "{}: compiled and interpreted", name);
@@ -298,7 +305,6 @@ fn computing_programs() {
 
 #[test]
 fn fasta_programs() {
-    // one test: the standard input of the interpreter is a global
     let dna = output("fasta", "1000", b"");
     assert!(dna == fasta(1000), "fasta");
     assert!(output("revcomp", "0", &dna) == revcomp(&dna), "revcomp");

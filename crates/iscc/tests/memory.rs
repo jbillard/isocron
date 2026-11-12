@@ -1744,3 +1744,17 @@ fn a_new_tuple_read_by_its_parts_to_make_a_state() {
     assert!(copies.iter().all(|l| *l > 25), "the lines whose values are copied: {:?}", copies);
     clean(src, "hot_parts_vg", &["40"]);
 }
+
+#[test]
+fn the_payload_of_a_node_made_anew() {
+    let src = include_str!("data/node_payload.isc");
+    let bin = compile(src, "node_payload");
+    for a in ["0", "3", "40"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let r = run_bin(&bin, &["2"]);
+    assert_eq!(r.stdout, "root.0.1[top](leaf2[c1](a2),b,leaf2[c1](a2))\nroot[](leaf2[](a2),b,leaf2[own](a2))\nleaf2[](a2)\n");
+    clean(src, "node_payload_vg", &["5"]);
+}
