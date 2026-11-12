@@ -653,7 +653,7 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
             }
             return;
         }
-        take_rebuilds(body, r, &rty, vars, false);
+        take_rebuilds(body, r, &rty, vars, true);
         return;
     }
     let ExprKind::Proj(x, k) = &body.kind else { return };
@@ -949,7 +949,7 @@ fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>, su
     comps.insert(v, None);
     aliases_of(e, v, &mut comps);
     let al: HashSet<VarId> = comps.keys().copied().collect();
-    rebuild_at(e, v, &al, &comps, vty, false, vars, sure)
+    rebuild_at(e, v, &al, &comps, vty, false, vars, sure, false)
 }
 
 /// The variables of the lets of `e` that borrow memory of `v` or of those
@@ -1005,7 +1005,7 @@ fn reads_any(e: &Expr, al: &HashSet<VarId>) -> bool {
 
 /// `rebuild_at` below `e`, `later`: whether `v` or one of its aliases may
 /// be read after `e`.
-fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId, Option<Vec<u32>>>, vty: &Type, later: bool, vars: &mut Vec<VarInfo>, sure: bool) -> bool {
+fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId, Option<Vec<u32>>>, vty: &Type, later: bool, vars: &mut Vec<VarInfo>, sure: bool, tainted: bool) -> bool {
     if !later && &e.ty == vty && matches!(e.kind, ExprKind::Tuple(_)) && rebuilt_from(e, v) && aliases_kept(e, v, al, comps) {
         take_parts_here(e, v, vty, vars);
         return true;
@@ -1019,7 +1019,12 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
     // given away)
     // (`v` surely owned, or made anew in the block: a value read out of a
     // node is a view of it, though its type owns no memory)
-    if !later && matches!(e.kind, ExprKind::Let { .. }) && reads_var(e, v) && only_parts(e, v) && (sure || has_rebuild(e, v, vty)) && aliases_kept(e, v, al, comps) {
+    // (and `v` read before only by its scalars: a value read before that
+    // holds `v` or a part of it, `[v, s]` taken apart, D661, borrows it)
+    // (not a value of a sum type, its tag first: one variant's fields alone
+    // are its own, the others not to be freed one by one, D448)
+    let tagged = matches!(vty, Type::Tuple(cs) if matches!(cs.first(), Some(Type::Int(crate::IntKind::U32))));
+    if !later && !tainted && matches!(e.kind, ExprKind::Let { .. } | ExprKind::Tuple(_) | ExprKind::If(..)) && reads_var(e, v) && only_parts(e, v) && ((sure && !tagged) || has_rebuild(e, v, vty)) && aliases_kept(e, v, al, comps) {
         take_parts_here(e, v, vty, vars);
         return true;
     }
@@ -1030,15 +1035,17 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
     match &mut e.kind {
         ExprKind::Let { init, body, .. } => {
             let after = later || reads_any(body, al);
-            let a = rebuild_at(init, v, al, comps, vty, after, vars, sure);
-            let b = rebuild_at(body, v, al, comps, vty, later, vars, sure);
+            let t2 = tainted || reads_heap(init, v);
+            let a = rebuild_at(init, v, al, comps, vty, after, vars, sure, tainted);
+            let b = rebuild_at(body, v, al, comps, vty, later, vars, sure, t2);
             a || b
         }
         ExprKind::If(c, t, f) => {
             let after = later || reads_any(t, al) || reads_any(f, al);
-            let a = rebuild_at(c, v, al, comps, vty, after, vars, sure);
-            let b = rebuild_at(t, v, al, comps, vty, later, vars, sure);
-            let d = rebuild_at(f, v, al, comps, vty, later, vars, sure);
+            let t2 = tainted || reads_heap(c, v);
+            let a = rebuild_at(c, v, al, comps, vty, after, vars, sure, tainted);
+            let b = rebuild_at(t, v, al, comps, vty, later, vars, sure, t2);
+            let d = rebuild_at(f, v, al, comps, vty, later, vars, sure, t2);
             a || b || d
         }
         _ => {
@@ -1052,10 +1059,20 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
                 if Some(i) == lam || !reads[i] {
                     continue;
                 }
-                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars, sure);
+                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars, sure, true);
             }
             any
         }
+    }
+}
+
+/// `e` reads `v` otherwise than by its parts of scalars: whole, or a part
+/// that owns memory (a value made of it may hold it).
+fn reads_heap(e: &Expr, v: VarId) -> bool {
+    match &e.kind {
+        ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == v) => e.ty.has_heap(),
+        ExprKind::Var(w, _) => *w == v,
+        _ => e.children().into_iter().any(|c| reads_heap(c, v)),
     }
 }
 

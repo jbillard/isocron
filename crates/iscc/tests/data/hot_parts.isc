@@ -1,0 +1,53 @@
+// A new tuple returned by a function, read by its parts to make another
+// state anew (`const h = step(...); { ...s, xs: h.xs, n: h.n }`): its parts
+// taken where the block that reads them begins, moved, not copied (D662);
+// and a component that is the state itself (`[g, s]` taken apart), read
+// with the state after it: the state not taken apart there.
+type St = { xs: i64[], log: string[], n: i64, tag: string };
+type Hot = { xs: i64[], n: i64 };
+type G = { k: i64[], free: i64, names: string[] };
+
+function step(h: Hot, k: i64): Hot {
+    return { xs: h.xs.with(k % 16, h.xs[k % 16] + k), n: h.n + 1 };
+}
+
+function round(s: St, k: i64): St {
+    const h = step({ xs: s.xs, n: s.n }, k);
+    return { ...s, xs: h.xs, n: h.n };
+}
+
+function rounds(s: St, k: i64, m: i64): St {
+    if (k >= m) {
+        return s;
+    }
+    return rounds(round(s, k), k + 1, m);
+}
+
+function temp(g: G): [G, i64] {
+    return [{ ...g, free: g.free + 1 }, g.free];
+}
+
+function anyReg(g: G, local: boolean, s: i64): [G, i64] {
+    if (local) {
+        return [g, s];
+    }
+    const [g1, r] = temp(g);
+    return [{ ...g1, k: concat(g1.k, [r]) }, r];
+}
+
+function stat(g0: G, local: boolean): G {
+    const g = { ...g0, free: g0.free + 0 };
+    const [c1, ro] = anyReg(g, local, 3);
+    const named = g.names.length;
+    return { ...c1, free: c1.free + ro + named };
+}
+
+action main(args: string[k]): i32 {
+    const m = parseI64(args[0]);
+    const s = rounds({ xs: map(iota(100000), (i) => i), log: ["a"], n: 0, tag: "s" }, 0, m);
+    print([s.n, s.xs[0] + s.xs[15], s.xs.length]);
+    const g = { k: [1, 2], free: 5, names: ["x", "y", "z"] };
+    print(stat(g, true));
+    print(stat(g, false));
+    return 0;
+}

@@ -16210,3 +16210,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     data/loop_state_parts.isc): a million steps in milliseconds, the copies
     of the report that of the literal of `main` alone, the output of the
     interpreter, Valgrind clean.
+
+- **D662 — The parts of a new tuple read by its parts taken where the
+  expression that reads them begins.** A new tuple returned by a function
+  and read by its parts to make another state (`const h = core(...); {
+  ...vm, regs: h.regs, ... }`) copied every part that owns memory: the
+  parts of a new tuple were taken only where it is made anew (D653); the
+  rule of D660 (taken where a block that reads them by its parts begins)
+  was for a parameter given alone. Now for a new tuple too, where a block,
+  a tuple or an `if` that reads it by its parts alone begins. But not
+  after a value that may hold it or a part that owns memory was read from
+  it: `const [c1, ro] = anyReg(cg, o)`, `anyReg` giving back `[cg, s]`,
+  `c1` is `cg` itself (the alias analysis does not see through a tuple
+  taken apart); taken apart after, `c1` read what was taken (the memory
+  check refused the compiler of Lua of isocron-ui). A read before of a
+  part of scalars alone keeps the rule. Nor for a value of a sum type (a
+  tuple whose tag, a `u32`, comes first: one variant's fields alone are
+  its own, freed by its tag, D448; taken apart, its other slots would be
+  freed one by one); a record whose first field is a `u32` loses the rule
+  alone. The fast core of the machine of
+  Lua then runs on the part of the machine it reads (38 words of 70),
+  merged into the machine after it without a copy: closures, methods,
+  hash, sort, concatenation and the library of texts 5 to 11 % faster.
+  - Test (`memory.rs`, `a_new_tuple_read_by_its_parts_to_make_a_state`,
+    data/hot_parts.isc): a million rounds over an array of 100 000
+    elements in milliseconds (23 s before), the form of `anyReg` accepted,
+    the output of the interpreter, Valgrind clean.

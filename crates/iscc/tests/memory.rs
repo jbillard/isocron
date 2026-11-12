@@ -1710,3 +1710,37 @@ fn a_loop_state_whose_new_state_reads_a_part_it_keeps() {
     assert!(copies.iter().all(|l| *l == 16), "the lines whose values are copied: {:?}", copies);
     clean(src, "loop_state_parts_vg", &["50"]);
 }
+
+/// D662: a new tuple returned by a function, read by its parts to make
+/// another state anew (`const h = step(...); { ...s, xs: h.xs, n: h.n }`):
+/// its parts taken where the expression that reads them begins (a block,
+/// a tuple, an `if`), the array moved, not copied (a million rounds over an
+/// array of 100 000 elements: 23 s, now milliseconds); and a component
+/// that is the state itself (`[g, s]` taken apart, `anyReg` of the compiler
+/// of Lua of isocron-ui), the state read after it: not taken apart there
+/// (the memory check refused the program). No copy in `step` or `round`;
+/// the output of the interpreter for both forms, Valgrind clean.
+#[test]
+fn a_new_tuple_read_by_its_parts_to_make_a_state() {
+    let src = include_str!("data/hot_parts.isc");
+    let bin = compile(src, "hot_parts");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["1000000"]);
+    let took = start.elapsed();
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (0, "[1000000, 62499937515, 100000]\n{free: 11, k: [1, 2], names: [x, y, z]}\n{free: 14, k: [1, 2, 5], names: [x, y, z]}\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(took.as_secs() < 5, "a million rounds in {:?}", took);
+    for a in ["1", "30"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("hot_parts.isc", src).unwrap();
+    let copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    assert!(copies.iter().all(|l| *l > 25), "the lines whose values are copied: {:?}", copies);
+    clean(src, "hot_parts_vg", &["40"]);
+}
