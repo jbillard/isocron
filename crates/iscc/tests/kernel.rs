@@ -262,10 +262,14 @@ fn a_block_of_the_runtime_is_not_of_the_arena() {
 /// The texts of an array are freed by the module (`isc.late.free_strs`);
 /// those of a large array out of the order of their places, and a text
 /// given to a function of the runtime, by the runtime, which gives each
-/// back through the entry of the program. After the first rounds nothing
-/// new is cut from the arena. (Before, a block freed by the runtime joined
-/// the lists of its allocator and the kernel cut new ones for ever: 1.2
-/// GiB for an array of 4096 texts made and freed 2400 times.)
+/// back through the entry of the program. After the first rounds the arena
+/// grows by 64 KiB at most over 120 more. (Before, a block freed by the
+/// runtime joined the lists of its allocator and the kernel cut new ones
+/// for ever: 1.2 GiB for an array of 4096 texts made and freed 2400 times,
+/// 0.5 MiB a round. Nothing new at all was asked before D651: since then a
+/// thread may run the share of another that has not started, two shares at
+/// once, its blocks then more than in the first rounds; measured under
+/// load: one block of 8 KiB more once, then none over 760 rounds.)
 #[test]
 fn blocks_freed_by_the_runtime_come_back() {
     let src = "function texts(n: i64, r: i64): string[n] {
@@ -306,7 +310,7 @@ action main(args: string[k]): i32 {
     const warm = rounds(0, 40);
     const cut = $load64(base);
     const more = rounds(40, 40) + rounds(80, 40) + rounds(120, 40);
-    print([warm > 0 ? 1 : 0, more > 0 ? 1 : 0, $load64(base) == cut ? 1 : 0]);
+    print([warm > 0 ? 1 : 0, more > 0 ? 1 : 0, $load64(base) - cut <= 65536u64 ? 1 : 0]);
     return 0;
 }
 ";

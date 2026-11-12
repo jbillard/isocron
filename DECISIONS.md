@@ -15974,6 +15974,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     processors of the machine): 293 µs a loop before, 17.4 after.
   - A share started and then interrupted by the system still holds the loop
     back (a thread cannot give part of its share).
+  - Found by suite 453: a thread that runs another's share holds the blocks
+    of two shares at once, more than in the first rounds of a program; the
+    test of D605 (nothing new cut from the arena after 40 rounds) failed 1
+    time of 8, 3 of 8 under load (0 of 8 before). Measured under load: one
+    block of 8 KiB more once, then none over 760 rounds: bounded, not a
+    leak. The test now bounds the growth over 120 rounds at 64 KiB (the
+    leak it guards against was 0.5 MiB a round); 10 of 10 under load.
   - Test (`parallel.rs`): small loops of the three kinds one after the
     other on 64 threads (tasks taken in turn, tasks by thread, ranges), and
     the programs of loops in tasks and of arrays filled by ranges: the
