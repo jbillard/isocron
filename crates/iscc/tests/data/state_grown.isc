@@ -1,0 +1,31 @@
+// A state whose array is grown by a function before the state is made
+// anew (`growTo(s.xs, s.n + 1)`, a branch of which gives back the array
+// itself), in a loop: the array moved there and updated in place, not
+// copied at each step (D660).
+type S = { xs: i64[], n: i64, names: string[], total: i64 };
+
+// room for `need` elements: `xs` itself, or a longer copy
+function growTo(xs: i64[n], need: i64): i64[] {
+    return need <= n ? xs : concat(xs, fill(max(n, 16), 0));
+}
+
+// a part of the state given to a function, the state made anew after it
+function push(s: S, x: i64): S {
+    const ys = growTo(s.xs, s.n + 1);
+    const t = s.total + x;
+    return { ...s, xs: ys.with(s.n, x), n: s.n + 1, total: t };
+}
+
+function pushAll(s: S, i: i64, m: i64): S {
+    if (i >= m) {
+        return s;
+    }
+    return pushAll(push(s, i * 3), i + 1, m);
+}
+
+action main(args: string[k]): i32 {
+    const m = parseI64(args[0]);
+    const s = pushAll({ xs: [], n: 0, names: ["a", "b"], total: 0 }, 0, m);
+    print([s.n, s.total, s.xs[s.n - 1], s.names.length]);
+    return 0;
+}

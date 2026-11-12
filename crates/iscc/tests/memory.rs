@@ -1652,3 +1652,32 @@ fn a_machine_whose_state_is_given_through_a_cycle() {
     assert!(copies.iter().all(|l| *l == 91 || *l == 92), "the lines whose values are copied: {:?}", copies);
     clean(src, "machine_given_vg", &["30"]);
 }
+
+/// D660: a state whose array is grown by a function before the state is
+/// made anew (`growTo(s.xs, s.n + 1)`, one branch of which gives back the
+/// array itself, the other a longer copy), all its fields replaced, in a
+/// loop: its parts taken where the block that reads them by its parts
+/// begins, an argument of a function inlined read as the part itself, the
+/// array moved and updated in place. A million steps in milliseconds (a
+/// copy of the array at each step: minutes); the copies of the memory
+/// report those of the literal of `main` alone; the output of the
+/// interpreter, Valgrind clean.
+#[test]
+fn a_state_whose_array_is_grown_before_it_is_made_anew() {
+    let src = include_str!("data/state_grown.isc");
+    let bin = compile(src, "state_grown");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["1000000"]);
+    let took = start.elapsed();
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[1000000, 1499998500000, 2999997, 2]\n"), "{}", r.stderr);
+    assert!(took.as_secs() < 5, "a million steps in {:?}", took);
+    for a in ["1", "40"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("state_grown.isc", src).unwrap();
+    let copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    assert!(copies.iter().all(|l| *l == 28), "the lines whose values are copied: {:?}", copies);
+    clean(src, "state_grown_vg", &["300"]);
+}

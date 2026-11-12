@@ -16149,3 +16149,42 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     elements in milliseconds, the copies of the report those of the
     literals of `main` alone, the output of the interpreter, Valgrind
     clean); `the_entries_of_a_module_at_their_file_and_line` (report.rs).
+
+- **D660 — The parts of a given state taken where a block that reads them
+  begins; aliases of variables read as the variables.** A part of a state
+  given to a function before the state is made anew (`let ups =
+  grow(vm.ups) in { ...vm, ups: ... }`) was copied there: the parts were
+  taken only where the tuple is made anew (D653), the part read before as a
+  view of the whole state. The closures of the machine of Lua of
+  isocron-ui: 200 000 made in 6.6 s, quadratic (the array of the upvalues
+  copied at each one); now 42 ms. Three changes:
+  - In a function given its state (D637, D654), a block (`let`) that reads
+    the state by its parts alone, and nothing after it, takes its parts at
+    its start (`only_parts`): a part given to a function there is moved,
+    one never moved freed. Only where the state is surely owned: a
+    parameter given, whose function the memory check decides (lent again
+    if it fails); a value read out of a node is a view of it though its
+    type owns no memory (`borrowed_from` does not see it: `pl` of a
+    statement of Lua), and a component of a tuple taken apart at once is
+    owned only once the tuple is split; for those, as before, where the
+    tuple is made anew. A block must read the state: one after it was
+    given away does not.
+  - `let x = y`, `y` a variable of the same type (an argument of a function
+    inlined): `y` read for `x` (`same_vars`), and in a loop state taken
+    apart (D206) a `let x = part` read as the part: through the `let`, a
+    branch that gave the part back (`need <= n ? xs : concat(xs, ...)`)
+    copied it at each step. A million steps of such a loop: 278 s, now 6
+    ms.
+  - Where parts are taken at the start of a block, every tuple of it is
+    made as in D659 (`bind_after_parts_in`).
+  - Tried and left: passing a large state by its place (a pointer, the
+    callee writing its result there, fields loaded and stored one by one).
+    The calls of the machine copied less, but its loop wrote back every
+    field of the state at each instruction: LLVM keeps the state in
+    registers and no longer sees a store of a value just loaded (fib 1.6 s
+    to 2.8 s, the loop 0.3 s to 2.7 s). The machine itself keeps its
+    frequent instructions in its loop instead (isocron-ui).
+  - Test (`memory.rs`, `a_state_whose_array_is_grown_before_it_is_made_anew`,
+    data/state_grown.isc): a million steps in milliseconds, the copies of
+    the report those of the literal of `main` alone, the output of the
+    interpreter, Valgrind clean.

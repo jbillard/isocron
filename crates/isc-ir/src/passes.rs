@@ -454,6 +454,10 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     // a value read by several `reduce`s now grouped (F3) is read once: it
     // can be fused into the group
     fuse_fixpoint(body);
+    // `let x = y`, `y` a variable: `y` read for `x` (an argument of a
+    // function inlined, a part of a state: an alias of it borrowed, a
+    // branch that gives it back copied it, D660)
+    same_vars(body);
     // the scalar parts of a variable given whole to a call, then read by a
     // later argument of it, read before the call (D656)
     hoist_scalar_args(body, vars);
@@ -600,7 +604,7 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         let acc = lam.params[0];
         let aty = vars[acc as usize].ty.clone();
         if matches!(aty, Type::Tuple(_)) && aty.has_heap() && lam.body.ty == aty {
-            take_rebuilds(&mut lam.body, acc, &aty, vars);
+            take_rebuilds(&mut lam.body, acc, &aty, vars, false);
         }
         return;
     }
@@ -616,7 +620,8 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     if !new_tuple(init) {
         if borrowed_from(init, &|w| vec![w]).is_none() && !matches!(body.kind, ExprKind::Proj(..)) {
             let rty = init.ty.clone();
-            take_rebuilds(body, r, &rty, vars);
+            // (not surely owned: `borrowed_from` sees no view of a node)
+            take_rebuilds(body, r, &rty, vars, false);
         }
         return;
     }
@@ -639,13 +644,16 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
                 for c in comps {
                     let cty = vars[c as usize].ty.clone();
                     if matches!(cty, Type::Tuple(_)) && cty.has_heap() {
-                        take_rebuilds(rest, c, &cty, vars);
+                        // (a component taken apart at once: owned once the
+                        // tuple is split, which a take at the start of a
+                        // block can hide from the memory check)
+                        take_rebuilds(rest, c, &cty, vars, false);
                     }
                 }
             }
             return;
         }
-        take_rebuilds(body, r, &rty, vars);
+        take_rebuilds(body, r, &rty, vars, false);
         return;
     }
     let ExprKind::Proj(x, k) = &body.kind else { return };
@@ -928,7 +936,7 @@ fn replace_body_reads(e: &mut Expr, ra: &HashSet<VarId>, bound: &HashSet<VarId>,
 /// freed, instead of copied. Elsewhere `v` is read as it is (a function
 /// that borrows it borrows it). Not when a variable aliases `v`, nor inside
 /// a lambda. Whether a tuple was so rewritten.
-fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) -> bool {
+fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>, sure: bool) -> bool {
     // (`let vm = v` of a function inlined, its parameter: `v` itself, not
     // an alias of all of it, D659)
     let mut same = HashSet::new();
@@ -941,7 +949,7 @@ fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) ->
     comps.insert(v, None);
     aliases_of(e, v, &mut comps);
     let al: HashSet<VarId> = comps.keys().copied().collect();
-    rebuild_at(e, v, &al, &comps, vty, false, vars)
+    rebuild_at(e, v, &al, &comps, vty, false, vars, sure)
 }
 
 /// The variables of the lets of `e` that borrow memory of `v` or of those
@@ -997,8 +1005,21 @@ fn reads_any(e: &Expr, al: &HashSet<VarId>) -> bool {
 
 /// `rebuild_at` below `e`, `later`: whether `v` or one of its aliases may
 /// be read after `e`.
-fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId, Option<Vec<u32>>>, vty: &Type, later: bool, vars: &mut Vec<VarInfo>) -> bool {
+fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId, Option<Vec<u32>>>, vty: &Type, later: bool, vars: &mut Vec<VarInfo>, sure: bool) -> bool {
     if !later && &e.ty == vty && matches!(e.kind, ExprKind::Tuple(_)) && rebuilt_from(e, v) && aliases_kept(e, v, al, comps) {
+        take_parts_here(e, v, vty, vars);
+        return true;
+    }
+    // (a block that reads `v`, owned, by its parts alone, and nothing after
+    // it: its parts taken at its start, so that a part given to a function
+    // there (`let ups = grow(vm.ups) in { ...vm, ups: ups }`, or a state
+    // all of whose fields are replaced) is moved rather than copied; a part
+    // never moved is freed, D660)
+    // (one that reads it: a block that does not may come after it was
+    // given away)
+    // (`v` surely owned, or made anew in the block: a value read out of a
+    // node is a view of it, though its type owns no memory)
+    if !later && matches!(e.kind, ExprKind::Let { .. }) && reads_var(e, v) && only_parts(e, v) && (sure || has_rebuild(e, v, vty)) && aliases_kept(e, v, al, comps) {
         take_parts_here(e, v, vty, vars);
         return true;
     }
@@ -1009,15 +1030,15 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
     match &mut e.kind {
         ExprKind::Let { init, body, .. } => {
             let after = later || reads_any(body, al);
-            let a = rebuild_at(init, v, al, comps, vty, after, vars);
-            let b = rebuild_at(body, v, al, comps, vty, later, vars);
+            let a = rebuild_at(init, v, al, comps, vty, after, vars, sure);
+            let b = rebuild_at(body, v, al, comps, vty, later, vars, sure);
             a || b
         }
         ExprKind::If(c, t, f) => {
             let after = later || reads_any(t, al) || reads_any(f, al);
-            let a = rebuild_at(c, v, al, comps, vty, after, vars);
-            let b = rebuild_at(t, v, al, comps, vty, later, vars);
-            let d = rebuild_at(f, v, al, comps, vty, later, vars);
+            let a = rebuild_at(c, v, al, comps, vty, after, vars, sure);
+            let b = rebuild_at(t, v, al, comps, vty, later, vars, sure);
+            let d = rebuild_at(f, v, al, comps, vty, later, vars, sure);
             a || b || d
         }
         _ => {
@@ -1031,11 +1052,25 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
                 if Some(i) == lam || !reads[i] {
                     continue;
                 }
-                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars);
+                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars, sure);
             }
             any
         }
     }
+}
+
+/// `e` reads `v` by its parts alone (`proj k v`), never whole.
+fn only_parts(e: &Expr, v: VarId) -> bool {
+    match &e.kind {
+        ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == v) => true,
+        ExprKind::Var(w, _) => *w != v,
+        _ => e.children().into_iter().all(|c| only_parts(c, v)),
+    }
+}
+
+/// `e` makes `v` anew from its parts somewhere (a tuple of its type).
+fn has_rebuild(e: &Expr, v: VarId, vty: &Type) -> bool {
+    (&e.ty == vty && matches!(e.kind, ExprKind::Tuple(_)) && rebuilt_from(e, v)) || e.children().into_iter().any(|c| has_rebuild(c, v, vty))
 }
 
 /// The aliases of `v` bound outside the tuple `e` that `e` reads borrow
@@ -1130,7 +1165,7 @@ fn take_parts_here(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) 
     // use; through the `let` it was a view, copied)
     let set: HashSet<VarId> = parts.iter().map(|(c, _)| *c).collect();
     same_as_parts(&mut body, &set);
-    bind_after_parts(&mut body, &set, vars);
+    bind_after_parts_in(&mut body, &set, vars);
     for (j, (c, t)) in parts.iter().enumerate().rev() {
         let bty = body.ty.clone();
         let part = Expr::new(ExprKind::Take(Box::new(Expr::var(v, vty.clone(), span)), j as u32), t.clone(), span);
@@ -1182,6 +1217,37 @@ fn bind_after_parts(e: &mut Expr, parts: &HashSet<VarId>, vars: &mut Vec<VarInfo
         body = Expr::new(ExprKind::Let { var: t, init: Box::new(value), body: Box::new(body), stmt: false, drop: false }, ty, span);
     }
     *e = body;
+}
+
+/// `bind_after_parts` for each tuple of `e` (a block whose parts were
+/// taken at its start, D660, makes its tuples further in).
+fn bind_after_parts_in(e: &mut Expr, parts: &HashSet<VarId>, vars: &mut Vec<VarInfo>) {
+    for c in e.children_mut() {
+        bind_after_parts_in(c, parts, vars);
+    }
+    bind_after_parts(e, parts, vars);
+}
+
+/// Each `let x = y in body` of `e` whose `y` is a variable of the same
+/// type: `body` with `y` for `x` (D660).
+fn same_vars(e: &mut Expr) {
+    loop {
+        let alias = match &e.kind {
+            ExprKind::Let { var, init, stmt: false, drop: false, .. } => match init.kind {
+                ExprKind::Var(y, _) if init.ty == e_ty_of_var(e) && y != *var => Some((*var, y)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((x, y)) = alias else { break };
+        let ExprKind::Let { body, .. } = &mut e.kind else { break };
+        let mut b = take(body);
+        rename_var(&mut b, x, y);
+        *e = b;
+    }
+    for c in e.children_mut() {
+        same_vars(c);
+    }
 }
 
 /// Each `let x = p in body` of `e` whose `p` is a variable of `parts`:
@@ -3918,6 +3984,10 @@ fn take_apart(vars: &mut Vec<VarInfo>, mut body: Expr, pv: VarId, ty: &Type) -> 
     }
     let span = body.span;
     rewrite_parts(&mut body, pv, &parts);
+    // (`let xs = part` of a function inlined: the part itself, moved at its
+    // last use; through the `let` it was a view, copied, D660)
+    let set: HashSet<VarId> = parts.iter().map(|(c, _)| *c).collect();
+    same_as_parts(&mut body, &set);
     for (j, (c, t)) in parts.iter().enumerate().rev() {
         let bty = body.ty.clone();
         let take = Expr::new(ExprKind::Take(Box::new(Expr::var(pv, ty.clone(), span)), j as u32), t.clone(), span);
@@ -4231,7 +4301,9 @@ fn apart(p: &mut Program, fi: usize, body: &Expr, ks: &[usize]) -> Expr {
         let pv = p.fns[fi].params[k];
         let ty = p.vars[pv as usize].ty.clone();
         if matches!(ty, Type::Tuple(_)) {
-            take_rebuilds(&mut b, pv, &ty, &mut p.vars);
+            // (a parameter given: the memory check of the function decides,
+            // the parameter lent if it fails)
+            take_rebuilds(&mut b, pv, &ty, &mut p.vars, true);
         }
     }
     b
