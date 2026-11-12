@@ -24,7 +24,11 @@ use super::{v, Gen, V};
 use isc_ir::SysOp;
 
 /// The functions of Windows the module calls.
-const DECLS: [&str; 36] = [
+const DECLS: [&str; 40] = [
+    "declare i32 @PeekMessageW(ptr, ptr, i32, i32, i32)",
+    "declare ptr @SetCursor(ptr)",
+    "declare i32 @GetCursorPos(ptr)",
+    "declare ptr @WindowFromPoint(i64)",
     "declare ptr @GetModuleHandleW(ptr)",
     "declare ptr @LoadCursorW(ptr, ptr)",
     "declare i16 @RegisterClassExW(ptr)",
@@ -82,8 +86,9 @@ const CAPTURE_DECLS: [&str; 6] = [
 // the signal of the window made, the title (UTF-16) and the size of the
 // window to make, the code of a failure to make it; the last image shown
 // (its pixels, width, height, the room of its block); the signal of a
-// flush (`WM_APP + 1` seen by the procedure).
-// (168 bytes; `isc_alloc` in `OPEN`)
+// flush (`WM_APP + 1` seen by the procedure); the shape of the pointer over
+// its inside (the number of a cursor of the system, D646).
+// (176 bytes; `isc_alloc` in `OPEN`)
 
 /// The name of the class of the windows, in UTF-16.
 const CLASS: &str = r#"@isc.win.class = private unnamed_addr constant [8 x i16] [i16 105, i16 115, i16 111, i16 99, i16 114, i16 111, i16 110, i16 0]"#;
@@ -228,9 +233,14 @@ end:
 /// the focus); the last image painted again; `WM_APP` (the program closes
 /// the window): destroyed, the thread ended; `WM_APP + 1`: a flush, its
 /// signal (every message posted before it has been seen); every other
-/// message to `DefWindowProcW`.
+/// message to `DefWindowProcW`. A flush that finds characters in the queue
+/// (`WM_CHAR` to `WM_UNICHAR`, posted by `TranslateMessage` for a key
+/// seen before it, so behind it) is posted again behind them, 8 times at
+/// most (D645: the character of a key posted just before a call of
+/// `sysWinEvents` came at the next call, now and then).
 const PROC: &str = r#"define internal i64 @isc.win.proc(ptr %hwnd, i32 %msg, i64 %wp, i64 %lp) {
 entry:
+  %peek = alloca [48 x i8], align 8
   %bi = call i64 @GetWindowLongPtrW(ptr %hwnd, i32 -21)
   %blk = inttoptr i64 %bi to ptr
   %none = icmp eq i64 %bi, 0
@@ -264,7 +274,9 @@ which:
                                 i32 7, label %focus
                                 i32 8, label %blur
                                 i32 32768, label %quit
-                                i32 32769, label %flush ]
+                                i32 32769, label %flush
+                                i32 32, label %setcursor
+                                i32 32770, label %cursornow ]
 close:
   call void @isc.win.push(ptr %blk, i64 1, i64 0, i64 0, i64 0)
   ret i64 0
@@ -353,12 +365,45 @@ focus:
 blur:
   call void @isc.win.push(ptr %blk, i64 10, i64 0, i64 0, i64 0)
   br label %def
+setcursor:
+  ; (the inside of the window, HTCLIENT: the shape asked; elsewhere the
+  ; system's, its borders)
+  %ht = and i64 %lp, 65535
+  %inside = icmp eq i64 %ht, 1
+  br i1 %inside, label %shape, label %def
+shape:
+  %pcs = getelementptr i8, ptr %blk, i64 160
+  %cid = load i64, ptr %pcs
+  %cres = inttoptr i64 %cid to ptr
+  %cur = call ptr @LoadCursorW(ptr null, ptr %cres)
+  %prevc = call ptr @SetCursor(ptr %cur)
+  ret i64 1
+cursornow:
+  ; the shape asked set at once when the pointer is over the window (it
+  ; may not move)
+  %gotpt = call i32 @GetCursorPos(ptr %peek)
+  %ptv = load i64, ptr %peek
+  %over = call ptr @WindowFromPoint(i64 %ptv)
+  %ours = icmp eq ptr %over, %hwnd
+  br i1 %ours, label %shape, label %done0
+done0:
+  ret i64 0
 quit:
   %gone = call i64 @SetWindowLongPtrW(ptr %hwnd, i32 -21, i64 0)
   %destroyed = call i32 @DestroyWindow(ptr %hwnd)
   call void @PostQuitMessage(i32 0)
   ret i64 0
 flush:
+  %pending = call i32 @PeekMessageW(ptr %peek, ptr %hwnd, i32 258, i32 265, i32 0)
+  %chars = icmp ne i32 %pending, 0
+  %hops = icmp ult i64 %wp, 8
+  %again = and i1 %chars, %hops
+  br i1 %again, label %repost, label %signal
+repost:
+  %wp1 = add i64 %wp, 1
+  %rp = call i32 @PostMessageW(ptr %hwnd, i32 32769, i64 %wp1, i64 0)
+  ret i64 0
+signal:
   %pfe = getelementptr i8, ptr %blk, i64 152
   %fe = load ptr, ptr %pfe
   %fs = call i32 @SetEvent(ptr %fe)
@@ -431,7 +476,7 @@ entry:
   %wh = sub i32 %b, %t
   ; the block: the window (made by the thread), the queue, the lock, the
   ; signals, what the thread needs, no image yet
-  %blk = call ptr @isc_alloc(i64 168)
+  %blk = call ptr @isc_alloc(i64 176)
   %queue = call ptr @isc_alloc(i64 131072)
   store ptr null, ptr %blk
   %pq = getelementptr i8, ptr %blk, i64 8
@@ -467,6 +512,8 @@ entry:
   %flushed = call ptr @CreateEventW(ptr null, i32 0, i32 0, ptr null)
   %pfl = getelementptr i8, ptr %blk, i64 152
   store ptr %flushed, ptr %pfl
+  %pshape = getelementptr i8, ptr %blk, i64 160
+  store i64 32512, ptr %pshape
   %th = call ptr @CreateThread(ptr null, i64 0, ptr @isc.win.thread, ptr %blk, i32 0, ptr null)
   %pth = getelementptr i8, ptr %blk, i64 80
   store ptr %th, ptr %pth
@@ -851,7 +898,278 @@ fail:
   ret i64 %code
 }"#;
 
+/// The functions of Windows of the clipboard (D646).
+const CLIP_DECLS: [&str; 13] = [
+    "declare i32 @OpenClipboard(ptr)",
+    "declare i32 @CloseClipboard()",
+    "declare i32 @EmptyClipboard()",
+    "declare ptr @SetClipboardData(i32, ptr)",
+    "declare ptr @GetClipboardData(i32)",
+    "declare ptr @GlobalAlloc(i32, i64)",
+    "declare ptr @GlobalLock(ptr)",
+    "declare i32 @GlobalUnlock(ptr)",
+    "declare ptr @GlobalFree(ptr)",
+    "declare i32 @lstrlenW(ptr)",
+    "declare void @Sleep(i32)",
+    "declare i32 @WideCharToMultiByte(i32, i32, ptr, i32, ptr, i32, ptr, ptr)",
+    "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+];
+
+/// `sysWinCursor(window, shape) => code`: the shape of the pointer over the
+/// inside of the window (0 an arrow, 1 a hand, 2 a bar of text: the cursors
+/// 32512, 32649 and 32513 of the system) kept in its block, then set at once
+/// by its thread (`WM_APP + 2`) when the pointer is over it; the procedure
+/// sets it at each `WM_SETCURSOR` of its inside.
+const CURSOR: &str = r#"define internal i64 @isc.win.cursor(i64 %h, i64 %shape) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %hand = icmp eq i64 %shape, 1
+  %bar = icmp eq i64 %shape, 2
+  %c1 = select i1 %hand, i64 32649, i64 32512
+  %cid = select i1 %bar, i64 32513, i64 %c1
+  %pcur = getelementptr i8, ptr %blk, i64 160
+  store i64 %cid, ptr %pcur
+  %hwnd = load ptr, ptr %blk
+  %posted = call i32 @PostMessageW(ptr %hwnd, i32 32770, i64 0, i64 0)
+  ret i64 0
+}"#;
+
+/// The clipboard opened for the window `hwnd`: tried 20 times 5 ms apart
+/// (another program may hold it); true when opened.
+const CLIP_OPEN: &str = r#"define internal i1 @isc.win.clipopen(ptr %hwnd) {
+entry:
+  br label %try
+try:
+  %k = phi i32 [ 0, %entry ], [ %k1, %again ]
+  %ok = call i32 @OpenClipboard(ptr %hwnd)
+  %opened = icmp ne i32 %ok, 0
+  br i1 %opened, label %yes, label %more
+more:
+  %k1 = add i32 %k, 1
+  %last = icmp sge i32 %k1, 20
+  br i1 %last, label %no, label %again
+again:
+  call void @Sleep(i32 5)
+  br label %try
+yes:
+  ret i1 true
+no:
+  ret i1 false
+}"#;
+
+/// `sysWinClipSet(window, text) => code`: the text put on the clipboard of
+/// the system as UTF-16 (`CF_UNICODETEXT`, a block of `GlobalAlloc` the
+/// system then owns), its owner the window.
+const CLIP_SET: &str = r#"define internal i64 @isc.win.clipset(i64 %h, ptr %p, i64 %n) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %hwnd = load ptr, ptr %blk
+  %opened = call i1 @isc.win.clipopen(ptr %hwnd)
+  br i1 %opened, label %put, label %fail
+put:
+  %emptied = call i32 @EmptyClipboard()
+  %n32 = trunc i64 %n to i32
+  %units = call i32 @MultiByteToWideChar(i32 65001, i32 0, ptr %p, i32 %n32, ptr null, i32 0)
+  %u64 = sext i32 %units to i64
+  %tb = shl i64 %u64, 1
+  %tb2 = add i64 %tb, 2
+  %mem = call ptr @GlobalAlloc(i32 2, i64 %tb2)
+  %nomem = icmp eq ptr %mem, null
+  br i1 %nomem, label %closefail, label %fill
+fill:
+  %w = call ptr @GlobalLock(ptr %mem)
+  %done = call i32 @MultiByteToWideChar(i32 65001, i32 0, ptr %p, i32 %n32, ptr %w, i32 %units)
+  %end = getelementptr i16, ptr %w, i64 %u64
+  store i16 0, ptr %end
+  %unl = call i32 @GlobalUnlock(ptr %mem)
+  %set = call ptr @SetClipboardData(i32 13, ptr %mem)
+  %notset = icmp eq ptr %set, null
+  br i1 %notset, label %freefail, label %closeok
+freefail:
+  %freed = call ptr @GlobalFree(ptr %mem)
+  br label %closefail
+closeok:
+  %c1 = call i32 @CloseClipboard()
+  ret i64 0
+closefail:
+  %e = call i32 @GetLastError()
+  %c2 = call i32 @CloseClipboard()
+  %e64 = zext i32 %e to i64
+  %neg = sub i64 0, %e64
+  %zero = icmp eq i64 %neg, 0
+  %code = select i1 %zero, i64 -1, i64 %neg
+  ret i64 %code
+fail:
+  %e2 = call i32 @GetLastError()
+  %e264 = zext i32 %e2 to i64
+  %neg2 = sub i64 0, %e264
+  %zero2 = icmp eq i64 %neg2, 0
+  %code2 = select i1 %zero2, i64 -1, i64 %neg2
+  ret i64 %code2
+}"#;
+
+/// `sysWinClipGet(window) => [text, code]`: the text of the clipboard of
+/// the system (`CF_UNICODETEXT`) in UTF-8; none there: an empty text.
+const CLIP_GET: &str = r#"define internal { { ptr, i64 }, i64 } @isc.win.clipget(i64 %h) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %hwnd = load ptr, ptr %blk
+  %opened = call i1 @isc.win.clipopen(ptr %hwnd)
+  br i1 %opened, label %get, label %fail
+get:
+  %mem = call ptr @GetClipboardData(i32 13)
+  %none = icmp eq ptr %mem, null
+  br i1 %none, label %empty, label %read
+read:
+  %w = call ptr @GlobalLock(ptr %mem)
+  %units = call i32 @lstrlenW(ptr %w)
+  %bytes = call i32 @WideCharToMultiByte(i32 65001, i32 0, ptr %w, i32 %units, ptr null, i32 0, ptr null, ptr null)
+  %b64 = sext i32 %bytes to i64
+  %room = add i64 %b64, 1
+  %out = call ptr @isc_alloc(i64 %room)
+  %done = call i32 @WideCharToMultiByte(i32 65001, i32 0, ptr %w, i32 %units, ptr %out, i32 %bytes, ptr null, ptr null)
+  %unl = call i32 @GlobalUnlock(ptr %mem)
+  %c1 = call i32 @CloseClipboard()
+  %d64 = sext i32 %done to i64
+  %a0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %a1 = insertvalue { ptr, i64 } %a0, i64 %d64, 1
+  %v0 = insertvalue { { ptr, i64 }, i64 } poison, { ptr, i64 } %a1, 0
+  %v1 = insertvalue { { ptr, i64 }, i64 } %v0, i64 0, 1
+  ret { { ptr, i64 }, i64 } %v1
+empty:
+  %c2 = call i32 @CloseClipboard()
+  %eout = call ptr @isc_alloc(i64 1)
+  %e0 = insertvalue { ptr, i64 } undef, ptr %eout, 0
+  %e1 = insertvalue { ptr, i64 } %e0, i64 0, 1
+  %ev0 = insertvalue { { ptr, i64 }, i64 } poison, { ptr, i64 } %e1, 0
+  %ev1 = insertvalue { { ptr, i64 }, i64 } %ev0, i64 0, 1
+  ret { { ptr, i64 }, i64 } %ev1
+fail:
+  %e = call i32 @GetLastError()
+  %fout = call ptr @isc_alloc(i64 1)
+  %e64 = zext i32 %e to i64
+  %neg = sub i64 0, %e64
+  %zero = icmp eq i64 %neg, 0
+  %code = select i1 %zero, i64 -1, i64 %neg
+  %f0 = insertvalue { ptr, i64 } undef, ptr %fout, 0
+  %f1 = insertvalue { ptr, i64 } %f0, i64 0, 1
+  %g0 = insertvalue { { ptr, i64 }, i64 } poison, { ptr, i64 } %f1, 0
+  %g1 = insertvalue { { ptr, i64 }, i64 } %g0, i64 %code, 1
+  ret { { ptr, i64 }, i64 } %g1
+}"#;
+
+/// The functions of Windows of `ALERT` and `PROGRAM`.
+const ALERT_DECLS: [&str; 5] = [
+    "declare i32 @MessageBoxW(ptr, ptr, ptr, i32)",
+    "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+    "declare i32 @WideCharToMultiByte(i32, i32, ptr, i32, ptr, i32, ptr, ptr)",
+    "declare i32 @GetModuleFileNameW(ptr, ptr, i32)",
+    "declare i32 @GetLastError()",
+];
+
+/// The text of UTF-8 `p`, `n` in UTF-16 ended by a zero, in a block of the
+/// allocator (D643).
+const WIDE: &str = r#"define internal ptr @isc.win.wide(ptr %p, i64 %n) {
+entry:
+  %n32 = trunc i64 %n to i32
+  %units = call i32 @MultiByteToWideChar(i32 65001, i32 0, ptr %p, i32 %n32, ptr null, i32 0)
+  %u64 = sext i32 %units to i64
+  %tb = shl i64 %u64, 1
+  %tb2 = add i64 %tb, 2
+  %w = call ptr @isc_alloc(i64 %tb2)
+  %done = call i32 @MultiByteToWideChar(i32 65001, i32 0, ptr %p, i32 %n32, ptr %w, i32 %units)
+  %end = getelementptr i16, ptr %w, i64 %u64
+  store i16 0, ptr %end
+  ret ptr %w
+}"#;
+
+/// `sysWinAlert(title, text) => code`: `MessageBoxW` without an owner, its
+/// button OK and the sign of a warning, brought in front
+/// (`MB_SETFOREGROUND`); the button pressed (1), or the code of a failure.
+const ALERT: &str = r#"define internal i64 @isc.win.alert(ptr %tp, i64 %tn, ptr %xp, i64 %xn) {
+entry:
+  %title = call ptr @isc.win.wide(ptr %tp, i64 %tn)
+  %text = call ptr @isc.win.wide(ptr %xp, i64 %xn)
+  %r = call i32 @MessageBoxW(ptr null, ptr %text, ptr %title, i32 65584)
+  %e = call i32 @GetLastError()
+  call void @isc_free(ptr %title)
+  call void @isc_free(ptr %text)
+  %ok = icmp ne i32 %r, 0
+  %r64 = sext i32 %r to i64
+  %e64 = zext i32 %e to i64
+  %neg = sub i64 0, %e64
+  %code = select i1 %ok, i64 %r64, i64 %neg
+  ret i64 %code
+}"#;
+
+/// `sysWinProgram() => [path, code]`: `GetModuleFileNameW` of the program
+/// (a path of 32767 units at most), in UTF-8 (`WideCharToMultiByte`).
+const PROGRAM: &str = r#"define internal { { ptr, i64 }, i64 } @isc.win.program() {
+entry:
+  %wbuf = call ptr @isc_alloc(i64 65536)
+  %n = call i32 @GetModuleFileNameW(ptr null, ptr %wbuf, i32 32768)
+  %e = call i32 @GetLastError()
+  %bad = icmp eq i32 %n, 0
+  %full = icmp uge i32 %n, 32768
+  %fail = or i1 %bad, %full
+  br i1 %fail, label %failed, label %convert
+convert:
+  %bytes = call i32 @WideCharToMultiByte(i32 65001, i32 0, ptr %wbuf, i32 %n, ptr null, i32 0, ptr null, ptr null)
+  %b64 = sext i32 %bytes to i64
+  %room = add i64 %b64, 1
+  %out = call ptr @isc_alloc(i64 %room)
+  %done = call i32 @WideCharToMultiByte(i32 65001, i32 0, ptr %wbuf, i32 %n, ptr %out, i32 %bytes, ptr null, ptr null)
+  call void @isc_free(ptr %wbuf)
+  %d64 = sext i32 %done to i64
+  %a0 = insertvalue { ptr, i64 } undef, ptr %out, 0
+  %a1 = insertvalue { ptr, i64 } %a0, i64 %d64, 1
+  %v0 = insertvalue { { ptr, i64 }, i64 } poison, { ptr, i64 } %a1, 0
+  %v1 = insertvalue { { ptr, i64 }, i64 } %v0, i64 0, 1
+  ret { { ptr, i64 }, i64 } %v1
+failed:
+  call void @isc_free(ptr %wbuf)
+  %none = call ptr @isc_alloc(i64 1)
+  %e64 = zext i32 %e to i64
+  %neg0 = sub i64 0, %e64
+  ; (a path too long: ERROR_INSUFFICIENT_BUFFER, 122)
+  %neg = select i1 %full, i64 -122, i64 %neg0
+  %f0 = insertvalue { ptr, i64 } undef, ptr %none, 0
+  %f1 = insertvalue { ptr, i64 } %f0, i64 0, 1
+  %g0 = insertvalue { { ptr, i64 }, i64 } poison, { ptr, i64 } %f1, 0
+  %g1 = insertvalue { { ptr, i64 }, i64 } %g0, i64 %neg, 1
+  ret { { ptr, i64 }, i64 } %g1
+}"#;
+
 impl Gen<'_> {
+    /// The functions `defs` of `ALERT` and `PROGRAM` defined in the program,
+    /// once each, and the functions of Windows they call (D643): none of
+    /// the windows'.
+    fn win_alert_defs(&mut self, defs: &[&str]) {
+        for d in ALERT_DECLS.iter() {
+            self.decls.insert(d.to_string());
+        }
+        for d in defs {
+            let name = d.split('@').nth(1).and_then(|r| r.split('(').next()).unwrap_or(d);
+            if self.decls.insert(format!("; the module win32: @{}", name)) {
+                self.funcs.push(format!("{}\n", d));
+            }
+        }
+    }
+
+    /// The functions `defs` of the clipboard defined in the program, once
+    /// each, and the functions of Windows they call (D646).
+    fn clip_defs(&mut self, defs: &[&str]) {
+        for d in CLIP_DECLS.iter().chain(ALERT_DECLS.iter()) {
+            self.decls.insert(d.to_string());
+        }
+        for d in defs {
+            let name = d.split('@').nth(1).and_then(|r| r.split('(').next()).unwrap_or(d);
+            if self.decls.insert(format!("; the module win32: @{}", name)) {
+                self.funcs.push(format!("{}\n", d));
+            }
+        }
+    }
+
     /// The functions `defs` of this module defined in the program, once
     /// each, with those of the program (their blocks from its allocator, as
     /// `unix_defs`); the functions of Windows declared.
@@ -902,6 +1220,31 @@ impl Gen<'_> {
             SysOp::WinClose => {
                 self.win_defs(&[CLOSE], false);
                 v(self.ins(format!("call i64 @isc.win.close(i64 {})", vals[0].r)), "i64")
+            }
+            SysOp::WinAlert => {
+                self.win_alert_defs(&[WIDE, ALERT]);
+                let (tp, tn) = self.str_parts(&vals[0]);
+                let (xp, xn) = self.str_parts(&vals[1]);
+                v(self.ins(format!("call i64 @isc.win.alert(ptr {}, i64 {}, ptr {}, i64 {})", tp, tn, xp, xn)), "i64")
+            }
+            SysOp::WinCursor => {
+                self.win_defs(&[CURSOR], false);
+                v(self.ins(format!("call i64 @isc.win.cursor(i64 {}, i64 {})", vals[0].r, vals[1].r)), "i64")
+            }
+            SysOp::WinClipSet => {
+                self.clip_defs(&[CLIP_OPEN, CLIP_SET]);
+                let (p, n) = self.str_parts(&vals[1]);
+                v(self.ins(format!("call i64 @isc.win.clipset(i64 {}, ptr {}, i64 {})", vals[0].r, p, n)), "i64")
+            }
+            SysOp::WinClipGet => {
+                self.clip_defs(&[CLIP_OPEN, CLIP_GET]);
+                let t = "{ { ptr, i64 }, i64 }";
+                v(self.ins(format!("call {} @isc.win.clipget(i64 {})", t, vals[0].r)), t)
+            }
+            SysOp::WinProgram => {
+                self.win_alert_defs(&[PROGRAM]);
+                let t = "{ { ptr, i64 }, i64 }";
+                v(self.ins(format!("call {} @isc.win.program()", t)), t)
             }
             _ => unreachable!("not a primitive of the module win32: {:?}", o),
         }

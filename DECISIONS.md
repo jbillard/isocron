@@ -15749,3 +15749,152 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     a record of a function, of a variable, of records, a record literal,
     a tuple of arrays; the program compiled against the interpreter for
     lengths below, at and above the old one.
+- **D643 — A box of messages and the path of the program (`win32`,
+  2026-11-12).** At the author's word: the list of tasks of the library,
+  started on his Windows, opened nothing. A program of the graphical
+  subsystem (D640) has no console: its font not found (read in the
+  current folder, absent when the program is started from inside its
+  archive or from another folder), it printed the reason where no one
+  sees it and ended.
+  - `win32.alert(title, text)`: `MessageBoxW` without an owner, its button
+    OK and the sign of a warning, brought in front (`MB_SETFOREGROUND`);
+    returns when the box is closed. `win32.programPath()`: the file of the
+    program running (`GetModuleFileNameW`, 32767 units at most), in UTF-8
+    (`WideCharToMultiByte`), `Result<string, IoError>`. Both emitted with
+    the module (`emit/win32.rs`, `sysWinAlert`, `sysWinProgram`), without
+    the functions of its windows; the interpreter answers `ENOSYS` as for
+    the others (a program reaches them in a branch for Windows).
+  - The library: `loadFont(args)` (the file of `--font=`, else
+    `DejaVuSans.ttf` beside the program, in the current folder, then Segoe
+    UI or Arial of Windows, the usual folders of DejaVu Sans under Linux),
+    `fail(title, text)` (the box under Windows, printed elsewhere); its
+    three programs of Windows use them.
+  - Checked in the machine of Windows: the list of tasks alone in a folder
+    opens with Segoe UI (507 ms); with `--font=missing.ttf`, the box shows
+    the reason; the plate, the list and the counter started 15 times
+    (each shown in 39 to 507 ms). Test (`windows.rs`,
+    `the_path_of_the_program_on_windows`): the name of the program and a
+    path of a drive, with both ABIs; `alert` built and linked, the program
+    built for Linux too (a box waits for a hand: not run by the test).
+  - The first start of a program never seen is held by Windows Defender
+    while it asks its service (event 2010 of its log at each such start):
+    the list of tasks 8.9 s, the plate 0.6 to 1.2 s, then 38 to 129 ms at
+    the next starts, in the machine of Windows. It explained the plate not
+    shown within the 8 s of the check of the archive, twice (its closing
+    then failed, and the plate, shown until closed, never ended): the
+    checks now wait for the window, 60 s at most. Told in the README of the
+    archive.
+- **D645 — A flush of `win32` behind the characters of its keys
+  (2026-11-12).** The test of the module (`a_window_of_windows`) failed
+  now and then after D641. Measured in the machine of Windows (its input
+  replayed 30 times by a program of its own): two causes.
+  - The character of the key `A`, posted just before a call of
+    `sysWinEvents`, came at the next call (seen once in three runs of the
+    test). The thread of the window gives `WM_KEYDOWN` to
+    `TranslateMessage`, which posts its `WM_CHAR` at the end of the queue:
+    behind the flush (`WM_APP + 1`) that `sysWinEvents` posted meanwhile,
+    when the pointer moved before woke it. The procedure, given a flush,
+    now looks for characters in the queue (`PeekMessageW` of `WM_CHAR` to
+    `WM_UNICHAR`, without taking them): when there are, it posts the flush
+    again behind them (its number of hops in `wParam`, 8 at most), and
+    signals it only when none are left. No other message is waited for
+    (the pointer moving all the time would hold every flush). Replayed 30
+    times: the character in the first call 30 times.
+  - Its place among the events: the thread of the window reads the
+    messages while the program still posts them, so the character of the
+    key comes after the character and the closing posted after the key 19
+    times in 30, between them 10 times, before both once. The test
+    expected one order: it now counts that character apart (its place is
+    that thread's), the other events in their order.
+  - The test of the module run six times more in the machine of Windows
+    with the test file whole.
+- **D644 — The array of a loop given by its callers (2026-11-12).** Found
+  by the inflater of the library of graphical interfaces: `codes(src, pos,
+  out, o, lit, dist)`, a loop (a recursive function whose calls to itself
+  are tail calls) writing the bytes of a block into `out`, called once per
+  block by the loop of the blocks, copied the whole output on entry at each
+  call (`isc.late.alloc` and `memcpy` of 6 MB for a photograph, 30 blocks):
+  the accumulators of a loop (D351, the state of D206) were lent by its
+  callers, so the generated code copied them once on entry.
+  - The accumulators of every function are now decided before any body is
+    rewritten (`decide_accumulators`: the body owning them passes the
+    memory check), then those of a function the code generator does not
+    call itself are given (D637): its callers move their argument at its
+    last use and copy it only otherwise; the code takes it as it comes (no
+    copy on entry, `consumed` and `given`). Not required unique at its
+    calls: a caller reading its argument again copies it, as the entry did.
+  - Measured at fixed frequency (`machine.sh apply parallel`), the inflater
+    of the library on the streams of three images against zlib's
+    `uncompress`: a photograph of 1920 by 1080 (6.2 MB, mostly literals)
+    122.1 ms -> 38.6 ms (zlib 27.8 ms); the plate of the library (4.0 MB)
+    9.96 -> 8.34 ms (zlib 4.56); an image of a palette (1.0 MB) 6.00 ->
+    5.21 ms (zlib 3.82); the same bytes.
+  - The memory report: the copies a loop made on entry are now made at its
+    calls, where they belong (`longest` of `views_of_texts.isc`: the
+    literal at its call, line 65, and the text it chooses before its tail
+    call, line 8, as many copies as before, 4: read in the code generated).
+  - Test (`memory.rs`, `a_loop_given_its_array`): a loop called once per
+    run of 7 places of an array of 300000 (42858 calls: a copy at each would
+    write 100 GB), a caller reading its array again (its copy at the call,
+    line 23 of the report), `requireUnique` in the loop; the interpreter's
+    results, the checked allocator, valgrind.
+- **D646 — The shape of the pointer and the clipboard of Windows
+  (`win32`, 2026-11-12).** At the author's word, testing the library: the
+  pointer kept its arrow over a button or a field, and nothing could be
+  copied or pasted.
+  - `win32.setCursor(w, shape)`: 0 an arrow, 1 a hand, 2 a bar of text
+    (the cursors 32512, 32649 and 32513 of the system), kept in the block
+    of the window (8 more bytes, 176); its procedure sets it at each
+    `WM_SETCURSOR` of its inside (`HTCLIENT`; its borders keep the
+    system's), and at once on `WM_APP + 2`, posted by `setCursor`, when the
+    pointer is over the window (`GetCursorPos`, `WindowFromPoint`: it may
+    not move).
+  - `win32.clipboardSet(w, text)` and `win32.clipboardGet(w)`: the clipboard
+    of the system as Unicode (`CF_UNICODETEXT`): opened for the window (20
+    tries 5 ms apart: another program may hold it), emptied, a block of
+    `GlobalAlloc` given to `SetClipboardData` (freed when refused); read by
+    `GetClipboardData`, `lstrlenW` and `WideCharToMultiByte`; no text: "".
+  - The library takes them: the shape of the place under the pointer, a
+    text copied by a field, a paste.
+- **D647 — A `concat` that takes its array in one branch (2026-11-12).**
+  `concat(a, b)` whose left array is read for the last time takes its
+  block (D533: grown in place; D638: the elements of both sides moved)
+  and binds `a` again to what is left of it to free. When `a` is visible
+  to both branches of an `if` (a parameter of a loop, `if (c) { return
+  f(concat(out, [x])); } return f(out);`), the other branch, made after,
+  read that binding, a value of the first branch: the code was refused by
+  LLVM (`Instruction does not dominate all uses`). Since D638 for arrays of
+  elements that own memory (a sum type holding texts); for arrays of
+  scalars since D644 (the loop's array given, the tail call of the other
+  branch moves it). Found by the library (its reading of the events of
+  Windows by a loop).
+  - The code generator now keeps the bindings a `concat` makes again
+    (`rebind`) with those before them: each branch of an `if` undoes its
+    own (`unbind`), and after the `if` each variable bound before it and
+    bound again in a branch is bound to the `phi` of its bindings at the
+    ends of the two branches (`join_bound`); the blocks a `concat` may take
+    (`taking`, `giving`) are those before the `if` in each branch, those
+    taken on a path not taken again after it.
+  - Test (`memory.rs`, `a_concat_that_takes_its_array_in_one_branch`): a
+    loop of scalars growing in one branch, a loop of a sum type holding
+    texts in the branches of a `match`, a `concat` in each branch; the
+    interpreter's results, the checked allocator, valgrind.
+- **D648 — `@noInline` and `@cold` on a function that takes a function
+  (2026-11-12).** The library of graphical interfaces gives its model's
+  `update` to the function that tells it an input (`told`), called a dozen
+  times by a step of its loop (`step`), itself called by each branch of the
+  loop of Wayland: a function that takes a function was copied at each call
+  (inlined, SPEC section 11), and `@noInline` was refused on it (`it would
+  be specialized at each call`). The program of its list of tasks had
+  grown to 5 MB, and once its menu was added its compilation was stopped
+  after 6 minutes and 4 GB.
+  - Such a function is now compiled once for each function given, as a
+    recursive one is (D128: a function of the program by its identity, a
+    lambda by its expression and what it reads of its context); one that
+    returns a function is still refused (each call would specialize it).
+  - The list of tasks with `told` and `step` marked: compiled in 19 s for
+    Linux (3.2 MB) and 10 s for Windows (2.1 MB).
+  - Tests (`functions.rs`): `apply` given a function of the program at
+    three places and a lambda: two functions compiled, the interpreter's
+    results; one that returns a function refused, for `@noInline` and for
+    `@cold`.

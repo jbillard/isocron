@@ -566,10 +566,25 @@ pub enum SysOp {
     WinCapture,
     /// `sysWinClose(window) => code`: consumes it
     WinClose,
+    /// `sysWinAlert(title, text) => code`: a box of messages of Windows
+    /// (`MessageBoxW`), waited for until it is closed (D643)
+    WinAlert,
+    /// `sysWinProgram() => [path, code]`: the file of the program running
+    /// (`GetModuleFileNameW`), its path in UTF-8 (D643)
+    WinProgram,
+    /// `sysWinCursor(window, shape) => code`: the shape of the pointer over
+    /// its inside (0 an arrow, 1 a hand, 2 a bar of text, D646)
+    WinCursor,
+    /// `sysWinClipSet(window, text) => code`: the text on the clipboard of
+    /// the system (D646)
+    WinClipSet,
+    /// `sysWinClipGet(window) => [text, code]`: the text of the clipboard of
+    /// the system, in UTF-8 (D646)
+    WinClipGet,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 57] = [
+    pub const ALL: [SysOp; 62] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -627,6 +642,11 @@ impl SysOp {
         SysOp::WinPost,
         SysOp::WinCapture,
         SysOp::WinClose,
+        SysOp::WinAlert,
+        SysOp::WinProgram,
+        SysOp::WinCursor,
+        SysOp::WinClipSet,
+        SysOp::WinClipGet,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
@@ -665,7 +685,13 @@ impl SysOp {
 
     /// The module `win32` (D636): Windows only, realized by the compiler.
     pub fn is_win32(self) -> bool {
-        matches!(self, SysOp::WinOpen | SysOp::WinEvents | SysOp::WinShow | SysOp::WinSize | SysOp::WinPost | SysOp::WinCapture | SysOp::WinClose)
+        matches!(
+            self,
+            SysOp::WinOpen | SysOp::WinEvents | SysOp::WinShow | SysOp::WinSize | SysOp::WinPost | SysOp::WinCapture | SysOp::WinClose | SysOp::WinAlert | SysOp::WinProgram
+                | SysOp::WinCursor
+                | SysOp::WinClipSet
+                | SysOp::WinClipGet
+        )
     }
 
     /// The target Linux has it (D324): not the module `win32`.
@@ -768,6 +794,11 @@ impl SysOp {
             SysOp::WinPost => "sysWinPost",
             SysOp::WinCapture => "sysWinCapture",
             SysOp::WinClose => "sysWinClose",
+            SysOp::WinAlert => "sysWinAlert",
+            SysOp::WinProgram => "sysWinProgram",
+            SysOp::WinCursor => "sysWinCursor",
+            SysOp::WinClipSet => "sysWinClipSet",
+            SysOp::WinClipGet => "sysWinClipGet",
         }
     }
 }

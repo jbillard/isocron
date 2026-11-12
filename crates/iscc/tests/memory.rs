@@ -1179,7 +1179,10 @@ fn texts_of_a_sorted_array_freed_in_the_order_of_their_places() {
 /// kept in a tuple, the text a loop keeps, a source read for the last time
 /// (the moves of D548). The same output as the interpreter, each block
 /// freed once (the checked allocator, valgrind), a copy in the memory
-/// report only where a text must be owned (lines 29, 32, 38, 43 and 71).
+/// report only where a text must be owned (lines 29, 32, 38, 43 and 71),
+/// and where the loop `longest` is given its text `best` (D644): the
+/// literal at its call (line 65) and the text it chooses before its tail
+/// call (line 8), copied before on entry of each call, as many copies.
 #[test]
 fn arrays_whose_texts_are_views_of_texts_that_live_longer() {
     let src = include_str!("data/views_of_texts.isc");
@@ -1193,7 +1196,7 @@ fn arrays_whose_texts_are_views_of_texts_that_live_longer() {
     let mut copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
     copies.sort();
     copies.dedup();
-    assert_eq!(copies, vec![29, 32, 38, 43, 71], "the lines whose texts are copied");
+    assert_eq!(copies, vec![8, 29, 32, 38, 43, 65, 71], "the lines whose texts are copied");
     clean(src, "views_of_texts_vg", &["700"]);
 }
 
@@ -1440,4 +1443,124 @@ action main(args: string[k]): i32 {
     let r = run_bin(&bin, &["5"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
     clean(src, "freed_once_vg", &["5"]);
+}
+
+/// D644: the array of a loop (a recursive function that changes it at each
+/// turn or gives it back, D351) given by its callers: a loop called once per
+/// run with the whole array (as an inflater's `codes` once per block) takes
+/// it as it comes, no copy on entry; a caller that reads its array again
+/// copies it at the call (the line in the memory report), `requireUnique`
+/// in the loop holds. 300000 elements in runs of 7 (42858 calls of the loop:
+/// a copy of the array at each would write 100 GB); the same output as the
+/// interpreter, each block freed once (the checked allocator, valgrind).
+#[test]
+fn a_loop_given_its_array() {
+    let src = "// fills `k` places of `out` from `o` with `v`
+function fillRun(out: i64[n], o: i64, k: i64, v: i64): i64[n] {
+    if (k == 0) {
+        return out;
+    }
+    return fillRun(requireUnique(out.with(o, v)), o + 1, k - 1, v);
+}
+
+// the runs of `r` places one after the other, each by a call of the loop
+function runs(out: i64[n], o: i64, r: i64): i64[n] {
+    if (o >= n) {
+        return out;
+    }
+    const k = min(r, n - o);
+    return runs(fillRun(out, o, k, o), o + k, r);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const a = runs(fill(n, 0), 0, 7);
+    print([a[0], a[7], a[n - 1], sum(a)] as const);
+    const b = fill(n, 1);
+    const c = fillRun(b, 0, 3, 9);
+    print([b[0], c[0], c[3], c[n - 1]] as const);
+    return 0;
+}
+";
+    let bin = compile(src, "loop_given");
+    for a in ["10", "300000"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("loop_given.isc", src).unwrap();
+    let copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    assert_eq!(copies, vec![23], "the lines whose arrays are copied");
+    clean(src, "loop_given_vg", &["3000"]);
+}
+
+/// D647: a `concat` that takes the block of its left array (D533, D638) in
+/// one branch of an `if`, the array read or given in the other: its binding
+/// bound again in that branch (what is left of it to free) read by the other
+/// branch, a value of the first in the second (invalid code: `Instruction
+/// does not dominate all uses`). A loop growing its array in one branch
+/// alone, of scalars and of a sum type holding texts, the branches of a
+/// `match`, a `concat` in each branch, one before an `if` that reads the
+/// array after; the same output as the interpreter, every block freed once
+/// (the checked allocator, valgrind).
+#[test]
+fn a_concat_that_takes_its_array_in_one_branch() {
+    let src = "type Ev = A(i64) | B(f32, f32) | C | S(string);
+type In = P(i64) | Q(i64, boolean) | R;
+
+function grow(xs: i64[n], i: i64, out: i64[]): i64[] {
+    if (i >= n) {
+        return out;
+    }
+    if (xs[i] > 0) {
+        return grow(xs, i + 1, concat(out, [xs[i]]));
+    }
+    return grow(xs, i + 1, out);
+}
+
+function events(xs: In[n], i: i64, out: Ev[], m: i64): [Ev[], i64] {
+    if (i >= n) {
+        return [out, m] as const;
+    }
+    return match (xs[i]) {
+        P(a) => events(xs, i + 1, concat(out, [a % 2 == 0 ? A(a) : S(`s${a}`)]), m),
+        Q(a, d) => {
+            if (a == 7) {
+                return events(xs, i + 1, concat(out, [C]), m + 1);
+            }
+            return events(xs, i + 1, d ? concat(out, [B(1.0f32, f32(a))]) : out, m);
+        },
+        _ => events(xs, i + 1, out, m),
+    };
+}
+
+function both(t: string[n], k: i64): string[] {
+    const u = map(t, (s) => s + \"!\");
+    const v = k > 2 ? concat(u, [`k${k}`]) : concat(u, [\"none\"]);
+    return v;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    print(grow(map(iota(n), (i) => i % 3 - 1), 0, []));
+    const xs: In[] = map(iota(n), (i) => i % 4 == 0 ? P(i) : (i % 4 == 1 ? Q(i, i % 3 == 0) : (i % 4 == 2 ? Q(7, true) : R)));
+    const [out, m] = events(xs, 0, [], 0);
+    print([out.length, m] as const);
+    print(map(out, (e) => match (e) {
+        A(a) => a,
+        B(x, y) => i64(y),
+        C => -1,
+        S(s) => s.length,
+    }).sum());
+    print(both(map(iota(n), (i) => `t${i}`), n));
+    return 0;
+}
+";
+    let bin = compile(src, "concat_one_branch");
+    for a in ["0", "3", "40"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    clean(src, "concat_one_branch_vg", &["40"]);
 }

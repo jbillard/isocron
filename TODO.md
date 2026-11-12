@@ -550,7 +550,12 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [ ] The focus and the typing of text, scrolling, hovering, long lists, images; the glyphs kept from one image to the next
 - [x] The system known when a program is built: `sys.platform()`, a branch of another system reaching nothing (D635)
 - [x] Windows (`user32`, `gdi32`, D635): the module `win32` (D636), a window, its events, an image shown and captured; tested in the machine of Windows; the plate of the library shown in a window of Windows 11
-- [ ] `win32`: its microbenchmark and floor in C (`show` of an image of 1920 by 1080), the interpreter under Windows, the cursor, the clipboard, the input methods
+- [ ] `win32`: its microbenchmark and floor in C (`show` of an image of 1920 by 1080), the interpreter under Windows, the input methods
+- [x] `win32`: the box of messages and the path of the program (D643), the shape of the pointer and the clipboard (D646); a flush behind the characters of its keys (D645)
+- [x] A field replaced by an array of another length (D642), the array of a loop given by its callers (D644: the inflater of the library 122 -> 38.6 ms on a photograph, zlib 27.8), a `concat` that takes its array in one branch (D647), `@noInline` on a function that takes a function (D648)
+- [ ] Found by the library: `const r: T = { a: [] }` keeps the length of the literal (`[0]`) rather than taking the size of its own of `T` (D341): a record literal annotated must be made by a function returning `T` to take it; a `fold` whose accumulator grows the same (`Ev[0]`): written as a recursion
+- [ ] The inflater of the library at the floor: 38.6 ms against 27.8 for zlib on a photograph (mostly literals), 8.3 against 4.6 on the plate; the PNG decoder after it (its filters and pixels, 26 ms against 6.4 in C before D644)
+- [ ] The programs of the library weigh 2 to 3 MB (450 KB before its loop of steps): what is copied, measured
 
 ## The versions of the runtime (the author's decision, 2026-11-10, D622)
 

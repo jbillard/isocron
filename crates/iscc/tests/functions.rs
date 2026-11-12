@@ -644,24 +644,30 @@ action main(args: string[k]): i32 {
     let p = iscc::frontend("cold.isc", src).unwrap();
     let calls = isc_ir::report::entries(&p).into_iter().filter(|e| e.kind == "stack" && e.what.contains("describe")).count();
     assert!(calls >= 2, "the calls of `describe` in the report: {}", calls);
+    // (one that returns a function: refused, each call would specialize it;
+    // one that takes a function: compiled once for each function given, D648)
     let bad = "@cold
-function apply(f: (i64) => i64, x: i64): i64 {
-    return f(x);
+function maker(k: i64): (i64) => i64 {
+    return (v) => v + k;
 }
 
 action main(args: string[k]): i32 {
-    print(apply((v) => v + 1, 2));
+    print(maker(1)(2));
     return 0;
 }
 ";
     let e = iscc::frontend("cold_bad.isc", bad).err().expect("refused");
-    assert!(e.to_string().contains("`@cold` function `apply` takes or returns a function"), "{}", e);
+    assert!(e.to_string().contains("`@cold` function `maker` returns a function"), "{}", e);
 }
 
 /// `@noInline` (D626): compiled once and called, never inlined, its
 /// calls not taken as unlikely (`noinline` without `cold`). The same
-/// results interpreted and compiled; one that takes a function is refused
-/// at compilation.
+/// results interpreted and compiled. One that takes a function is compiled
+/// once for each function given (D648: a function of the program by its
+/// identity, given at three places, and a lambda: two functions compiled,
+/// where each call made a copy before, the library of graphical interfaces
+/// copying its model's `update` into each step of its loop); one that
+/// returns a function is refused at compilation.
 #[test]
 fn no_inline_functions_called_not_inlined() {
     let src = "@noInline
@@ -688,16 +694,41 @@ action main(args: string[k]): i32 {
         let r = run_bin(&bin, &args);
         assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", args, r.stderr);
     }
-    let bad = "@noInline
+    let given = "@noInline
 function apply(f: (i64) => i64, x: i64): i64 {
-    return f(x);
+    return f(x) * 2 + x % 7;
+}
+
+function inc(v: i64): i64 {
+    return v + 1;
 }
 
 action main(args: string[k]): i32 {
-    print(apply((v) => v + 1, 2));
+    const n = parseI64(args[0]);
+    print([apply(inc, n), apply(inc, n + 1), apply(inc, n * 3), apply((v) => v * n, 5)] as const);
+    return 0;
+}
+";
+    let bin = compile(given, "no_inline_given");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let apply = ll.lines().filter(|l| l.starts_with("define internal ") && l.contains("@isc_fn_") && l.contains(" noinline") && !l.contains(" cold")).count();
+    assert_eq!(apply, 2, "the functions compiled for `apply`");
+    for a in ["4", "100"] {
+        let want = interp_ok(given, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    assert_eq!(interp_ok(given, &["4"]), "(14, 17, 31, 45)\n");
+    let bad = "@noInline
+function maker(k: i64): (i64) => i64 {
+    return (v) => v + k;
+}
+
+action main(args: string[k]): i32 {
+    print(maker(1)(2));
     return 0;
 }
 ";
     let e = iscc::frontend("no_inline_bad.isc", bad).err().expect("refused");
-    assert!(e.to_string().contains("`@noInline` function `apply` takes or returns a function"), "{}", e);
+    assert!(e.to_string().contains("`@noInline` function `maker` returns a function"), "{}", e);
 }

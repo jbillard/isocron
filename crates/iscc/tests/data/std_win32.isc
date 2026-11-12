@@ -32,8 +32,14 @@ action main(args: string[k]): i32 {
             print(win.post(w, 256, 65, 1 + 30 * 65536));
             print(win.post(w, 258, 233, 0));
             print(win.post(w, 16, 0, 0));
+            // (the character of the key, made by the thread of the window
+            // when it reads the key: its place among the messages posted
+            // meanwhile is that thread's, counted apart, D645)
             match (win.events(w, 1000)) {
-                Ok(evs) => print(filter(evs, input)),
+                Ok(evs) => {
+                    print(filter(evs, (e) => input(e) && e != win.Char(97)));
+                    print(count(evs, (e) => e == win.Char(97)));
+                },
                 Err(e) => print(message(e)),
             };
             // nothing more: the wait ends after its delay

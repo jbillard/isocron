@@ -84,6 +84,40 @@ export action capture(w: Window): Result<u32[], IoError> {
 }
 
 // the window closed: it cannot be used after
+// a box of messages of Windows titled `title` showing `text`, with its
+// button OK, in front of the other windows; returns when it is closed (D643:
+// what a program without a console shows of a failure)
+export action alert(title: string, text: string): void {
+    const shown = sysWinAlert(title, text);
+}
+
+// the path of the file of the program running (D643: the folder of its
+// files beside it, whatever the current folder)
+export action programPath(): Result<string, IoError> {
+    const [b, code] = sysWinProgram();
+    return code == 0 ? Ok(stringOf(b)) : Err(ioError(code, "program"));
+}
+
+// the shape of the pointer over the inside of `w`: 0 an arrow, 1 a hand, 2
+// a bar of text (D646: the cursors of the system, set at once when the
+// pointer is over the window)
+export action setCursor(w: Window, shape: i64): void {
+    const set = sysWinCursor(w, shape);
+}
+
+// `text` put on the clipboard of the system (as Unicode), `w` its owner
+// (D646)
+export action clipboardSet(w: Window, text: string): Result<void, IoError> {
+    const code = sysWinClipSet(w, text);
+    return code == 0 ? Ok(()) : Err(ioError(code, "clipboard"));
+}
+
+// the text on the clipboard of the system ("" for none, D646)
+export action clipboardGet(w: Window): Result<string, IoError> {
+    const [b, code] = sysWinClipGet(w);
+    return code == 0 ? Ok(stringOf(b)) : Err(ioError(code, "clipboard"));
+}
+
 export action close(w: Window): void {
     const code = sysWinClose(w);
 }

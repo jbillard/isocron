@@ -610,6 +610,11 @@ pub struct Gen<'p> {
     /// alone, then freed (D638): their elements moved into it when both
     /// sides are, each side then bound to its block alone.
     giving: HashSet<VarId>,
+    /// The variables bound again by a `concat` that took their block
+    /// (D533, D638), with their bindings before, in that order: undone after
+    /// each branch of an `if`, the two branches' bindings joined by a `phi`
+    /// after it (D647: the binding of one branch read by the other).
+    rebound: Vec<(VarId, Option<V>)>,
     /// The variables freed at once, the rest of their scope not reading
     /// them (D117): not freed again before the jump of a tail call (D639).
     freed_early: HashSet<VarId>,
@@ -1584,6 +1589,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         taking: HashSet::new(),
         moving: HashSet::new(),
         giving: HashSet::new(),
+        rebound: Vec::new(),
         freed_early: HashSet::new(),
         view_parts: view_parts(p),
         part_values: HashSet::new(),
@@ -3638,10 +3644,11 @@ impl<'p> Gen<'p> {
             self.stack_check(&f.name, f.span);
         }
         // the state of a loop (D206): lent by the caller, copied once here;
-        // its body takes it apart, each iteration receives a new one
+        // its body takes it apart, each iteration receives a new one (one
+        // the caller gives, D644, is taken as it comes)
         let mut entry: Vec<String> = (0..f.params.len()).map(|k| format!("%a{}", k)).collect();
         for (k, var) in f.params.iter().enumerate() {
-            if f.consumed.get(k).copied().unwrap_or(false) {
+            if f.consumed.get(k).copied().unwrap_or(false) && !f.given.get(k).copied().unwrap_or(false) {
                 let ty = self.p.vars[*var as usize].ty.clone();
                 let t = lt(&ty);
                 let x = self.copy_value(&v(entry[k].clone(), t.clone()), &ty);
@@ -5659,16 +5666,28 @@ impl<'p> Gen<'p> {
                 let lj = self.label();
                 self.cbr(&cv.r, &lt_, &lf);
                 self.block(&lt_);
+                // (the blocks a `concat` may take, as before the `if`: each
+                // branch from them, D647)
+                let mark = self.rebound.len();
+                let (taking0, giving0) = (self.taking.clone(), self.giving.clone());
                 let tv = self.ex(t, 1)?;
                 let tend = self.current_label(&lt_);
+                let tbound = self.unbind(mark);
+                let (taking_t, giving_t) = (std::mem::replace(&mut self.taking, taking0.clone()), std::mem::replace(&mut self.giving, giving0.clone()));
                 self.br(&lj);
                 self.block(&lf);
                 let fv = self.ex(f, 1)?;
                 let fend = self.current_label(&lf);
+                let fbound = self.unbind(mark);
                 self.br(&lj);
                 self.block(&lj);
                 let ty = lt(&e.ty);
                 let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", ty, tv.r, tend, fv.r, fend));
+                // a block taken on a path is not taken again after the `if`
+                self.taking = self.taking.intersection(&taking_t).copied().collect();
+                self.giving = self.giving.intersection(&giving_t).copied().collect();
+                let outer: HashSet<VarId> = taking0.union(&giving0).copied().collect();
+                self.join_bound(&tbound, &tend, &fbound, &fend, &outer);
                 Ok(v(r, ty))
             }
             Len(x) => {
@@ -7115,7 +7134,7 @@ impl<'p> Gen<'p> {
             // (no read of it follows, `concat_alone`)
             let left = self.ins(format!("phi {{ ptr, i64 }} [ zeroinitializer, %{} ], [ {}, %{} ]", lfast_end, av.r, lslow_end));
             self.taking.remove(&va);
-            self.env.insert(va, v(left, "{ ptr, i64 }"));
+            self.rebind(va, v(left, "{ ptr, i64 }"));
             return Ok(V { r, t: "{ ptr, i64 }".into(), uni: fast.uni && slow.uni });
         }
         let dst = self.alloc_elems(&nv.r, &et);
@@ -7213,9 +7232,64 @@ impl<'p> Gen<'p> {
         let nb = self.ins(format!("phi {{ ptr, i64 }} [ {}, %{} ], [ {}, %{} ]", eb, lfast_end, bv.r, lslow_end));
         self.giving.remove(&va);
         self.giving.remove(&vb);
-        self.env.insert(va, v(na, "{ ptr, i64 }"));
-        self.env.insert(vb, v(nb, "{ ptr, i64 }"));
+        self.rebind(va, v(na, "{ ptr, i64 }"));
+        self.rebind(vb, v(nb, "{ ptr, i64 }"));
         Ok(V { r, t: "{ ptr, i64 }".into(), uni: fast.uni && slow.uni })
+    }
+
+    /// `var` bound to `x`, its binding before kept to be undone (D647).
+    fn rebind(&mut self, var: VarId, x: V) {
+        let old = self.env.insert(var, x);
+        self.rebound.push((var, old));
+    }
+
+    /// The bindings made again since `mark` undone, the last first: each
+    /// variable with its binding at the end of the branch and that before it.
+    fn unbind(&mut self, mark: usize) -> Vec<(VarId, Option<V>, Option<V>)> {
+        let mut out: Vec<(VarId, Option<V>, Option<V>)> = Vec::new();
+        while self.rebound.len() > mark {
+            let (var, old) = self.rebound.pop().unwrap();
+            let now = self.env.get(&var).cloned();
+            match old.clone() {
+                Some(x) => {
+                    self.env.insert(var, x);
+                }
+                None => {
+                    self.env.remove(&var);
+                }
+            }
+            // (the earliest binding before the branch, the latest in it)
+            match out.iter_mut().find(|(w, _, _)| *w == var) {
+                Some(entry) => entry.2 = old,
+                None => out.push((var, now, old)),
+            }
+        }
+        out
+    }
+
+    /// After an `if`, each variable bound again in a branch bound to the
+    /// `phi` of its bindings at the ends of the two branches (that before
+    /// the `if` for a branch that left it), a binding to undo in turn; only
+    /// those bound before the `if` (`outer`: a `concat` could take their
+    /// block there), not those of a branch, out of their scope after it.
+    fn join_bound(&mut self, t: &[(VarId, Option<V>, Option<V>)], tend: &str, f: &[(VarId, Option<V>, Option<V>)], fend: &str, outer: &HashSet<VarId>) {
+        let mut vars: Vec<VarId> = t.iter().map(|(v, _, _)| *v).collect();
+        for (v, _, _) in f {
+            if !vars.contains(v) {
+                vars.push(*v);
+            }
+        }
+        for var in vars.into_iter().filter(|v| outer.contains(v)) {
+            let before = t.iter().find(|(w, _, _)| *w == var).map(|(_, _, b)| b.clone()).or_else(|| f.iter().find(|(w, _, _)| *w == var).map(|(_, _, b)| b.clone())).flatten();
+            let at_t = t.iter().find(|(w, _, _)| *w == var).map(|(_, n, _)| n.clone()).unwrap_or_else(|| before.clone());
+            let at_f = f.iter().find(|(w, _, _)| *w == var).map(|(_, n, _)| n.clone()).unwrap_or_else(|| before.clone());
+            let (Some(a), Some(b)) = (at_t, at_f) else { continue };
+            if a.t != b.t {
+                continue;
+            }
+            let r = self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", a.t, a.r, tend, b.r, fend));
+            self.rebind(var, V { r, t: a.t.clone(), uni: false });
+        }
     }
 
     fn materialize_general(&mut self, e: &Expr) -> R<V> {

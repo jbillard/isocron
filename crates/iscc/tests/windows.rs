@@ -882,7 +882,10 @@ fn programs_build_for_windows() {
 /// image shown (fewer pixels than its size: refused), input played by
 /// messages posted to it (the pointer, a click, a key and the character
 /// Windows makes of it, a character, closing asked) read back in their
-/// order as events, a wait without events that ends after its delay, what
+/// order as events (the character of the key in the same call, counted
+/// apart: the thread of the window makes it when it reads the key, its place
+/// among the messages posted meanwhile that thread's, D641, D645), a wait
+/// without events that ends after its delay, what
 /// the window shows captured: the image drawn, pixel for pixel; built with
 /// both ABIs of Windows.
 #[test]
@@ -892,7 +895,7 @@ fn a_window_of_windows() {
         return;
     };
     let src = include_str!("data/std_win32.isc");
-    let want = "(320, 200)\nOk(())\nErr(std:sys.Other(22, show))\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\n[std:win32.Pointer(10, 20), std:win32.Pointer(11, 21), std:win32.Button(0, true), std:win32.Pointer(11, 21), std:win32.Button(0, false), std:win32.Key(65, true, 30), std:win32.Char(233), std:win32.Close, std:win32.Char(97)]\n0\n(64000, 64000)\n";
+    let want = "(320, 200)\nOk(())\nErr(std:sys.Other(22, show))\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\n[std:win32.Pointer(10, 20), std:win32.Pointer(11, 21), std:win32.Button(0, true), std:win32.Pointer(11, 21), std:win32.Button(0, false), std:win32.Key(65, true, 30), std:win32.Char(233), std:win32.Close]\n1\n0\n(64000, 64000)\n";
     for msvc in [false, true] {
         let exe = compile_windows_with(src, &format!("std_win32_{}", if msvc { "msvc" } else { "gnu" }), msvc);
         let d = dir("win32");
@@ -946,5 +949,92 @@ fn a_program_of_windows_without_a_console() {
             let subsystem = u16::from_le_bytes(b[pe + 24 + 68..pe + 24 + 70].try_into().unwrap());
             assert_eq!(subsystem, if gui { 2 } else { 3 }, "{} {}", name, gui);
         }
+    }
+}
+
+/// D643: `win32.programPath()`, the file of the program running
+/// (`GetModuleFileNameW`, in UTF-8): its name, a path of a drive; and
+/// `win32.alert` built and linked (`MessageBoxW` of user32; a box waits for
+/// a hand: shown by the check of the library in the machine of Windows, not
+/// here), in a branch for Windows: the program built for Linux too.
+#[test]
+fn the_path_of_the_program_on_windows() {
+    let src = "import * as win from \"win32\";
+import * as sys from \"sys\";
+
+action main(args: string[k]): i32 {
+    if (sys.platform() == \"windows\") {
+        if (args.length > 0) {
+            win.alert(\"Isocron\", args[0]);
+        }
+        match (win.programPath()) {
+            Ok(p) => print([p.slice(p.lastIndexOf(\"\\\\\") + 1, p.length), p.indexOf(\":\\\\\") == 1] as const),
+            Err(e) => print(sys.message(e)),
+        };
+    } else {
+        print(0);
+    }
+    return 0;
+}
+";
+    let r = run_bin(&compile(src, "program_path_linux"), &[]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "0\n"));
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    for msvc in [false, true] {
+        let name = format!("program_path_{}", if msvc { "msvc" } else { "gnu" });
+        let exe = compile_windows_with(src, &name, msvc);
+        let d = dir(&name);
+        let (code, out, err) = run_windows(&runner, &exe, &d, &[], None, 1);
+        assert_eq!((code, String::from_utf8_lossy(&out).replace("\r\n", "\n")), (0, format!("({}.exe, true)\n", name)), "{}", String::from_utf8_lossy(&err));
+    }
+}
+
+/// D646: the shape of the pointer and the clipboard of `win32`, in the
+/// session of the machine of Windows (`run.py --interactive`): a text with
+/// an emoji put on the clipboard and read back, an empty text; the shapes
+/// of the pointer set (a hand, a bar, an arrow) without failing; with both
+/// ABIs.
+#[test]
+fn the_clipboard_and_the_pointer_on_windows() {
+    let Some(runner) = runner() else {
+        eprintln!("no Windows machine (ISC_WINDOWS_RUNNER): the Windows target not run");
+        return;
+    };
+    let src = "import * as win from \"win32\";
+import { message } from \"sys\";
+
+action main(args: string[k]): i32 {
+    match (win.open(\"clip\", 320, 200)) {
+        Ok(w) => {
+            const s = win.show(w, fill(320 * 200, 0xFF808080u32), 320, 200);
+            const opening = win.events(w, 200);
+            win.setCursor(w, 1);
+            print(win.clipboardSet(w, \"Café 😀 du presse-papiers\"));
+            print(win.clipboardGet(w));
+            print(win.clipboardSet(w, \"\"));
+            print(win.clipboardGet(w));
+            win.setCursor(w, 2);
+            win.setCursor(w, 0);
+            win.close(w);
+        },
+        Err(e) => print(message(e)),
+    };
+    return 0;
+}
+";
+    for msvc in [false, true] {
+        let exe = compile_windows_with(src, &format!("clip_{}", if msvc { "msvc" } else { "gnu" }), msvc);
+        let d = dir("clip");
+        let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg("--interactive").arg(&exe).output().unwrap();
+        assert_eq!(
+            (o.status.code(), String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n")),
+            (Some(0), "Ok(())\nOk(Café 😀 du presse-papiers)\nOk(())\nOk()\n".to_string()),
+            "msvc {}: {}",
+            msvc,
+            String::from_utf8_lossy(&o.stderr)
+        );
     }
 }

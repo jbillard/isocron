@@ -3416,9 +3416,60 @@ fn updates_unique(e: &Expr, v: VarId) -> bool {
     e.children().into_iter().any(|c| updates_unique(c, v))
 }
 
+/// The accumulators of each function (D351: the arrays a loop gives back
+/// or changes at each turn), decided before any body is rewritten: each kept
+/// when the body owning them passes the memory check. Those of a function
+/// the code generator does not call itself are then given by its callers
+/// (D644): a loop called once per block of a stream with the whole output
+/// (`codes(src, pos, out, o, ...)` of an inflater) copied it on entry at each
+/// call, its caller lending it; given, the caller moves it at its last use
+/// and copies it only otherwise, the entry copies none. Not required unique
+/// at its calls (`Function::unique`): a caller reading its argument again
+/// copies it, as the entry did.
+fn decide_accumulators(p: &mut Program) -> Vec<Vec<usize>> {
+    let n = p.fns.len();
+    let mut out = vec![Vec::new(); n];
+    for fi in 0..n {
+        let acc = accumulators(p, fi);
+        if acc.is_empty() {
+            continue;
+        }
+        let callees = Callees::of(p);
+        let mut body = p.fns[fi].body.clone();
+        let params: Vec<VarId> = acc.iter().map(|&k| p.fns[fi].params[k]).collect();
+        if ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_err() {
+            continue;
+        }
+        for &k in &acc {
+            p.fns[fi].consumed[k] = true;
+        }
+        let saved = std::mem::replace(&mut p.fns[fi].body, body);
+        let ok = crate::verify::verify_fn(p, &p.fns[fi]).is_ok();
+        p.fns[fi].body = saved;
+        if !ok {
+            for &k in &acc {
+                p.fns[fi].consumed[k] = false;
+            }
+            continue;
+        }
+        out[fi] = acc;
+    }
+    // (the functions from `text_fns` on are called by the code generator,
+    // which lends their arguments)
+    for (fi, acc) in out.iter().enumerate() {
+        if (fi as u32) < p.text_fns {
+            for &k in acc {
+                p.fns[fi].given[k] = true;
+            }
+        }
+    }
+    out
+}
+
 pub fn ownership(p: &mut Program) -> R<()> {
     own_states(p);
     decide_given(p);
+    let accs = decide_accumulators(p);
     let callees = Callees::of(p);
     // `main` owns the array of its arguments (allocated by the runtime at
     // start-up), defined in the outermost region
@@ -3431,32 +3482,16 @@ pub fn ownership(p: &mut Program) -> R<()> {
         // are not kept (a program that prints a float has no copy of its
         // own for it)
         let reported = (fi as u32) < p.text_fns;
-        // its accumulators owned (D351), kept only when the memory check of
-        // the function holds (each moved on every path); otherwise borrowed
-        let acc = accumulators(p, fi);
-        if !acc.is_empty() {
-            let saved = p.fns[fi].body.clone();
-            let params: Vec<VarId> = acc.iter().map(|&k| p.fns[fi].params[k]).collect();
-            let mut reasons = Vec::new();
-            let f = &mut p.fns[fi];
-            if ownership_body_with(&mut f.body, &p.vars, None, &params, &callees, &mut reasons).is_ok() {
-                for &k in &acc {
-                    p.fns[fi].consumed[k] = true;
-                }
-                if crate::verify::verify_fn(p, &p.fns[fi]).is_ok() {
-                    if reported {
-                        p.copy_reasons.extend(reasons);
-                    }
-                    continue;
-                }
-                for &k in &acc {
-                    p.fns[fi].consumed[k] = false;
-                }
-            }
-            p.fns[fi].body = saved;
-        }
         let mut reasons = Vec::new();
-        ownership_fn(&mut p.fns[fi], &p.vars, &callees, &mut reasons)?;
+        if accs[fi].is_empty() {
+            ownership_fn(&mut p.fns[fi], &p.vars, &callees, &mut reasons)?;
+        } else {
+            // its accumulators owned (D351, decided above), and the
+            // parameters it is given
+            let f = &mut p.fns[fi];
+            let params: Vec<VarId> = (0..f.params.len()).filter(|&k| accs[fi].contains(&k) || f.given[k]).map(|k| f.params[k]).collect();
+            ownership_body_with(&mut f.body, &p.vars, None, &params, &callees, &mut reasons)?;
+        }
         if reported {
             p.copy_reasons.extend(reasons);
         }

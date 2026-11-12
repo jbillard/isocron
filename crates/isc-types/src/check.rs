@@ -2766,6 +2766,17 @@ impl<'g> FnCx<'g> {
                 (vec![Ty::Handle(Handle::Window)], Ty::Tuple(vec![own(Ty::Int(IntKind::U32)), i64t.clone()]))
             }
             SysOp::WinClose => (vec![Ty::Handle(Handle::Window)], i64t.clone()),
+            SysOp::WinAlert => (vec![Ty::Str, Ty::Str], i64t.clone()),
+            SysOp::WinCursor => (vec![Ty::Handle(Handle::Window), i64t.clone()], i64t.clone()),
+            SysOp::WinClipSet => (vec![Ty::Handle(Handle::Window), Ty::Str], i64t.clone()),
+            SysOp::WinClipGet => {
+                let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
+                (vec![Ty::Handle(Handle::Window)], Ty::Tuple(vec![own(Ty::Int(IntKind::U8)), i64t.clone()]))
+            }
+            SysOp::WinProgram => {
+                let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
+                (vec![], Ty::Tuple(vec![own(Ty::Int(IntKind::U8)), i64t.clone()]))
+            }
         };
         if args.len() != params.len() {
             return err(span, format!("`{}` takes {} arguments, not {}", name, params.len(), args.len()));
@@ -4297,14 +4308,17 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
     // the connections and listeners closed exactly once (D339)
     check_linear(&fns, &sums_for_linear(&globals))?;
     let mut recursive = recursive_fns(&fns);
-    // `@cold` (D584): called, never inlined; not a function that takes or
-    // returns a function (each call specializes it, SPEC section 11)
+    // `@cold` (D584): called, never inlined; not a function that returns a
+    // function (each call would specialize it, SPEC section 11). One that
+    // takes a function is compiled once for each function given, as a
+    // recursive one (D128, D648: a function of the program by its identity,
+    // a lambda by its expression)
     // (`@noInline` the same, its calls not unlikely)
     for (id, f) in fns.iter().enumerate() {
         if let Some((m, at)) = f.requires.iter().find(|(m, _)| matches!(m, isc_syntax::ast::Modifier::Cold | isc_syntax::ast::Modifier::NoInline)) {
-            if f.param_tys.iter().chain(std::iter::once(&f.ret)).any(|t| holds_function(&globals, t, &mut Vec::new())) {
+            if holds_function(&globals, &f.ret, &mut Vec::new()) {
                 let name = if *m == isc_syntax::ast::Modifier::Cold { "cold" } else { "noInline" };
-                return err(*at, format!("`@{}` function `{}` takes or returns a function: it would be specialized at each call, never compiled once", name, f.name));
+                return err(*at, format!("`@{}` function `{}` returns a function: it would be specialized at each call, never compiled once", name, f.name));
             }
             recursive[id] = true;
         }
