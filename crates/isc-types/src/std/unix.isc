@@ -97,6 +97,15 @@ export action closeFd(fd: i32): Result<void, IoError> {
     return code == 0 ? Ok(()) : Err(ioError(code, "closeFd"));
 }
 
+// all the bytes `x` written to the descriptor `fd` (one received with
+// `receiveWithFds`: the end of a pipe, a socket, a file): again after a
+// signal, the descriptor waited for while it is full; its reader gone an
+// error (never the signal SIGPIPE, which would end the program; D650)
+export action writeFd(fd: i32, x: u8[n]): Result<void, IoError> {
+    const code = sysWriteFd(fd, x);
+    return code == 0 ? Ok(()) : Err(ioError(code, "writeFd"));
+}
+
 // ----- memory shared ------------------------------------------------------
 
 // `bytes` bytes of memory of a file of their own, zeros, readable and

@@ -3405,7 +3405,10 @@ descriptors of files `fds` (`i32`, at least one byte when there are
 descriptors, at most 253); `receiveWithFds(c, max, maxFds)` gives a
 `Received`: the bytes (`bytes`, none at the end of the stream) and the
 descriptors that came with them (`fds`, more than `maxFds`: an error), each
-the program's to close with `closeFd(fd)`. `poll(fds, ms)` waits until one
+the program's to close with `closeFd(fd)`; `writeFd(fd, bytes)` writes all
+the bytes to one of them (the end of a pipe another program reads: its
+reader gone is the error `Other(32)`, never the signal that would end the
+program). `poll(fds, ms)` waits until one
 of the descriptors can be read, at most `ms` milliseconds (-1: without
 limit), and gives the events of each: `readable(e)`, `hungUp(e)` (the peer
 has closed its side), `failed(e)`; none of them: the time passed.

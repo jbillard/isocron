@@ -256,6 +256,10 @@ mod linux {
                 let r = unsafe { close(int(&vs[0]) as c_int) };
                 Value::Int(if r < 0 { code(&std::io::Error::last_os_error()) } else { 0 })
             }
+            S::WriteFd => {
+                let data: Vec<u8> = ints(&vs[1]).into_iter().map(|x| x as u8).collect();
+                Value::Int(write_fd(int(&vs[0]) as c_int, &data))
+            }
             S::SharedOpen => {
                 let bytes = int(&vs[0]);
                 if bytes < 1 {
@@ -343,6 +347,34 @@ mod linux {
             return Err(code(&std::io::Error::last_os_error()));
         }
         Ok(p as *mut u8)
+    }
+
+    /// `sysWriteFd` (D650): as the compiled program, `write` until all the
+    /// bytes are written, again after a signal, the descriptor waited for
+    /// while it is full (`EAGAIN`); its reader gone `EPIPE` (the programs
+    /// of Rust, the interpreter among them, ignore `SIGPIPE`)
+    fn write_fd(fd: c_int, data: &[u8]) -> i64 {
+        if fd < 0 {
+            return -9;
+        }
+        // SAFETY: a descriptor named by the program, never closed here (a
+        // number that is not one: `EBADF` from the kernel at the write)
+        let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+        let mut at = 0usize;
+        while at < data.len() {
+            match std::io::Write::write(&mut &*file, &data[at..]) {
+                Ok(n) => at += n,
+                Err(e) if e.raw_os_error() == Some(4) => {}
+                Err(e) if e.raw_os_error() == Some(11) => {
+                    let mut p = [PollFd { fd, events: 4, revents: 0 }];
+                    // SAFETY: one descriptor, its `revents` written by the
+                    // kernel in place, alive during the call
+                    unsafe { poll(p.as_mut_ptr(), 1, -1) };
+                }
+                Err(e) => return code(&e),
+            }
+        }
+        0
     }
 
     /// `sysSendFds`: as the compiled program, `sendmsg` with the

@@ -10,7 +10,7 @@ use common::*;
 
 const SRC: &str = include_str!("data/std_unix.isc");
 
-const WANT: &str = "Ok(())\nhello\n8192\nOk(())\nOk(())\nErr(std:sys.Other(22, writeShared))\nOk(())\nM\n1\nOk([112, 105, 120, 101, 108, 115])\nOk([68, 51, 34, 17, 0, 255, 0, 255])\nErr(std:sys.PermissionDenied(writeShared))\nErr(std:sys.Other(22, readShared))\nOk(())\n[0]\nOk(())\n(true, false, false)\nping\n(true, true)\n0\nrefused: @isocron-nothing-listens-here\nerror 22 of the system: /tmp/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nerror 22 of the system: shared\nErr(std:sys.Other(9, closeFd))\n";
+const WANT: &str = "Ok(())\nhello\n8192\nOk(())\nOk(())\nErr(std:sys.Other(22, writeShared))\nOk(())\nM\n1\nOk([112, 105, 120, 101, 108, 115])\nOk([68, 51, 34, 17, 0, 255, 0, 255])\nErr(std:sys.PermissionDenied(writeShared))\nErr(std:sys.Other(22, readShared))\nOk(())\n[0]\nOk(())\n(true, false, false)\nping\n(true, true)\n0\nrefused: @isocron-nothing-listens-here\nerror 22 of the system: /tmp/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nerror 22 of the system: shared\nErr(std:sys.Other(9, closeFd))\nOk(())\nthrough a descriptor\nErr(std:sys.Other(32, writeFd))\nOk(())\nErr(std:sys.Other(9, writeFd))\nstill running\n";
 
 /// A name of this run for the socket of the program (two runs at the same
 /// time never share it).
@@ -24,7 +24,9 @@ fn name(what: &str) -> String {
 /// projected read only on the other side (its bytes, a write refused, a
 /// read past its end refused); `poll`: nothing within 20 ms, then bytes,
 /// then the peer gone; a name where nothing listens, a path too long, an
-/// empty memory, a descriptor that is none. Interpreted and compiled (1 and
+/// empty memory, a descriptor that is none; bytes written to a descriptor
+/// (`writeFd`), its reader gone an error and not the signal `SIGPIPE`
+/// (D650). Interpreted and compiled (1 and
 /// 4 threads), the same outputs; the compiled program makes its calls of
 /// the system itself (no function of the runtime); Valgrind.
 #[test]

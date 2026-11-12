@@ -495,6 +495,71 @@ entry:
   ret i64 %c
 }"#;
 
+/// `sysWriteFd(fd, bytes)` (D650): `write` until all is written, again
+/// after a signal (`EINTR`), the descriptor waited for while it is full
+/// (`EAGAIN`, `poll` for `POLLOUT`). `SIGPIPE` blocked for the thread
+/// during the call (`rt_sigprocmask`): a reader gone is `EPIPE`, the signal
+/// the write raised then taken from those pending (`rt_sigtimedwait`
+/// without waiting), the mask of before set again; the program never ended
+/// by it (a pipe whose reader has gone, unlike a socket, has no
+/// `MSG_NOSIGNAL`).
+const WRITE_FD: &str = r#"define internal i64 @isc.unix.writefd(i32 %fd, ptr %p, i64 %n) {
+entry:
+  %set = alloca i64, align 8
+  %old = alloca i64, align 8
+  %ts = alloca [2 x i64], align 8
+  %pfd = alloca [2 x i32], align 8
+  %atp = alloca i64, align 8
+  %fd64 = sext i32 %fd to i64
+  store i64 4096, ptr %set
+  store i64 0, ptr %old
+  store i64 0, ptr %atp
+  %blocked = call i64 @SC(i64 14, i64 0, ptr %set, ptr %old, i64 8, i64 0, i64 0)
+  br label %loop
+loop:
+  %at = load i64, ptr %atp
+  %done = icmp sge i64 %at, %n
+  br i1 %done, label %all, label %write
+write:
+  %q = getelementptr i8, ptr %p, i64 %at
+  %left = sub i64 %n, %at
+  %w = call i64 @SC(i64 1, i64 %fd64, ptr %q, i64 %left, i64 0, i64 0, i64 0)
+  %wintr = icmp eq i64 %w, -4
+  br i1 %wintr, label %loop, label %written
+written:
+  %full = icmp eq i64 %w, -11
+  br i1 %full, label %wait, label %checked
+wait:
+  store i32 %fd, ptr %pfd
+  %ev = getelementptr i8, ptr %pfd, i64 4
+  store i32 4, ptr %ev
+  %pr = call i64 @SC(i64 7, ptr %pfd, i64 1, i64 -1, i64 0, i64 0, i64 0)
+  br label %loop
+checked:
+  %wbad = icmp slt i64 %w, 0
+  br i1 %wbad, label %finish, label %more
+more:
+  %next = add i64 %at, %w
+  store i64 %next, ptr %atp
+  br label %loop
+all:
+  br label %finish
+finish:
+  %r = phi i64 [ 0, %all ], [ %w, %checked ]
+  %pipe = icmp eq i64 %r, -32
+  br i1 %pipe, label %take, label %restore
+take:
+  store i64 0, ptr %ts
+  %ns = getelementptr i8, ptr %ts, i64 8
+  store i64 0, ptr %ns
+  %taken = call i64 @SC(i64 128, ptr %set, i64 0, ptr %ts, i64 8, i64 0, i64 0)
+  br label %restore
+restore:
+  %unblocked = call i64 @SC(i64 14, i64 2, ptr %old, i64 0, i64 8, i64 0, i64 0)
+  %c = call i64 @isc.unix.code(i64 %r, i1 false)
+  ret i64 %c
+}"#;
+
 /// The name of the files of `sysSharedOpen` (seen in `/proc/<pid>/fd`).
 const SHARED_NAME: &str = r#"@isc.unix.memfd = private unnamed_addr constant [8 x i8] c"isocron\00""#;
 
@@ -736,6 +801,11 @@ impl Gen<'_> {
             SysOp::CloseFd => {
                 self.unix_defs(&[CLOSE_FD]);
                 v(self.ins(format!("call i64 @isc.unix.closefd(i32 {})", vals[0].r)), "i64")
+            }
+            SysOp::WriteFd => {
+                self.unix_defs(&[WRITE_FD]);
+                let (p, n) = self.str_parts(&vals[1]);
+                v(self.ins(format!("call i64 @isc.unix.writefd(i32 {}, ptr {}, i64 {})", vals[0].r, p, n)), "i64")
             }
             SysOp::SharedOpen => {
                 self.unix_defs(&[SHARED_NAME, SHARED_OPEN]);

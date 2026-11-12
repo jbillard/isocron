@@ -2737,6 +2737,10 @@ impl<'g> FnCx<'g> {
                 (vec![Ty::Array(s.clone(), Box::new(Ty::Int(IntKind::I32))), i64t.clone()], Ty::Tuple(vec![Ty::Array(s, Box::new(Ty::Int(IntKind::I32))), i64t.clone()]))
             }
             SysOp::CloseFd => (vec![Ty::Int(IntKind::I32)], i64t.clone()),
+            SysOp::WriteFd => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Int(IntKind::I32), Ty::Array(s, Box::new(Ty::Int(IntKind::U8)))], i64t.clone())
+            }
             SysOp::SharedOpen => (vec![i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Shared), i64t.clone()])),
             SysOp::SharedMap => (vec![Ty::Int(IntKind::I32), i64t.clone(), Ty::Bool], Ty::Tuple(vec![Ty::Handle(Handle::Shared), i64t.clone()])),
             SysOp::SharedWrite => {

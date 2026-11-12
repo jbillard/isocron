@@ -117,5 +117,35 @@ action main(args: string[k]): i32 {
         Err(e) => print(message(e)),
     };
     print(unix.closeFd(-1i32));
+    // bytes written to a descriptor (that of a connection), read on the
+    // other side; the reader gone: an error, the program not ended by the
+    // signal SIGPIPE; a descriptor that is none
+    match (unix.listen(path + "-w")) {
+        Ok(l) => {
+            match (unix.connect(path + "-w")) {
+                Ok(c) => {
+                    match (unix.accept(l)) {
+                        Ok(s) => {
+                            print(unix.writeFd(unix.fdOf(c), bytes("through a descriptor")));
+                            match (net.read(s, 100)) {
+                                Ok(b) => print(stringOf(b)),
+                                Err(e) => print(message(e)),
+                            };
+                            net.close(s);
+                            print(unix.writeFd(unix.fdOf(c), bytes("nobody reads")));
+                            print(unix.writeFd(unix.fdOf(c), []));
+                        },
+                        Err(e) => print(message(e)),
+                    };
+                    net.close(c);
+                },
+                Err(e) => print(message(e)),
+            };
+            net.closeListener(l);
+        },
+        Err(e) => print(message(e)),
+    };
+    print(unix.writeFd(-1i32, bytes("x")));
+    print("still running");
     return 0;
 }

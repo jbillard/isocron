@@ -524,6 +524,10 @@ pub enum SysOp {
     Poll,
     /// `sysCloseFd(fd) => code`
     CloseFd,
+    /// `sysWriteFd(fd, bytes) => code`: all the bytes written to the
+    /// descriptor `fd` (a pipe, a socket, a file), a reader gone an error,
+    /// never the signal `SIGPIPE`
+    WriteFd,
     /// `sysSharedOpen(bytes) => [shared, code]`: `bytes` bytes of memory of
     /// a file of its own (`memfd_create`), zeros, projected readable and
     /// writable; its descriptor `sysSharedFd`
@@ -586,7 +590,7 @@ pub enum SysOp {
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 63] = [
+    pub const ALL: [SysOp; 64] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -629,6 +633,7 @@ impl SysOp {
         SysOp::ConnFd,
         SysOp::Poll,
         SysOp::CloseFd,
+        SysOp::WriteFd,
         SysOp::SharedOpen,
         SysOp::SharedMap,
         SysOp::SharedWrite,
@@ -670,6 +675,7 @@ impl SysOp {
                 | SysOp::ConnFd
                 | SysOp::Poll
                 | SysOp::CloseFd
+                | SysOp::WriteFd
                 | SysOp::SharedOpen
                 | SysOp::SharedMap
                 | SysOp::SharedWrite
@@ -783,6 +789,7 @@ impl SysOp {
             SysOp::ConnFd => "sysConnFd",
             SysOp::Poll => "sysPoll",
             SysOp::CloseFd => "sysCloseFd",
+            SysOp::WriteFd => "sysWriteFd",
             SysOp::SharedOpen => "sysSharedOpen",
             SysOp::SharedMap => "sysSharedMap",
             SysOp::SharedWrite => "sysSharedWrite",

@@ -15922,3 +15922,29 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     their size, scrollbars, menus).
   - Test (`windows.rs`, with D646): the density of the session of the
     machine of Windows, 96.
+- **D650 — `unix.writeFd`: bytes written to a descriptor received
+  (2026-11-12).** The library of graphical interfaces gives the text it
+  copies to the other programs of a Wayland session: the compositor sends
+  it, for each program that pastes, the end of a pipe to write the text
+  into (`wl_data_source.send`). The module `unix` read and closed received
+  descriptors but could not write to one.
+  - `unix.writeFd(fd, bytes)`: all the bytes written (`write`), again after
+    a signal, the descriptor waited for while it is full (`poll` for
+    `POLLOUT`), as the compiled program's own calls of the system (D632).
+  - A pipe whose reader has gone raises `SIGPIPE`, which ends a program;
+    a socket avoids it by `MSG_NOSIGNAL`, a pipe has no such flag. Ignoring
+    the signal for the whole program would change what happens when its
+    standard output is closed (a program piped into `head` would no longer
+    end), so the signal is blocked for the thread during the call alone:
+    a reader gone is the error `Other(32)`, the signal the write raised
+    taken from those pending, the mask of before set again. Two calls of
+    the system more per `writeFd` (three on `EPIPE`).
+  - Measured (64 bytes to `/dev/null`, a million writes, indicative: a
+    transcoding of Plex running): `writeFd` 335 ns a write, C with the same
+    mask 329 ns, a plain `write` of C 105 ns: the difference is the mask,
+    paid once a call whatever the number of bytes; to be measured again on
+    a prepared machine.
+  - Tests (`std_unix.rs`): bytes written to the descriptor of a connection,
+    read on the other side; written once it is closed: `Other(32)`, the
+    program still running; an empty write; a descriptor that is none:
+    `Other(9)`. Interpreted and compiled (1 and 4 threads), Valgrind.
