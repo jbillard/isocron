@@ -257,7 +257,7 @@ fn main() {
     // (`run`: the functions of the prelude that the interpreter has in a
     // native form, D616)
     let front = if cmd == "run" { iscc::frontend_for_run(&path, &src) } else { iscc::frontend(&path, &src) };
-    let prog = match front {
+    let mut prog = match front {
         Ok(p) => p,
         Err(msg) => {
             eprintln!("{}", style.diagnostics(&msg, &path, &src));
@@ -269,8 +269,9 @@ fn main() {
     let report = args.iter().any(|a| a == "--report") && matches!(cmd.as_str(), "check" | "build");
     if report {
         args.retain(|a| a != "--report");
+        prog.files = report_files(&prog);
         let es = isc_ir::report::entries(&prog);
-        print!("{}", isc_ir::report::text(&path, &es));
+        print!("{}", isc_ir::report::text(&path, &prog.files, &es));
     }
     match cmd.as_str() {
         "check" => {}
@@ -363,7 +364,7 @@ fn main() {
                 let es = isc_ir::report::entries(&prog);
                 let mut j = opts.output.clone().into_os_string();
                 j.push(".report.json");
-                if let Err(e) = std::fs::write(&j, isc_ir::report::json(&path, &es)) {
+                if let Err(e) = std::fs::write(&j, isc_ir::report::json(&path, &prog.files, &es)) {
                     eprintln!("{}", style.error(&format!("cannot write `{}`: {}", std::path::Path::new(&j).display(), e)));
                     exit(1)
                 }
@@ -385,4 +386,17 @@ fn main() {
         }
         _ => usage(),
     }
+}
+
+/// The names of the files of the program for its memory report (D659): a
+/// module under the current directory by its path from there.
+fn report_files(prog: &isc_ir::Program) -> Vec<(u32, String)> {
+    let here = std::env::current_dir().ok();
+    prog.files
+        .iter()
+        .map(|(k, n)| {
+            let short = here.as_ref().and_then(|h| std::path::Path::new(n).strip_prefix(h).ok()).map(|r| r.display().to_string());
+            (*k, short.unwrap_or_else(|| n.clone()))
+        })
+        .collect()
 }

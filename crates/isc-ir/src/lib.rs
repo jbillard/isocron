@@ -507,6 +507,10 @@ pub struct VarInfo {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
+    /// The files of the program: their numbers (`Span::file`) and names
+    /// (the program, the prelude, the modules), for the memory report
+    /// (D659); set by the driver.
+    pub files: Vec<(u32, String)>,
     /// The `args` parameter of `main`.
     pub args: VarId,
     /// `main` frees the array `args` (it owns it and does not give it away:

@@ -16100,3 +16100,52 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Test (`memory.rs`, `a_fold_whose_array_grows_from_an_empty_one`): a
     record of integers and texts grown from empty records; the output of
     the interpreter, Valgrind clean.
+
+- **D659 — The state of a machine given through a cycle; the report of a
+  module at its own lines.** The bytecode machine of Lua of isocron-ui (a
+  record of some sixty arrays given from `run` to `enter`, to the
+  functions of its library and back to `run`) copied its arrays at each
+  instruction: fib(18) in 5.6 s, a recursion of depth 20000 in 21 s
+  (quadratic). The causes, each one a value read after the state was
+  given or taken apart:
+  - `libCall(vm, vm.rI[a], ...)`: an element read by an argument after the
+    state given whole. The reads of D656 are now those of elements and
+    divisions too (`pure_read`: they may fail but have no other effect), of
+    tuples of scalars (a value `{ t, i, f }` read), of comparisons and
+    lengths of texts (`[vm, s < u]`, `s` and `u` texts of `vm`), when the
+    arguments before them cannot fail: a failure stays the first. An
+    argument made of parts of variables (`{ ...vm, pc: next }`) or a
+    component that is a new tuple (`[{ ...v1, pc: pc }, v1.acc % 1000]`)
+    gives them whole as a variable does.
+  - A function inlined binds its arguments in turn (`let vm = { ...vm,
+    pc: next } in let lim = vm.base + c in ...`): a later argument that
+    reads the variables of the first bound before it (`hoist_let_read`);
+    and in the body of any `let` whose value owns memory, every read of a
+    scalar that cannot fail (`vm.pc + back`) of a variable that the value
+    reads bound before it (`hoist_body_reads`): such a read has no effect,
+    made earlier nothing changes.
+  - `{ ...vm, rT: vm.rT.with(ra, vm.kT[b]) }`: `kT` moved into the new
+    state by its own component, then read by another. Where a tuple is
+    made anew from its parts (D653), the components that are not variables
+    or constants are computed first, in their order, and the parts moved
+    by the tuple after them (`bind_after_parts`).
+  - The accumulator of a `fold` made anew at each step (`(acc, i) => ({
+    ...acc, rI: acc.rI.with(i, 0) })`): its parts taken there, as those of
+    a new tuple (D653).
+  - `let vm = v1` of a function inlined: `v1` itself where its parts are
+    taken, not an alias of all of it.
+  Now fib(18) in 0.1 s (the official Lua: 0.08 s), the recursion of depth
+  20000 in 12 ms.
+  - The memory report placed what the modules of a program write at a
+    line of the program (every entry of the machine at `line 7`, the line
+    of its `main`). The standard modules are now numbered apart
+    (`STD_FILE_BASE`); a file of the program (`is_program_file`: its own
+    or one of its modules) keeps its positions: `src/lua_vm.isc:791`, the
+    path from the current directory; the prelude and the standard modules
+    at the line of the program that calls them, as before. The JSON names
+    the file of each entry (`source`, null for the program's).
+  - Tests: `a_machine_whose_state_is_given_through_a_cycle` (memory.rs,
+    data/machine_given.isc: seven million steps on registers of 65536
+    elements in milliseconds, the copies of the report those of the
+    literals of `main` alone, the output of the interpreter, Valgrind
+    clean); `the_entries_of_a_module_at_their_file_and_line` (report.rs).

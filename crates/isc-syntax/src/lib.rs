@@ -77,22 +77,46 @@ pub type Result<T> = std::result::Result<T, Diagnostic>;
 /// Isocron).
 pub const PRELUDE_FILE: u32 = 1;
 
+/// The first file number of the standard modules (`std:json`, ...): their
+/// files are numbered from there, apart from those of the program.
+pub const STD_FILE_BASE: u32 = 1 << 30;
+
+/// A file of the program: the one compiled or a module of its own (not the
+/// prelude, not a standard module). The memory report places what is
+/// written there at its own line; what is written elsewhere, at the line of
+/// the program that calls it (D659).
+pub fn is_program_file(file: u32) -> bool {
+    file != PRELUDE_FILE && file < STD_FILE_BASE
+}
+
 /// File names indexed by `Span::file`.
 #[derive(Clone, Debug, Default)]
 pub struct SourceFiles {
     names: Vec<String>,
+    std_names: Vec<String>,
 }
 
 impl SourceFiles {
     pub fn new() -> SourceFiles {
-        SourceFiles { names: Vec::new() }
+        SourceFiles { names: Vec::new(), std_names: Vec::new() }
     }
     pub fn add(&mut self, name: impl Into<String>) -> u32 {
         self.names.push(name.into());
         (self.names.len() - 1) as u32
     }
+    /// A standard module: its number from `STD_FILE_BASE`.
+    pub fn add_std(&mut self, name: impl Into<String>) -> u32 {
+        self.std_names.push(name.into());
+        STD_FILE_BASE + (self.std_names.len() - 1) as u32
+    }
     pub fn name(&self, file: u32) -> &str {
-        self.names.get(file as usize).map(|s| s.as_str()).unwrap_or("<unknown>")
+        let found = if file >= STD_FILE_BASE { self.std_names.get((file - STD_FILE_BASE) as usize) } else { self.names.get(file as usize) };
+        found.map(|s| s.as_str()).unwrap_or("<unknown>")
+    }
+    /// Every file: its number and its name.
+    pub fn all(&self) -> Vec<(u32, String)> {
+        let own = self.names.iter().enumerate().map(|(i, n)| (i as u32, n.clone()));
+        own.chain(self.std_names.iter().enumerate().map(|(i, n)| (STD_FILE_BASE + i as u32, n.clone()))).collect()
     }
 }
 

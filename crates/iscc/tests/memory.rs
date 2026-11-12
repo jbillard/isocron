@@ -1621,3 +1621,34 @@ action main(args: string[k]): i32 {
     assert_eq!((r.code, r.stdout.as_str()), (0, want), "{}", r.stderr);
     clean(src, "fold_grows_vg", &["4"]);
 }
+
+/// D659: a machine of registers whose state, a record of arrays, is given
+/// from function to function in a cycle (`run`, `enter`, `lib`, `run`
+/// again), as the machine of Lua of isocron-ui: an element of a part read
+/// by another component of the new state, an argument of a function
+/// inlined read after its first one, elements of the state read by the
+/// arguments of a call after the state itself, texts of the state compared
+/// beside it, the state made anew at each step of a `fold`. Each of its
+/// arrays updated in place: seven million steps on registers of 65536
+/// elements in milliseconds (a copy of them at each step took minutes);
+/// the copies of the memory report are those of the literals of `main`
+/// alone; the output of the interpreter, Valgrind clean.
+#[test]
+fn a_machine_whose_state_is_given_through_a_cycle() {
+    let src = include_str!("data/machine_given.isc");
+    let bin = compile(src, "machine_given");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["1000000"]);
+    let took = start.elapsed();
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[0, 1999998000000, 1, 1000000, 1000000, 1000000, 1000000, 999999000000, 0, 14]\n"), "{}", r.stderr);
+    assert!(took.as_secs() < 5, "seven million steps in {:?}", took);
+    for a in ["1", "10"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("machine_given.isc", src).unwrap();
+    let copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
+    assert!(copies.iter().all(|l| *l == 91 || *l == 92), "the lines whose values are copied: {:?}", copies);
+    clean(src, "machine_given_vg", &["30"]);
+}

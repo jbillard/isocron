@@ -368,7 +368,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
     let text_fns = fns.len() as u32;
-    Ok(Program { args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
+    Ok(Program { files: Vec::new(), args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -468,6 +468,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
     let fns = std::mem::take(&mut l.fns).into_iter().map(|f| f.expect("a recursive function lowered")).collect();
     let recs = std::mem::take(&mut *l.recs.borrow_mut()).into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     Ok(Program {
+        files: Vec::new(),
         args,
         drop_args: false,
         copy_reasons: std::mem::take(&mut l.copy_reasons),

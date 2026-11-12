@@ -13,7 +13,7 @@ fn find<'a>(es: &'a [Entry], kind: &str, line: u32) -> Vec<&'a Entry> {
 }
 
 fn dump(es: &[Entry]) -> String {
-    text("r.isc", es)
+    text("r.isc", &[], es)
 }
 
 const RULES: &str = "action main(args: string[k]): i32 {
@@ -134,16 +134,16 @@ fn a_function_of_the_prelude_is_reported_where_it_is_called() {
 #[test]
 fn the_report_as_text_and_json() {
     let es = report(RULES);
-    let t = text("r.isc", &es);
+    let t = text("r.isc", &[], &es);
     assert!(t.starts_with("Memory report — r.isc\n"), "{}", t);
     assert!(t.contains("  line 17   alloc       32 bytes      the accumulator of a `fold` (rule M2)"), "{}", t);
-    let j = json("r.isc", &es);
+    let j = json("r.isc", &[], &es);
     assert!(j.starts_with("{\"file\": \"r.isc\", \"entries\": [{\"line\": 2, \"column\": "), "{}", j);
     assert!(j.contains("\"kind\": \"alloc\", \"what\": \"32 bytes\", \"bytes\": 32, \"rule\": \"M2\""), "{}", j);
     // balanced and escaped
     assert_eq!(j.matches('{').count(), j.matches('}').count(), "{}", j);
     assert!(!j.contains('\n') || j.ends_with("]}\n"), "{}", j);
-    let none = text("e.isc", &[]);
+    let none = text("e.isc", &[], &[]);
     assert!(none.contains("no allocation, no copy, no run-time test"), "{}", none);
 }
 
@@ -176,7 +176,7 @@ fn the_example_of_the_guide() {
     let text_start = sec.find("```text\n").unwrap() + "```text\n".len();
     let shown = &sec[text_start..text_start + sec[text_start..].find("```").unwrap()];
     let p = iscc::frontend("stats.isc", prog).unwrap_or_else(|e| panic!("{}", e));
-    assert_eq!(text("stats.isc", &entries(&p)), shown);
+    assert_eq!(text("stats.isc", &p.files, &entries(&p)), shown);
 }
 
 /// A fused filter allocates nothing; one read by index is materialized.
@@ -431,4 +431,52 @@ fn the_result_of_a_function_of_the_prelude_is_not_listed() {
     assert!(!d.contains('$'), "a name of the prelude: {}", d);
     assert!(es.iter().all(|e| e.kind != "alloc" && e.line <= 4), "{}", d);
     assert_eq!(find(&es, "bounds", 2).len(), 1, "{}", d);
+}
+
+/// D659: the entries of a module of the program at its file and line
+/// (`parts.isc:3`), not at the line of the program that imports it; those
+/// of the prelude and of the standard modules at the line of the program
+/// that calls them. The JSON names the file of each (`source`).
+#[test]
+fn the_entries_of_a_module_at_their_file_and_line() {
+    let dir = std::env::temp_dir().join(format!("isc_report_modules_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("parts.isc"),
+        "export function bumped(xs: i64[n]): i64[] {
+    const ys = xs.with(0, xs[0] + 1);
+    return concat(ys, xs);
+}
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.isc"),
+        "import * as parts from \"./parts\";
+import * as path from \"path\";
+
+action main(args: string[k]): i32 {
+    const xs = map(iota(parseI64(args[0])), (i) => i * 2);
+    print(parts.bumped(xs));
+    print(path.join(args[0], \"x.txt\"));
+    return 0;
+}
+",
+    )
+    .unwrap();
+    let out = dir.join("main");
+    let r = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"))
+        .current_dir(&dir)
+        .args(["build", "main.isc", "-o", out.to_str().unwrap(), "--report"])
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let printed = String::from_utf8_lossy(&r.stdout);
+    assert!(printed.lines().any(|l| l.starts_with("  parts.isc:2 copy")), "{}", printed);
+    assert!(!printed.contains("std:"), "{}", printed);
+    assert!(!printed.contains("<prelude>"), "{}", printed);
+    let j = std::fs::read_to_string(dir.join("main.report.json")).unwrap();
+    assert!(j.contains("\"source\": \"parts.isc\""), "{}", j);
+    assert!(j.contains("\"source\": null"), "{}", j);
+    let _ = std::fs::remove_dir_all(&dir);
 }

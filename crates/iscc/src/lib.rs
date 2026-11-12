@@ -12,6 +12,7 @@ pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     loaded.map_err(render)?;
     let (_, mut p) = isc_ir::lower::check_and_lower(&user).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
+    p.files = files.all();
     Ok(p)
 }
 
@@ -32,6 +33,7 @@ pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String
     loaded.map_err(render)?;
     let (t, mut p) = isc_ir::lower::check_and_lower(&user).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
+    p.files = files.all();
     // (a text of the source, or of a module it imports, names one: by its
     // public name, which the functions of the prelude that call them have)
     // (`indexOf` in `lastIndexOf`, `replace` in `replaceAll`, `Csv` in the
@@ -53,6 +55,7 @@ pub fn frontend_for_run(path: &str, src: &str) -> Result<isc_ir::Program, String
     }
     let mut p = isc_ir::lower::lower(&t).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
+    p.files = files.all();
     Ok(p)
 }
 
@@ -65,6 +68,7 @@ pub fn frontend_as_prelude(path: &str, src: &str) -> Result<isc_ir::Program, Str
     let render = |d: isc_syntax::Diagnostic| d.render(&files);
     let (_, mut p) = isc_ir::lower::check_and_lower(&user).map_err(render)?;
     isc_ir::passes::optimize(&mut p).map_err(render)?;
+    p.files = files.all();
     Ok(p)
 }
 

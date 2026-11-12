@@ -13,6 +13,9 @@ use crate::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
+    /// The file (`Span::file`): the program's, or a module of its own
+    /// (D659).
+    pub file: u32,
     pub line: u32,
     pub column: u32,
     /// `alloc`, `copy`, `bounds` or `size`.
@@ -73,9 +76,10 @@ struct Walk<'p> {
     /// The enclosing loops (the lambda of a `map`, `reduce`, ..., the body
     /// of a `bench`): what is evaluated there is evaluated many times.
     loops: Vec<String>,
-    copy_reasons: HashMap<(u32, u32), Vec<String>>,
-    /// The position, in the program's file, of the innermost expression
-    /// being walked: an inlined function of the prelude (`sum`, `min`, ...)
+    copy_reasons: HashMap<(u32, u32, u32), Vec<String>>,
+    /// The position, in a file of the program (its own or one of its
+    /// modules, D659), of the innermost expression being walked: an inlined
+    /// function of the prelude (`sum`, `min`, ...) or of a standard module
     /// is reported at the place that calls it.
     user: isc_syntax::Span,
     /// The direct tail calls of the recursive functions, compiled as loops,
@@ -100,9 +104,9 @@ pub fn entries_of(p: &Program, with_fns: bool) -> Vec<Entry> {
 }
 
 fn collect(p: &Program, with_fns: bool, prelude: bool) -> Vec<Entry> {
-    let mut copy_reasons: HashMap<(u32, u32), Vec<String>> = HashMap::new();
+    let mut copy_reasons: HashMap<(u32, u32, u32), Vec<String>> = HashMap::new();
     for (sp, why) in p.copy_reasons.iter().rev() {
-        copy_reasons.entry((sp.line, sp.col)).or_default().push(why.clone());
+        copy_reasons.entry((sp.file, sp.line, sp.col)).or_default().push(why.clone());
     }
     let user = p.body.span;
     let mut tails = std::collections::HashSet::new();
@@ -119,6 +123,7 @@ fn collect(p: &Program, with_fns: bool, prelude: bool) -> Vec<Entry> {
     // the functions whose results may vary (section 10: in the report)
     for (name, sp) in &p.reassoc_fns {
         w.out.push(Entry {
+            file: sp.file,
             line: sp.line,
             column: sp.col,
             kind: "reassoc",
@@ -131,6 +136,7 @@ fn collect(p: &Program, with_fns: bool, prelude: bool) -> Vec<Entry> {
     // a function chosen at run time (section 11: in the report)
     for sp in &p.choices {
         w.out.push(Entry {
+            file: sp.file,
             line: sp.line,
             column: sp.col,
             kind: "switch",
@@ -152,7 +158,7 @@ fn collect(p: &Program, with_fns: bool, prelude: bool) -> Vec<Entry> {
             out.push(e);
         }
     }
-    out.sort_by_key(|e| (e.line, e.column));
+    out.sort_by_key(|e| (e.file, e.line, e.column));
     out
 }
 
@@ -258,9 +264,9 @@ impl<'p> Walk<'p> {
         }
     }
 
-    /// The position of `e` in the program's file.
+    /// The position of `e` in a file of the program.
     fn place(&self, e: &Expr) -> isc_syntax::Span {
-        if e.span.file == isc_types::USER_FILE {
+        if isc_syntax::is_program_file(e.span.file) {
             e.span
         } else {
             self.user
@@ -268,17 +274,22 @@ impl<'p> Walk<'p> {
     }
 
     fn loop_label(&self, e: &Expr) -> String {
-        let line = self.place(e).line;
+        let at = self.place(e);
+        let place = if at.file == isc_types::USER_FILE {
+            format!("line {}", at.line)
+        } else {
+            format!("{}:{}", file_name(&self.p.files, at.file), at.line)
+        };
         match &e.kind {
-            ExprKind::Bench(..) => format!("at each repetition of `bench` at line {}", line),
-            _ => format!("at each iteration of the loop at line {}", line),
+            ExprKind::Bench(..) => format!("at each repetition of `bench` at {}", place),
+            _ => format!("at each iteration of the loop at {}", place),
         }
     }
 
     fn push(&mut self, e: &Expr, kind: &'static str, what: String, bytes: Option<u64>, why: String, rule: Option<&'static str>) {
         let why = format!("{}{}", why, self.in_loop());
         let at = self.place(e);
-        self.out.push(Entry { line: at.line, column: at.col, kind, what, bytes, why, rule });
+        self.out.push(Entry { file: at.file, line: at.line, column: at.col, kind, what, bytes, why, rule });
     }
 
     /// Whether the `let` of `v` is a statement of an action.
@@ -295,7 +306,7 @@ impl<'p> Walk<'p> {
         fn go(e: &Expr, v: VarId, depth: u32, user: u32, path: &mut Vec<(usize, u8)>, out: &mut Out) {
             // a use inside a function of the prelude is at the line that
             // calls it
-            let user = if e.span.file == isc_types::USER_FILE { e.span.line } else { user };
+            let user = if isc_syntax::is_program_file(e.span.file) { e.span.line } else { user };
             let lam = lambda_body_index(e);
             let slots = fusable_slots(e);
             for (i, c) in e.children().into_iter().enumerate() {
@@ -316,7 +327,7 @@ impl<'p> Walk<'p> {
                             _ if slots.contains(&i) => "read",
                             _ => "other",
                         };
-                        let line = if c.span.file == isc_types::USER_FILE { c.span.line } else { user };
+                        let line = if isc_syntax::is_program_file(c.span.file) { c.span.line } else { user };
                         let mut here = path.clone();
                         if matches!(e.kind, ExprKind::If(..)) && i > 0 {
                             here.push((e as *const Expr as usize, i as u8));
@@ -455,7 +466,7 @@ impl<'p> Walk<'p> {
 
     fn walk(&mut self, e: &'p Expr, ctx: Ctx<'p>) {
         let saved = self.user;
-        if e.span.file == isc_types::USER_FILE {
+        if isc_syntax::is_program_file(e.span.file) {
             self.user = e.span;
         }
         self.walk_in(e, ctx);
@@ -469,7 +480,7 @@ impl<'p> Walk<'p> {
                 let (what, bytes) = self.size(e);
                 let why = self
                     .copy_reasons
-                    .get_mut(&(e.span.line, e.span.col))
+                    .get_mut(&(e.span.file, e.span.line, e.span.col))
                     .and_then(|v| v.pop())
                     .unwrap_or_else(|| "a borrowed value must be owned here".into());
                 if matches!(e.ty, Type::Rec(_)) {
@@ -624,7 +635,7 @@ impl<'p> Walk<'p> {
     /// iteration of that loop, which the report names after the producer.
     fn walk_fused(&mut self, e: &'p Expr, consumer: &'p Expr) {
         let saved = self.user;
-        if e.span.file == isc_types::USER_FILE {
+        if isc_syntax::is_program_file(e.span.file) {
             self.user = e.span;
         }
         let slots = fusable_slots(e);
@@ -648,15 +659,26 @@ impl<'p> Walk<'p> {
     }
 }
 
-/// The report as text (SPEC section 8).
-pub fn text(file: &str, es: &[Entry]) -> String {
+/// The name of the file `f` among `files` (D659).
+fn file_name(files: &[(u32, String)], f: u32) -> &str {
+    files.iter().find(|(k, _)| *k == f).map(|(_, n)| n.as_str()).unwrap_or("<unknown>")
+}
+
+/// The report as text (SPEC section 8): the entries of the program's file
+/// at their lines, those of its modules at `file:line` (D659; `files`: the
+/// names of the files by their numbers).
+pub fn text(file: &str, files: &[(u32, String)], es: &[Entry]) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "Memory report — {}", file);
     if es.is_empty() {
         let _ = writeln!(s, "  no allocation, no copy, no run-time test");
     }
     for e in es {
-        let _ = writeln!(s, "  line {:<4} {:<11} {:<13} {}", e.line, e.kind, e.what, e.why);
+        if e.file == isc_types::USER_FILE {
+            let _ = writeln!(s, "  line {:<4} {:<11} {:<13} {}", e.line, e.kind, e.what, e.why);
+        } else {
+            let _ = writeln!(s, "  {}:{} {:<11} {:<13} {}", file_name(files, e.file), e.line, e.kind, e.what, e.why);
+        }
     }
     s
 }
@@ -679,8 +701,9 @@ fn json_str(s: &str) -> String {
 }
 
 /// The report as JSON: `{"file": ..., "entries": [{"line", "column", "kind",
-/// "what", "bytes", "rule", "why"}]}`.
-pub fn json(file: &str, es: &[Entry]) -> String {
+/// "what", "bytes", "rule", "why", "source"}]}`, `source` the file of a
+/// module of the program the entry is in (D659; null: the program's).
+pub fn json(file: &str, files: &[(u32, String)], es: &[Entry]) -> String {
     let mut s = format!("{{\"file\": {}, \"entries\": [", json_str(file));
     for (i, e) in es.iter().enumerate() {
         if i > 0 {
@@ -690,14 +713,15 @@ pub fn json(file: &str, es: &[Entry]) -> String {
         let rule = e.rule.map(json_str).unwrap_or_else(|| "null".into());
         let _ = write!(
             s,
-            "{{\"line\": {}, \"column\": {}, \"kind\": {}, \"what\": {}, \"bytes\": {}, \"rule\": {}, \"why\": {}}}",
+            "{{\"line\": {}, \"column\": {}, \"kind\": {}, \"what\": {}, \"bytes\": {}, \"rule\": {}, \"why\": {}, \"source\": {}}}",
             e.line,
             e.column,
             json_str(e.kind),
             json_str(&e.what),
             bytes,
             rule,
-            json_str(&e.why)
+            json_str(&e.why),
+            if e.file == isc_types::USER_FILE { "null".to_string() } else { json_str(file_name(files, e.file)) }
         );
     }
     s.push_str("]}\n");

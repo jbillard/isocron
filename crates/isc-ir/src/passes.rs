@@ -593,6 +593,17 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     for c in e.children_mut() {
         bind_projections(c, vars);
     }
+    // the accumulator of a `fold`, a tuple that owns memory made anew at
+    // each step (`(acc, i) => ({ ...acc, rT: acc.rT.with(i, 0) })`): its
+    // parts taken there, as those of a new tuple (D659)
+    if let ExprKind::Fold(_, _, lam) = &mut e.kind {
+        let acc = lam.params[0];
+        let aty = vars[acc as usize].ty.clone();
+        if matches!(aty, Type::Tuple(_)) && aty.has_heap() && lam.body.ty == aty {
+            take_rebuilds(&mut lam.body, acc, &aty, vars);
+        }
+        return;
+    }
     let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
     let r = *var;
     let Type::Tuple(ts) = &init.ty else { return };
@@ -702,6 +713,28 @@ fn scalar_read(e: &Expr) -> bool {
         }
 }
 
+/// A value computed from variables without any effect but a failure (an
+/// element read out of its bounds, a division by zero): reads, lengths,
+/// operations, choices (D659). An argument of a scalar so computed is
+/// computed before the call when the arguments before it cannot fail: a
+/// failure stays the first. (`[vm, s < u]`, `s` and `u` texts of `vm`:
+/// the comparison made before `vm` is given.)
+fn pure_read(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Var(..) | ExprKind::Lit(_) => true,
+        ExprKind::Proj(x, _) | ExprKind::Len(x) | ExprKind::Unary(_, x) => pure_read(x),
+        ExprKind::Index(x, i) => pure_read(x) && pure_read(i),
+        ExprKind::Binary(_, a, b) => pure_read(a) && pure_read(b),
+        ExprKind::If(c, t, f) => pure_read(c) && pure_read(t) && pure_read(f),
+        // (a tuple of scalars: a value of a machine `{ t, i, f }` read)
+        ExprKind::Tuple(cs) => !e.ty.has_heap() && cs.iter().all(pure_read),
+        // (the comparisons and lengths of texts)
+        ExprKind::StrOp(StrOp::Cmp(_) | StrOp::Len | StrOp::StartsWith | StrOp::EndsWith, xs) => xs.iter().all(pure_read),
+        ExprKind::StrLit(_) => true,
+        _ => false,
+    }
+}
+
 fn scalar_or_view_read(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Var(..) => true,
@@ -730,20 +763,32 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     for c in e.children_mut() {
         hoist_scalar_args(c, vars);
     }
-    let args = match &mut e.kind {
-        ExprKind::Call(_, args) => args,
+    // (a call inlined: its arguments bound in turn, `let s = { ...vm, pc:
+    // next } in let v = vm.base + c in ...`, the reads of the second made
+    // before the first takes the parts of `vm`, D659)
+    while hoist_let_read(e, vars) {}
+    let (args, call) = match &mut e.kind {
+        ExprKind::Call(_, args) => (args, true),
         // (a tuple too: `[st, st.flow != 0]`, its components all computed
         // before it holds them)
-        ExprKind::Tuple(cs) => cs,
+        ExprKind::Tuple(cs) => (cs, false),
         _ => return,
     };
     let mut whole: HashSet<VarId> = HashSet::new();
     let mut lets: Vec<(VarId, Expr)> = Vec::new();
+    // (the arguments left in place so far cannot fail: one read before
+    // them that fails fails first as it would have, D659)
+    let mut quiet = true;
     for a in args.iter_mut() {
-        if !matches!(a.kind, ExprKind::Var(..)) && scalar_read(a) {
+        let plain = cannot_fail(a);
+        let checked = !scalar_read(a) && quiet && !a.ty.has_heap() && pure_read(a);
+        let part = !call && scalar_or_view_read(a);
+        if !part && !matches!(a.kind, ExprKind::Var(..)) && (scalar_read(a) || checked) {
             let mut rd = HashSet::new();
             vars_read(a, &mut rd);
-            if rd.iter().any(|w| whole.contains(w)) {
+            // (one that may fail or reads another variable, a view of a
+            // part of one given, perhaps: after any variable given whole)
+            if rd.iter().any(|w| whole.contains(w)) || (checked && !whole.is_empty()) {
                 let t = vars.len() as VarId;
                 vars.push(VarInfo { name: "arg".into(), ty: a.ty.clone(), prelude: false });
                 let (ty, sp) = (a.ty.clone(), a.span);
@@ -752,10 +797,17 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
                 continue;
             }
         }
+        quiet &= plain;
         if let ExprKind::Var(w, _) = a.kind {
             if a.ty.has_heap() {
                 whole.insert(w);
             }
+        } else if a.ty.has_heap() && plain && (call || matches!(a.kind, ExprKind::Tuple(_))) {
+            // (an argument, or a component that is itself a new tuple, made
+            // of parts of variables: `{ ...vm, pc: next }` takes them, D659;
+            // not a part of the tuple itself, which takes it where it is
+            // made anew from its parts, D653)
+            vars_read(a, &mut whole);
         }
     }
     if lets.is_empty() {
@@ -770,6 +822,104 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     *e = body;
 }
 
+/// A value computed without any effect and that cannot fail: variables,
+/// constants, parts of them, tuples of such values, reads of scalars that
+/// cannot fail (D659).
+fn cannot_fail(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Var(..) | ExprKind::Lit(_) | ExprKind::StrLit(_) => true,
+        ExprKind::Proj(x, _) => cannot_fail(x),
+        ExprKind::Tuple(cs) => cs.iter().all(cannot_fail),
+        _ => scalar_read(e),
+    }
+}
+
+/// `let x = A in let y = B in body`, `A` a value that owns memory made of
+/// parts of variables without failing (the first argument of a call
+/// inlined, `{ ...vm, pc: next }`), `B` a scalar computed from variables
+/// that `A` reads too (`vm.base + c`) but not from `x`: `B` bound first,
+/// so that `A` takes the parts of what it reads at its last use instead of
+/// copying them (the arguments of the call computed in another order: the
+/// same values, `A` cannot fail, D659). Whether `e` was so rewritten.
+fn hoist_let_read(e: &mut Expr, vars: &mut Vec<VarInfo>) -> bool {
+    let ExprKind::Let { var: x, init: a, body, stmt: false, drop: false } = &e.kind else { return false };
+    let ExprKind::Let { var: y, init: b, stmt: false, drop: false, .. } = &body.kind else { return hoist_body_reads(e, vars) };
+    if !a.ty.has_heap() || !cannot_fail(a) || b.ty.has_heap() || !pure_read(b) {
+        return hoist_body_reads(e, vars);
+    }
+    let (mut ra, mut rb) = (HashSet::new(), HashSet::new());
+    vars_read(a, &mut ra);
+    vars_read(b, &mut rb);
+    if rb.contains(x) || !rb.iter().any(|w| ra.contains(w)) || ra.contains(y) {
+        // (the reads that cannot fail further down: `let back = b - 128 in
+        // let lim = vm.base + c in ...`)
+        return hoist_body_reads(e, vars);
+    }
+    let (x, span, ty) = (*x, e.span, e.ty.clone());
+    let ExprKind::Let { init: a, body, .. } = take(e).kind else { unreachable!() };
+    let ExprKind::Let { var: y, init: b, body: inner, .. } = body.kind else { unreachable!() };
+    let inner_ty = inner.ty.clone();
+    let mut lx = Expr::new(ExprKind::Let { var: x, init: a, body: inner, stmt: false, drop: false }, inner_ty, span);
+    // (the reads after it too: `let v = ... in let w = ...`)
+    while hoist_let_read(&mut lx, vars) {}
+    *e = Expr::new(ExprKind::Let { var: y, init: b, body: Box::new(lx), stmt: false, drop: false }, ty, span);
+    true
+}
+
+/// `let x = A in body`, `A` a value that owns memory made of parts of
+/// variables (`let t = { ...vm, rT: ... } in { ...t, pc: vm.pc + back }`,
+/// a function inlined): the reads of scalars of `body`
+/// that cannot fail and read a variable `A` reads (`vm.pc + back`) bound
+/// before `A`, which then takes the parts of what it reads at its last use
+/// (D659). Such a read has no effect and cannot fail: made before, even
+/// where `body` would not make it, nothing changes. Not one that reads a
+/// variable bound in `body` or `x`. Whether one was.
+fn hoist_body_reads(e: &mut Expr, vars: &mut Vec<VarInfo>) -> bool {
+    let ExprKind::Let { var: x, init: a, body, stmt: false, drop: false } = &mut e.kind else { return false };
+    if !a.ty.has_heap() {
+        return false;
+    }
+    let mut ra = HashSet::new();
+    vars_read(a, &mut ra);
+    let mut bound = HashSet::new();
+    bound_in(body, &mut bound);
+    bound.insert(*x);
+    let mut found: Vec<(VarId, Expr)> = Vec::new();
+    replace_body_reads(body, &ra, &bound, vars, &mut found);
+    if found.is_empty() {
+        return false;
+    }
+    let span = e.span;
+    let mut out = take(e);
+    for (t, read) in found.into_iter().rev() {
+        let ty = out.ty.clone();
+        out = Expr::new(ExprKind::Let { var: t, init: Box::new(read), body: Box::new(out), stmt: false, drop: false }, ty, span);
+    }
+    *e = out;
+    true
+}
+
+/// The reads of scalars of `e` that cannot fail, read a variable of `ra`
+/// and none of `bound`: each one replaced by a new variable, bound to it in
+/// `out` (`hoist_body_reads`).
+fn replace_body_reads(e: &mut Expr, ra: &HashSet<VarId>, bound: &HashSet<VarId>, vars: &mut Vec<VarInfo>, out: &mut Vec<(VarId, Expr)>) {
+    if !matches!(e.kind, ExprKind::Var(..) | ExprKind::Lit(_)) && e.ty.is_scalar() && scalar_read(e) {
+        let mut rd = HashSet::new();
+        vars_read(e, &mut rd);
+        if rd.iter().any(|w| ra.contains(w)) && !rd.iter().any(|w| bound.contains(w)) {
+            let t = vars.len() as VarId;
+            vars.push(VarInfo { name: "read".into(), ty: e.ty.clone(), prelude: false });
+            let (ty, sp) = (e.ty.clone(), e.span);
+            let r = std::mem::replace(e, Expr::var(t, ty, sp));
+            out.push((t, r));
+            return;
+        }
+    }
+    for c in e.children_mut() {
+        replace_body_reads(c, ra, bound, vars, out);
+    }
+}
+
 /// The tuple variable `v` (of the type `vty`, owned: a new tuple, a
 /// parameter given) made anew from its parts where it is read for the last
 /// time (`{ ...v, f: g(v.f) }`, D653, D654): there, every part of `v` taken
@@ -779,6 +929,11 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
 /// that borrows it borrows it). Not when a variable aliases `v`, nor inside
 /// a lambda. Whether a tuple was so rewritten.
 fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) -> bool {
+    // (`let vm = v` of a function inlined, its parameter: `v` itself, not
+    // an alias of all of it, D659)
+    let mut same = HashSet::new();
+    same.insert(v);
+    same_as_parts(e, &same);
     // (the variables that borrow memory of `v`, with the parts they borrow
     // (None: any): read after it are reads of it, a part taken would leave
     // them a view of what is moved or freed)
@@ -975,10 +1130,56 @@ fn take_parts_here(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>) 
     // use; through the `let` it was a view, copied)
     let set: HashSet<VarId> = parts.iter().map(|(c, _)| *c).collect();
     same_as_parts(&mut body, &set);
+    bind_after_parts(&mut body, &set, vars);
     for (j, (c, t)) in parts.iter().enumerate().rev() {
         let bty = body.ty.clone();
         let part = Expr::new(ExprKind::Take(Box::new(Expr::var(v, vty.clone(), span)), j as u32), t.clone(), span);
         body = Expr::new(ExprKind::Let { var: *c, init: Box::new(part), body: Box::new(body), stmt: false, drop: false }, bty, span);
+    }
+    *e = body;
+}
+
+/// The tuple `e` made of the parts `parts` of a tuple, one of which a
+/// component reads while another moves it whole (`{ ...vm, rT:
+/// vm.rT.with(ra, vm.kT[b]) }`: `kT` moved, then read): its components that
+/// are not variables or constants computed first, in their order, bound
+/// (`let c = vm.rT.with(ra, vm.kT[b]) in [..., vm.kT, ..., c]`), the parts
+/// moved by the tuple after them (D659). The same order of evaluation: a
+/// variable or a constant cannot fail.
+fn bind_after_parts(e: &mut Expr, parts: &HashSet<VarId>, vars: &mut Vec<VarInfo>) {
+    let ExprKind::Tuple(cs) = &mut e.kind else { return };
+    let trivial = |c: &Expr| matches!(c.kind, ExprKind::Var(..) | ExprKind::Lit(_) | ExprKind::StrLit(_));
+    let whole: HashSet<VarId> = cs
+        .iter()
+        .filter_map(|c| match c.kind {
+            ExprKind::Var(w, _) if parts.contains(&w) && c.ty.has_heap() => Some(w),
+            _ => None,
+        })
+        .collect();
+    let reads_whole = |c: &Expr| {
+        let mut r = HashSet::new();
+        vars_read(c, &mut r);
+        r.iter().any(|w| whole.contains(w))
+    };
+    if !cs.iter().any(|c| !trivial(c) && reads_whole(c)) {
+        return;
+    }
+    let mut lets = Vec::new();
+    for c in cs.iter_mut() {
+        if trivial(c) {
+            continue;
+        }
+        let t = vars.len() as VarId;
+        vars.push(VarInfo { name: "part".into(), ty: c.ty.clone(), prelude: false });
+        let (ty, sp) = (c.ty.clone(), c.span);
+        let value = std::mem::replace(c, Expr::var(t, ty, sp));
+        lets.push((t, value));
+    }
+    let span = e.span;
+    let mut body = take(e);
+    for (t, value) in lets.into_iter().rev() {
+        let ty = body.ty.clone();
+        body = Expr::new(ExprKind::Let { var: t, init: Box::new(value), body: Box::new(body), stmt: false, drop: false }, ty, span);
     }
     *e = body;
 }
@@ -2826,7 +3027,7 @@ impl<'a> Walker<'a> {
     /// Analysis: aliases, owned variables, uses in evaluation order.
     fn scan(&mut self, e: &Expr, region: u32) {
         let saved = self.user;
-        if e.span.file == isc_types::USER_FILE {
+        if isc_syntax::is_program_file(e.span.file) {
             self.user = e.span;
         }
         self.scan_in(e, region);

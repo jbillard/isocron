@@ -133,7 +133,7 @@ pub fn load_modules(root: &mut isc_syntax::ast::Program, path: &Path, files: &mu
                         Some(name) => std_module(name).unwrap_or_default().to_string(),
                         None => std::fs::read_to_string(&file).map_err(|e| Diagnostic::new(imp.span, format!("cannot read `{}`: {}", file.display(), e)))?,
                     };
-                    let fid = files.add(file.display().to_string());
+                    let fid = if standard.is_some() { files.add_std(file.display().to_string()) } else { files.add(file.display().to_string()) };
                     let mut mp = isc_syntax::parse(&src, fid)?;
                     for d in &mp.decls {
                         if let Decl::Fn(f) = d {
