@@ -19,8 +19,8 @@ export type Window = sysWindow;
 // again; its dots per inch (96: a scale of 1); the focus taken or lost
 export type Event = Close | Resize(i64, i64) | Pointer(i64, i64) | Button(i64, boolean) | Wheel(i64) | Key(i64, boolean, i64) | Char(i64) | Paint | Dpi(i64) | Focus(boolean) | Unknown(i64);
 
-// a window titled `title` whose inside has `width` by `height` pixels,
-// shown
+// a window titled `title` whose inside has `width` by `height` units of 96
+// dots per inch (pixels at 100 %; 1.5 pixel each at 150 %, D649), shown
 export action open(title: string, width: i64, height: i64): Result<Window, IoError> {
     const [w, code] = sysWinOpen(title, width, height);
     if (code == 0) {
@@ -96,6 +96,15 @@ export action alert(title: string, text: string): void {
 export action programPath(): Result<string, IoError> {
     const [b, code] = sysWinProgram();
     return code == 0 ? Ok(stringOf(b)) : Err(ioError(code, "program"));
+}
+
+// the density of the screen of `w`, in dots per inch (96: 100 %, 120:
+// 125 %, 144: 150 %; D649). A window is opened at the density of the
+// system: its inside `width` by `height` units of 96 dots per inch;
+// `Dpi(d)` comes when it moves to a screen of another density, the window
+// resized by Windows (`Resize`)
+export action dpi(w: Window): i64 {
+    return sysWinDpi(w);
 }
 
 // the shape of the pointer over the inside of `w`: 0 an arrow, 1 a hand, 2

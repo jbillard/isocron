@@ -2768,6 +2768,7 @@ impl<'g> FnCx<'g> {
             SysOp::WinClose => (vec![Ty::Handle(Handle::Window)], i64t.clone()),
             SysOp::WinAlert => (vec![Ty::Str, Ty::Str], i64t.clone()),
             SysOp::WinCursor => (vec![Ty::Handle(Handle::Window), i64t.clone()], i64t.clone()),
+            SysOp::WinDpi => (vec![Ty::Handle(Handle::Window)], i64t.clone()),
             SysOp::WinClipSet => (vec![Ty::Handle(Handle::Window), Ty::Str], i64t.clone()),
             SysOp::WinClipGet => {
                 let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));

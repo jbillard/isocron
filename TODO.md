@@ -547,7 +547,9 @@ After GPUI (`docs/proposals/gui.md`): the library in a repository of its own (`i
 - [x] `concat` of arrays whose elements own memory copied each element (the mask of each glyph of the plate, at each of its 36 `concat`s): moved when both sides are read for the last time (D638), the plate made in 2.05 -> 1.44 ms
 - [ ] `concat` with one side read again: the other side's elements moved, its own copied (D638)
 - [x] The layout (a part of flexbox: rows, columns, gaps, padding, sizes fixed, as their content or sharing the room left, justification, alignment), elements (boxes, texts cut in lines), the places of clicks, an application in the manner of Elm (a counter) under Linux and Windows
-- [ ] The focus and the typing of text, scrolling, hovering, long lists, images; the glyphs kept from one image to the next
+- [x] The focus and the typing of text (a field: its caret blinking, its selection by the keys and the pointer, a double and a triple click, the clipboard of Windows, its menu on the right button), scrolling (the wheel, scrollbars dragged or clicked), hovering and the shape of the pointer, the components of the plate shared by every application (`src/widgets.isc`), PNG files read (the decoder of Go's results on the PngSuite)
+- [ ] The density of the screen (D649 for Windows; Wayland: `wl_output.scale`, then `wp_fractional_scale_v1`), checked at 150 % in the machine of Windows
+- [ ] Long lists (only the rows seen laid out), images shown (an element of a decoded PNG), the glyphs kept from one image to the next, the clipboard of Wayland (`wl_data_device`: a pipe in `unix`), X11
 - [x] The system known when a program is built: `sys.platform()`, a branch of another system reaching nothing (D635)
 - [x] Windows (`user32`, `gdi32`, D635): the module `win32` (D636), a window, its events, an image shown and captured; tested in the machine of Windows; the plate of the library shown in a window of Windows 11
 - [ ] `win32`: its microbenchmark and floor in C (`show` of an image of 1920 by 1080), the interpreter under Windows, the input methods

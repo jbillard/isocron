@@ -992,8 +992,9 @@ action main(args: string[k]): i32 {
     }
 }
 
-/// D646: the shape of the pointer and the clipboard of `win32`, in the
-/// session of the machine of Windows (`run.py --interactive`): a text with
+/// D646, D649: the density of the screen (96 dots per inch in the machine
+/// of Windows, at 100 %), the shape of the pointer and the clipboard of
+/// `win32`, in the session of the machine (`run.py --interactive`): a text with
 /// an emoji put on the clipboard and read back, an empty text; the shapes
 /// of the pointer set (a hand, a bar, an arrow) without failing; with both
 /// ABIs.
@@ -1011,6 +1012,7 @@ action main(args: string[k]): i32 {
         Ok(w) => {
             const s = win.show(w, fill(320 * 200, 0xFF808080u32), 320, 200);
             const opening = win.events(w, 200);
+            print(win.dpi(w));
             win.setCursor(w, 1);
             print(win.clipboardSet(w, \"Café 😀 du presse-papiers\"));
             print(win.clipboardGet(w));
@@ -1031,7 +1033,7 @@ action main(args: string[k]): i32 {
         let o = std::process::Command::new(&runner).arg("--dir").arg(&d).arg("--interactive").arg(&exe).output().unwrap();
         assert_eq!(
             (o.status.code(), String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n")),
-            (Some(0), "Ok(())\nOk(Café 😀 du presse-papiers)\nOk(())\nOk()\n".to_string()),
+            (Some(0), "96\nOk(())\nOk(Café 😀 du presse-papiers)\nOk(())\nOk()\n".to_string()),
             "msvc {}: {}",
             msvc,
             String::from_utf8_lossy(&o.stderr)

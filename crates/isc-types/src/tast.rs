@@ -581,10 +581,12 @@ pub enum SysOp {
     /// `sysWinClipGet(window) => [text, code]`: the text of the clipboard of
     /// the system, in UTF-8 (D646)
     WinClipGet,
+    /// `sysWinDpi(window) => dots per inch`: the density of its screen (D649)
+    WinDpi,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 62] = [
+    pub const ALL: [SysOp; 63] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -647,6 +649,7 @@ impl SysOp {
         SysOp::WinCursor,
         SysOp::WinClipSet,
         SysOp::WinClipGet,
+        SysOp::WinDpi,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
@@ -691,6 +694,7 @@ impl SysOp {
                 | SysOp::WinCursor
                 | SysOp::WinClipSet
                 | SysOp::WinClipGet
+                | SysOp::WinDpi
         )
     }
 
@@ -799,6 +803,7 @@ impl SysOp {
             SysOp::WinCursor => "sysWinCursor",
             SysOp::WinClipSet => "sysWinClipSet",
             SysOp::WinClipGet => "sysWinClipGet",
+            SysOp::WinDpi => "sysWinDpi",
         }
     }
 }

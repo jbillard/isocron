@@ -15906,3 +15906,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     three places and a lambda: two functions compiled, the interpreter's
     results; one that returns a function refused, for `@noInline` and for
     `@cold`.
+- **D649 — The density of the screen (`win32`, 2026-11-12).** At the
+  author's word: does the size of the elements follow the factor of
+  enlargement of the system? It did not: a program of `win32` declares
+  itself aware of the density of each screen (D636), so Windows does not
+  enlarge it, and its window had its size in pixels.
+  - `win32.open(title, width, height)` takes its size in units of 96 dots
+    per inch: multiplied by the density of the system (`GetDpiForSystem`)
+    before the size of the window is computed (150 %: 1.5 pixel a unit).
+    `win32.dpi(w)`: the density of the screen of the window
+    (`GetDpiForWindow`). `Dpi(d)` comes, as before, when the window moves to
+    a screen of another density, Windows resizing it (`Resize`).
+  - The library lays its views out in units, multiplied by the density
+    (sizes, gaps, paddings, borders, corners, shadows, rings, texts drawn at
+    their size, scrollbars, menus).
+  - Test (`windows.rs`, with D646): the density of the session of the
+    machine of Windows, 96.

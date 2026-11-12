@@ -24,8 +24,10 @@ use super::{v, Gen, V};
 use isc_ir::SysOp;
 
 /// The functions of Windows the module calls.
-const DECLS: [&str; 40] = [
+const DECLS: [&str; 42] = [
     "declare i32 @PeekMessageW(ptr, ptr, i32, i32, i32)",
+    "declare i32 @GetDpiForSystem()",
+    "declare i32 @GetDpiForWindow(ptr)",
     "declare ptr @SetCursor(ptr)",
     "declare i32 @GetCursorPos(ptr)",
     "declare ptr @WindowFromPoint(i64)",
@@ -457,9 +459,15 @@ entry:
   %done = call i32 @MultiByteToWideChar(i32 65001, i32 0, ptr %p, i32 %n32, ptr %title, i32 %units)
   %end = getelementptr i16, ptr %title, i64 %u64
   store i16 0, ptr %end
-  ; the size of the window for an inside of w by h
-  %w32 = trunc i64 %w to i32
-  %h32 = trunc i64 %h to i32
+  ; the size of the window for an inside of w by h units of 96 dots per
+  ; inch, at the density of the system (D649: 150 %, 1.5 pixel a unit)
+  %sdpi = call i32 @GetDpiForSystem()
+  %w32u = trunc i64 %w to i32
+  %h32u = trunc i64 %h to i32
+  %w32m = mul i32 %w32u, %sdpi
+  %h32m = mul i32 %h32u, %sdpi
+  %w32 = sdiv i32 %w32m, 96
+  %h32 = sdiv i32 %h32m, 96
   store i32 0, ptr %rect
   %rt = getelementptr i8, ptr %rect, i64 4
   store i32 0, ptr %rt
@@ -934,6 +942,17 @@ entry:
   ret i64 0
 }"#;
 
+/// `sysWinDpi(window) => dots per inch`: the density of the screen of the
+/// window (96: 100 %, 144: 150 %, D649).
+const DPI: &str = r#"define internal i64 @isc.win.dpi(i64 %h) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %hwnd = load ptr, ptr %blk
+  %d = call i32 @GetDpiForWindow(ptr %hwnd)
+  %d64 = zext i32 %d to i64
+  ret i64 %d64
+}"#;
+
 /// The clipboard opened for the window `hwnd`: tried 20 times 5 ms apart
 /// (another program may hold it); true when opened.
 const CLIP_OPEN: &str = r#"define internal i1 @isc.win.clipopen(ptr %hwnd) {
@@ -1226,6 +1245,10 @@ impl Gen<'_> {
                 let (tp, tn) = self.str_parts(&vals[0]);
                 let (xp, xn) = self.str_parts(&vals[1]);
                 v(self.ins(format!("call i64 @isc.win.alert(ptr {}, i64 {}, ptr {}, i64 {})", tp, tn, xp, xn)), "i64")
+            }
+            SysOp::WinDpi => {
+                self.win_defs(&[DPI], false);
+                v(self.ins(format!("call i64 @isc.win.dpi(i64 {})", vals[0].r)), "i64")
             }
             SysOp::WinCursor => {
                 self.win_defs(&[CURSOR], false);
