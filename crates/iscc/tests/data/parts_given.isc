@@ -1,0 +1,76 @@
+// A state of many numbers kept through rounds by the forms that copied it
+// whole at each call before D667: a function that runs a machine, part of
+// an application given whole, from a block that read a row of it first (a
+// view bound inside the value of a `concat`), then puts the machine back,
+// returned by a call within a tuple (`const [b1, v] = called(b, ...)`); the
+// machine made anew within the application (`{ ...a, vm: held(a.vm) }`,
+// a part of a part).
+type Vm = { heap: f64[], n: i64, pinned: i64 };
+type Row = { name: string, drag: i64, args: f64[] };
+type App = { vm: Vm, rows: Row[], ran: boolean, tag: string, focus: i64 };
+type B = { vm: Vm, seen: boolean[], focus: i64 };
+type In = Click(i64) | Drag(i64, f64) | Other;
+
+function held(v: Vm, by: i64): Vm {
+    return { ...v, pinned: v.pinned + by };
+}
+
+@noInline
+function called(b: B, f: i64, args: f64[]): [B, f64] {
+    return [{ ...b, vm: { ...b.vm, heap: b.vm.heap.with(f % b.vm.heap.length, args[0]) } }, 1.0] as const;
+}
+
+function ranValue(a: App, f: i64, args: f64[]): [App, f64] {
+    if (f < 0) {
+        return [a, 0.0] as const;
+    }
+    const b: B = { vm: a.vm, seen: [], focus: a.focus };
+    const [b1, v] = called(b, f, args);
+    return [{ ...a, vm: b1.vm, ran: true }, v] as const;
+}
+
+@noInline
+function answered(a: App, i: In): [App, i64[]] {
+    return match (i) {
+        Click(p) => [{ ...a, focus: p }, []] as const,
+        Drag(p, x) => {
+            if (p >= 0 && p < a.rows.length && a.rows[p].drag >= 0) {
+                const [a1, v] = ranValue(a, a.rows[p].drag, concat(a.rows[p].args, [x]));
+                return [a1, []] as const;
+            }
+            return [a, []] as const;
+        },
+        Other => [a, []] as const,
+    };
+}
+
+// the machine held while a value is read from it, then let go
+@noInline
+function pinnedRead(a: App, k: i64): App {
+    const a1 = { ...a, vm: held(a.vm, 1) };
+    const x = a1.vm.heap[k % a1.vm.heap.length];
+    return { ...a1, vm: held(a1.vm, -1), focus: i64(x) };
+}
+
+action rounds(a: App, k: i64): App {
+    if (k == 0) {
+        return a;
+    }
+    const [a1, fx] = answered(a, Drag(k % 2, f64(k)));
+    return rounds(pinnedRead(a1, k), k - 1);
+}
+
+function rowsOf(): Row[] {
+    const one: Row = { name: "x", drag: 3, args: [1.0, 2.0] };
+    const two: Row = { name: "y", drag: 4, args: [3.0] };
+    return [one, two];
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const r = parseI64(args[1]);
+    const a = { vm: { heap: fill(n, 0.0), n: 3, pinned: 0 }, rows: rowsOf(), ran: false, tag: "", focus: 0 };
+    const b = rounds(a, r);
+    print([i64(reduce(b.vm.heap, (x, y) => x + y, 0.0)), b.ran, b.focus, b.vm.pinned] as const);
+    return 0;
+}

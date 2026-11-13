@@ -640,6 +640,11 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         };
         if split {
             let comps = chain_vars(body, r);
+            // (the result of a call, a value of its own: its components
+            // surely owned, their parts taken where a block reads them by
+            // their parts alone, `const [b1, v] = called(b, ...)` then `{
+            // ...a, vm: b1.vm }`, D667)
+            let fresh = matches!(init.kind, ExprKind::Call(..)) && !unboxes(init);
             if let Some(rest) = chain_rest_mut(body, r) {
                 for c in comps {
                     let cty = vars[c as usize].ty.clone();
@@ -647,7 +652,9 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
                         // (a component taken apart at once: owned once the
                         // tuple is split, which a take at the start of a
                         // block can hide from the memory check)
-                        take_rebuilds(rest, c, &cty, vars, false);
+                        if take_rebuilds(rest, c, &cty, vars, fresh) && fresh {
+                            apart_parts(rest, c, vars, 0);
+                        }
                     }
                 }
             }
@@ -656,7 +663,9 @@ fn bind_projections(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         // (surely owned unless it reads a node outside a call: the payload
         // of a variant read out of its node is a view of it, D663)
         let sure = !unboxes(init);
-        take_rebuilds(body, r, &rty, vars, sure);
+        if take_rebuilds(body, r, &rty, vars, sure) && sure {
+            apart_parts(body, r, vars, 0);
+        }
         return;
     }
     let ExprKind::Proj(x, k) = &body.kind else { return };
@@ -893,6 +902,19 @@ fn fresh_read(e: &Expr) -> bool {
     }
 }
 
+/// A value of its own, its memory not that of what it reads: a `map`, a
+/// `filter`, a `scan`, or a block whose value is one (`concat(xs, ys)`: its
+/// inputs bound, then a `map`) (D667). Not the result of a call: given a
+/// variable, it may give it back (`[ui, cv]`).
+fn fresh_value(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Let { body, .. } => fresh_value(body),
+        ExprKind::Map(..) | ExprKind::Filter(..) | ExprKind::Scan(..) => true,
+        ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => fresh_value(b),
+        _ => false,
+    }
+}
+
 /// A value computed without any effect and that cannot fail: variables,
 /// constants, parts of them, tuples of such values, reads of scalars that
 /// cannot fail (D659).
@@ -1018,12 +1040,17 @@ fn take_rebuilds(e: &mut Expr, v: VarId, vty: &Type, vars: &mut Vec<VarInfo>, su
 /// The variables of the lets of `e` that borrow memory of `v` or of those
 /// of `al`, added to it with the parts of `v` they borrow.
 fn aliases_of(e: &Expr, v: VarId, al: &mut HashMap<VarId, Option<Vec<u32>>>) {
-    if let ExprKind::Let { var, init, .. } = &e.kind {
+    // (the lets of its value first: `let h = (let r = v.hs[p] in r.args)`,
+    // `h` a view of `v` through `r`, D667)
+    if let ExprKind::Let { var, init, body, .. } = &e.kind {
+        aliases_of(init, v, al);
         if init.ty.has_heap() {
             if let Some(c) = borrowed_parts(init, v, al) {
                 al.insert(*var, c);
             }
         }
+        aliases_of(body, v, al);
+        return;
     }
     for c in e.children() {
         aliases_of(c, v, al);
@@ -1101,11 +1128,15 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
     }
     let lam = lambda_body_index(e);
     match &mut e.kind {
-        ExprKind::Let { init, body, .. } => {
+        ExprKind::Let { var, init, body, .. } => {
             let after = later || reads_any(body, al);
             // (a value without memory read from it, a number, holds none of
             // it: `const t = f(v.vm)` before `{ ...v, vm: g(v.vm) }`, D666)
-            let t2 = tainted || (reads_heap(init, v) && init.ty.has_heap());
+            // (nor a value of its own made of it, `concat(v.hs[p].args, ...)`,
+            // a `map`, nor a view of it the aliases
+            // follow, `const h = v.hs[p]`: read after, it keeps the parts
+            // where they are by itself, D667)
+            let t2 = tainted || (reads_heap(init, v) && init.ty.has_heap() && !fresh_value(init) && !al.contains(var));
             let a = rebuild_at(init, v, al, comps, vty, after, vars, sure, tainted);
             let b = rebuild_at(body, v, al, comps, vty, later, vars, sure, t2);
             a || b
@@ -4463,10 +4494,36 @@ fn apart(p: &mut Program, fi: usize, body: &Expr, ks: &[usize]) -> Expr {
         if matches!(ty, Type::Tuple(_)) {
             // (a parameter given: the memory check of the function decides,
             // the parameter lent if it fails)
-            take_rebuilds(&mut b, pv, &ty, &mut p.vars, true);
+            if take_rebuilds(&mut b, pv, &ty, &mut p.vars, true) {
+                apart_parts(&mut b, pv, &mut p.vars, 0);
+            }
         }
     }
     b
+}
+
+/// The parts of a variable owned taken apart (`let c = take j v`) that are
+/// tuples owning memory, the machine of an application given: taken apart
+/// in their turn where they are made anew or read by their parts, as the
+/// variable was (D667), their own parts likewise. (Taken after the pass
+/// that takes the parts of tuples, they were left whole: `{ ...vm, pinned:
+/// vm.pinned + 1 }` of a part copied every array of it.)
+fn apart_parts(e: &mut Expr, v: VarId, vars: &mut Vec<VarInfo>, depth: u32) {
+    if depth > 4 {
+        return;
+    }
+    if let ExprKind::Let { var, init, body, .. } = &mut e.kind {
+        if matches!(&init.kind, ExprKind::Take(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == v)) {
+            let c = *var;
+            let cty = vars[c as usize].ty.clone();
+            if matches!(cty, Type::Tuple(_)) && cty.has_heap() && take_rebuilds(body, c, &cty, vars, true) {
+                apart_parts(body, c, vars, depth + 1);
+            }
+        }
+    }
+    for ch in e.children_mut() {
+        apart_parts(ch, v, vars, depth);
+    }
 }
 
 /// `e` updates `v` in place with `requireUnique` (D637).

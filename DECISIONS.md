@@ -16347,3 +16347,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     rounds of the four forms, 6 ms (1.6 s before); no copy of the states
     in the report; the output of the interpreter, Valgrind clean. The
     resizing in the machine of Windows (verify script of the library).
+
+- **D667 — The parts of a part taken; the components of the result of a
+  call owned; an alias seen through the block that binds it.** Dragging
+  the edge of the side bar of the editor of isocron-ui, each frame copied
+  the machine of Lua whole, twice or more (the time of a frame grew with
+  its memory, from 2 to 28 ms; 1 ms now, whatever its size):
+  - a parameter given is taken apart after the pass that takes the parts
+    of tuples (D654): a part that is itself a tuple, the machine of an
+    application, was left whole, `{ ...vm, pinned: vm.pinned + 1 }` of it
+    copying each of its arrays. Now the parts of a parameter given, of a
+    component of the result of a call and of a new tuple taken apart are
+    taken apart in their turn where they are made anew or read by their
+    parts (`apart_parts`, four levels);
+  - the components of a tuple a call returns (`const [b1, v] =
+    called(b, ...)`) were taken apart only where they are made anew as the
+    same type: `{ ...a, vm: b1.vm }` copied the machine. The result of a
+    call is a value of its own: its components are surely owned, their
+    parts taken where a block reads them by their parts alone;
+  - `aliases_of` decided a `let` before the `let`s of its value: `let h =
+    (let r = a.rows[p] in r.args)`, a view of `a` through `r`, was not
+    seen as one; and a value read from a variable marked it as held (D662,
+    D666) even when it is a value of its own (`concat`, `map`, `filter`,
+    `scan`: `fresh_value`) or a view the aliases follow. Both kept the
+    application whole after `concat(a.rows[p].args, [x])` of the arguments
+    of a drag, its machine copied when given to Lua. (The result of a call
+    is not counted: given the variable, it may give it back, `[ui, cv]`;
+    counted, the memory check refused the loop of X11 of isocron-ui.)
+  - Not yet: the parts of a part of a value an inlined function returned
+    (`requested`, `rebuilt` of isocron-ui inlined into `update`); the
+    library keeps them as functions not inlined, given the application.
+  - Test (`memory.rs`, `a_machine_given_with_its_application`,
+    data/parts_given.isc): a machine of a million numbers through 2 000
+    rounds of a drag and of a hold, 2 ms (4.7 s before); no copy of the
+    machine in the report; the output of the interpreter, Valgrind clean.

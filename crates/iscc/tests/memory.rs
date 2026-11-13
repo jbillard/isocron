@@ -1759,6 +1759,32 @@ fn the_payload_of_a_node_made_anew() {
     clean(src, "node_payload_vg", &["5"]);
 }
 
+/// D667: a machine of a million numbers in an application kept through
+/// 2 000 rounds: run from a block that read a row of the application first,
+/// put back from a tuple a call returns, held and let go within the
+/// application (a part of a part made anew); each a copy of the whole
+/// machine at each round before (4.7 s, now milliseconds); no copy of it in
+/// the report; the output of the interpreter, Valgrind clean
+#[test]
+fn a_machine_given_with_its_application() {
+    let src = include_str!("data/parts_given.isc");
+    let bin = compile(src, "parts_given");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["1000000", "2000"]);
+    let took = start.elapsed();
+    assert_eq!((r.code, r.stdout.as_str()), (0, "(4, true, 0, 0)\n"), "{}", r.stderr);
+    assert!(took.as_millis() < 500, "2 000 rounds in {:?}", took);
+    for a in [["10", "1"], ["10", "4"]] {
+        let want = interp_ok(src, &a);
+        let r = run_bin(&bin, &a);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("parts_given.isc", src).unwrap();
+    let copies: Vec<(u32, String)> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy" && e.what.contains("[f64[], i64, i64]")).map(|e| (e.line, e.what.clone())).collect();
+    assert!(copies.is_empty(), "the copies: {:?}", copies);
+    clean(src, "parts_given_vg", &["20", "3"]);
+}
+
 /// D666: a state of a million numbers kept through 2 000 rounds by four
 /// forms, each a copy of the whole state at each call before: a number read
 /// from it before it is made anew, with a path that gives it back whole; a
