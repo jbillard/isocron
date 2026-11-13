@@ -2781,6 +2781,12 @@ impl<'g> FnCx<'g> {
             SysOp::WinAlert => (vec![Ty::Str, Ty::Str], i64t.clone()),
             SysOp::WinCursor => (vec![Ty::Handle(Handle::Window), i64t.clone()], i64t.clone()),
             SysOp::WinDpi => (vec![Ty::Handle(Handle::Window)], i64t.clone()),
+            SysOp::WinCaption => {
+                let s = self.fresh_size(span);
+                (vec![Ty::Handle(Handle::Window), Ty::Array(s, Box::new(i64t.clone()))], i64t.clone())
+            }
+            SysOp::WinCommand => (vec![Ty::Handle(Handle::Window), i64t.clone()], i64t.clone()),
+            SysOp::WinZoomed => (vec![Ty::Handle(Handle::Window)], i64t.clone()),
             SysOp::WinClipSet => (vec![Ty::Handle(Handle::Window), Ty::Str], i64t.clone()),
             SysOp::WinClipGet => {
                 let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));

@@ -81,6 +81,7 @@ pub fn win32(o: S, _vs: &[Value]) -> Value {
         S::WinSize => tuple(vec![Value::Int(0), Value::Int(0)]),
         S::WinClose => Value::Int(0),
         S::WinDpi => Value::Int(96),
+        S::WinZoomed => Value::Int(0),
         _ => Value::Int(-38),
     }
 }

@@ -30,7 +30,18 @@ export action open(title: string, width: i64, height: i64): Result<Window, IoErr
 // with its button that minimizes it or not, with its button that maximizes
 // it or not (a window of a fixed size has none, D669)
 export action openWith(title: string, width: i64, height: i64, resizable: boolean, minimizable: boolean, maximizable: boolean): Result<Window, IoError> {
-    const options = (resizable ? 1 : 0) | (minimizable ? 2 : 0) | (maximizable ? 4 : 0);
+    return opened(title, width, height, (resizable ? 1 : 0) | (minimizable ? 2 : 0) | (maximizable ? 4 : 0));
+}
+
+// `openWith`, the title of the window drawn by the program in its inside
+// (D670): no title of Windows above it, its edges kept (they resize it, the
+// top too); the program tells which areas of its inside move the window
+// (`setCaption`) and moves it itself (`command`: its buttons)
+export action openDrawn(title: string, width: i64, height: i64, resizable: boolean, minimizable: boolean, maximizable: boolean): Result<Window, IoError> {
+    return opened(title, width, height, (resizable ? 1 : 0) | (minimizable ? 2 : 0) | (maximizable ? 4 : 0) | 8);
+}
+
+action opened(title: string, width: i64, height: i64, options: i64): Result<Window, IoError> {
     const [w, code] = sysWinOpen(title, width, height, options);
     if (code == 0) {
         return Ok(w);
@@ -90,6 +101,32 @@ export action post(w: Window, message: i64, wparam: i64, lparam: i64): Result<vo
 export action capture(w: Window): Result<u32[], IoError> {
     const [px, code] = sysWinCapture(w);
     return code == 0 ? Ok(px) : Err(ioError(code, "capture"));
+}
+
+// the areas of the inside of a window whose title the program draws
+// (`openDrawn`), in pixels: those that move it when dragged (`moves`: a
+// title, a free part of its bar) and those that are the program's (`keeps`:
+// its buttons, its menus within them); a point is the last area's holding
+// it, `moves` before `keeps`; 256 areas at most (D670). Four numbers each:
+// x, y, width, height.
+export action setCaption(w: Window, moves: i64[n], keeps: i64[m]): void {
+    const words = concat(map(iota(n / 4 * 5), (k) => k % 5 == 4 ? 1 : moves[k / 5 * 4 + k % 5]), map(iota(m / 4 * 5), (k) => k % 5 == 4 ? 0 : keeps[k / 5 * 4 + k % 5]));
+    const code = sysWinCaption(w, words);
+}
+
+// the window minimized, as by its button (D670)
+export action minimize(w: Window): void {
+    const code = sysWinCommand(w, 0);
+}
+
+// the window maximized, or restored when it is (D670)
+export action toggleMaximized(w: Window): void {
+    const code = sysWinCommand(w, sysWinZoomed(w) != 0 ? 2 : 1);
+}
+
+// whether the window is maximized (D670)
+export action maximized(w: Window): boolean {
+    return sysWinZoomed(w) != 0;
 }
 
 // the window closed: it cannot be used after

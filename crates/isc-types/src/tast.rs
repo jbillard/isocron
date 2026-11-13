@@ -588,10 +588,19 @@ pub enum SysOp {
     WinClipGet,
     /// `sysWinDpi(window) => dots per inch`: the density of its screen (D649)
     WinDpi,
+    /// `sysWinCaption(window, words) => code`: the areas of the inside of a
+    /// window whose title the program draws, five words each (x, y, width,
+    /// height, kind: 1 moves the window), D670
+    WinCaption,
+    /// `sysWinCommand(window, what) => code`: minimized (0), maximized (1),
+    /// restored (2), closing asked (3), D670
+    WinCommand,
+    /// `sysWinZoomed(window) => 1 or 0`: maximized or not, D670
+    WinZoomed,
 }
 
 impl SysOp {
-    pub const ALL: [SysOp; 64] = [
+    pub const ALL: [SysOp; 67] = [
         SysOp::Getenv,
         SysOp::Environ,
         SysOp::Stat,
@@ -656,6 +665,9 @@ impl SysOp {
         SysOp::WinClipSet,
         SysOp::WinClipGet,
         SysOp::WinDpi,
+        SysOp::WinCaption,
+        SysOp::WinCommand,
+        SysOp::WinZoomed,
     ];
 
     /// It consumes its first argument (a resource of the system closed,
@@ -702,6 +714,9 @@ impl SysOp {
                 | SysOp::WinClipSet
                 | SysOp::WinClipGet
                 | SysOp::WinDpi
+                | SysOp::WinCaption
+                | SysOp::WinCommand
+                | SysOp::WinZoomed
         )
     }
 
@@ -812,6 +827,9 @@ impl SysOp {
             SysOp::WinClipSet => "sysWinClipSet",
             SysOp::WinClipGet => "sysWinClipGet",
             SysOp::WinDpi => "sysWinDpi",
+            SysOp::WinCaption => "sysWinCaption",
+            SysOp::WinCommand => "sysWinCommand",
+            SysOp::WinZoomed => "sysWinZoomed",
         }
     }
 }

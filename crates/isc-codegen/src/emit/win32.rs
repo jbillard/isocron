@@ -27,7 +27,10 @@ use super::{v, Gen, V};
 use isc_ir::SysOp;
 
 /// The functions of Windows the module calls.
-const DECLS: [&str; 43] = [
+const DECLS: [&str; 46] = [
+    "declare i32 @IsZoomed(ptr)",
+    "declare i32 @GetSystemMetricsForDpi(i32, i32)",
+    "declare i32 @ScreenToClient(ptr, ptr)",
     "declare i64 @GetTickCount64()",
     "declare i32 @PeekMessageW(ptr, ptr, i32, i32, i32)",
     "declare i32 @GetDpiForSystem()",
@@ -95,8 +98,10 @@ const CAPTURE_DECLS: [&str; 6] = [
 // flush (`WM_APP + 1` seen by the procedure); the shape of the pointer over
 // its inside (the number of a cursor of the system, D646); the size of the
 // inside the procedure waits for an image of (0 by 0: none) and the signal
-// of an image shown (D666); the style of the window (D669).
-// (208 bytes; `isc_alloc` in `OPEN`)
+// of an image shown (D666); the style of the window (D669); the areas of
+// its inside the program draws its title in (their block, their number)
+// and whether it does (D670).
+// (232 bytes; `isc_alloc` in `OPEN`)
 
 /// The name of the class of the windows, in UTF-16.
 const CLASS: &str = r#"@isc.win.class = private unnamed_addr constant [8 x i16] [i16 105, i16 115, i16 111, i16 99, i16 114, i16 111, i16 110, i16 0]"#;
@@ -284,7 +289,9 @@ which:
                                 i32 32768, label %quit
                                 i32 32769, label %flush
                                 i32 32, label %setcursor
-                                i32 32770, label %cursornow ]
+                                i32 32770, label %cursornow
+                                i32 131, label %nccalc
+                                i32 132, label %nchit ]
 close:
   call void @isc.win.push(ptr %blk, i64 1, i64 0, i64 0, i64 0)
   ret i64 0
@@ -479,6 +486,129 @@ signal:
   %fe = load ptr, ptr %pfe
   %fs = call i32 @SetEvent(ptr %fe)
   ret i64 0
+nccalc:
+  ; (the program draws the title: the inside the whole window but its
+  ; edges at the left, the right and the bottom, which resize it; the top
+  ; too when the window is maximized, past the screen; D670)
+  %pdr = getelementptr i8, ptr %blk, i64 224
+  %dr = load i64, ptr %pdr
+  %isdr = icmp ne i64 %dr, 0
+  %wpn = icmp ne i64 %wp, 0
+  %own = and i1 %isdr, %wpn
+  br i1 %own, label %nccalc1, label %def
+nccalc1:
+  %dpic = call i32 @GetDpiForWindow(ptr %hwnd)
+  %fxa = call i32 @GetSystemMetricsForDpi(i32 32, i32 %dpic)
+  %fya = call i32 @GetSystemMetricsForDpi(i32 33, i32 %dpic)
+  %padc = call i32 @GetSystemMetricsForDpi(i32 92, i32 %dpic)
+  %fx = add i32 %fxa, %padc
+  %fy = add i32 %fya, %padc
+  %rc = inttoptr i64 %lp to ptr
+  %zoomc = call i32 @IsZoomed(ptr %hwnd)
+  %zoomed = icmp ne i32 %zoomc, 0
+  %rl = load i32, ptr %rc
+  %rl1 = add i32 %rl, %fx
+  store i32 %rl1, ptr %rc
+  %prt = getelementptr i8, ptr %rc, i64 4
+  %rt0 = load i32, ptr %prt
+  %rtadd = select i1 %zoomed, i32 %fy, i32 0
+  %rt1 = add i32 %rt0, %rtadd
+  store i32 %rt1, ptr %prt
+  %prr = getelementptr i8, ptr %rc, i64 8
+  %rr0 = load i32, ptr %prr
+  %rr1 = sub i32 %rr0, %fx
+  store i32 %rr1, ptr %prr
+  %prb = getelementptr i8, ptr %rc, i64 12
+  %rb0 = load i32, ptr %prb
+  %rb1 = sub i32 %rb0, %fy
+  store i32 %rb1, ptr %prb
+  ret i64 0
+nchit:
+  ; (the program draws the title: the edges as Windows tells them; inside,
+  ; the top resizes a window not maximized, then the last area of the
+  ; program holding the point decides: 1 moves the window (HTCAPTION),
+  ; 0 is the program's; D670)
+  %pdr2 = getelementptr i8, ptr %blk, i64 224
+  %dr2 = load i64, ptr %pdr2
+  %isdr2 = icmp ne i64 %dr2, 0
+  br i1 %isdr2, label %nchit1, label %def
+nchit1:
+  %hd = call i64 @DefWindowProcW(ptr %hwnd, i32 %msg, i64 %wp, i64 %lp)
+  %inclient = icmp eq i64 %hd, 1
+  br i1 %inclient, label %nchit2, label %nchitret
+nchitret:
+  ret i64 %hd
+nchit2:
+  %x32 = trunc i64 %x to i32
+  %y32 = trunc i64 %y to i32
+  store i32 %x32, ptr %peek
+  %ppy = getelementptr i8, ptr %peek, i64 4
+  store i32 %y32, ptr %ppy
+  %s2c = call i32 @ScreenToClient(ptr %hwnd, ptr %peek)
+  %cx = load i32, ptr %peek
+  %cy = load i32, ptr %ppy
+  %zoomh = call i32 @IsZoomed(ptr %hwnd)
+  %notzoomed = icmp eq i32 %zoomh, 0
+  %pws = getelementptr i8, ptr %blk, i64 192
+  %ws = load i32, ptr %pws
+  %thick = and i32 %ws, 262144
+  %canrsz = icmp ne i32 %thick, 0
+  %dpih = call i32 @GetDpiForWindow(ptr %hwnd)
+  %fyh = call i32 @GetSystemMetricsForDpi(i32 33, i32 %dpih)
+  %padh = call i32 @GetSystemMetricsForDpi(i32 92, i32 %dpih)
+  %band = add i32 %fyh, %padh
+  %attop = icmp slt i32 %cy, %band
+  %top1 = and i1 %attop, %notzoomed
+  %topedge = and i1 %top1, %canrsz
+  br i1 %topedge, label %nctop, label %nccap
+nctop:
+  ret i64 12
+nccap:
+  %cx64 = sext i32 %cx to i64
+  %cy64 = sext i32 %cy to i64
+  %csh = getelementptr i8, ptr %blk, i64 32
+  call void @EnterCriticalSection(ptr %csh)
+  %pcb = getelementptr i8, ptr %blk, i64 208
+  %cb = load ptr, ptr %pcb
+  %pcn = getelementptr i8, ptr %blk, i64 216
+  %cn = load i64, ptr %pcn
+  br label %ncloop
+ncloop:
+  %ci = phi i64 [ 0, %nccap ], [ %ci1, %ncnext ]
+  %kind = phi i64 [ 0, %nccap ], [ %kind1, %ncnext ]
+  %more = icmp slt i64 %ci, %cn
+  br i1 %more, label %ncbody, label %ncdone
+ncbody:
+  %cw0 = mul i64 %ci, 5
+  %pax = getelementptr i64, ptr %cb, i64 %cw0
+  %ax = load i64, ptr %pax
+  %pay = getelementptr i64, ptr %pax, i64 1
+  %ay = load i64, ptr %pay
+  %paw = getelementptr i64, ptr %pax, i64 2
+  %aw = load i64, ptr %paw
+  %pah = getelementptr i64, ptr %pax, i64 3
+  %ah = load i64, ptr %pah
+  %pak = getelementptr i64, ptr %pax, i64 4
+  %ak = load i64, ptr %pak
+  %axe = add i64 %ax, %aw
+  %aye = add i64 %ay, %ah
+  %h1 = icmp sge i64 %cx64, %ax
+  %h2 = icmp slt i64 %cx64, %axe
+  %h3 = icmp sge i64 %cy64, %ay
+  %h4 = icmp slt i64 %cy64, %aye
+  %h12 = and i1 %h1, %h2
+  %h34 = and i1 %h3, %h4
+  %holds = and i1 %h12, %h34
+  %kind1 = select i1 %holds, i64 %ak, i64 %kind
+  br label %ncnext
+ncnext:
+  %ci1 = add i64 %ci, 1
+  br label %ncloop
+ncdone:
+  call void @LeaveCriticalSection(ptr %csh)
+  %moves = icmp eq i64 %kind, 1
+  %hres = select i1 %moves, i64 2, i64 1
+  ret i64 %hres
 def:
   %r0 = call i64 @DefWindowProcW(ptr %hwnd, i32 %msg, i64 %wp, i64 %lp)
   ret i64 %r0
@@ -504,6 +634,8 @@ entry:
   %mini = icmp ne i64 %o2, 0
   %maxi0 = icmp ne i64 %o4, 0
   %maxi = and i1 %maxi0, %rsz
+  %o8 = and i64 %opts, 8
+  %drawn = icmp ne i64 %o8, 0
   %sf = select i1 %rsz, i32 262144, i32 0
   %sm = select i1 %mini, i32 131072, i32 0
   %sx = select i1 %maxi, i32 65536, i32 0
@@ -568,10 +700,13 @@ entry:
   %r = load i32, ptr %rr
   %b = load i32, ptr %rb
   %ww = sub i32 %r, %l
-  %wh = sub i32 %b, %t
+  ; (the title drawn by the program: no title of Windows above the inside,
+  ; its edges kept, D670)
+  %wh0 = sub i32 %b, %t
+  %wh = select i1 %drawn, i32 %b, i32 %wh0
   ; the block: the window (made by the thread), the queue, the lock, the
   ; signals, what the thread needs, no image yet
-  %blk = call ptr @isc_alloc(i64 208)
+  %blk = call ptr @isc_alloc(i64 232)
   %queue = call ptr @isc_alloc(i64 131072)
   store ptr null, ptr %blk
   %pq = getelementptr i8, ptr %blk, i64 8
@@ -618,6 +753,14 @@ entry:
   store ptr %shown, ptr %pshown
   %pwstyle = getelementptr i8, ptr %blk, i64 192
   store i32 %style, ptr %pwstyle
+  %areas = call ptr @isc_alloc(i64 10240)
+  %pareas = getelementptr i8, ptr %blk, i64 208
+  store ptr %areas, ptr %pareas
+  %pnareas = getelementptr i8, ptr %blk, i64 216
+  store i64 0, ptr %pnareas
+  %drawn64 = zext i1 %drawn to i64
+  %pdrawn = getelementptr i8, ptr %blk, i64 224
+  store i64 %drawn64, ptr %pdrawn
   %th = call ptr @CreateThread(ptr null, i64 0, ptr @isc.win.thread, ptr %blk, i32 0, ptr null)
   %pth = getelementptr i8, ptr %blk, i64 80
   store ptr %th, ptr %pth
@@ -650,6 +793,7 @@ clean:
   %cf = call i32 @CloseHandle(ptr %flushed)
   %csh = call i32 @CloseHandle(ptr %shown)
   call void @DeleteCriticalSection(ptr %cs)
+  call void @isc_free(ptr %areas)
   call void @isc_free(ptr %queue)
   call void @isc_free(ptr %blk)
   %r0 = insertvalue { i64, i64 } { i64 -1, i64 0 }, i64 %code, 1
@@ -694,6 +838,13 @@ made:
   %bi = ptrtoint ptr %blk to i64
   %old = call i64 @SetWindowLongPtrW(ptr %hwnd, i32 -21, i64 %bi)
   store ptr %hwnd, ptr %blk
+  ; (its title drawn by the program: its frame computed again, through
+  ; the procedure, now that it has its block, D670)
+  %pdrawn = getelementptr i8, ptr %blk, i64 224
+  %drawn = load i64, ptr %pdrawn
+  %isdrawn = icmp ne i64 %drawn, 0
+  %fflags = select i1 %isdrawn, i32 39, i32 23
+  %framed = call i32 @SetWindowPos(ptr %hwnd, ptr null, i32 0, i32 0, i32 0, i32 0, i32 %fflags)
   %shown = call i32 @ShowWindow(ptr %hwnd, i32 5)
   %upd = call i32 @UpdateWindow(ptr %hwnd)
   %s1 = call i32 @SetEvent(ptr %ready)
@@ -1000,6 +1151,9 @@ join:
   %pshown = getelementptr i8, ptr %blk, i64 184
   %shown = load ptr, ptr %pshown
   %csh = call i32 @CloseHandle(ptr %shown)
+  %pareas = getelementptr i8, ptr %blk, i64 208
+  %areas = load ptr, ptr %pareas
+  call void @isc_free(ptr %areas)
   %cs = getelementptr i8, ptr %blk, i64 32
   call void @DeleteCriticalSection(ptr %cs)
   %pq = getelementptr i8, ptr %blk, i64 8
@@ -1020,6 +1174,67 @@ fail:
   %e64 = zext i32 %e to i64
   %code = sub i64 0, %e64
   ret i64 %code
+}"#;
+
+/// `sysWinCaption(window, words) => code`: the areas of the inside of a
+/// window whose title the program draws (D670), five words each (x, y,
+/// width, height in pixels, kind: 1 moves the window, 0 the program's),
+/// in their order (the last holding a point decides), 256 at most; kept
+/// under the lock for its procedure.
+const CAPTION: &str = r#"define internal i64 @isc.win.caption(i64 %h, ptr %p, i64 %n) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %k0 = sdiv i64 %n, 5
+  %big = icmp sgt i64 %k0, 256
+  %k = select i1 %big, i64 256, i64 %k0
+  %bytes = mul i64 %k, 40
+  %cs = getelementptr i8, ptr %blk, i64 32
+  call void @EnterCriticalSection(ptr %cs)
+  %pareas = getelementptr i8, ptr %blk, i64 208
+  %areas = load ptr, ptr %pareas
+  call void @llvm.memcpy.p0.p0.i64(ptr %areas, ptr %p, i64 %bytes, i1 false)
+  %pn = getelementptr i8, ptr %blk, i64 216
+  store i64 %k, ptr %pn
+  call void @LeaveCriticalSection(ptr %cs)
+  ret i64 0
+}"#;
+
+/// `sysWinCommand(window, what) => code`: the window minimized (0),
+/// maximized (1), restored (2) as by its buttons (`WM_SYSCOMMAND`), or
+/// closing asked (3, `WM_CLOSE`: the program told `Close`), posted to its
+/// thread (D670).
+const COMMAND: &str = r#"define internal i64 @isc.win.command(i64 %h, i64 %what) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %hwnd = load ptr, ptr %blk
+  %isclose = icmp eq i64 %what, 3
+  %ismax = icmp eq i64 %what, 1
+  %isrestore = icmp eq i64 %what, 2
+  %sc1 = select i1 %ismax, i64 61488, i64 61472
+  %sc = select i1 %isrestore, i64 61728, i64 %sc1
+  %msg = select i1 %isclose, i32 16, i32 274
+  %wp = select i1 %isclose, i64 0, i64 %sc
+  %ok = call i32 @PostMessageW(ptr %hwnd, i32 %msg, i64 %wp, i64 0)
+  %done = icmp ne i32 %ok, 0
+  br i1 %done, label %fine, label %fail
+fine:
+  ret i64 0
+fail:
+  %e = call i32 @GetLastError()
+  %e64 = zext i32 %e to i64
+  %code = sub i64 0, %e64
+  ret i64 %code
+}"#;
+
+/// `sysWinZoomed(window) => 1 or 0`: whether it is maximized (D670).
+const ZOOMED: &str = r#"define internal i64 @isc.win.zoomed(i64 %h) {
+entry:
+  %blk = inttoptr i64 %h to ptr
+  %hwnd = load ptr, ptr %blk
+  %z = call i32 @IsZoomed(ptr %hwnd)
+  %is = icmp ne i32 %z, 0
+  %r = zext i1 %is to i64
+  ret i64 %r
 }"#;
 
 /// The functions of Windows of the clipboard (D646).
@@ -1366,6 +1581,19 @@ impl Gen<'_> {
                 self.win_defs(&[DPI], false);
                 v(self.ins(format!("call i64 @isc.win.dpi(i64 {})", vals[0].r)), "i64")
             }
+            SysOp::WinCaption => {
+                self.win_defs(&[CAPTION], false);
+                let (p, n) = self.str_parts(&vals[1]);
+                v(self.ins(format!("call i64 @isc.win.caption(i64 {}, ptr {}, i64 {})", vals[0].r, p, n)), "i64")
+            }
+            SysOp::WinCommand => {
+                self.win_defs(&[COMMAND], false);
+                v(self.ins(format!("call i64 @isc.win.command(i64 {}, i64 {})", vals[0].r, vals[1].r)), "i64")
+            }
+            SysOp::WinZoomed => {
+                self.win_defs(&[ZOOMED], false);
+                v(self.ins(format!("call i64 @isc.win.zoomed(i64 {})", vals[0].r)), "i64")
+            }
             SysOp::WinCursor => {
                 self.win_defs(&[CURSOR], false);
                 v(self.ins(format!("call i64 @isc.win.cursor(i64 {}, i64 {})", vals[0].r, vals[1].r)), "i64")
@@ -1416,5 +1644,37 @@ mod tests {
         assert!(OPEN.contains("%maxi = and i1 %maxi0, %rsz"));
         assert!(OPEN.contains("@AdjustWindowRectEx(ptr %rect, i32 %frame,"));
         assert!(THREAD.contains("i32 %style, i32 -2147483648"));
+    }
+
+    /// A title drawn by the program (D670): the option 8; the messages of
+    /// the frame and of the places (`WM_NCCALCSIZE`, `WM_NCHITTEST`); the
+    /// sizes of the frame (`SM_CXSIZEFRAME`, `SM_CYSIZEFRAME`,
+    /// `SM_CXPADDEDBORDER`); the answers (`HTCAPTION`, `HTCLIENT`, `HTTOP`);
+    /// the frame computed again (`SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER |
+    /// SWP_FRAMECHANGED`); the commands (`WM_SYSCOMMAND` with `SC_MINIMIZE`,
+    /// `SC_MAXIMIZE`, `SC_RESTORE`; `WM_CLOSE`), each from its value in the
+    /// headers of Windows
+    #[test]
+    fn the_title_drawn_by_the_program() {
+        const WM_NCCALCSIZE: u32 = 0x0083;
+        const WM_NCHITTEST: u32 = 0x0084;
+        const WM_SYSCOMMAND: u32 = 0x0112;
+        const WM_CLOSE: u32 = 0x0010;
+        const SC_MINIMIZE: u32 = 0xF020;
+        const SC_MAXIMIZE: u32 = 0xF030;
+        const SC_RESTORE: u32 = 0xF120;
+        const SWP: u32 = 0x0001 | 0x0002 | 0x0004 | 0x0020;
+        assert!(OPEN.contains("%o8 = and i64 %opts, 8"));
+        assert!(PROC.contains(&format!("i32 {}, label %nccalc", WM_NCCALCSIZE)));
+        assert!(PROC.contains(&format!("i32 {}, label %nchit", WM_NCHITTEST)));
+        for (metric, name) in [(32, "%fxa"), (33, "%fya"), (92, "%padc")] {
+            assert!(PROC.contains(&format!("{} = call i32 @GetSystemMetricsForDpi(i32 {}", name, metric)));
+        }
+        assert!(PROC.contains("%hres = select i1 %moves, i64 2, i64 1"));
+        assert!(PROC.contains("nctop:\n  ret i64 12"));
+        assert!(THREAD.contains(&format!("select i1 %isdrawn, i32 {}, i32 23", SWP)));
+        assert!(COMMAND.contains(&format!("select i1 %ismax, i64 {}, i64 {}", SC_MAXIMIZE, SC_MINIMIZE)));
+        assert!(COMMAND.contains(&format!("select i1 %isrestore, i64 {}, i64 %sc1", SC_RESTORE)));
+        assert!(COMMAND.contains(&format!("select i1 %isclose, i32 {}, i32 {}", WM_CLOSE, WM_SYSCOMMAND)));
     }
 }

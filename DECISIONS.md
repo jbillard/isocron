@@ -16472,3 +16472,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   reads it. Test `a_large_constant_read_at_many_places` (declarations.rs):
   that program interpreted and compiled, the same output; a constant that
   names itself still refused.
+
+- **D670 — The title of a window of Windows drawn by the program.** At the
+  author's word: an editor in the image of Visual Studio Code, whose bar of
+  title holds its menus, the box that finds a file and the buttons of the
+  window. `win32.openDrawn(title, width, height, resizable, minimizable,
+  maximizable)`: the option 8 of `sysWinOpen`; the window keeps its style
+  (its edges resize it, Windows animates it), the procedure answers
+  `WM_NCCALCSIZE` with the whole window as its inside but its edges at the
+  left, the right and the bottom (`SM_CXSIZEFRAME` + `SM_CXPADDEDBORDER`;
+  the top too when it is maximized, past the screen), so no title of
+  Windows is drawn; the frame computed again at its creation
+  (`SWP_FRAMECHANGED`). `WM_NCHITTEST`: the edges as Windows tells them,
+  the top band of the inside resizing a window not maximized, then the
+  areas the program gives (`setCaption(w, moves, keeps)`, 256 at most in
+  the block of the window, read under its lock): a point in the last area
+  holding it moves the window (`HTCAPTION`: dragged, double clicked to
+  maximize, its menu of the system) or is the program's (`HTCLIENT`).
+  (A light bar the author saw for a moment over the title, opening a file,
+  was the banner of an error of the Lua of the editor, not a title of
+  Windows: watched every 20 ms in the machine of Windows, no title of
+  Windows over the program's at the opening of files nor when the window
+  became inactive and active again.)
+  `minimize`, `toggleMaximized` (`WM_SYSCOMMAND`: `SC_MINIMIZE`,
+  `SC_MAXIMIZE`, `SC_RESTORE`) and `maximized` (`IsZoomed`). isocron-ui
+  gives the areas of its boxes `moves` and of the places over them at each
+  frame. Test `the_title_drawn_by_the_program` (emit/win32.rs): each
+  constant from the headers of Windows; in the machine of Windows, the two
+  editors of isocron-ui (read at run time, compiled): no title of Windows,
+  the window moved by its bar (100 by 50 pixels), maximized by its button,
+  restored by a double click on its bar, minimized, closed by their
+  buttons.
