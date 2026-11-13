@@ -80,6 +80,27 @@ pub fn interp_lanes_ok(src: &str, args: &[&str], lanes: usize) {
     assert_eq!(isc_interp::run_with(&p, &args, &mut out, lanes).unwrap(), 0);
 }
 
+/// The interpreter run in a process of its own (`iscc run`), its output;
+/// panics unless the program exits with 0. A program whose outcome depends
+/// on its descriptors being closed (a connection: its peer reads the end or
+/// a write fails; a listener: a connection refused) cannot run in the
+/// process of the tests: the processes the other tests start meanwhile
+/// (their programs, the linker) each hold a copy of every descriptor
+/// between their `fork` and their `exec`, those closed on `exec` too, and a
+/// connection closed then stays open for its peer (a write after its peer
+/// closed it succeeded, once in a suite).
+pub fn interp_alone(src: &str, args: &[&str]) -> String {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let k = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = tmp(&format!("interp_alone_{}_{}", std::process::id(), k));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("program.isc");
+    std::fs::write(&file, src).unwrap();
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_iscc")).arg("run").arg(&file).args(args).output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "iscc run: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8(o.stdout).unwrap()
+}
+
 pub fn interp_ok(src: &str, args: &[&str]) -> String {
     match interp(src, args) {
         Outcome::Exit(0, out) => out,

@@ -6,6 +6,14 @@
 
 mod common;
 use common::*;
+
+// (the interpreter in a process of its own: the programs here close their
+// descriptors, which the processes the other tests start hold a copy of
+// meanwhile, `interp_alone`)
+fn interp_ok(src: &str, args: &[&str]) -> String {
+    interp_alone(src, args)
+}
+
 use std::net::UdpSocket;
 
 const SRC: &str = include_str!("data/std_net.isc");

@@ -16414,3 +16414,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     that maximizes only with the edges, the size computed with the style
     (written first as 12058624 for `WS_CAPTION | WS_SYSMENU`, 13107200:
     the test refused it); in the machine of Windows, the style read back.
+
+- **D671 — The programs of the tests that close their descriptors
+  interpreted in a process of their own.** Once in a suite (472), the
+  interpreted program of `sockets_descriptors_and_shared_memory` wrote to a
+  connection whose peer it had just closed and the write succeeded, where
+  it fails (`EPIPE`) every other time. The interpreter runs in the process
+  of the tests, whose other tests start processes meanwhile (their
+  programs, the linker): each child holds a copy of every descriptor
+  between its `fork` and its `exec`, those closed on `exec` too, so a
+  connection closed then stays open for its peer. Shown alone: a pair of
+  sockets, one end closed, a write to the other, 20 000 times: no write
+  succeeds; with four threads starting processes meanwhile, 1 946 succeed.
+  Shown on the program of the test itself, 300 runs each: interpreted in
+  the process of the tests, nothing beside, 0 wrong; with four threads of
+  that process starting processes meanwhile, 53 wrong; run by `iscc run` in
+  a process of its own, the same four threads, 0 wrong.
+  Not a defect of the language: closing one's own descriptor must not cut
+  a connection another process holds (a connection handed to a worker).
+  Now `interp_alone` of the tests runs `iscc run` in a process of its own,
+  used by the tests of `unix`, `net`, `http` and `https` (a connection
+  refused once its listener is closed, the end of a stream read once its
+  peer closed it: the same race).
