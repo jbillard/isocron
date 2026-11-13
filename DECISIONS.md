@@ -16275,3 +16275,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `float_remainders_on_windows` runs it there (signed zeros,
     infinities, NaN, subnormals, 20 000 pairs drawn over the exponents):
     the same digits as on Linux (glibc's `fmod`), with both ABIs.
+
+- **D665 — A value read before a state is given; a state given whole into
+  a new tuple given.** The generic application of isocron-ui made its view
+  in 10 s for a file of 600 lines: at each of its thousands of calls into
+  its machine of Lua the state of the machine was copied whole. Three
+  forms, each a copy of the whole state:
+  - `[v1, map(iota(n), (i) => reg(v1, at + i))]`, the results of a call
+    read out of the state it gives back: the components of a tuple (and
+    the arguments of a call) are computed before it holds them, but D656
+    and D659 moved before the others only the reads of scalars. Now also a
+    new value that reads a variable given whole before it (`fresh_read`: a
+    `map`, a `filter`, a `scan`, the result of a call), when the
+    components before it cannot fail (a failure stays the first);
+  - `[{ ...b, hs: concat(b.hs, [h]) }, b.hs.length]`: a read that cannot
+    fail of a variable a component before takes, moved before it even when
+    that component may fail; the length of a variable or of a part of one
+    is such a read (`scalar_read`);
+  - `{ s: s, total: total }`, a parameter of a tuple type given whole into a
+    new tuple: a candidate to be given (D654), as one given whole to a
+    call.
+  The library had been changed to read before giving (its own form); the
+  compiler now does it for any program.
+  - Test (`memory.rs`, `a_state_read_before_it_is_given`,
+    data/host_state.isc): a state of 200 000 strings through 2 000 rounds
+    of 50 calls: 27 ms (more than two minutes before), no copy in the
+    report; the output of the interpreter, Valgrind clean.
+  - Not yet: a part of a parameter of a recursive function given to a call
+    while another part is read after (`call(acc.s, k)`, then `acc.total`),
+    and `concat(xs, ys)` taking the elements of `xs` when the length of
+    `xs` is read in the same expression.

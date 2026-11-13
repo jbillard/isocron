@@ -1758,3 +1758,30 @@ fn the_payload_of_a_node_made_anew() {
     assert_eq!(r.stdout, "root.0.1[top](leaf2[c1](a2),b,leaf2[c1](a2))\nroot[](leaf2[](a2),b,leaf2[own](a2))\nleaf2[](a2)\n");
     clean(src, "node_payload_vg", &["5"]);
 }
+
+/// D665: a value read before a state is given, a parameter held whole by a
+/// new tuple given: the results of a call read out of a state given back
+/// with them, a length read after the state is made anew, the state given
+/// whole into a new record; the state of 200 000 strings never copied
+/// (2 000 rounds of 50 calls in milliseconds, more than two minutes
+/// before); no copy in the report; the output of the interpreter, Valgrind
+/// clean.
+#[test]
+fn a_state_read_before_it_is_given() {
+    let src = include_str!("data/host_state.isc");
+    let bin = compile(src, "host_state");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["200000", "2000"]);
+    let took = start.elapsed();
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[2550000, 200000, 147480550000]\n"), "{}", r.stderr);
+    assert!(took.as_secs() < 3, "2 000 rounds in {:?}", took);
+    for a in [["3", "1"], ["10", "4"]] {
+        let want = interp_ok(src, &a);
+        let r = run_bin(&bin, &a);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", a, r.stderr);
+    }
+    let p = iscc::frontend("host_state.isc", src).unwrap();
+    let copies: Vec<(u32, String)> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| (e.line, e.what.clone())).collect();
+    assert!(copies.is_empty(), "the copies: {:?}", copies);
+    clean(src, "host_state_vg", &["20", "3"]);
+}

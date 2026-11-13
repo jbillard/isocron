@@ -1,0 +1,46 @@
+// A host that calls into the state of a machine (as the generic application
+// of isocron-ui calls its machine of Lua), each value read before the
+// state is given, the state given, not copied (D665): the results of a
+// call read out of the state given back with them (`[s1, map(...s1...)]`),
+// a length read after the state is made anew (`[{ ...s, n: s.n + k },
+// s.big.length]`), the state given whole into a new record (`{ s: s,
+// total: total }`).
+type St = { big: string[], n: i64 };
+type Acc = { s: St, total: i64 };
+
+function call(s: St, k: i64): [St, i64[]] {
+    const s1 = { ...s, n: s.n + k };
+    return [s1, map(iota(3), (i) => s1.big[i].length + s1.n)];
+}
+
+function counted(s: St, k: i64): [St, i64] {
+    return [{ ...s, n: s.n + k }, s.big.length];
+}
+
+// the state and the total in a new record at the end of the steps (the
+// state given whole into it)
+function steps(s: St, total: i64, k: i64, m: i64): Acc {
+    if (k >= m) {
+        return { s: s, total: total };
+    }
+    const [s1, xs] = call(s, k);
+    const [s2, len] = counted(s1, 1);
+    return steps(s2, total + xs[0] + len, k + 1, m);
+}
+
+function rounds(s: St, r: i64, total: i64): [St, i64] {
+    if (r == 0) {
+        return [s, total];
+    }
+    const end = steps(s, 0, 0, 50);
+    return rounds(end.s, r - 1, total + end.total);
+}
+
+action main(args: string[k]): i32 {
+    const strings = parseI64(args[0]);
+    const r = parseI64(args[1]);
+    const s0 = { big: map(iota(strings), (i) => `s${i}`), n: 0 };
+    const [s, total] = rounds(s0, r, 0);
+    print([s.n, s.big.length, total]);
+    return 0;
+}

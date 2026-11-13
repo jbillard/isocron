@@ -716,6 +716,9 @@ fn scalar_read(e: &Expr) -> bool {
         && match &e.kind {
             ExprKind::Var(..) | ExprKind::Lit(_) => true,
             ExprKind::Proj(x, _) => matches!(x.kind, ExprKind::Var(..)) || scalar_or_view_read(x),
+            // (the length of a variable or of a part of one: it cannot
+            // fail, D665)
+            ExprKind::Len(x) => scalar_or_view_read(x),
             // (an operation of such reads that cannot panic: a comparison,
             // `!`, a sum)
             ExprKind::Unary(_, x) => scalar_read(x),
@@ -786,6 +789,9 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         _ => return,
     };
     let mut whole: HashSet<VarId> = HashSet::new();
+    // (the variables read by the components before that own memory, given
+    // whole or taken apart there, whether or not they may fail)
+    let mut held: HashSet<VarId> = HashSet::new();
     let mut lets: Vec<(VarId, Expr)> = Vec::new();
     // (the arguments left in place so far cannot fail: one read before
     // them that fails fails first as it would have, D659)
@@ -794,12 +800,21 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         let plain = cannot_fail(a);
         let checked = !scalar_read(a) && quiet && !a.ty.has_heap() && pure_read(a);
         let part = !call && scalar_or_view_read(a);
-        if !part && !matches!(a.kind, ExprKind::Var(..)) && (scalar_read(a) || checked) {
+        // (a new value computed by reading a variable given whole before
+        // it, `[vm, map(iota(n), (i) => reg(vm, at + i))]`: made before, the
+        // variable then given rather than copied whole, D665)
+        let fresh = quiet && a.ty.has_heap() && fresh_read(a);
+        // (a read that cannot fail of a variable a component before takes,
+        // `[{ ...b, hs: concat(b.hs, [h]) }, b.hs.length]`: made before it
+        // even when it may fail, D665)
+        let still = plain && !a.ty.has_heap();
+        if !part && !matches!(a.kind, ExprKind::Var(..)) && (scalar_read(a) || checked || fresh || still) {
             let mut rd = HashSet::new();
             vars_read(a, &mut rd);
             // (one that may fail or reads another variable, a view of a
             // part of one given, perhaps: after any variable given whole)
-            if rd.iter().any(|w| whole.contains(w)) || (checked && !whole.is_empty()) {
+            let given = rd.iter().any(|w| whole.contains(w));
+            if (given && (scalar_read(a) || checked || fresh)) || (checked && !whole.is_empty()) || (still && rd.iter().any(|w| held.contains(w))) {
                 let t = vars.len() as VarId;
                 vars.push(VarInfo { name: "arg".into(), ty: a.ty.clone(), prelude: false });
                 let (ty, sp) = (a.ty.clone(), a.span);
@@ -809,6 +824,9 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
             }
         }
         quiet &= plain;
+        if a.ty.has_heap() {
+            vars_read(a, &mut held);
+        }
         if let ExprKind::Var(w, _) = a.kind {
             if a.ty.has_heap() {
                 whole.insert(w);
@@ -831,6 +849,17 @@ fn hoist_scalar_args(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         body = Expr::new(ExprKind::Let { var: t, init: Box::new(read), body: Box::new(body), stmt: false, drop: false }, ty, span);
     }
     *e = body;
+}
+
+/// A new value computed from what it reads (a `map`, a `filter`, a
+/// `scan`, the result of a call), its memory its own: computed before a
+/// variable it reads is given, nothing it reads is held by it (D665).
+fn fresh_read(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Map(..) | ExprKind::Filter(..) | ExprKind::Scan(..) | ExprKind::Call(..) => true,
+        ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => fresh_read(b),
+        _ => false,
+    }
 }
 
 /// A value computed without any effect and that cannot fail: variables,
@@ -4246,9 +4275,11 @@ fn given_candidates(p: &Program, fi: usize) -> Vec<usize> {
         .collect()
 }
 
-/// `v` itself is an argument of a call in `e`
+/// `v` itself is an argument of a call in `e`, or a component of a new
+/// tuple (`{ b: b, es: [] }`, the accumulator of a `fold` made of a state
+/// given, D665)
 fn passed_whole(e: &Expr, v: VarId) -> bool {
-    if let ExprKind::Call(_, args) = &e.kind {
+    if let ExprKind::Call(_, args) | ExprKind::Tuple(args) = &e.kind {
         if args.iter().any(|a| matches!(a.kind, ExprKind::Var(w, _) if w == v)) {
             return true;
         }
