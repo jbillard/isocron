@@ -16455,3 +16455,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   whole; with the old compiler only the first reached this path and failed,
   the others are not made vector code), interpreted and compiled for the
   machine, AVX2 and SSE, 1 and 4 threads.
+
+- **D673 — A large constant read at many places is computed by a function
+  called there, not refused as one that depends on itself.** The table of
+  the icons of files of the editor of isocron-ui compiled (238 extensions
+  of the theme Seti, a constant array of texts) was refused: "the constant
+  `EXTENSIONS_KEYS` depends on itself". Its lookup is inlined at each of
+  the places of the view that shows an icon; past the sizes of D336 (at
+  least 100 nodes, more than 2000 in all their copies) `outline_large`
+  marks a function to be compiled once and called, and the constant, a
+  function of no parameter, was marked so; the check of D159 (a constant
+  computed from itself would never end) ran after that mark and took it for
+  a recursion. Reduced: an array of 150 texts read at 20 places. Now the
+  check of D159 looks at the recursion alone, before `outline_large`; the
+  constant so marked is computed by a function called at each place that
+  reads it. Test `a_large_constant_read_at_many_places` (declarations.rs):
+  that program interpreted and compiled, the same output; a constant that
+  names itself still refused.

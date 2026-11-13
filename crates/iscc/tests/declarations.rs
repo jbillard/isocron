@@ -144,3 +144,27 @@ fn declaration_errors() {
         }
     }
 }
+
+/// D673: a constant too large to be copied at each of the places that read
+/// it (an array of 150 texts read at 20 places: past the sizes of D336) is
+/// computed by a function called there, as a function so large is; it was
+/// refused as a constant that depends on itself (the check of D159 ran
+/// after the functions too large were marked, and took that mark for a
+/// recursion). A constant that names itself is still refused. Interpreted
+/// and compiled, the same output.
+#[test]
+fn a_large_constant_read_at_many_places() {
+    let keys = (0..150).map(|i| format!("\"k{}\"", i)).collect::<Vec<_>>().join(", ");
+    let uses = (0..20).map(|i| format!("    print(findIndex(KEYS, (k) => k == args[0] + \"{}\"));\n", i * 7)).collect::<String>();
+    let src = format!("const KEYS: string[] = [{}];\n\naction main(args: string[k]): i32 {{\n{}    return 0;\n}}\n", keys, uses);
+    let want: String = (0..20).map(|i| format!("{}\n", i * 7)).collect();
+    assert_eq!(interp_ok(&src, &["k"]), want, "interpreter");
+    let bin = compile(&src, "large_constant");
+    let r = run_bin(&bin, &["k"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    let selfish = "const X: i64[] = concat(X, [1]);\n\naction main(args: string[k]): i32 {\n    return 0;\n}\n";
+    match iscc::frontend("t.isc", selfish) {
+        Ok(_) => panic!("a constant that names itself accepted"),
+        Err(e) => assert!(e.contains("the constant `X` depends on itself"), "{}", e),
+    }
+}

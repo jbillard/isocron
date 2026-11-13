@@ -4336,13 +4336,16 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
             recursive[id] = true;
         }
     }
-    let recursive = outline_large(&fns, recursive, main);
-    // a constant computed from itself would never end (D159)
+    // a constant computed from itself would never end (D159): its own
+    // recursion, before the functions too large to be copied at each call
+    // are marked (a large constant read at many places is computed by a
+    // function called there, D673)
     for (id, f) in fns.iter().enumerate() {
         if recursive[id] && globals.sigs[id].is_const {
             return err(f.span, format!("the constant `{}` depends on itself", f.name));
         }
     }
+    let recursive = outline_large(&fns, recursive, main);
     Ok(TProgram { fns, main, sums: globals.sums, externs, recursive, checked })
 }
 
