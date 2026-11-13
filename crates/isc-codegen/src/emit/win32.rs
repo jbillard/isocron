@@ -282,6 +282,7 @@ which:
                                 i32 260, label %skdown
                                 i32 261, label %skup
                                 i32 258, label %char
+                                i32 262, label %syschar
                                 i32 15, label %paint
                                 i32 20, label %erase
                                 i32 736, label %dpi
@@ -417,6 +418,14 @@ skey:
   %sscan = and i64 %hi, 511
   call void @isc.win.push(ptr %blk, i64 6, i64 %svk, i64 %skd, i64 %sscan)
   br label %def
+  ; (a character with Alt, WM_SYSCHAR: answered, not given to Windows,
+  ; which would sound for a window without a menu; Alt+Space given, its
+  ; menu of the system, D675)
+syschar:
+  %sysspace = icmp eq i64 %wp, 32
+  br i1 %sysspace, label %def, label %sysnone
+sysnone:
+  ret i64 0
 char:
   %unit = and i64 %wp, 65535
   call void @isc.win.push(ptr %blk, i64 7, i64 %unit, i64 0, i64 0)
@@ -1685,6 +1694,19 @@ mod tests {
         assert!(COMMAND.contains(&format!("select i1 %ismax, i64 {}, i64 {}", SC_MAXIMIZE, SC_MINIMIZE)));
         assert!(COMMAND.contains(&format!("select i1 %isrestore, i64 {}, i64 %sc1", SC_RESTORE)));
         assert!(COMMAND.contains(&format!("select i1 %isclose, i32 {}, i32 {}", WM_CLOSE, WM_SYSCOMMAND)));
+    }
+
+    /// A character with Alt (D675): `WM_SYSCHAR` (0x0106) answered without
+    /// `DefWindowProcW` (no sound for a window without a menu), Alt+Space
+    /// given to it (its menu of the system)
+    #[test]
+    fn a_character_with_alt_does_not_sound() {
+        const WM_SYSCHAR: u32 = 0x0106;
+        assert!(PROC.contains(&format!("i32 {}, label %syschar", WM_SYSCHAR)));
+        assert!(PROC.contains("%sysspace = icmp eq i64 %wp, 32\n  br i1 %sysspace, label %def, label %sysnone\nsysnone:\n  ret i64 0"));
+        for name in ["%sysspace ="] {
+            assert_eq!(PROC.matches(name).count(), 1, "{}", name);
+        }
     }
 
     /// The wheel turned across (D674): `WM_MOUSEHWHEEL` (0x020E) queued as

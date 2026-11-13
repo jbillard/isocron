@@ -16512,3 +16512,11 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Test `the_wheel_across` (emit/win32.rs: each constant from the headers
   of Windows); `a_window_of_windows` posts both messages and reads
   `Wheel(-120)`, `HWheel(-120)` in their order, with both ABIs.
+- **D675 — A character with Alt does not sound.** An editor in the image
+  of Visual Studio Code takes Alt+C, Alt+W, Alt+R, Alt+Z (the options of
+  its search, the wrap of its lines) as keys: `WM_SYSKEYDOWN` gives them,
+  then `WM_SYSCHAR` comes, which `DefWindowProcW` answers in a window
+  without a menu by a sound. The procedure answers `WM_SYSCHAR` (0x0106)
+  itself, but for Alt+Space, given to Windows (the menu of the system);
+  Alt+F4 still closes (`WM_SYSKEYDOWN`, given to Windows as before). Test
+  `a_character_with_alt_does_not_sound` (emit/win32.rs).
