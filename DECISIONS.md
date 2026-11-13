@@ -16436,3 +16436,22 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   used by the tests of `unix`, `net`, `http` and `https` (a connection
   refused once its listener is closed, the end of a stream read once its
   peer closed it: the same race).
+
+- **D672 — The booleans of an array read under a mask are bits.** A fold
+  of the layout of isocron-ui, `fold(iota(n), -1, (a, i) => i < n - 1 &&
+  fits[i] && !over[i] ? i : a)`, `fits` an array of booleans, made a module
+  LLVM refused: `select <64 x i1> %c, <64 x i8> %x, <64 x i1> false`. Read
+  under the mask of the condition before it, the element is a masked load
+  of the bytes of the array (`llvm.masked.load.v64i8`), given on as they
+  were where every boolean in registers is a bit (the load of whole lanes,
+  `load_scalar`, made them bits: `trunc`). Reduced to four lines
+  (`fold(iota(n), -1, (a, i) => i < n - 1 && fits[i] ? i : a)`: the
+  interpreter 66, the compiler refused). Now the lanes keep the type they
+  were read with and booleans read as bytes are made bits after
+  (`bits_of_bytes`): after a masked load, a gather (the same bytes), and the
+  lanes reversed of a read downwards (they named the type of bytes for the
+  bits of a whole load). Test `booleans_read_under_a_mask_are_bits`
+  (vector_index.rs): that form and those beside it (downwards, gathered,
+  whole; with the old compiler only the first reached this path and failed,
+  the others are not made vector code), interpreted and compiled for the
+  machine, AVX2 and SSE, 1 and 4 threads.

@@ -920,3 +920,38 @@ fn scans_of_sources_with_two_reads_by_vectors() {
         assert_eq!((run.code, run.stderr.trim_end()), (101, want.as_str()), "{}", name);
     }
 }
+
+/// D672: an element of an array of booleans read under the mask of a
+/// condition (`i < n - 1 && fits[i]` in a fold: a masked load of its bytes)
+/// is a boolean of bits as every other: LLVM refused the module (`select`
+/// of bytes against bits) where the interpreter gave the index. The forms
+/// beside it (downwards, gathered, whole) give the interpreter's results
+/// too; on every set of instructions.
+#[test]
+fn booleans_read_under_a_mask_are_bits() {
+    let src = "action main(args: string[k]): i32 {
+    const n = args.length + 131;
+    const fits = map(iota(n), (i) => i % 3 == 0 || i % 5 == 1);
+    print(fold(iota(n), -1, (a, i) => i < n - 1 && fits[i] ? i : a));
+    print(fold(iota(n), -1, (a, i) => i > 2 && fits[n - 1 - i] ? i : a));
+    print(count(iota(n), (i) => fits[n - 1 - i]));
+    print(count(iota(n), (i) => i % 2 == 0 && fits[(i * 7) % n]));
+    print(count(iota(n), (i) => fits[(i * 7) % n]));
+    print(map(iota(12), (i) => i < 9 && fits[i] ? i : -i));
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    assert_eq!(want, "129\n130\n61\n32\n61\n[0, 1, -2, 3, -4, -5, 6, -7, -8, -9, -10, -11]\n");
+    for (name, isa) in [("native", isc_codegen::Isa::Native), ("avx2", isc_codegen::Isa::Avx2), ("sse", isc_codegen::Isa::Sse)] {
+        let bin = compile_with(src, &format!("vector_bool_mask_{}", name), isc_codegen::Options { isa, ..isc_codegen::Options::default() });
+        if name == "native" {
+            let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+            assert!(ll.contains("@llvm.masked.load.v64i8") && ll.contains("to <64 x i1>"), "the booleans not read under a mask as bytes made bits");
+        }
+        for t in [1, 4] {
+            let r = run_bin_threads(&bin, &[], Some(t));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{} {} threads: {}", name, t, r.stderr);
+        }
+    }
+}

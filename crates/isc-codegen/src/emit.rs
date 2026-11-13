@@ -6465,19 +6465,25 @@ impl<'p> Gen<'p> {
             // reversed (D185)
             let rev = format!("<{}>", (0..w).rev().map(|j| format!("i32 {}", j)).collect::<Vec<_>>().join(", "));
             let low = if dir == 1 { base } else { self.ins(format!("sub i64 {}, {}", base, w - 1)) };
-            let x = match self.mask.clone() {
-                None => self.load_scalar(&ptr, &low, &elem, w).r,
+            // (the type of the lanes read: bits for booleans read whole,
+            // `load_scalar`, bytes for those of a masked load, made bits
+            // after, D672)
+            let (x, xt) = match self.mask.clone() {
+                None => {
+                    let v = self.load_scalar(&ptr, &low, &elem, w);
+                    (v.r, v.t)
+                }
                 Some(mask) => {
                     // the lanes of a mask only: the others may be past the end
                     let mask = if dir == 1 { mask } else { self.ins(format!("shufflevector <{} x i1> {}, <{} x i1> poison, <{} x i32> {}", w, mask, w, w, rev)) };
                     let g = self.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, ptr, low));
                     let name = format!("llvm.masked.load.v{}{}.p0", w, suffix);
                     self.decls.insert(format!("declare {} @{}(ptr, i32, <{} x i1>, {})", vm, name, w, vm));
-                    self.ins(format!("call {} @{}(ptr {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, g, esize(&elem), w, mask, vm))
+                    (self.ins(format!("call {} @{}(ptr {}, i32 {}, <{} x i1> {}, {} zeroinitializer)", vm, name, g, esize(&elem), w, mask, vm)), vm.clone())
                 }
             };
-            let x = if dir == 1 { x } else { self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> {}", vm, x, vm, w, rev)) };
-            return Ok(V { r: x, t: vm, uni: false });
+            let x = if dir == 1 { x } else { self.ins(format!("shufflevector {} {}, {} poison, <{} x i32> {}", xt, x, xt, w, rev)) };
+            return Ok(self.bits_of_bytes(x, xt, &elem, w));
         }
         // 64 lanes: only a table in registers (D388; any array of bytes
         // read on 64 lanes took the test and the permutations too: fasta +4
@@ -6510,7 +6516,19 @@ impl<'p> Gen<'p> {
             return Ok(V { r, t: vm, uni: false });
         }
         let x = self.gather(&ptr, &idx, &elem, w);
-        Ok(V { r: x, t: vm, uni: false })
+        Ok(self.bits_of_bytes(x, vm, &elem, w))
+    }
+
+    /// The lanes `x` of the type `xt` read from an array of `elem`: booleans
+    /// read as bytes (a masked load, a gather) made bits, as every boolean
+    /// in registers is (D672: `xs[i]` of an array of booleans under a mask,
+    /// a `select` of bytes against bits refused by LLVM).
+    fn bits_of_bytes(&mut self, x: String, xt: String, elem: &Type, w: u32) -> V {
+        if *elem == Type::Bool && xt == format!("<{} x i8>", w) {
+            let b = self.ins(format!("trunc {} {} to <{} x i1>", xt, x, w));
+            return V { r: b, t: format!("<{} x i1>", w), uni: false };
+        }
+        V { r: x, t: xt, uni: false }
     }
 
     /// The elements of `ptr` at the lanes of `idx` (`<w x i64>`), those of
