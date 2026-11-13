@@ -16,8 +16,10 @@ export type Window = sysWindow;
 // the pointer just before; the wheel turned (120 a notch, forwards
 // positive); a key (its virtual code, pressed or released, its scan code);
 // a character typed (a unit of UTF-16); a part of the window to draw
-// again; its dots per inch (96: a scale of 1); the focus taken or lost
-export type Event = Close | Resize(i64, i64) | Pointer(i64, i64) | Button(i64, boolean) | Wheel(i64) | Key(i64, boolean, i64) | Char(i64) | Paint | Dpi(i64) | Focus(boolean) | Unknown(i64);
+// again; its dots per inch (96: a scale of 1); the focus taken or lost;
+// the wheel turned across (a tilt of the wheel, two fingers on a touchpad:
+// 120 a notch, right positive, D674)
+export type Event = Close | Resize(i64, i64) | Pointer(i64, i64) | Button(i64, boolean) | Wheel(i64) | Key(i64, boolean, i64) | Char(i64) | Paint | Dpi(i64) | Focus(boolean) | HWheel(i64) | Unknown(i64);
 
 // a window titled `title` whose inside has `width` by `height` units of 96
 // dots per inch (pixels at 100 %; 1.5 pixel each at 150 %, D649), shown:
@@ -64,7 +66,8 @@ function eventAt(x: i64[n], at: i64): Event {
         : (k == 7 ? Char(a)
         : (k == 8 ? Paint
         : (k == 9 ? Dpi(a)
-        : (k == 10 ? Focus(a != 0) : Unknown(k))))))))));
+        : (k == 10 ? Focus(a != 0)
+        : (k == 11 ? HWheel(a) : Unknown(k)))))))))));
 }
 
 // the events of `w` since the last call, in their order; when there are

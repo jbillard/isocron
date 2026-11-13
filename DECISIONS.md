@@ -16503,3 +16503,12 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the window moved by its bar (100 by 50 pixels), maximized by its button,
   restored by a double click on its bar, minimized, closed by their
   buttons.
+- **D674 — The wheel of a window of Windows turned across.** At the
+  author's word (an editor of code whose long lines scroll across, as
+  Visual Studio Code does): the procedure of the window answers
+  `WM_MOUSEHWHEEL` (0x020E: a wheel tilted, two fingers on a touchpad) as
+  it answers `WM_MOUSEWHEEL`, queued as the event 11, `win32.HWheel(d)`:
+  120 a notch, right positive, the signed high word of its `wParam`.
+  Test `the_wheel_across` (emit/win32.rs: each constant from the headers
+  of Windows); `a_window_of_windows` posts both messages and reads
+  `Wheel(-120)`, `HWheel(-120)` in their order, with both ABIs.

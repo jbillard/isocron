@@ -905,7 +905,7 @@ fn a_window_of_windows() {
         return;
     };
     let src = include_str!("data/std_win32.isc");
-    let want = "(320, 200)\nOk(())\nErr(std:sys.Other(22, show))\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\n[std:win32.Pointer(10, 20), std:win32.Pointer(11, 21), std:win32.Button(0, true), std:win32.Pointer(11, 21), std:win32.Button(0, false), std:win32.Key(65, true, 30), std:win32.Char(233), std:win32.Close]\n1\n0\n(64000, 64000)\n";
+    let want = "(320, 200)\nOk(())\nErr(std:sys.Other(22, show))\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\nOk(())\n[std:win32.Pointer(10, 20), std:win32.Pointer(11, 21), std:win32.Button(0, true), std:win32.Pointer(11, 21), std:win32.Button(0, false), std:win32.Key(65, true, 30), std:win32.Char(233), std:win32.Wheel(-120), std:win32.HWheel(-120), std:win32.Close]\n1\n0\n(64000, 64000)\n";
     for msvc in [false, true] {
         let exe = compile_windows_with(src, &format!("std_win32_{}", if msvc { "msvc" } else { "gnu" }), msvc);
         let d = dir("win32");

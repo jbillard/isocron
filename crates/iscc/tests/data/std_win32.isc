@@ -10,6 +10,8 @@ function input(e: win.Event): boolean {
         win.Key(k, d, s) => true,
         win.Char(c) => true,
         win.Close => true,
+        win.Wheel(d) => true,
+        win.HWheel(d) => true,
         _ => false,
     };
 }
@@ -23,7 +25,8 @@ action main(args: string[k]): i32 {
             print(win.show(w, px, 320, 200));
             print(win.show(w, px, 320, 201));
             // the events of its opening, then input played: the pointer
-            // moved, a click of the left button, a key, a character, closing
+            // moved, a click of the left button, a key, a character, the
+            // wheel turned down then across to the left (D674), closing
             // asked
             const opening = win.events(w, 200);
             print(win.post(w, 512, 0, 10 + 20 * 65536));
@@ -31,6 +34,8 @@ action main(args: string[k]): i32 {
             print(win.post(w, 514, 0, 11 + 21 * 65536));
             print(win.post(w, 256, 65, 1 + 30 * 65536));
             print(win.post(w, 258, 233, 0));
+            print(win.post(w, 522, -120 * 65536, 0));
+            print(win.post(w, 526, (65536 - 120) * 65536, 0));
             print(win.post(w, 16, 0, 0));
             // (the character of the key, made by the thread of the window
             // when it reads the key: its place among the messages posted

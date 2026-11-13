@@ -276,6 +276,7 @@ which:
                                 i32 519, label %mdown
                                 i32 520, label %mup
                                 i32 522, label %wheel
+                                i32 526, label %hwheel
                                 i32 256, label %kdown
                                 i32 257, label %kup
                                 i32 260, label %skdown
@@ -387,6 +388,14 @@ wheel:
   %wd16 = trunc i64 %wp16 to i16
   %wd = sext i16 %wd16 to i64
   call void @isc.win.push(ptr %blk, i64 5, i64 %wd, i64 0, i64 0)
+  ret i64 0
+  ; (the wheel turned across, WM_MOUSEHWHEEL: a tilt of the wheel, two
+  ; fingers on a touchpad; right positive, D674)
+hwheel:
+  %xwp16 = lshr i64 %wp, 16
+  %xwd16 = trunc i64 %xwp16 to i16
+  %xwd = sext i16 %xwd16 to i64
+  call void @isc.win.push(ptr %blk, i64 11, i64 %xwd, i64 0, i64 0)
   ret i64 0
 kdown:
   br label %key
@@ -1676,5 +1685,22 @@ mod tests {
         assert!(COMMAND.contains(&format!("select i1 %ismax, i64 {}, i64 {}", SC_MAXIMIZE, SC_MINIMIZE)));
         assert!(COMMAND.contains(&format!("select i1 %isrestore, i64 {}, i64 %sc1", SC_RESTORE)));
         assert!(COMMAND.contains(&format!("select i1 %isclose, i32 {}, i32 {}", WM_CLOSE, WM_SYSCOMMAND)));
+    }
+
+    /// The wheel turned across (D674): `WM_MOUSEHWHEEL` (0x020E) queued as
+    /// the event 11, its delta the signed high word of its `wParam`, as
+    /// `WM_MOUSEWHEEL` (0x020A) is the event 5
+    #[test]
+    fn the_wheel_across() {
+        const WM_MOUSEWHEEL: u32 = 0x020A;
+        const WM_MOUSEHWHEEL: u32 = 0x020E;
+        assert!(PROC.contains(&format!("i32 {}, label %wheel", WM_MOUSEWHEEL)));
+        assert!(PROC.contains(&format!("i32 {}, label %hwheel", WM_MOUSEHWHEEL)));
+        assert!(PROC.contains("%xwd = sext i16 %xwd16 to i64\n  call void @isc.win.push(ptr %blk, i64 11, i64 %xwd, i64 0, i64 0)"));
+        // (each value named once in the procedure: LLVM refuses a name
+        // defined twice)
+        for name in ["%xwp16 =", "%xwd16 =", "%xwd ="] {
+            assert_eq!(PROC.matches(name).count(), 1, "{}", name);
+        }
     }
 }
