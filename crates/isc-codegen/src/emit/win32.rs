@@ -95,8 +95,8 @@ const CAPTURE_DECLS: [&str; 6] = [
 // flush (`WM_APP + 1` seen by the procedure); the shape of the pointer over
 // its inside (the number of a cursor of the system, D646); the size of the
 // inside the procedure waits for an image of (0 by 0: none) and the signal
-// of an image shown (D666).
-// (200 bytes; `isc_alloc` in `OPEN`)
+// of an image shown (D666); the style of the window (D669).
+// (208 bytes; `isc_alloc` in `OPEN`)
 
 /// The name of the class of the windows, in UTF-16.
 const CLASS: &str = r#"@isc.win.class = private unnamed_addr constant [8 x i16] [i16 105, i16 115, i16 111, i16 99, i16 114, i16 111, i16 110, i16 0]"#;
@@ -484,15 +484,33 @@ def:
   ret i64 %r0
 }"#;
 
-/// `sysWinOpen(title, width, height) => [window, code]`: the class
+/// `sysWinOpen(title, width, height, options) => [window, code]`: the class
 /// registered (again: refused, nothing changed), the title in UTF-16, the
 /// block of the window, its thread started, which makes a window whose
 /// inside has `width` by `height` pixels, shown, then reads its messages;
 /// the process aware of the density of each screen.
-const OPEN: &str = r#"define internal { i64, i64 } @isc.win.open(ptr %p, i64 %n, i64 %w, i64 %h) {
+const OPEN: &str = r#"define internal { i64, i64 } @isc.win.open(ptr %p, i64 %n, i64 %w, i64 %h, i64 %opts) {
 entry:
   %wc = alloca [80 x i8], align 8
   %rect = alloca [16 x i8], align 8
+  ; the style of the window (D669): a title and its menu (WS_CAPTION |
+  ; WS_SYSMENU), edges that resize it when its options have 1
+  ; (WS_THICKFRAME), the button that minimizes it with 2 (WS_MINIMIZEBOX),
+  ; that maximizes it with 4 and 1 (WS_MAXIMIZEBOX); shown (WS_VISIBLE)
+  %o1 = and i64 %opts, 1
+  %o2 = and i64 %opts, 2
+  %o4 = and i64 %opts, 4
+  %rsz = icmp ne i64 %o1, 0
+  %mini = icmp ne i64 %o2, 0
+  %maxi0 = icmp ne i64 %o4, 0
+  %maxi = and i1 %maxi0, %rsz
+  %sf = select i1 %rsz, i32 262144, i32 0
+  %sm = select i1 %mini, i32 131072, i32 0
+  %sx = select i1 %maxi, i32 65536, i32 0
+  %s1 = or i32 13107200, %sf
+  %s2 = or i32 %s1, %sm
+  %frame = or i32 %s2, %sx
+  %style = or i32 %frame, 268435456
   %aware = call i32 @SetProcessDpiAwarenessContext(ptr inttoptr (i64 -4 to ptr))
   %hinst = call ptr @GetModuleHandleW(ptr null)
   %cursor = call ptr @LoadCursorW(ptr null, ptr inttoptr (i64 32512 to ptr))
@@ -544,7 +562,7 @@ entry:
   store i32 %w32, ptr %rr
   %rb = getelementptr i8, ptr %rect, i64 12
   store i32 %h32, ptr %rb
-  %adj = call i32 @AdjustWindowRectEx(ptr %rect, i32 13565952, i32 0, i32 0)
+  %adj = call i32 @AdjustWindowRectEx(ptr %rect, i32 %frame, i32 0, i32 0)
   %l = load i32, ptr %rect
   %t = load i32, ptr %rt
   %r = load i32, ptr %rr
@@ -553,7 +571,7 @@ entry:
   %wh = sub i32 %b, %t
   ; the block: the window (made by the thread), the queue, the lock, the
   ; signals, what the thread needs, no image yet
-  %blk = call ptr @isc_alloc(i64 200)
+  %blk = call ptr @isc_alloc(i64 208)
   %queue = call ptr @isc_alloc(i64 131072)
   store ptr null, ptr %blk
   %pq = getelementptr i8, ptr %blk, i64 8
@@ -598,6 +616,8 @@ entry:
   %shown = call ptr @CreateEventW(ptr null, i32 0, i32 0, ptr null)
   %pshown = getelementptr i8, ptr %blk, i64 184
   store ptr %shown, ptr %pshown
+  %pwstyle = getelementptr i8, ptr %blk, i64 192
+  store i32 %style, ptr %pwstyle
   %th = call ptr @CreateThread(ptr null, i64 0, ptr @isc.win.thread, ptr %blk, i32 0, ptr null)
   %pth = getelementptr i8, ptr %blk, i64 80
   store ptr %th, ptr %pth
@@ -656,9 +676,10 @@ entry:
   %wh = load i32, ptr %pwh
   %prd = getelementptr i8, ptr %blk, i64 88
   %ready = load ptr, ptr %prd
-  ; (WS_VISIBLE | WS_OVERLAPPEDWINDOW: a title, a menu of the system, edges
-  ; that resize it, the buttons that minimize and maximize it, D668)
-  %hwnd = call ptr @CreateWindowExW(i32 0, ptr @isc.win.class, ptr %title, i32 282001408, i32 -2147483648, i32 -2147483648, i32 %ww, i32 %wh, ptr null, ptr null, ptr %hinst, ptr null)
+  ; (the style its options gave, D668, D669)
+  %pwstyle = getelementptr i8, ptr %blk, i64 192
+  %style = load i32, ptr %pwstyle
+  %hwnd = call ptr @CreateWindowExW(i32 0, ptr @isc.win.class, ptr %title, i32 %style, i32 -2147483648, i32 -2147483648, i32 %ww, i32 %wh, ptr null, ptr null, ptr %hinst, ptr null)
   %failed = icmp eq ptr %hwnd, null
   br i1 %failed, label %fail, label %made
 fail:
@@ -1306,7 +1327,7 @@ impl Gen<'_> {
             SysOp::WinOpen => {
                 self.win_defs(&[OPEN], false);
                 let (p, n) = self.str_parts(&vals[0]);
-                v(self.ins(format!("call {{ i64, i64 }} @isc.win.open(ptr {}, i64 {}, i64 {}, i64 {})", p, n, vals[1].r, vals[2].r)), "{ i64, i64 }")
+                v(self.ins(format!("call {{ i64, i64 }} @isc.win.open(ptr {}, i64 {}, i64 {}, i64 {}, i64 {})", p, n, vals[1].r, vals[2].r, vals[3].r)), "{ i64, i64 }")
             }
             SysOp::WinEvents => {
                 self.win_defs(&[EVENTS], false);
@@ -1373,15 +1394,27 @@ impl Gen<'_> {
 mod tests {
     use super::*;
 
-    /// The style of a window made, and the one its size is computed with:
-    /// `WS_OVERLAPPEDWINDOW` (caption, system menu, thick frame, minimize
-    /// and maximize boxes), visible (D668: a style 2048 below it lacked
-    /// the maximize box, the button greyed).
+    /// The style of a window made, from its options (D668, D669): its
+    /// title, its menu and its visibility always; its edges that resize it,
+    /// its buttons that minimize and maximize it (this one only with its
+    /// edges), each from the flags of Windows; the size computed with the
+    /// style without its visibility
     #[test]
-    fn the_window_has_every_button() {
-        const WS_OVERLAPPEDWINDOW: u32 = 0x00C0_0000 | 0x0008_0000 | 0x0004_0000 | 0x0002_0000 | 0x0001_0000;
+    fn the_window_has_the_buttons_asked() {
+        const WS_CAPTION: u32 = 0x00C0_0000;
+        const WS_SYSMENU: u32 = 0x0008_0000;
+        const WS_THICKFRAME: u32 = 0x0004_0000;
+        const WS_MINIMIZEBOX: u32 = 0x0002_0000;
+        const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
         const WS_VISIBLE: u32 = 0x1000_0000;
-        assert!(THREAD.contains(&format!("ptr %title, i32 {},", WS_VISIBLE | WS_OVERLAPPEDWINDOW)));
-        assert!(OPEN.contains(&format!("ptr %rect, i32 {},", WS_OVERLAPPEDWINDOW)));
+        for (flag, part) in [(1, WS_THICKFRAME), (2, WS_MINIMIZEBOX), (4, WS_MAXIMIZEBOX)] {
+            assert!(OPEN.contains(&format!("and i64 %opts, {}", flag)));
+            assert!(OPEN.contains(&format!("i32 {}, i32 0", part)), "{:x}", part);
+        }
+        assert!(OPEN.contains(&format!("or i32 {}, %sf", WS_CAPTION | WS_SYSMENU)));
+        assert!(OPEN.contains(&format!("or i32 %frame, {}", WS_VISIBLE)));
+        assert!(OPEN.contains("%maxi = and i1 %maxi0, %rsz"));
+        assert!(OPEN.contains("@AdjustWindowRectEx(ptr %rect, i32 %frame,"));
+        assert!(THREAD.contains("i32 %style, i32 -2147483648"));
     }
 }

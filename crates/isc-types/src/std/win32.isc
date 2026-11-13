@@ -20,9 +20,18 @@ export type Window = sysWindow;
 export type Event = Close | Resize(i64, i64) | Pointer(i64, i64) | Button(i64, boolean) | Wheel(i64) | Key(i64, boolean, i64) | Char(i64) | Paint | Dpi(i64) | Focus(boolean) | Unknown(i64);
 
 // a window titled `title` whose inside has `width` by `height` units of 96
-// dots per inch (pixels at 100 %; 1.5 pixel each at 150 %, D649), shown
+// dots per inch (pixels at 100 %; 1.5 pixel each at 150 %, D649), shown:
+// resized by its edges, its buttons that minimize and maximize it there
 export action open(title: string, width: i64, height: i64): Result<Window, IoError> {
-    const [w, code] = sysWinOpen(title, width, height);
+    return openWith(title, width, height, true, true, true);
+}
+
+// `open`, the window resized by its edges or of a fixed size (`resizable`),
+// with its button that minimizes it or not, with its button that maximizes
+// it or not (a window of a fixed size has none, D669)
+export action openWith(title: string, width: i64, height: i64, resizable: boolean, minimizable: boolean, maximizable: boolean): Result<Window, IoError> {
+    const options = (resizable ? 1 : 0) | (minimizable ? 2 : 0) | (maximizable ? 4 : 0);
+    const [w, code] = sysWinOpen(title, width, height, options);
     if (code == 0) {
         return Ok(w);
     }

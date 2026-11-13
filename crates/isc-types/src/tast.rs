@@ -554,7 +554,8 @@ pub enum SysOp {
     SharedClose,
     // The module `win32` (D636): Windows only, realized by the compiler
     // (calls of `user32`, `gdi32`, `kernel32`).
-    /// `sysWinOpen(title, width, height) => [window, code]`
+    /// `sysWinOpen(title, width, height, options) => [window, code]` (the
+    /// options: 1 resizable, 2 minimizable, 4 maximizable, D669)
     WinOpen,
     /// `sysWinEvents(window, ms) => [words, code]`: the events of the
     /// window, four words each (kind, three numbers), waited for `ms` ms at

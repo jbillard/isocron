@@ -2762,7 +2762,7 @@ impl<'g> FnCx<'g> {
             SysOp::SharedRead => (vec![Ty::Handle(Handle::Shared), i64t.clone(), i64t.clone()], Ty::Tuple(vec![exist(self, Ty::Int(IntKind::U8)), i64t.clone()])),
             SysOp::SharedFd | SysOp::SharedSize | SysOp::SharedClose => (vec![Ty::Handle(Handle::Shared)], i64t.clone()),
             // the module `win32` (D636)
-            SysOp::WinOpen => (vec![Ty::Str, i64t.clone(), i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Window), i64t.clone()])),
+            SysOp::WinOpen => (vec![Ty::Str, i64t.clone(), i64t.clone(), i64t.clone()], Ty::Tuple(vec![Ty::Handle(Handle::Window), i64t.clone()])),
             SysOp::WinEvents => {
                 let own = |t: Ty| Ty::Array(Size::Own, Box::new(t));
                 (vec![Ty::Handle(Handle::Window), i64t.clone()], Ty::Tuple(vec![own(i64t.clone()), i64t.clone()]))

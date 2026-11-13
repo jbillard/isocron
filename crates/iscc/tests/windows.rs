@@ -927,7 +927,9 @@ fn win32_refused_for_linux_and_wasi() {
     ] {
         let opts = iscc::BuildOptions { output: tmp("win32_other"), emit_llvm: None, emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false };
         let e = iscc::build(&p, &opts).expect_err("the module win32 built for another system");
-        assert!(e.contains(&format!("the target {} has no `sysWinOpen`", target)) && e.contains("reached by `main` -> `shown` -> `win32.open`"), "{}: {}", target, e);
+        // (the first primitive of the module the check meets: that of
+        // `open` through `openWith`, or that of `close`, D669)
+        assert!(e.contains(&format!("the target {} has no `sysWin", target)) && e.contains("reached by `main` -> `shown` -> `win32."), "{}: {}", target, e);
     }
     let branch = src.replace("    if (args.length > 99) {", "    if (sys.platform() == \"windows\" && args.length > 99) {").replace("import * as win from \"win32\";\n", "import * as win from \"win32\";\nimport * as sys from \"sys\";\n");
     assert_eq!(interp_ok(&branch, &[]), "1\n");

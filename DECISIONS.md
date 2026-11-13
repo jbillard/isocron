@@ -16394,3 +16394,23 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     in the machine of Windows (verify script of isocron-ui), the style
     read back has `WS_MAXIMIZEBOX`, the window maximized is drawn at its
     new size.
+
+- **D669 — The buttons and the edges of a window of Windows asked by the
+  program.** `win32.openWith(title, width, height, resizable, minimizable,
+  maximizable)` (`open` gives all three): `sysWinOpen` takes a fourth
+  number, its options (1 resizable, 2 minimizable, 4 maximizable), from
+  which the window's style is computed where it is made: always its title
+  and its menu (`WS_CAPTION | WS_SYSMENU`), its edges (`WS_THICKFRAME`),
+  its buttons (`WS_MINIMIZEBOX`, `WS_MAXIMIZEBOX`, the latter only with
+  its edges: a window of a fixed size is not maximized), shown; its size
+  computed with that style. The style kept in the block of the window (208
+  bytes), read by its thread. isocron-ui gives them from the `resizable`,
+  `minimizable` and `maximizable` of the `<view>` of its generic
+  application (and under X11 and Wayland the equivalents of their
+  protocols).
+  - Test (`emit/win32.rs`, `the_window_has_the_buttons_asked`, after
+    D668): each option read from its bit and turned into its flag of
+    Windows, the title and the menu always, the visibility, the button
+    that maximizes only with the edges, the size computed with the style
+    (written first as 12058624 for `WS_CAPTION | WS_SYSMENU`, 13107200:
+    the test refused it); in the machine of Windows, the style read back.
