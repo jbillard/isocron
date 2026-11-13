@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+## 0.8.0 — 2026-11-13
+
+What a library of graphical interfaces written in Isocron
+([isocron-ui](https://github.com/jbillard/isocron-ui), after GPUI) asked of
+the language, its compiler and its standard library: windows of Windows,
+Unix sockets and shared memory, the system known when a program is built,
+and a state passed from function to function updated in place rather than
+copied. Each defect it met in the compiler is fixed here. The language is
+the same; no name removed.
+
+- The module `win32`: a window of Windows (on a thread of its own), its
+  events, the image it shows; its title, its size in units of 96 dots per
+  inch (multiplied by the density of the screen), the shape of the
+  pointer, the clipboard, a box of messages, the path of the program; a
+  window resized with the image of its new size; `win32.openWith` asks
+  its edges and its buttons (resizable, minimizable, maximizable). Its
+  calls of the system are made by the compiled program, no function of
+  the runtime (D636, D641, D643, D645, D646, D649, D666, D668, D669).
+- `iscc build --subsystem windows`: a program of Windows without a
+  console (D640).
+- The module `unix`: Unix sockets (a path or a name of the abstract space
+  of Linux), descriptors passed with bytes, memory shared, `poll`,
+  `writeFd` (its reader gone, an error and not the signal `SIGPIPE`)
+  (D632, D650).
+- `sys.platform()` is known when a program is built: a condition on it
+  keeps the branch of the target's system alone, the other one neither
+  checked against the target nor compiled (D635).
+- `~`, the complement of the bits of an integer, as in TypeScript (D633).
+- `@noInline` and `@cold` are taken on a function that takes a function
+  (D648).
+- A state (a record of arrays, a tuple) given from function to function
+  and changed by `{ ...st, f: g(st.f) }` is updated in place: its parts
+  are taken where it is read for the last time rather than copied, through
+  loops, cycles of functions, the parts of its parts and the results of
+  calls (D653 to D667). A machine of Lua written in Isocron no longer
+  copies its whole state at each operation.
+- `concat` moves the elements of the arrays it reads for the last time
+  (texts, records, arrays of them) rather than copying them (D638); the
+  array of a loop is given by its callers rather than copied at each call
+  (D644); a parameter is given to a function that is called rather than
+  inlined (D637).
+- A parallel loop no longer waits for a thread of the pool that has not
+  started: a loop of 0.28 ms took 4 ms when one processor was busy
+  (D651).
+- Vector code: a tuple of scalars made and taken apart inside it, a field
+  of a record of the context (D634).
+- Fixed: a value freed at once was freed again before a tail call (an
+  invalid free, D639); a field replaced by an array of another length kept
+  the old length (D642); a `concat` taking its array in one branch of an
+  `if` made a module LLVM refused (D647); a local of the type checker
+  named after a field `text` hid the insertions of a template literal
+  (D652); the accumulator of a `fold` had the type of its first value (an
+  array growing from `[]` read with the length 0, D658); the payload of a
+  variant read out of its node was taken for new memory (D663); a program
+  for Windows that computes `%` of floats did not link (`fmod`, D664); the
+  booleans of an array read under a mask were bytes (a module LLVM
+  refused, D672).
+
 ## 0.7.0 — 2026-11-10
 
 The first step of the runtime written in Isocron is complete: every part of
