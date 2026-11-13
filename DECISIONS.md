@@ -16381,3 +16381,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     data/parts_given.isc): a machine of a million numbers through 2 000
     rounds of a drag and of a hold, 2 ms (4.7 s before); no copy of the
     machine in the report; the output of the interpreter, Valgrind clean.
+
+- **D668 — The window of Windows made with its button that maximizes.**
+  Its style was written as a number, 281999360 (`0x10CEF800`), 2048 below
+  `WS_VISIBLE | WS_OVERLAPPEDWINDOW` (`0x10CF0000`, 282001408): the bit of
+  `WS_MAXIMIZEBOX` was missing (the button greyed, a double click on the
+  title doing nothing) and bits of the styles of controls set, since D636;
+  its size was computed with the right style. Now the right number, its
+  flags named in the test that checks it.
+  - Test (`emit/win32.rs`, `the_window_has_every_button`): the styles of
+    the window made and of its size computed, from the flags of Windows;
+    in the machine of Windows (verify script of isocron-ui), the style
+    read back has `WS_MAXIMIZEBOX`, the window maximized is drawn at its
+    new size.

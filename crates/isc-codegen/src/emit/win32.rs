@@ -656,7 +656,9 @@ entry:
   %wh = load i32, ptr %pwh
   %prd = getelementptr i8, ptr %blk, i64 88
   %ready = load ptr, ptr %prd
-  %hwnd = call ptr @CreateWindowExW(i32 0, ptr @isc.win.class, ptr %title, i32 281999360, i32 -2147483648, i32 -2147483648, i32 %ww, i32 %wh, ptr null, ptr null, ptr %hinst, ptr null)
+  ; (WS_VISIBLE | WS_OVERLAPPEDWINDOW: a title, a menu of the system, edges
+  ; that resize it, the buttons that minimize and maximize it, D668)
+  %hwnd = call ptr @CreateWindowExW(i32 0, ptr @isc.win.class, ptr %title, i32 282001408, i32 -2147483648, i32 -2147483648, i32 %ww, i32 %wh, ptr null, ptr null, ptr %hinst, ptr null)
   %failed = icmp eq ptr %hwnd, null
   br i1 %failed, label %fail, label %made
 fail:
@@ -1364,5 +1366,22 @@ impl Gen<'_> {
             }
             _ => unreachable!("not a primitive of the module win32: {:?}", o),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The style of a window made, and the one its size is computed with:
+    /// `WS_OVERLAPPEDWINDOW` (caption, system menu, thick frame, minimize
+    /// and maximize boxes), visible (D668: a style 2048 below it lacked
+    /// the maximize box, the button greyed).
+    #[test]
+    fn the_window_has_every_button() {
+        const WS_OVERLAPPEDWINDOW: u32 = 0x00C0_0000 | 0x0008_0000 | 0x0004_0000 | 0x0002_0000 | 0x0001_0000;
+        const WS_VISIBLE: u32 = 0x1000_0000;
+        assert!(THREAD.contains(&format!("ptr %title, i32 {},", WS_VISIBLE | WS_OVERLAPPEDWINDOW)));
+        assert!(OPEN.contains(&format!("ptr %rect, i32 {},", WS_OVERLAPPEDWINDOW)));
     }
 }
