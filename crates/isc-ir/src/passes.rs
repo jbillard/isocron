@@ -701,12 +701,43 @@ fn chain_rest_mut(e: &mut Expr, r: VarId) -> Option<&mut Expr> {
 /// (`{ ...r, f: v }`: the state of a program made anew; not the payloads
 /// of a value of a sum type read by a `match`, taken out in its arms, D367)
 fn rebuilds(e: &Expr, r: VarId, rty: &Type) -> bool {
+    // (a component may be a variable bound to a part of `r`: `{ ...prev, w:
+    // width, ... }` whose kept part was read before, D666)
+    let mut parts = HashSet::new();
+    parts_bound(e, r, &mut parts);
+    rebuilds_with(e, r, rty, &parts)
+}
+
+fn rebuilds_with(e: &Expr, r: VarId, rty: &Type, parts: &HashSet<VarId>) -> bool {
     if let ExprKind::Tuple(cs) = &e.kind {
-        if &e.ty == rty && cs.iter().any(|c| matches!(&c.kind, ExprKind::Proj(x, _) if matches!(x.kind, ExprKind::Var(w, _) if w == r))) {
+        let part = |c: &Expr| match &c.kind {
+            ExprKind::Proj(x, _) => matches!(x.kind, ExprKind::Var(w, _) if w == r),
+            ExprKind::Var(w, _) => parts.contains(w),
+            _ => false,
+        };
+        if &e.ty == rty && cs.iter().any(part) {
             return true;
         }
     }
-    e.children().into_iter().any(|c| rebuilds(c, r, rty))
+    e.children().into_iter().any(|c| rebuilds_with(c, r, rty, parts))
+}
+
+/// The variables of `e` bound to a part of `r` (`let x = proj k r`), or to
+/// such a variable.
+fn parts_bound(e: &Expr, r: VarId, out: &mut HashSet<VarId>) {
+    if let ExprKind::Let { var, init, .. } = &e.kind {
+        let part = match &init.kind {
+            ExprKind::Proj(x, _) => matches!(x.kind, ExprKind::Var(w, _) if w == r),
+            ExprKind::Var(w, _) => out.contains(w),
+            _ => false,
+        };
+        if part {
+            out.insert(*var);
+        }
+    }
+    for c in e.children() {
+        parts_bound(c, r, out);
+    }
 }
 
 /// A read of a scalar of variables (a part of a tuple, an element): its
@@ -1072,14 +1103,16 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
     match &mut e.kind {
         ExprKind::Let { init, body, .. } => {
             let after = later || reads_any(body, al);
-            let t2 = tainted || reads_heap(init, v);
+            // (a value without memory read from it, a number, holds none of
+            // it: `const t = f(v.vm)` before `{ ...v, vm: g(v.vm) }`, D666)
+            let t2 = tainted || (reads_heap(init, v) && init.ty.has_heap());
             let a = rebuild_at(init, v, al, comps, vty, after, vars, sure, tainted);
             let b = rebuild_at(body, v, al, comps, vty, later, vars, sure, t2);
             a || b
         }
         ExprKind::If(c, t, f) => {
             let after = later || reads_any(t, al) || reads_any(f, al);
-            let t2 = tainted || reads_heap(c, v);
+            let t2 = tainted || (reads_heap(c, v) && c.ty.has_heap());
             let a = rebuild_at(c, v, al, comps, vty, after, vars, sure, tainted);
             let b = rebuild_at(t, v, al, comps, vty, later, vars, sure, t2);
             let d = rebuild_at(f, v, al, comps, vty, later, vars, sure, t2);
@@ -1096,11 +1129,49 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
                 if Some(i) == lam || !reads[i] {
                     continue;
                 }
-                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars, sure, true);
+                // (a sibling that reads `v` may hold it: none when this
+                // child alone reads it, `[{ ...a, vm: f(a.vm) }, []]`, D666)
+                any |= rebuild_at(c, v, al, comps, vty, later || total > 1, vars, sure, tainted || total > 1);
             }
             any
         }
     }
+}
+
+/// The views of a variable of `mine` bound by a `let` and read as an
+/// argument of a call that is given that variable whole (`f(a, a.hs[p])`,
+/// `a.hs[p]` bound before the call): copied where they are bound, so that
+/// the variable is given, not copied whole as the view of it is read after
+/// (a part is never larger than the whole, D666). A view that is the
+/// variable itself is left as it is.
+fn copy_views_given(e: &mut Expr, mine: &HashSet<VarId>, callees: &Callees) {
+    for c in e.children_mut() {
+        copy_views_given(c, mine, callees);
+    }
+    let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
+    if !init.ty.has_heap() || matches!(init.kind, ExprKind::Copy(_) | ExprKind::Var(..)) {
+        return;
+    }
+    let Some(from) = borrowed_from(init, &|w| vec![w]) else { return };
+    let from: Vec<VarId> = from.into_iter().filter(|w| mine.contains(w)).collect();
+    if from.is_empty() || !given_beside(body, *var, &from, callees) {
+        return;
+    }
+    let inner = take(init);
+    let (ty, sp) = (inner.ty.clone(), inner.span);
+    **init = Expr::new(ExprKind::Copy(Box::new(inner)), ty, sp);
+}
+
+/// A call in `e` given one of `from` whole that reads `t` as another of its
+/// arguments.
+fn given_beside(e: &Expr, t: VarId, from: &[VarId], callees: &Callees) -> bool {
+    if let ExprKind::Call(g, args) = &e.kind {
+        let gives = args.iter().enumerate().any(|(k, a)| matches!(a.kind, ExprKind::Var(w, _) if from.contains(&w)) && callees.given(*g as usize, k));
+        if gives && args.iter().any(|a| matches!(a.kind, ExprKind::Var(w, _) if w == t)) {
+            return true;
+        }
+    }
+    e.children().into_iter().any(|c| given_beside(c, t, from, callees))
 }
 
 /// `e` reads `v` otherwise than by its parts of scalars: whole, or a part
@@ -3895,6 +3966,11 @@ fn ownership_body_with(
     for &v in params {
         info.owned[v as usize] = true;
     }
+    // (a view of a parameter owned given whole to a call that reads it too,
+    // `f(a, a.hs[p])`: the view copied, the parameter given, D666)
+    let mut mine: HashSet<VarId> = params.iter().copied().collect();
+    mine.extend(owned);
+    copy_views_given(body, &mine, callees);
     let mut split = Vec::new();
     split_tuples(body, &mut split);
     {

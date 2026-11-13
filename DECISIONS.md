@@ -16305,3 +16305,45 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     while another part is read after (`call(acc.s, k)`, then `acc.total`),
     and `concat(xs, ys)` taking the elements of `xs` when the length of
     `xs` is read in the same expression.
+
+- **D666 — A state given rather than copied beside its views and its
+  numbers; a window of Windows resized with the image of its new size.**
+  The editor of the generic application of isocron-ui was not fluid: each
+  input copied the whole application, its machine of Lua with it (5.7 ms
+  for an offset told, 0.67 ms now; 31 ms for a resized window, 9 ms now).
+  Four forms copied a state whole at each call:
+  - a value without memory read from it (`const host = lua.global(a.vm,
+    ...)`, three numbers) marked it as held by a value read before (the
+    rule of D662): its parts were no longer taken where it is made anew
+    (`{ ...a, vm: rawSet(a.vm, ...) }`), its machine copied. Now only a
+    value that owns memory, which may hold a part of it, marks it; the
+    condition of an `if` never does;
+  - a child of a node other than a block or an `if` (a component of a
+    tuple, an argument) was marked so whatever its siblings read: `[{
+    ...a, vm: f(a.vm) }, []]`, the result of an `update`, copied its
+    machine. Now only when a sibling reads the state too;
+  - a view of a parameter given whole to a call beside it (`fieldEdited(a,
+    a.hs[p], ...)`, the row bound before the call): the parameter was
+    copied, the function freeing it on that path, so lending it at every
+    call (D654): every input of the application copied it whole. Now the
+    view is copied where it is bound (a part is never larger than its
+    whole) and the parameter given (`copy_views_given`, at the start of the
+    ownership pass, the parameters given of the callees known);
+  - a function that makes a tuple anew from its parts, the part it keeps
+    read before into a variable (`{ tile: prev.tile, ... }` after the read
+    of `prev.tile` moved up): not seen as made anew (`rebuilds` saw only a
+    projection), so lent, the canvas of the library copied at each frame.
+    Now a variable bound to a part of it counts.
+  - Windows: resized by the hand, the procedure painted the last image,
+    of the old size, and the rest in the colour of its last pixel (the
+    blue of the bar of the state of the editor) until the program drew
+    again: the window showed its ground at each step. Now the procedure
+    waits for the program's image of the new size (`WM_SIZE`, 100 ms at
+    most, the signal of `sysWinShow`), as Chromium does; `sysWinEvents`
+    does not ask for a flush while it waits (each would have waited for
+    the other).
+  - Test (`memory.rs`, `a_state_given_beside_its_views`,
+    data/given_views.isc): a state of a million numbers through 2 000
+    rounds of the four forms, 6 ms (1.6 s before); no copy of the states
+    in the report; the output of the interpreter, Valgrind clean. The
+    resizing in the machine of Windows (verify script of the library).

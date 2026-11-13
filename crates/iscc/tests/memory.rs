@@ -1759,6 +1759,34 @@ fn the_payload_of_a_node_made_anew() {
     clean(src, "node_payload_vg", &["5"]);
 }
 
+/// D666: a state of a million numbers kept through 2 000 rounds by four
+/// forms, each a copy of the whole state at each call before: a number read
+/// from it before it is made anew, with a path that gives it back whole; a
+/// view of it (a row) given beside it to a function that takes it; a
+/// function that makes a frame anew from its parts, the part it keeps read
+/// before; the state made anew as the component of a tuple
+#[test]
+fn a_state_given_beside_its_views() {
+    let src = include_str!("data/given_views.isc");
+    let bin = compile(src, "given_views");
+    let start = std::time::Instant::now();
+    let r = run_bin(&bin, &["1000000", "2000"]);
+    let took = start.elapsed();
+    assert_eq!((r.code, r.stdout.as_str()), (0, "(4003, y, 2000, 2000)\n"), "{}", r.stderr);
+    assert!(took.as_millis() < 500, "2 000 rounds in {:?}", took);
+    for a in [["3", "1"], ["10", "4"]] {
+        let want = interp_ok(src, &a);
+        let r = run_bin(&bin, &a);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{:?}: {}", a, r.stderr);
+    }
+    // (the rows and the strings copied, small; never the machine, the
+    // application or the frame, whose types hold `[f64[], i64`)
+    let p = iscc::frontend("given_views.isc", src).unwrap();
+    let copies: Vec<(u32, String)> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy" && e.what.contains("[f64[], i64")).map(|e| (e.line, e.what.clone())).collect();
+    assert!(copies.is_empty(), "the copies: {:?}", copies);
+    clean(src, "given_views_vg", &["20", "3"]);
+}
+
 /// D665: a value read before a state is given, a parameter held whole by a
 /// new tuple given: the results of a call read out of a state given back
 /// with them, a length read after the state is made anew, the state given
@@ -1766,6 +1794,7 @@ fn the_payload_of_a_node_made_anew() {
 /// (2 000 rounds of 50 calls in milliseconds, more than two minutes
 /// before); no copy in the report; the output of the interpreter, Valgrind
 /// clean.
+
 #[test]
 fn a_state_read_before_it_is_given() {
     let src = include_str!("data/host_state.isc");

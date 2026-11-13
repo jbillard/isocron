@@ -15,7 +15,10 @@
 //! the program draws again while the window is resized. The procedure
 //! paints the last image shown again itself (`sysWinShow` keeps a copy),
 //! the part of the window it does not cover in the colour of its last
-//! pixel: no part left black. A window is a block of the runtime's
+//! pixel: no part left black. Resized, the procedure waits for the
+//! program's image of the new size (100 ms at most) before Windows shows
+//! the window at that size: no part shows the image of another size
+//! (D666). A window is a block of the runtime's
 //! allocator, its address the handle: the window (`HWND`), its queue, the
 //! number of events in it, its room, the lock, the signals, the thread,
 //! the last image.
@@ -24,7 +27,8 @@ use super::{v, Gen, V};
 use isc_ir::SysOp;
 
 /// The functions of Windows the module calls.
-const DECLS: [&str; 42] = [
+const DECLS: [&str; 43] = [
+    "declare i64 @GetTickCount64()",
     "declare i32 @PeekMessageW(ptr, ptr, i32, i32, i32)",
     "declare i32 @GetDpiForSystem()",
     "declare i32 @GetDpiForWindow(ptr)",
@@ -89,8 +93,10 @@ const CAPTURE_DECLS: [&str; 6] = [
 // window to make, the code of a failure to make it; the last image shown
 // (its pixels, width, height, the room of its block); the signal of a
 // flush (`WM_APP + 1` seen by the procedure); the shape of the pointer over
-// its inside (the number of a cursor of the system, D646).
-// (176 bytes; `isc_alloc` in `OPEN`)
+// its inside (the number of a cursor of the system, D646); the size of the
+// inside the procedure waits for an image of (0 by 0: none) and the signal
+// of an image shown (D666).
+// (200 bytes; `isc_alloc` in `OPEN`)
 
 /// The name of the class of the windows, in UTF-16.
 const CLASS: &str = r#"@isc.win.class = private unnamed_addr constant [8 x i16] [i16 105, i16 115, i16 111, i16 99, i16 114, i16 111, i16 110, i16 0]"#;
@@ -283,7 +289,70 @@ close:
   call void @isc.win.push(ptr %blk, i64 1, i64 0, i64 0, i64 0)
   ret i64 0
 size:
+  ; (an image shown already, of another size, the window not minimized:
+  ; the program's image of the new size awaited, 100 ms at most, before
+  ; Windows shows the window at that size, D666)
+  %minimized = icmp eq i64 %wp, 1
+  %cs0 = getelementptr i8, ptr %blk, i64 32
+  %pimg0 = getelementptr i8, ptr %blk, i64 120
+  %piw0 = getelementptr i8, ptr %blk, i64 128
+  %pih0 = getelementptr i8, ptr %blk, i64 136
+  %pwantw = getelementptr i8, ptr %blk, i64 168
+  %pwanth = getelementptr i8, ptr %blk, i64 176
+  call void @EnterCriticalSection(ptr %cs0)
+  %img0 = load ptr, ptr %pimg0
+  %iw0 = load i64, ptr %piw0
+  %ih0 = load i64, ptr %pih0
+  %hasimg0 = icmp ne ptr %img0, null
+  %samew = icmp eq i64 %iw0, %lo
+  %sameh = icmp eq i64 %ih0, %hi
+  %same = and i1 %samew, %sameh
+  %nz1 = icmp sgt i64 %lo, 0
+  %nz2 = icmp sgt i64 %hi, 0
+  %nz = and i1 %nz1, %nz2
+  %notsame = xor i1 %same, true
+  %notmin = xor i1 %minimized, true
+  %w1 = and i1 %hasimg0, %notsame
+  %w2 = and i1 %w1, %nz
+  %wait = and i1 %w2, %notmin
+  %ww0 = select i1 %wait, i64 %lo, i64 0
+  %wh0 = select i1 %wait, i64 %hi, i64 0
+  store i64 %ww0, ptr %pwantw
+  store i64 %wh0, ptr %pwanth
+  call void @LeaveCriticalSection(ptr %cs0)
   call void @isc.win.push(ptr %blk, i64 2, i64 %lo, i64 %hi, i64 0)
+  br i1 %wait, label %await0, label %sized
+await0:
+  %t0 = call i64 @GetTickCount64()
+  %deadline = add i64 %t0, 100
+  %pshown = getelementptr i8, ptr %blk, i64 184
+  %shown = load ptr, ptr %pshown
+  br label %awaitloop
+awaitloop:
+  call void @EnterCriticalSection(ptr %cs0)
+  %iw1 = load i64, ptr %piw0
+  %ih1 = load i64, ptr %pih0
+  call void @LeaveCriticalSection(ptr %cs0)
+  %okw = icmp eq i64 %iw1, %lo
+  %okh = icmp eq i64 %ih1, %hi
+  %okwh = and i1 %okw, %okh
+  br i1 %okwh, label %awaited, label %awaitmore
+awaitmore:
+  %tn = call i64 @GetTickCount64()
+  %left = sub i64 %deadline, %tn
+  %late = icmp sle i64 %left, 0
+  br i1 %late, label %awaited, label %awaitsleep
+awaitsleep:
+  %left32 = trunc i64 %left to i32
+  %wr0 = call i32 @WaitForSingleObject(ptr %shown, i32 %left32)
+  br label %awaitloop
+awaited:
+  call void @EnterCriticalSection(ptr %cs0)
+  store i64 0, ptr %pwantw
+  store i64 0, ptr %pwanth
+  call void @LeaveCriticalSection(ptr %cs0)
+  br label %sized
+sized:
   ret i64 0
 move:
   call void @isc.win.push(ptr %blk, i64 3, i64 %x, i64 %y, i64 0)
@@ -484,7 +553,7 @@ entry:
   %wh = sub i32 %b, %t
   ; the block: the window (made by the thread), the queue, the lock, the
   ; signals, what the thread needs, no image yet
-  %blk = call ptr @isc_alloc(i64 176)
+  %blk = call ptr @isc_alloc(i64 200)
   %queue = call ptr @isc_alloc(i64 131072)
   store ptr null, ptr %blk
   %pq = getelementptr i8, ptr %blk, i64 8
@@ -522,6 +591,13 @@ entry:
   store ptr %flushed, ptr %pfl
   %pshape = getelementptr i8, ptr %blk, i64 160
   store i64 32512, ptr %pshape
+  %pwantw = getelementptr i8, ptr %blk, i64 168
+  store i64 0, ptr %pwantw
+  %pwanth = getelementptr i8, ptr %blk, i64 176
+  store i64 0, ptr %pwanth
+  %shown = call ptr @CreateEventW(ptr null, i32 0, i32 0, ptr null)
+  %pshown = getelementptr i8, ptr %blk, i64 184
+  store ptr %shown, ptr %pshown
   %th = call ptr @CreateThread(ptr null, i64 0, ptr @isc.win.thread, ptr %blk, i32 0, ptr null)
   %pth = getelementptr i8, ptr %blk, i64 80
   store ptr %th, ptr %pth
@@ -552,6 +628,7 @@ join:
 clean:
   %ca = call i32 @CloseHandle(ptr %avail)
   %cf = call i32 @CloseHandle(ptr %flushed)
+  %csh = call i32 @CloseHandle(ptr %shown)
   call void @DeleteCriticalSection(ptr %cs)
   call void @isc_free(ptr %queue)
   call void @isc_free(ptr %blk)
@@ -637,6 +714,15 @@ wait:
   %wr = call i32 @WaitForSingleObject(ptr %avail, i32 %t)
   br label %flush
 flush:
+  ; (none while the procedure waits for an image of a new size: it would
+  ; see the flush after it, D666)
+  call void @EnterCriticalSection(ptr %cs)
+  %pwant = getelementptr i8, ptr %blk, i64 168
+  %want = load i64, ptr %pwant
+  call void @LeaveCriticalSection(ptr %cs)
+  %waits = icmp ne i64 %want, 0
+  br i1 %waits, label %take, label %post
+post:
   %hwnd = load ptr, ptr %blk
   %pfl = getelementptr i8, ptr %blk, i64 152
   %flushed = load ptr, ptr %pfl
@@ -740,6 +826,10 @@ copy:
   %dc = call ptr @GetDC(ptr %hwnd)
   %lines = call i32 @SetDIBitsToDevice(ptr %dc, i32 0, i32 0, i32 %w32, i32 %h32, i32 0, i32 0, i32 0, i32 %h32, ptr %px, ptr %bmi, i32 0)
   %rel = call i32 @ReleaseDC(ptr %hwnd, ptr %dc)
+  ; (the procedure waiting for an image of this size told, D666)
+  %pshown = getelementptr i8, ptr %blk, i64 184
+  %shownev = load ptr, ptr %pshown
+  %sig = call i32 @SetEvent(ptr %shownev)
   %ok = icmp ne i32 %lines, 0
   br i1 %ok, label %fine, label %fail
 fine:
@@ -884,6 +974,9 @@ join:
   %pfl = getelementptr i8, ptr %blk, i64 152
   %flushed = load ptr, ptr %pfl
   %cf = call i32 @CloseHandle(ptr %flushed)
+  %pshown = getelementptr i8, ptr %blk, i64 184
+  %shown = load ptr, ptr %pshown
+  %csh = call i32 @CloseHandle(ptr %shown)
   %cs = getelementptr i8, ptr %blk, i64 32
   call void @DeleteCriticalSection(ptr %cs)
   %pq = getelementptr i8, ptr %blk, i64 8
