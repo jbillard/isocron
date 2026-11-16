@@ -243,6 +243,15 @@ const STREAM_UNROLL: i64 = 4;
 const UNROLL_FULL: i64 = 16;
 /// The first identifier of their metadata, after those of the scalar loops.
 const UNROLL_IDS: u64 = 1 << 20;
+/// The numbers of the metadata of the loops of tail calls (D681): each
+/// marked `llvm.licm.disable`. The body of such a loop is the body of a
+/// function, most often a `match` whose few arms loop (a node wrapping
+/// another) while the others return; LLVM would move before the loop what
+/// an arm computes from the parameters the loop passes on as they are (the
+/// sine of a checker texture computed at each call of `textureValue`,
+/// whatever its texture: rtiow), and the loops that walk lists and texts
+/// lose nothing measurable without it.
+const TAIL_LOOP_IDS: u64 = 1 << 22;
 /// The numbers of the metadata of the kernel's memory (D605): the base of
 /// the arena, the words of the arena and those of the zone of the thread
 /// are three kinds of memory that are never one another (the arena is not
@@ -773,6 +782,10 @@ pub struct Gen<'p> {
     join_fns: bool,
     /// Loops of a constant count of at most UNROLL_FULL, unrolled (D205).
     unrolled_loops: u32,
+    /// The loops of tail calls (D681), each with its metadata.
+    tail_loops: u32,
+    /// The metadata of the loop of the tail calls of this function.
+    tail_loop_id: u64,
     ntask: u32,
     /// The function whose tasks are being outlined (its name after
     /// `isc_fn_`, and the tasks it has so far): a task of a function is
@@ -1128,6 +1141,20 @@ fn window_reduce_of(l: &Lambda) -> Option<&Expr> {
     find(&l.body, w)
 }
 
+/// Whether each direct tail call of a loop (`calls`) passes its parameter
+/// `k` (the variable `var`) on as it is (D681).
+fn same_in_tail_calls(body: &Expr, calls: &HashMap<*const Expr, isc_ir::passes::TailCall>, k: usize, var: VarId) -> bool {
+    fn walk(e: &Expr, calls: &HashMap<*const Expr, isc_ir::passes::TailCall>, k: usize, var: VarId) -> bool {
+        if let ExprKind::Call(_, args) = &e.kind {
+            if calls.contains_key(&(e as *const Expr)) && !matches!(args.get(k).map(|a| &a.kind), Some(ExprKind::Var(x, _)) if *x == var) {
+                return false;
+            }
+        }
+        e.children().into_iter().all(|c| walk(c, calls, k, var))
+    }
+    walk(body, calls, k, var)
+}
+
 fn rec_drop_name(i: u32, atomic: bool) -> String {
     if atomic {
         format!("isc_rec_drop_{}_atomic", i)
@@ -1335,7 +1362,7 @@ fn loop_kinds(text: String) -> String {
         rest = &rest[at + TAG.len()..];
         let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
         let n: u64 = rest[..digits].parse().unwrap_or(0);
-        out.push_str(if n >= UNROLL_IDS { "unrolled" } else { "scalar" });
+        out.push_str(if n >= TAIL_LOOP_IDS { "tail" } else if n >= UNROLL_IDS { "unrolled" } else { "scalar" });
         rest = &rest[digits..];
     }
     out.push_str(rest);
@@ -1616,6 +1643,8 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         digits2: false,
         join_fns: false,
         unrolled_loops: 0,
+        tail_loops: 0,
+        tail_loop_id: 0,
         ntask: 0,
         task_owner: None,
         decls: BTreeSet::new(),
@@ -2143,6 +2172,12 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         out.push_str(&format!("\n!{} = !{{!\"llvm.loop.unroll.full\"}}\n", UNROLL_IDS));
         for k in 1..=g.unrolled_loops as u64 {
             out.push_str(&format!("!{0} = distinct !{{!{0}, !{1}}}\n", UNROLL_IDS + k, UNROLL_IDS));
+        }
+    }
+    if g.tail_loops > 0 {
+        out.push_str(&format!("\n!{} = !{{!\"llvm.licm.disable\"}}\n", TAIL_LOOP_IDS));
+        for k in 1..=g.tail_loops as u64 {
+            out.push_str(&format!("!{0} = distinct !{{!{0}, !{1}}}\n", TAIL_LOOP_IDS + k, TAIL_LOOP_IDS));
         }
     }
     if g.scalar_loops > 0 {
@@ -4031,15 +4066,23 @@ impl<'p> Gen<'p> {
             if moves || buffered || self.opts.isa.is_wasm() { HashMap::new() } else { isc_ir::passes::other_tail_calls(i as u32, f) };
         let saved_others = std::mem::replace(&mut self.other_tails, others);
         let saved_tail = self.tail.take();
+        let saved_tail_id = std::mem::replace(&mut self.tail_loop_id, 0);
         if !calls.is_empty() {
             let mut slots = Vec::new();
             for (k, var) in f.params.iter().enumerate() {
                 let ty = self.p.vars[*var as usize].ty.clone();
                 let t = lt(&ty);
+                // (a parameter given by its address: its slot that address
+                // when each iteration passes it on as it is, or writes its
+                // new state over it (D681): the caller gave that memory for
+                // it; else a copy, which each iteration writes, D679)
+                let by_address = abi.ptr.get(k).copied().unwrap_or(false);
+                if by_address && (same_in_tail_calls(&f.body, &calls, k, *var) || (abi.inout.is_some_and(|(j, _)| j == k) && !ty.has_heap())) {
+                    slots.push((entry[k].clone(), None, ty));
+                    continue;
+                }
                 let s = self.alloca(&t);
-                // (a parameter given by its address: copied into the slot of
-                // the loop, which each iteration writes, D679)
-                let first = if abi.ptr.get(k).copied().unwrap_or(false) { self.ins(format!("load {}, ptr {}", t, entry[k])) } else { entry[k].clone() };
+                let first = if by_address { self.ins(format!("load {}, ptr {}", t, entry[k])) } else { entry[k].clone() };
                 self.emit(format!("store {} {}, ptr {}", t, first, s));
                 // a state is consumed by each iteration: never freed by the
                 // loop (no flag)
@@ -4060,7 +4103,9 @@ impl<'p> Gen<'p> {
                 // (a large one read in its slot, D679)
                 if abi.ptr.get(k).copied().unwrap_or(false) {
                     let last = abi.inout.is_some_and(|(j, _)| j == k).then(|| last_uses(&f.body, *var));
-                    self.mem_vars.insert(*var, MemVar { p: s.clone(), ty: ty.clone(), kept: false, over: None, last });
+                    // (at the address the caller gave: kept by it, D681)
+                    let kept = *s == entry[k];
+                    self.mem_vars.insert(*var, MemVar { p: s.clone(), ty: ty.clone(), kept, over: None, last });
                     continue;
                 }
                 let t = lt(ty);
@@ -4107,6 +4152,7 @@ impl<'p> Gen<'p> {
             }
         }
         self.tail = saved_tail;
+        self.tail_loop_id = saved_tail_id;
         let attrs = self.attrs();
         // `tailcc`: a call marked `tail` and followed by `ret` reuses the frame
         // (mutual tail recursion, D113)
@@ -4234,9 +4280,15 @@ impl<'p> Gen<'p> {
     /// the start of the body. A temporary passed as an array parameter is
     /// moved into the loop (the old value freed if the loop owned it).
     fn tail_jump(&mut self, e: &Expr, args: &[Expr]) -> R<V> {
+        // (a parameter in memory passed on as it is, at the address its
+        // caller gave: nothing to read nor to write, D681)
         let mut vals = Vec::new();
-        for a in args {
-            vals.push(self.ex(a, 1)?);
+        for (k, a) in args.iter().enumerate() {
+            let stays = self.tail.as_ref().is_some_and(|tl| {
+                let s = &tl.slots[k].0;
+                s.starts_with("%a") && matches!(&a.kind, ExprKind::Var(x, _) if self.mem_vars.get(x).is_some_and(|m| m.p == *s && m.over.is_none()))
+            });
+            vals.push(if stays { None } else { Some(self.ex(a, 1)?) });
         }
         let tl = self.tail.take().unwrap();
         let tc = &tl.calls[&(e as *const Expr)];
@@ -4253,6 +4305,7 @@ impl<'p> Gen<'p> {
             self.drop_var(*var, &x);
         }
         for (k, x) in vals.iter().enumerate() {
+            let Some(x) = x else { continue };
             let (s, owned, ty) = &tl.slots[k];
             let t = lt(ty);
             // a string literal for an owned parameter (a slot without a
@@ -4292,7 +4345,12 @@ impl<'p> Gen<'p> {
         }
         let head = tl.head.clone();
         self.tail = Some(tl);
-        self.br(&head);
+        // (nothing of the body moved before the loop by LLVM, D681)
+        if self.tail_loop_id == 0 {
+            self.tail_loops += 1;
+            self.tail_loop_id = TAIL_LOOP_IDS + self.tail_loops as u64;
+        }
+        self.emit(format!("br label %{}, !llvm.loop !{}", head, self.tail_loop_id));
         // the rest of the expression is never reached
         let dead = self.label();
         self.block(&dead);

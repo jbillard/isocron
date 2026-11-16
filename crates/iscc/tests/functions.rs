@@ -954,3 +954,73 @@ action main(args: string[k]): i32 {
     }
     checked_clean(src, "over_given", &[]);
 }
+
+#[test]
+fn states_of_loops_stay_where_given() {
+    let src = r#"type State = { a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64, j: u64, k: u64, l: u64, m: u64 };
+
+type Tree = Leaf(i64) | Wrap(Tree) | Pair(Tree, Tree) | Scaled(Tree, f64);
+
+function seeded(q: u64): State {
+    return { a: q, b: q + 1u64, c: q + 2u64, d: q, e: q, f: q, g: q, h: q, i: q, j: q, k: q, l: q, m: 0u64 };
+}
+
+// a tree walked with a state: a node wrapping another passes the state on
+// in a tail call (a loop), its other kinds return or recurse
+function walk(t: Tree, x: f64, s: State): [i64, State] {
+    return match (t) {
+        Leaf(v) => [v + i64(s.a % 5u64), { ...s, a: s.a * 3u64 + 1u64, m: s.m + 1u64 }] as const,
+        Wrap(inner) => walk(inner, x, s),
+        Scaled(inner, k) => {
+            // (computed from the parameters only: never before the match)
+            const w = Math.sin(x * k) * Math.cos(x + k);
+            return w > 0.0 ? walk(inner, x, s) : [i64(w * 1000.0), s] as const;
+        },
+        Pair(l, r) => {
+            const [a, s1] = walk(l, x, s);
+            const [b, s2] = walk(r, x, s1);
+            return [a + b, s2] as const;
+        },
+    };
+}
+
+function built(d: i64): Tree {
+    if (d == 0) {
+        return Leaf(d + 7);
+    }
+    return d % 3 == 0 ? Wrap(built(d - 1)) : (d % 3 == 1 ? Pair(built(d - 1), Scaled(built(d - 1), f64(d) * 0.3)) : Pair(Wrap(built(d - 1)), Leaf(d)));
+}
+
+action main(args: string[k]): i32 {
+    const t = built(10);
+    print(map(iota(6), (q) => {
+        const [v, s] = walk(t, 0.25 + f64(q), seeded(u64(q) * 11u64));
+        return [v, i64(s.m), i64(s.a % 1000u64)] as const;
+    }));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    let ll = tmp("loop_given.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("loop_given_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    // (the state of the loop of `walk` at the address its caller gave, D681:
+    // never read whole into a slot of the loop)
+    let state = "{ i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 }";
+    assert!(!text.lines().any(|l| l.contains(&format!("load {}, ptr %a", state))), "{}", text);
+    // (and nothing of its arms moved before the loop: `llvm.licm.disable` on
+    // its jump back)
+    let marked = text.lines().filter(|l| l.trim_start().starts_with("br label %") && l.contains("!llvm.loop !")).any(|jump| {
+        let id = jump.rsplit('!').next().unwrap().trim();
+        let Some(def) = text.lines().find(|l| l.starts_with(&format!("!{} = distinct", id))) else { return false };
+        let kind = def.rsplit('!').next().unwrap().trim_end_matches('}').trim();
+        text.lines().any(|l| l.starts_with(&format!("!{} = !{{!\"llvm.licm.disable\"}}", kind)))
+    });
+    assert!(marked, "{}", text);
+    for _ in 0..3 {
+        assert_eq!(run_bin_threads(&bin, &[], Some(4)).stdout, want);
+    }
+    checked_clean(src, "loop_given", &[]);
+}

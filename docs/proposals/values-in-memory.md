@@ -44,6 +44,10 @@ Quand l'appelant ne relit plus une valeur après l'avoir donnée (c'est sa derni
 
 But mesuré : `walk` au niveau de Rust avec `&mut` (0,88 s), puis en dessous. **Fait en partie (D680)**, avec l'écriture de chaque résultat à sa place : 1,21 s → 1,02 s (Rust par valeur 1,18 s, avec `&mut` 0,88 s) ; rtiow sur un fil 875 ms → 444 ms (Rust 356 ms).
 
+### Suite : les boucles de rappels en queue (D681)
+
+Une fonction dont les rappels en queue font une boucle (D102) copiait chaque paramètre passé par adresse dans une case de la boucle à son entrée, puis le résultat en retour : `hit` copiait deux fois les 112 octets de son générateur à chaque appel. La boucle garde désormais l'adresse donnée par l'appelant quand chaque rappel passe le paramètre tel quel ou que la fonction écrit son nouvel état par-dessus. Et LLVM ne sort plus de ces boucles ce qu'une branche calcule des paramètres inchangés (`llvm.licm.disable`) : il calculait les trois sinus d'une texture en damier à chaque appel de `textureValue`, quelle que soit la texture. rtiow (192 × 108) devant Rust dans les quatre cas : `sphere` sur un fil 1718 ms (Rust 1752), sur 8 fils 523 ms (689) ; `final` sur un fil 2667 ms (2695), sur 8 fils 646 ms (708). Le reste du corpus à ±0,4 %.
+
 ## 4. Les autres causes connues (chantiers suivants)
 
 - **Les comptes de références des données partagées en lecture** pendant un `map` parallèle : le monde de rtiow vit plus longtemps que le `map` et n'y change pas ; ses nœuds n'ont pas à être comptés dans les tâches (sur 8 fils, Rust perd les deux tiers de son travail sur ses `Arc`, Isocron 20 % sur ses comptes atomiques, D678).

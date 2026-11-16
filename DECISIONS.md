@@ -16648,3 +16648,39 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   results compiled on 4 threads, checked by the allocator and interpreted)
   and `large_values_of_recursive_functions_stay_in_memory` (its states now
   written over).
+- **D681 — The state of a loop of tail calls stays where it was given, and
+  nothing of its arms is computed before it (2026-11-17).** After D680, rtiow
+  on one thread was still 1.25 times slower than Rust on its scene `sphere`
+  (2198 against 1752 ms), at 20.4 against 13.0 billion instructions. Two
+  causes, both general. (1) A recursive function whose direct tail calls are
+  a loop (D102) copied each parameter given by its address into a slot of
+  the loop at its entry and copied the result back at its return: `hit`
+  (a node `Cuboid` passes its sides on in a tail call) copied the 112 bytes
+  of its generator twice at each call. Such a parameter now keeps the
+  address its caller gave as the slot of the loop when each tail call
+  passes it on as it is (nothing written: the address stays read-only) or
+  when the function writes its new state over it (D680, holding no heap
+  memory: the caller gave that memory for it; the values of a jump are all
+  computed before any is written); a parameter passed on as it is costs
+  nothing at the jump. (2) LLVM moved before such a loop what an arm
+  computes from the parameters the loop passes on unchanged: the three
+  sines of a checker texture were computed at every call of
+  `textureValue`, whatever the texture (12.8 % of the instructions of rtiow
+  for solid colors alone). The jump back of every loop of tail calls now
+  carries `llvm.licm.disable` (`TAIL_LOOP_IDS`). The loops of tail calls
+  that walk lists and texts lose nothing measurable: the ten programs of
+  the Benchmarks Game and `bench/records/walk` within ±0.4 % (21 runs
+  each; `revcomp`, apparently +11 % when its output went through a pipe
+  read by the measuring script, is the same to the millisecond written to
+  `/dev/null`: the gap was the pipe). MachineLICM (in the back end) still
+  moves part of such arms; switched off for the whole program it gave
+  another 3 % on rtiow but cost `fannkuchredux` 6 %, and LLVM has no switch
+  for one loop: left. rtiow (192 by 108, the median of 3 renders, against
+  the Rust program): `sphere` on one thread 2198 to 1718 ms (Rust 1752),
+  on 8 threads 621 to 523 ms (689); `final` on one thread 3102 to 2667 ms
+  (2695), on 8 threads 766 to 646 ms (708); the same images. Test
+  `states_of_loops_stay_where_given` (functions.rs: a tree walked with a
+  state, a node wrapping another passing it on in a tail call, an arm
+  computing sines of the parameters; no whole state read from a parameter,
+  the jump back marked; the same results compiled on 4 threads, checked by
+  the allocator and interpreted; both fail without the change).
