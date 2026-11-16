@@ -857,14 +857,100 @@ action main(args: string[k]): i32 {
         // (the function defined with that parameter, by its body's place)
         text.lines().filter(|l| l.starts_with("define ") && l.contains(name)).collect::<Vec<_>>().join("\n")
     };
-    // `walk`, `leafHit` and `steps` write their results at `%out` and read
-    // their states by address; `even` and `odd`, a cycle, keep their values
+    // `walk`, `leafHit` and `steps` write their results at `%out` and their
+    // states over the ones they are given (D680); `even` and `odd`, a cycle,
+    // keep their values
     let outs = header("%out");
     assert!(outs.matches("define ").count() >= 3, "{}", text);
-    assert!(outs.contains("readonly %a"), "{}", outs);
+    assert!(outs.contains("ptr noalias nocapture %a"), "{}", outs);
     assert!(text.contains("tail call tailcc void @isc_fn_"), "the tail call of `walk` handing `%out` on: {}", outs);
     for _ in 0..3 {
         assert_eq!(run_bin_threads(&bin, &[], Some(4)).stdout, want);
     }
     checked_clean(src, "mem_values", &[]);
+}
+
+/// A state written over the one given (D680): a recursive function whose
+/// result holds a value of the type of a parameter given by its address
+/// (holding no counted memory) writes that part over the parameter; its
+/// caller gives the memory of a variable read there for the last time (the
+/// state handed down a recursion, no copy), or a copy. A result is written
+/// at its place (`%out`, the state given): a part already there is left, a
+/// call writes there. Found by rtiow: a call in tail position that borrows a
+/// value freed after it (no tail call: `color` calling `shade` with the hit
+/// it found), its result, its state written over another place, copied part
+/// by part to the place of the caller, the state read from the block of the
+/// result where the callee never wrote it (the images differed). The same
+/// results compiled on 4 threads, checked by the allocator and interpreted;
+/// the state given by its own address.
+#[test]
+fn states_written_over_the_ones_given() {
+    let src = "type State = { a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64, j: u64, k: u64, l: u64, m: u64 };
+
+type Named = { t: f64, u: f64, v: f64, w: f64, x: f64, y: f64, z: f64, name: string };
+
+function seeded(q: u64): State {
+    return { a: q, b: q + 1u64, c: q + 2u64, d: q, e: q, f: q, g: q, h: q, i: q, j: q, k: q, l: q, m: 0u64 };
+}
+
+// a hit holding a text, and the state after it
+function probe(n: i64, x: f64, s: State): [Option<Named>, State] {
+    if (n == 0) {
+        return s.a % 3u64 == 0u64 ? [None, { ...s, c: s.c + 1u64 }] as const : [Some({ t: x, u: 1.0, v: 2.0, w: 3.0, x: 4.0, y: 5.0, z: 6.0, name: `n${s.a % 10u64}` }), { ...s, a: s.a * 5u64 + 3u64 }] as const;
+    }
+    return probe(n - 1, x * 0.5, { ...s, a: s.a + 1u64 });
+}
+
+// the color of a point: the hit found, then a call that borrows it (its
+// text freed after the call: no tail call), in the place of this result
+function color(n: i64, x: f64, s: State): [f64, State] {
+    const [h, s1] = probe(n, x, s);
+    return match (h) {
+        None => [0.0, s1] as const,
+        Some(rec) => shade(n, x, rec, s1),
+    };
+}
+
+function shade(n: i64, x: f64, rec: Named, s: State): [f64, State] {
+    if (n == 0) {
+        return [rec.t + f64(rec.name.length), { ...s, m: s.m + 1u64 }] as const;
+    }
+    const [c, s1] = color(n - 1, x * 0.75 + rec.u, { ...s, b: s.b + 1u64 });
+    return [c * 0.5 + rec.t, { ...s1, l: s1.l ^ s1.a }] as const;
+}
+
+
+// a state handed down a recursion: read for the last time at each call,
+// written over by the callee, no copy
+function count(n: i64, s: State): [i64, State] {
+    if (n == 0) {
+        return [i64(s.a % 7u64), { ...s, a: s.a * 3u64 + 1u64, m: s.m + 1u64 }] as const;
+    }
+    const [a, s1] = count(n - 1, s);
+    const [b, s2] = count(n - 1, s1);
+    return [a + b, s2] as const;
+}
+
+action main(args: string[k]): i32 {
+    print(map(iota(8), (q) => {
+        const [c, s] = color(4, 1.0 + f64(q), seeded(u64(q) * 7u64));
+        return [i64(c * 1000.0), i64(s.m), i64(s.l % 1000u64), i64(s.b % 1000u64)] as const;
+    }));
+    const [total, st] = count(12, seeded(3u64));
+    print([total, i64(st.m), i64(st.a % 100000u64)] as const);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let ll = tmp("over_given.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("over_given_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    // (a call of `count` from itself giving its own parameter, `%a1`)
+    assert!(text.lines().any(|l| l.contains("call tailcc void @isc_fn_") && l.trim_end().ends_with("ptr %a1)")), "{}", text);
+    for _ in 0..3 {
+        assert_eq!(run_bin_threads(&bin, &[], Some(4)).stdout, want);
+    }
+    checked_clean(src, "over_given", &[]);
 }

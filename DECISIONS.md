@@ -16614,3 +16614,37 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   dispatch by tail calls handing `%out` on, a cycle of tail calls over a
   million steps; the same results compiled on 4 threads, checked by the
   allocator and interpreted; no `%out` without the change).
+- **D680 — A state written over the one given, a result written at its
+  place (2026-11-16).** Second phase of `docs/proposals/values-in-memory.md`.
+  After D679 the walk of `bench/records` still copied its state at each
+  call and wrote its whole result back at each return (13 and 20 words),
+  rtiow its generator at each object of a list. Now a recursive function
+  whose result holds a value of the type of a parameter given by its
+  address (holding no counted memory: a state, a generator, a vector) writes
+  that part over the parameter (`FnAbi::inout`; the whole result when it is
+  of that type: no `%out`). Its caller gives the memory of a variable at one
+  of its last reads (`last_uses`: `let` and `if` in their order, never in a
+  lambda, none in a node reading it twice) — a parameter so written, a
+  result, a part taken, or a part of a tuple the rest never reads — and a
+  copy otherwise; the new state is read where the callee wrote it
+  (`MemVar::over`). A tail call stays one when the callee writes its state
+  where this frame writes its own. The body of a function writing its
+  result in memory is emitted with that place (`Dest`, `ex_into`): a tuple
+  part by part, each branch of an `if` and the body of a `let` there, a
+  value in memory copied or left (already there: the state handed down),
+  a call writing its `%out` there; any other value computed, then stored.
+  Found by rtiow on the way: a call in tail position that borrows a value
+  freed after it (not a tail call) gave a result whose state the callee had
+  written over another place; copied part by part to the caller's place, the
+  state was read from the block of the result, where nothing had written
+  it, and the images differed; such a value is now read whole (its part from
+  where it is) before it is written. `bench/records/walk`: 1.21 s (D679) to
+  1.02 s, 10.0 to 7.7 billion instructions, 2.7 to 1.7 billion stores (Rust
+  by value 1.18 s, with `&mut` 0.88 s); rtiow on one thread (20 samples of
+  192 by 108) 875 ms to 444 ms (894 before D679; Rust 356 ms), its images the
+  same on 8 threads; nbody 2407 ms to 2392 ms. Tests
+  `states_written_over_the_ones_given` (functions.rs: the shape found by
+  rtiow, a state handed down a recursion given by its own address, the same
+  results compiled on 4 threads, checked by the allocator and interpreted)
+  and `large_values_of_recursive_functions_stay_in_memory` (its states now
+  written over).

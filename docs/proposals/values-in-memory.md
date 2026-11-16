@@ -36,13 +36,13 @@ Une valeur d'un type agrégé « gros » (plus de 64 octets) passée à une fonc
 
 Exclus de la phase 1 : les paramètres des fonctions qui se rappellent en queue (des boucles : leur état est dans les registres) et des appels en queue vers d'autres fonctions (D113 : l'appelé ne doit pas lire le cadre de l'appelant).
 
-But mesuré : `walk` au niveau de Rust dans le style d'Isocron (1,2 s), sans plus d'instructions ailleurs.
+But mesuré : `walk` au niveau de Rust dans le style d'Isocron (1,2 s), sans plus d'instructions ailleurs. **Fait (D679)** : 2,02 s → 1,21 s.
 
 ### Phase 2 : la mise à jour sur place
 
 Quand l'appelant ne relit plus une valeur après l'avoir donnée (c'est sa dernière lecture) et que l'appelé la rend mise à jour, les deux places peuvent n'en faire qu'une : l'appelé écrit l'état nouveau là où était l'ancien. C'est le `&mut` de Rust, déduit au lieu d'être écrit, et un seul état traverse toute la récursion. L'appelé doit lire tout ce qu'il lit de l'ancien état avant d'écrire le nouveau à la même place ; l'analyse de propriété (D96, D206, D637) dit déjà quelle lecture est la dernière.
 
-But mesuré : `walk` au niveau de Rust avec `&mut` (0,88 s), puis en dessous.
+But mesuré : `walk` au niveau de Rust avec `&mut` (0,88 s), puis en dessous. **Fait en partie (D680)**, avec l'écriture de chaque résultat à sa place : 1,21 s → 1,02 s (Rust par valeur 1,18 s, avec `&mut` 0,88 s) ; rtiow sur un fil 875 ms → 444 ms (Rust 356 ms).
 
 ## 4. Les autres causes connues (chantiers suivants)
 

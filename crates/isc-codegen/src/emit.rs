@@ -677,9 +677,20 @@ pub struct Gen<'p> {
     /// the value, its type, and whether a caller keeps it (a parameter
     /// given by its address, or a part of one: a tail call may pass it on);
     /// each part read where it is read.
-    mem_vars: HashMap<VarId, (String, Type, bool)>,
+    mem_vars: HashMap<VarId, MemVar>,
     /// The function being emitted writes its result at `%out` (D679).
     cur_out: bool,
+    /// The state the function being emitted writes over (D680).
+    cur_inout: Option<(usize, Option<u32>)>,
+    /// The place where the expression emitted next writes its value
+    /// (D680): the result of a function, a part of it.
+    dest: Option<Dest>,
+    /// That place for the body of one `let` (by its expression), taken by
+    /// it.
+    dest_for_let: Option<(*const Expr, Dest)>,
+    /// The last variable made by the code generator for a value in memory
+    /// (from the top of the numbers, D680).
+    tmp_var: VarId,
     /// How each recursive function takes its large values (D679).
     abi: Vec<FnAbi>,
     /// While the first level of a `reduce` is emitted: an `i1`, true when its
@@ -1573,6 +1584,10 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         tk_needed: BTreeSet::new(),
         mem_vars: HashMap::new(),
         cur_out: false,
+        cur_inout: None,
+        dest: None,
+        dest_for_let: None,
+        tmp_var: VarId::MAX,
         abi: fn_abis(p, opts.isa.is_wasm()),
         stream: None,
         scalar_loops: 0,
@@ -2922,6 +2937,58 @@ fn join_map<'a>(s: VarId, init: &'a Expr, body: &'a Expr) -> Option<(Vec<(VarId,
 /// elements alone: the counts of that predicate by blocks may come from the
 /// pass of a caller over the whole array. For each, the index of the
 /// parameter and the lambda (the first such `filter`).
+/// A place where a value is written (D680): an address (a parameter, a
+/// register), the path of a part from it, and one part of the whole
+/// written elsewhere (the state a function writes over).
+#[derive(Clone, Debug)]
+struct Dest {
+    root: String,
+    root_ty: Type,
+    path: Vec<u32>,
+    ty: Type,
+    over: Option<(u32, String)>,
+}
+
+impl Dest {
+    /// The part `i` of the place.
+    fn child(&self, i: u32) -> Dest {
+        let Type::Tuple(ts) = &self.ty else { unreachable!("a part of a place that is no tuple") };
+        let ty = ts[i as usize].clone();
+        match &self.over {
+            Some((j, q)) if *j == i => Dest { root: q.clone(), root_ty: ty.clone(), path: Vec::new(), ty, over: None },
+            _ => {
+                let mut path = self.path.clone();
+                path.push(i);
+                Dest { root: self.root.clone(), root_ty: self.root_ty.clone(), path, ty, over: None }
+            }
+        }
+    }
+}
+
+/// The result of a call of a function taking large values by address
+/// (D679): in memory, or in a register.
+enum CallOut {
+    Mem(MemVar),
+    Reg(V),
+}
+
+/// A variable whose value is in memory (D679).
+#[derive(Clone, Debug)]
+struct MemVar {
+    /// The address of the value.
+    p: String,
+    ty: Type,
+    /// A caller of this frame keeps it (a parameter given by its address, or
+    /// a part of one): a tail call may pass it on.
+    kept: bool,
+    /// One part of it written elsewhere (D680): its place in the tuple and
+    /// its address (the state a callee wrote over the one it was given).
+    over: Option<(u32, String)>,
+    /// Its last reads (D680): there its memory may be given to a callee
+    /// that writes its new state over it; None: never given.
+    last: Option<HashSet<*const Expr>>,
+}
+
 /// A value larger than this (in bytes) given to or by a recursive function
 /// stays in memory (D679).
 const MEM_BYTES: i64 = 64;
@@ -2933,11 +3000,80 @@ const MEM_BYTES: i64 = 64;
 struct FnAbi {
     out: bool,
     ptr: Vec<bool>,
+    /// A parameter given by its address over which the function writes a
+    /// part of its result of the same type (D680): the parameter, and the
+    /// place of that part in the result (None: the whole result).
+    inout: Option<(usize, Option<u32>)>,
 }
 
 impl FnAbi {
     fn any(&self) -> bool {
-        self.out || self.ptr.iter().any(|b| *b)
+        self.out || self.ptr.iter().any(|b| *b) || self.inout.is_some()
+    }
+
+    /// The function writes (a part of) its result in memory, not in a
+    /// register: it returns `void`.
+    fn void(&self) -> bool {
+        self.out || matches!(self.inout, Some((_, None)))
+    }
+}
+
+/// The reads of the variable `v` in `e` after which no path reads it again
+/// (D680): `let` and `if` in their order; a read in a lambda is never one
+/// (its loop may run it again); a node that reads it in more than one of
+/// its parts has none (the order of its parts is not relied upon).
+fn last_uses(e: &Expr, v: VarId) -> HashSet<*const Expr> {
+    fn walk(e: &Expr, v: VarId, after: bool, out: &mut HashSet<*const Expr>) -> bool {
+        match &e.kind {
+            ExprKind::Var(w, _) if *w == v => {
+                if !after {
+                    out.insert(e as *const Expr);
+                }
+                true
+            }
+            ExprKind::Let { init, body, .. } => {
+                let live = walk(body, v, after, out);
+                walk(init, v, live, out)
+            }
+            ExprKind::If(c, a, b) => {
+                let la = walk(a, v, after, out);
+                let lb = walk(b, v, after, out);
+                walk(c, v, la || lb, out)
+            }
+            ExprKind::Map(..) | ExprKind::Filter(..) | ExprKind::Tasks(..) | ExprKind::Reduce(..) | ExprKind::Scan(..) | ExprKind::Fold(..) => {
+                // (a read in the lambda or in the inputs: never the last)
+                path_uses(e, v) > 0 || after
+            }
+            _ => {
+                let parts: Vec<&Expr> = e.children().into_iter().filter(|c| path_uses(c, v) > 0).collect();
+                match parts.len() {
+                    0 => after,
+                    1 => {
+                        walk(parts[0], v, after, out);
+                        true
+                    }
+                    _ => true,
+                }
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(e, v, false, &mut out);
+    out
+}
+
+/// The most reads of the variable `v` on one path of `e` (D680): the two
+/// branches of an `if` are two paths; a read in a lambda counts twice (the
+/// loop that runs it may run it more than once).
+fn path_uses(e: &Expr, v: VarId) -> usize {
+    let lam = |l: &Lambda| if path_uses(&l.body, v) > 0 { 2 } else { 0 };
+    match &e.kind {
+        ExprKind::Var(w, _) => (*w == v) as usize,
+        ExprKind::If(c, a, b) => path_uses(c, v) + path_uses(a, v).max(path_uses(b, v)),
+        ExprKind::Map(ins, l) => ins.iter().map(|x| path_uses(x, v)).sum::<usize>() + lam(l),
+        ExprKind::Filter(x, l) | ExprKind::Tasks(x, l) => path_uses(x, v) + lam(l),
+        ExprKind::Reduce(x, l, i) | ExprKind::Scan(x, l, i) | ExprKind::Fold(x, i, l) => path_uses(x, v) + path_uses(i, v) + lam(l),
+        _ => e.children().into_iter().map(|c| path_uses(c, v)).sum(),
     }
 }
 
@@ -2998,9 +3134,9 @@ fn fn_abis(p: &Program, wasm: bool) -> Vec<FnAbi> {
         .map(|(i, f)| {
             let i = i as u32;
             if wasm || f.name.starts_with('$') || excluded.contains(&i) || builders.contains(&i) || counted.contains_key(&i) {
-                return FnAbi { out: false, ptr: vec![false; f.params.len()] };
+                return FnAbi { out: false, ptr: vec![false; f.params.len()], inout: None };
             }
-            let ptr = f
+            let ptr: Vec<bool> = f
                 .params
                 .iter()
                 .enumerate()
@@ -3009,7 +3145,25 @@ fn fn_abis(p: &Program, wasm: bool) -> Vec<FnAbi> {
                     borrowed && large(&p.vars[*q as usize].ty)
                 })
                 .collect();
-            FnAbi { out: large(&f.body.ty), ptr }
+            // (a parameter holding no counted memory, of the type of the
+            // result or of a part of it: the new state written over the old,
+            // D680)
+            let res = &f.body.ty;
+            let inout = f.params.iter().enumerate().find_map(|(k, q)| {
+                let ty = &p.vars[*q as usize].ty;
+                if !ptr[k] || ty.has_heap() {
+                    return None;
+                }
+                if res == ty {
+                    return Some((k, None));
+                }
+                match res {
+                    Type::Tuple(ts) => ts.iter().position(|c| c == ty).map(|j| (k, Some(j as u32))),
+                    _ => None,
+                }
+            });
+            let whole = matches!(inout, Some((_, None)));
+            FnAbi { out: large(res) && !whole, ptr, inout }
         })
         .collect()
 }
@@ -3783,6 +3937,7 @@ impl<'p> Gen<'p> {
         let saved_mem = std::mem::take(&mut self.mem_vars);
         let abi = self.abi[i].clone();
         let saved_out = std::mem::replace(&mut self.cur_out, abi.out);
+        let saved_inout = std::mem::replace(&mut self.cur_inout, abi.inout);
         let mut ps = Vec::new();
         // its result written where its caller keeps it (D679)
         if abi.out {
@@ -3808,8 +3963,16 @@ impl<'p> Gen<'p> {
             // a large borrowed parameter: its address, its parts read where
             // they are read (D679)
             if abi.ptr.get(k).copied().unwrap_or(false) {
-                ps.push(format!("ptr noalias nocapture readonly %a{}", k));
-                self.mem_vars.insert(*var, (format!("%a{}", k), ty, true));
+                // (the state written over, D680: read until then, and given
+                // on to a callee when it is read once on each path)
+                let inout = abi.inout.is_some_and(|(j, _)| j == k);
+                if inout {
+                    ps.push(format!("ptr noalias nocapture %a{}", k));
+                } else {
+                    ps.push(format!("ptr noalias nocapture readonly %a{}", k));
+                }
+                let last = inout.then(|| last_uses(&f.body, *var));
+                self.mem_vars.insert(*var, MemVar { p: format!("%a{}", k), ty, kept: true, over: None, last });
                 continue;
             }
             ps.push(format!("{} %a{}", t, k));
@@ -3896,7 +4059,8 @@ impl<'p> Gen<'p> {
             for (k, (var, (s, _, ty))) in f.params.iter().zip(&slots).enumerate() {
                 // (a large one read in its slot, D679)
                 if abi.ptr.get(k).copied().unwrap_or(false) {
-                    self.mem_vars.insert(*var, (s.clone(), ty.clone(), false));
+                    let last = abi.inout.is_some_and(|(j, _)| j == k).then(|| last_uses(&f.body, *var));
+                    self.mem_vars.insert(*var, MemVar { p: s.clone(), ty: ty.clone(), kept: false, over: None, last });
                     continue;
                 }
                 let t = lt(ty);
@@ -3906,7 +4070,18 @@ impl<'p> Gen<'p> {
             self.tail = Some(TailLoop { calls, head, slots });
         }
         let ret = lt(&f.body.ty);
+        // (the result written at its place, D680: `%out`, its state over the
+        // one given)
+        if abi.void() {
+            let d = match abi.inout {
+                Some((k, None)) => Dest { root: format!("%a{}", k), root_ty: f.body.ty.clone(), path: Vec::new(), ty: f.body.ty.clone(), over: None },
+                Some((k, Some(j))) => Dest { root: "%out".into(), root_ty: f.body.ty.clone(), path: Vec::new(), ty: f.body.ty.clone(), over: Some((j, format!("%a{}", k))) },
+                None => Dest { root: "%out".into(), root_ty: f.body.ty.clone(), path: Vec::new(), ty: f.body.ty.clone(), over: None },
+            };
+            self.dest = Some(d);
+        }
         let r = self.ex(&f.body, 1);
+        self.dest = None;
         if let Ok(x) = &r {
             // the parameters the loop owns are freed on return
             if let Some(tl) = self.tail.take() {
@@ -3924,9 +4099,8 @@ impl<'p> Gen<'p> {
                     self.block(&ld);
                 }
             }
-            if abi.out {
-                // (written where the caller keeps it, D679)
-                self.emit(format!("store {} {}, ptr %out", ret, x.r));
+            // (written at its place by the body, D679, D680)
+            if abi.void() {
                 self.emit("ret void");
             } else {
                 self.emit(format!("ret {} {}", ret, x.r));
@@ -3949,10 +4123,11 @@ impl<'p> Gen<'p> {
         } else {
             ""
         };
-        let ret_ty = if abi.out { "void".to_string() } else { ret };
+        let ret_ty = if abi.void() { "void".to_string() } else { ret };
         let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}{} align 64", cc, ret_ty, name, ps.join(", "), attrs, cold));
         self.mem_vars = saved_mem;
         self.cur_out = saved_out;
+        self.cur_inout = saved_inout;
         self.region = saved_region;
         self.other_tails = saved_others;
         self.f = saved_f;
@@ -5312,9 +5487,15 @@ impl<'p> Gen<'p> {
         if let Some(v) = self.env.get(&x) {
             return Some(v.clone());
         }
-        let (p, ty, _) = self.mem_vars.get(&x).cloned()?;
-        let t = lt(&ty);
-        let r = self.ins(format!("load {}, ptr {}", t, p));
+        let m = self.mem_vars.get(&x).cloned()?;
+        let t = lt(&m.ty);
+        let mut r = self.ins(format!("load {}, ptr {}", t, m.p));
+        // (its part written elsewhere, D680)
+        if let (Some((j, q)), Type::Tuple(ts)) = (&m.over, &m.ty) {
+            let pt = lt(&ts[*j as usize]);
+            let part = self.ins(format!("load {}, ptr {}", pt, q));
+            r = self.ins(format!("insertvalue {} {}, {} {}, {}", t, r, pt, part, j));
+        }
         Some(v(r, t))
     }
 
@@ -5322,7 +5503,7 @@ impl<'p> Gen<'p> {
     /// (D679), without emitting anything.
     fn mem_type(&self, e: &Expr) -> Option<Type> {
         match &e.kind {
-            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|(_, t, _)| t.clone()),
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|m| m.ty.clone()),
             ExprKind::Proj(x, i) | ExprKind::Take(x, i) => match self.mem_type(x)? {
                 Type::Tuple(ts) => ts.get(*i as usize).cloned(),
                 _ => None,
@@ -5335,9 +5516,17 @@ impl<'p> Gen<'p> {
     /// part of one (D679).
     fn mem_path(&mut self, e: &Expr) -> Option<(String, Type)> {
         match &e.kind {
-            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|(p, t, _)| (p.clone(), t.clone())),
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|m| (m.p.clone(), m.ty.clone())),
             ExprKind::Proj(x, i) | ExprKind::Take(x, i) => {
                 self.mem_type(e)?;
+                // (a part written elsewhere, D680)
+                if let ExprKind::Var(t, _) = &x.kind {
+                    if let Some(MemVar { ty: Type::Tuple(ts), over: Some((j, q)), .. }) = self.mem_vars.get(t) {
+                        if *j == *i {
+                            return Some((q.clone(), ts[*i as usize].clone()));
+                        }
+                    }
+                }
                 let (p, ty) = self.mem_path(x)?;
                 let Type::Tuple(ts) = &ty else { return None };
                 let c = ts[*i as usize].clone();
@@ -5348,11 +5537,199 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// A variable of the code generator for a value in memory (D680).
+    fn next_mem_var(&mut self) -> VarId {
+        self.tmp_var -= 1;
+        self.tmp_var
+    }
+
+    /// The place of the value of the `let` `e`, given to its body (D680).
+    fn take_let_dest(&mut self, e: &Expr) {
+        if let Some((at, d)) = self.dest_for_let.take() {
+            if at == e as *const Expr {
+                self.dest = Some(d);
+            } else {
+                self.dest_for_let = Some((at, d));
+            }
+        }
+    }
+
+    /// The address of the place `d` (D680).
+    fn dest_addr(&mut self, d: &Dest) -> String {
+        if d.path.is_empty() {
+            return d.root.clone();
+        }
+        let idx: Vec<String> = d.path.iter().map(|i| format!("i32 {}", i)).collect();
+        self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, {}", lt(&d.root_ty), d.root, idx.join(", ")))
+    }
+
+    /// The place of `e` when it is a value in memory or a part of one,
+    /// without emitting anything (D680): its root and path.
+    fn mem_sym(&self, e: &Expr) -> Option<(String, Vec<u32>)> {
+        match &e.kind {
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|m| (m.p.clone(), Vec::new())),
+            ExprKind::Proj(x, i) | ExprKind::Take(x, i) => {
+                if let ExprKind::Var(t, _) = &x.kind {
+                    if let Some(MemVar { over: Some((j, q)), .. }) = self.mem_vars.get(t) {
+                        if *j == *i && !self.env.contains_key(t) {
+                            return Some((q.clone(), Vec::new()));
+                        }
+                    }
+                }
+                let (r, mut p) = self.mem_sym(x)?;
+                p.push(*i);
+                Some((r, p))
+            }
+            _ => None,
+        }
+    }
+
+    /// `e` written at the place `d` (D680): a tuple part by part, each branch
+    /// of an `if` there, the body of a `let` there, a value in memory copied
+    /// (or left, already there), a call writing its result there; any other
+    /// value computed, then stored. Its value is in memory: a register of
+    /// no use is given back.
+    fn ex_into(&mut self, e: &Expr, d: Dest) -> R<V> {
+        let t = lt(&e.ty);
+        let done = V { r: "poison".into(), t: t.clone(), uni: true };
+        match &e.kind {
+            ExprKind::Tuple(es) if matches!(d.ty, Type::Tuple(_)) => {
+                for (i, x) in es.iter().enumerate() {
+                    self.dest = Some(d.child(i as u32));
+                    self.ex(x, 1)?;
+                    self.dest = None;
+                }
+                Ok(done)
+            }
+            ExprKind::If(c, a, b) => {
+                let cv = self.ex(c, 1)?;
+                let (la, lb, lj) = (self.label(), self.label(), self.label());
+                self.cbr(&cv.r, &la, &lb);
+                self.block(&la);
+                self.dest = Some(d.clone());
+                self.ex(a, 1)?;
+                self.dest = None;
+                self.br(&lj);
+                self.block(&lb);
+                self.dest = Some(d);
+                self.ex(b, 1)?;
+                self.dest = None;
+                self.br(&lj);
+                self.block(&lj);
+                Ok(done)
+            }
+            ExprKind::Let { .. } => {
+                self.dest_for_let = Some((e as *const Expr, d.clone()));
+                let x = self.ex_any(e, 1)?;
+                match self.dest_for_let.take() {
+                    // (written by its body)
+                    None => Ok(done),
+                    // (a `let` of another kind: its value stored)
+                    Some(_) => {
+                        let x = if has_fixed(&e.ty) && !self.no_fix { self.fix_len(x, &e.ty) } else { x };
+                        let at = self.dest_addr(&d);
+                        self.emit(format!("store {} {}, ptr {}", x.t, x.r, at));
+                        Ok(done)
+                    }
+                }
+            }
+            // (a source with a part written elsewhere is read whole, below)
+            ExprKind::Var(..) | ExprKind::Proj(..) | ExprKind::Take(..)
+                if self.mem_type(e).is_some() && !matches!(&e.kind, ExprKind::Var(x, _) if self.mem_vars.get(x).is_some_and(|m| m.over.is_some())) =>
+            {
+                let here = self.mem_sym(e);
+                if d.over.is_none() && here.as_ref().is_some_and(|(r, p)| *r == d.root && *p == d.path) {
+                    // (already there: a state written over itself)
+                    return Ok(done);
+                }
+                let (src, _) = self.mem_path(e).ok_or("codegen: a value in memory without its address")?;
+                match &d.over {
+                    None => {
+                        let x = self.ins(format!("load {}, ptr {}", t, src));
+                        let at = self.dest_addr(&d);
+                        self.emit(format!("store {} {}, ptr {}", t, x, at));
+                    }
+                    Some((j, q)) => {
+                        // (each part at its place)
+                        let Type::Tuple(ts) = &d.ty else { return Err("codegen: a part of a place that is no tuple".into()) };
+                        for (i, ct) in ts.iter().enumerate() {
+                            let c = d.child(i as u32);
+                            let from = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 {}", t, src, i));
+                            if i as u32 == *j && from == *q {
+                                continue;
+                            }
+                            let x = self.ins(format!("load {}, ptr {}", lt(ct), from));
+                            let at = self.dest_addr(&c);
+                            self.emit(format!("store {} {}, ptr {}", lt(ct), x, at));
+                        }
+                    }
+                }
+                Ok(done)
+            }
+            ExprKind::Call(f, args)
+                if self.abi[*f as usize].void()
+                    && !self.other_tails.contains_key(&(e as *const Expr))
+                    && !self.tail.as_ref().is_some_and(|tl| tl.calls.contains_key(&(e as *const Expr)))
+                    && self.text_buffer(e).is_none() =>
+            {
+                let at = if self.abi[*f as usize].out && d.over.is_none() { Some(self.dest_addr(&d)) } else { None };
+                let into = at.is_some();
+                let m = match self.call_abi_at(e, *f, args, at)? {
+                    CallOut::Mem(m) => m,
+                    CallOut::Reg(_) => return Err("codegen: a call without its result in memory".into()),
+                };
+                // (its state, written over another place: copied to this one)
+                if into {
+                    if let Some((j, q)) = &m.over {
+                        let c = d.child(*j);
+                        let Type::Tuple(ts) = &d.ty else { return Err("codegen: a part of a place that is no tuple".into()) };
+                        let ct = lt(&ts[*j as usize]);
+                        let x = self.ins(format!("load {}, ptr {}", ct, q));
+                        let to = self.dest_addr(&c);
+                        self.emit(format!("store {} {}, ptr {}", ct, x, to));
+                    }
+                    return Ok(done);
+                }
+                let mv = m.clone();
+                let tmp = self.next_mem_var();
+                self.mem_vars.insert(tmp, mv);
+                let ve = Expr::new(ExprKind::Var(tmp, Use::Borrow), e.ty.clone(), e.span);
+                self.dest = Some(d);
+                let r = self.ex(&ve, 1);
+                self.mem_vars.remove(&tmp);
+                r?;
+                Ok(done)
+            }
+            _ => {
+                let x = self.ex(e, 1)?;
+                if x.r == "poison" {
+                    // (a jump: nothing after it)
+                    return Ok(done);
+                }
+                match &d.over {
+                    None => {
+                        let at = self.dest_addr(&d);
+                        self.emit(format!("store {} {}, ptr {}", x.t, x.r, at));
+                    }
+                    Some(_) => {
+                        let Type::Tuple(ts) = &d.ty else { return Err("codegen: a part of a place that is no tuple".into()) };
+                        for (i, ct) in ts.iter().enumerate() {
+                            let part = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+                            let at = self.dest_addr(&d.child(i as u32));
+                            self.emit(format!("store {} {}, ptr {}", lt(ct), part, at));
+                        }
+                    }
+                }
+                Ok(done)
+            }
+        }
+    }
+
     /// `e` is a value in memory that a caller of this frame keeps (a
     /// parameter given by its address, or a part of one), D679.
     fn incoming(&self, e: &Expr) -> bool {
         match &e.kind {
-            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).is_some_and(|(_, _, k)| *k),
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).is_some_and(|m| m.kept),
             ExprKind::Proj(x, _) | ExprKind::Take(x, _) => self.incoming(x),
             _ => false,
         }
@@ -5361,9 +5738,21 @@ impl<'p> Gen<'p> {
     /// A tail call of `f` that can replace this frame (D113 with D679): its
     /// result at the same place as this one's, each value it takes by
     /// address kept by a caller of this frame.
+    /// The state written over (D680): the callee's at the place of this
+    /// frame's, this frame's own given on.
     fn tail_ok(&self, f: u32, args: &[Expr]) -> bool {
         let abi = &self.abi[f as usize];
-        abi.out == self.cur_out && args.iter().enumerate().all(|(k, a)| !abi.ptr.get(k).copied().unwrap_or(false) || self.incoming(a))
+        let inout_ok = match (abi.inout, self.cur_inout) {
+            (None, None) => true,
+            (Some((k, j)), Some((mine, jm))) if j == jm => {
+                let at = &args[k] as *const Expr;
+                matches!(&args[k].kind, ExprKind::Var(x, _) if self.mem_vars.get(x).is_some_and(|m| m.p == format!("%a{}", mine) && m.last.as_ref().is_some_and(|l| l.contains(&at))))
+            }
+            _ => false,
+        };
+        abi.out == self.cur_out
+            && inout_ok
+            && args.iter().enumerate().all(|(k, a)| !abi.ptr.get(k).copied().unwrap_or(false) || abi.inout.is_some_and(|(j, _)| j == k) || self.incoming(a))
     }
 
     /// The variables freed before a tail call to another function (D113).
@@ -5399,6 +5788,7 @@ impl<'p> Gen<'p> {
         }
         for (k, a) in args.iter().enumerate() {
             if abi.ptr.get(k).copied().unwrap_or(false) {
+                // (the state written over: this frame's, `tail_ok`)
                 let (p, _) = self.mem_path(a).ok_or("codegen: a value by address without its address")?;
                 vals.push(format!("ptr {}", p));
             } else {
@@ -5418,7 +5808,7 @@ impl<'p> Gen<'p> {
             }
         };
         let ret = lt(&e.ty);
-        if abi.out {
+        if abi.void() {
             self.emit(format!("tail call {}void @isc_fn_{}({})", cc, callee, vals.join(", ")));
             self.emit("ret void");
         } else {
@@ -5435,39 +5825,82 @@ impl<'p> Gen<'p> {
     /// memory.
     fn mem_init_ok(&self, init: &Expr) -> bool {
         match &init.kind {
-            ExprKind::Call(f, _) => self.abi[*f as usize].out && !self.other_tails.contains_key(&(init as *const Expr)) && self.text_buffer(init).is_none(),
+            ExprKind::Call(f, _) => self.abi[*f as usize].void() && !self.other_tails.contains_key(&(init as *const Expr)) && self.text_buffer(init).is_none(),
             ExprKind::Proj(..) | ExprKind::Take(..) => self.mem_type(init).is_some_and(|t| matches!(t, Type::Tuple(_)) && esize(&t) > MEM_BYTES),
             _ => false,
         }
     }
 
-    /// The address and the type of the value of `init` (`mem_init_ok`).
-    fn mem_init(&mut self, init: &Expr) -> R<(String, Type)> {
+    /// The value in memory of `init` (`mem_init_ok`).
+    fn mem_init(&mut self, init: &Expr) -> R<MemVar> {
         match &init.kind {
             ExprKind::Call(f, args) => match self.call_abi(init, *f, args)? {
-                Ok(slot) => Ok((slot, init.ty.clone())),
-                Err(_) => Err("codegen: a call without its result in memory".into()),
+                CallOut::Mem(m) => Ok(m),
+                CallOut::Reg(_) => Err("codegen: a call without its result in memory".into()),
             },
-            _ => self.mem_path(init).ok_or_else(|| "codegen: a part of a value in memory".into()),
+            _ => {
+                let (p, ty) = self.mem_path(init).ok_or("codegen: a part of a value in memory")?;
+                Ok(MemVar { p, ty, kept: false, over: None, last: None })
+            }
         }
     }
 
     /// A call of the recursive function `f` that takes large values by
     /// their addresses (D679): each such argument given by its address (a
     /// value in memory as it is, another stored on the stack first), the
-    /// result written in a place of this frame: that place (Ok), or the
-    /// result in a register (Err) for a function without `%out`.
-    fn call_abi(&mut self, e: &Expr, f: u32, args: &[Expr]) -> R<Result<String, V>> {
+    /// result written in a place of this frame (`CallOut::Mem`), or in a
+    /// register for a function without `%out`. The state the callee writes
+    /// over (D680): the memory of a variable read there for the last time
+    /// (given), or a copy of the value; its new value is read there.
+    fn call_abi(&mut self, e: &Expr, f: u32, args: &[Expr]) -> R<CallOut> {
+        self.call_abi_at(e, f, args, None)
+    }
+
+    /// `call_abi`, its `%out` at `at` when given (D680: the place of the
+    /// value of the call).
+    fn call_abi_at(&mut self, e: &Expr, f: u32, args: &[Expr], at: Option<String>) -> R<CallOut> {
         let abi = self.abi[f as usize].clone();
         let mut vals = Vec::new();
         let out = if abi.out {
-            let slot = self.alloca(&lt(&e.ty));
+            let slot = match at {
+                Some(p) => p,
+                None => self.alloca(&lt(&e.ty)),
+            };
             vals.push(format!("ptr {}", slot));
             Some(slot)
         } else {
             None
         };
+        let mut over = None;
         for (k, a) in args.iter().enumerate() {
+            if abi.inout.is_some_and(|(j, _)| j == k) {
+                let at = a as *const Expr;
+                let given = match &a.kind {
+                    ExprKind::Var(x, _) if !self.env.contains_key(x) => {
+                        self.mem_vars.get(x).filter(|m| m.over.is_none() && m.last.as_ref().is_some_and(|l| l.contains(&at))).map(|m| m.p.clone())
+                    }
+                    _ => None,
+                };
+                let p = match given {
+                    Some(p) => p,
+                    None => {
+                        let x = match self.mem_path(a) {
+                            Some((p, ty)) => {
+                                let t = lt(&ty);
+                                let r = self.ins(format!("load {}, ptr {}", t, p));
+                                v(r, t)
+                            }
+                            None => self.ex(a, 1)?,
+                        };
+                        let s = self.alloca(&x.t);
+                        self.emit(format!("store {} {}, ptr {}", x.t, x.r, s));
+                        s
+                    }
+                };
+                over = Some(p.clone());
+                vals.push(format!("ptr {}", p));
+                continue;
+            }
             if abi.ptr.get(k).copied().unwrap_or(false) {
                 let p = match self.mem_path(a) {
                     Some((p, _)) => p,
@@ -5493,17 +5926,19 @@ impl<'p> Gen<'p> {
                 f.to_string()
             }
         };
-        match out {
-            Some(slot) => {
-                self.emit(format!("call {}void @isc_fn_{}({})", cc, callee, vals.join(", ")));
-                Ok(Ok(slot))
-            }
-            None => {
-                let ret = lt(&e.ty);
-                let r = self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, callee, vals.join(", ")));
-                Ok(Err(v(r, ret)))
-            }
+        if !abi.void() {
+            let ret = lt(&e.ty);
+            let r = self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, callee, vals.join(", ")));
+            return Ok(CallOut::Reg(v(r, ret)));
         }
+        self.emit(format!("call {}void @isc_fn_{}({})", cc, callee, vals.join(", ")));
+        let ty = e.ty.clone();
+        Ok(CallOut::Mem(match (out, abi.inout, over) {
+            (Some(slot), Some((_, Some(j))), Some(q)) => MemVar { p: slot, ty, kept: false, over: Some((j, q)), last: None },
+            (Some(slot), _, _) => MemVar { p: slot, ty, kept: false, over: None, last: None },
+            (None, _, Some(q)) => MemVar { p: q, ty, kept: false, over: None, last: None },
+            (None, _, None) => return Err("codegen: a result in memory without its place".into()),
+        }))
     }
 
     /// Compiles an expression; `w > 1` only for element computations
@@ -5513,6 +5948,12 @@ impl<'p> Gen<'p> {
     /// constant, loops of a known count). Only results, never bindings: a
     /// parameter whose size is tested on entry is not fixed before its test.
     fn ex(&mut self, e: &Expr, w: u32) -> R<V> {
+        // (written at a place, D680)
+        if let Some(d) = self.dest.take() {
+            if w == 1 {
+                return self.ex_into(e, d);
+            }
+        }
         let x = self.ex_any(e, w)?;
         if w == 1 && !self.no_fix && has_fixed(&e.ty) {
             return Ok(self.fix_len(x, &e.ty));
@@ -5709,9 +6150,20 @@ impl<'p> Gen<'p> {
             // at an address of this frame, or a part of a value in memory;
             // each of its parts read where it is read
             Let { var, init, body, stmt: false, drop } if w == 1 && self.mem_init_ok(init) => {
-                let (p, ty) = self.mem_init(init)?;
-                let kept = self.incoming(init);
-                self.mem_vars.insert(*var, (p.clone(), ty.clone(), kept));
+                let mut m = self.mem_init(init)?;
+                m.kept = self.incoming(init);
+                // (its memory given on to a callee that writes its new state
+                // over it at its last reads: a result, or a part of a tuple
+                // the rest never reads, holding no counted memory, D680)
+                let own = match &init.kind {
+                    ExprKind::Call(..) | ExprKind::Take(..) => true,
+                    ExprKind::Proj(x, _) => matches!(&x.kind, ExprKind::Var(t, _) if path_uses(body, *t) == 0),
+                    _ => false,
+                };
+                m.last = (own && !m.ty.has_heap()).then(|| last_uses(body, *var));
+                let (p, ty) = (m.p.clone(), m.ty.clone());
+                self.mem_vars.insert(*var, m);
+                self.take_let_dest(e);
                 let r = self.ex(body, w);
                 if *drop && r.is_ok() && ty.has_heap() && !self.freed_early.contains(var) {
                     let t = lt(&ty);
@@ -5858,6 +6310,7 @@ impl<'p> Gen<'p> {
                 if gives {
                     self.giving.insert(*var);
                 }
+                self.take_let_dest(e);
                 let r = self.ex(body, w);
                 self.moving.remove(var);
                 self.freed_early.remove(var);
@@ -6547,17 +7000,23 @@ impl<'p> Gen<'p> {
                 // call to another function stays one when what it passes
                 // by address is kept by a caller of this frame
                 let tail_other = self.other_tails.contains_key(&key);
-                if (self.abi[*f as usize].any() || (self.cur_out && tail_other)) && self.text_buffer(e).is_none() {
+                if (self.abi[*f as usize].any() || ((self.cur_out || self.cur_inout.is_some()) && tail_other)) && self.text_buffer(e).is_none() {
                     if tail_other && self.tail_ok(*f, args) {
                         return self.tail_call_abi(e, *f, args, key);
                     }
                     return match self.call_abi(e, *f, args)? {
-                        Ok(slot) => {
-                            let t = lt(&e.ty);
-                            let r = self.ins(format!("load {}, ptr {}", t, slot));
+                        CallOut::Mem(m) => {
+                            // (no variable: a register of it)
+                            let t = lt(&m.ty);
+                            let mut r = self.ins(format!("load {}, ptr {}", t, m.p));
+                            if let (Some((j, q)), Type::Tuple(ts)) = (&m.over, &m.ty) {
+                                let pt = lt(&ts[*j as usize]);
+                                let part = self.ins(format!("load {}, ptr {}", pt, q));
+                                r = self.ins(format!("insertvalue {} {}, {} {}, {}", t, r, pt, part, j));
+                            }
                             Ok(v(r, t))
                         }
-                        Err(x) => Ok(x),
+                        CallOut::Reg(x) => Ok(x),
                     };
                 }
                 let mut vals = Vec::new();
