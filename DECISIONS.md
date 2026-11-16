@@ -16559,3 +16559,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   bytes and the group, the three ways of linking, none without `--icon`, a
   file that is not one of icons refused, `--icon` for Linux refused) and
   `the_icon_of_the_program` (emit/win32.rs).
+- **D678 — The functions a task calls count the shared nodes atomically
+  (2026-11-16).** The port of rtiow (`bench/rtiow`, a ray tracer of three
+  books, compared with its Rust original) ended one run in three on
+  "invalid free" with several threads, never with one. A recursive
+  function was emitted once, with plain counts (D175 made the counts
+  atomic in the body of a task only): called from a task, each thread
+  copied into its records of hits the materials and textures of the world
+  it shared with the others (an increment, then a free, of the same nodes
+  at once), lost some of them, and a node was freed twice. A task, or a
+  variant for the tasks, now calls `isc_fn_<f>_tk<k>`: the function
+  emitted with the counts of the types of the set `k` atomic, `k` the
+  recursive types the task may share (D175: those reached from what it
+  captures or returns), when the function holds one of them or calls a
+  function that does (`fn_rec_types`: the types of its parameters and of
+  its expressions, through the calls); a function that holds none (an
+  integer loop, a text) is called as it is, and a task that shares no
+  node (binary-trees) calls no variant. Inside a variant, the nested loops
+  are those of the function (it is not a task). Test
+  `functions_called_by_tasks_count_shared_nodes_atomically` (memory.rs:
+  the variants of the two functions holding the shared tree, an atomic
+  increment in one, none for the integer loop, the same results on 8
+  threads and interpreted; no variant without the change).

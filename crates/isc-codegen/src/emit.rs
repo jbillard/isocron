@@ -662,6 +662,17 @@ pub struct Gen<'p> {
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
     task_shared: Option<HashSet<u32>>,
+    /// In the variant of a recursive function for the tasks (`_tk<k>`,
+    /// D678): the recursive types whose nodes may be shared with other
+    /// threads, as `task_shared` for a task (`Some(None)`: all of them).
+    variant_shared: Option<Option<HashSet<u32>>>,
+    /// The recursive types each recursive function holds, or reaches
+    /// through the functions it calls (D678).
+    fn_recs: Vec<HashSet<u32>>,
+    /// The shared types of each variant for the tasks (D678), by index.
+    tk_sets: Vec<Option<BTreeSet<u32>>>,
+    /// The variants for the tasks to emit: the function, its set.
+    tk_needed: BTreeSet<(u32, usize)>,
     /// While the first level of a `reduce` is emitted: an `i1`, true when its
     /// array has at least STREAM_BYTES bytes (see `reduce_block`).
     stream: Option<String>,
@@ -1547,6 +1558,10 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         kernel_fn: false,
         kernel_used: false,
         task_shared: None,
+        variant_shared: None,
+        fn_recs: fn_rec_types(p),
+        tk_sets: Vec::new(),
+        tk_needed: BTreeSet::new(),
         stream: None,
         scalar_loops: 0,
         windowed: HashMap::new(),
@@ -1624,7 +1639,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
     for i in 0..p.fns.len() {
         if (i as u32) < p.text_fns || reached.contains(&(i as u32)) {
             g.text_emitted.insert(i as u32);
-            g.emit_fn(i, false, false, false)?;
+            g.emit_fn(i, false, false, false, None)?;
         }
     }
     let slot = g.alloca("{ ptr, i64 }");
@@ -1656,15 +1671,20 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
     // the variants of the builders whose trees are made in a region (D200),
     // each of which may ask for others
     // and those that take the counts of a caller (D426)
+    // and those that the tasks call (D678)
     let mut done: HashSet<u32> = HashSet::new();
     let mut done_counted: HashSet<u32> = HashSet::new();
+    let mut done_tk: HashSet<(u32, usize)> = HashSet::new();
     loop {
         if let Some(f) = g.rg_needed.iter().copied().find(|f| !done.contains(f)) {
             done.insert(f);
-            g.emit_fn(f as usize, true, false, false)?;
+            g.emit_fn(f as usize, true, false, false, None)?;
         } else if let Some(f) = g.count_needed.iter().copied().find(|f| !done_counted.contains(f)) {
             done_counted.insert(f);
-            g.emit_fn(f as usize, false, true, false)?;
+            g.emit_fn(f as usize, false, true, false, None)?;
+        } else if let Some((f, k)) = g.tk_needed.iter().copied().find(|x| !done_tk.contains(x)) {
+            done_tk.insert((f, k));
+            g.emit_fn(f as usize, false, false, false, Some(k))?;
         } else {
             break;
         }
@@ -1681,11 +1701,11 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
             g.emit_text_print(f)?;
         } else if let Some(f) = g.buf_needed.iter().copied().find(|f| !done_buffered.contains(f)) {
             done_buffered.insert(f);
-            g.emit_fn(f as usize, false, false, true)?;
+            g.emit_fn(f as usize, false, false, true, None)?;
         } else if let Some(f) = g.text_called.iter().copied().find(|f| !g.text_emitted.contains(f)) {
             // called by a function of `print` or by a variant `_buf` alone
             g.text_emitted.insert(f);
-            g.emit_fn(f as usize, false, false, false)?;
+            g.emit_fn(f as usize, false, false, false, None)?;
         } else {
             break;
         }
@@ -2890,6 +2910,61 @@ fn join_map<'a>(s: VarId, init: &'a Expr, body: &'a Expr) -> Option<(Vec<(VarId,
 /// elements alone: the counts of that predicate by blocks may come from the
 /// pass of a caller over the whole array. For each, the index of the
 /// parameter and the lambda (the first such `filter`).
+/// The recursive types each recursive function of `p` holds (in the types
+/// of its parameters and of its expressions, with the types their nodes
+/// hold) or reaches through the functions it calls (D678): its variant for
+/// the tasks is needed when one of them may be shared.
+fn fn_rec_types(p: &Program) -> Vec<HashSet<u32>> {
+    fn types_in(p: &Program, t: &Type, out: &mut HashSet<u32>) {
+        match t {
+            Type::Rec(i) => {
+                if out.insert(*i) {
+                    types_in(p, &p.recs[*i as usize].layout, out);
+                }
+            }
+            Type::Tuple(ts) => ts.iter().for_each(|x| types_in(p, x, out)),
+            Type::Array(e, _) => types_in(p, e, out),
+            _ => {}
+        }
+    }
+    fn walk(p: &Program, e: &Expr, out: &mut HashSet<u32>, calls: &mut HashSet<u32>) {
+        types_in(p, &e.ty, out);
+        if let ExprKind::Call(g, _) = &e.kind {
+            calls.insert(*g);
+        }
+        for c in e.children() {
+            walk(p, c, out, calls);
+        }
+    }
+    let mut recs = Vec::new();
+    let mut calls = Vec::new();
+    for f in &p.fns {
+        let mut r = HashSet::new();
+        let mut c = HashSet::new();
+        for q in &f.params {
+            types_in(p, &p.vars[*q as usize].ty, &mut r);
+        }
+        walk(p, &f.body, &mut r, &mut c);
+        recs.push(r);
+        calls.push(c);
+    }
+    loop {
+        let mut changed = false;
+        for f in 0..recs.len() {
+            for g in calls[f].iter().copied().collect::<Vec<u32>>() {
+                let more: Vec<u32> = recs[g as usize].difference(&recs[f]).copied().collect();
+                if !more.is_empty() {
+                    recs[f].extend(more);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return recs;
+        }
+    }
+}
+
 fn count_users(p: &Program) -> HashMap<u32, (usize, &Lambda)> {
     fn walk<'a>(e: &'a Expr, params: &[VarId], out: &mut Option<(usize, &'a Lambda)>) {
         if out.is_some() {
@@ -3562,7 +3637,11 @@ impl<'p> Gen<'p> {
     /// `buffered`: its variant `isc_fn_<i>_buf`, for a function of the
     /// prelude that makes a text: the buffer of its caller its first
     /// parameter, the texts of its result written there (`buffered_texts`).
-    fn emit_fn(&mut self, i: usize, in_region: bool, counted: bool, buffered: bool) -> R<()> {
+    ///
+    /// `task`: its variant `isc_fn_<i>_tk<k>` for the tasks of parallel
+    /// loops (D678), the counts of the nodes of the types of the set `k`
+    /// atomic, as in the task.
+    fn emit_fn(&mut self, i: usize, in_region: bool, counted: bool, buffered: bool, task: Option<usize>) -> R<()> {
         let f = &self.p.fns[i];
         let saved_text_buf = std::mem::replace(&mut self.text_buf, if buffered { Some("%tb".to_string()) } else { None });
         if buffered {
@@ -3578,13 +3657,16 @@ impl<'p> Gen<'p> {
         let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
+        let saved_variant = std::mem::replace(&mut self.variant_shared, task.map(|k| self.tk_sets[k].as_ref().map(|s| s.iter().copied().collect())));
         let saved_kernel = std::mem::replace(&mut self.kernel_fn, f.name.starts_with('$'));
         let saved_counts = std::mem::take(&mut self.counts);
         let saved_count_param = self.count_param.take();
         // the texts on the stack, by the names of the registers of a
         // function (D442)
         let saved_stack_strs = std::mem::take(&mut self.stack_strs);
-        let name = if in_region {
+        let name = if let Some(k) = task {
+            format!("{}_tk{}", i, k)
+        } else if in_region {
             format!("{}_rg", i)
         } else if counted {
             format!("{}_sm", i)
@@ -3743,6 +3825,7 @@ impl<'p> Gen<'p> {
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
+        self.variant_shared = saved_variant;
         self.kernel_fn = saved_kernel;
         self.counts = saved_counts;
         self.count_param = saved_count_param;
@@ -4720,14 +4803,53 @@ impl<'p> Gen<'p> {
     /// The counts of the nodes of the recursive type `i` must be atomic:
     /// in a task, unless no type reached from `i` can be shared with
     /// another thread (D175).
+    /// In a variant of a function for the tasks, the same with its set
+    /// (D678).
     fn rec_atomic(&self, i: u32) -> bool {
-        if !self.in_task {
-            return false;
-        }
-        let Some(shared) = &self.task_shared else { return true };
+        let shared = if self.in_task {
+            &self.task_shared
+        } else {
+            match &self.variant_shared {
+                Some(s) => s,
+                None => return false,
+            }
+        };
+        let Some(shared) = shared else { return true };
         let mut reach = HashSet::new();
         self.rec_types_in(&Type::Rec(i), &mut reach);
         reach.iter().any(|r| shared.contains(r))
+    }
+
+    /// The variant of the recursive function `f` that a task, or a variant
+    /// for the tasks, calls (D678): the one whose counts of the shared
+    /// types are atomic, when `f` holds or reaches one; None elsewhere (the
+    /// function itself). A function is emitted once with plain counts:
+    /// called from a task, its increments and frees of the nodes of a world
+    /// the threads share lost some of them, and a node was freed twice.
+    fn task_variant(&mut self, f: u32) -> Option<usize> {
+        let shared: Option<HashSet<u32>> = if self.in_task {
+            self.task_shared.clone()
+        } else {
+            self.variant_shared.clone()?
+        };
+        let recs = &self.fn_recs[f as usize];
+        let needed = match &shared {
+            Some(s) => recs.iter().any(|r| s.contains(r)),
+            None => !recs.is_empty(),
+        };
+        if !needed {
+            return None;
+        }
+        let key: Option<BTreeSet<u32>> = shared.map(|s| s.into_iter().collect());
+        let k = match self.tk_sets.iter().position(|x| *x == key) {
+            Some(k) => k,
+            None => {
+                self.tk_sets.push(key);
+                self.tk_sets.len() - 1
+            }
+        };
+        self.tk_needed.insert((f, k));
+        Some(k)
     }
 
     /// Adds one owner to a node: atomic in a task (other threads may hold
@@ -4790,6 +4912,7 @@ impl<'p> Gen<'p> {
         let saved_task = std::mem::replace(&mut self.in_task, atomic);
         // inside an atomic drop, every count is atomic (D175)
         let saved_shared = self.task_shared.take();
+        let saved_variant = self.variant_shared.take();
         let nt = self.rec_node_ty(i);
         let layout = self.p.recs[i as usize].layout.clone();
         let lay = lt(&layout);
@@ -4846,6 +4969,7 @@ impl<'p> Gen<'p> {
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
+        self.variant_shared = saved_variant;
         self.funcs.push(text);
         Ok(())
     }
@@ -6077,8 +6201,15 @@ impl<'p> Gen<'p> {
                         let x = self.env[var].clone();
                         self.drop_var(*var, &x);
                     }
-                    self.text_called.insert(*f);
-                    let r = self.ins(format!("tail call {}{} @isc_fn_{}({})", self.fn_cc(), ret, f, vals.join(", ")));
+                    // (from a task: its variant for the tasks, D678)
+                    let callee = match self.task_variant(*f) {
+                        Some(k) => format!("{}_tk{}", f, k),
+                        None => {
+                            self.text_called.insert(*f);
+                            f.to_string()
+                        }
+                    };
+                    let r = self.ins(format!("tail call {}{} @isc_fn_{}({})", self.fn_cc(), ret, callee, vals.join(", ")));
                     self.emit(format!("ret {} {}", ret, r));
                     let dead = self.label();
                     self.block(&dead);
@@ -6137,6 +6268,9 @@ impl<'p> Gen<'p> {
                     // the counts made of the array it is given (D426)
                     self.count_needed.insert(*f);
                     self.ins(format!("call {}{} @isc_fn_{}_sm(ptr {}, {})", cc, ret, f, sm, vals.join(", ")))
+                } else if let Some(k) = self.task_variant(*f) {
+                    // from a task: its variant for the tasks (D678)
+                    self.ins(format!("call {}{} @isc_fn_{}_tk{}({})", cc, ret, f, k, vals.join(", ")))
                 } else {
                     self.text_called.insert(*f);
                     self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, f, vals.join(", ")))

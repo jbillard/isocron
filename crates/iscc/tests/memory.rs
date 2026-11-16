@@ -591,6 +591,67 @@ action main(args: string[k]): i32 {
     }
 }
 
+/// The recursive functions a task calls (D678). A function was emitted once,
+/// with plain counts: called from a task, the copies it made of the nodes
+/// of a tree the threads share (here the subtree it returns, a new owner)
+/// raced with the other threads, and a node was freed twice (the port of
+/// rtiow, `bench/rtiow`: "invalid free" one run in three). The task calls
+/// its variant `_tk`, whose counts of the shared types are atomic; a
+/// function that holds no node (`steps`) is called as it is.
+#[test]
+fn functions_called_by_tasks_count_shared_nodes_atomically() {
+    let src = "type Tree = Leaf | Node(Tree, Tree);
+
+function make(d: i64): Tree {
+    if (d == 0) return Leaf;
+    return Node(make(d - 1), make(d - 1));
+}
+
+function nodes(t: Tree): i64 {
+    return match (t) {
+        Leaf => 1,
+        Node(l, r) => 1 + nodes(l) + nodes(r),
+    };
+}
+
+// the subtree `k` steps down the left side: a new owner of a shared node
+function leftAt(t: Tree, k: i64): Tree {
+    if (k == 0) return t;
+    return match (t) {
+        Leaf => Leaf,
+        Node(l, r) => leftAt(l, k - 1),
+    };
+}
+
+function steps(n: i64, acc: i64): i64 {
+    if (n == 0) return acc;
+    return steps(n - 1, acc + 1);
+}
+
+action main(args: string[k]): i32 {
+    const t = make(10);
+    print(sum(map(iota(200000), (i) => nodes(leftAt(t, 6 + i % 4)) + steps(i % 3, 0))));
+    print(nodes(t));
+    return 0;
+}
+";
+    let want = "2999999\n2047\n";
+    let ll = tmp("tk_variants.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("tk_variants_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    // the variants of `nodes` and `leftAt`, not of `steps`; the copy of a
+    // node in that of `leftAt` atomic
+    let variants: Vec<&str> = text.split("\ndefine ").filter(|f| f.lines().next().is_some_and(|h| h.contains("_tk0("))).collect();
+    assert_eq!(variants.len(), 2, "{}", text);
+    assert!(variants.iter().any(|f| f.contains("atomicrmw")), "{}", text);
+    for _ in 0..5 {
+        assert_eq!(run_bin_threads(&bin, &[], Some(8)).stdout, want);
+    }
+    assert_eq!(interp_ok(src, &[]), want, "interpreted");
+}
+
 #[test]
 fn literal_arrays_only_read_live_on_the_stack() {
     // D191: an array literal of scalars that its scope only reads (an
