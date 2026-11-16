@@ -1450,6 +1450,41 @@ fn a_program_declaring_a_function_of_the_prelude_leaves_the_modules_alone() {
     agree(REDECLARED, "redeclared_prelude", &[], "300\n{\"a\":[1.5,2.5]}\n2026-01-01T00:00:00.123Z\n");
 }
 
+const PRIMITIVES_REDECLARED: &str = r##"import * as sys from "sys";
+
+// the names of primitives declared again by the program, of other types
+function split(a: i64, b: i64, c: i64): i64 {
+    return a * 100 + b * 10 + c;
+}
+
+function argsort(s: string): string {
+    return s + "!";
+}
+
+action main(args: string[k]): i32 {
+    print(split(1, 2, 3));
+    print(argsort("x"));
+    print(sort([3, 1, 2]));
+    print(sortBy(["bb", "a"], (s) => s.length));
+    print(match (sys.makeDirs(".")) {
+        Ok(v) => "made",
+        Err(e) => sys.message(e),
+    });
+    return 0;
+}
+"##;
+
+/// D676: the functions of the program are not the names of the modules
+/// nor of the prelude, which cannot import them: a program that declares
+/// `split` and `argsort` of its own still has `sys.makeDirs` cut a path
+/// with the primitive `split` and the prelude's `sort` and `sortBy` order
+/// with the primitive `argsort` (both refused before: `split` takes 3
+/// arguments, but 2 were given); the interpreter, compiled, Valgrind.
+#[test]
+fn a_program_declaring_a_primitive_leaves_the_modules_alone() {
+    agree(PRIMITIVES_REDECLARED, "redeclared_primitive", &[], "123\nx!\n[1, 2, 3]\n[a, bb]\nmade\n");
+}
+
 const BRANCHES_OF_SIZES: &str = r##"type S = A | B | C;
 
 function pick(c: boolean, a: i64[n], b: i64[m]): i64[k] {

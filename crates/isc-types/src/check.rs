@@ -636,6 +636,9 @@ struct FnCx<'g> {
     /// The module of the function (D139): an unqualified name is first
     /// looked for there, then among the names its file imports (D150).
     module: Option<String>,
+    /// A function of a module or of the prelude: the functions of the
+    /// first file of the program are not its names (D676).
+    hides_root: bool,
     file: u32,
     is_action: bool,
     lambda_depth: u32,
@@ -680,6 +683,9 @@ struct Globals {
     codecs: HashMap<String, (FnId, FnId)>,
     /// The placeholders `json.decode` and `json.encode`.
     placeholders: (Option<FnId>, Option<FnId>),
+    /// The functions of the first file of the program: not seen from a
+    /// module nor from the prelude, which cannot import them (D676).
+    root_fns: HashSet<String>,
 }
 
 impl<'g> FnCx<'g> {
@@ -1937,20 +1943,30 @@ impl<'g> FnCx<'g> {
             if self.g.names.contains_key(&qn) || self.g.ctors.contains_key(&qn) {
                 return qn;
             }
-            // in a module of the standard library (or the prelude kept for
-            // it), a function of the prelude that the program declares
-            // again keeps its meaning (D337)
-            if m.starts_with(crate::modules::STD_KEY) {
-                let pn = format!("{}{}", PRELUDE_KEPT, name);
-                if self.g.names.contains_key(&pn) {
-                    return pn;
-                }
+        }
+        // in a module or in the prelude, a function of the prelude that the
+        // program declares again keeps its meaning (D337, D676)
+        if self.hides_root && self.g.root_fns.contains(name) {
+            let pn = format!("{}{}", PRELUDE_KEPT, name);
+            if self.g.names.contains_key(&pn) {
+                return pn;
             }
         }
         if let Some(qn) = self.g.imports.get(&self.file).and_then(|i| i.get(name)) {
             return qn.clone();
         }
         name.to_string()
+    }
+
+    /// The function named `qn` (a name `q` gave) as this function sees it:
+    /// none of the first file of the program from a module or the prelude,
+    /// which cannot import them (D676: a primitive of that name is then
+    /// called).
+    fn fn_named(&self, qn: &str) -> Option<FnId> {
+        if self.hides_root && self.g.root_fns.contains(qn) {
+            return None;
+        }
+        self.g.names.get(qn).copied()
     }
 
     fn check_var(&mut self, name: &str, span: Span) -> Result<TExpr> {
@@ -1966,7 +1982,7 @@ impl<'g> FnCx<'g> {
         if self.g.ctors.contains_key(name) {
             return self.check_construct(name, &[], span, None);
         }
-        if let Some(&id) = self.g.names.get(name) {
+        if let Some(id) = self.fn_named(name) {
             let sig = &self.g.sigs[id];
             // a constant: its value
             if sig.is_const {
@@ -2181,7 +2197,7 @@ impl<'g> FnCx<'g> {
                 return err(inner.span, format!("`{}` is a variable: type arguments are given to a function of the program or of a module", name));
             }
             let q = self.q(name);
-            let Some(&id) = self.g.names.get(q.as_str()) else {
+            let Some(id) = self.fn_named(q.as_str()) else {
                 return err(inner.span, format!("unknown function `{}`", name));
             };
             // the sizes that the type of `json.decode` names are those of
@@ -2203,7 +2219,7 @@ impl<'g> FnCx<'g> {
                 if self.g.ctors.contains_key(name.as_str()) {
                     return self.check_construct(name, args, span, expected);
                 }
-                if let Some(&id) = self.g.names.get(name.as_str()) {
+                if let Some(id) = self.fn_named(name.as_str()) {
                     let call = self.check_call_fn(id, args, span)?;
                     if id >= self.g.first_extern {
                         // a C function (D125)
@@ -4272,7 +4288,10 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
         }
     }
     let placeholders = (names.get(DECODE).copied(), names.get(ENCODE).copied());
-    let globals = Globals { sigs, names, first_extern, sums, heads, ctors, imports, codecs: codec_ids, placeholders };
+    // (the functions of the first file: those of the program not renamed
+    // by a module, D139)
+    let root_fns: HashSet<String> = decls.iter().filter(|(d, prelude)| !*prelude && !d.name.contains('.')).map(|(d, _)| d.name.clone()).collect();
+    let globals = Globals { sigs, names, first_extern, sums, heads, ctors, imports, codecs: codec_ids, placeholders, root_fns };
     // the bodies (D629): those of the program, in their order (its first
     // error first, as before), then those of the prelude it reaches, through
     // its calls and the functions of the prelude that the lowering calls for
@@ -4738,6 +4757,7 @@ fn check_fn_body(g: &Globals, id: FnId, d: &ast::FnDecl, from_prelude: bool, wit
         g,
         fn_id: id,
         module: module_of(&d.name).map(|m| m.to_string()),
+        hides_root: from_prelude || module_of(&d.name).is_some(),
         file: d.span.file,
         is_action: sig.is_action,
         lambda_depth: 0,

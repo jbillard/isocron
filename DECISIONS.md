@@ -16520,3 +16520,20 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   itself, but for Alt+Space, given to Windows (the menu of the system);
   Alt+F4 still closes (`WM_SYSKEYDOWN`, given to Windows as before). Test
   `a_character_with_alt_does_not_sound` (emit/win32.rs).
+- **D676 — The functions of a program are not names of its modules nor of
+  the prelude.** A program of the library of interfaces declared its own
+  `split` (three arguments): `import * as sys from "sys"` was then refused
+  (`std:sys:149:31: error: split takes 3 arguments, but 2 were given`),
+  the `path.split("/")` of `sys.makeDirs` taking the program's function
+  for the primitive. A module looked an unqualified name up in itself
+  (D139), then among the global names, where the functions of the first
+  file are; D337 covered a function of the prelude declared again, for
+  the standard modules only. Now the checker gives each function of a
+  module or of the prelude (`hides_root`) a view without the functions
+  of the first file (`root_fns`: those not renamed by a module, D139),
+  which no module can import: the name is then the prelude's kept one
+  (D337, now for every module and the prelude) or the primitive's. The
+  program itself still sees its own functions first. Test
+  `a_program_declaring_a_primitive_leaves_the_modules_alone` (stdlib.rs:
+  `split` and `argsort` declared again, `sys.makeDirs`, `sort` and
+  `sortBy` of the prelude; refused without the change).
