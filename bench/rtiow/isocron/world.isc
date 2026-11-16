@@ -1,0 +1,679 @@
+// The world of rtiow: boxes, textures and the noise of Perlin, materials,
+// the objects hit by the rays (spheres, moving spheres, rectangles, boxes,
+// their faces turned, moved and turned around Y, smoke, lists and the tree
+// of boxes, BVH), their densities (pdf) and the camera (aabb.rs, aarect.rs,
+// bvh.rs, camera.rs, hittable/*, material.rs, pdf.rs, perlin.rs,
+// texture.rs). The traits of the Rust program (`dyn Hittable`, `dyn
+// Texture`, `dyn Pdf`) are sum types here; each computation is that of the
+// Rust program, in its order, and draws the same numbers from the same
+// generator (the smoke draws while a ray hits it, as there).
+import { Rng, genF64, genF32, genRange, genRangeU8, genRangeUsize } from "./rng";
+import {
+    Vec3, Ray, Onb, PI, TWO_PI, FRAC_1_PI, FRAC_PI_2, INFINITY, NEG_INFINITY,
+    vec, splat, add, sub, mul, scale, div, neg, lengthSquared, length, dot, cross, unit,
+    reflect, refract, fmin, fmax, ray, at, randomRange, randomInUnitSphere, randomInUnitCircle,
+    randomCosineDirection, randomToSphere, buildFromW, local,
+} from "./vec3";
+
+// ----- boxes aligned on the axes ------------------------------------------------
+
+export type Aabb = { min: Vec3, max: Vec3 };
+
+// one axis of `Aabb::hit`: the interval narrowed, and whether it is empty
+function slab(lo: f64, hi: f64, o: f64, d: f64, tmin: f64, tmax: f64): [f64, f64, boolean] {
+    const invD = 1.0 / d;
+    const a = (lo - o) * invD;
+    const b = (hi - o) * invD;
+    const t0 = invD < 0.0 ? b : a;
+    const t1 = invD < 0.0 ? a : b;
+    const mn = t0 > tmin ? t0 : tmin;
+    const mx = t1 < tmax ? t1 : tmax;
+    return [mn, mx, mx <= mn] as const;
+}
+
+export function boxHit(b: Aabb, r: Ray, tmin: f64, tmax: f64): boolean {
+    const [mn1, mx1, out1] = slab(b.min.x, b.max.x, r.orig.x, r.dir.x, tmin, tmax);
+    if (out1) {
+        return false;
+    }
+    const [mn2, mx2, out2] = slab(b.min.y, b.max.y, r.orig.y, r.dir.y, mn1, mx1);
+    if (out2) {
+        return false;
+    }
+    const [mn3, mx3, out3] = slab(b.min.z, b.max.z, r.orig.z, r.dir.z, mn2, mx2);
+    return !out3;
+}
+
+export function surrounding(a: Aabb, b: Aabb): Aabb {
+    return {
+        min: vec(fmin(a.min.x, b.min.x), fmin(a.min.y, b.min.y), fmin(a.min.z, b.min.z)),
+        max: vec(fmax(a.max.x, b.max.x), fmax(a.max.y, b.max.y), fmax(a.max.z, b.max.z)),
+    };
+}
+
+// ----- the noise of Perlin ------------------------------------------------------------
+
+export const SQUARE: i64 = 0;
+export const SMOOTH: i64 = 1;
+export const MARBLE: i64 = 2;
+export const NET: i64 = 3;
+export const TRILINEAR: i64 = 4;
+
+export type Perlin = { ranfloat: f64[], ranvec: Vec3[], permX: i64[], permY: i64[], permZ: i64[] };
+
+function floatsFrom(r: Rng, n: i64, out: f64[]): [f64[], Rng] {
+    if (out.length >= n) {
+        return [out, r] as const;
+    }
+    const [x, r1] = genF64(r);
+    return floatsFrom(r1, n, concat(out, [x]));
+}
+
+function vecsFrom(r: Rng, n: i64, out: Vec3[]): [Vec3[], Rng] {
+    if (out.length >= n) {
+        return [out, r] as const;
+    }
+    const [v, r1] = randomRange(r, -1.0, 1.0);
+    return vecsFrom(r1, n, concat(out, [unit(v)]));
+}
+
+// `perlin_generate_permute`: 0 to 255 shuffled from the end
+function permuted(r: Rng, p: i64[], i: i64): [i64[], Rng] {
+    if (i < 1) {
+        return [p, r] as const;
+    }
+    const [target, r1] = genRangeUsize(r, 0, i);
+    const a = p[i];
+    return permuted(r1, p.with(i, p[target]).with(target, a), i - 1);
+}
+
+// `Perlin::new`, from the generator `r` (in that order: the floats, the
+// vectors, the three permutations)
+export function perlinNew(r: Rng): [Perlin, Rng] {
+    const [fs, r1] = floatsFrom(r, 256, []);
+    const [vs, r2] = vecsFrom(r1, 256, []);
+    const [px, r3] = permuted(r2, iota(256), 255);
+    const [py, r4] = permuted(r3, iota(256), 255);
+    const [pz, r5] = permuted(r4, iota(256), 255);
+    return [{ ranfloat: fs, ranvec: vs, permX: px, permY: py, permZ: pz }, r5] as const;
+}
+
+// `i as usize`: saturated (0 below 0 and for NaN)
+function index(f: f64): u64 {
+    return u64(f);
+}
+
+// the weight `i * u + (1 - i) * (1 - u)` of a corner
+function corner(i: i64, u: f64): f64 {
+    return f64(i) * u + f64(1 - i) * (1.0 - u);
+}
+
+function hermite(u: f64): f64 {
+    return u * u * (3.0 - 2.0 * u);
+}
+
+function cornerAt(n: Perlin, i: u64, j: u64, k: u64, di: i64, dj: i64, dk: i64): i64 {
+    return n.permX[i64((i + u64(di)) & 255u64)] ^ n.permY[i64((j + u64(dj)) & 255u64)] ^ n.permZ[i64((k + u64(dk)) & 255u64)];
+}
+
+export function noise(n: Perlin, p: Vec3, kind: i64): f64 {
+    if (kind == SQUARE) {
+        const i = i32(4.0 * p.x) & 255i32;
+        const j = i32(4.0 * p.y) & 255i32;
+        const k = i32(4.0 * p.z) & 255i32;
+        return n.ranfloat[n.permX[i64(i)] ^ n.permY[i64(j)] ^ n.permZ[i64(k)]];
+    }
+    const fi = Math.floor(p.x);
+    const fj = Math.floor(p.y);
+    const fk = Math.floor(p.z);
+    const u = hermite(p.x - fi);
+    const v = hermite(p.y - fj);
+    const w = hermite(p.z - fk);
+    const [i, j, k] = [index(fi), index(fj), index(fk)] as const;
+    if (kind == TRILINEAR) {
+        // `trilinear_interp`, its corners in the order of its loops
+        return fold(iota(8), 0.0, (acc, c) => {
+            const [di, dj, dk] = [c >> 2, (c >> 1) & 1, c & 1] as const;
+            return acc + corner(di, u) * corner(dj, v) * corner(dk, w) * n.ranfloat[cornerAt(n, i, j, k, di, dj, dk)];
+        });
+    }
+    // `perlin_interp`
+    return fold(iota(8), 0.0, (acc, c) => {
+        const [di, dj, dk] = [c >> 2, (c >> 1) & 1, c & 1] as const;
+        const weight = vec(u - f64(di), v - f64(dj), w - f64(dk));
+        return acc + corner(di, u) * corner(dj, v) * corner(dk, w) * dot(n.ranvec[cornerAt(n, i, j, k, di, dj, dk)], weight);
+    });
+}
+
+export function turb(n: Perlin, p: Vec3, depth: i64, kind: i64): f64 {
+    const [accum, w, q] = fold(iota(depth), [0.0, 1.0, p] as const, (s, d) => {
+        const [acc, weight, tp] = s;
+        return [acc + weight * noise(n, tp, kind), weight * 0.5, scale(tp, 2.0)] as const;
+    });
+    return Math.abs(accum);
+}
+
+// ----- textures ------------------------------------------------------------------
+
+// a solid color; a checker (odd, even); a noise (its noise, albedo, kind,
+// scale, depth of turbulence, phase)
+export type Texture = Solid(Vec3) | Checker(Texture, Texture) | Noise(Perlin, Vec3, i64, f64, i64, f64);
+
+export function textureValue(t: Texture, u: f64, v: f64, p: Vec3): Vec3 {
+    return match (t) {
+        Solid(c) => c,
+        Checker(odd, even) => {
+            const sines = Math.sin(10.0 * p.x) * Math.sin(10.0 * p.y) * Math.sin(10.0 * p.z);
+            return sines < 0.0 ? textureValue(odd, u, v, p) : textureValue(even, u, v, p);
+        },
+        Noise(n, albedo, kind, s, depth, phase) => {
+            if (kind == SQUARE || kind == TRILINEAR) {
+                return scale(albedo, noise(n, scale(p, s), kind));
+            }
+            if (kind == SMOOTH) {
+                return scale(scale(albedo, 0.5), 1.0 + noise(n, scale(p, s), kind));
+            }
+            if (kind == MARBLE) {
+                return scale(scale(albedo, 0.5), 1.0 + Math.sin(s * p.z + phase * turb(n, p, depth, kind)));
+            }
+            return scale(albedo, turb(n, p, depth, kind));
+        },
+    };
+}
+
+// ----- materials -----------------------------------------------------------------
+
+export type Material = Lambertian(Texture) | Metal(Vec3, f64) | Dielectric(f64) | DiffLight(Texture) | Isotropic(Texture);
+
+// `Metal::new`: the fuzz at most 1
+export function metal(albedo: Vec3, fuzz: f64): Material {
+    return Metal(albedo, fuzz < 1.0 ? fuzz : 1.0);
+}
+
+// `Material::default()`
+export function defaultMaterial(): Material {
+    return Lambertian(Solid(vec(0.2, 0.6, 0.8)));
+}
+
+// where a ray hit: the point, the normal against the ray, the material, the
+// parameter of the ray, the coordinates of the texture, whether the ray hit
+// the front face
+export type HitRecord = { p: Vec3, normal: Vec3, mat: Material, t: f64, u: f64, v: f64, front: boolean };
+
+// `set_face_normal`: the normal turned against the ray
+function faced(rec: HitRecord, r: Ray, outward: Vec3): HitRecord {
+    const front = dot(r.dir, outward) < 0.0;
+    return { ...rec, front: front, normal: front ? unit(outward) : neg(unit(outward)) };
+}
+
+// how a material sends a ray on: absorbed, a ray and its attenuation, or a
+// diffusion of an attenuation along the cosine of the basis of the normal
+export type Scatter = Absorbed | Specular(Ray, Vec3) | Diffuse(Vec3, Onb);
+
+// `schlick`, its `powi(5)` as the compiler of Rust expands it (`x * x^4`)
+function schlick(cosine: f64, refIdx: f64): f64 {
+    const r0 = (1.0 - refIdx) * (1.0 / (1.0 + refIdx));
+    const r1 = r0 * r0;
+    const c = 1.0 - cosine;
+    const c2 = c * c;
+    return r1 + (1.0 - r1) * (c * (c2 * c2));
+}
+
+export function scatter(m: Material, g: Rng, rIn: Ray, rec: HitRecord): [Scatter, Rng] {
+    return match (m) {
+        Lambertian(albedo) => [Diffuse(textureValue(albedo, rec.u, rec.v, rec.p), buildFromW(rec.normal)), g] as const,
+        Metal(albedo, fuzz) => {
+            const reflected = reflect(unit(rIn.dir), rec.normal);
+            const [s, g1] = randomInUnitSphere(g);
+            return [Specular(ray(rec.p, add(reflected, scale(s, fuzz)), rIn.time), albedo), g1] as const;
+        },
+        Dielectric(ri) => {
+            const ratio = rec.front ? 1.0 * (1.0 / ri) : ri;
+            const unitDir = unit(rIn.dir);
+            const cosTheta = fmin(dot(neg(unitDir), rec.normal), 1.0);
+            const sinTheta = Math.sqrt(1.0 - cosTheta * cosTheta);
+            const att = splat(1.0);
+            if (ratio * sinTheta > 1.0) {
+                return [Specular(ray(rec.p, reflect(unitDir, rec.normal), rIn.time), att), g] as const;
+            }
+            const [x, g1] = genF64(g);
+            return x < schlick(cosTheta, ratio)
+                ? [Specular(ray(rec.p, reflect(unitDir, rec.normal), rIn.time), att), g1] as const
+                : [Specular(ray(rec.p, refract(unitDir, rec.normal, ratio), rIn.time), att), g1] as const;
+        },
+        Isotropic(albedo) => {
+            const [s, g1] = randomInUnitSphere(g);
+            return [Specular(ray(rec.p, s, rIn.time), textureValue(albedo, rec.u, rec.v, rec.p)), g1] as const;
+        },
+        DiffLight(e) => [Absorbed, g] as const,
+    };
+}
+
+// `scattering_pdf` (of a Lambertian material: the others never diffuse)
+export function scatteringPdf(rec: HitRecord, scattered: Ray): f64 {
+    const cosine = dot(rec.normal, unit(scattered.dir));
+    return cosine < 0.0 ? 0.0 : cosine * FRAC_1_PI;
+}
+
+export function emitted(m: Material, rec: HitRecord): Vec3 {
+    return match (m) {
+        DiffLight(e) => rec.front ? textureValue(e, rec.u, rec.v, rec.p) : splat(0.0),
+        _ => splat(0.0),
+    };
+}
+
+// the density of the cosine around `o.w` (`CosPdf::value`)
+export function cosValue(o: Onb, direction: Vec3): f64 {
+    const cosine = dot(unit(direction), o.w);
+    return cosine <= 0.0 ? 0.0 : cosine * FRAC_1_PI;
+}
+
+// ----- objects --------------------------------------------------------------------
+
+export const XY: i64 = 0;
+export const XZ: i64 = 1;
+export const YZ: i64 = 2;
+
+// a sphere (center, radius); a moving one (centers at the two times, the
+// times, radius); a rectangle on a plane (a0, a1, b0, b1, k, plane); its
+// faces turned; a list; a box (its corners, its six sides as a list); moved
+// by an offset; turned around Y (sin, cos, whether it has a box, the box);
+// smoke in a boundary (its material, -1 / density); a node of the tree of
+// boxes (left, right, their box); a node without boxes
+export type Hittable =
+    Sphere(Vec3, f64, Material)
+    | MovingSphere(Vec3, Vec3, f64, f64, f64, Material)
+    | Rect(f64, f64, f64, f64, f64, Material, i64)
+    | Flip(Hittable)
+    | List(Hittable[])
+    | Cuboid(Vec3, Vec3, Hittable)
+    | Translate(Hittable, Vec3)
+    | RotateY(Hittable, f64, f64, boolean, Aabb)
+    | Medium(Hittable, Material, f64)
+    | Bvh(Hittable, Hittable, Aabb)
+    | Empty;
+
+function blank(m: Material): HitRecord {
+    return { p: splat(0.0), normal: splat(0.0), mat: m, t: 0.0, u: 0.0, v: 0.0, front: false };
+}
+
+function centerAt(c0: Vec3, c1: Vec3, t0: f64, t1: f64, time: f64): Vec3 {
+    return add(c0, scale(sub(c1, c0), (time - t0) / (t1 - t0)));
+}
+
+// a sphere of center `c` hit between `tmin` and `tmax`, the closer root
+// first; `uv`: whether the coordinates of the texture are computed (not by
+// a moving sphere, which leaves them)
+function sphereHit(c: Vec3, radius: f64, m: Material, r: Ray, tmin: f64, tmax: f64, uv: boolean): Option<HitRecord> {
+    const oc = sub(r.orig, c);
+    const a = lengthSquared(r.dir);
+    const halfB = dot(oc, r.dir);
+    const cc = lengthSquared(oc) - radius * radius;
+    const discriminant = halfB * halfB - a * cc;
+    if (discriminant > 0.0) {
+        const root = Math.sqrt(discriminant);
+        const t1 = (-halfB - root) / a;
+        const t2 = (-halfB + root) / a;
+        const t = t1 < tmax && t1 > tmin ? t1 : t2;
+        if (t < tmax && t > tmin) {
+            const p = at(r, t);
+            const outward = div(sub(p, c), radius);
+            const q = scale(sub(p, c), 1.0 / radius);
+            const u = uv ? 1.0 - (Math.atan2(q.z, q.x) + PI) * (1.0 / TWO_PI) : 0.0;
+            const v = uv ? (Math.asin(q.y) + FRAC_PI_2) * (1.0 / PI) : 0.0;
+            return Some(faced({ ...blank(m), t: t, p: p, u: u, v: v }, r, outward));
+        }
+        return None;
+    }
+    return None;
+}
+
+function rectHit(a0: f64, a1: f64, b0: f64, b1: f64, k: f64, m: Material, plane: i64, r: Ray, tmin: f64, tmax: f64): Option<HitRecord> {
+    // (the axis across the plane, then the two along it)
+    const [oz, dz] = plane == XY ? [r.orig.z, r.dir.z] as const : (plane == XZ ? [r.orig.y, r.dir.y] as const : [r.orig.x, r.dir.x] as const);
+    const t = (k - oz) * (1.0 / dz);
+    if (t < tmin || t > tmax) {
+        return None;
+    }
+    const [oa, da] = plane == YZ ? [r.orig.y, r.dir.y] as const : [r.orig.x, r.dir.x] as const;
+    const [ob, db] = plane == XY ? [r.orig.y, r.dir.y] as const : [r.orig.z, r.dir.z] as const;
+    const x = oa + t * da;
+    const y = ob + t * db;
+    if (x < a0 || x > a1 || y < b0 || y > b1) {
+        return None;
+    }
+    const outward = plane == XY ? vec(0.0, 0.0, 1.0) : (plane == XZ ? vec(0.0, 1.0, 0.0) : vec(1.0, 0.0, 0.0));
+    const rec = { ...blank(m), u: (x - a0) * (1.0 / (a1 - a0)), v: (y - b0) * (1.0 / (b1 - b0)), t: t };
+    return Some({ ...faced(rec, r, outward), p: at(r, t) });
+}
+
+// the closest of the objects `objs` from the `i`-th hit before `closest`
+function listHit(objs: Hittable[n], i: i64, r: Ray, tmin: f64, closest: f64, best: Option<HitRecord>, g: Rng): [Option<HitRecord>, Rng] {
+    if (i >= n) {
+        return [best, g] as const;
+    }
+    const [h, g1] = hit(objs[i], r, tmin, closest, g);
+    return match (h) {
+        Some(rec) => listHit(objs, i + 1, r, tmin, rec.t, h, g1),
+        None => listHit(objs, i + 1, r, tmin, closest, best, g1),
+    };
+}
+
+// where `r` hits `h` between `tmin` and `tmax`, and the generator after it
+export function hit(h: Hittable, r: Ray, tmin: f64, tmax: f64, g: Rng): [Option<HitRecord>, Rng] {
+    return match (h) {
+        Sphere(c, radius, m) => [sphereHit(c, radius, m, r, tmin, tmax, true), g] as const,
+        MovingSphere(c0, c1, t0, t1, radius, m) => [sphereHit(centerAt(c0, c1, t0, t1, r.time), radius, m, r, tmin, tmax, false), g] as const,
+        Rect(a0, a1, b0, b1, k, m, plane) => [rectHit(a0, a1, b0, b1, k, m, plane, r, tmin, tmax), g] as const,
+        Flip(inner) => {
+            const [hh, g1] = hit(inner, r, tmin, tmax, g);
+            return match (hh) {
+                Some(rec) => [Some({ ...rec, front: !rec.front }), g1] as const,
+                None => [None, g1] as const,
+            };
+        },
+        List(objs) => listHit(objs, 0, r, tmin, tmax, None, g),
+        Cuboid(lo, hi, sides) => hit(sides, r, tmin, tmax, g),
+        Translate(inner, offset) => {
+            const moved = ray(sub(r.orig, offset), r.dir, r.time);
+            const [hh, g1] = hit(inner, moved, tmin, tmax, g);
+            return match (hh) {
+                Some(rec) => [Some(faced({ ...rec, p: add(rec.p, offset) }, moved, rec.normal)), g1] as const,
+                None => [None, g1] as const,
+            };
+        },
+        RotateY(inner, s, c, hasBox, b) => {
+            const o = r.orig;
+            const d = r.dir;
+            const rotated = ray(vec(c * o.x - s * o.z, o.y, s * o.x + c * o.z), vec(c * d.x - s * d.z, d.y, s * d.x + c * d.z), r.time);
+            const [hh, g1] = hit(inner, rotated, tmin, tmax, g);
+            return match (hh) {
+                Some(rec) => {
+                    const p = vec(c * rec.p.x + s * rec.p.z, rec.p.y, -s * rec.p.x + c * rec.p.z);
+                    const nn = vec(c * rec.normal.x + s * rec.normal.z, rec.normal.y, -s * rec.normal.x + c * rec.normal.z);
+                    return [Some(faced({ ...rec, p: p }, rotated, nn)), g1] as const;
+                },
+                None => [None, g1] as const,
+            };
+        },
+        Medium(boundary, phase, negInvDensity) => mediumHit(boundary, phase, negInvDensity, r, tmin, tmax, g),
+        Bvh(left, right, b) => {
+            if (!boxHit(b, r, tmin, tmax)) {
+                return [None, g] as const;
+            }
+            // (the right one tried up to `tmax` too, as in the Rust program:
+            // its hit, when there is one, is kept)
+            const [hl, g1] = hit(left, r, tmin, tmax, g);
+            const [hr, g2] = hit(right, r, tmin, tmax, g1);
+            return match (hr) {
+                Some(rec) => [hr, g2] as const,
+                None => [hl, g2] as const,
+            };
+        },
+        Empty => [None, g] as const,
+    };
+}
+
+// `ConstantMedium::hit`: where the ray enters and leaves the boundary; a
+// distance drawn inside it
+function mediumHit(boundary: Hittable, phase: Material, negInvDensity: f64, r: Ray, tmin: f64, tmax: f64, g: Rng): [Option<HitRecord>, Rng] {
+    const [h1, g1] = hit(boundary, r, NEG_INFINITY, INFINITY, g);
+    return match (h1) {
+        None => [None, g1] as const,
+        Some(rec1) => {
+            const [h2, g2] = hit(boundary, r, rec1.t + 0.0001, INFINITY, g1);
+            return match (h2) {
+                None => [None, g2] as const,
+                Some(rec2) => {
+                    const ta = rec1.t < tmin ? tmin : rec1.t;
+                    const tb = rec2.t > tmax ? tmax : rec2.t;
+                    if (ta >= tb) {
+                        return [None, g2] as const;
+                    }
+                    const t1 = ta < 0.0 ? 0.0 : ta;
+                    const rayLength = length(r.dir);
+                    const inside = (tb - t1) * rayLength;
+                    const [x, g3] = genF64(g2);
+                    const hitDistance = negInvDensity * Math.log(x);
+                    if (hitDistance > inside) {
+                        return [None, g3] as const;
+                    }
+                    const t = t1 + hitDistance * (1.0 / rayLength);
+                    return [Some({ ...blank(phase), t: t, p: at(r, t), normal: vec(1.0, 0.0, 0.0), front: true }), g3] as const;
+                },
+            };
+        },
+    };
+}
+
+// `bounding_box(t0, t1)`
+export function bbox(h: Hittable, t0: f64, t1: f64): Option<Aabb> {
+    return match (h) {
+        Sphere(c, radius, m) => Some({ min: sub(c, splat(radius)), max: add(c, splat(radius)) }),
+        MovingSphere(c0, c1, s0, s1, radius, m) => {
+            const a = centerAt(c0, c1, s0, s1, t0);
+            const b = centerAt(c0, c1, s0, s1, t1);
+            return Some(surrounding({ min: sub(a, splat(radius)), max: add(a, splat(radius)) }, { min: sub(b, splat(radius)), max: add(b, splat(radius)) }));
+        },
+        Rect(a0, a1, b0, b1, k, m, plane) => {
+            const pad = 0.0001;
+            if (plane == XY) {
+                return Some({ min: vec(a0, b0, k - pad), max: vec(a1, b1, k + pad) });
+            }
+            if (plane == XZ) {
+                return Some({ min: vec(a0, k - pad, b0), max: vec(a1, k + pad, b1) });
+            }
+            return Some({ min: vec(k - pad, a0, b0), max: vec(k + pad, a1, b1) });
+        },
+        Flip(inner) => bbox(inner, t0, t1),
+        List(objs) => objs.length == 0 ? None : listBox(objs, 1, t0, t1, bbox(objs[0], t0, t1)),
+        Cuboid(lo, hi, sides) => Some({ min: lo, max: hi }),
+        Translate(inner, offset) => match (bbox(inner, t0, t1)) {
+            Some(b) => Some({ min: add(b.min, offset), max: add(b.max, offset) }),
+            None => None,
+        },
+        RotateY(inner, s, c, hasBox, b) => hasBox ? Some(b) : None,
+        Medium(boundary, phase, d) => bbox(boundary, t0, t1),
+        Bvh(left, right, b) => Some(b),
+        Empty => Some({ min: splat(0.0), max: splat(0.0) }),
+    };
+}
+
+function listBox(objs: Hittable[n], i: i64, t0: f64, t1: f64, acc: Option<Aabb>): Option<Aabb> {
+    if (i >= n) {
+        return acc;
+    }
+    return match (acc) {
+        None => None,
+        Some(a) => match (bbox(objs[i], t0, t1)) {
+            None => None,
+            Some(b) => listBox(objs, i + 1, t0, t1, Some(surrounding(a, b))),
+        },
+    };
+}
+
+// `pdf_value(o, v)`: the density of the directions towards the object (0
+// but for rectangles and spheres)
+export function pdfValue(h: Hittable, o: Vec3, v: Vec3, g: Rng): [f64, Rng] {
+    return match (h) {
+        Rect(a0, a1, b0, b1, k, m, plane) => {
+            const [hh, g1] = hit(h, ray(o, v, 0.0), 0.001, INFINITY, g);
+            return match (hh) {
+                None => [0.0, g1] as const,
+                Some(rec) => {
+                    const area = (a1 - a0) * (b1 - b0);
+                    const distanceSquared = rec.t * rec.t * lengthSquared(v);
+                    const cosine = Math.abs(dot(v, rec.normal) * (1.0 / length(v)));
+                    return [distanceSquared * (1.0 / (cosine * area)), g1] as const;
+                },
+            };
+        },
+        Sphere(c, radius, m) => {
+            const [hh, g1] = hit(h, ray(o, v, 0.0), 0.001, INFINITY, g);
+            return match (hh) {
+                None => [0.0, g1] as const,
+                Some(rec) => {
+                    const cosThetaMax = Math.sqrt(1.0 - radius * radius * (1.0 / lengthSquared(sub(c, o))));
+                    return [1.0 / (TWO_PI * (1.0 - cosThetaMax)), g1] as const;
+                },
+            };
+        },
+        _ => [0.0, g] as const,
+    };
+}
+
+// `random(rng, origin)`: a direction towards the object
+export function randomTowards(h: Hittable, g: Rng, o: Vec3): [Vec3, Rng] {
+    return match (h) {
+        Rect(a0, a1, b0, b1, k, m, plane) => {
+            const [a, g1] = genRange(g, a0, a1);
+            const [b, g2] = genRange(g1, b0, b1);
+            const p = plane == XY ? vec(a, b, k) : (plane == XZ ? vec(a, k, b) : vec(k, a, b));
+            return [sub(p, o), g2] as const;
+        },
+        Sphere(c, radius, m) => {
+            const direction = sub(c, o);
+            const distanceSquared = lengthSquared(direction);
+            const uvw = buildFromW(direction);
+            const [d, g1] = randomToSphere(g, radius, distanceSquared);
+            return [local(uvw, d), g1] as const;
+        },
+        _ => [vec(1.0, 0.0, 0.0), g] as const,
+    };
+}
+
+// ----- made ----------------------------------------------------------------------
+
+// `BoxPrim::new`: its six sides
+export function cuboid(p0: Vec3, p1: Vec3, m: Material): Hittable {
+    return Cuboid(p0, p1, List([
+        Rect(p0.x, p1.x, p0.y, p1.y, p1.z, m, XY),
+        Flip(Rect(p0.x, p1.x, p0.y, p1.y, p0.z, m, XY)),
+        Rect(p0.x, p1.x, p0.z, p1.z, p1.y, m, XZ),
+        Flip(Rect(p0.x, p1.x, p0.z, p1.z, p0.y, m, XZ)),
+        Rect(p0.y, p1.y, p0.z, p1.z, p1.x, m, YZ),
+        Flip(Rect(p0.y, p1.y, p0.z, p1.z, p0.x, m, YZ)),
+    ]));
+}
+
+// `RotateY::new`: the box of `inner` turned (its corners as the Rust
+// program takes them: `1 - i` on the three axes)
+export function rotateY(inner: Hittable, angle: f64, t0: f64, t1: f64): Hittable {
+    const rad = angle * (PI / 180.0);
+    const s = Math.sin(rad);
+    const c = Math.cos(rad);
+    const has = bbox(inner, t0, t1);
+    const b = match (has) {
+        Some(x) => x,
+        None => ({ min: splat(0.0), max: splat(0.0) }),
+    };
+    const [lo, hi] = fold(iota(8), [splat(INFINITY), splat(NEG_INFINITY)] as const, (acc, n) => {
+        const [mn, mx] = acc;
+        const [i, j, k] = [n >> 2, (n >> 1) & 1, n & 1] as const;
+        const x = f64(i) * b.max.x + f64(1 - i) * b.min.x;
+        const y = f64(j) * b.max.y + f64(1 - i) * b.min.y;
+        const z = f64(k) * b.max.z + f64(1 - i) * b.min.z;
+        const newx = c * x + s * z;
+        const newz = -s * x + c * z;
+        return [vec(fmin(mn.x, newx), fmin(mn.y, y), fmin(mn.z, newz)), vec(fmax(mx.x, newx), fmax(mx.y, y), fmax(mx.z, newz))] as const;
+    });
+    const hasBox = match (has) {
+        Some(x) => true,
+        None => false,
+    };
+    return RotateY(inner, s, c, hasBox, { min: lo, max: hi });
+}
+
+// `ConstantMedium::new`
+export function medium(boundary: Hittable, phase: Texture, density: f64): Hittable {
+    return Medium(boundary, Isotropic(phase), -1.0 * (1.0 / density));
+}
+
+// the key of `h` on the axis `axis` (`box_compare`: its box at the times 0)
+function keyOf(h: Hittable, axis: i64): f64 {
+    return match (bbox(h, 0.0, 0.0)) {
+        Some(b) => axis == 0 ? b.min.x : (axis == 1 ? b.min.y : b.min.z),
+        None => 0.0,
+    };
+}
+
+// the indices `idx` sorted by decreasing keys, the equal ones in their order
+function sortedDown(keys: f64[n], idx: i64[m]): i64[] {
+    if (m <= 1) {
+        return idx;
+    }
+    const h = m / 2;
+    return merged(keys, sortedDown(keys, idx.slice(0, h)), sortedDown(keys, idx.slice(h, m)), 0, 0, []);
+}
+
+function merged(keys: f64[n], a: i64[p], b: i64[q], i: i64, j: i64, out: i64[]): i64[] {
+    if (i >= p) {
+        return concat(out, b.slice(j, q));
+    }
+    if (j >= q) {
+        return concat(out, a.slice(i, p));
+    }
+    return keys[a[i]] < keys[b[j]] ? merged(keys, a, b, i, j + 1, concat(out, [b[j]])) : merged(keys, a, b, i + 1, j, concat(out, [a[i]]));
+}
+
+// `BvhNode::bvh_node`: an axis drawn; the objects sorted along it (by
+// decreasing boxes, as the comparison of the Rust program sorts them), the
+// second half on the left, made first
+export function bvhNode(g: Rng, objs: Hittable[n], t0: f64, t1: f64): [Hittable, Rng] {
+    const [axis, g1] = genRangeU8(g, 0, 3);
+    if (n == 0) {
+        return [Empty, g1] as const;
+    }
+    const [left, right, g3] = n == 1 ? [objs[0], objs[0], g1] as const
+        : (n == 2 ? (keyOf(objs[0], axis) < keyOf(objs[1], axis) ? [objs[0], objs[1], g1] as const : [objs[1], objs[0], g1] as const)
+        : halves(g1, objs, axis, t0, t1));
+    return match (bbox(left, t0, t1)) {
+        None => [Empty, g3] as const,
+        Some(bl) => match (bbox(right, t0, t1)) {
+            None => [Empty, g3] as const,
+            Some(br) => [Bvh(left, right, surrounding(bl, br)), g3] as const,
+        },
+    };
+}
+
+function halves(g: Rng, objs: Hittable[n], axis: i64, t0: f64, t1: f64): [Hittable, Hittable, Rng] {
+    const keys = map(objs, (o) => keyOf(o, axis));
+    const order = sortedDown(keys, iota(n));
+    const sorted = map(order, (i) => objs[i]);
+    const mid = n / 2;
+    const [left, g1] = bvhNode(g, sorted.slice(mid, n), t0, t1);
+    const [right, g2] = bvhNode(g1, sorted.slice(0, mid), t0, t1);
+    return [left, right, g2] as const;
+}
+
+// ----- the camera ----------------------------------------------------------------
+
+export type Camera = {
+    orig: Vec3, lowerLeft: Vec3, horizontal: Vec3, vertical: Vec3,
+    u: Vec3, v: Vec3, w: Vec3, lensRadius: f64, time0: f64, time1: f64,
+};
+
+export function camera(lookfrom: Vec3, lookat: Vec3, vup: Vec3, vfov: f64, aspect: f64, aperture: f64, focusDist: f64, time0: f64, time1: f64): Camera {
+    const viewportHeight = 2.0 * Math.tan(vfov * (PI / 180.0) * 0.5);
+    const viewportWidth = aspect * viewportHeight;
+    const w = unit(sub(lookfrom, lookat));
+    const u = unit(cross(vup, w));
+    const v = cross(w, u);
+    const horizontal = scale(u, focusDist * viewportWidth);
+    const vertical = scale(v, focusDist * viewportHeight);
+    return {
+        orig: lookfrom,
+        lowerLeft: sub(sub(sub(lookfrom, scale(horizontal, 0.5)), scale(vertical, 0.5)), scale(w, focusDist)),
+        horizontal: horizontal, vertical: vertical, u: u, v: v, w: w,
+        lensRadius: aperture * 0.5, time0: time0, time1: time1,
+    };
+}
+
+export function getRay(c: Camera, g: Rng, s: f64, t: f64): [Ray, Rng] {
+    const [d, g1] = randomInUnitCircle(g);
+    const rd = scale(d, c.lensRadius);
+    const offset = add(scale(c.u, rd.x), scale(c.v, rd.y));
+    const [time, g2] = genRange(g1, c.time0, c.time1);
+    const dir = sub(sub(add(add(c.lowerLeft, scale(c.horizontal, s)), scale(c.vertical, t)), c.orig), offset);
+    return [ray(add(c.orig, offset), dir, time), g2] as const;
+}

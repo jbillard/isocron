@@ -1,0 +1,205 @@
+// The random numbers of rtiow, the same as those of the Rust program, draw
+// after draw: the generator ChaCha8Rng of rand_chacha 0.2 (8 rounds, a key
+// of 8 words, a counter of blocks of 64 bits, the stream 0), seeded from an
+// integer as rand_core 0.5 seeds it (`seed_from_u64`: the words of PCG32),
+// and the draws of rand 0.7: `gen::<f64>()`, `gen::<f32>()`, `gen_range`
+// of floats and of integers. The words of the stream are read in order (as
+// the buffer of 4 blocks of rand_core reads them), one block of 16 at a
+// time: a generator is a value, given to each draw, which gives back the
+// next one.
+
+// 16 words: a state of ChaCha, or a block of its output
+type Words = {
+    x0: u32, x1: u32, x2: u32, x3: u32, x4: u32, x5: u32, x6: u32, x7: u32,
+    x8: u32, x9: u32, x10: u32, x11: u32, x12: u32, x13: u32, x14: u32, x15: u32,
+};
+
+type Key = { k0: u32, k1: u32, k2: u32, k3: u32, k4: u32, k5: u32, k6: u32, k7: u32 };
+
+// the key, the counter of the next block, the block being read and the
+// index of its next word (16: none left)
+export type Rng = { key: Key, next: u64, at: i64, b: Words };
+
+// ----- ChaCha ----------------------------------------------------------------
+
+function rotl(x: u32, n: u32): u32 {
+    return (x << n) | (x >> (32u32 - n));
+}
+
+function quarter(a: u32, b: u32, c: u32, d: u32): [u32, u32, u32, u32] {
+    const a1 = a + b;
+    const d1 = rotl(d ^ a1, 16u32);
+    const c1 = c + d1;
+    const b1 = rotl(b ^ c1, 12u32);
+    const a2 = a1 + b1;
+    const d2 = rotl(d1 ^ a2, 8u32);
+    const c2 = c1 + d2;
+    const b2 = rotl(b1 ^ c2, 7u32);
+    return [a2, b2, c2, d2] as const;
+}
+
+// a round of the columns, then one of the diagonals
+function doubleRound(s: Words): Words {
+    const [a0, b0, c0, d0] = quarter(s.x0, s.x4, s.x8, s.x12);
+    const [a1, b1, c1, d1] = quarter(s.x1, s.x5, s.x9, s.x13);
+    const [a2, b2, c2, d2] = quarter(s.x2, s.x6, s.x10, s.x14);
+    const [a3, b3, c3, d3] = quarter(s.x3, s.x7, s.x11, s.x15);
+    const [e0, f1, g2, h3] = quarter(a0, b1, c2, d3);
+    const [e1, f2, g3, h0] = quarter(a1, b2, c3, d0);
+    const [e2, f3, g0, h1] = quarter(a2, b3, c0, d1);
+    const [e3, f0, g1, h2] = quarter(a3, b0, c1, d2);
+    return {
+        x0: e0, x1: e1, x2: e2, x3: e3, x4: f0, x5: f1, x6: f2, x7: f3,
+        x8: g0, x9: g1, x10: g2, x11: g3, x12: h0, x13: h1, x14: h2, x15: h3,
+    };
+}
+
+// the block `ctr` of the stream of the key `k`
+function block(k: Key, ctr: u64): Words {
+    const s: Words = {
+        x0: 0x61707865u32, x1: 0x3320646eu32, x2: 0x79622d32u32, x3: 0x6b206574u32,
+        x4: k.k0, x5: k.k1, x6: k.k2, x7: k.k3, x8: k.k4, x9: k.k5, x10: k.k6, x11: k.k7,
+        x12: u32(ctr), x13: u32(ctr >> 32u64), x14: 0u32, x15: 0u32,
+    };
+    const r = doubleRound(doubleRound(doubleRound(doubleRound(s))));
+    return {
+        x0: r.x0 + s.x0, x1: r.x1 + s.x1, x2: r.x2 + s.x2, x3: r.x3 + s.x3,
+        x4: r.x4 + s.x4, x5: r.x5 + s.x5, x6: r.x6 + s.x6, x7: r.x7 + s.x7,
+        x8: r.x8 + s.x8, x9: r.x9 + s.x9, x10: r.x10 + s.x10, x11: r.x11 + s.x11,
+        x12: r.x12 + s.x12, x13: r.x13 + s.x13, x14: r.x14 + s.x14, x15: r.x15 + s.x15,
+    };
+}
+
+// the word `i` of `w`
+function wordOf(w: Words, i: i64): u32 {
+    if (i < 8) {
+        if (i < 4) {
+            return i < 2 ? (i == 0 ? w.x0 : w.x1) : (i == 2 ? w.x2 : w.x3);
+        }
+        return i < 6 ? (i == 4 ? w.x4 : w.x5) : (i == 6 ? w.x6 : w.x7);
+    }
+    if (i < 12) {
+        return i < 10 ? (i == 8 ? w.x8 : w.x9) : (i == 10 ? w.x10 : w.x11);
+    }
+    return i < 14 ? (i == 12 ? w.x12 : w.x13) : (i == 14 ? w.x14 : w.x15);
+}
+
+// ----- seeded ---------------------------------------------------------------
+
+const PCG_MUL: u64 = 6364136223846793005u64;
+const PCG_INC: u64 = 11634580027462260723u64;
+
+// the word of PCG32 of the state `s` (already advanced)
+function pcgWord(s: u64): u32 {
+    const xorshifted = u32(((s >> 18u64) ^ s) >> 27u64);
+    const rot = u32(s >> 59u64);
+    return (xorshifted >> rot) | (xorshifted << (32u32 - rot));
+}
+
+// `ChaCha8Rng::seed_from_u64(seed)`
+export function seeded(seed: u64): Rng {
+    const s0 = seed * PCG_MUL + PCG_INC;
+    const s1 = s0 * PCG_MUL + PCG_INC;
+    const s2 = s1 * PCG_MUL + PCG_INC;
+    const s3 = s2 * PCG_MUL + PCG_INC;
+    const s4 = s3 * PCG_MUL + PCG_INC;
+    const s5 = s4 * PCG_MUL + PCG_INC;
+    const s6 = s5 * PCG_MUL + PCG_INC;
+    const s7 = s6 * PCG_MUL + PCG_INC;
+    const z = 0u32;
+    return {
+        key: {
+            k0: pcgWord(s0), k1: pcgWord(s1), k2: pcgWord(s2), k3: pcgWord(s3),
+            k4: pcgWord(s4), k5: pcgWord(s5), k6: pcgWord(s6), k7: pcgWord(s7),
+        },
+        next: 0u64,
+        at: 16,
+        b: { x0: z, x1: z, x2: z, x3: z, x4: z, x5: z, x6: z, x7: z, x8: z, x9: z, x10: z, x11: z, x12: z, x13: z, x14: z, x15: z },
+    };
+}
+
+// ----- the words --------------------------------------------------------------
+
+// `next_u32`
+export function nextU32(r: Rng): [u32, Rng] {
+    if (r.at >= 16) {
+        const b = block(r.key, r.next);
+        return [b.x0, { key: r.key, next: r.next + 1u64, at: 1, b: b }] as const;
+    }
+    return [wordOf(r.b, r.at), { ...r, at: r.at + 1 }] as const;
+}
+
+// `next_u64`: two words in a row, the first the low one
+export function nextU64(r: Rng): [u64, Rng] {
+    if (r.at < 15) {
+        return [u64(wordOf(r.b, r.at)) | (u64(wordOf(r.b, r.at + 1)) << 32u64), { ...r, at: r.at + 2 }] as const;
+    }
+    const [lo, r1] = nextU32(r);
+    const [hi, r2] = nextU32(r1);
+    return [u64(lo) | (u64(hi) << 32u64), r2] as const;
+}
+
+// ----- the draws of rand 0.7 ----------------------------------------------------
+
+// 2^-53 and 2^-52
+const SCALE53: f64 = 1.0 / 9007199254740992.0;
+const SCALE52: f64 = 1.0 / 4503599627370496.0;
+
+// `gen::<f64>()`: the 53 high bits of a `u64`, in [0, 1)
+export function genF64(r: Rng): [f64, Rng] {
+    const [v, r1] = nextU64(r);
+    return [SCALE53 * f64(v >> 11u64), r1] as const;
+}
+
+// `gen::<f32>()`: the 24 high bits of a `u32`, in [0, 1)
+export function genF32(r: Rng): [f32, Rng] {
+    const [v, r1] = nextU32(r);
+    return [(1.0f32 / 16777216.0f32) * f32(v >> 8u32), r1] as const;
+}
+
+// `gen_range(low, high)` of floats: 52 bits in [0, 1) times `high - low`
+// plus `low`, drawn again while that rounds to `high` (finite bounds)
+export function genRange(r: Rng, low: f64, high: f64): [f64, Rng] {
+    const scale = high - low;
+    const [v, r1] = nextU64(r);
+    const value01 = f64(v >> 12u64) * SCALE52;
+    const res = value01 * scale + low;
+    return res < high ? [res, r1] as const : genRange(r1, low, high);
+}
+
+// `gen_range(low, high)` of `u8` (and other types of 8 or 16 bits): a `u32`
+// times the range, its high word, unless its low word falls in the zone
+// rejected (the remainder of 2^32 by the range)
+export function genRangeU8(r: Rng, low: i64, high: i64): [i64, Rng] {
+    const range = u32(high - low);
+    const rejected = (0xFFFFFFFFu32 - range + 1u32) % range;
+    const zone = 0xFFFFFFFFu32 - rejected;
+    const [v, r1] = nextU32(r);
+    const m = u64(v) * u64(range);
+    return u32(m) <= zone ? [low + i64(m >> 32u64), r1] as const : genRangeU8(r1, low, high);
+}
+
+// the high and low words of the product of two `u64`
+function wideMul(a: u64, b: u64): [u64, u64] {
+    const mask = 0xFFFFFFFFu64;
+    const [a0, a1, b0, b1] = [a & mask, a >> 32u64, b & mask, b >> 32u64] as const;
+    const p00 = a0 * b0;
+    const p01 = a0 * b1;
+    const p10 = a1 * b0;
+    const p11 = a1 * b1;
+    const mid = (p00 >> 32u64) + (p01 & mask) + (p10 & mask);
+    const hi = p11 + (p01 >> 32u64) + (p10 >> 32u64) + (mid >> 32u64);
+    const lo = (mid << 32u64) | (p00 & mask);
+    return [hi, lo] as const;
+}
+
+// `gen_range(low, high)` of `usize`: a `u64` times the range, its high
+// word, unless its low word passes the zone (the range shifted to the top,
+// less one)
+export function genRangeUsize(r: Rng, low: i64, high: i64): [i64, Rng] {
+    const range = u64(high - low);
+    const zone = (range << u64(leadingZeros(range))) - 1u64;
+    const [v, r1] = nextU64(r);
+    const [hi, lo] = wideMul(v, range);
+    return lo <= zone ? [low + i64(hi), r1] as const : genRangeUsize(r1, low, high);
+}

@@ -1,0 +1,186 @@
+// rtiow (okaneco/rtiow, MIT: Peter Shirley's Ray Tracing in One Weekend,
+// The Next Week and The Rest of Your Life) in Isocron: the scenes, the
+// colors of the rays (ray.rs) and the image, each pixel from its own
+// generator (the seed plus its index), all the pixels in parallel; written
+// as a PPM file of text (P3), the same bytes as the Rust program.
+// usage: rtiow [image.ppm] [samples] [width] [height] [seed] [sphere|final]
+import { Rng, seeded, genF32, genF64, genRange } from "./rng";
+import { Vec3, Ray, Onb, INFINITY, vec, splat, add, mul, scale, ray, randomRange, randomCosineDirection, local, intoU8 } from "./vec3";
+import {
+    Hittable, HitRecord, Camera, Sphere, MovingSphere, Rect, Flip, List, Translate, Solid, Noise,
+    Lambertian, Dielectric, DiffLight, Absorbed, Specular, Diffuse, XY, XZ, YZ, MARBLE,
+    hit, scatter, emitted, scatteringPdf, cosValue, pdfValue, randomTowards, cuboid, rotateY,
+    medium, metal, defaultMaterial, perlinNew, bvhNode, camera, getRay,
+} from "./world";
+
+// ----- the colors of the rays -------------------------------------------------------
+
+function rayColor(g: Rng, r: Ray, bg: Vec3, world: Hittable, lights: Hittable, depth: i64): [Vec3, Rng] {
+    if (depth == 0) {
+        return [splat(0.0), g] as const;
+    }
+    const [h, g1] = hit(world, r, 0.001, INFINITY, g);
+    return match (h) {
+        None => [bg, g1] as const,
+        Some(rec) => shaded(g1, r, rec, bg, world, lights, depth),
+    };
+}
+
+// the light of the point hit: emitted, plus that of the ray sent on (a
+// diffusion: towards the lights or along the cosine, half and half)
+function shaded(g: Rng, r: Ray, rec: HitRecord, bg: Vec3, world: Hittable, lights: Hittable, depth: i64): [Vec3, Rng] {
+    const em = emitted(rec.mat, rec);
+    const [sc, g1] = scatter(rec.mat, g, r, rec);
+    return match (sc) {
+        Absorbed => [em, g1] as const,
+        Specular(sr, att) => {
+            const [c, g2] = rayColor(g1, sr, bg, world, lights, depth - 1);
+            return [mul(att, c), g2] as const;
+        },
+        Diffuse(att, onb) => {
+            const [f, g2] = genF32(g1);
+            const [dir, g3] = f < 0.5f32 ? randomTowards(lights, g2, rec.p) : cosine(onb, g2);
+            const scattered = ray(rec.p, dir, r.time);
+            const [lv, g4] = pdfValue(lights, rec.p, scattered.dir, g3);
+            const pdfVal = 0.5 * lv + 0.5 * cosValue(onb, scattered.dir);
+            const [c, g5] = rayColor(g4, scattered, bg, world, lights, depth - 1);
+            return [add(em, scale(mul(scale(att, scatteringPdf(rec, scattered)), c), 1.0 / pdfVal)), g5] as const;
+        },
+    };
+}
+
+// `CosPdf::generate`
+function cosine(onb: Onb, g: Rng): [Vec3, Rng] {
+    const [d, g1] = randomCosineDirection(g);
+    return [local(onb, d), g1] as const;
+}
+
+// ----- the scenes -------------------------------------------------------------------
+
+type Setup = { cam: Camera, world: Hittable, lights: Hittable, bg: Vec3, w: i64, h: i64, samples: i64, depth: i64, seed: u64 };
+
+// `third::cornell_box_sphere`: a box of Cornell, a block turned and a
+// sphere of glass
+function cornellBoxSphere(w: i64, h: i64): [Camera, Hittable, Hittable] {
+    const red = Lambertian(Solid(vec(0.65, 0.05, 0.05)));
+    const white = Lambertian(Solid(vec(0.73, 0.73, 0.73)));
+    const green = Lambertian(Solid(vec(0.12, 0.45, 0.15)));
+    const light = DiffLight(Solid(splat(15.0)));
+    const world = List([
+        Flip(Rect(213.0, 343.0, 227.0, 332.0, 554.0, light, XZ)),
+        Flip(Rect(0.0, 555.0, 0.0, 555.0, 555.0, green, YZ)),
+        Rect(0.0, 555.0, 0.0, 555.0, 0.0, red, YZ),
+        Flip(Rect(0.0, 555.0, 0.0, 555.0, 555.0, white, XZ)),
+        Rect(0.0, 555.0, 0.0, 555.0, 0.0, white, XZ),
+        Flip(Rect(0.0, 555.0, 0.0, 555.0, 555.0, white, XY)),
+        Translate(rotateY(cuboid(splat(0.0), vec(165.0, 330.0, 165.0), white), 15.0, 0.0, 1.0), vec(265.0, 0.0, 295.0)),
+        Sphere(vec(190.0, 90.0, 190.0), 90.0, Dielectric(1.5)),
+    ]);
+    const lights = Rect(213.0, 343.0, 227.0, 332.0, 554.0, defaultMaterial(), XZ);
+    const aspect = f64(w) * (1.0 / f64(h));
+    const cam = camera(vec(278.0, 278.0, -800.0), vec(278.0, 278.0, 0.0), vec(0.0, 1.0, 0.0), 40.0, aspect, 0.0, 10.0, 0.0, 1.0);
+    return [cam, world, lights] as const;
+}
+
+// the 400 blocks of the ground, `k` = 20 i + j, their heights drawn
+function groundFrom(g: Rng, k: i64, out: Hittable[]): [Hittable[], Rng] {
+    if (k >= 400) {
+        return [out, g] as const;
+    }
+    const ground = Lambertian(Solid(vec(0.48, 0.83, 0.53)));
+    const x0 = -1000.0 + f64(k / 20) * 100.0;
+    const z0 = -1000.0 + f64(k % 20) * 100.0;
+    const [y1, g1] = genRange(g, 1.0, 101.0);
+    return groundFrom(g1, k + 1, concat(out, [cuboid(vec(x0, 0.0, z0), vec(x0 + 100.0, y1, z0 + 100.0), ground)]));
+}
+
+// the 1000 spheres of the box of spheres
+function ballsFrom(g: Rng, k: i64, out: Hittable[]): [Hittable[], Rng] {
+    if (k >= 1000) {
+        return [out, g] as const;
+    }
+    const white = Lambertian(Solid(vec(0.73, 0.73, 0.73)));
+    const [c, g1] = randomRange(g, 0.0, 165.0);
+    return ballsFrom(g1, k + 1, concat(out, [Sphere(c, 10.0, white)]));
+}
+
+// `second::final_scene`, its light turned down (as the lights of the
+// third book), lit by it: blocks, a moving sphere, glass, metal, smoke in
+// a sphere and around everything, a ball of marble and a box of spheres
+function finalScene(g: Rng, w: i64, h: i64): [Camera, Hittable, Hittable] {
+    const [blocks, g1] = groundFrom(g, 0, []);
+    const [tree1, g2] = bvhNode(g1, blocks, 0.0, 1.0);
+    const center1 = vec(400.0, 400.0, 200.0);
+    const boundary = Sphere(vec(360.0, 150.0, 145.0), 70.0, Dielectric(1.5));
+    // (the noise of Perlin from the generator of the thread, seeded with 0)
+    const [perlin, gp] = perlinNew(seeded(0u64));
+    const [balls, g3] = ballsFrom(g2, 0, []);
+    const [tree2, g4] = bvhNode(g3, balls, 0.0, 1.0);
+    const world = List([
+        tree1,
+        Flip(Rect(123.0, 423.0, 147.0, 412.0, 554.0, DiffLight(Solid(splat(7.0))), XZ)),
+        MovingSphere(center1, add(center1, vec(30.0, 0.0, 0.0)), 0.0, 1.0, 50.0, Lambertian(Solid(vec(0.7, 0.3, 0.1)))),
+        Sphere(vec(260.0, 150.0, 45.0), 50.0, Dielectric(1.5)),
+        Sphere(vec(0.0, 150.0, 145.0), 50.0, metal(vec(0.8, 0.8, 0.9), 10.0)),
+        boundary,
+        medium(boundary, Solid(vec(0.2, 0.4, 0.9)), 0.2),
+        medium(Sphere(splat(0.0), 5000.0, Dielectric(1.5)), Solid(vec(1.0, 1.0, 1.0)), 0.0001),
+        Sphere(vec(220.0, 280.0, 300.0), 80.0, Lambertian(Noise(perlin, splat(1.0), MARBLE, 0.1, 7, 10.0))),
+        Translate(rotateY(tree2, 15.0, 0.0, 1.0), vec(-100.0, 270.0, 395.0)),
+    ]);
+    const lights = Rect(123.0, 423.0, 147.0, 412.0, 554.0, defaultMaterial(), XZ);
+    const aspect = f64(w) * (1.0 / f64(h));
+    const cam = camera(vec(478.0, 278.0, -600.0), vec(278.0, 278.0, 0.0), vec(0.0, 1.0, 0.0), 40.0, aspect, 0.0, 10.0, 0.0, 1.0);
+    return [cam, world, lights] as const;
+}
+
+// ----- the image ------------------------------------------------------------------
+
+// the pixel `x` (row after row from the top): its samples summed, then
+// `sqrt` of their mean as bytes
+function pixel(s: Setup, x: i64): [i64, i64, i64] {
+    const w = s.w;
+    const h = s.h;
+    const [color, gEnd] = fold(iota(s.samples), [splat(0.0), seeded(s.seed + u64(x))] as const, (acc, k) => {
+        const [pix, g] = acc;
+        const [a, g1] = genF64(g);
+        const u = (f64(x % w) + a) * (1.0 / f64(w - 1));
+        const [b, g2] = genF64(g1);
+        const v = (f64(h - 1 - x / w) + b) * (1.0 / f64(h - 1));
+        const [r, g3] = getRay(s.cam, g2, u, v);
+        const [c, g4] = rayColor(g3, r, s.bg, s.world, s.lights, s.depth);
+        return [add(pix, c), g4] as const;
+    });
+    const k = 1.0 / f64(s.samples);
+    return [intoU8(Math.sqrt(color.x * k)), intoU8(Math.sqrt(color.y * k)), intoU8(Math.sqrt(color.z * k))] as const;
+}
+
+function argOr(args: string[k], i: i64, d: i64): i64 {
+    if (i >= k) {
+        return d;
+    }
+    return match (tryParseI64(args[i])) {
+        Ok(v) => v,
+        Err(e) => d,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const filename = k > 0 ? args[0] : "image0.ppm";
+    const samples = argOr(args, 1, 100);
+    const w = argOr(args, 2, 384);
+    const h = argOr(args, 3, i64(f64(w) * (1.0 / (16.0 / 9.0))));
+    const seed = u64(argOr(args, 4, i64(clock() / 1000000000u64)));
+    const scene = k > 5 ? args[5] : "sphere";
+    const [cam, world, lights] = scene == "final" ? finalScene(seeded(seed), w, h) : cornellBoxSphere(w, h);
+    const setup: Setup = { cam: cam, world: world, lights: lights, bg: splat(0.0), w: w, h: h, samples: samples, depth: 50, seed: seed };
+    const t0 = clock();
+    const colors = map(iota(w * h), (x) => pixel(setup, x));
+    const lines = map(colors, (c) => {
+        const [r, g, b] = c;
+        return `${r} ${g} ${b}\n`;
+    });
+    writeText(filename, `P3\n${w} ${h}\n255\n` + join(lines, ""));
+    print(`Done in ${i64((clock() - t0) / 1000000u64)} ms.`);
+    return 0;
+}

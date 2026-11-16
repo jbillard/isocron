@@ -1,0 +1,110 @@
+# rtiow: a Rust project and its port to Isocron
+
+[okaneco/rtiow](https://github.com/okaneco/rtiow) (MIT, `rust/LICENSE-MIT`; its sample images left out)
+is a ray tracer in Rust following Peter Shirley's three books (*Ray Tracing
+in One Weekend*, *The Next Week*, *The Rest of Your Life*): spheres, moving
+spheres, rectangles, boxes, instances moved and turned, smoke, a tree of
+bounding boxes (BVH), textures and the noise of Perlin, materials
+(Lambertian, metal, glass, lights, isotropic), sampling by probability
+densities (towards the lights and along the cosine), rendered in parallel
+with rayon. `isocron/` is the same program in Isocron, written plainly
+(not tuned): the two write the same image, byte for byte.
+
+| | Rust (`rust/`) | Isocron (`isocron/`) |
+| --- | --- | --- |
+| Source | 4460 lines (26 files, comments included; 1615 of them the scenes of the three books, about 20), the crates rand, rand_chacha, rayon, image | 1248 lines (4 files: `rng`, `vec3`, `world`, `main`; every part of the library, the two scenes measured) |
+| Polymorphism | traits (`dyn Hittable`, `dyn Texture`, `dyn Pdf`) behind `Arc` | sum types and `match` |
+| Random numbers | `rand` 0.7, `rand_chacha` 0.2 | `rng.isc`: ChaCha8 and the draws of `rand` 0.7, the same numbers (`rng_check.isc`, `rng_check.out`, `rng_check.rs`) |
+| Parallelism | `rayon` (`into_par_iter` over the pixels) | `map` over the pixels |
+
+## What was changed in the Rust program
+
+Only what a comparison needs, each place marked `bench/rtiow`:
+
+* **Reproducible random numbers.** The program drew from `rand::thread_rng()`
+  (seeded by the system, its draws shared by the pixels a thread happens to
+  render): an image could not be rendered twice. `src/rng.rs` gives each
+  thread a ChaCha8 generator (the generator its scenes use) started again
+  from the seed plus the index of the pixel at the start of each pixel
+  (`render.rs`); the smoke and the noise of Perlin draw from it as they drew
+  from `thread_rng`.
+* **The final scene of the second book** (`main.rs`: a sixth argument,
+  `sphere` by default, or `final`): its light turned down
+  (`FlipFace`), as the lights of the third book, whose `emitted` lights the
+  front face only (it rendered black); it had been put behind the feature
+  `images` although it uses no image.
+* **The sort of the BVH** (`bvh.rs`): its comparison gave `Less` both ways
+  for equal keys, which is no order: the order of the many equal boxes of
+  the ground was left to the algorithm of `sort_unstable_by`. Now `Equal`
+  for them, and a stable sort: the same order, defined.
+* `ImageTexture` behind the feature `images` (the port has no JPEG decoder;
+  without `images` the program builds without the `image` crate).
+
+Kept as they are, in both: the BVH tries its right child up to `t_max` even
+after a hit on its left (its right hit, when there is one, is kept), the box
+of `RotateY` takes `1 - i` on its three axes, a translated hit is faced
+against its ray again.
+
+## Running it
+
+```
+# Rust
+cd rust && cargo build --release --no-default-features --features threads
+target/release/rtiow image.ppm 100 384 216 42 sphere
+# Isocron
+iscc build isocron/main.isc -o rtiow-isc
+./rtiow-isc image.ppm 100 384 216 42 sphere
+```
+
+Arguments: the image, the samples per pixel, its width, its height, the
+seed, the scene (`sphere` or `final`). `RAYON_NUM_THREADS` and `ISC_THREADS`
+set the numbers of threads.
+
+## Measures
+
+`measure.py` (its steps in its header) runs under the protocol of the
+machine (`bench/machine.sh`) and writes `results/*.json`; the numbers are in
+`results/rtiow.md`. Those of 2026-11-16 (Isocron c1c4107, rustc 1.99.1, a
+Xeon E-2388G at a fixed 3.2 GHz), the port as written, before any tuning:
+
+* **The same images**: every render of the two programs, on 8 threads and
+  on 1, the two scenes, byte for byte.
+* **Builds**: `iscc build` 2.9 s (one core); Rust 6.3 s from clean (14.7 s
+  of processor: its dependencies build in parallel), 3.0 s after one file
+  touched (thin LTO). The programs: 363 KiB and 721 KiB.
+* **8 threads**: `sphere` 2.73 s for Isocron, 2.78 s for Rust; `final`
+  3.48 s and 2.40 s.
+* **1 thread**: `sphere` 17.8 s and 7.0 s; `final` 23.7 s and 10.8 s.
+* **Memory**: peaks of 20.7 MiB and 3.3 MiB (`sphere`), 28.7 and 3.8 MiB
+  (`final`); 5 thousand blocks allocated and 858 thousand for a small
+  `sphere` (Valgrind).
+
+What explains them (`perf`, on the same renders):
+
+1. **One thread, Isocron 2.5 times slower**: 11.3 billion instructions
+   against 3.3 (`sphere`, 25 samples of 192 by 108), 4.2 billion loads
+   against 1.0, 4.0 billion stores against 0.56, at a like number of
+   instructions per cycle: copies. `hit` is one function of 3852
+   instructions and a frame of 2.9 KiB (every kind of object inlined in its
+   `match`); each call takes the ray and the generator (26 words) and gives
+   back the generator and an `Option<HitRecord>` (its material inside, about
+   160 bytes), through memory. The Rust program fills a `&mut HitRecord` and
+   draws from a generator of its thread.
+2. **Rust on 8 threads** spends 22.2 s of processor where one thread needs
+   7.0 s: its `Arc`. In `AaRect::hit` the same work takes 1794 samples
+   against 424 on one thread, the hottest instructions the `lock incq` of
+   `rec.material = self.mp.clone()` and the loads of the rectangle beside
+   counters other cores write. On one thread already, `malloc`, `free` and
+   the drops of `Arc` are 35 % of its time (16 allocations a sample:
+   `HitRecord::default()` makes an `Arc<Material>` and an `Arc<SolidColor>`,
+   each diffusion two `Arc` of densities).
+3. **Isocron on 8 threads** spends 21.4 s of processor for 17.8 s on one:
+   the atomic counts of the textures of the world copied into each hit
+   (D678): the `lock incq` of `hit` from about 1 % to about 9 % of its
+   samples, `isc_rec_drop_1_atomic` from 2.1 % to 4.6 %.
+4. **Memory**: Isocron's own is 2.6 MiB (Rust's 2.8); its peak grows by
+   about 200 bytes a pixel, the port making the whole text of the image (the
+   colors, a line a pixel, joined) before writing it, where the Rust program
+   writes it line by line; the final scene adds 8 MiB while it is made
+   (seen on an image of 2 by 2 pixels; which of its arrays, not measured
+   yet).

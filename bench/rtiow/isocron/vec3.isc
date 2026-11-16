@@ -1,0 +1,178 @@
+// Vectors, points and colors of rtiow (vec3.rs, ray.rs, onb.rs,
+// conversion.rs). Each operation is that of the Rust program, in its
+// order, so that the bits are the same: `v / s` multiplies each component by
+// `1 / s`, as its `Div` does; `s * v` and `v * s` are the same products.
+import { Rng, genF64, genRange } from "./rng";
+
+export type Vec3 = { x: f64, y: f64, z: f64 };
+
+export type Ray = { orig: Vec3, dir: Vec3, time: f64 };
+
+// an orthonormal basis (`Onb`)
+export type Onb = { u: Vec3, v: Vec3, w: Vec3 };
+
+export const PI: f64 = 3.141592653589793;
+export const TWO_PI: f64 = 6.283185307179586;
+export const FRAC_1_PI: f64 = 0.3183098861837907;
+export const FRAC_PI_2: f64 = 1.5707963267948966;
+export const INFINITY: f64 = 1.0 / 0.0;
+export const NEG_INFINITY: f64 = -1.0 / 0.0;
+
+export function vec(x: f64, y: f64, z: f64): Vec3 {
+    return { x: x, y: y, z: z };
+}
+
+// `Vec3::new_with(a)`
+export function splat(a: f64): Vec3 {
+    return { x: a, y: a, z: a };
+}
+
+export function add(a: Vec3, b: Vec3): Vec3 {
+    return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+export function sub(a: Vec3, b: Vec3): Vec3 {
+    return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+// the product component by component
+export function mul(a: Vec3, b: Vec3): Vec3 {
+    return { x: a.x * b.x, y: a.y * b.y, z: a.z * b.z };
+}
+
+// `s * v`, `v * s`
+export function scale(a: Vec3, s: f64): Vec3 {
+    return { x: a.x * s, y: a.y * s, z: a.z * s };
+}
+
+// `v / s`: times `1 / s`
+export function div(a: Vec3, s: f64): Vec3 {
+    const k = 1.0 / s;
+    return { x: a.x * k, y: a.y * k, z: a.z * k };
+}
+
+export function neg(a: Vec3): Vec3 {
+    return { x: -a.x, y: -a.y, z: -a.z };
+}
+
+export function lengthSquared(a: Vec3): f64 {
+    return a.x * a.x + a.y * a.y + a.z * a.z;
+}
+
+export function length(a: Vec3): f64 {
+    return Math.sqrt(lengthSquared(a));
+}
+
+export function dot(a: Vec3, b: Vec3): f64 {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+export function cross(a: Vec3, b: Vec3): Vec3 {
+    return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
+export function unit(a: Vec3): Vec3 {
+    return div(a, length(a));
+}
+
+export function reflect(v: Vec3, n: Vec3): Vec3 {
+    return sub(v, scale(n, dot(v, n) * 2.0));
+}
+
+// the refraction of `uv` through the normal `n`, `etaRatio` the ratio of
+// the indices (incident over transmitted)
+export function refract(uv: Vec3, n: Vec3, etaRatio: f64): Vec3 {
+    const cosTheta = dot(neg(uv), n);
+    const parallel = scale(add(uv, scale(n, cosTheta)), etaRatio);
+    const perp = scale(n, -Math.sqrt(1.0 - lengthSquared(parallel)));
+    return add(parallel, perp);
+}
+
+// `f64::min`, `f64::max`: the other value when one is NaN
+export function fmin(a: f64, b: f64): f64 {
+    return b != b ? a : (a < b ? a : b);
+}
+
+export function fmax(a: f64, b: f64): f64 {
+    return b != b ? a : (a > b ? a : b);
+}
+
+// ----- rays -----------------------------------------------------------------
+
+export function ray(orig: Vec3, dir: Vec3, time: f64): Ray {
+    return { orig: orig, dir: dir, time: time };
+}
+
+export function at(r: Ray, t: f64): Vec3 {
+    return add(r.orig, scale(r.dir, t));
+}
+
+// ----- random vectors ---------------------------------------------------------
+
+// `Vec3::random_range(rng, min, max)`
+export function randomRange(r: Rng, lo: f64, hi: f64): [Vec3, Rng] {
+    const [x, r1] = genRange(r, lo, hi);
+    const [y, r2] = genRange(r1, lo, hi);
+    const [z, r3] = genRange(r2, lo, hi);
+    return [vec(x, y, z), r3] as const;
+}
+
+export function randomInUnitSphere(r: Rng): [Vec3, Rng] {
+    const [p, r1] = randomRange(r, -1.0, 1.0);
+    return lengthSquared(p) >= 1.0 ? randomInUnitSphere(r1) : [p, r1] as const;
+}
+
+export function randomInUnitCircle(r: Rng): [Vec3, Rng] {
+    const [a, r1] = genF64(r);
+    const rad = Math.sqrt(a);
+    const [b, r2] = genF64(r1);
+    const theta = b * TWO_PI;
+    return [vec(rad * Math.cos(theta), rad * Math.sin(theta), 0.0), r2] as const;
+}
+
+// `CosPdf::random_cosine_direction`
+export function randomCosineDirection(r: Rng): [Vec3, Rng] {
+    const [r1, g1] = genF64(r);
+    const [r2, g2] = genF64(g1);
+    const z = Math.sqrt(1.0 - r2);
+    const phi = TWO_PI * r1;
+    const x = Math.cos(phi) * Math.sqrt(r2);
+    const y = Math.sin(phi) * Math.sqrt(r2);
+    return [vec(x, y, z), g2] as const;
+}
+
+// `pdf::random_to_sphere`
+export function randomToSphere(r: Rng, radius: f64, distanceSquared: f64): [Vec3, Rng] {
+    const [r1, g1] = genF64(r);
+    const [r2, g2] = genF64(g1);
+    const z = 1.0 + r2 * (Math.sqrt(1.0 - radius * radius * (1.0 / distanceSquared)) - 1.0);
+    const phi = TWO_PI * r1;
+    const x = Math.cos(phi) * Math.sqrt(1.0 - z * z);
+    const y = Math.sin(phi) * Math.sqrt(1.0 - z * z);
+    return [vec(x, y, z), g2] as const;
+}
+
+// ----- the basis of a normal ---------------------------------------------------
+
+export function buildFromW(n: Vec3): Onb {
+    const w = unit(n);
+    const a = Math.abs(w.x) > 0.9 ? vec(0.0, 1.0, 0.0) : vec(1.0, 0.0, 0.0);
+    const v = unit(cross(w, a));
+    const u = cross(w, v);
+    return { u: u, v: v, w: w };
+}
+
+export function local(o: Onb, a: Vec3): Vec3 {
+    return add(add(scale(o.u, a.x), scale(o.v, a.y)), scale(o.w, a.z));
+}
+
+// ----- colors ---------------------------------------------------------------------
+
+// `IntoU8 for f64`: `(x * 255).min(255)` rounded to the nearest integer
+// (by adding 2^52), 0 below 0
+export function intoU8(x: f64): i64 {
+    const s0 = x * 255.0;
+    const s = s0 != s0 ? 255.0 : (s0 < 255.0 ? s0 : 255.0);
+    const f = s + 4503599627370496.0;
+    return f < 4503599627370496.0 ? 0 : i64(f - 4503599627370496.0);
+}

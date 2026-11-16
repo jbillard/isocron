@@ -1,0 +1,52 @@
+// The draws of rng.isc, to compare with those of rand_chacha 0.2 and
+// rand 0.7 (rng_check.out, printed by the same draws in Rust).
+import { Rng, seeded, nextU32, nextU64, genF64, genF32, genRange, genRangeU8, genRangeUsize } from "./rng";
+
+// `n` draws of `f` from `r`, as texts, and the generator after them
+function drawn(r: Rng, n: i64, f: (Rng, i64) => [string, Rng], i: i64, out: string[]): [string[], Rng] {
+    if (i >= n) {
+        return [out, r] as const;
+    }
+    const [s, r1] = f(r, i);
+    return drawn(r1, n, f, i + 1, concat(out, [s]));
+}
+
+action main(args: string[k]): i32 {
+    const [w1, r1] = drawn(seeded(42u64), 70, (r, i) => {
+        const [v, r2] = nextU32(r);
+        return [`${v}`, r2] as const;
+    }, 0, []);
+    print(`u32 ${join(w1, " ")}`);
+    const [skip, r0] = nextU32(seeded(7u64));
+    const [w2, r2] = drawn(r0, 20, (r, i) => {
+        const [v, r3] = nextU64(r);
+        return [`${v}`, r3] as const;
+    }, 0, []);
+    print(`u64 ${join(w2, " ")}`);
+    const [w3, r3] = drawn(r2, 10, (r, i) => {
+        const [v, r4] = genF64(r);
+        return [`${v}`, r4] as const;
+    }, 0, []);
+    print(`f64 ${join(w3, " ")}`);
+    const [w4, r4] = drawn(r3, 10, (r, i) => {
+        const [v, r5] = genRange(r, -1.0, 1.0);
+        return [`${v}`, r5] as const;
+    }, 0, []);
+    print(`range ${join(w4, " ")}`);
+    const [w5, r5] = drawn(r4, 10, (r, i) => {
+        const [v, r6] = genRangeU8(r, 0, 3);
+        return [`${v}`, r6] as const;
+    }, 0, []);
+    print(`u8 ${join(w5, " ")}`);
+    const [w6, r6] = drawn(r5, 10, (r, i) => {
+        const [v, r7] = genRangeUsize(r, 0, 255 - i);
+        return [`${v}`, r7] as const;
+    }, 0, []);
+    print(`usize ${join(w6, " ")}`);
+    const [w7, r7] = drawn(r6, 5, (r, i) => {
+        const [v, r8] = genF32(r);
+        return [`${v}`, r8] as const;
+    }, 0, []);
+    print(`f32 ${join(w7, " ")}`);
+    return 0;
+}
