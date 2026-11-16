@@ -732,3 +732,139 @@ action main(args: string[k]): i32 {
     let e = iscc::frontend("no_inline_bad.isc", bad).err().expect("refused");
     assert!(e.to_string().contains("`@noInline` function `maker` returns a function"), "{}", e);
 }
+
+/// Large values given to and by recursive functions stay in memory (D679):
+/// the result written where the caller keeps it (`%out`), a large borrowed
+/// parameter given by its address and read where it is read. A walk of a
+/// tree carrying a state of 13 words and giving back a hit that holds a
+/// text (its counts and frees); a loop (a tail call to itself) with a large
+/// state in its slot; a dispatch by tail calls to other functions, whose
+/// addresses are those of its caller (`%out` handed on); a cycle of tail
+/// calls between two functions, which keeps its values (a million steps in
+/// constant stack). The same results compiled, checked by the allocator, on
+/// 4 threads, and interpreted.
+#[test]
+fn large_values_of_recursive_functions_stay_in_memory() {
+    let src = "type State = { a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64, j: u64, k: u64, l: u64, m: u64 };
+
+type Hit = { t: f64, u: f64, v: f64, w: f64, x: f64, y: f64, z: f64, id: i64, name: string };
+
+type Tree = Leaf(f64, f64, i64) | Node(Tree, Tree, f64, f64);
+
+function seeded(q: u64): State {
+    const a = q * 0x9E3779B97F4A7C15u64 + 1u64;
+    return { a: a, b: a, c: a, d: a, e: a, f: a, g: a, h: a, i: a, j: a, k: a, l: a, m: 0u64 };
+}
+
+function draw(s: State): [f64, State] {
+    const x1 = s.a ^ (s.a >> 12u64);
+    const x2 = x1 ^ (x1 << 25u64);
+    const x3 = x2 ^ (x2 >> 27u64);
+    const r = x3 * 0x2545F4914F6CDD1Du64;
+    return [f64(r >> 11u64) * (1.0 / 9007199254740992.0), { ...s, a: x3, l: s.l + r, m: s.m + 1u64 }] as const;
+}
+
+// the walk: a state in, a state and a hit out
+function walk(t: Tree, x: f64, tmax: f64, s: State): [Option<Hit>, State] {
+    return match (t) {
+        Leaf(lo, hi, id) => leafHit(lo, hi, id, x, tmax, s),
+        Node(left, right, lo, hi) => {
+            if (x < lo || x > hi) {
+                return [None, s] as const;
+            }
+            const [h1, s1] = walk(left, x, tmax, s);
+            const t1 = match (h1) {
+                Some(h) => h.t,
+                None => tmax,
+            };
+            const [h2, s2] = walk(right, x, t1, s1);
+            return match (h2) {
+                Some(h) => [h2, s2] as const,
+                None => [h1, s2] as const,
+            };
+        },
+    };
+}
+
+// (a tail call from `walk`: its result where `walk` writes its own)
+@noInline
+function leafHit(lo: f64, hi: f64, id: i64, x: f64, tmax: f64, s: State): [Option<Hit>, State] {
+    if (x < lo || x > hi) {
+        return [None, s] as const;
+    }
+    const [r, s1] = draw(s);
+    const tt = (x - lo) * (1.0 + r);
+    if (tt >= tmax) {
+        return [None, s1] as const;
+    }
+    return [Some({ t: tt, u: r, v: lo, w: hi, x: x, y: 1.0 - r, z: 0.5, id: id, name: `leaf ${id}` }), s1] as const;
+}
+
+function built(from: i64, to: i64): Tree {
+    if (to - from == 1) {
+        return Leaf(f64(from) / 64.0, f64(from) / 64.0 + 0.05, from);
+    }
+    const mid = (from + to) / 2;
+    return Node(built(from, mid), built(mid, to), f64(from) / 64.0, f64(to - 1) / 64.0 + 0.05);
+}
+
+// a loop with a large state in its slot
+function steps(s: State, n: i64): State {
+    if (n == 0) return s;
+    const [r, s1] = draw(s);
+    return steps(r < 0.5 ? s1 : { ...s1, b: s1.b + 1u64 }, n - 1);
+}
+
+// a cycle of tail calls between two functions, with a large state
+function even(s: State, n: i64): State {
+    if (n == 0) return s;
+    return odd({ ...s, c: s.c + u64(n) }, n - 1);
+}
+
+function odd(s: State, n: i64): State {
+    if (n == 0) return s;
+    return even({ ...s, d: s.d ^ u64(n) }, n - 1);
+}
+
+function query(t: Tree, q: i64): string {
+    const [x, s0] = draw(seeded(u64(q)));
+    const [h, s1] = walk(t, x, 1.0e9, s0);
+    return match (h) {
+        Some(hit) => `${hit.name}:${i64(hit.t * 1.0e6)}:${s1.m}`,
+        None => `none:${s1.m}`,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const t = built(0, 64);
+    print(join(map(iota(2000), (q) => query(t, q)), \" \").length);
+    print(query(t, 7));
+    print(query(t, 1234));
+    const s = steps(seeded(5u64), 1000);
+    print([s.a, s.b, s.m] as const);
+    const e = even(seeded(9u64), 1000000);
+    print([e.c, e.d] as const);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    let ll = tmp("mem_values.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("mem_values_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    let header = |name: &str| -> String {
+        // (the function defined with that parameter, by its body's place)
+        text.lines().filter(|l| l.starts_with("define ") && l.contains(name)).collect::<Vec<_>>().join("\n")
+    };
+    // `walk`, `leafHit` and `steps` write their results at `%out` and read
+    // their states by address; `even` and `odd`, a cycle, keep their values
+    let outs = header("%out");
+    assert!(outs.matches("define ").count() >= 3, "{}", text);
+    assert!(outs.contains("readonly %a"), "{}", outs);
+    assert!(text.contains("tail call tailcc void @isc_fn_"), "the tail call of `walk` handing `%out` on: {}", outs);
+    for _ in 0..3 {
+        assert_eq!(run_bin_threads(&bin, &[], Some(4)).stdout, want);
+    }
+    checked_clean(src, "mem_values", &[]);
+}

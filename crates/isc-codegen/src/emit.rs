@@ -673,6 +673,15 @@ pub struct Gen<'p> {
     tk_sets: Vec<Option<BTreeSet<u32>>>,
     /// The variants for the tasks to emit: the function, its set.
     tk_needed: BTreeSet<(u32, usize)>,
+    /// The variables whose values are in memory (D679): the address of
+    /// the value, its type, and whether a caller keeps it (a parameter
+    /// given by its address, or a part of one: a tail call may pass it on);
+    /// each part read where it is read.
+    mem_vars: HashMap<VarId, (String, Type, bool)>,
+    /// The function being emitted writes its result at `%out` (D679).
+    cur_out: bool,
+    /// How each recursive function takes its large values (D679).
+    abi: Vec<FnAbi>,
     /// While the first level of a `reduce` is emitted: an `i1`, true when its
     /// array has at least STREAM_BYTES bytes (see `reduce_block`).
     stream: Option<String>,
@@ -1562,6 +1571,9 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         fn_recs: fn_rec_types(p),
         tk_sets: Vec::new(),
         tk_needed: BTreeSet::new(),
+        mem_vars: HashMap::new(),
+        cur_out: false,
+        abi: fn_abis(p, opts.isa.is_wasm()),
         stream: None,
         scalar_loops: 0,
         windowed: HashMap::new(),
@@ -2910,6 +2922,98 @@ fn join_map<'a>(s: VarId, init: &'a Expr, body: &'a Expr) -> Option<(Vec<(VarId,
 /// elements alone: the counts of that predicate by blocks may come from the
 /// pass of a caller over the whole array. For each, the index of the
 /// parameter and the lambda (the first such `filter`).
+/// A value larger than this (in bytes) given to or by a recursive function
+/// stays in memory (D679).
+const MEM_BYTES: i64 = 64;
+
+/// How a recursive function takes and gives its large values (D679): its
+/// result written at an address its caller gives (`ptr %out`, its first
+/// parameter), and each borrowed parameter given by its address.
+#[derive(Clone, Debug, Default)]
+struct FnAbi {
+    out: bool,
+    ptr: Vec<bool>,
+}
+
+impl FnAbi {
+    fn any(&self) -> bool {
+        self.out || self.ptr.iter().any(|b| *b)
+    }
+}
+
+/// The ways of passing of the recursive functions of `p` (D679). A large
+/// tuple (more than MEM_BYTES) given to or by a function of the program
+/// passes by its address: its caller keeps it in memory and reads each part
+/// where it reads it, the callee writes its result where its caller will
+/// keep it, instead of the whole value in registers and on the stack at
+/// each call (32 words copied in and out of each frame of a walk of a tree
+/// carrying a state). Not for the functions of the prelude, the builders of
+/// regions (D200), the functions given counts (D426), nor those of a cycle
+/// of tail calls between functions (D113: such a loop runs in constant
+/// stack only when each call passes its values, not addresses in the frame
+/// it replaces).
+fn fn_abis(p: &Program, wasm: bool) -> Vec<FnAbi> {
+    let large = |t: &Type| matches!(t, Type::Tuple(_)) && esize(t) > MEM_BYTES;
+    // the functions calling another one in tail position, and those called so
+    fn tails(e: &Expr, fi: u32, out: &mut HashSet<u32>) {
+        match &e.kind {
+            ExprKind::Let { body, .. } | ExprKind::Free(_, body) | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => tails(body, fi, out),
+            ExprKind::If(_, t, x) => {
+                tails(t, fi, out);
+                tails(x, fi, out);
+            }
+            ExprKind::Call(g, _) if *g != fi => {
+                out.insert(*g);
+            }
+            _ => {}
+        }
+    }
+    let edges: Vec<HashSet<u32>> = p
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let mut callees = HashSet::new();
+            tails(&f.body, i as u32, &mut callees);
+            callees
+        })
+        .collect();
+    // (in a cycle: reaches itself through tail calls to other functions)
+    let reaches = |from: u32| -> HashSet<u32> {
+        let mut seen = HashSet::new();
+        let mut todo: Vec<u32> = edges[from as usize].iter().copied().collect();
+        while let Some(g) = todo.pop() {
+            if seen.insert(g) {
+                todo.extend(edges[g as usize].iter().copied());
+            }
+        }
+        seen
+    };
+    let excluded: HashSet<u32> = (0..p.fns.len() as u32).filter(|i| !edges[*i as usize].is_empty() && reaches(*i).contains(i)).collect();
+    let builders = builders(p);
+    let counted = count_users(p);
+    p.fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let i = i as u32;
+            if wasm || f.name.starts_with('$') || excluded.contains(&i) || builders.contains(&i) || counted.contains_key(&i) {
+                return FnAbi { out: false, ptr: vec![false; f.params.len()] };
+            }
+            let ptr = f
+                .params
+                .iter()
+                .enumerate()
+                .map(|(k, q)| {
+                    let borrowed = !f.consumed.get(k).copied().unwrap_or(false) && !f.given.get(k).copied().unwrap_or(false);
+                    borrowed && large(&p.vars[*q as usize].ty)
+                })
+                .collect();
+            FnAbi { out: large(&f.body.ty), ptr }
+        })
+        .collect()
+}
+
 /// The recursive types each recursive function of `p` holds (in the types
 /// of its parameters and of its expressions, with the types their nodes
 /// hold) or reaches through the functions it calls (D678): its variant for
@@ -3676,7 +3780,14 @@ impl<'p> Gen<'p> {
             i.to_string()
         };
         let saved_owner = std::mem::replace(&mut self.task_owner, Some((name.clone(), 0)));
+        let saved_mem = std::mem::take(&mut self.mem_vars);
+        let abi = self.abi[i].clone();
+        let saved_out = std::mem::replace(&mut self.cur_out, abi.out);
         let mut ps = Vec::new();
+        // its result written where its caller keeps it (D679)
+        if abi.out {
+            ps.push("ptr noalias nocapture writeonly %out".to_string());
+        }
         if in_region {
             ps.push("ptr %rg".to_string());
         }
@@ -3692,7 +3803,15 @@ impl<'p> Gen<'p> {
             self.count_param = Some(("%sm".into(), l));
         }
         for (k, var) in f.params.iter().enumerate() {
-            let t = lt(&self.p.vars[*var as usize].ty);
+            let ty = self.p.vars[*var as usize].ty.clone();
+            let t = lt(&ty);
+            // a large borrowed parameter: its address, its parts read where
+            // they are read (D679)
+            if abi.ptr.get(k).copied().unwrap_or(false) {
+                ps.push(format!("ptr noalias nocapture readonly %a{}", k));
+                self.mem_vars.insert(*var, (format!("%a{}", k), ty, true));
+                continue;
+            }
             ps.push(format!("{} %a{}", t, k));
             self.env.insert(*var, v(format!("%a{}", k), t));
         }
@@ -3755,7 +3874,10 @@ impl<'p> Gen<'p> {
                 let ty = self.p.vars[*var as usize].ty.clone();
                 let t = lt(&ty);
                 let s = self.alloca(&t);
-                self.emit(format!("store {} {}, ptr {}", t, entry[k], s));
+                // (a parameter given by its address: copied into the slot of
+                // the loop, which each iteration writes, D679)
+                let first = if abi.ptr.get(k).copied().unwrap_or(false) { self.ins(format!("load {}, ptr {}", t, entry[k])) } else { entry[k].clone() };
+                self.emit(format!("store {} {}, ptr {}", t, first, s));
                 // a state is consumed by each iteration: never freed by the
                 // loop (no flag)
                 let consumed = f.consumed.get(k).copied().unwrap_or(false);
@@ -3771,7 +3893,12 @@ impl<'p> Gen<'p> {
             let head = self.label();
             self.br(&head);
             self.block(&head);
-            for (var, (s, _, ty)) in f.params.iter().zip(&slots) {
+            for (k, (var, (s, _, ty))) in f.params.iter().zip(&slots).enumerate() {
+                // (a large one read in its slot, D679)
+                if abi.ptr.get(k).copied().unwrap_or(false) {
+                    self.mem_vars.insert(*var, (s.clone(), ty.clone(), false));
+                    continue;
+                }
                 let t = lt(ty);
                 let x = self.ins(format!("load {}, ptr {}", t, s));
                 self.env.insert(*var, v(x, t));
@@ -3797,7 +3924,13 @@ impl<'p> Gen<'p> {
                     self.block(&ld);
                 }
             }
-            self.emit(format!("ret {} {}", ret, x.r));
+            if abi.out {
+                // (written where the caller keeps it, D679)
+                self.emit(format!("store {} {}, ptr %out", ret, x.r));
+                self.emit("ret void");
+            } else {
+                self.emit(format!("ret {} {}", ret, x.r));
+            }
         }
         self.tail = saved_tail;
         let attrs = self.attrs();
@@ -3816,7 +3949,10 @@ impl<'p> Gen<'p> {
         } else {
             ""
         };
-        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}{} align 64", cc, ret, name, ps.join(", "), attrs, cold));
+        let ret_ty = if abi.out { "void".to_string() } else { ret };
+        let text = self.finish(&format!("define internal {}{} @isc_fn_{}({}){}{} align 64", cc, ret_ty, name, ps.join(", "), attrs, cold));
+        self.mem_vars = saved_mem;
+        self.cur_out = saved_out;
         self.region = saved_region;
         self.other_tails = saved_others;
         self.f = saved_f;
@@ -3938,7 +4074,7 @@ impl<'p> Gen<'p> {
                 self.emit(format!("call void @isc_region_free(ptr {})", rg));
                 continue;
             }
-            let x = self.env[var].clone();
+            let x = self.var_val(*var).expect("a variable to free bound");
             self.drop_var(*var, &x);
         }
         for (k, x) in vals.iter().enumerate() {
@@ -4905,6 +5041,7 @@ impl<'p> Gen<'p> {
     fn emit_rec_drop(&mut self, i: u32, atomic: bool) -> R<()> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_mem_vars = std::mem::take(&mut self.mem_vars);
         let saved_divmod = std::mem::take(&mut self.divmod);
         // the names of registers of this function alone (D518)
         let saved_parts = std::mem::take(&mut self.part_values);
@@ -4964,6 +5101,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal void @{}(ptr %p)", rec_drop_name(i, atomic)));
         self.f = saved_f;
         self.env = saved_env;
+        self.mem_vars = saved_mem_vars;
         self.divmod = saved_divmod;
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
@@ -4982,6 +5120,7 @@ impl<'p> Gen<'p> {
     fn emit_rec_eq(&mut self, i: u32) -> R<()> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_mem_vars = std::mem::take(&mut self.mem_vars);
         let saved_divmod = std::mem::take(&mut self.divmod);
         // the names of registers of this function alone (D518)
         let saved_parts = std::mem::take(&mut self.part_values);
@@ -5041,6 +5180,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal i1 @isc_rec_eq_{}(ptr %p, ptr %q)", i));
         self.f = saved_f;
         self.env = saved_env;
+        self.mem_vars = saved_mem_vars;
         self.divmod = saved_divmod;
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
@@ -5107,6 +5247,7 @@ impl<'p> Gen<'p> {
     fn emit_rec_print(&mut self, i: u32) -> R<()> {
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_mem_vars = std::mem::take(&mut self.mem_vars);
         let saved_divmod = std::mem::take(&mut self.divmod);
         // the names of registers of this function alone (D518)
         let saved_parts = std::mem::take(&mut self.part_values);
@@ -5122,6 +5263,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal void @isc_rec_print_{}(ptr %p)", i));
         self.f = saved_f;
         self.env = saved_env;
+        self.mem_vars = saved_mem_vars;
         self.divmod = saved_divmod;
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
@@ -5162,6 +5304,206 @@ impl<'p> Gen<'p> {
 
     fn bind(&mut self, var: VarId, x: V) {
         self.env.insert(var, x);
+    }
+
+    /// The value of the variable `x`: its register, or its value in memory
+    /// read here (D679).
+    fn var_val(&mut self, x: VarId) -> Option<V> {
+        if let Some(v) = self.env.get(&x) {
+            return Some(v.clone());
+        }
+        let (p, ty, _) = self.mem_vars.get(&x).cloned()?;
+        let t = lt(&ty);
+        let r = self.ins(format!("load {}, ptr {}", t, p));
+        Some(v(r, t))
+    }
+
+    /// The type of `e` when it is a value in memory or a part of one
+    /// (D679), without emitting anything.
+    fn mem_type(&self, e: &Expr) -> Option<Type> {
+        match &e.kind {
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|(_, t, _)| t.clone()),
+            ExprKind::Proj(x, i) | ExprKind::Take(x, i) => match self.mem_type(x)? {
+                Type::Tuple(ts) => ts.get(*i as usize).cloned(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The address and the type of `e` when it is a value in memory or a
+    /// part of one (D679).
+    fn mem_path(&mut self, e: &Expr) -> Option<(String, Type)> {
+        match &e.kind {
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).map(|(p, t, _)| (p.clone(), t.clone())),
+            ExprKind::Proj(x, i) | ExprKind::Take(x, i) => {
+                self.mem_type(e)?;
+                let (p, ty) = self.mem_path(x)?;
+                let Type::Tuple(ts) = &ty else { return None };
+                let c = ts[*i as usize].clone();
+                let q = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 {}", lt(&ty), p, i));
+                Some((q, c))
+            }
+            _ => None,
+        }
+    }
+
+    /// `e` is a value in memory that a caller of this frame keeps (a
+    /// parameter given by its address, or a part of one), D679.
+    fn incoming(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Var(x, _) if !self.env.contains_key(x) => self.mem_vars.get(x).is_some_and(|(_, _, k)| *k),
+            ExprKind::Proj(x, _) | ExprKind::Take(x, _) => self.incoming(x),
+            _ => false,
+        }
+    }
+
+    /// A tail call of `f` that can replace this frame (D113 with D679): its
+    /// result at the same place as this one's, each value it takes by
+    /// address kept by a caller of this frame.
+    fn tail_ok(&self, f: u32, args: &[Expr]) -> bool {
+        let abi = &self.abi[f as usize];
+        abi.out == self.cur_out && args.iter().enumerate().all(|(k, a)| !abi.ptr.get(k).copied().unwrap_or(false) || self.incoming(a))
+    }
+
+    /// The variables freed before a tail call to another function (D113).
+    fn free_before_tail(&mut self, first: &[VarId]) -> R<()> {
+        for var in first {
+            // (one freed already, D117: D639)
+            if self.freed_early.contains(var) {
+                continue;
+            }
+            // (an array on the stack is never freed, D191; a tree of a
+            // region with its region, D200)
+            if self.stack_vars.contains(var) {
+                continue;
+            }
+            if let Some(rg) = self.region_vars.get(var).cloned() {
+                self.emit(format!("call void @isc_region_free(ptr {})", rg));
+                continue;
+            }
+            let x = self.var_val(*var).ok_or("codegen: a variable to free unbound")?;
+            self.drop_var(*var, &x);
+        }
+        Ok(())
+    }
+
+    /// A tail call to another function that takes large values by their
+    /// addresses (D679, `tail_ok`): `%out` handed on, the addresses those of
+    /// the caller of this frame.
+    fn tail_call_abi(&mut self, e: &Expr, f: u32, args: &[Expr], key: *const Expr) -> R<V> {
+        let abi = self.abi[f as usize].clone();
+        let mut vals = Vec::new();
+        if abi.out {
+            vals.push("ptr %out".to_string());
+        }
+        for (k, a) in args.iter().enumerate() {
+            if abi.ptr.get(k).copied().unwrap_or(false) {
+                let (p, _) = self.mem_path(a).ok_or("codegen: a value by address without its address")?;
+                vals.push(format!("ptr {}", p));
+            } else {
+                let x = self.ex(a, 1)?;
+                vals.push(format!("{} {}", x.t, x.r));
+            }
+        }
+        let first = self.other_tails.get(&key).cloned().unwrap_or_default();
+        self.free_before_tail(&first)?;
+        let cc = self.fn_cc();
+        // (from a task: its variant for the tasks, D678)
+        let callee = match self.task_variant(f) {
+            Some(k) => format!("{}_tk{}", f, k),
+            None => {
+                self.text_called.insert(f);
+                f.to_string()
+            }
+        };
+        let ret = lt(&e.ty);
+        if abi.out {
+            self.emit(format!("tail call {}void @isc_fn_{}({})", cc, callee, vals.join(", ")));
+            self.emit("ret void");
+        } else {
+            let r = self.ins(format!("tail call {}{} @isc_fn_{}({})", cc, ret, callee, vals.join(", ")));
+            self.emit(format!("ret {} {}", ret, r));
+        }
+        let dead = self.label();
+        self.block(&dead);
+        Ok(V { r: "poison".into(), t: ret, uni: true })
+    }
+
+    /// `init` can be kept in memory by its `let` (D679): a call of a function
+    /// that writes its result at an address, or a large part of a value in
+    /// memory.
+    fn mem_init_ok(&self, init: &Expr) -> bool {
+        match &init.kind {
+            ExprKind::Call(f, _) => self.abi[*f as usize].out && !self.other_tails.contains_key(&(init as *const Expr)) && self.text_buffer(init).is_none(),
+            ExprKind::Proj(..) | ExprKind::Take(..) => self.mem_type(init).is_some_and(|t| matches!(t, Type::Tuple(_)) && esize(&t) > MEM_BYTES),
+            _ => false,
+        }
+    }
+
+    /// The address and the type of the value of `init` (`mem_init_ok`).
+    fn mem_init(&mut self, init: &Expr) -> R<(String, Type)> {
+        match &init.kind {
+            ExprKind::Call(f, args) => match self.call_abi(init, *f, args)? {
+                Ok(slot) => Ok((slot, init.ty.clone())),
+                Err(_) => Err("codegen: a call without its result in memory".into()),
+            },
+            _ => self.mem_path(init).ok_or_else(|| "codegen: a part of a value in memory".into()),
+        }
+    }
+
+    /// A call of the recursive function `f` that takes large values by
+    /// their addresses (D679): each such argument given by its address (a
+    /// value in memory as it is, another stored on the stack first), the
+    /// result written in a place of this frame: that place (Ok), or the
+    /// result in a register (Err) for a function without `%out`.
+    fn call_abi(&mut self, e: &Expr, f: u32, args: &[Expr]) -> R<Result<String, V>> {
+        let abi = self.abi[f as usize].clone();
+        let mut vals = Vec::new();
+        let out = if abi.out {
+            let slot = self.alloca(&lt(&e.ty));
+            vals.push(format!("ptr {}", slot));
+            Some(slot)
+        } else {
+            None
+        };
+        for (k, a) in args.iter().enumerate() {
+            if abi.ptr.get(k).copied().unwrap_or(false) {
+                let p = match self.mem_path(a) {
+                    Some((p, _)) => p,
+                    None => {
+                        let x = self.ex(a, 1)?;
+                        let s = self.alloca(&x.t);
+                        self.emit(format!("store {} {}, ptr {}", x.t, x.r, s));
+                        s
+                    }
+                };
+                vals.push(format!("ptr {}", p));
+            } else {
+                let x = self.ex(a, 1)?;
+                vals.push(format!("{} {}", x.t, x.r));
+            }
+        }
+        let cc = self.fn_cc();
+        // (from a task: its variant for the tasks, D678)
+        let callee = match self.task_variant(f) {
+            Some(k) => format!("{}_tk{}", f, k),
+            None => {
+                self.text_called.insert(f);
+                f.to_string()
+            }
+        };
+        match out {
+            Some(slot) => {
+                self.emit(format!("call {}void @isc_fn_{}({})", cc, callee, vals.join(", ")));
+                Ok(Ok(slot))
+            }
+            None => {
+                let ret = lt(&e.ty);
+                let r = self.ins(format!("call {}{} @isc_fn_{}({})", cc, ret, callee, vals.join(", ")));
+                Ok(Err(v(r, ret)))
+            }
+        }
     }
 
     /// Compiles an expression; `w > 1` only for element computations
@@ -5238,7 +5580,15 @@ impl<'p> Gen<'p> {
                 isc_ir::Lit::Bool(b) => v(b.to_string(), "i1"),
                 isc_ir::Lit::Unit => v("false", "i1"),
             }),
-            Var(x, _) => self.env.get(x).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", x)),
+            Var(x, _) => self.var_val(*x).ok_or_else(|| format!("codegen: unbound variable %{}", x)),
+            // a part of a value in memory: its address, then the part alone
+            // read (D679)
+            Proj(x, _) | Take(x, _) if w == 1 && self.mem_type(x).is_some() => {
+                let (p, ty) = self.mem_path(e).ok_or("codegen: a part of a value in memory")?;
+                let t = lt(&ty);
+                let r = self.ins(format!("load {}, ptr {}", t, p));
+                Ok(v(r, t))
+            }
             // a `let` of a split `fold` (D260): its value for this element,
             // computed before the loop
             Let { var, body, .. } if w == 1 && self.split_vars.contains_key(var) => {
@@ -5354,6 +5704,25 @@ impl<'p> Gen<'p> {
                 self.bind(*var, arr);
                 self.stack_vars.insert(*var);
                 self.ex(body, w)
+            }
+            // a large value kept in memory (D679): the result of a call written
+            // at an address of this frame, or a part of a value in memory;
+            // each of its parts read where it is read
+            Let { var, init, body, stmt: false, drop } if w == 1 && self.mem_init_ok(init) => {
+                let (p, ty) = self.mem_init(init)?;
+                let kept = self.incoming(init);
+                self.mem_vars.insert(*var, (p.clone(), ty.clone(), kept));
+                let r = self.ex(body, w);
+                if *drop && r.is_ok() && ty.has_heap() && !self.freed_early.contains(var) {
+                    let t = lt(&ty);
+                    let x = self.ins(format!("load {}, ptr {}", t, p));
+                    // (a part taken out of a tuple, D518)
+                    let saved = std::mem::replace(&mut self.literal_test, matches!(init.kind, ExprKind::Take(..)));
+                    self.drop_var(*var, &v(x, t));
+                    self.literal_test = saved;
+                }
+                self.mem_vars.remove(var);
+                r
             }
             Let { var, init, body, stmt, drop } => {
                 if let (StrLit(t), Type::Str) = (&init.kind, &init.ty) {
@@ -6123,7 +6492,7 @@ impl<'p> Gen<'p> {
                 self.taking.remove(var);
                 self.giving.remove(var);
                 let r = r?;
-                let x = self.env[var].clone();
+                let x = self.var_val(*var).ok_or("codegen: a variable to free unbound")?;
                 // (a text freed on the paths that do not move it: often a
                 // message of a fault, D518)
                 let saved = std::mem::replace(&mut self.literal_test, true);
@@ -6173,6 +6542,24 @@ impl<'p> Gen<'p> {
                 if self.tail.as_ref().map(|t| t.calls.contains_key(&key)).unwrap_or(false) {
                     return self.tail_jump(e, args);
                 }
+                // large values by their addresses (D679); a result read
+                // whole here (a `let` keeps it in memory instead); a tail
+                // call to another function stays one when what it passes
+                // by address is kept by a caller of this frame
+                let tail_other = self.other_tails.contains_key(&key);
+                if (self.abi[*f as usize].any() || (self.cur_out && tail_other)) && self.text_buffer(e).is_none() {
+                    if tail_other && self.tail_ok(*f, args) {
+                        return self.tail_call_abi(e, *f, args, key);
+                    }
+                    return match self.call_abi(e, *f, args)? {
+                        Ok(slot) => {
+                            let t = lt(&e.ty);
+                            let r = self.ins(format!("load {}, ptr {}", t, slot));
+                            Ok(v(r, t))
+                        }
+                        Err(x) => Ok(x),
+                    };
+                }
                 let mut vals = Vec::new();
                 let mut xs = Vec::new();
                 for a in args {
@@ -6198,7 +6585,7 @@ impl<'p> Gen<'p> {
                             self.emit(format!("call void @isc_region_free(ptr {})", rg));
                             continue;
                         }
-                        let x = self.env[var].clone();
+                        let x = self.var_val(*var).ok_or("codegen: a variable to free unbound")?;
                         self.drop_var(*var, &x);
                     }
                     // (from a task: its variant for the tasks, D678)
@@ -9737,7 +10124,9 @@ impl<'p> Gen<'p> {
         }
         let mut vals: Vec<V> = Vec::new();
         for c in &caps {
-            vals.push(self.env.get(c).cloned().ok_or_else(|| format!("codegen: task capture %{} unbound", c))?);
+            // (a value in memory read here: the task has its own frame, D679)
+            let x = self.var_val(*c).ok_or_else(|| format!("codegen: task capture %{} unbound", c))?;
+            vals.push(x);
         }
         vals.extend(extra.iter().cloned());
         let ctx_ty = if vals.is_empty() {
@@ -9764,6 +10153,7 @@ impl<'p> Gen<'p> {
         };
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_mem_vars = std::mem::take(&mut self.mem_vars);
         let saved_divmod = std::mem::take(&mut self.divmod);
         // the names of registers of this function alone (D518)
         let saved_parts = std::mem::take(&mut self.part_values);
@@ -9810,6 +10200,7 @@ impl<'p> Gen<'p> {
         let text = self.finish(&format!("define internal void {}(ptr %ctx, i64 %i){}", name, attrs));
         self.f = saved_f;
         self.env = saved_env;
+        self.mem_vars = saved_mem_vars;
         self.divmod = saved_divmod;
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;
@@ -16886,7 +17277,7 @@ impl<'p> Gen<'p> {
         self.guard(&ok, format!("call void @isc_panic_bench(i64 {}, {})", rv.r, Self::pos(e.span)));
         let mut caps = Vec::new();
         free_vars(body, &mut HashSet::new(), &mut caps);
-        let cap_vals: Vec<V> = caps.iter().map(|c| self.env[c].clone()).collect();
+        let cap_vals: Vec<V> = caps.iter().map(|c| self.var_val(*c).expect("a captured variable bound")).collect();
         let env_ty = if cap_vals.is_empty() {
             "{ i1 }".to_string()
         } else {
@@ -16903,6 +17294,7 @@ impl<'p> Gen<'p> {
         let rt = lt(&body.ty);
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
+        let saved_mem_vars = std::mem::take(&mut self.mem_vars);
         let saved_divmod = std::mem::take(&mut self.divmod);
         // the names of registers of this function alone (D518)
         let saved_parts = std::mem::take(&mut self.part_values);
@@ -16920,6 +17312,7 @@ impl<'p> Gen<'p> {
         self.funcs.push(text);
         self.f = saved_f;
         self.env = saved_env;
+        self.mem_vars = saved_mem_vars;
         self.divmod = saved_divmod;
         self.part_values = saved_parts;
         self.vec_fail = saved_vec_fail;

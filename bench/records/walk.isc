@@ -1,0 +1,105 @@
+// Records passed and returned through a recursion that is not a loop: a tree
+// of 4096 intervals; for each query a point, the tree walked (both children
+// of a node whose bounds hold the point), a state of 13 words (a generator)
+// given to each call and given back advanced by each leaf the point is in,
+// the closest hit a record of 15 words (or none). The shape of the walk of a
+// ray tracer, of an interpreter carrying its machine, of a parser carrying
+// its position: a state in, a state out, a result out.
+// usage: walk QUERIES
+type State = { a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64, j: u64, k: u64, l: u64, m: u64 };
+
+type Mat = { kind: i64, r: f64, g: f64, b: f64, fuzz: f64 };
+
+type Hit = { px: f64, py: f64, pz: f64, nx: f64, ny: f64, nz: f64, t: f64, u: f64, v: f64, id: i64, mat: Mat };
+
+type Tree = Leaf(f64, f64, i64) | Node(Tree, Tree, f64, f64);
+
+function seeded(q: u64): State {
+    const a = q * 0x9E3779B97F4A7C15u64 + 1u64;
+    return { a: a, b: a ^ 1u64, c: a ^ 2u64, d: a ^ 3u64, e: a ^ 4u64, f: a ^ 5u64, g: a ^ 6u64, h: a ^ 7u64, i: a ^ 8u64, j: a ^ 9u64, k: a ^ 10u64, l: a ^ 11u64, m: 0u64 };
+}
+
+// a number in [0, 1) and the state after it (xorshift64*, the draws counted)
+function draw(s: State): [f64, State] {
+    const x1 = s.a ^ (s.a >> 12u64);
+    const x2 = x1 ^ (x1 << 25u64);
+    const x3 = x2 ^ (x2 >> 27u64);
+    const r = x3 * 0x2545F4914F6CDD1Du64;
+    return [f64(r >> 11u64) * (1.0 / 9007199254740992.0), { ...s, a: x3, b: s.b + r, m: s.m + 1u64 }] as const;
+}
+
+function material(id: i64): Mat {
+    return { kind: id % 4, r: f64(id % 7) * 0.1, g: f64(id % 11) * 0.05, b: f64(id % 13) * 0.02, fuzz: 0.5 };
+}
+
+function walk(t: Tree, x: f64, tmax: f64, s: State): [Option<Hit>, State] {
+    return match (t) {
+        Leaf(lo, hi, id) => {
+            if (x < lo || x > hi) {
+                return [None, s] as const;
+            }
+            const [r, s1] = draw(s);
+            const tt = (x - lo) * (1.0 + r);
+            if (tt >= tmax) {
+                return [None, s1] as const;
+            }
+            const h: Hit = { px: x, py: lo, pz: hi, nx: r, ny: 1.0 - r, nz: 0.5, t: tt, u: x - lo, v: hi - x, id: id, mat: material(id) };
+            return [Some(h), s1] as const;
+        },
+        Node(left, right, lo, hi) => {
+            if (x < lo || x > hi) {
+                return [None, s] as const;
+            }
+            const [h1, s1] = walk(left, x, tmax, s);
+            const t1 = match (h1) {
+                Some(h) => h.t,
+                None => tmax,
+            };
+            const [h2, s2] = walk(right, x, t1, s1);
+            return match (h2) {
+                Some(h) => [h2, s2] as const,
+                None => [h1, s2] as const,
+            };
+        },
+    };
+}
+
+// the intervals `from` to `to` of the sorted starts, as a tree
+function built(starts: f64[n], from: i64, to: i64): Tree {
+    if (to - from == 1) {
+        return Leaf(starts[from], starts[from] + 0.01, from);
+    }
+    const mid = (from + to) / 2;
+    return Node(built(starts, from, mid), built(starts, mid, to), starts[from], starts[to - 1] + 0.01);
+}
+
+function lo(t: Tree): f64 {
+    return match (t) {
+        Leaf(a, b, id) => a,
+        Node(l, r, a, b) => a,
+    };
+}
+
+// the value of a query, an integer (a sum the same in any order): its hit's
+// parameter, material, place and draws
+function query(t: Tree, q: i64): i64 {
+    const [x, s0] = draw(seeded(u64(q)));
+    const [h, s1] = walk(t, x, 1.0e9, s0);
+    return match (h) {
+        Some(hit) => i64(hit.t * 1.0e9) + i64(hit.mat.r * 1.0e6) + i64(hit.u * 1.0e9) + hit.id + i64(s1.m),
+        None => i64(s1.m),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const queries = args.length > 0 ? parseI64(args[0]) : 1000000;
+    // the starts of 4096 intervals of width 0.01, sorted
+    const starts = map(iota(4096), (i) => f64(i) / 4096.0);
+    const t = built(starts, 0, 4096);
+    const t0 = clock();
+    const total = sum(map(iota(queries), (q) => query(t, q)));
+    const ms = (clock() - t0) / 1000000u64;
+    print(`${total}`);
+    print(`lo ${lo(t)}; ${ms} ms`);
+    return 0;
+}

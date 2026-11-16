@@ -16581,3 +16581,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the variants of the two functions holding the shared tree, an atomic
   increment in one, none for the integer loop, the same results on 8
   threads and interpreted; no variant without the change).
+- **D679 — Large values given to and by recursive functions stay in
+  memory (2026-11-16).** First phase of `docs/proposals/values-in-memory.md`
+  (the user: beat Rust in every case, the compiler changed as deeply as
+  needed). A value was always an SSA value of LLVM, even a record of 33
+  words: at each call of a recursive function walking a tree with a state
+  (`bench/records/walk`), the state went by value (9 words pushed, read
+  again by the callee) and the result came back in a buffer that the caller
+  read field by field and copied into its own frame, then into its own
+  result: 16.4 billion instructions where Rust takes 8.7 with the same
+  values given and given back, 5.5 with `&mut`. Now (`fn_abis`) a tuple of
+  more than 64 bytes given to or by a function of the program passes by its
+  address: the result written where the caller keeps it (`ptr %out`, the
+  first parameter; a `let` of it keeps it there, `mem_vars`), a borrowed
+  parameter given by its address (`ptr noalias nocapture readonly`), each
+  part of a value in memory read where it is read (`mem_path`: an address,
+  then the part alone), the whole value read only where something needs it
+  whole (`var_val`); a large parameter of a loop lives in its slot. A tail
+  call to another function stays one when its result goes where this one's
+  goes and what it gives by address is kept by a caller (`tail_ok`: `%out`
+  handed on), otherwise it is an ordinary call; the functions of a cycle of
+  tail calls keep their values (D113: such a loop runs in constant stack).
+  Not for the prelude, the builders of regions (D200), the functions given
+  counts (D426), nor WebAssembly. `bench/records/walk` (1 million queries,
+  one core at 3.2 GHz): 2.02 s to 1.21 s, 16.4 to 10.0 billion
+  instructions, 6.2 to 2.7 billion stores (Rust by value 1.18 s, with
+  `&mut` 0.88 s: the second phase, the update in place); rtiow 9.0 to 7.6
+  billion instructions, its images the same; nbody (its loop `steps` now
+  writes its result at `%out`) 2393 ms before and after. Test
+  `large_values_of_recursive_functions_stay_in_memory` (functions.rs: a walk
+  carrying a state and a hit holding a text, a loop with a large state, a
+  dispatch by tail calls handing `%out` on, a cycle of tail calls over a
+  million steps; the same results compiled on 4 threads, checked by the
+  allocator and interpreted; no `%out` without the change).
