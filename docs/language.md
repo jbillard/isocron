@@ -3514,8 +3514,9 @@ Windows of its own), its events keep coming, so a program lays its view
 out again and shows it at each size; when Windows asks for a part of the
 window again, the procedure paints the last image shown itself, the part
 it does not cover in the colour of its last pixel. A program whose only face is its window is built
-with `--subsystem windows`: started from the explorer, it opens no console.
-To run on other machines than the one that builds it, give the
+with `--subsystem windows`: started from the explorer, it opens no console;
+`--icon file.ico` gives it its icon (the explorer, its window, its button
+on the taskbar). To run on other machines than the one that builds it, give the
 instruction set (`--isa avx2`, `--isa sse`): native code is for the CPU
 that compiles.
 
@@ -3692,7 +3693,7 @@ iscc ir    <file.isc>                       print the optimized IR
 iscc run   <file.isc> [args...]             run with the reference interpreter
 iscc build <file.isc> [-o out] [--emit-llvm f.ll] [--emit-asm f.s] [--debug]
            [--target native|wasm32-wasi|wasm32-wasi-threads|x86_64-windows]
-           [--subsystem console|windows]
+           [--subsystem console|windows] [--icon file.ico]
 iscc completions bash|zsh|fish              the completion of the shell
 ```
 
@@ -3748,7 +3749,9 @@ iscc completions bash|zsh|fish              the completion of the shell
   a program of the graphical subsystem: started from the explorer, it opens
   no console (a window of `win32`); its standard output then goes nowhere
   unless it is redirected, and `print` loses what it writes (D640). The
-  console subsystem is the default.
+  console subsystem is the default. With `--icon file.ico`, the program
+  has the icons of that file (its images, PNG or bitmaps, as resources:
+  the explorer shows it, the windows of `win32` take it, D677).
 * `build --target x86_64-windows-msvc` writes the same Windows program
   with Microsoft's ABI (D542), linked by LLD as Microsoft's `link`: without
   C, as above (`kernel32` alone, no C library); a program that declares C

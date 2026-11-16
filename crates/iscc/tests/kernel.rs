@@ -29,6 +29,7 @@ fn compiled(src: &str, name: &str) -> Run {
         codegen: isc_codegen::Options::default(),
         link: Vec::new(),
         glibc: false,
+        icon: None,
     };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
     run_bin(&out, &[])
@@ -152,6 +153,7 @@ fn small_blocks_on_several_threads() {
         codegen: isc_codegen::Options::default(),
         link: Vec::new(),
         glibc: false,
+        icon: None,
     };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
     let want = "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n1\n";
@@ -206,6 +208,7 @@ fn the_generated_code_allocates_in_the_arena() {
             codegen: isc_codegen::Options::default(),
             link: Vec::new(),
             glibc,
+            icon: None,
         };
         iscc::build_in(&p, &opts, cache.as_deref()).unwrap_or_else(|e| panic!("{}", e));
         for (mode, first) in modes {
@@ -324,6 +327,7 @@ action main(args: string[k]): i32 {
         codegen: isc_codegen::Options::default(),
         link: Vec::new(),
         glibc: false,
+        icon: None,
     };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
     let ll = std::fs::read_to_string(out.with_extension("ll")).unwrap();

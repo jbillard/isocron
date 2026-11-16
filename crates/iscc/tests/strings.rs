@@ -3173,7 +3173,7 @@ fn with_text_replaces_whole_characters() {
     let mut p = iscc::frontend("with_text.isc", src).unwrap_or_else(|e| panic!("{}", e));
     assert_eq!(with_text(&mut p.body) + p.fns.iter_mut().map(|f| with_text(&mut f.body)).sum::<usize>(), 2);
     let out = tmp("with_text");
-    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options::default(), link: Vec::new(), glibc: false };
+    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options::default(), link: Vec::new(), glibc: false, icon: None };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
     let both = |args: &[&str]| -> (Result<String, String>, Run) {
         let mut o = Vec::new();

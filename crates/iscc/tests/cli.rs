@@ -85,7 +85,9 @@ fn completion_of_the_shell() {
     std::fs::write(&script, out("bash")).unwrap();
     let cases: &[(&[&str], &str)] = &[
         (&["iscc", "bu"], "build"),
-        (&["iscc", "build", "a.isc", "--i"], "--isa"),
+        (&["iscc", "build", "a.isc", "--i"], "--icon --isa"),
+        // (`--icon`: the files `.ico` and the folders, D677)
+        (&["iscc", "build", "a.isc", "--icon", ""], "sub"),
         (&["iscc", "build", "a.isc", "--isa", "avx"], "avx avx2 avx512"),
         (&["iscc", "--color", "a"], "always auto"),
         (&["iscc", "completions", ""], "bash fish zsh"),

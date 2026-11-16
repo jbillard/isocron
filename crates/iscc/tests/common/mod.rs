@@ -218,6 +218,7 @@ fn compile_built(src: &str, name: &str, mut codegen: isc_codegen::Options, link:
         codegen,
         link: link.iter().map(|s| s.to_string()).collect(),
         glibc,
+        icon: None,
     };
     let cache = if whole { None } else { iscc::pre_dir() };
     iscc::build_in(&p, &opts, cache.as_deref()).unwrap_or_else(|e| panic!("{}: {}", name, e));
@@ -284,7 +285,7 @@ pub fn compile_wasm_isa(src: &str, name: &str, isa: isc_codegen::Isa) -> PathBuf
     o.isa = isa;
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(&format!("{}.wasm", name));
-    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false, icon: None };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
     out
 }

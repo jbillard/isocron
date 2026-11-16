@@ -22,7 +22,7 @@ fn compile_windows_with(src: &str, name: &str, msvc: bool) -> PathBuf {
     let o = isc_codegen::Options { windows: true, msvc, ..isc_codegen::Options::default() };
     let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
     let out = tmp(&format!("{}.exe", name));
-    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false, icon: None };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}: {}", name, e));
     out
 }
@@ -679,7 +679,7 @@ fn the_guide_on_windows() {
         // Windows, the primitive named
         let p = iscc::frontend("guide.isc", src).unwrap_or_else(|e| panic!("docs/language.md:{}: {}", line, e));
         if p.sys_paths[1].iter().any(|(op, _, _)| !op.on_windows()) {
-            let opts = iscc::BuildOptions { output: tmp(&format!("win_guide_{}.exe", k)), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false };
+            let opts = iscc::BuildOptions { output: tmp(&format!("win_guide_{}.exe", k)), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false, icon: None };
             let e = iscc::build(&p, &opts).expect_err("an example of the module unix built for Windows");
             assert!(e.contains("(the module `unix` is Linux only)"), "docs/language.md:{}: {}", line, e);
             continue;
@@ -741,10 +741,10 @@ action main(args: string[k]): i32 {
     let o = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
     let p = iscc::frontend("win_msvc_c.isc", src).unwrap_or_else(|e| panic!("{}", e));
     let exe = tmp("win_msvc_c.exe");
-    let opts = iscc::BuildOptions { output: exe.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o.clone(), link: vec![lib.to_string_lossy().to_string()], glibc: false };
+    let opts = iscc::BuildOptions { output: exe.clone(), emit_llvm: None, emit_asm: None, debug: false, codegen: o.clone(), link: vec![lib.to_string_lossy().to_string()], glibc: false, icon: None };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("win_msvc_c: {}", e));
     // without the library, the functions of shlwapi are not found
-    let without = iscc::BuildOptions { output: tmp("win_msvc_c_without.exe"), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+    let without = iscc::BuildOptions { output: tmp("win_msvc_c_without.exe"), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false, icon: None };
     assert!(iscc::build(&p, &without).is_err(), "shlwapi linked without its library");
     let w = run_windows(&runner, &exe, &d, &[], None, 1);
     assert_eq!(w.0, 0, "stderr: {}", String::from_utf8_lossy(&w.2));
@@ -874,7 +874,7 @@ fn programs_build_for_windows() {
         let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
         if p.sys_paths[1].iter().any(|(op, _, _)| !op.on_windows()) {
             let o = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
-            let opts = iscc::BuildOptions { output: tmp(&format!("built_{}.exe", name)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+            let opts = iscc::BuildOptions { output: tmp(&format!("built_{}.exe", name)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false, icon: None };
             let e = iscc::build(&p, &opts).expect_err("a program of the module unix built for Windows");
             assert!(e.contains("the target Windows has no `sys") && e.contains("(the module `unix` is Linux only)"), "{}: {}", name, e);
             continue;
@@ -925,7 +925,7 @@ fn win32_refused_for_linux_and_wasi() {
         ("Linux", isc_codegen::Options::default()),
         ("WebAssembly (WASI preview 1)", isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() }),
     ] {
-        let opts = iscc::BuildOptions { output: tmp("win32_other"), emit_llvm: None, emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false };
+        let opts = iscc::BuildOptions { output: tmp("win32_other"), emit_llvm: None, emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false, icon: None };
         let e = iscc::build(&p, &opts).expect_err("the module win32 built for another system");
         // (the first primitive of the module the check meets: that of
         // `open` through `openWith`, or that of `close`, D669)
@@ -962,6 +962,105 @@ fn a_program_of_windows_without_a_console() {
             assert_eq!(subsystem, if gui { 2 } else { 3 }, "{} {}", name, gui);
         }
     }
+}
+
+/// The resource of the type `kind` and the number `id` of the program of
+/// Windows `b` (its first language): its bytes; none when it has none
+fn resource(b: &[u8], kind: u32, id: u32) -> Option<Vec<u8>> {
+    let u16_at = |at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap()) as usize;
+    let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) as usize;
+    let pe = u32_at(0x3c);
+    let sections = u16_at(pe + 6);
+    let opt = pe + 24;
+    let table = opt + u16_at(pe + 20);
+    // (the directory of the resources: the third of the optional header)
+    let rva = u32_at(opt + 112 + 2 * 8);
+    if rva == 0 {
+        return None;
+    }
+    let at = |r: usize| -> usize {
+        (0..sections)
+            .map(|k| table + 40 * k)
+            .find(|&h| r >= u32_at(h + 12) && r < u32_at(h + 12) + u32_at(h + 8).max(u32_at(h + 16)))
+            .map(|h| r - u32_at(h + 12) + u32_at(h + 20))
+            .expect("an address in a section")
+    };
+    let base = at(rva);
+    // the entry of the number `n` of the directory at `d` (from the start
+    // of the resources): what it names, and whether it is a directory
+    let find = |d: usize, n: usize| -> Option<(usize, bool)> {
+        let count = u16_at(base + d + 12) + u16_at(base + d + 14);
+        (0..count).map(|k| base + d + 16 + 8 * k).find(|&e| u32_at(e) == n).map(|e| (u32_at(e + 4) & 0x7fff_ffff, u32_at(e + 4) & 0x8000_0000 != 0))
+    };
+    let (types, sub) = find(0, kind as usize)?;
+    assert!(sub);
+    let (langs, sub) = find(types, id as usize)?;
+    assert!(sub);
+    // (the first language)
+    let entry = u32_at(base + langs + 16 + 4);
+    assert_eq!(entry & 0x8000_0000, 0);
+    let data = base + entry;
+    let (r, size) = (u32_at(data), u32_at(data + 4));
+    Some(b[at(r)..at(r) + size].to_vec())
+}
+
+/// D677: `iscc build --icon file.ico`: the images of the file the
+/// resources of the program (`RT_ICON` 3, numbered from 1, their bytes as
+/// in the file) and their group (`RT_GROUP_ICON` 14, number 1: its header,
+/// each entry of the file with its number in place of its place), with the
+/// start of the runtime, with MinGW's C runtime (a C function declared),
+/// with Microsoft's ABI; none without `--icon`; a file that is not one of
+/// icons refused, and `--icon` for another system than Windows
+#[test]
+fn the_icon_of_a_program_of_windows() {
+    // a file of two images: 16 by 16 (40 bytes), 32 by 32 (70 bytes)
+    let images: [(u8, Vec<u8>); 2] = [(16, (0..40u8).collect()), (32, (100..170u8).collect())];
+    let mut ico: Vec<u8> = vec![0, 0, 1, 0, 2, 0];
+    let mut at = 6 + 16 * images.len();
+    for (side, bytes) in &images {
+        ico.extend_from_slice(&[*side, *side, 0, 0, 1, 0, 32, 0]);
+        ico.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&(at as u32).to_le_bytes());
+        at += bytes.len();
+    }
+    for (_, bytes) in &images {
+        ico.extend_from_slice(bytes);
+    }
+    let icon = tmp("program.ico");
+    std::fs::write(&icon, &ico).unwrap();
+    let alone = "action main(args: string[k]): i32 {\n    print(1);\n    return 0;\n}\n";
+    let with_c = "declare function abs(v: i32): i32;\n\naction main(args: string[k]): i32 {\n    print(abs(-1i32));\n    return 0;\n}\n";
+    for (name, src, msvc) in [("alone", alone, false), ("with_c", with_c, false), ("msvc", alone, true)] {
+        let p = iscc::frontend(&format!("{}.isc", name), src).unwrap_or_else(|e| panic!("{}", e));
+        for with_icon in [true, false] {
+            let out = tmp(&format!("icon_{}_{}.exe", name, with_icon));
+            let codegen = isc_codegen::Options { windows: true, msvc, windows_gui: true, ..isc_codegen::Options::default() };
+            let opts = iscc::BuildOptions { output: out.clone(), codegen, icon: with_icon.then(|| icon.clone()), ..Default::default() };
+            iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{} {}: {}", name, with_icon, e));
+            let b = std::fs::read(&out).unwrap();
+            if !with_icon {
+                assert_eq!(resource(&b, 14, 1), None, "{}", name);
+                continue;
+            }
+            for (k, (_, bytes)) in images.iter().enumerate() {
+                assert_eq!(resource(&b, 3, k as u32 + 1).as_ref(), Some(bytes), "{} image {}", name, k + 1);
+            }
+            let mut group: Vec<u8> = vec![0, 0, 1, 0, 2, 0];
+            for k in 0..images.len() {
+                group.extend_from_slice(&ico[6 + 16 * k..6 + 16 * k + 12]);
+                group.extend_from_slice(&(k as u16 + 1).to_le_bytes());
+            }
+            assert_eq!(resource(&b, 14, 1), Some(group), "{}", name);
+        }
+    }
+    let p = iscc::frontend("alone.isc", alone).unwrap();
+    let not_ico = tmp("not_an_icon.ico");
+    std::fs::write(&not_ico, b"\x89PNG\r\n\x1a\n").unwrap();
+    let windows = isc_codegen::Options { windows: true, ..isc_codegen::Options::default() };
+    let e = iscc::build(&p, &iscc::BuildOptions { output: tmp("not_an_icon.exe"), codegen: windows, icon: Some(not_ico), ..Default::default() }).unwrap_err();
+    assert!(e.contains("not a file of icons (.ico)"), "{}", e);
+    let e = iscc::build(&p, &iscc::BuildOptions { output: tmp("icon_linux"), icon: Some(icon.clone()), ..Default::default() }).unwrap_err();
+    assert!(e.contains("`--icon` gives its icon to a program of Windows"), "{}", e);
 }
 
 /// D643: `win32.programPath()`, the file of the program running

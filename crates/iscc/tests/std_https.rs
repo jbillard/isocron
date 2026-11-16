@@ -201,7 +201,7 @@ fn https_refused_for_wasi() {
     let src = "import * as https from \"https\";\nimport * as http from \"http\";\n\naction main(args: string[k]): i32 {\n    match (https.get(\"https://localhost:1/\")) {\n        Ok(r) => print(r.status),\n        Err(e) => print(http.message(e)),\n    };\n    return 0;\n}\n";
     let p = iscc::frontend("https.isc", src).unwrap();
     let o = isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() };
-    let opts = iscc::BuildOptions { output: tmp("https_wasi.wasm"), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+    let opts = iscc::BuildOptions { output: tmp("https_wasi.wasm"), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false, icon: None };
     let e = iscc::build(&p, &opts).expect_err("TLS built for WASI");
     assert!(e.contains("(WASI preview 1) has no") && e.contains("main"), "{}", e);
 }

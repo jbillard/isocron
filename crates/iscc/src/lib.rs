@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod icon;
+
 /// Parses, type-checks, lowers and optimizes a program and the modules it
 /// imports. Errors are rendered as `file:line:col: error: message`.
 pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
@@ -248,6 +250,9 @@ pub struct BuildOptions {
     /// Linked with glibc under Linux even without C functions (the tests
     /// under Valgrind, which sees the blocks of glibc's allocator, D289).
     pub glibc: bool,
+    /// The icon of a program of Windows (`--icon`, a file `.ico`, D677):
+    /// its resources, shown by the explorer, loaded by its windows.
+    pub icon: Option<PathBuf>,
 }
 
 /// Whether a program for Linux is linked with glibc (D289): when it
@@ -632,10 +637,23 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
             (f, true)
         }
     };
+    // the icon of a program of Windows (D677): its resources in an object
+    // of their own, next to the other
+    let res = match (&opts.icon, windows) {
+        (Some(ico), true) => {
+            let bytes = std::fs::read(ico).map_err(|e| format!("cannot read the icon `{}`: {}", ico.display(), e))?;
+            let o = icon::icon_object(&bytes).map_err(|e| format!("{}: {}", ico.display(), e))?;
+            let f = opts.output.with_extension("icon.o");
+            std::fs::write(&f, o).map_err(|e| format!("cannot write `{}`: {}", f.display(), e))?;
+            Some(f)
+        }
+        (Some(_), false) => return Err("`--icon` gives its icon to a program of Windows: build it for Windows (`--target x86_64-windows`)".into()),
+        _ => None,
+    };
     let linked = if msvc {
-        link_windows_msvc(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
+        link_windows_msvc(&obj, pre, res.as_deref(), &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
     } else if windows {
-        link_windows(&obj, pre, &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
+        link_windows(&obj, pre, res.as_deref(), &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
     } else if wasm {
         link_wasm(&obj, pre, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
     } else if !with_glibc(p, opts) {
@@ -644,6 +662,9 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
         link(&obj, pre, &rt, &opts.output, opts.debug, &opts.link)
     };
     let _ = std::fs::remove_file(&obj);
+    if let Some(f) = &res {
+        let _ = std::fs::remove_file(f);
+    }
     if temporary {
         let _ = std::fs::remove_file(&rt);
     }
@@ -829,9 +850,9 @@ fn subsystem(gui: bool) -> &'static str {
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
-fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
+fn link_windows(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
     if own_start {
-        return link_windows_alone(obj, pre, rt, out, debug, gui);
+        return link_windows_alone(obj, pre, res, rt, out, debug, gui);
     }
     let tmp = out.with_extension("mingw");
     let (lib, gcc) = if MINGW_FILES.is_empty() {
@@ -846,6 +867,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bo
     a.push(gcc.join("crtbegin.o").into());
     a.push(obj.into());
     a.extend(pre.map(|p| p.into()));
+    a.extend(res.map(|p| p.into()));
     a.extend(libs.iter().map(|l| lib_arg(l)));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "-L".into(), gcc.clone().into(), "--start-group".into()]);
@@ -869,7 +891,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bo
 /// API set only (their import libraries, from MinGW-w64: no code of MinGW
 /// in the program); a console executable whose main thread has a stack of
 /// 8 MiB.
-fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, gui: bool) -> Result<(), String> {
+fn link_windows_alone(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, gui: bool) -> Result<(), String> {
     let tmp = out.with_extension("mingw");
     let lib = if MINGW_FILES.is_empty() {
         mingw_dirs()?.0
@@ -881,6 +903,7 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, deb
     a.push(out.into());
     a.push(obj.into());
     a.extend(pre.map(|p| p.into()));
+    a.extend(res.map(|p| p.into()));
     a.push(rt.into());
     a.extend(["-L".into(), lib.clone().into(), "--start-group".into()]);
     // the DLLs of the network and of TLS loaded by the runtime at their
@@ -910,7 +933,7 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, deb
 /// and those of the SDK found as Visual Studio's own tools find them, in
 /// the directories of `LIB` (set by a Developer Command Prompt): iscc never
 /// has them.
-fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
+fn link_windows_msvc(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
     let mut a: Vec<std::ffi::OsString> = vec!["/nologo".into(), format!("/subsystem:{}", subsystem(gui)).into(), "/stack:8388608".into(), "/opt:ref".into(), "/machine:x64".into()];
     a.push(format!("/out:{}", out.display()).into());
     if debug {
@@ -927,6 +950,7 @@ fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debu
         a.extend(["/entry:isc_win_start".into(), "/nodefaultlib".into()]);
         a.push(obj.into());
         a.extend(pre.map(|p| p.into()));
+        a.extend(res.map(|p| p.into()));
         a.push(rt.into());
         for l in ["kernel32", "synchronization", "user32", "gdi32"] {
             a.push(lib.join(format!("lib{}.a", l)).into());
@@ -937,6 +961,7 @@ fn link_windows_msvc(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debu
         }
         a.push(obj.into());
         a.extend(pre.map(|p| p.into()));
+        a.extend(res.map(|p| p.into()));
         for l in libs {
             a.push(if l.contains('/') || l.contains('\\') || l.ends_with(".lib") || l.ends_with(".a") || l.ends_with(".obj") { l.into() } else { format!("{}.lib", l).into() });
         }

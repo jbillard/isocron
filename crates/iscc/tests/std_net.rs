@@ -143,6 +143,7 @@ fn net_refused_for_wasi() {
         codegen: isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() },
         link: Vec::new(),
         glibc: false,
+        icon: None,
     };
     let e = iscc::build(&p, &opts).expect_err("a program with sockets built for WASI");
     assert!(e.contains("(WASI preview 1) has no `sys") && e.contains("(no sockets): reached by `main` -> `ask` -> `net."), "{}", e);

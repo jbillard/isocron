@@ -137,7 +137,7 @@ fn every_example_of_the_guide_works() {
                 let p = iscc::frontend("doc.isc", &ex.src).unwrap_or_else(|e| panic!("{}: {}", at, e));
                 if p.sys_paths[2].iter().any(|(op, _, _)| !op.on_wasi()) {
                     let o = isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() };
-                    let opts = iscc::BuildOptions { output: tmp(&format!("doc_{}.wasm", n)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false };
+                    let opts = iscc::BuildOptions { output: tmp(&format!("doc_{}.wasm", n)), emit_llvm: None, emit_asm: None, debug: false, codegen: o, link: Vec::new(), glibc: false, icon: None };
                     let e = iscc::build(&p, &opts).expect_err("a program that WASI cannot run, built for it");
                     assert!(e.contains("(WASI preview 1) has no"), "{}: {}", at, e);
                 } else if let (Some(runner), None) = (&wasm, &ex.input) {

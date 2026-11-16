@@ -104,7 +104,7 @@ fn unix_refused_for_windows_and_wasi() {
         ("Windows", isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }),
         ("WebAssembly (WASI preview 1)", isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() }),
     ] {
-        let opts = iscc::BuildOptions { output: tmp("unix_other"), emit_llvm: None, emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false };
+        let opts = iscc::BuildOptions { output: tmp("unix_other"), emit_llvm: None, emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false, icon: None };
         let e = iscc::build(&p, &opts).expect_err("the module unix built for another system");
         assert!(
             e.contains(&format!("the target {} has no `sysUnixConnect` (the module `unix` is Linux only): reached by `main` -> `ask` -> `unix.connect`", target)),
@@ -132,11 +132,11 @@ fn a_branch_of_another_system_reaches_nothing() {
     assert!(p.sys_paths[0].iter().any(|(op, _, _)| op.is_unix()), "Linux reaches the module unix");
     assert!(!p.sys_paths[1].iter().any(|(op, _, _)| op.is_unix()) && !p.sys_paths[2].iter().any(|(op, _, _)| op.is_unix()), "Windows and WASI reach none of it");
     // built for WebAssembly (no C library needed)
-    let opts = iscc::BuildOptions { output: tmp("platform_wasi.wasm"), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false };
+    let opts = iscc::BuildOptions { output: tmp("platform_wasi.wasm"), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { isa: isc_codegen::Isa::Wasm32, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false, icon: None };
     iscc::build(&p, &opts).unwrap_or_else(|e| panic!("built for WASI: {}", e));
     // and for Windows, when its libraries are here
     if std::env::var_os("ISC_MINGW_DIR").is_some() || std::path::Path::new("/usr/x86_64-w64-mingw32/lib").is_dir() {
-        let opts = iscc::BuildOptions { output: tmp("platform_windows.exe"), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false };
+        let opts = iscc::BuildOptions { output: tmp("platform_windows.exe"), emit_llvm: None, emit_asm: None, debug: false, codegen: isc_codegen::Options { windows: true, ..isc_codegen::Options::default() }, link: Vec::new(), glibc: false, icon: None };
         iscc::build(&p, &opts).unwrap_or_else(|e| panic!("built for Windows: {}", e));
     }
     // outside a test of the system: refused for Windows

@@ -27,9 +27,10 @@ use super::{v, Gen, V};
 use isc_ir::SysOp;
 
 /// The functions of Windows the module calls.
-const DECLS: [&str; 46] = [
+const DECLS: [&str; 48] = [
     "declare i32 @IsZoomed(ptr)",
     "declare i32 @GetSystemMetricsForDpi(i32, i32)",
+    "declare i32 @GetSystemMetrics(i32)",
     "declare i32 @ScreenToClient(ptr, ptr)",
     "declare i64 @GetTickCount64()",
     "declare i32 @PeekMessageW(ptr, ptr, i32, i32, i32)",
@@ -40,6 +41,7 @@ const DECLS: [&str; 46] = [
     "declare ptr @WindowFromPoint(i64)",
     "declare ptr @GetModuleHandleW(ptr)",
     "declare ptr @LoadCursorW(ptr, ptr)",
+    "declare ptr @LoadImageW(ptr, ptr, i32, i32, i32, i32)",
     "declare i16 @RegisterClassExW(ptr)",
     "declare i32 @AdjustWindowRectEx(ptr, i32, i32, i32)",
     "declare ptr @CreateWindowExW(i32, ptr, ptr, i32, i32, i32, i32, i32, ptr, ptr, ptr, ptr)",
@@ -664,6 +666,12 @@ entry:
   %aware = call i32 @SetProcessDpiAwarenessContext(ptr inttoptr (i64 -4 to ptr))
   %hinst = call ptr @GetModuleHandleW(ptr null)
   %cursor = call ptr @LoadCursorW(ptr null, ptr inttoptr (i64 32512 to ptr))
+  ; the icon of the program: its resource 1 (`--icon`, D677), large and at
+  ; the size of the small icons of the system (none: null, Windows' own)
+  %appicon = call ptr @LoadImageW(ptr %hinst, ptr inttoptr (i64 1 to ptr), i32 1, i32 0, i32 0, i32 64)
+  %smcx = call i32 @GetSystemMetrics(i32 49)
+  %smcy = call i32 @GetSystemMetrics(i32 50)
+  %appsmall = call ptr @LoadImageW(ptr %hinst, ptr inttoptr (i64 1 to ptr), i32 1, i32 %smcx, i32 %smcy, i32 0)
   store i32 80, ptr %wc
   %pstyle = getelementptr i8, ptr %wc, i64 4
   store i32 3, ptr %pstyle
@@ -674,7 +682,7 @@ entry:
   %pinst = getelementptr i8, ptr %wc, i64 24
   store ptr %hinst, ptr %pinst
   %picon = getelementptr i8, ptr %wc, i64 32
-  store ptr null, ptr %picon
+  store ptr %appicon, ptr %picon
   %pcur = getelementptr i8, ptr %wc, i64 40
   store ptr %cursor, ptr %pcur
   %pbg = getelementptr i8, ptr %wc, i64 48
@@ -684,7 +692,7 @@ entry:
   %pclass = getelementptr i8, ptr %wc, i64 64
   store ptr @isc.win.class, ptr %pclass
   %psm = getelementptr i8, ptr %wc, i64 72
-  store ptr null, ptr %psm
+  store ptr %appsmall, ptr %psm
   %atom = call i16 @RegisterClassExW(ptr %wc)
   ; the title in UTF-16, ended by a zero
   %n32 = trunc i64 %n to i32
@@ -1706,6 +1714,23 @@ mod tests {
         assert!(PROC.contains("%sysspace = icmp eq i64 %wp, 32\n  br i1 %sysspace, label %def, label %sysnone\nsysnone:\n  ret i64 0"));
         for name in ["%sysspace ="] {
             assert_eq!(PROC.matches(name).count(), 1, "{}", name);
+        }
+    }
+
+    /// The icon of the program (D677): the class of the windows given the
+    /// icon of its resource 1 (`LoadImageW` of `IMAGE_ICON`, 1), large at
+    /// the size of the system (`LR_DEFAULTSIZE`, 64) and small at that of
+    /// its small icons (`SM_CXSMICON`, 49; `SM_CYSMICON`, 50), at their
+    /// places in `WNDCLASSEXW` (`hIcon` at 32, `hIconSm` at 72)
+    #[test]
+    fn the_icon_of_the_program() {
+        assert!(OPEN.contains("%appicon = call ptr @LoadImageW(ptr %hinst, ptr inttoptr (i64 1 to ptr), i32 1, i32 0, i32 0, i32 64)"));
+        assert!(OPEN.contains("%smcx = call i32 @GetSystemMetrics(i32 49)\n  %smcy = call i32 @GetSystemMetrics(i32 50)"));
+        assert!(OPEN.contains("%appsmall = call ptr @LoadImageW(ptr %hinst, ptr inttoptr (i64 1 to ptr), i32 1, i32 %smcx, i32 %smcy, i32 0)"));
+        assert!(OPEN.contains("%picon = getelementptr i8, ptr %wc, i64 32\n  store ptr %appicon, ptr %picon"));
+        assert!(OPEN.contains("%psm = getelementptr i8, ptr %wc, i64 72\n  store ptr %appsmall, ptr %psm"));
+        for name in ["%appicon =", "%appsmall =", "%smcx =", "%smcy ="] {
+            assert_eq!(OPEN.matches(name).count(), 1, "{}", name);
         }
     }
 

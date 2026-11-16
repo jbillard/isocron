@@ -16537,3 +16537,25 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `a_program_declaring_a_primitive_leaves_the_modules_alone` (stdlib.rs:
   `split` and `argsort` declared again, `sys.makeDirs`, `sort` and
   `sortBy` of the prelude; refused without the change).
+- **D677 — The icon of a program of Windows.** The user of the library of
+  interfaces asked for an icon on its programs. `iscc build --icon
+  file.ico` (a program for Windows; refused for another system) makes the
+  images of the file the resources of the program, as a resource compiler
+  makes them, without one: `crates/iscc/src/icon.rs` reads the file (its
+  header, its entries, their images: PNG or bitmaps, kept as they are) and
+  writes an object of COFF of its own, `.rsrc$01` (the directories: the
+  types `RT_ICON` 3 and `RT_GROUP_ICON` 14, the images numbered from 1,
+  their group number 1, the language 0x0409; the entries of the data, their
+  places relocated by `IMAGE_REL_AMD64_ADDR32NB` against `.rsrc$02`) and
+  `.rsrc$02` (the images, then the group: its header and each entry of the
+  file with its number in place of its place), given to the linker after
+  the program (MinGW's start or the runtime's, Microsoft's ABI): the
+  linker joins them in `.rsrc`, the explorer shows the icon. The class of
+  the windows of `win32` takes the resource 1 (`LoadImageW`, large at the
+  size of the system, small at `SM_CXSMICON` by `SM_CYSMICON`), none
+  without it (Windows' own, as before). `iscc` with no tool of resources:
+  nothing more to install. Tests `the_icon_of_a_program_of_windows`
+  (windows.rs: the resources read back from the executable, each image's
+  bytes and the group, the three ways of linking, none without `--icon`, a
+  file that is not one of icons refused, `--icon` for Linux refused) and
+  `the_icon_of_the_program` (emit/win32.rs).

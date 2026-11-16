@@ -45,6 +45,7 @@ fn built(src: &str, name: &str, dir: Option<&Path>) -> (PathBuf, String) {
         codegen: isc_codegen::Options::default(),
         link: Vec::new(),
         glibc: false,
+        icon: None,
     };
     iscc::build_in(&p, &opts, dir).unwrap_or_else(|e| panic!("{}: {}", name, e));
     (out, std::fs::read_to_string(&ll).unwrap())
@@ -294,7 +295,7 @@ fn for_webassembly() {
     let ll = out.with_extension("ll");
     let mut codegen = isc_codegen::Options::default();
     codegen.isa = isc_codegen::Isa::Wasm32;
-    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: Some(ll.clone()), emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false };
+    let opts = iscc::BuildOptions { output: out.clone(), emit_llvm: Some(ll.clone()), emit_asm: None, debug: false, codegen, link: Vec::new(), glibc: false, icon: None };
     iscc::build_in(&p, &opts, Some(&dir)).unwrap();
     let ir = std::fs::read_to_string(&ll).unwrap();
     assert!(ir.lines().any(|l| l.starts_with("declare hidden ") && l.contains("@isc.pre.fixedRest(")));

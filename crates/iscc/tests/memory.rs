@@ -1272,6 +1272,7 @@ fn scan_and_kept_filter_of_rows_refused() {
             codegen: isc_codegen::Options::default(),
             link: Vec::new(),
             glibc: false,
+            icon: None,
         };
         let e = iscc::build(&p, &opts).unwrap_err();
         assert!(e.to_string().contains(message), "{}", e);
