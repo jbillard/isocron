@@ -70,9 +70,10 @@
 //!   system whole and never given back but by `trim_idle`, `trim_large` and
 //!   the free of a large block, which unmap or advise only the pages of
 //!   blocks that are free; the bytes of a block in use belong to its owner.
-//! - H5, the chunks: `BUMP`, `BUMP_END`, `CHUNKS_MADE` and `FIRST_CHUNK`
-//!   only under `CHUNK_LOCK`; the bytes from `BUMP[g]` to `BUMP_END[g]`, and
-//!   from the `span` of a thread to its `span_end`, belong to no block yet.
+//! - H5, the chunks: `BUMP`, `BUMP_END`, `CHUNKS_MADE`, `GROUP_CHUNKS` and
+//!   `FIRST_CHUNK` only under `CHUNK_LOCK`; the bytes from `BUMP[g]` to
+//!   `BUMP_END[g]`, and from the `span` of a thread to its `span_end`,
+//!   belong to no block yet.
 
 // every unsafe operation in a block of its own, each justified by the
 // invariants H1 to H5 above (D567)
@@ -1070,30 +1071,35 @@ unsafe extern "C" fn thread_end(p: *mut c_void) {
 
 /// The chunks made (under CHUNK_LOCK).
 static mut CHUNKS_MADE: usize = 0;
+/// The chunks made for each group of sizes (`group`, under CHUNK_LOCK).
+static mut GROUP_CHUNKS: [usize; 2] = [0; 2];
 /// The start of the first chunk, in pages of 4 KiB (`chunk_start`).
 static mut FIRST_CHUNK: usize = 0;
 /// The small blocks of less than ALIGNED_MIN bytes carved from the spans of
 /// the threads (`carve_many`), once the first chunk can hold no more.
 static SMALL_SPANS: AtomicBool = AtomicBool::new(false);
 
-/// The start of a new chunk mapped at `base` (with a huge page more, to
-/// align it): in huge pages, except the first chunk of the process, in
-/// pages of 4 KiB even where the kernel gives huge pages to any mapping
-/// (`transparent_hugepage=always`): a small program touches a few pages of
-/// it, and the first fault of a huge page clears 2 MiB (D289).
+/// The start of a new chunk of the group `g` mapped at `base` (with a huge
+/// page more, to align it): in huge pages, except the first chunk of each
+/// group, in pages of 4 KiB even where the kernel gives huge pages to any
+/// mapping (`transparent_hugepage=always`): a small program touches a few
+/// pages of it, and the first fault of a huge page clears 2 MiB (D289). (The
+/// first chunk of the arrays of 16 KiB or more was in huge pages: one such
+/// array made 2 MiB resident at once, most of the memory of rtiow, D688.)
 ///
 /// # Safety
 /// Under CHUNK_LOCK; `base` a new mapping of `CHUNK + HUGE` bytes.
-unsafe fn chunk_start(base: *mut u8) -> usize {
+unsafe fn chunk_start(base: *mut u8, g: usize) -> usize {
     let start = (base as usize).next_multiple_of(HUGE);
     // SAFETY: see above
     unsafe {
         if CHUNKS_MADE == 0 {
             FIRST_CHUNK = start;
         }
-        let advice = if CHUNKS_MADE == 0 { MADV_NOHUGEPAGE } else { MADV_HUGEPAGE };
+        let advice = if GROUP_CHUNKS[g] == 0 { MADV_NOHUGEPAGE } else { MADV_HUGEPAGE };
         madvise(start as *mut c_void, CHUNK, advice);
         CHUNKS_MADE += 1;
+        GROUP_CHUNKS[g] += 1;
     }
     start
 }
@@ -1114,7 +1120,7 @@ fn carve(class: usize, size: usize) -> *mut Header {
                 CHUNK_LOCK.store(false, Ordering::Release);
                 return null_mut();
             }
-            let start = chunk_start(base);
+            let start = chunk_start(base, g);
             BUMP[g] = start;
             BUMP_END[g] = start + CHUNK;
         }
@@ -1185,7 +1191,7 @@ unsafe fn carve_many(tc: *mut ThreadCache, class: usize, size: usize, count: usi
             if BUMP_END[0] == 0 && CHUNKS_MADE == 0 {
                 let base = map(CHUNK + HUGE, 0);
                 if !base.is_null() {
-                    let start = chunk_start(base);
+                    let start = chunk_start(base, 0);
                     BUMP[0] = start;
                     BUMP_END[0] = start + CHUNK;
                 }
@@ -1259,7 +1265,7 @@ fn take_span(need: usize) -> (usize, usize) {
                 CHUNK_LOCK.store(false, Ordering::Release);
                 return (0, 0);
             }
-            let start = chunk_start(base);
+            let start = chunk_start(base, 0);
             BUMP[0] = start;
             BUMP_END[0] = start + CHUNK;
         }

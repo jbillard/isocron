@@ -1230,6 +1230,40 @@ action main(args: string[k]): i32 {
     clean(src, "narrow_vg", &[]);
 }
 
+/// D688: the first chunk of the arrays of 16 KiB or more in pages of 4
+/// KiB, as the first chunk of the smaller blocks: a small program makes its
+/// pages resident, not a huge page of 2 MiB (where the kernel gives huge
+/// pages to any mapping, or to those that ask for them: its file of 64 KiB
+/// read, or an array of 100 KiB, took one). The most memory of the program
+/// (`VmHWM`, as it prints it) under 1.5 MiB, with an array of 1 KiB and
+/// one of 100 KiB (before: 2256 and 2356 KiB, now 216 and 412 on this
+/// machine). Isocron's allocator only: glibc's maps its library, the
+/// checked one keeps a quarantine.
+#[test]
+fn the_first_array_takes_small_pages() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => i * 3 + 1);
+    print(sum(xs) > 0 ? 1 : 0);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let bin = compile(src, "first_array_pages");
+    let most = |n: &str| -> u64 {
+        let r = run_bin(&bin, &[n]);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        let line = r.stdout.lines().nth(1).unwrap_or("").to_string();
+        line.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", r.stdout))
+    };
+    let (small, large) = (most("128"), most("12800"));
+    assert!(small < 1536 && large < 1536, "{} KiB, then {} KiB", small, large);
+}
+
 #[test]
 fn tuples_stored_in_narrower_types() {
     // D687: the values of a `map` followed through the conditions of its

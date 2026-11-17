@@ -16875,3 +16875,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   NaN, infinities and values out of 0 .. 1; `%` of a value of unknown sign
   in `i8`, `&` in `u16`, a branch never taken, a part not bounded kept;
   0, 1 and 1000 elements, as interpreted; checked by the allocator).
+- **D688 — The first chunk of the arrays in pages of 4 KiB too
+  (2026-11-17).** After D687 most of the peak of rtiow was one region of 2
+  MiB resident (`/proc/<pid>/smaps` at the peak: 2048 KiB of a mapping of 4
+  MiB, for a program whose own blocks were a few hundred KiB). The small
+  blocks are carved from chunks of 4 MiB in two groups, below and from 16
+  KiB (`group`: the arrays aligned for vectors); the first chunk of the
+  process was kept in pages of 4 KiB (D289), the next ones in huge pages,
+  so the first chunk of the second group was in huge pages: where the
+  kernel gives huge pages to any mapping (`transparent_hugepage=always`,
+  this machine), the first array of 16 KiB or more (the colors of rtiow,
+  its text of 64 KiB) made 2 MiB resident at once, cleared. Now the first
+  chunk of each group is in pages of 4 KiB (`chunk_start(base, g)`,
+  `GROUP_CHUNKS`); the next ones in huge pages as before. rtiow 384 by 216
+  at its peak (`VmHWM`): `sphere` 2.9 to 1.3 MiB on one thread (Rust 3.1),
+  3.8 to 2.2 on 8 (3.5); `final` 4.5 to 3.6 (3.8), 5.7 to 4.9 (4.4); the
+  same images. Any program: one that reads a small file and makes an array
+  of 1 KiB, 2256 to 216 KiB at its peak. The cost, measured: the regions
+  of the nodes (256 KiB each, of that group) are in pages of 4 KiB too, and
+  a tree read at random pays misses of the first level of the TLB:
+  `bench/records/walk` (a tree of 8191 nodes, 0.4 MB, walked a million
+  times) 13 600 to 9.4 million `dtlb_load_misses.stlb_hit`, 3.170 to 3.210
+  billion cycles, +0.9 % over 21 runs (992.6 to 1001.2 ms); rtiow 192 by
+  108, 100 samples, +0.2 to +0.6 % (`sphere` 1658 to 1666 ms on one thread,
+  Rust 1752; `final` 12198 to 12252, Rust 13326; on 8 threads 428 to 429,
+  Rust 660, and 2931 to 2950, Rust 3482); the nine others of the Benchmarks
+  Game within 0.7 % (11 runs). Kept: the regions of the nodes in huge pages
+  would make `final` 1 MiB larger than Rust's again; huge pages for the
+  trees of a long run (collapsed once it is known to be long) are a lever
+  of their own. What remains on `final` with 8 threads: the stacks of the
+  threads, about 180 KiB touched by each (Rust: under 56 KiB), the frames of
+  the large functions (2.5 to 2.8 KiB for those of `hit`) never sharing
+  their slots, the generated code marking no lifetime of them (no
+  `llvm.lifetime`): a lever of its own. Test
+  `the_first_array_takes_small_pages` (memory.rs: a program reading a file
+  and making an array of 1 KiB, then of 100 KiB, under 1.5 MiB at its
+  peak; Isocron's allocator only); in `bounded.rs` the peaks of its loops
+  are now about 1 MiB instead of 3 (the floor of its check of a peak read,
+  1000 KiB, lowered to 200).

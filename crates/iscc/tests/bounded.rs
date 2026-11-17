@@ -105,7 +105,9 @@ fn the_memory_of_a_loop_does_not_grow_with_its_rounds() {
     for (bin, how) in [(compile(LOOPS, "bounded_loops"), "with the module"), (compile_whole(LOOPS, "bounded_loops_whole"), "whole")] {
         for kind in ["pad", "join", "case", "fixed", "float", "parse", "floor", "split", "sort", "concat"] {
             let (few, many) = (most(&bin, kind, 60), most(&bin, kind, 600));
-            assert!(few > 1000, "{} {}: {} KiB", kind, how, few);
+            // (a peak read: the program and its data, below 1 MiB for some
+            // since the first chunks are in pages of 4 KiB, D688)
+            assert!(few > 200, "{} {}: {} KiB", kind, how, few);
             // (the caches of four threads fill a little more in ten times the rounds)
             assert!(many <= few + few / 7 + 256, "{} {}: {} KiB after 60 rounds, {} after 600", kind, how, few, many);
         }
