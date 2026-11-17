@@ -870,6 +870,49 @@ action main(args: string[k]): i32 {
     checked_clean(src, "mem_values", &[]);
 }
 
+/// D689: a function writing its large result at its place (`%out`, D680)
+/// whose body is an `if`: one branch moves the texts of a part of the state
+/// into a new array (`concat` at its last read: the part then bound to its
+/// empty block, D647), the other keeps that part in its result. That
+/// binding was not undone before the other branch, which read the part
+/// from a block it never reached: invalid IR, the program refused (found by
+/// the editor of isocron-ui, `readIn`). The same output as interpreted,
+/// checked by the allocator.
+#[test]
+fn a_branch_moving_a_part_leaves_the_other_alone() {
+    let src = "type Big = { n: i64, log: string[], name: string, a: f64, b: f64, c: f64, d: f64, e: f64 };
+
+function step(m: Big, s: string, ok: boolean, k: i64): Big {
+    if (!ok) {
+        const log = concat(m.log, [s]);
+        return { ...m, log: log.length > 3 ? map(iota(3), (i) => log[log.length - 3 + i]) : log };
+    }
+    if (k > 0) {
+        return step({ ...m, n: m.n + 1 }, `${s}+`, k % 3 != 0, k - 1);
+    }
+    return { ...m, n: m.n + 100, name: s };
+}
+
+action main(args: string[k]): i32 {
+    const log: string[] = [\"a\", \"b\"];
+    const m0: Big = { n: 0, log: log, name: \"\", a: 1.0, b: 2.0, c: 3.0, d: 4.0, e: 5.0 };
+    const m = step(step(m0, \"x\", true, 7), \"y\", false, 0);
+    print(m.log);
+    print(`${m.n} ${m.name}`);
+    const k = step(m0, \"z\", true, 2);
+    print(k.log);
+    print(`${k.n} ${k.name}`);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    assert_eq!(want, "[b, x++, y]\n2 \n[a, b]\n102 z++\n");
+    let bin = compile(src, "branch_moving_part");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    checked_clean(src, "branch_moving_part", &[]);
+}
+
 /// A state written over the one given (D680): a recursive function whose
 /// result holds a value of the type of a parameter given by its address
 /// (holding no counted memory) writes that part over the parameter; its

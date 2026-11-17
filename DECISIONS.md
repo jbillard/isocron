@@ -16913,3 +16913,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   peak; Isocron's allocator only); in `bounded.rs` the peaks of its loops
   are now about 1 MiB instead of 3 (the floor of its check of a peak read,
   1000 KiB, lowered to 200).
+- **D689 — The branches of an `if` written at its place each from the
+  bindings before it (2026-11-17).** The tests of isocron-ui found a
+  program the compiler refused since D680 (`click_scale_check`, through
+  the editor: "the generated IR is invalid: Instruction does not dominate
+  all uses"). Its function `readIn` writes its result, the state of the
+  editor (37 parts), at its place (`%out`, D680), its body an `if`: one
+  branch moves the texts of the log of the state into the new log
+  (`concat` at its last read, D638: the log then bound to its empty block,
+  `rebind`, D647), the other keeps the log in its result. An `if` of a
+  value undoes such bindings after each branch and joins them after it
+  (`unbind`, `join_bound`, D647); the `if` of `ex_into` (a value written at
+  its place, D680) did not: the second branch read the log from the
+  register of the first, a block it never reached. It now does as the
+  other `if` (the bindings, and the blocks a `concat` may take, from those
+  before it in each branch, joined after it). Found by reducing the
+  function: a step of a state whose one branch appends to its log and the
+  other keeps it, recursive (bisected: D679 compiles it, D680 refuses it).
+  Test `a_branch_moving_a_part_leaves_the_other_alone` (functions.rs: as
+  interpreted, checked by the allocator). The suite of the compiler had
+  no such program: the tests of isocron-ui are now run with each change of
+  the code generator.

@@ -6050,16 +6050,34 @@ impl<'p> Gen<'p> {
                 let (la, lb, lj) = (self.label(), self.label(), self.label());
                 self.cbr(&cv.r, &la, &lb);
                 self.block(&la);
+                // each branch from the bindings and the blocks a `concat` may
+                // take as before the `if`, joined after it, as an `if` of a
+                // value does (D647): a variable a branch bound again (its
+                // block taken by a `concat`) was read so in the other branch
+                // too, a value of a block it never reached (D689)
+                let mark = self.rebound.len();
+                let (taking0, giving0) = (self.taking.clone(), self.giving.clone());
                 self.dest = Some(d.clone());
-                self.ex(a, 1)?;
+                let ra = self.ex(a, 1);
                 self.dest = None;
+                ra?;
+                let aend = self.current_label(&la);
+                let abound = self.unbind(mark);
+                let (taking_a, giving_a) = (std::mem::replace(&mut self.taking, taking0.clone()), std::mem::replace(&mut self.giving, giving0.clone()));
                 self.br(&lj);
                 self.block(&lb);
                 self.dest = Some(d);
-                self.ex(b, 1)?;
+                let rb = self.ex(b, 1);
                 self.dest = None;
+                rb?;
+                let bend = self.current_label(&lb);
+                let bbound = self.unbind(mark);
                 self.br(&lj);
                 self.block(&lj);
+                self.taking = self.taking.intersection(&taking_a).copied().collect();
+                self.giving = self.giving.intersection(&giving_a).copied().collect();
+                let outer: HashSet<VarId> = taking0.union(&giving0).copied().collect();
+                self.join_bound(&abound, &aend, &bbound, &bend, &outer);
                 Ok(done)
             }
             ExprKind::Let { .. } => {
