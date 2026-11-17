@@ -16934,3 +16934,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   interpreted, checked by the allocator). The suite of the compiler had
   no such program: the tests of isocron-ui are now run with each change of
   the code generator.
+- **D690 — The runs of a class of bytes found without the engine of
+  regular expressions (2026-11-17).** `bench/countwords` (benhoyt's
+  benchmark, its Rust programs by Andrew Gallant, a port written plainly):
+  Isocron 1.40 s on one thread against 0.57 s (simple Rust) and 0.25 s
+  (optimized), 53 % of it in the engine (`regex_automata`): `matches(text,
+  /[^ \n]+/g)`, each of the 8.2 million words searched forwards to its end
+  then backwards to its start. `matches(s, /[c]+/g)`, `c` a class of ASCII
+  characters or its complement (`[a-z_]+`, `[^ \n]+`), the flags `g` alone,
+  is now lowered to the prelude (`ascii_class_runs` in `lower.rs`): a class
+  of ASCII characters holds no byte of a character of more bytes (all 0x80
+  or more), its complement all of them, so the runs of the bytes of the
+  class are the matches of the engine. A class or a complement of four
+  intervals or fewer (`$rangeRuns`): the places where a byte and the next
+  are not of the same class in one pass of comparisons, by vectors, the
+  first and the last byte apart, the boundaries alternating; beyond, a
+  table of 256 bytes (`$classRuns`). The pattern is checked at compilation
+  as any literal (D157); the classes of Unicode (`\w`, `\d`, `\s`, named),
+  nested classes and their operations, other flags (`i` folds cases beyond
+  ASCII) and other quantifiers are left to the engine. countwords on one
+  thread, not under the protocol: 1.41 to 0.33 s (a table read at each
+  byte first: 0.79 s, the loops scalar), 1339 to 435 MiB at its peak; the
+  same counts. What remains is `countBy`'s grouping (`isc_group`, 59 % now)
+  and the arrays of the words and of their boundaries (the pages cleared,
+  15 %). The Benchmarks Game, walk and rtiow lower to the same IR. Test
+  `runs_of_a_class_without_the_engine` (stdlib.rs: nine patterns, six
+  sizes, three texts of ASCII and of characters of two to four bytes, each
+  the same matches as the engine finds with the flag `m`, which leaves the
+  pattern to it; a program of patterns `g` of classes without a call of the
+  engine; on 1 and 4 threads, as interpreted, checked by the allocator).
+  The type checker foresees `$classRuns` and `$rangeRuns` for `matches`
+  (D629): a list of `isc-types`, nothing else of it changed.

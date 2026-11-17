@@ -295,6 +295,70 @@ fn regular_expressions() {
     }
 }
 
+/// D690: `matches(s, /[c]+/g)`, `c` a class of ASCII characters or its
+/// complement, found as the runs of the bytes of the class (by vectors for
+/// four intervals or fewer, by a table beyond), not by the engine: the
+/// same matches as the engine finds (the same pattern with the flag `m`,
+/// which changes nothing for a class and leaves it to the engine), over
+/// texts of spaces, newlines, tabs, ASCII and characters of two, three and
+/// four bytes, empty or not, starting and ending in the class or out of it;
+/// as interpreted; the engine called for the patterns with `m` alone.
+#[test]
+fn runs_of_a_class_without_the_engine() {
+    let src = r##"function text(seed: i64, n: i64): string {
+    const parts = ["été", " ", "\n", "東京", "ab", "Z9", "_", "\t", "🦀", ",", "x-y", "  ", "q"];
+    return join(map(iota(n), (i) => parts[(i * 7 + seed * 13 + (i * i) % 5) % parts.length]), "");
+}
+
+// the matches of the runs of a class, those of the engine: their numbers,
+// their bytes, whether they are the same
+function same(a: string[n], b: string[m]): string {
+    return `${n} ${m} ${join(a, "|").length} ${join(a, "\u{1}") == join(b, "\u{1}")}`;
+}
+
+function runs(s: string): string[] {
+    return [
+        same(matches(s, /[^ \n]+/g), matches(s, /[^ \n]+/gm)),
+        same(matches(s, /[a-z]+/g), matches(s, /[a-z]+/gm)),
+        same(matches(s, /[a-zA-Z0-9_]+/g), matches(s, /[a-zA-Z0-9_]+/gm)),
+        same(matches(s, /[^a-zA-Z]+/g), matches(s, /[^a-zA-Z]+/gm)),
+        same(matches(s, /[ \t]+/g), matches(s, /[ \t]+/gm)),
+        same(matches(s, /[-a-c]+/g), matches(s, /[-a-c]+/gm)),
+        same(matches(s, /[a\-z]+/g), matches(s, /[a\-z]+/gm)),
+        same(matches(s, /[acegikmoqsuwy]+/g), matches(s, /[acegikmoqsuwy]+/gm)),
+        same(matches(s, /[^,]+/g), matches(s, /[^,]+/gm)),
+    ];
+}
+
+action main(args: string[k]): i32 {
+    const sizes = [0, 1, 2, 5, 40, 300];
+    print(join(map(iota(18), (k) => join(runs(text(k % 3, sizes[k / 3])), "\n")), "\n"));
+    return 0;
+}
+"##;
+    let want = interp_ok(src, &[]);
+    let lines: Vec<&str> = want.lines().collect();
+    assert_eq!(lines.len(), 18 * 9, "{}", want);
+    for l in &lines {
+        assert!(l.ends_with(" true"), "the runs of a class and the engine: {}\n{}", l, want);
+    }
+    // (texts with matches)
+    assert!(lines.iter().any(|l| !l.starts_with("0 ")), "{}", want);
+    let bin = compile(src, "class_runs_bin");
+    // a program of patterns `g` of classes alone: no call of the engine
+    let only = "action main(args: string[k]): i32 {\n    print(matches(args[0], /[^ \\n]+/g));\n    print(matches(args[0], /[acegikmoqsuwy]+/g));\n    return 0;\n}\n";
+    let ll = tmp("class_runs.ll");
+    let p = iscc::frontend("a.isc", only).unwrap();
+    iscc::build(&p, &iscc::BuildOptions { output: tmp("class_runs_only"), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    assert!(!text.contains("call void @isc_rx_matches("), "{}", text);
+    assert_eq!(run_bin(&tmp("class_runs_only"), &["ab cd\nqe"]).stdout, interp_ok(only, &["ab cd\nqe"]));
+    for t in [1, 4] {
+        assert_eq!(run_bin_threads(&bin, &[], Some(t)).stdout, want);
+    }
+    checked_clean(src, "class_runs", &[]);
+}
+
 const MAP: &str = r##"action main(args: string[k]): i32 {
     const m = Map([["b", 2] as const, ["a", 1] as const, ["c", 3] as const, ["a", 10] as const]);
     print(m.size);

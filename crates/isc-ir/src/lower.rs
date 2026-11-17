@@ -35,6 +35,81 @@ pub fn needs_whole(d: &Diagnostic) -> bool {
     d.message.starts_with(UNCHECKED)
 }
 
+/// The bytes of the runs that the global search of `/source/flags` finds
+/// when `source` is one class of ASCII characters, or its complement,
+/// repeated (`[a-z_]+`, `[^ \n]+`) and `flags` is `g` alone (D690): a table
+/// of 256 entries, 1 for a byte of the class. A class of ASCII characters
+/// holds no byte of a character of more bytes (all 0x80 or more), its
+/// complement all of them, so the runs of its bytes are the matches. None
+/// for any other pattern: other flags (`i` folds cases beyond ASCII), the
+/// classes of Unicode (`\w`, `\d`, `\s` and the named ones), nested
+/// classes and their operations (`[`, `&&`, `--`, `~~`), another
+/// quantifier (`*` matches the empty text).
+pub fn ascii_class_runs(source: &str, flags: &str) -> Option<Vec<u8>> {
+    if flags != "g" {
+        return None;
+    }
+    let body = source.strip_prefix('[')?.strip_suffix("]+")?;
+    let (negated, body) = match body.strip_prefix('^') {
+        Some(rest) => (true, rest),
+        None => (false, body),
+    };
+    if body.is_empty() || !body.is_ascii() || body.contains("&&") || body.contains("--") || body.contains("~~") {
+        return None;
+    }
+    // the characters of the class, each with whether it was escaped (`\-`
+    // is a dash, `-` between two characters a range)
+    let mut toks: Vec<(u8, bool)> = Vec::new();
+    let b = body.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let t = match b[i] {
+            b'\\' => {
+                i += 1;
+                let c = match *b.get(i)? {
+                    b'n' => b'\n',
+                    b't' => b'\t',
+                    b'r' => b'\r',
+                    x if b"\\]-^/.*+?(){}|$[".contains(&x) => x,
+                    _ => return None,
+                };
+                (c, true)
+            }
+            b'[' | b']' => return None,
+            x => (x, false),
+        };
+        toks.push(t);
+        i += 1;
+    }
+    let dash = |t: (u8, bool)| t == (b'-', false);
+    let mut table = vec![0u8; 256];
+    let mut k = 0;
+    while k < toks.len() {
+        if k + 2 < toks.len() && dash(toks[k + 1]) && !dash(toks[k]) && !dash(toks[k + 2]) {
+            let (lo, hi) = (toks[k].0, toks[k + 2].0);
+            if lo > hi {
+                return None;
+            }
+            for x in lo..=hi {
+                table[x as usize] = 1;
+            }
+            k += 3;
+        } else if dash(toks[k]) && k != 0 && k + 1 != toks.len() {
+            // (a dash neither first nor last nor a range: left to the engine)
+            return None;
+        } else {
+            table[toks[k].0 as usize] = 1;
+            k += 1;
+        }
+    }
+    if negated {
+        for x in table.iter_mut() {
+            *x ^= 1;
+        }
+    }
+    Some(table)
+}
+
 /// The function of the prelude `name` that the lowering calls itself (a
 /// primitive written in Isocron, the text of a number, the allocator): its
 /// id, none when the prelude has none; an error (`needs_whole`) when its
@@ -2778,6 +2853,53 @@ impl<'p> Lower<'p> {
                 };
                 let keys = Expr::new(ExprKind::Proj(Box::new(m), 0), kt, span);
                 ExprKind::Len(Box::new(keys))
+            }
+            // `matches(s, /[c]+/g)`, `c` a class of ASCII characters or its
+            // complement: the runs of its bytes, found by the prelude (D690),
+            // the pattern checked here as any literal (D157)
+            Prim::RxMatches
+                if matches!(&args[1].kind, TExprKind::Call { callee: tast::Callee::Prim(Prim::RegExpNew), args: ra, .. }
+                    if matches!((&ra[0].kind, &ra[1].kind), (TExprKind::Lit(tast::Lit::Str(src)), TExprKind::Lit(tast::Lit::Str(fl))) if ascii_class_runs(src, fl).is_some())) =>
+            {
+                let TExprKind::Call { args: ra, .. } = &args[1].kind else { unreachable!() };
+                let (TExprKind::Lit(tast::Lit::Str(src)), TExprKind::Lit(tast::Lit::Str(fl))) = (&ra[0].kind, &ra[1].kind) else { unreachable!() };
+                let mut sink = String::new();
+                if let Err(e) = isc_runtime_core::rx::value(src, fl, &mut sink) {
+                    return Err(Diagnostic::new(args[1].span, format!("{}", e)));
+                }
+                let table = ascii_class_runs(src, fl).expect("a class of bytes");
+                let u8t = Type::Int(IntKind::U8);
+                let s = self.expr(env, &args[0])?;
+                // the intervals of the class, or of its complement: four at
+                // most, compared by vectors (`$rangeRuns`); else the table
+                let ranges = |want: u8| -> Vec<(u8, u8)> {
+                    let mut out: Vec<(u8, u8)> = Vec::new();
+                    for x in 0..256usize {
+                        if table[x] == want {
+                            match out.last_mut() {
+                                Some((_, hi)) if *hi as usize + 1 == x => *hi = x as u8,
+                                _ => out.push((x as u8, x as u8)),
+                            }
+                        }
+                    }
+                    out
+                };
+                let (inside, outside) = (ranges(1), ranges(0));
+                let chosen = if inside.len() <= 4 { Some((inside, false)) } else if outside.len() <= 4 { Some((outside, true)) } else { None };
+                let Some((mut rs, out)) = chosen else {
+                    let lits = table.into_iter().map(|x| Lit::Int(x as i64)).collect();
+                    let t = Expr::new(ExprKind::ConstArray(lits), Type::Array(Box::new(u8t), Fixed(Some(256))), span);
+                    return self.prelude_call("$classRuns", vec![s, t], &ty, span);
+                };
+                // (empty intervals: 1 .. 0)
+                rs.resize(4, (1, 0));
+                let mut call = vec![s];
+                for (lo, hi) in rs {
+                    call.push(Expr::lit(Lit::Int(lo as i64), u8t.clone(), span));
+                    call.push(Expr::lit(Lit::Int(hi as i64), u8t.clone(), span));
+                }
+                call.push(Expr::lit(Lit::Bool(out), Type::Bool, span));
+                return self.prelude_call("$rangeRuns", call, &ty, span);
             }
             // strings (D134)
             // `replace` and `replaceAll` of a text: written in Isocron

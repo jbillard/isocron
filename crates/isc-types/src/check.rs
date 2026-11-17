@@ -4426,6 +4426,11 @@ fn prim_needs(p: Prim, arg: Option<&Ty>, ret: &Ty, named: &mut dyn FnMut(&str)) 
         }
         Prim::Replace => named("$replaceOne"),
         Prim::ReplaceAll => named("$replaceEvery"),
+        // (a class of bytes repeated, D690)
+        Prim::RxMatches => {
+            named("$classRuns");
+            named("$rangeRuns");
+        }
         Prim::ParseCsvF64 | Prim::ReadCsvF64 => named("$csvParse"),
         Prim::JsNumber => named("$jsNumber"),
         Prim::Map => named("mapInOrder"),
