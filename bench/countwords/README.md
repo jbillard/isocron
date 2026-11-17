@@ -43,7 +43,9 @@ programs use one.
 `measure.py` (its steps in its header) fetches the input of the benchmark
 (the King James Bible, checked by its SHA-256, ten times: 43 MB), runs
 under the protocol of the machine (`bench/machine.sh`) and writes
-`results/*.json`; the numbers are in `results/countwords.md`.
+`results/*.json`; the numbers are in `results/countwords.md`, those before
+the compiler was changed for this program's shapes in
+`results/before/countwords.md`.
 
 ### Before any change (2026-11-17)
 
@@ -73,3 +75,20 @@ What explains them (`perf`, Isocron on one thread):
    then the words, then the counts; the Rust programs read by lines or by
    blocks of 64 KiB and count each word in their hash map as they find it,
    never an array of words.
+
+### After the changes of the compiler (2026-11-17)
+
+Isocron c6d8408, the port the same, line for line:
+
+* **Times**: Isocron 0.307 s on one thread (1.399 s before), 0.263 s on 8
+  (0.848 s); Rust 0.568 s (simple) and 0.251 s (optimized).
+* **Memory**: 434 MiB at its peak (1339 MiB before); Rust 6 MiB.
+
+What changed: the runs of a class of bytes are found without the engine of
+regular expressions (D690: a class of ASCII characters or its complement
+repeated, `[^ \n]+`, the places where a byte and the next differ in class
+found in one pass by vectors). What remains: `countBy` groups the words
+once all are made (an array of 8.2 million words, another of their
+boundaries: `isc_group` about 60 % of the time, the pages of 434 MiB
+cleared about 15 %), where the Rust programs count each word as they find
+it; and the whole text read, then lowercased, where they read by blocks.
