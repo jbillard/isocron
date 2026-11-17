@@ -1660,6 +1660,19 @@ fn room(p: *mut u8) -> usize {
         // SAFETY: an owned string of the program, a block of `alloc`
         return unsafe { heap::usable(p) };
     }
+    // the allocators of the tests too (D685: a text appended to a million
+    // times grows by doubling, not by a copy at each of them, quadratic)
+    #[cfg(target_os = "linux")]
+    if HEAP_MODE.load(Ordering::Relaxed) == 1 {
+        if checked::CHECKED.load(Ordering::Relaxed) {
+            return checked::usable(p);
+        }
+        if let Some(f) = process::os().usable {
+            // SAFETY: an owned string of the program, a block of glibc's
+            // `aligned_alloc`
+            return unsafe { f(p as *mut c_void) };
+        }
+    }
     0
 }
 

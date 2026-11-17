@@ -1330,7 +1330,10 @@ action main(args: string[k]): i32 {
 ";
     for (name, src, call, not) in [("two", two, "@isc_str_append(", "@isc_str_reserve("), ("three", three, "@isc_str_reserve(", "@isc_str_append_n(")] {
         let bin = compile(src, &format!("appends_every_length_{}", name));
-        let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        let all = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+        // (the functions of the program, `grow`: not `main`, whose join of
+        // `src` appends each text with its separator, D685)
+        let ll: String = all.split("\ndefine ").filter(|f| f.lines().next().is_some_and(|h| h.contains("@isc_fn_"))).collect::<Vec<_>>().join("\ndefine ");
         assert!(ll.contains(&format!("call void {}", call)) || ll.contains(&format!("call ptr {}", call)), "{}: no call of {}", name, call);
         assert!(!ll.contains(&format!("call void {}", not)) && !ll.contains(&format!("call ptr {}", not)), "{}: a call of {}", name, not);
         for n in ["0", "1", "17", "50", "2000"] {
@@ -3665,4 +3668,59 @@ fn parse_f64_of_the_prelude_answers_as_str_parse() {
         let run = run_bin_threads(&bin, args, Some(4));
         assert_eq!(run.code, 0, "{}", run.stderr);
     });
+}
+
+/// The texts of a `map` whose function makes a text without a loop, a call
+/// or an action, joined: each appended to the result in order (D685), no
+/// array of texts; a `let` of such a `map` read by its join alone made
+/// where it was; a `map` that calls a function still made on the threads,
+/// then joined. The same texts as interpreted, nothing leaked.
+#[test]
+fn texts_of_light_maps_appended() {
+    let src = r#"// Texts of a map joined: a light function (a text made of numbers) each
+// text appended in order; a heavy one (a call) made on the threads
+function steps(n: i64, acc: i64): i64 {
+    if (n <= 1) {
+        return acc;
+    }
+    return steps(n % 2 == 0 ? n / 2 : 3 * n + 1, acc + 1);
+}
+
+action main(args: string[k]): i32 {
+    const n = args.length > 0 ? parseI64(args[0]) : 1000;
+    const plain = join(map(iota(n), (i) => `${i % 256} ${(i * 7) % 256}\n`), "");
+    print(plain.length);
+    print(plain.slice(0, 20));
+    const sep = join(map(iota(n), (i) => `${i}`), ", ");
+    print(sep.length);
+    print(sep.slice(sep.length - 30, sep.length));
+    const colors = map(iota(n), (i) => [i % 256, (i * 3) % 256, (i * 5) % 256] as const);
+    const lines = map(colors, (c) => {
+        const [r, g, b] = c;
+        return `${r} ${g} ${b}\n`;
+    });
+    const image = `P3\n${n} 1\n255\n` + join(lines, "");
+    print(image.length);
+    print(image.slice(0, 30));
+    const words = join(map(iota(5), (i) => `w${i}`), "-");
+    print(words);
+    const none = join(map(iota(0), (i) => `${i}`), ",");
+    print(none.length);
+    const heavy = join(map(iota(n / 10), (i) => `${steps(i + 1, 0)}`), " ");
+    print(heavy.length);
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    let ll = tmp("light_joins.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("light_joins_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    // (one join left: the texts of `steps`)
+    assert_eq!(text.matches("; text join").count(), 1, "{}", text);
+    for t in [1, 4] {
+        assert_eq!(run_bin_threads(&bin, &[], Some(t)).stdout, want);
+    }
+    checked_clean(src, "light_joins", &[]);
 }

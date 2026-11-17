@@ -164,6 +164,21 @@ unsafe fn release(p: usize) {
     }
 }
 
+/// The bytes of the block `p` of `alloc` (its size asked), 0 when it is no
+/// live block: the room of a text grown by doubling (D685).
+pub fn usable(p: *mut u8) -> usize {
+    let p = p as usize;
+    if p % 64 != 0 {
+        return 0;
+    }
+    // SAFETY: a block of `alloc`, its header before it (the texts of the
+    // program are its blocks, or literals: not aligned on 64)
+    unsafe {
+        let h = &*header(p);
+        if h[0] == LIVE { h[1] as usize } else { 0 }
+    }
+}
+
 /// The end of `main`: every block of the quarantine checked; the blocks of
 /// the program still allocated: their count and bytes (0, 0 none).
 pub fn end() -> (usize, usize) {

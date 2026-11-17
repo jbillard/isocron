@@ -16768,3 +16768,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   memory of its own; such a tree is counted node by node. Test
   `trees_of_regions_hold_no_texts` (memory.rs: checked by the allocator,
   which reported the five blocks before).
+- **D685 — The texts of a light map joined are appended in order
+  (2026-11-17).** rtiow made the text of its image as an array of texts,
+  one a pixel, then joined: about 190 bytes a line of 11 (a block of 128
+  bytes with its header, 16 in the array, the join), 21.0 MiB at its peak
+  for 384 by 216 pixels where Rust needs 3.3 MiB. `join(map(x, f), sep)`,
+  `f` making a text without a loop, a call or an action (`light_text_map`:
+  a text formatted from its element), is now `fold(iota(n), "", (text, i)
+  => text + f(x[i]))`, the separator before each text but the first
+  (`appended_texts`): each text appended where it is made, the text grown
+  by doubling; also `let v = map(...)` read by such a join alone, outside a
+  function, its separator a literal or a variable bound before: the text
+  made where the map was (`light_joins`). A map whose function loops or
+  calls is still made on the threads (the patterns of `regexredux`); no
+  program of the Benchmarks Game is changed. 830000 lines of three
+  numbers: 355 ms to 98 ms, 127 to 31 MB. Found on the way: a text grown
+  by an append knew its room only in the allocator of Isocron; with
+  glibc's or the checked one (`ISC_ALLOC`, the passes of the suite) each
+  append copied the whole text (200000 parts under Valgrind: over 16
+  minutes, then 3 s); `room` now asks them (`malloc_usable_size` through
+  the table of glibc, `checked::usable`). rtiow 384 by 216: `sphere` 21.0
+  to 7.1 MiB at its peak (Rust 3.3), `final` 22.7 to 8.7 MiB (3.9); the same
+  images, the same times. Test `texts_of_light_maps_appended` (strings.rs:
+  joins with and without a separator, of an `iota`, of an array of tuples
+  through a `let`, empty, and one of a function that calls, left a join;
+  as interpreted, checked by the allocator); `appends_of_parts_of_every_length`
+  now looks at the functions of its program alone (the join of its `main`
+  appends).

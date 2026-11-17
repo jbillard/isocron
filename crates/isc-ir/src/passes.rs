@@ -227,6 +227,178 @@ fn replace_var(e: &mut Expr, v: VarId, with: &mut Option<Expr>) {
 }
 
 // ---------------------------------------------------------------------
+// the join of the texts of a light map, each text appended (D685)
+
+/// A `map` of one input, not a stream, whose function makes a text without
+/// a loop, a call or an action (a text formatted from its element), under
+/// the checks of its length.
+fn light_text_map(e: &Expr) -> bool {
+    fn heavy(e: &Expr) -> bool {
+        crate::blocks::inner_loop(e)
+            || matches!(e.kind, ExprKind::Map(..) | ExprKind::Action(..) | ExprKind::Tasks(..) | ExprKind::Bench(..))
+            || e.children().into_iter().any(heavy)
+    }
+    match &e.kind {
+        ExprKind::CheckNonNegative(_, x) => light_text_map(x),
+        ExprKind::Map(ins, l) => {
+            ins.len() == 1 && l.params.len() == 1 && e.ty.is_array() && *e.ty.elem() == Type::Str && !is_stream(e) && !heavy(&l.body)
+        }
+        _ => false,
+    }
+}
+
+/// The texts of the light `map` `m` (`light_text_map`) joined by `sep`,
+/// each appended to the text in order: `fold(iota(n), "", (text, i) =>
+/// text + f(x[i]))`, `sep` between them (D685).
+fn appended_texts(m: Expr, sep: Expr, vars: &mut Vec<VarInfo>) -> Expr {
+    let span = m.span;
+    if let ExprKind::CheckNonNegative(k, x) = m.kind {
+        let inner = appended_texts(*x, sep, vars);
+        return Expr::new(ExprKind::CheckNonNegative(k, Box::new(inner)), Type::Str, span);
+    }
+    let ExprKind::Map(mut ins, l) = m.kind else { unreachable!("a light map") };
+    let src = ins.pop().expect("one input");
+    let i64t = Type::Int(IntKind::I64);
+    let mut new = |name: &str, ty: Type| -> VarId {
+        vars.push(VarInfo { name: name.into(), ty, prelude: false });
+        (vars.len() - 1) as VarId
+    };
+    let text = new("text", Type::Str);
+    let i = new("i", i64t.clone());
+    let piece = new("piece", Type::Str);
+    let sep_var = new("sep", Type::Str);
+    let src_var = new("src", src.ty.clone());
+    let empty_sep = matches!(&sep.kind, ExprKind::StrLit(s) if s.is_empty());
+    // (an `iota`: its element is the index)
+    let iota = matches!(src.kind, ExprKind::Iota(_));
+    let (n, elem) = if let ExprKind::Iota(n) = &src.kind {
+        ((**n).clone(), Expr::var(i, i64t.clone(), span))
+    } else {
+        let sv = Expr::var(src_var, src.ty.clone(), span);
+        let n = Expr::new(ExprKind::Len(Box::new(sv.clone())), i64t.clone(), span);
+        let el = Expr::new(ExprKind::Index(Box::new(sv), Box::new(Expr::var(i, i64t.clone(), span))), src.ty.elem().clone(), span);
+        (n, el)
+    };
+    let tv = Expr::var(text, Type::Str, span);
+    let pv = Expr::var(piece, Type::Str, span);
+    let add = if empty_sep {
+        Expr::new(ExprKind::StrOp(StrOp::Concat, vec![tv, pv]), Type::Str, span)
+    } else {
+        let first = Expr::new(
+            ExprKind::Binary(BinOp::Eq, Box::new(Expr::var(i, i64t.clone(), span)), Box::new(Expr::lit(Lit::Int(0), i64t.clone(), span))),
+            Type::Bool,
+            span,
+        );
+        let alone = Expr::new(ExprKind::StrOp(StrOp::Concat, vec![tv.clone(), pv.clone()]), Type::Str, span);
+        let after = Expr::new(ExprKind::StrOp(StrOp::Concat, vec![tv, Expr::var(sep_var, Type::Str, span), pv]), Type::Str, span);
+        Expr::new(ExprKind::If(Box::new(first), Box::new(alone), Box::new(after)), Type::Str, span)
+    };
+    let let_ = |var: VarId, init: Expr, body: Expr| -> Expr {
+        let ty = body.ty.clone();
+        Expr::new(ExprKind::Let { var, init: Box::new(init), body: Box::new(body), stmt: false, drop: false }, ty, span)
+    };
+    // the element bound to the parameter of the function, its text to `piece`
+    let body = let_(l.params[0], elem, let_(piece, *l.body, add));
+    let lam = Lambda { params: vec![text, i], body: Box::new(body), drop_params: vec![false, false] };
+    let iota_n = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(Box::new(i64t), Fixed::ANY), span);
+    let fold = Expr::new(ExprKind::Fold(Box::new(iota_n), Box::new(Expr::new(ExprKind::StrLit(String::new()), Type::Str, span)), lam), Type::Str, span);
+    let with_src = if iota { fold } else { let_(src_var, src, fold) };
+    if empty_sep {
+        with_src
+    } else {
+        let_(sep_var, sep, with_src)
+    }
+}
+
+/// `join(map(x, f), sep)` whose `f` makes a text without a loop, a call or
+/// an action: each text appended to the result in order (`appended_texts`)
+/// instead of an array of texts joined (D685): no block per text (128
+/// bytes with its header, for a line of 12), and appending each text where
+/// it is made is faster than making them on the threads (830000 lines of
+/// three numbers: 355 ms to 98 ms, 127 to 31 MB). Also `let v = map(...)
+/// in ...join(v, sep)...`, `v` read there alone, outside a function, and
+/// `sep` a literal or a variable bound before: the text made where the map
+/// was (rtiow: the lines of its image).
+fn light_joins(e: &mut Expr, vars: &mut Vec<VarInfo>) {
+    for c in e.children_mut() {
+        light_joins(c, vars);
+    }
+    if let ExprKind::StrOp(StrOp::Join, args) = &mut e.kind {
+        if args.len() == 2 && light_text_map(&args[0]) {
+            let sep = args.pop().unwrap();
+            let m = args.pop().unwrap();
+            *e = appended_texts(m, sep, vars);
+        }
+        return;
+    }
+    let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
+    if !light_text_map(init) {
+        return;
+    }
+    let v = *var;
+    fn reads(e: &Expr, v: VarId) -> usize {
+        usize::from(matches!(e.kind, ExprKind::Var(w, _) if w == v)) + e.children().into_iter().map(|c| reads(c, v)).sum::<usize>()
+    }
+    if reads(body, v) != 1 {
+        return;
+    }
+    // the variables bound in `e` (a separator bound there is not known
+    // where the map is)
+    fn bound(e: &Expr, out: &mut HashSet<VarId>) {
+        match &e.kind {
+            ExprKind::Let { var, .. } => {
+                out.insert(*var);
+            }
+            ExprKind::Map(_, l) | ExprKind::Reduce(_, l, _) | ExprKind::Fold(_, _, l) | ExprKind::Scan(_, l, _) | ExprKind::Filter(_, l) | ExprKind::Tasks(_, l) => {
+                out.extend(l.params.iter().copied());
+            }
+            _ => {}
+        }
+        for c in e.children() {
+            bound(c, out);
+        }
+    }
+    let mut inside = HashSet::new();
+    bound(body, &mut inside);
+    // its read: the texts joined, outside a function
+    fn join_of(e: &Expr, v: VarId) -> Option<&Expr> {
+        if let ExprKind::StrOp(StrOp::Join, args) = &e.kind {
+            if args.len() == 2 && matches!(args[0].kind, ExprKind::Var(w, _) if w == v) {
+                return Some(&args[1]);
+            }
+        }
+        let skip = lambda_body_index(e);
+        e.children().into_iter().enumerate().filter(|(k, _)| Some(*k) != skip).find_map(|(_, c)| join_of(c, v))
+    }
+    let Some(sep) = join_of(body, v) else { return };
+    let known = match &sep.kind {
+        ExprKind::StrLit(_) => true,
+        ExprKind::Var(w, _) => !inside.contains(w),
+        _ => false,
+    };
+    if !known {
+        return;
+    }
+    let sep = sep.clone();
+    fn to_text(e: &mut Expr, v: VarId) {
+        if let ExprKind::StrOp(StrOp::Join, args) = &e.kind {
+            if args.len() == 2 && matches!(args[0].kind, ExprKind::Var(w, _) if w == v) {
+                *e = Expr::var(v, Type::Str, e.span);
+                return;
+            }
+        }
+        for c in e.children_mut() {
+            to_text(c, v);
+        }
+    }
+    let span = init.span;
+    let m = std::mem::replace(&mut **init, Expr::lit(Lit::Unit, Type::Unit, span));
+    **init = appended_texts(m, sep, vars);
+    vars[v as usize].ty = Type::Str;
+    to_text(body, v);
+}
+
+// ---------------------------------------------------------------------
 // arrays stored in a narrower type (D218)
 
 /// `let v = map(.., (x) => f)` whose values all fit a narrower integer type
@@ -437,6 +609,8 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     table_functions(body, vars, &mut HashMap::new());
     inline_zips(body, vars);
     fuse_fixpoint(body);
+    // the texts of a light map joined: each appended to the result (D685)
+    light_joins(body, vars);
     // a `map` of a zip of scalars that reads its pairs by their components:
     // one `map` over the inputs of the zip (D495)
     compose_zip_maps(body);
