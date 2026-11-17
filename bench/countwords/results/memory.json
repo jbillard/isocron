@@ -1,0 +1,21 @@
+{
+ "date": "2026-11-17T08:36:49",
+ "programs": {
+  "rust-simple": {
+   "threads": 1,
+   "kib": 6144
+  },
+  "rust-optimized": {
+   "threads": 1,
+   "kib": 6240
+  },
+  "isc-1": {
+   "threads": 1,
+   "kib": 1371172
+  },
+  "isc-n": {
+   "threads": 8,
+   "kib": 1467844
+  }
+ }
+}

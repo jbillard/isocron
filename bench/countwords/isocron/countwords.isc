@@ -1,0 +1,18 @@
+// countwords (benhoyt/countwords, MIT): the words of the standard input,
+// lowercased, counted, the most frequent first, as `word count` lines.
+// Written plainly, as the simple Rust version: the whole text read, its
+// words found, a map of their counts, the counts sorted.
+action main(args: string[k]): i32 {
+    const text = readStdinText().toLowerCase();
+    const words = matches(text, /[^ \n]+/g);
+    const counts = countBy(words, (w) => w);
+    const ordered = sortBy(counts.entries(), (e) => {
+        const [w, c] = e;
+        return -c;
+    });
+    print(join(map(ordered, (e) => {
+        const [w, c] = e;
+        return `${w} ${c}`;
+    }), "\n"));
+    return 0;
+}
