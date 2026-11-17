@@ -52,11 +52,18 @@ Une fonction dont les rappels en queue font une boucle (D102) copiait chaque par
 
 Un nœud d'un type somme récursif réservait la place de toutes ses variantes (728 octets pour chaque objet de rtiow) ; il ne tient plus que celles de sa variante (D682 : le monde de la scène finale de 11,1 Mio à 4,6 Mio, Rust 3,6 Mio). Et une tâche dont les résultats ne tiennent aucun nœud ne compte plus que les nœuds que son itération a faits, marqués par elle : le monde partagé n'est plus écrit par les fils (D683). rtiow : `sphere` sur 8 fils 428 ms (Rust 676), sur un fil 1653 ms (1753) ; `final` sur 8 fils 622 ms (704), sur un fil 2453 ms (2706).
 
-## 4. Les autres causes connues (chantiers suivants)
+### Suite : la sortie et la mémoire (D685 à D688)
 
-- **Les très grandes fonctions** : tous les cas d'un `match` récursif fusionnés (3852 instructions, 2,9 Ko de pile pour le `hit` de rtiow), qui manquent de registres.
-- **La fusion des productions** : un `map` vers des textes, joints puis écrits, gardé en mémoire tout entier (200 octets par pixel dans rtiow) au lieu d'être écrit au fur et à mesure.
-- **Les calculs SPMD sur des enregistrements** (D140 ne prend que des scalaires) : plusieurs rayons, ou plusieurs requêtes, par instruction vectorielle.
+Les textes d'un `map` léger joints sont ajoutés un à un (D685), écrits dans leur fichier par parties au fur et à mesure (D686) ; le compilateur suit les valeurs possibles d'une expression et range un tableau de n-uplets d'entiers dans des types plus étroits (D687 : les couleurs de rtiow en octets) ; le premier morceau de chaque groupe de l'allocateur est en pages de 4 Kio (D688 : environ 2 Mio de moins pour tout programme). rtiow (384 × 216, protocole, Isocron 3e66f95) : `sphere` sur 8 fils 0,867 s (Rust 2,798), sur un fil 6,65 s (7,04) ; `final` 1,395 s (2,411) et 9,85 s (10,72) ; mémoire 1,3 Mio sur un fil (Rust 3,1). D689 a corrigé un défaut de D680 trouvé par l'éditeur d'isocron-ui (les branches d'un `if` écrit à sa place lisaient une variable reliée dans l'autre branche).
+
+## 4. Ce qui reste sur les valeurs (dans cet ordre)
+
+1. **Finir la phase 2** : la mise à jour sur place ne vaut aujourd'hui que pour les parties d'un état qui ne possèdent pas de mémoire (D680). Un état qui tient des textes, des tableaux ou des nœuds (l'état de l'éditeur d'isocron-ui, 37 champs ; la machine d'un interprète ; un analyseur et son texte) est encore recopié en partie. Mesures : l'éditeur, `walk`, un interprète.
+2. **`walk` au niveau de Rust avec `&mut`** : 1,02 s contre 0,88 s ; mesurer d'abord les copies qui restent (instructions, lectures, écritures).
+3. **Les cadres de pile** : le code généré ne marque la durée de vie d'aucune case (`llvm.lifetime`), les branches d'un grand `match` n'en partagent aucune (2,5 à 2,8 Ko pour `hit`, 180 Kio de pile touchés par fil de rtiow contre moins de 56 en Rust).
+4. **Les calculs SPMD sur des enregistrements** (D140 ne prend que des scalaires) : plusieurs rayons, ou plusieurs requêtes, par instruction vectorielle.
+
+Écarté à l'essai : découper à la main `hit` en une fonction par variante a été plus lent (2114 ms contre 1897), les très grandes fonctions ne sont pas la cause qu'elles semblaient.
 
 ## 5. La mesure
 
