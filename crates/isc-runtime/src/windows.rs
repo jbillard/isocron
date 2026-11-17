@@ -34,6 +34,7 @@ const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const CREATE_ALWAYS: u32 = 2;
 const OPEN_EXISTING: u32 = 3;
+const OPEN_ALWAYS: u32 = 4;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_TYPE_DISK: u32 = 1;
@@ -188,7 +189,12 @@ pub unsafe fn open(path: *const c_char, flags: c_int, _mode: c_int) -> c_int {
         }
         *w.add(wn.max(0) as usize) = 0;
         let write = flags & O_WRONLY != 0;
-        let (access, disposition) = if write { (GENERIC_WRITE, CREATE_ALWAYS) } else { (GENERIC_READ, OPEN_EXISTING) };
+        // (made or emptied; without O_TRUNC made or kept, D686)
+        let (access, disposition) = match (write, flags & O_TRUNC != 0) {
+            (true, true) => (GENERIC_WRITE, CREATE_ALWAYS),
+            (true, false) => (GENERIC_WRITE, OPEN_ALWAYS),
+            _ => (GENERIC_READ, OPEN_EXISTING),
+        };
         // a directory opens too (as on Linux), its read then fails
         let h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, core::ptr::null_mut(), disposition, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, core::ptr::null_mut());
         let e = GetLastError();

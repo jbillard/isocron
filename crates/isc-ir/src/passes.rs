@@ -271,10 +271,13 @@ fn appended_texts(m: Expr, sep: Expr, vars: &mut Vec<VarInfo>) -> Expr {
     let empty_sep = matches!(&sep.kind, ExprKind::StrLit(s) if s.is_empty());
     // (an `iota`: its element is the index)
     let iota = matches!(src.kind, ExprKind::Iota(_));
+    // (a variable read where it is: no copy of it bound, which would be a
+    // use of all of it, D687)
+    let named = matches!(src.kind, ExprKind::Var(..));
     let (n, elem) = if let ExprKind::Iota(n) = &src.kind {
         ((**n).clone(), Expr::var(i, i64t.clone(), span))
     } else {
-        let sv = Expr::var(src_var, src.ty.clone(), span);
+        let sv = if named { src.clone() } else { Expr::var(src_var, src.ty.clone(), span) };
         let n = Expr::new(ExprKind::Len(Box::new(sv.clone())), i64t.clone(), span);
         let el = Expr::new(ExprKind::Index(Box::new(sv), Box::new(Expr::var(i, i64t.clone(), span))), src.ty.elem().clone(), span);
         (n, el)
@@ -302,7 +305,7 @@ fn appended_texts(m: Expr, sep: Expr, vars: &mut Vec<VarInfo>) -> Expr {
     let lam = Lambda { params: vec![text, i], body: Box::new(body), drop_params: vec![false, false] };
     let iota_n = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(Box::new(i64t), Fixed::ANY), span);
     let fold = Expr::new(ExprKind::Fold(Box::new(iota_n), Box::new(Expr::new(ExprKind::StrLit(String::new()), Type::Str, span)), lam), Type::Str, span);
-    let with_src = if iota { fold } else { let_(src_var, src, fold) };
+    let with_src = if iota || named { fold } else { let_(src_var, src, fold) };
     if empty_sep {
         with_src
     } else {
@@ -399,15 +402,225 @@ fn light_joins(e: &mut Expr, vars: &mut Vec<VarInfo>) {
 }
 
 // ---------------------------------------------------------------------
+// a text of appends written to its file as it is made (D686)
+
+/// A `fold` that appends to its text and whose function can neither stop
+/// the program nor act: `fold(x, init, (text, i) => ...)`, `text` read once,
+/// as the first part of the `Concat` that gives the new text (under `let`s
+/// and the branches of `if`s), its source an array or an `iota`, its
+/// function made of the operations that cannot fail (`quiet`), its reads of
+/// an array at the index of the loop over that array's length. What
+/// `light_joins` makes of the join of a light map (D685). Once its source
+/// and its initial text are made, its loop gives the same text however it
+/// is cut, and does nothing else (D686).
+pub fn quiet_appends(e: &Expr) -> bool {
+    let ExprKind::Fold(x, _, l) = &e.kind else { return false };
+    if e.ty != Type::Str || !appends_to_text(l) {
+        return false;
+    }
+    let i = l.params[1];
+    // the array read at the index of the loop: the one whose length it runs
+    // over
+    let whole = match &x.kind {
+        ExprKind::Iota(n) => match &n.kind {
+            ExprKind::Len(a) => match a.kind {
+                ExprKind::Var(a, _) => Some(a),
+                _ => None,
+            },
+            _ => None,
+        },
+        ExprKind::Var(..) => None,
+        _ => return false,
+    };
+    quiet(&l.body, i, whole)
+}
+
+/// The function of a `fold` of texts that appends to its text: `(text, i)
+/// => ...`, `text` read once, as the first part of the `Concat` that gives
+/// the new text (under `let`s and the branches of `if`s).
+pub fn appends_to_text(l: &Lambda) -> bool {
+    fn appends(e: &Expr, t: VarId) -> bool {
+        match &e.kind {
+            ExprKind::Let { init, body, .. } => !reads_var(init, t) && appends(body, t),
+            ExprKind::If(c, a, b) => !reads_var(c, t) && appends(a, t) && appends(b, t),
+            ExprKind::StrOp(StrOp::Concat, args) => {
+                !args.is_empty() && matches!(args[0].kind, ExprKind::Var(w, _) if w == t) && args[1..].iter().all(|a| !reads_var(a, t))
+            }
+            _ => false,
+        }
+    }
+    l.params.len() == 2 && l.body.ty == Type::Str && appends(&l.body, l.params[0])
+}
+
+/// A quiet fold of appends (`quiet_appends`) whose source and initial text
+/// cannot fail either: made anywhere, it gives the same text and nothing
+/// else happens.
+pub fn quiet_append_fold(e: &Expr) -> bool {
+    let ExprKind::Fold(x, init, _) = &e.kind else { return false };
+    quiet_appends(e) && quiet(x, VarId::MAX, None) && quiet(init, VarId::MAX, None)
+}
+
+/// `e` cannot stop the program nor act: literals, variables, copies,
+/// tuples and their parts, lengths, `let`s, `if`s, the operations of
+/// scalars but the division and the remainder of integers (their
+/// arithmetic wraps, D329), the conversions that cannot fail (from a float
+/// it saturates; to a wider integer of the same sign), texts concatenated
+/// or made of a scalar, and `a[i]` of the array `whole` at the index `i` of
+/// a loop over its length.
+fn quiet(e: &Expr, i: VarId, whole: Option<VarId>) -> bool {
+    use ExprKind::*;
+    let float = |t: &Type| matches!(t, Type::F64 | Type::F32);
+    let here = match &e.kind {
+        Lit(_) | Var(..) | StrLit(_) | Copy(_) | Tuple(_) | Proj(..) | Len(_) | If(..) | Let { .. } | Unary(..) | Iota(_) => true,
+        // (a length is never negative)
+        CheckNonNegative(k, _) => matches!(k.kind, Len(_)) || matches!(k.kind, Lit(crate::Lit::Int(c)) if c >= 0),
+        Binary(BinOp::Div | BinOp::Rem, ..) => float(&e.ty),
+        Binary(..) => true,
+        Convert(x) => match (&x.ty, &e.ty) {
+            (Type::F64 | Type::F32, _) | (Type::Int(_) | Type::Bool, Type::F64 | Type::F32) | (Type::Bool, Type::Int(_)) => true,
+            (Type::Int(f), Type::Int(t)) => t.bits() >= f.bits() && (f.signed() == t.signed() || (!f.signed() && t.bits() > f.bits())),
+            _ => false,
+        },
+        StrOp(crate::StrOp::Concat | crate::StrOp::ToString | crate::StrOp::Len, _) => true,
+        Index(a, k) => matches!((&a.kind, &k.kind), (Var(a, _), Var(k, _)) if Some(*a) == whole && *k == i),
+        _ => false,
+    };
+    here && e.children().into_iter().all(|c| quiet(c, i, whole))
+}
+
+/// `let s = f in ... writeText(path, .. s) ...`, `f` a quiet fold of
+/// appends after `let`s (`quiet_text`) and `s` read there alone, as the
+/// text or as its last part, the write reached through `let`s: `f` made
+/// there instead (then `prefixed_folds` makes it from the parts before it).
+/// Since nothing in `f` can fail nor act, making it at the write instead of
+/// before changes nothing but when it is made; the code generator then
+/// writes the text to its file by parts as it is made (D686).
+fn streamed_texts(e: &mut Expr) {
+    for c in e.children_mut() {
+        streamed_texts(c);
+    }
+    let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
+    let v = *var;
+    if !quiet_text(init) {
+        return;
+    }
+    fn reads(e: &Expr, v: VarId) -> usize {
+        usize::from(matches!(e.kind, ExprKind::Var(w, _) if w == v)) + e.children().into_iter().map(|c| reads(c, v)).sum::<usize>()
+    }
+    if reads(body, v) != 1 {
+        return;
+    }
+    let mut fold = Some(take(init));
+    if write_site(body, v, &mut fold) {
+        *e = take(body);
+    } else {
+        **init = fold.take().expect("the fold not placed");
+    }
+}
+
+/// A quiet fold of appends (`quiet_append_fold`) after `let`s whose values
+/// cannot fail (`quiet`): the array of `light_joins` bound before its
+/// fold.
+pub fn quiet_text(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Let { init, body, .. } => quiet(init, VarId::MAX, None) && quiet_text(body),
+        _ => quiet_append_fold(e),
+    }
+}
+
+/// The end of `e` after `let`s and checks of sizes.
+fn fold_end(e: &Expr) -> &Expr {
+    match &e.kind {
+        ExprKind::Let { body, .. } | ExprKind::CheckNonNegative(_, body) => fold_end(body),
+        _ => e,
+    }
+}
+
+fn fold_at(e: &mut Expr) -> &mut Expr {
+    if matches!(e.kind, ExprKind::Let { .. } | ExprKind::CheckNonNegative(..)) {
+        let (ExprKind::Let { body, .. } | ExprKind::CheckNonNegative(_, body)) = &mut e.kind else { unreachable!() };
+        return fold_at(body);
+    }
+    e
+}
+
+/// The write of the text `v` reached from `e` through `let`s
+/// (`streamed_texts`): `writeText(p, t)` with `t` bound to `.. v` or `.. a
+/// + v` just before, or `writeText(p, .. v)`, `writeText(p, .. a + v)`;
+/// `fold` put there.
+fn write_site(e: &mut Expr, v: VarId, fold: &mut Option<Expr>) -> bool {
+    match &mut e.kind {
+        ExprKind::Let { var, init, body, .. } => {
+            let t = *var;
+            let written = matches!(&body.kind, ExprKind::Action(ActionOp::WriteText, args)
+                if matches!(args[1].kind, ExprKind::Var(w, _) if w == t));
+            (written && text_end(init, v, fold)) || write_site(init, v, fold) || write_site(body, v, fold)
+        }
+        ExprKind::Action(ActionOp::WriteText, args) => text_end(&mut args[1], v, fold),
+        _ => false,
+    }
+}
+
+/// The text `.. v` or `.. a + v` (after `let`s) given the fold of `v`: the
+/// fold put in the place of `v`.
+fn text_end(e: &mut Expr, v: VarId, fold: &mut Option<Expr>) -> bool {
+    let is_v = |x: &Expr| matches!(x.kind, ExprKind::Var(w, _) if w == v);
+    if is_v(e) {
+        *e = fold.take().expect("one fold");
+        return true;
+    }
+    match &mut e.kind {
+        ExprKind::Let { body, .. } => text_end(body, v, fold),
+        ExprKind::StrOp(StrOp::Concat, args) if args.len() >= 2 && is_v(args.last().unwrap()) => {
+            *args.last_mut().unwrap() = fold.take().expect("one fold");
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `a + f`, `f` a fold of appends whose loop can neither fail nor act
+/// (`quiet_appends`) after `let`s and checks of sizes, the parts of `a`
+/// quiet: the fold from the text `a + init` (D686). The same text, without
+/// the copy of all of it behind `a` (rtiow: the header of its image); `a`
+/// made after what comes before the loop of `f` instead of before it,
+/// which nothing can tell since `a` neither fails nor acts.
+fn prefixed_folds(e: &mut Expr) {
+    for c in e.children_mut() {
+        prefixed_folds(c);
+    }
+    let ExprKind::StrOp(StrOp::Concat, args) = &mut e.kind else { return };
+    let k = args.len();
+    if k < 2 || !quiet_appends(fold_end(&args[k - 1])) || !args[..k - 1].iter().all(|a| quiet(a, VarId::MAX, None)) {
+        return;
+    }
+    let mut x = args.pop().expect("a last part");
+    let ExprKind::Fold(_, init, _) = &mut fold_at(&mut x).kind else { unreachable!("a fold") };
+    let empty = match &init.kind {
+        ExprKind::StrLit(s) => s.is_empty(),
+        ExprKind::Copy(y) => matches!(&y.kind, ExprKind::StrLit(s) if s.is_empty()),
+        _ => false,
+    };
+    // (a new text: two parts at least)
+    if !empty || args.len() < 2 {
+        args.push(take(init));
+    }
+    **init = take(e);
+    *e = x;
+}
+
+// ---------------------------------------------------------------------
 // arrays stored in a narrower type (D218)
 
 /// `let v = map(.., (x) => f)` whose values all fit a narrower integer type
-/// (`int_range` of `f`: the leaves of an `if`, `x & c`, a byte or a
-/// boolean converted), every use of `v` an element `v[i]` or the length:
-/// `v` is stored in that type, `f` converted to it, each `v[i]` converted
-/// back. The same values for the program, fewer bytes written and read
-/// (k-nucleotide: the codes 0 to 3 of 125 million bases, 125 MB of bytes
-/// instead of 1 GB of `i64`).
+/// (`ranges::vals` of `f`, D687: the leaves of `if`s, what their conditions
+/// tell, `x & c`, `x % c`, conversions, floats clamped then converted),
+/// every use of `v` an element `v[i]` or the length: `v` is stored in that
+/// type, `f` converted to it, each `v[i]` converted back. The same values
+/// for the program, fewer bytes written and read (k-nucleotide: the codes 0
+/// to 3 of 125 million bases, 125 MB of bytes instead of 1 GB of `i64`).
+/// Also a tuple of integers, each part in its own narrower type when it has
+/// one (D687: the colors of rtiow, three bytes a pixel instead of 24).
 fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     for c in e.children_mut() {
         narrow_arrays(c, vars);
@@ -415,19 +628,23 @@ fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
     let v = *var;
     let Type::Array(et, fixed) = init.ty.clone() else { return };
-    let Type::Int(k) = *et else { return };
     let ExprKind::Map(_, l) = &init.kind else { return };
-    let Some((lo, hi)) = int_range(&l.body) else { return };
-    let narrow = if lo >= 0 && hi <= 255 {
-        IntKind::U8
-    } else if lo >= 0 && hi <= 65535 {
-        IntKind::U16
-    } else if lo >= -128 && hi <= 127 {
-        IntKind::I8
-    } else {
-        return;
+    // the narrower type of each part, None to keep it
+    let parts: Vec<Option<IntKind>> = match &*et {
+        Type::Int(k) => vec![narrow_kind(crate::ranges::vals(&l.body, &mut Default::default()), *k)],
+        Type::Tuple(ts) if !ts.is_empty() && ts.iter().all(|t| matches!(t, Type::Int(_))) => {
+            let Some(rs) = crate::ranges::tuple_vals(&l.body, &mut Default::default()) else { return };
+            ts.iter()
+                .zip(rs)
+                .map(|(t, r)| match t {
+                    Type::Int(k) => narrow_kind(r, *k),
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => return,
     };
-    if narrow.bits() >= k.bits() {
+    if parts.iter().all(Option::is_none) {
         return;
     }
     let (mut index, mut other) = (0, 0);
@@ -435,36 +652,131 @@ fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     if other > 0 || index == 0 {
         return;
     }
-    let nt = Type::Array(Box::new(Type::Int(narrow)), fixed);
     let ExprKind::Map(_, l) = &mut init.kind else { return };
-    let lb = take(&mut l.body);
-    let sp = lb.span;
-    *l.body = Expr::new(ExprKind::Convert(Box::new(lb)), Type::Int(narrow), sp);
+    if let Type::Int(k) = *et {
+        let narrow = parts[0].expect("a narrower type");
+        let nt = Type::Array(Box::new(Type::Int(narrow)), fixed);
+        let lb = take(&mut l.body);
+        let sp = lb.span;
+        *l.body = Expr::new(ExprKind::Convert(Box::new(lb)), Type::Int(narrow), sp);
+        init.ty = nt.clone();
+        vars[v as usize].ty = nt.clone();
+        widen_reads(body, v, &nt, &Type::Int(k));
+        return;
+    }
+    // a tuple: its narrowed parts converted where the tuple is made, back
+    // where an element is read
+    let Type::Tuple(ts) = *et.clone() else { unreachable!("a tuple") };
+    let nts: Vec<Type> = ts.iter().zip(&parts).map(|(t, p)| p.map_or(t.clone(), Type::Int)).collect();
+    let nelem = Type::Tuple(nts.clone());
+    let end = let_end(&mut l.body);
+    if !matches!(end.kind, ExprKind::Tuple(_)) {
+        // (`let t = f in [t.0, t.1, ...]`)
+        vars.push(VarInfo { name: "parts".into(), ty: (*et).clone(), prelude: false });
+        let t = (vars.len() - 1) as VarId;
+        let sp = end.span;
+        let made = take(end);
+        let comps = ts.iter().enumerate().map(|(j, ty)| Expr::new(ExprKind::Proj(Box::new(Expr::var(t, (*et).clone(), sp)), j as u32), ty.clone(), sp)).collect();
+        let tuple = Expr::new(ExprKind::Tuple(comps), (*et).clone(), sp);
+        *end = Expr::new(ExprKind::Let { var: t, init: Box::new(made), body: Box::new(tuple), stmt: false, drop: false }, (*et).clone(), sp);
+    }
+    let end = let_end(&mut l.body);
+    end.ty = nelem.clone();
+    let ExprKind::Tuple(es) = &mut end.kind else { unreachable!("a tuple") };
+    for (x, nt) in es.iter_mut().zip(&nts) {
+        if x.ty != *nt {
+            let sp = x.span;
+            let wide = take(x);
+            *x = Expr::new(ExprKind::Convert(Box::new(wide)), nt.clone(), sp);
+        }
+    }
+    set_let_types(&mut l.body, &nelem);
+    let nt = Type::Array(Box::new(nelem), fixed);
     init.ty = nt.clone();
     vars[v as usize].ty = nt.clone();
-    widen_reads(body, v, &nt, &Type::Int(k));
+    widen_tuple_reads(body, v, &nt, &et, vars);
 }
 
-/// The values an integer expression can take, when it is one of the simple
-/// forms of `narrow_arrays`.
-fn int_range(e: &Expr) -> Option<(i64, i64)> {
-    match &e.kind {
-        ExprKind::Lit(Lit::Int(c)) => Some((*c, *c)),
-        ExprKind::If(_, t, f) => {
-            let (a, b) = (int_range(t)?, int_range(f)?);
-            Some((a.0.min(b.0), a.1.max(b.1)))
+/// The narrowest of `u8`, `u16` and `i8` that holds the values `r`, if
+/// narrower than `k`.
+fn narrow_kind(r: Option<crate::ranges::Vals>, k: IntKind) -> Option<IntKind> {
+    let Some(crate::ranges::Vals::Int(lo, hi)) = r else { return None };
+    let n = if lo >= 0 && hi <= 255 {
+        IntKind::U8
+    } else if lo >= 0 && hi <= 65535 {
+        IntKind::U16
+    } else if lo >= -128 && hi <= 127 {
+        IntKind::I8
+    } else {
+        return None;
+    };
+    (n.bits() < k.bits()).then_some(n)
+}
+
+/// The end of `e` after `let`s.
+fn let_end(e: &mut Expr) -> &mut Expr {
+    if matches!(e.kind, ExprKind::Let { .. }) {
+        let ExprKind::Let { body, .. } = &mut e.kind else { unreachable!() };
+        return let_end(body);
+    }
+    e
+}
+
+/// The type of each `let` down to the end of `e`: `t`.
+fn set_let_types(e: &mut Expr, t: &Type) {
+    e.ty = t.clone();
+    if let ExprKind::Let { body, .. } = &mut e.kind {
+        set_let_types(body, t);
+    }
+}
+
+/// Each `v[i]` of the array of narrowed tuples `v` (`nt`) made a tuple of
+/// `wide` again: `[v[i].0 converted, ...]`, the index bound first when it is
+/// not a variable nor a literal.
+fn widen_tuple_reads(e: &mut Expr, v: VarId, nt: &Type, wide: &Type, vars: &mut Vec<VarInfo>) {
+    match &mut e.kind {
+        ExprKind::Index(a, i) if matches!(a.kind, ExprKind::Var(w, _) if w == v) => {
+            widen_tuple_reads(i, v, nt, wide, vars);
+            a.ty = nt.clone();
+            let sp = e.span;
+            let mut lets = None;
+            if !matches!(i.kind, ExprKind::Var(..) | ExprKind::Lit(_)) {
+                vars.push(VarInfo { name: "at".into(), ty: i.ty.clone(), prelude: false });
+                let at = (vars.len() - 1) as VarId;
+                let ity = i.ty.clone();
+                lets = Some((at, take(i)));
+                **i = Expr::var(at, ity, sp);
+            }
+            let mut read = take(e);
+            read.ty = nt.elem().clone();
+            let (Type::Tuple(ws), Type::Tuple(ns)) = (wide, nt.elem()) else { unreachable!("tuples") };
+            let comps = ws
+                .iter()
+                .zip(ns)
+                .enumerate()
+                .map(|(j, (w, n))| {
+                    let part = Expr::new(ExprKind::Proj(Box::new(read.clone()), j as u32), n.clone(), sp);
+                    if w == n {
+                        part
+                    } else {
+                        Expr::new(ExprKind::Convert(Box::new(part)), w.clone(), sp)
+                    }
+                })
+                .collect();
+            let tuple = Expr::new(ExprKind::Tuple(comps), wide.clone(), sp);
+            *e = match lets {
+                Some((at, init)) => Expr::new(ExprKind::Let { var: at, init: Box::new(init), body: Box::new(tuple), stmt: false, drop: false }, wide.clone(), sp),
+                None => tuple,
+            };
         }
-        ExprKind::Let { body, .. } => int_range(body),
-        ExprKind::Binary(BinOp::BitAnd, _, m) => match m.kind {
-            ExprKind::Lit(Lit::Int(c)) if c >= 0 => Some((0, c)),
-            _ => None,
-        },
-        ExprKind::Convert(x) => match x.ty {
-            Type::Int(IntKind::U8) => Some((0, 255)),
-            Type::Bool => Some((0, 1)),
-            _ => None,
-        },
-        _ => None,
+        ExprKind::Len(a) if matches!(a.kind, ExprKind::Var(w, _) if w == v) => {
+            a.ty = nt.clone();
+        }
+        _ => {
+            for c in e.children_mut() {
+                widen_tuple_reads(c, v, nt, wide, vars);
+            }
+        }
     }
 }
 
@@ -611,6 +923,10 @@ pub(crate) fn optimize_body(body: &mut Expr, vars: &mut Vec<VarInfo>) {
     fuse_fixpoint(body);
     // the texts of a light map joined: each appended to the result (D685)
     light_joins(body, vars);
+    // a text of appends written: made at its write, which writes it by parts
+    // (D686)
+    streamed_texts(body);
+    prefixed_folds(body);
     // a `map` of a zip of scalars that reads its pairs by their components:
     // one `map` over the inputs of the zip (D495)
     compose_zip_maps(body);

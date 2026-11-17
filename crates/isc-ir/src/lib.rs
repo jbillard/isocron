@@ -17,6 +17,7 @@ pub mod blocks;
 pub mod lower;
 pub mod passes;
 pub mod print;
+pub mod ranges;
 pub mod report;
 pub mod requirements;
 pub mod verify;

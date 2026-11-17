@@ -1225,13 +1225,15 @@ fn read_file(path: &str, line: i32, col: i32) -> IscArray {
 
 /// Writes `bytes` (produced chunk by chunk by `fill`) to a file, like
 /// `std::fs::write`; an error instead of a panic (D138), the file closed.
-fn try_write_file<'a>(path: &'a str, total: usize, fill: &dyn Fn(usize, &mut [u8]) -> usize) -> Result<(), Panic<'a>> {
+fn try_write_file<'a>(path: &'a str, total: usize, append: bool, fill: &dyn Fn(usize, &mut [u8]) -> usize) -> Result<(), Panic<'a>> {
     // SAFETY: `cp` a NUL-terminated copy of the path, freed once after `open`;
     // each write of the bytes of `part`, a slice of the chunk; the descriptor
     // closed once
     unsafe {
         let cp = c_path(path);
-        let fd = open(cp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o666 as c_int);
+        // (made or emptied; or kept, written at its end: the parts of a text
+        // after the first, D686)
+        let fd = open(cp, O_WRONLY | O_CREAT | O_CLOEXEC | if append { 0 } else { O_TRUNC }, 0o666 as c_int);
         isc_free(cp as *mut u8);
         let error = |code: c_int| {
             let (detail, code) = os_error(code);
@@ -1239,6 +1241,13 @@ fn try_write_file<'a>(path: &'a str, total: usize, fill: &dyn Fn(usize, &mut [u8
         };
         if fd < 0 {
             return Err(error(fail(fd as isize)));
+        }
+        if append {
+            let r = lseek(fd, 0, SEEK_END);
+            if r < 0 {
+                close(fd);
+                return Err(error(fail(r as isize)));
+            }
         }
         let mut chunk = [0u8; 8192];
         let mut done = 0usize;
@@ -1268,8 +1277,8 @@ fn try_write_file<'a>(path: &'a str, total: usize, fill: &dyn Fn(usize, &mut [u8
     }
 }
 
-fn write_file(path: &str, total: usize, line: i32, col: i32, fill: &dyn Fn(usize, &mut [u8]) -> usize) {
-    if let Err(e) = try_write_file(path, total, fill) {
+fn write_file(path: &str, total: usize, append: bool, line: i32, col: i32, fill: &dyn Fn(usize, &mut [u8]) -> usize) {
+    if let Err(e) = try_write_file(path, total, append, fill) {
         die(line, col, &e)
     }
 }
@@ -1336,7 +1345,7 @@ pub unsafe extern "C" fn isc_write_f32(path: *const u8, plen: i64, data: *const 
     // SAFETY: the path and the array of the generated code (C1)
     let (path, data) = unsafe { (str_of(path, plen), elements_of(data, n)) };
     let n = data.len();
-    write_file(path, n * 4, line, col, &|done, chunk| {
+    write_file(path, n * 4, false, line, col, &|done, chunk| {
         let first = done / 4;
         let count = (chunk.len() / 4).min(n - first);
         for i in 0..count {
@@ -1355,7 +1364,7 @@ pub unsafe extern "C" fn isc_write_f64(path: *const u8, plen: i64, data: *const 
     // SAFETY: the path and the array of the generated code (C1)
     let (path, data) = unsafe { (str_of(path, plen), elements_of(data, n)) };
     let n = data.len();
-    write_file(path, n * 8, line, col, &|done, chunk| {
+    write_file(path, n * 8, false, line, col, &|done, chunk| {
         let first = done / 8;
         let count = (chunk.len() / 8).min(n - first);
         for i in 0..count {
@@ -1374,7 +1383,7 @@ pub unsafe extern "C" fn isc_write_bytes(path: *const u8, plen: i64, data: *cons
     // SAFETY: the path and the array of the generated code (C1)
     let (path, data) = unsafe { (str_of(path, plen), bytes_of(data, n)) };
     let n = data.len();
-    write_file(path, n, line, col, &|done, chunk| {
+    write_file(path, n, false, line, col, &|done, chunk| {
         let count = chunk.len().min(n - done);
         chunk[..count].copy_from_slice(&data[done..done + count]);
         count
@@ -1946,16 +1955,22 @@ pub unsafe extern "C" fn isc_read_text(out: *mut IscStr, path: *const u8, plen: 
     }
 }
 
+/// `writeText(path, t)`; with `append`, a part of a text written by parts
+/// as it is made after the first (D686): the file kept, the bytes written
+/// at its end.
 ///
 /// # Safety
 /// The pointers as the generated code gives them (C1).
 #[no_mangle]
-pub unsafe extern "C" fn isc_write_text(path: *const u8, plen: i64, data: *const u8, n: i64, line: i32, col: i32) {
-    // SAFETY: the pointers the generated code gives (C1): its places of results
-    // and its strings and arrays, alive during the call
-    unsafe {
-        isc_write_bytes(path, plen, data, n, line, col);
-    }
+pub unsafe extern "C" fn isc_write_text(path: *const u8, plen: i64, data: *const u8, n: i64, append: i32, line: i32, col: i32) {
+    // SAFETY: the path and the text of the generated code (C1)
+    let (path, data) = unsafe { (str_of(path, plen), bytes_of(data, n)) };
+    let n = data.len();
+    write_file(path, n, append != 0, line, col, &|done, chunk| {
+        let count = chunk.len().min(n - done);
+        chunk[..count].copy_from_slice(&data[done..done + count]);
+        count
+    });
 }
 
 /// An array of new strings, one per item.
@@ -4126,7 +4141,7 @@ pub unsafe extern "C" fn isc_try_write_bytes(e: *mut IscStr, path: *const u8, pl
     // (the value, the message) and its strings and arrays
     unsafe {
         let n = n.max(0) as usize;
-        let r = try_write_file(str_of(path, plen), n, &|done, chunk| {
+        let r = try_write_file(str_of(path, plen), n, false, &|done, chunk| {
             let count = chunk.len().min(n - done);
             core::ptr::copy_nonoverlapping(data.add(done), chunk.as_mut_ptr(), count);
             count

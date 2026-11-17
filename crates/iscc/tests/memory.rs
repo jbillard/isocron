@@ -1230,6 +1230,64 @@ action main(args: string[k]): i32 {
     clean(src, "narrow_vg", &[]);
 }
 
+#[test]
+fn tuples_stored_in_narrower_types() {
+    // D687: the values of a `map` followed through the conditions of its
+    // `if`s (`x < c`, `x == x`, of floats and integers), the bounds of
+    // operations and conversions (a float saturated, NaN giving 0); each
+    // part of a tuple of integers stored in its narrowest type, read back
+    // converted. The bytes of a color as rtiow makes them (a float clamped,
+    // then made an integer by adding 2^52), NaN and infinities among its
+    // inputs; a part not bounded left as it is; `%` and `&` of integers;
+    // a branch that cannot be taken. The results of the interpreter.
+    let src = "function byte(x: f64): i64 {
+    const s0 = x * 255.0;
+    const s = s0 != s0 ? 255.0 : (s0 < 255.0 ? s0 : 255.0);
+    const f = s + 4503599627370496.0;
+    return f < 4503599627370496.0 ? 0 : i64(f - 4503599627370496.0);
+}
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => i % 7 == 0 ? 0.0 / 0.0 : (i % 11 == 0 ? 1.0 / 0.0 : f64(i) / f64(n) * 1.5 - 0.2));
+    const colors = map(xs, (x) => [byte(x), byte(x * x), byte(1.0 - x)] as const);
+    print(fold(iota(colors.length), 0, (a, i) => {
+        const [r, g, b] = colors[i];
+        return a + r * 3 + g * 5 + b * 7;
+    }));
+    const [r0, g0, b0] = n > 0 ? colors[n / 2] : [0, 0, 0] as const;
+    print(`${r0} ${g0} ${b0}`);
+    const mixed = map(iota(n), (i) => {
+        const k = i % 100;
+        return [k, i * 1000, (i * 37) & 4095, k > 200 ? 70000 : -3] as const;
+    });
+    print(fold(iota(mixed.length), 0, (a, i) => {
+        const [p, q, m, k] = mixed[i];
+        return a + p + q + m + k;
+    }));
+    const unbounded = map(xs, (x) => [byte(x), i64(x * 1000.0)] as const);
+    print(fold(iota(unbounded.length), 0, (a, i) => {
+        const [c, d] = unbounded[i];
+        return a + c + d;
+    }));
+    return 0;
+}
+";
+    for n in ["0", "1", "1000"] {
+        let want = interp_ok(src, &[n]);
+        let bin = compile(src, "narrow_tuples");
+        let run = run_bin(&bin, &[n]);
+        assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    }
+    let p = iscc::frontend("narrow_tuples.isc", src).unwrap();
+    let ty = |name: &str| p.vars.iter().find(|v| v.name == name).map(|v| isc_ir::print::type_str(&v.ty)).unwrap_or_default();
+    assert_eq!(ty("colors"), "[u8, u8, u8][]");
+    // (the sign of `i` not followed: `i % 100` from -99 to 99; `k > 200`
+    // never true)
+    assert_eq!(ty("mixed"), "[i8, i64, u16, i8][]");
+    assert_eq!(ty("unbounded"), "[u8, i64][]");
+    clean(src, "narrow_tuples_vg", &["1000"]);
+}
+
 /// D316: the last 2 MiB of a region of medium blocks are kept out of huge
 /// pages (its sentinel is written there). Blocks of about 16 MiB up to that
 /// end and into a second region (17 of them, 272 MB), every element written

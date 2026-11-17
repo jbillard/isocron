@@ -660,6 +660,11 @@ pub struct Gen<'p> {
     builders: HashSet<u32>,
     /// In a variant of a builder: the register of its region.
     region: Option<String>,
+    /// While the text of a write is made (D686): the fold of appends that
+    /// makes it, the slot that tells whether a part is written, the parts
+    /// of its path and the position of the write; that fold writes its
+    /// text by parts.
+    text_sink: Option<(usize, String, (String, String), String)>,
     /// The trees built in a region: their region, freed at their drop.
     region_vars: HashMap<VarId, String>,
     /// The variants of builders to emit.
@@ -1233,7 +1238,7 @@ const RUNTIME_DECLS: &[&str] = &[
     "declare void @isc_str_from_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_str_adopt_bytes(ptr, ptr, i64, i32, i32)",
     "declare void @isc_read_text(ptr, ptr, i64, i32, i32)",
-    "declare void @isc_write_text(ptr, i64, ptr, i64, i32, i32)",
+    "declare void @isc_write_text(ptr, i64, ptr, i64, i32, i32, i32)",
     "declare void @isc_lines(ptr, ptr, i64)",
     "declare void @isc_split(ptr, ptr, i64, ptr, i64, i32, i32)",
     "declare void @isc_lines_view(ptr, ptr, i64)",
@@ -1706,6 +1711,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         no_fix: false,
         builders: if opts.isa.is_wasm() { HashSet::new() } else { builders(p) },
         region: None,
+        text_sink: None,
         region_vars: HashMap::new(),
         rg_needed: BTreeSet::new(),
         base_cases: base_cases(p),
@@ -3824,6 +3830,24 @@ fn first_where<'a>(x: &Expr, l: &'a Lambda) -> Option<&'a Expr> {
     let (mut bound, mut free) = (HashSet::new(), Vec::new());
     free_vars(c, &mut bound, &mut free);
     (!free.contains(&a)).then_some(&**c)
+}
+
+/// `let t = .. f in writeText(p, t)` (D686): `f` a fold of appends whose
+/// loop can neither fail nor act (`quiet_appends`), the end of the text
+/// after `let`s and checks of sizes, `p` a variable or a literal (read
+/// again at the write without effect). The path and the fold.
+fn streamed_write<'a>(t: VarId, init: &'a Expr, body: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+    let ExprKind::Action(ActionOp::WriteText, args) = &body.kind else { return None };
+    if !matches!(args[1].kind, ExprKind::Var(w, _) if w == t) || !matches!(args[0].kind, ExprKind::Var(..) | ExprKind::StrLit(_)) {
+        return None;
+    }
+    // (what comes before the loop of the fold is made before any part is
+    // written: the file is opened at the first part)
+    let mut x = init;
+    while let ExprKind::Let { body, .. } | ExprKind::CheckNonNegative(_, body) = &x.kind {
+        x = body;
+    }
+    isc_ir::passes::quiet_appends(x).then_some((&args[0], x))
 }
 
 /// `e` is computed from scalars without anything that can stop the
@@ -6512,6 +6536,30 @@ impl<'p> Gen<'p> {
                 self.print_stream_any(init)?;
                 Ok(v("false", "i1"))
             }
+            // a text of appends made only to be written to a file: written by
+            // parts as it is made, never whole (D686)
+            Let { var, init, body, drop, .. } if w == 1 && streamed_write(*var, init, body).is_some() => {
+                let (path, fold) = streamed_write(*var, init, body).unwrap();
+                let pv = self.ex(path, 1)?;
+                let (pp, pn) = self.str_parts(&pv);
+                // (1 once a part is written)
+                let written = self.alloca("i32");
+                self.emit(format!("store i32 0, ptr {}", written));
+                let pos = Self::pos(body.span);
+                self.text_sink = Some((fold as *const Expr as usize, written.clone(), (pp.clone(), pn.clone()), pos.clone()));
+                let iv = self.ex(init, 1);
+                self.text_sink = None;
+                let iv = iv?;
+                // the rest of the text (all of it, the file made or emptied,
+                // when no part came before)
+                let (d, m) = self.str_parts(&iv);
+                let append = self.ins(format!("load i32, ptr {}", written));
+                self.emit(format!("call void @isc_write_text(ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, {})", pp, pn, d, m, append, pos));
+                if *drop {
+                    self.drop_var(*var, &iv);
+                }
+                Ok(v("false", "i1"))
+            }
             // `(a * k + b) / c` of bigints, the product and the sum bound to
             // temporaries read once: one call, the quotient from the leading
             // words when they decide it, neither made (D389)
@@ -7313,6 +7361,11 @@ impl<'p> Gen<'p> {
             Scan(x, l, z) => self.scan(e, x, l, z),
             Filter(x, l) => self.filter(e, x, l),
             Tasks(x, l) => self.tasks(e, x, l),
+            // the text of a write, written by parts (D686)
+            Fold(x, init, l) if w == 1 && self.text_sink.as_ref().is_some_and(|s| s.0 == e as *const Expr as usize) => {
+                let sink = self.text_sink.take().unwrap();
+                self.fold_written(x, init, l, &sink)
+            }
             Fold(x, init, l) if w > 1 => self.fold_vec(x, init, l, w),
             Fold(x, init, l) if last_where(x, l).is_some() => {
                 let c = last_where(x, l).unwrap();
@@ -13642,6 +13695,50 @@ impl<'p> Gen<'p> {
         self.fold_loop(&src, &n, &iv, &init.ty, l)
     }
 
+    /// A fold of appends whose text is written to a file (D686,
+    /// `streamed_write`): the loop of `fold_loop`, the text written as soon
+    /// as it holds TEXT_PART bytes (the file made or emptied by the first
+    /// part, each next one written at its end), then kept with no byte (its
+    /// block, its room kept); the rest left to the write.
+    fn fold_written(&mut self, x: &Expr, init: &Expr, l: &Lambda, sink: &(usize, String, (String, String), String)) -> R<V> {
+        const TEXT_PART: i64 = 1 << 16;
+        let (_, written, (pp, pn), pos) = sink;
+        let (src, n) = self.prepare_src(x)?;
+        let iv = self.ex(init, 1)?;
+        let at = Type::Str;
+        let alt = lt(&at);
+        let acc = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, iv.r, acc));
+        self.for_range("0", &n, 1, &mut |g, i| {
+            let a = g.ins(format!("load {}, ptr {}", alt, acc));
+            let av = v(a, alt.clone());
+            let el = g.elem(&src, i, 1)?;
+            g.bind(l.params[0], av.clone());
+            g.bind(l.params[1], el);
+            let r = g.ex(&l.body, 1)?;
+            if l.drop_params[0] {
+                g.drop_value(&av, &at);
+            }
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+            let len = g.ins(format!("extractvalue {} {}, 1", alt, r.r));
+            let full = g.ins(format!("icmp sge i64 {}, {}", len, TEXT_PART));
+            let (lput, lnext) = (g.label(), g.label());
+            g.cbr(&full, &lput, &lnext);
+            g.block(&lput);
+            let p = g.ins(format!("extractvalue {} {}, 0", alt, r.r));
+            let append = g.ins(format!("load i32, ptr {}", written));
+            g.emit(format!("call void @isc_write_text(ptr {}, i64 {}, ptr {}, i64 {}, i32 {}, {})", pp, pn, p, len, append, pos));
+            g.emit(format!("store i32 1, ptr {}", written));
+            let none = g.ins(format!("insertvalue {} {}, i64 0, 1", alt, r.r));
+            g.emit(format!("store {} {}, ptr {}", alt, none, acc));
+            g.br(&lnext);
+            g.block(&lnext);
+            Ok(())
+        })?;
+        let r = self.ins(format!("load {}, ptr {}", alt, acc));
+        Ok(v(r, alt))
+    }
+
     /// The loop of a `fold` from its initial value `iv` (of type `at`).
     fn fold_loop(&mut self, src: &Src, n: &str, iv: &V, at: &Type, l: &Lambda) -> R<V> {
         let at = at.clone();
@@ -18194,7 +18291,7 @@ impl<'p> Gen<'p> {
             ActionOp::WriteText => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (d, m) = self.str_parts(&vals[1]);
-                self.emit(format!("call void @isc_write_text(ptr {}, i64 {}, ptr {}, i64 {}, {})", p, n, d, m, pos));
+                self.emit(format!("call void @isc_write_text(ptr {}, i64 {}, ptr {}, i64 {}, i32 0, {})", p, n, d, m, pos));
                 v("false", "i1")
             }
             ActionOp::Extern(i) => self.call_extern(i, &vals, e)?,

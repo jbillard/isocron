@@ -3724,3 +3724,110 @@ action main(args: string[k]): i32 {
     }
     checked_clean(src, "light_joins", &[]);
 }
+
+/// A text of appends written to a file (D686): written by parts as it is
+/// made when its loop can neither fail nor act (a light map over an `iota`
+/// joined, a header and the lines of an array, a separator, a text bound
+/// then written), at once otherwise (a division by a variable); the same
+/// files as the interpreter, the same panics and the same files left (a
+/// folder missing, a negative size before any file, a division by zero
+/// after four files); the most memory of a program writing a million lines
+/// the same as for a hundred thousand.
+#[test]
+fn texts_of_appends_written_by_parts() {
+    let src = r#"// Texts written to files
+action main(args: string[k]): i32 {
+    const dir = args[0];
+    const n = parseI64(args[1]);
+    const d = parseI64(args[2]);
+    writeText(dir + "/a.txt", join(map(iota(n), (i) => `${i} ${i * i}\n`), ""));
+    const xs = map(iota(n), (i) => [i % 256, (i * 3) % 256, (i * 5) % 256] as const);
+    const lines = map(xs, (c) => {
+        const [r, g, b] = c;
+        return `${r} ${g} ${b}\n`;
+    });
+    writeText(dir + "/b.txt", `P3\n${n} 1\n255\n` + join(lines, ""));
+    const ys = map(iota(n), (i) => i * 3);
+    writeText(dir + "/c.txt", join(map(ys, (y) => `${y}`), ", "));
+    const t = join(map(ys, (y) => `<${y}>`), "");
+    writeText(dir + "/d.txt", t);
+    writeText(dir + "/e.txt", join(map(ys, (y) => `${y / d}\n`), ""));
+    print("done");
+    return 0;
+}
+"#;
+    let ll = tmp("text_parts.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("text_parts_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    // (four texts written by parts, each part and the rest with the mode of
+    // the write computed, the text of the divisions at once, its mode 0)
+    let modes: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("call void @isc_write_text("))
+        .map(|l| l.split(", ").nth(4).unwrap_or(""))
+        .collect();
+    assert_eq!(modes.iter().filter(|m| m.starts_with("i32 %")).count(), 8, "{:?}", modes);
+    assert_eq!(modes.iter().filter(|m| **m == "i32 0").count(), 1, "{:?}", modes);
+    let files = ["a", "b", "c", "d", "e"];
+    let read = |dir: &std::path::Path| -> Vec<Option<Vec<u8>>> { files.iter().map(|f| std::fs::read(dir.join(format!("{}.txt", f))).ok()).collect() };
+    // (the code, the output and the message of a panic, as the program
+    // prints them)
+    let interpreted = |args: &[&str]| -> (i32, String, String) {
+        match interp(src, args) {
+            Outcome::Exit(c, out) => (c, out, String::new()),
+            Outcome::Panic(m, out) => (101, out, m),
+        }
+    };
+    let compiled = |args: &[&str]| -> (i32, String, String) {
+        let r = run_bin(&bin, args);
+        (r.code, r.stdout, r.stderr.trim_end().to_string())
+    };
+    // 0, 1 and many parts of 64 KiB; then the panics
+    for (k, (n, d)) in [("0", "3"), ("7", "3"), ("20000", "3"), ("-1", "3"), ("20000", "0")].into_iter().enumerate() {
+        let (ci, ii) = (tmp(&format!("text_parts_c{}", k)), tmp(&format!("text_parts_i{}", k)));
+        for dir in [&ci, &ii] {
+            std::fs::create_dir_all(dir).unwrap();
+            // (none left by an earlier run)
+            for f in files {
+                let _ = std::fs::remove_file(dir.join(format!("{}.txt", f)));
+            }
+        }
+        let (cs, is) = (ci.to_str().unwrap(), ii.to_str().unwrap());
+        let (c, i) = (compiled(&[cs, n, d]), interpreted(&[is, n, d]));
+        // (the paths of the files differ in a message)
+        assert_eq!(c, (i.0, i.1, i.2.replace(is, cs)), "n {} d {}", n, d);
+        assert_eq!(read(&ci), read(&ii), "n {} d {}", n, d);
+        if n == "20000" {
+            assert!(read(&ci).iter().take(4).all(|f| f.as_ref().is_some_and(|b| b.len() > 1 << 16)), "n {} d {}", n, d);
+        }
+    }
+    let missing = tmp("text_parts_missing/inner");
+    let args = [missing.to_str().unwrap(), "100", "3"];
+    let c = compiled(&args);
+    assert_eq!(c, interpreted(&args));
+    assert!(c.0 == 101 && c.2.contains("cannot write"), "{:?}", c);
+    checked_clean(src, "text_parts", &[tmp("text_parts_c2").to_str().unwrap(), "20000", "3"]);
+    // the most memory: no text made whole
+    let src = r#"action main(args: string[k]): i32 {
+    const n = parseI64(args[1]);
+    writeText(args[0], `${n} lines\n` + join(map(iota(n), (i) => `${i} ${i * 3} ${i * 5} ${i * 11}\n`), ""));
+    const status = lines(readText("/proc/self/status"));
+    print(filter(status, (l) => l.startsWith("VmHWM")));
+    return 0;
+}
+"#;
+    let bin = compile(src, "text_parts_most");
+    let out = tmp("text_parts_most.txt");
+    let most = |n: &str| -> u64 {
+        let r = run_bin(&bin, &[out.to_str().unwrap(), n]);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r.stdout.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap()
+    };
+    let (small, large) = (most("100000"), most("1000000"));
+    let size = std::fs::metadata(&out).unwrap().len();
+    // (the text of a million lines: 30 MB)
+    assert!(size > 30_000_000, "{}", size);
+    assert!(large < small + 1024, "{} KiB, then {} KiB", small, large);
+}

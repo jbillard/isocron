@@ -110,6 +110,13 @@ const FILES: &str = r#"action main(args: string[k]): i32 {
     print([b.length, i64(b[69999]), sum(map(b, (x) => i64(x)))]);
     writeText("text.txt", "line one\nline two\n");
     print(readText("text.txt"));
+    // texts written by parts (D686): the first part empties the file, the
+    // next ones go at its end
+    writeText("parts.txt", join(map(iota(40000), (i) => `${i * 3}\n`), ""));
+    writeText("parts.txt", `header\n` + join(map(iota(30000), (i) => `${i} ${i * 7}\n`), ""));
+    const parts = readText("parts.txt");
+    print(parts.length);
+    print(parts.slice(parts.length - 12, parts.length));
     print(readText(args[0]).length);
     print(readStdinLines().length);
     const missing = tryReadText("missing.txt");

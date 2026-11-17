@@ -935,6 +935,38 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// The function of a fold that appends to its text (`appends_to_text`)
+    /// evaluated for one element: its `let`s and conditions, then the parts
+    /// after the text pushed onto `text`, in order.
+    fn append_parts(&mut self, e: &Expr, text: &mut String) -> R<()> {
+        match &e.kind {
+            ExprKind::Let { var, init, body, .. } => {
+                let x = self.eval(init)?;
+                self.set(*var, x);
+                self.append_parts(body, text)
+            }
+            ExprKind::If(c, t, f) => match self.eval(c)? {
+                Value::Bool(true) => self.append_parts(t, text),
+                Value::Bool(false) => self.append_parts(f, text),
+                v => panic!("if on {:?}", v),
+            },
+            ExprKind::StrOp(isc_ir::StrOp::Concat, args) => {
+                let mut parts = Vec::with_capacity(args.len() - 1);
+                for a in &args[1..] {
+                    parts.push(self.eval(a)?);
+                }
+                for p in &parts {
+                    match p {
+                        Value::Str(s) => text.push_str(s),
+                        v => panic!("string expected, got {:?}", v),
+                    }
+                }
+                Ok(())
+            }
+            _ => unreachable!("a fold that appends to its text"),
+        }
+    }
+
     fn call(&mut self, l: &Lambda, args: Vec<Value>) -> R<Value> {
         for (p, a) in l.params.iter().zip(args) {
             self.set(*p, a);
@@ -1149,6 +1181,20 @@ impl<'a> Interp<'a> {
                 let z = self.eval(z)?;
                 let items: Vec<Value> = (0..arr.len()).map(|i| arr.get(i)).collect();
                 self.reduce(&items, l, &z)?
+            }
+            // a fold that appends to its text (D685, D686): each part pushed
+            // onto one text that grows, not all of it copied at each part
+            Fold(x, init, l) if e.ty == Type::Str && isc_ir::passes::appends_to_text(l) => {
+                let arr = self.array(x)?;
+                let mut text = match self.eval(init)? {
+                    Value::Str(s) => String::from(&*s),
+                    v => panic!("string expected, got {:?}", v),
+                };
+                for i in 0..arr.len() {
+                    self.set(l.params[1], arr.get(i));
+                    self.append_parts(&l.body, &mut text)?;
+                }
+                Value::Str(Rc::from(text))
             }
             Fold(x, init, l) => {
                 let arr = self.array(x)?;

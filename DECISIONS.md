@@ -16795,3 +16795,83 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   as interpreted, checked by the allocator); `appends_of_parts_of_every_length`
   now looks at the functions of its program alone (the join of its `main`
   appends).
+- **D686 — A text of appends written to a file by parts (2026-11-17).**
+  rtiow made the whole text of its image before `writeText` (1 MB for 384
+  by 216 pixels), and the header before it copied it all once more; Rust
+  writes each line into a `BufWriter`. A `fold` that appends to its text
+  and whose function can neither stop the program nor act
+  (`quiet_appends`: its text read once, as the first part of the
+  concatenation that gives the new one; literals, variables, copies, parts
+  of tuples, `let`s, `if`s, the operations of scalars but the division and
+  the remainder of integers, the conversions that cannot fail, texts
+  concatenated or made of scalars, reads of an array at the index of the
+  loop over its length; what `light_joins` makes, D685) gives the same text
+  however its loop is cut and does nothing else. Three changes. (1) `let s
+  = f in ... writeText(p, .. s)`, `f` such a fold whose source and initial
+  text cannot fail either and `s` read there alone, the write reached
+  through `let`s: `f` made at the write (`streamed_texts`). (2) `a + f`,
+  the parts of `a` unable to fail: `f` from the text `a + init`
+  (`prefixed_folds`), no copy of the whole text behind its header. (3)
+  `let t = .. f in writeText(p, t)`, `p` a variable or a literal: the code
+  generator writes the text by parts as it is made (`fold_written`: as
+  soon as it holds 64 KiB, the text kept then with no byte in its block
+  and its room; the rest at the end). No function added to the runtime
+  (D622: its Rust only shrinks; two new ones, a first version, failed
+  `frontier.rs`): each part is a call of `isc_write_text`, which now takes
+  a mode, the first part (or the whole text when it is shorter) making or
+  emptying the file, each next one written at its end (opened without
+  `O_TRUNC`, then `lseek` to the end; `open` under Windows now keeps the
+  file without `O_TRUNC`); each call opens and closes the file, 16 times
+  for a text of 1 MB. The file is touched at the first part only, so what
+  comes before the loop (the source, the header, a check of a size) fails,
+  when it fails, before any file is touched, as before; any write that
+  fails gives the message of `writeText` (`Panic::Write`, its text and
+  number of the system). A fold whose function may fail (a division by a
+  variable) is still made whole, then written. Found on the way, from
+  D685: the interpreter copied the whole text at each append of such a
+  fold (a million lines: over 24 minutes); it now pushes each part onto
+  one text (`appends_to_text`, `append_parts`: 1.5 s). A program
+  writing a million lines of four numbers after a header: 70.6 MiB at its
+  peak to 2.5 MiB, the same as for 100000 lines; 3 million lines of three
+  numbers from an array of tuples: 140.2 to 71.3 MiB (the array). rtiow 384
+  by 216 at its peak (`VmHWM`): `sphere` 7.8 to 5.8 MiB on 8 threads (Rust
+  3.5), 8.9 to 4.9 on one (Rust 3.2); `final` 11.7 to 7.7 (4.3), 10.5 to
+  6.5 (3.9); the same images. What remains is mostly its array of colors,
+  three `i64` a pixel (1.9 MB; Rust's `ColorU8` are 3 bytes). The same
+  files under WASI. Test `texts_of_appends_written_by_parts` (strings.rs:
+  four texts written by parts and one at once, counted in the IR; 0, 7 and
+  20000 lines, the files and outputs of the interpreter; a negative size
+  before any file, a division by zero after four files, a folder missing:
+  the same panics and the same files left; checked by the allocator; the
+  most memory of a million lines the same as of 100000).
+- **D687 — The values of an expression followed, a tuple of integers
+  stored narrower (2026-11-17).** After D686 the peak of rtiow was mostly
+  its array of colors, three `i64` a pixel (1.9 MB for 384 by 216), where
+  Rust keeps `ColorU8` (3 bytes). Its colors are bytes: a float clamped by
+  comparisons (`s0 != s0 ? 255 : (s0 < 255 ? s0 : 255)`), made an integer
+  by adding 2^52 (`f < 2^52 ? 0 : i64(f - 2^52)`); D218 knew only the
+  leaves of `if`s, `x & c` and the conversions of bytes. `ranges.rs` now
+  follows the values of a scalar expression (`vals`): an interval of
+  integers, or of `f64` and whether NaN may come; each variable by the
+  expression of its `let` (bound once, its value the same everywhere),
+  inside a branch by what its condition tells of it (`x < c` true or false,
+  `x == x`, a branch that cannot be taken); the bounds of `+`, `-`, `*` of
+  floats by the same operations on the bounds (rounding to the nearest is
+  monotone), NaN from infinities of two signs or 0 times an infinity;
+  integers wrapping (D329) take their whole type; a float converted
+  saturates, NaN giving 0; `%`, `/` by a positive divisor, `&` with a
+  number not negative, `>>`, `min`, `max`, `sqrt`; what is not followed
+  (`f32`, a parameter, a call, a part of a tuple) takes every value of its
+  type; a budget of steps bounds the work. `narrow_arrays` uses it, and a
+  `map` of tuples of integers (`tuple_vals`: after `let`s and `if`s) has
+  each part stored in its own narrowest type, converted where the tuple is
+  made and back where an element is read (`widen_tuple_reads`; arrays of
+  tuples are kept by columns, a byte a part). On the way, D685 bound the
+  array of its join again before its fold, a use of all of it: a variable
+  is now read where it is. rtiow 384 by 216 at its peak: `sphere` 4.9 to
+  2.9 MiB on one thread (Rust 3.2), 5.8 to 3.8 on 8 (3.7); `final` 6.5 to
+  4.5 (3.7), 7.7 to 5.7 (4.4); the same images. Test
+  `tuples_stored_in_narrower_types` (memory.rs: the bytes of rtiow from
+  NaN, infinities and values out of 0 .. 1; `%` of a value of unknown sign
+  in `i8`, `&` in `u16`, a branch never taken, a part not bounded kept;
+  0, 1 and 1000 elements, as interpreted; checked by the allocator).
