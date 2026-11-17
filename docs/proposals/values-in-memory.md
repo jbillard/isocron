@@ -48,9 +48,12 @@ But mesuré : `walk` au niveau de Rust avec `&mut` (0,88 s), puis en dessous. **
 
 Une fonction dont les rappels en queue font une boucle (D102) copiait chaque paramètre passé par adresse dans une case de la boucle à son entrée, puis le résultat en retour : `hit` copiait deux fois les 112 octets de son générateur à chaque appel. La boucle garde désormais l'adresse donnée par l'appelant quand chaque rappel passe le paramètre tel quel ou que la fonction écrit son nouvel état par-dessus. Et LLVM ne sort plus de ces boucles ce qu'une branche calcule des paramètres inchangés (`llvm.licm.disable`) : il calculait les trois sinus d'une texture en damier à chaque appel de `textureValue`, quelle que soit la texture. rtiow (192 × 108) devant Rust dans les quatre cas : `sphere` sur un fil 1718 ms (Rust 1752), sur 8 fils 523 ms (689) ; `final` sur un fil 2667 ms (2695), sur 8 fils 646 ms (708). Le reste du corpus à ±0,4 %.
 
+### Suite : les nœuds à la taille de leur variante, et les comptes des tâches (D682, D683)
+
+Un nœud d'un type somme récursif réservait la place de toutes ses variantes (728 octets pour chaque objet de rtiow) ; il ne tient plus que celles de sa variante (D682 : le monde de la scène finale de 11,1 Mio à 4,6 Mio, Rust 3,6 Mio). Et une tâche dont les résultats ne tiennent aucun nœud ne compte plus que les nœuds que son itération a faits, marqués par elle : le monde partagé n'est plus écrit par les fils (D683). rtiow : `sphere` sur 8 fils 428 ms (Rust 676), sur un fil 1653 ms (1753) ; `final` sur 8 fils 622 ms (704), sur un fil 2453 ms (2706).
+
 ## 4. Les autres causes connues (chantiers suivants)
 
-- **Les comptes de références des données partagées en lecture** pendant un `map` parallèle : le monde de rtiow vit plus longtemps que le `map` et n'y change pas ; ses nœuds n'ont pas à être comptés dans les tâches (sur 8 fils, Rust perd les deux tiers de son travail sur ses `Arc`, Isocron 20 % sur ses comptes atomiques, D678).
 - **Les très grandes fonctions** : tous les cas d'un `match` récursif fusionnés (3852 instructions, 2,9 Ko de pile pour le `hit` de rtiow), qui manquent de registres.
 - **La fusion des productions** : un `map` vers des textes, joints puis écrits, gardé en mémoire tout entier (200 octets par pixel dans rtiow) au lieu d'être écrit au fur et à mesure.
 - **Les calculs SPMD sur des enregistrements** (D140 ne prend que des scalaires) : plusieurs rayons, ou plusieurs requêtes, par instruction vectorielle.

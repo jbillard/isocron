@@ -433,7 +433,7 @@ Quand une fonction produit un nouveau tableau, l'appelant fournit la mémoire du
 ### Libération
 
 - Une valeur unique est libérée juste après sa dernière utilisation.
-- Une valeur partagée dont la durée de vie n'est pas déterminable à la compilation passe en comptage de références. Le comptage est non atomique si la valeur ne quitte pas un thread, atomique sinon ; c'est le compilateur qui crée les threads, il sait donc lequel choisir.
+- Une valeur partagée dont la durée de vie n'est pas déterminable à la compilation passe en comptage de références. Le comptage est non atomique si la valeur ne quitte pas un thread, atomique sinon ; c'est le compilateur qui crée les threads, il sait donc lequel choisir. Dans une tâche dont les résultats ne tiennent aucun nœud, seuls les nœuds faits par son itération sont comptés : les plus anciens survivent à la boucle et ne sont pas écrits par les threads (D683).
 - Aucun cycle n'est possible : dans un langage strict et pur, une valeur ne peut pas se référencer elle-même. Lean repose sur la même propriété (Ullrich & de Moura, 2019).
 
 ### Memory report

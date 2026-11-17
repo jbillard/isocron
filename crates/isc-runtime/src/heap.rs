@@ -380,7 +380,15 @@ struct NodeCache {
     end: *mut u8,
 }
 
-const _: () = assert!(core::mem::size_of::<NodeCache>() <= 256);
+// (its last two words, 240 to 255, are those of the compiled code: the mark
+// of the iteration of a task that counts its own nodes, and the last mark of
+// the thread, D683)
+const _: () = assert!(core::mem::size_of::<NodeCache>() <= 240);
+
+/// The marks of the iterations of the tasks that count their own nodes
+/// (D683): each thread takes 65536 of them here at its first such task.
+#[no_mangle]
+pub static isc_token_threads: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 #[cfg(windows)]
 core::arch::global_asm!(

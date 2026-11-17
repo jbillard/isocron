@@ -556,7 +556,10 @@ action main(args: string[k]): i32 {
 
 /// The counts of the nodes of a task are atomic only for the recursive
 /// types the task may share with another thread (D175): a tree it builds
-/// and drops itself is counted plainly; a tree it captures, atomically.
+/// and drops itself is counted plainly; a tree it captures, atomically when
+/// its results hold nodes, and not at all when they hold none: the
+/// iteration then counts the nodes it made alone (D683, `_own`), the tree it
+/// captures never written by the threads.
 #[test]
 fn atomic_counts_only_for_shared_nodes() {
     let local = "type Tree = Leaf | Node(Tree, Tree);
@@ -579,15 +582,30 @@ action main(args: string[k]): i32 {
 }
 ";
     let shared = local.replace("print(sum(map(iota(10000), (i) => nodes(make(i % 5)))));", "const t = make(4);\n    print(sum(map(iota(10000), (i) => nodes(Node(t, make(i % 3))))));");
-    for (src, name, atomic, want) in [(local, "atomic_local", false, "114000\n"), (shared.as_str(), "atomic_shared", true, "356664\n")] {
+    // (the results of the first loop hold the shared tree: counted atomically)
+    let held = local.replace(
+        "print(sum(map(iota(10000), (i) => nodes(make(i % 5)))));",
+        "const t = make(4);\n    const ts = map(iota(10000), (i) => Node(t, make(i % 3)));\n    print(sum(map(ts, (x) => nodes(x))));",
+    );
+    for (src, name, atomic, own, want) in [
+        (local, "atomic_local", false, false, "114000\n"),
+        (shared.as_str(), "atomic_shared", false, true, "356664\n"),
+        (held.as_str(), "atomic_held", true, false, "356664\n"),
+    ] {
         let ll = tmp(&format!("{}.ll", name));
         let p = iscc::frontend("a.isc", src).unwrap();
         let bin = tmp(&format!("{}_bin", name));
         iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
         let text = std::fs::read_to_string(&ll).unwrap();
-        assert_eq!(text.contains("atomicrmw"), atomic, "{}", name);
-        assert_eq!(run_bin_threads(&bin, &[], Some(4)).stdout, want, "{}", name);
+        // (an atomic count of a node: `atomicrmw` on a register, not on the
+        // marks of the runtime)
+        assert_eq!(text.lines().any(|l| l.contains("atomicrmw") && !l.contains("@isc_token_threads")), atomic, "{}", name);
+        assert_eq!(text.contains("_own("), own, "{}", name);
+        for t in [1, 4, 8] {
+            assert_eq!(run_bin_threads(&bin, &[], Some(t)).stdout, want, "{}", name);
+        }
         assert_eq!(interp_ok(src, &[]), want, "{} interpreted", name);
+        checked_clean(src, name, &[]);
     }
 }
 
@@ -642,14 +660,196 @@ action main(args: string[k]): i32 {
     iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
     let text = std::fs::read_to_string(&ll).unwrap();
     // the variants of `nodes` and `leftAt`, not of `steps`; the copy of a
-    // node in that of `leftAt` atomic
+    // node in that of `leftAt` counted by the iteration of the task alone
+    // when the node is its own (D683: the results of the loop hold no
+    // node), never by a plain increment of a node of the shared tree
     let variants: Vec<&str> = text.split("\ndefine ").filter(|f| f.lines().next().is_some_and(|h| h.contains("_tk0("))).collect();
     assert_eq!(variants.len(), 2, "{}", text);
-    assert!(variants.iter().any(|f| f.contains("atomicrmw")), "{}", text);
+    assert!(variants.iter().any(|f| f.contains("lshr i64") && f.contains(", 40")), "{}", text);
     for _ in 0..5 {
         assert_eq!(run_bin_threads(&bin, &[], Some(8)).stdout, want);
     }
     assert_eq!(interp_ok(src, &[]), want, "interpreted");
+    checked_clean(src, "tk_variants", &[]);
+}
+
+/// A node of a recursive type holds the slots of its own variant alone
+/// (D682): a `Circle` 32 bytes, not the room of a `Poly` of 13 slots; read
+/// slot by slot where a pattern reads it, freed variant by variant; equal,
+/// printed and freed in tasks as before.
+#[test]
+fn nodes_hold_their_variant_alone() {
+    let src = r#"// A tree of shapes: variants of very different sizes in one recursive type;
+// each node holds its own variant's slots alone
+type Shape =
+    Dot
+    | Circle(f64)
+    | Poly(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, string)
+    | Group(Shape[])
+    | Moved(Shape, f64, f64);
+
+function area(s: Shape): f64 {
+    return match (s) {
+        Dot => 0.0,
+        Circle(r) => 3.0 * r * r,
+        Poly(a, b, c, d, e, f, g, h, i, j, k, l, name) => a + b + c + d + e + f + g + h + i + j + k + l + f64(name.length),
+        Group(xs) => sum(map(xs, (x) => area(x))),
+        Moved(inner, dx, dy) => area(inner) + dx * dy,
+    };
+}
+
+function made(n: i64): Shape {
+    if (n == 0) {
+        return Circle(1.5);
+    }
+    if (n % 4 == 1) {
+        return Moved(made(n - 1), f64(n), 0.5);
+    }
+    if (n % 4 == 2) {
+        const p = Poly(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, f64(n), `p${n}`);
+        return Group([made(n - 1), p, Dot, Circle(f64(n))]);
+    }
+    return Group([made(n - 1), Moved(Dot, 1.0, f64(n))]);
+}
+
+action main(args: string[k]): i32 {
+    const t = made(9);
+    print(area(t));
+    print(made(2));
+    print(made(3) == made(3));
+    print(made(3) == made(4));
+    print(Moved(Circle(2.0), 1.0, 1.0) == Moved(Circle(2.0), 1.0, 1.0));
+    // many small nodes in parallel tasks, freed there
+    print(sum(map(iota(2000), (q) => area(made(q % 13)))));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    let ll = tmp("variant_nodes.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("variant_nodes_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    // (the size of the node of a `Circle`: its count, its tag, its radius)
+    assert!(text.contains("getelementptr { i64, { i32, double } }, ptr null, i32 1"), "{}", text);
+    for t in [1, 4, 8] {
+        assert_eq!(run_bin_threads(&bin, &[], Some(t)).stdout, want);
+    }
+    checked_clean(src, "variant_nodes", &[]);
+}
+
+/// The tasks of a loop whose results hold no node count the nodes their
+/// iteration made alone (D683): trees of each iteration holding parts of a
+/// world the threads share, freed in it; a loop inside each task sharing the
+/// task's own tree with its threads; a loop whose results hold nodes, counted
+/// atomically. The same results on 1 to 16 threads, as interpreted, nothing
+/// leaked nor freed twice.
+#[test]
+fn tasks_count_their_own_nodes() {
+    let src = r#"// Tasks that make nodes of the types they share with the other threads:
+// a world built before the loops, read by every task; each iteration makes
+// its own trees holding parts of the world, frees them, and hands some of
+// them to a loop inside it; the results hold no node
+type Tree = Leaf(i64) | Pair(Tree, Tree) | Tag(string, Tree);
+
+function made(d: i64, k: i64): Tree {
+    if (d == 0) {
+        return Leaf(k);
+    }
+    return d % 3 == 0 ? Tag(`t${k}`, made(d - 1, k * 2)) : Pair(made(d - 1, k * 2), made(d - 1, k * 2 + 1));
+}
+
+function total(t: Tree): i64 {
+    return match (t) {
+        Leaf(k) => k,
+        Pair(a, b) => total(a) + total(b),
+        Tag(s, x) => s.length + total(x),
+    };
+}
+
+// a tree of this iteration holding the parts of the world it picks
+function picked(w: Tree, q: i64): Tree {
+    return match (w) {
+        Leaf(k) => Pair(w, Leaf(k + q)),
+        Pair(a, b) => q % 2 == 0 ? Pair(picked(a, q / 2), b) : Tag(`q${q}`, picked(b, q / 2)),
+        Tag(s, x) => Pair(x, picked(x, q + 1)),
+    };
+}
+
+function first(t: Tree): Tree {
+    return match (t) {
+        Pair(a, b) => a,
+        Tag(s, x) => x,
+        Leaf(k) => t,
+    };
+}
+
+action main(args: string[k]): i32 {
+    const world = made(9, 1);
+    const n = args.length > 0 ? parseI64(args[0]) : 3000;
+    // each task: its own trees with parts of the world, freed in it
+    print(sum(map(iota(n), (q) => {
+        const mine = picked(world, q);
+        const more = Pair(mine, first(world));
+        return total(more) + total(picked(first(mine), q + 3));
+    })));
+    // a loop inside each task, sharing the task's own tree with its threads
+    print(sum(map(iota(n / 10), (q) => {
+        const mine = picked(world, q);
+        return sum(map(iota(20), (r) => total(picked(mine, r)) + total(first(mine))));
+    })));
+    // a loop whose results hold nodes: counted by atomic instructions
+    const kept = map(iota(n / 10), (q) => picked(world, q));
+    print(sum(map(kept, (t) => total(t))));
+    print(total(world));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    let ll = tmp("own_counts.ll");
+    let p = iscc::frontend("a.isc", src).unwrap();
+    let bin = tmp("own_counts_bin");
+    iscc::build(&p, &iscc::BuildOptions { output: bin.clone(), emit_llvm: Some(ll.clone()), ..Default::default() }).unwrap();
+    let text = std::fs::read_to_string(&ll).unwrap();
+    assert!(text.contains("_own("), "{}", text);
+    for t in [1, 2, 4, 8, 16] {
+        assert_eq!(run_bin_threads(&bin, &[], Some(t)).stdout, want, "{} threads", t);
+    }
+    checked_clean(src, "own_counts", &[]);
+}
+
+/// A tree a builder makes (D200) is made in a region and freed with it,
+/// its nodes never one by one: a node holding a text of its own then lost
+/// it (D684: five texts of a tree of depth 6, found by the tasks of D683).
+/// Such a node is no longer made in a region.
+#[test]
+fn trees_of_regions_hold_no_texts() {
+    let src = r#"type Tree = Leaf(i64) | Pair(Tree, Tree) | Tag(string, Tree);
+
+function made(d: i64, k: i64): Tree {
+    if (d == 0) {
+        return Leaf(k);
+    }
+    return d % 3 == 0 ? Tag(`t${k}`, made(d - 1, k * 2)) : Pair(made(d - 1, k * 2), made(d - 1, k * 2 + 1));
+}
+
+function total(t: Tree): i64 {
+    return match (t) {
+        Leaf(k) => k,
+        Pair(a, b) => total(a) + total(b),
+        Tag(s, x) => s.length + total(x),
+    };
+}
+
+action main(args: string[k]): i32 {
+    const world = made(6, 1);
+    print(total(world));
+    return 0;
+}
+"#;
+    let want = interp_ok(src, &[]);
+    assert_eq!(run_bin_threads(&compile(src, "region_texts"), &[], Some(1)).stdout, want);
+    checked_clean(src, "region_texts", &[]);
 }
 
 #[test]

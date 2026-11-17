@@ -671,15 +671,24 @@ pub struct Gen<'p> {
     /// threads (reached from what the task captures or returns); None: all
     /// of them (D175).
     task_shared: Option<HashSet<u32>>,
+    /// How the task being emitted counts the nodes of its shared types
+    /// (D683): COUNT_OWN, COUNT_OWN_ATOMIC, or 0 (atomically, D175).
+    task_marks: u8,
+    /// The type of the result of the next task outlined, when its caller
+    /// knows it (D683).
+    task_out: Option<Type>,
     /// In the variant of a recursive function for the tasks (`_tk<k>`,
     /// D678): the recursive types whose nodes may be shared with other
     /// threads, as `task_shared` for a task (`Some(None)`: all of them).
     variant_shared: Option<Option<HashSet<u32>>>,
+    /// How the variant being emitted counts the nodes of its shared types
+    /// (D683): as `task_marks`.
+    variant_marks: u8,
     /// The recursive types each recursive function holds, or reaches
     /// through the functions it calls (D678).
     fn_recs: Vec<HashSet<u32>>,
     /// The shared types of each variant for the tasks (D678), by index.
-    tk_sets: Vec<Option<BTreeSet<u32>>>,
+    tk_sets: Vec<(Option<BTreeSet<u32>>, u8)>,
     /// The variants for the tasks to emit: the function, its set.
     tk_needed: BTreeSet<(u32, usize)>,
     /// The variables whose values are in memory (D679): the address of
@@ -805,7 +814,7 @@ pub struct Gen<'p> {
     tail: Option<TailLoop>,
     /// The functions that free or print the nodes of each recursive type
     /// (`(type, atomic)` for the frees), emitted at the end (D103).
-    rec_drops: BTreeSet<(u32, bool)>,
+    rec_drops: BTreeSet<(u32, u8)>,
     rec_prints: BTreeSet<u32>,
     /// The equality functions of recursive types to emit (D129).
     rec_eqs: BTreeSet<u32>,
@@ -1155,11 +1164,32 @@ fn same_in_tail_calls(body: &Expr, calls: &HashMap<*const Expr, isc_ir::passes::
     walk(body, calls, k, var)
 }
 
-fn rec_drop_name(i: u32, atomic: bool) -> String {
-    if atomic {
-        format!("isc_rec_drop_{}_atomic", i)
-    } else {
-        format!("isc_rec_drop_{}", i)
+/// How the counts of the nodes of a type are kept where code runs: by
+/// plain instructions (one thread), atomic ones (a task sharing the type
+/// with others, D175), or by the iteration of a task that counts the nodes
+/// it made alone (D683): plainly in that iteration, atomically in the tasks
+/// of a loop it runs (they share its nodes), the others never written.
+const COUNT_PLAIN: u8 = 0;
+const COUNT_ATOMIC: u8 = 1;
+const COUNT_OWN: u8 = 2;
+const COUNT_OWN_ATOMIC: u8 = 3;
+
+/// The bits of the count of a node; the 24 above them, the mark of the
+/// iteration of a task that made it (D683; 0: made outside such a task).
+const COUNT_BITS: u32 = 40;
+
+/// The word of `isc_node_thread` (the cache of the nodes of the thread,
+/// `heap.rs`) holding the mark of the iteration that runs, shifted to the
+/// bits of a mark (D683), and the one holding the last mark of the thread.
+const TOKEN_WORD: u32 = 30;
+const TOKEN_NEXT_WORD: u32 = 31;
+
+fn rec_drop_name(i: u32, mode: u8) -> String {
+    match mode {
+        COUNT_ATOMIC => format!("isc_rec_drop_{}_atomic", i),
+        COUNT_OWN => format!("isc_rec_drop_{}_own", i),
+        COUNT_OWN_ATOMIC => format!("isc_rec_drop_{}_ownat", i),
+        _ => format!("isc_rec_drop_{}", i),
     }
 }
 
@@ -1605,7 +1635,10 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         kernel_fn: false,
         kernel_used: false,
         task_shared: None,
+        task_marks: 0,
+        task_out: None,
         variant_shared: None,
+        variant_marks: 0,
         fn_recs: fn_rec_types(p),
         tk_sets: Vec::new(),
         tk_needed: BTreeSet::new(),
@@ -2543,8 +2576,12 @@ fn builders(p: &Program) -> HashSet<u32> {
     }
     fn builds(e: &Expr, set: &HashSet<u32>) -> bool {
         match &e.kind {
+            // (a part holding memory of its own, a string or an array, never
+            // in a node of a region: the region is freed whole, its nodes
+            // never one by one, and the texts of a tree a builder made were
+            // never freed, D684)
             ExprKind::Box(x) => match &x.kind {
-                ExprKind::Tuple(es) => es.iter().all(|c| matches!(c.kind, ExprKind::Zero) || plain(c) || builds(c, set)),
+                ExprKind::Tuple(es) => es.iter().all(|c| matches!(c.kind, ExprKind::Zero) || (plain(c) && !c.ty.has_heap()) || builds(c, set)),
                 _ => false,
             },
             ExprKind::Call(g, args) => set.contains(g) && args.iter().all(plain),
@@ -3950,7 +3987,8 @@ impl<'p> Gen<'p> {
         let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
-        let saved_variant = std::mem::replace(&mut self.variant_shared, task.map(|k| self.tk_sets[k].as_ref().map(|s| s.iter().copied().collect())));
+        let saved_variant = std::mem::replace(&mut self.variant_shared, task.map(|k| self.tk_sets[k].0.as_ref().map(|s| s.iter().copied().collect())));
+        let saved_variant_marks = std::mem::replace(&mut self.variant_marks, task.map_or(0, |k| self.tk_sets[k].1));
         let saved_kernel = std::mem::replace(&mut self.kernel_fn, f.name.starts_with('$'));
         let saved_counts = std::mem::take(&mut self.counts);
         let saved_count_param = self.count_param.take();
@@ -4183,6 +4221,7 @@ impl<'p> Gen<'p> {
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.variant_shared = saved_variant;
+        self.variant_marks = saved_variant_marks;
         self.kernel_fn = saved_kernel;
         self.counts = saved_counts;
         self.count_param = saved_count_param;
@@ -4766,9 +4805,9 @@ impl<'p> Gen<'p> {
         match t {
             // one owner less: the node is freed by the last one (D103)
             Type::Rec(i) => {
-                let atomic = self.rec_atomic(*i);
-                self.rec_drops.insert((*i, atomic));
-                self.emit(format!("call void @{}(ptr {})", rec_drop_name(*i, atomic), x.r));
+                let mode = self.count_mode(*i);
+                self.rec_drops.insert((*i, mode));
+                self.emit(format!("call void @{}(ptr {})", rec_drop_name(*i, mode), x.r));
             }
             Type::Array(e, _) if e.is_array() => {
                 let p = self.ins(format!("extractvalue {} {}, 0", NESTED, x.r));
@@ -5025,6 +5064,214 @@ impl<'p> Gen<'p> {
         format!("{{ i64, {} }}", lt(&self.p.recs[i as usize].layout))
     }
 
+    /// The slots of each variant of the recursive type `i` (by its tag),
+    /// when a node holds those of its own variant alone (D682): its count,
+    /// its tag, its slots, and no room for the others. None: a type of one
+    /// variant with slots at most, its node the whole tuple.
+    fn node_variants(&self, i: u32) -> Option<Vec<Vec<u32>>> {
+        let Shape::Sum(vs) = &self.p.recs[i as usize].shape else { return None };
+        if vs.iter().filter(|(_, slots, _)| !slots.is_empty()).count() < 2 {
+            return None;
+        }
+        Some(vs.iter().map(|(_, slots, _)| slots.clone()).collect())
+    }
+
+    /// The type of a node of the recursive type `i` holding the slots
+    /// `slots` of one variant (D682): its count, then its tag and those
+    /// slots.
+    fn variant_node_ty(&self, i: u32, slots: &[u32]) -> String {
+        let comps = match &self.p.recs[i as usize].layout {
+            Type::Tuple(ts) => ts.clone(),
+            other => vec![other.clone()],
+        };
+        let mut parts = vec![lt(&comps[0])];
+        parts.extend(slots.iter().map(|s| lt(&comps[*s as usize])));
+        format!("{{ i64, {{ {} }} }}", parts.join(", "))
+    }
+
+    /// The tuple the node `p` of the recursive type `i` holds, and the
+    /// bytes of the node: loaded whole, or (D682) the slots of its variant,
+    /// by its tag, and zeros in the slots of the others.
+    fn node_payload(&mut self, p: &str, i: u32) -> (String, String) {
+        let lay = lt(&self.p.recs[i as usize].layout);
+        let Some(vs) = self.node_variants(i) else {
+            let nt = self.rec_node_ty(i);
+            let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
+            let loaded = self.ins(format!("load {}, ptr {}", lay, pt));
+            let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
+            let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
+            return (loaded, bytes);
+        };
+        let tp = self.ins(format!("getelementptr inbounds {{ i64, i32 }}, ptr {}, i32 0, i32 1", p));
+        let tag = self.ins(format!("load i32, ptr {}", tp));
+        let labels: Vec<String> = vs.iter().map(|_| self.label()).collect();
+        let (ldef, lj) = (self.label(), self.label());
+        let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i32 {}, label %{}", k, l)).collect();
+        self.emit(format!("switch i32 {}, label %{} [ {} ]", tag, ldef, cases.join(" ")));
+        let mut tuples = Vec::new();
+        let mut sizes = Vec::new();
+        for (k, slots) in vs.iter().enumerate() {
+            self.block(&labels[k]);
+            let vt = self.variant_node_ty(i, slots);
+            let inner = vt["{ i64, ".len()..vt.len() - 2].to_string();
+            let at = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", vt, p));
+            let x = self.ins(format!("load {}, ptr {}", inner, at));
+            let mut t = self.ins(format!("insertvalue {} zeroinitializer, i32 {}, 0", lay, k));
+            for (j, s) in slots.iter().enumerate() {
+                let f = self.ins(format!("extractvalue {} {}, {}", inner, x, j + 1));
+                t = self.ins(format!("insertvalue {} {}, {} {}, {}", lay, t, self.slot_ty(i, *s), f, s));
+            }
+            let bytes = self.variant_bytes(&vt);
+            self.br(&lj);
+            tuples.push(format!("[ {}, %{} ]", t, labels[k]));
+            sizes.push(format!("[ {}, %{} ]", bytes, labels[k]));
+        }
+        self.block(&ldef);
+        self.emit("unreachable");
+        self.block(&lj);
+        let t = self.ins(format!("phi {} {}", lay, tuples.join(", ")));
+        let bytes = self.ins(format!("phi i64 {}", sizes.join(", ")));
+        (t, bytes)
+    }
+
+    /// Slot `s` of the tuple of the value `p` of the recursive type `i`
+    /// whose nodes hold their own variant's slots (D682), read at its place:
+    /// the tag (slot 0) from the node, or from the odd value of a
+    /// constructor without payload (D169); another slot from the node of
+    /// its variant, zero when the value is of another variant (a pattern
+    /// may test a slot before its tag: never read out of the node). In an
+    /// arm of its variant, LLVM knows the tag and drops the tests.
+    fn node_slot_read(&mut self, p: &str, i: u32, s: u32) -> String {
+        let vs = self.node_variants(i).unwrap_or_default();
+        let comps = match &self.p.recs[i as usize].layout {
+            Type::Tuple(ts) => ts.clone(),
+            other => vec![other.clone()],
+        };
+        let st = lt(&comps[s as usize]);
+        let zero = if st == "ptr" { "null".to_string() } else { Self::zero(&comps[s as usize]) };
+        let pi = self.ins(format!("ptrtoint ptr {} to i64", p));
+        let low = self.ins(format!("and i64 {}, 1", pi));
+        let odd = self.ins(format!("icmp ne i64 {}, 0", low));
+        let (lodd, lnode, lj) = (self.label(), self.label(), self.label());
+        self.cbr(&odd, &lodd, &lnode);
+        self.block(&lodd);
+        let from_odd = if s == 0 {
+            let t = self.ins(format!("lshr i64 {}, 1", pi));
+            self.ins(format!("trunc i64 {} to i32", t))
+        } else {
+            zero.clone()
+        };
+        self.br(&lj);
+        self.block(&lnode);
+        let tp = self.ins(format!("getelementptr inbounds {{ i64, i32 }}, ptr {}, i32 0, i32 1", p));
+        let tag = self.ins(format!("load i32, ptr {}", tp));
+        if s == 0 {
+            self.br(&lj);
+            self.block(&lj);
+            return self.ins(format!("phi i32 [ {}, %{} ], [ {}, %{} ]", from_odd, lodd, tag, lnode));
+        }
+        let Some((k, j)) = vs.iter().enumerate().find_map(|(k, slots)| slots.iter().position(|x| *x == s).map(|j| (k, j))) else {
+            self.br(&lj);
+            self.block(&lj);
+            return self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", st, from_odd, lodd, zero, lnode));
+        };
+        let mine = self.ins(format!("icmp eq i32 {}, {}", tag, k));
+        let lread = self.label();
+        self.cbr(&mine, &lread, &lj);
+        self.block(&lread);
+        let vt = self.variant_node_ty(i, &vs[k]);
+        let at = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}", vt, p, j + 1));
+        let x = self.ins(format!("load {}, ptr {}", st, at));
+        self.br(&lj);
+        self.block(&lj);
+        self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]", st, from_odd, lodd, zero, lnode, x, lread))
+    }
+
+    /// The bytes of a node of type `vt` (D682).
+    fn variant_bytes(&mut self, vt: &str) -> String {
+        let end = self.ins(format!("getelementptr {}, ptr null, i32 1", vt));
+        self.ins(format!("ptrtoint ptr {} to i64", end))
+    }
+
+    /// The LLVM type of slot `s` of the tuple of the recursive type `i`.
+    fn slot_ty(&self, i: u32, s: u32) -> String {
+        match &self.p.recs[i as usize].layout {
+            Type::Tuple(ts) => lt(&ts[s as usize]),
+            other => lt(other),
+        }
+    }
+
+    /// A new node of the recursive type `i` holding the tuple `t` (D682: the
+    /// slots of its variant alone, at a constant tag when `tag` is known):
+    /// its count 1, in the region of a builder (D200) or of the allocator
+    /// of nodes (D166, D176).
+    fn node_new(&mut self, i: u32, t: &V, tag: Option<usize>) -> String {
+        let Some(vs) = self.node_variants(i) else {
+            let nt = self.rec_node_ty(i);
+            let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
+            let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
+            let p = self.cell_new(&bytes);
+            let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
+            self.emit(format!("store {} {}, ptr {}", t.t, t.r, pt));
+            return p;
+        };
+        let store_variant = |g: &mut Self, k: usize, slots: &[u32]| -> String {
+            let vt = g.variant_node_ty(i, slots);
+            let inner = vt["{ i64, ".len()..vt.len() - 2].to_string();
+            let bytes = g.variant_bytes(&vt);
+            let p = g.cell_new(&bytes);
+            let mut x = g.ins(format!("insertvalue {} undef, i32 {}, 0", inner, k));
+            for (j, s) in slots.iter().enumerate() {
+                let f = g.ins(format!("extractvalue {} {}, {}", t.t, t.r, s));
+                x = g.ins(format!("insertvalue {} {}, {} {}, {}", inner, x, g.slot_ty(i, *s), f, j + 1));
+            }
+            let at = g.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", vt, p));
+            g.emit(format!("store {} {}, ptr {}", inner, x, at));
+            p
+        };
+        if let Some(k) = tag.filter(|k| *k < vs.len()) {
+            return store_variant(self, k, &vs[k]);
+        }
+        // (a tag known when the program runs: a node of each variant)
+        let tag = self.ins(format!("extractvalue {} {}, 0", t.t, t.r));
+        let labels: Vec<String> = vs.iter().map(|_| self.label()).collect();
+        let (ldef, lj) = (self.label(), self.label());
+        let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i32 {}, label %{}", k, l)).collect();
+        self.emit(format!("switch i32 {}, label %{} [ {} ]", tag, ldef, cases.join(" ")));
+        let mut ps = Vec::new();
+        for (k, slots) in vs.iter().enumerate() {
+            self.block(&labels[k]);
+            let p = store_variant(self, k, slots);
+            let end = self.current_label(&labels[k]);
+            self.br(&lj);
+            ps.push(format!("[ {}, %{} ]", p, end));
+        }
+        self.block(&ldef);
+        self.emit("unreachable");
+        self.block(&lj);
+        self.ins(format!("phi ptr {}", ps.join(", ")))
+    }
+
+    /// A cell of `bytes` bytes for a node, its count 1: in the region of a
+    /// builder (D200), else of the allocator of nodes (D166, D176).
+    fn cell_new(&mut self, bytes: &str) -> String {
+        let p = match self.region.clone() {
+            Some(rg) => self.region_alloc(&rg, bytes),
+            None => self.node_alloc(bytes),
+        };
+        // (its count 1, with the mark of the iteration of a task that counts
+        // its own nodes, 0 elsewhere: D683)
+        if self.opts.isa.is_wasm() {
+            self.emit(format!("store i64 1, ptr {}", p));
+        } else {
+            let tp = self.token_word(TOKEN_WORD);
+            let cur = self.ins(format!("load i64, ptr {}", tp));
+            let c = self.ins(format!("or i64 {}, 1", cur));
+            self.emit(format!("store i64 {}, ptr {}", c, p));
+        }
+        p
+    }
+
     /// The cells of nodes in the code itself (D176): the free list of the
     /// thread (`isc_node_thread` of the runtime, `heap.rs`) when the
     /// allocator of Isocron is in use and the node takes at most 256
@@ -5131,7 +5378,6 @@ impl<'p> Gen<'p> {
     /// or, for a constructor without payload (an odd value, D169), its tag
     /// and zeros.
     fn node_tuple(&mut self, p: &str, i: u32) -> String {
-        let nt = self.rec_node_ty(i);
         let lay = lt(&self.p.recs[i as usize].layout);
         let pi = self.ins(format!("ptrtoint ptr {} to i64", p));
         let low = self.ins(format!("and i64 {}, 1", pi));
@@ -5146,11 +5392,11 @@ impl<'p> Gen<'p> {
         let tagged = self.ins(format!("insertvalue {} zeroinitializer, i32 {}, 0", lay, t32));
         self.br(&lj);
         self.block(&lload);
-        let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
-        let loaded = self.ins(format!("load {}, ptr {}", lay, pt));
+        let (loaded, _) = self.node_payload(p, i);
+        let lload_end = self.current_label(&lload);
         self.br(&lj);
         self.block(&lj);
-        self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", lay, tagged, ltag, loaded, lload))
+        self.ins(format!("phi {} [ {}, %{} ], [ {}, %{} ]", lay, tagged, ltag, loaded, lload_end))
     }
 
     /// The recursive types reached from a type, through the layouts of
@@ -5189,6 +5435,35 @@ impl<'p> Gen<'p> {
         reach.iter().any(|r| shared.contains(r))
     }
 
+    /// How the counts of the nodes of type `i` are kept here (D683).
+    fn count_mode(&self, i: u32) -> u8 {
+        if !self.rec_atomic(i) {
+            COUNT_PLAIN
+        } else {
+            match if self.in_task { self.task_marks } else { self.variant_marks } {
+                0 => COUNT_ATOMIC,
+                m => m,
+            }
+        }
+    }
+
+    /// The address of word `k` of the cache of the nodes of the thread
+    /// (`isc_node_thread`): `TOKEN_WORD`, `TOKEN_NEXT_WORD` (D683).
+    fn token_word(&mut self, k: u32) -> String {
+        self.node_decls();
+        self.ins(format!("getelementptr inbounds [32 x ptr], ptr @isc_node_thread, i64 0, i64 {}", k))
+    }
+
+    /// `i1`: the count `c` of a node is one of the iteration of the task that
+    /// runs, which counts its own nodes alone (D683): their marks the same.
+    fn count_mine(&mut self, c: &str) -> String {
+        let tp = self.token_word(TOKEN_WORD);
+        let cur = self.ins(format!("load i64, ptr {}", tp));
+        let x = self.ins(format!("xor i64 {}, {}", c, cur));
+        let hi = self.ins(format!("lshr i64 {}, {}", x, COUNT_BITS));
+        self.ins(format!("icmp eq i64 {}, 0", hi))
+    }
+
     /// The variant of the recursive function `f` that a task, or a variant
     /// for the tasks, calls (D678): the one whose counts of the shared
     /// types are atomic, when `f` holds or reaches one; None elsewhere (the
@@ -5209,7 +5484,8 @@ impl<'p> Gen<'p> {
         if !needed {
             return None;
         }
-        let key: Option<BTreeSet<u32>> = shared.map(|s| s.into_iter().collect());
+        let marks = if self.in_task { self.task_marks } else { self.variant_marks };
+        let key: (Option<BTreeSet<u32>>, u8) = (shared.map(|s| s.into_iter().collect()), marks);
         let k = match self.tk_sets.iter().position(|x| *x == key) {
             Some(k) => k,
             None => {
@@ -5230,12 +5506,28 @@ impl<'p> Gen<'p> {
         let lj = self.label();
         self.cbr(&node, &linc, &lj);
         self.block(&linc);
-        if self.rec_atomic(i) {
-            self.emit(format!("atomicrmw add ptr {}, i64 1 monotonic", p));
-        } else {
-            let c = self.ins(format!("load i64, ptr {}", p));
-            let c1 = self.ins(format!("add i64 {}, 1", c));
-            self.emit(format!("store i64 {}, ptr {}", c1, p));
+        match self.count_mode(i) {
+            COUNT_ATOMIC => self.emit(format!("atomicrmw add ptr {}, i64 1 monotonic", p)),
+            // (a node of the iteration counted, another one left: it is
+            // older than the iteration, and outlives it, D683)
+            mode @ (COUNT_OWN | COUNT_OWN_ATOMIC) => {
+                let c = self.ins(format!("load i64, ptr {}", p));
+                let mine = self.count_mine(&c);
+                let lmine = self.label();
+                self.cbr(&mine, &lmine, &lj);
+                self.block(&lmine);
+                if mode == COUNT_OWN_ATOMIC {
+                    self.emit(format!("atomicrmw add ptr {}, i64 1 monotonic", p));
+                } else {
+                    let c1 = self.ins(format!("add i64 {}, 1", c));
+                    self.emit(format!("store i64 {}, ptr {}", c1, p));
+                }
+            }
+            _ => {
+                let c = self.ins(format!("load i64, ptr {}", p));
+                let c1 = self.ins(format!("add i64 {}, 1", c));
+                self.emit(format!("store i64 {}, ptr {}", c1, p));
+            }
         }
         self.br(&lj);
         self.block(&lj);
@@ -5271,7 +5563,8 @@ impl<'p> Gen<'p> {
     /// the parts of the node, then the node. The last part that is a node is
     /// freed by a tail call, so that freeing a long list does not use the
     /// stack.
-    fn emit_rec_drop(&mut self, i: u32, atomic: bool) -> R<()> {
+    fn emit_rec_drop(&mut self, i: u32, mode: u8) -> R<()> {
+        let atomic = mode == COUNT_ATOMIC;
         let saved_f = std::mem::take(&mut self.f);
         let saved_env = std::mem::take(&mut self.env);
         let saved_mem_vars = std::mem::take(&mut self.mem_vars);
@@ -5279,11 +5572,13 @@ impl<'p> Gen<'p> {
         // the names of registers of this function alone (D518)
         let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
-        let saved_task = std::mem::replace(&mut self.in_task, atomic);
-        // inside an atomic drop, every count is atomic (D175)
+        let saved_task = std::mem::replace(&mut self.in_task, mode != COUNT_PLAIN);
+        // inside an atomic drop, every count is atomic (D175); inside a drop
+        // of a node of the iteration of a task, every count is kept by it
+        // (D683)
         let saved_shared = self.task_shared.take();
+        let saved_marks = std::mem::replace(&mut self.task_marks, if mode == COUNT_OWN || mode == COUNT_OWN_ATOMIC { mode } else { 0 });
         let saved_variant = self.variant_shared.take();
-        let nt = self.rec_node_ty(i);
         let layout = self.p.recs[i as usize].layout.clone();
         let lay = lt(&layout);
         let lnull = self.label();
@@ -5294,14 +5589,33 @@ impl<'p> Gen<'p> {
         self.block(&lnull);
         self.emit("ret void");
         self.block(&lgo);
-        let last = if atomic {
+        // (the count in the low COUNT_BITS bits, the mark of the iteration
+        // that made the node above them, D683)
+        if mode == COUNT_OWN_ATOMIC {
+            // (a node older than the iteration: not counted by it)
+            let c = self.ins("load i64, ptr %p".to_string());
+            let mine = self.count_mine(&c);
+            let lmine = self.label();
+            self.cbr(&mine, &lmine, &lnull);
+            self.block(&lmine);
+        }
+        let last = if atomic || mode == COUNT_OWN_ATOMIC {
             let old = self.ins("atomicrmw sub ptr %p, i64 1 acq_rel".to_string());
-            self.ins(format!("icmp eq i64 {}, 1", old))
+            let low = self.ins(format!("shl i64 {}, {}", old, 64 - COUNT_BITS));
+            self.ins(format!("icmp eq i64 {}, {}", low, 1u64 << (64 - COUNT_BITS)))
         } else {
             let c = self.ins("load i64, ptr %p".to_string());
+            if mode == COUNT_OWN {
+                // (a node older than the iteration: not counted by it)
+                let mine = self.count_mine(&c);
+                let lmine = self.label();
+                self.cbr(&mine, &lmine, &lnull);
+                self.block(&lmine);
+            }
             let c1 = self.ins(format!("sub i64 {}, 1", c));
             self.emit(format!("store i64 {}, ptr %p", c1));
-            self.ins(format!("icmp eq i64 {}, 0", c1))
+            let low = self.ins(format!("shl i64 {}, {}", c1, 64 - COUNT_BITS));
+            self.ins(format!("icmp eq i64 {}, 0", low))
         };
         let lfree = self.label();
         let lkeep = self.label();
@@ -5309,8 +5623,61 @@ impl<'p> Gen<'p> {
         self.block(&lkeep);
         self.emit("ret void");
         self.block(&lfree);
-        let pt = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", nt));
-        let t = self.ins(format!("load {}, ptr {}", lay, pt));
+        // (a node holding its own variant's slots, D682: each variant frees
+        // its own)
+        if let Some(vs) = self.node_variants(i) {
+            let comps = match &layout {
+                Type::Tuple(ts) => ts.clone(),
+                other => vec![other.clone()],
+            };
+            let tp = self.ins("getelementptr inbounds { i64, i32 }, ptr %p, i32 0, i32 1".to_string());
+            let tag = self.ins(format!("load i32, ptr {}", tp));
+            let labels: Vec<String> = vs.iter().map(|_| self.label()).collect();
+            let ldef = self.label();
+            let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i32 {}, label %{}", k, l)).collect();
+            self.emit(format!("switch i32 {}, label %{} [ {} ]", tag, ldef, cases.join(" ")));
+            for (k, slots) in vs.iter().enumerate() {
+                self.block(&labels[k]);
+                let vt = self.variant_node_ty(i, slots);
+                let inner = vt["{ i64, ".len()..vt.len() - 2].to_string();
+                let at = self.ins(format!("getelementptr inbounds {}, ptr %p, i32 0, i32 1", vt));
+                let x = self.ins(format!("load {}, ptr {}", inner, at));
+                // (its last node by a tail call: a long list freed in
+                // constant stack)
+                let tail = slots.iter().rposition(|s| matches!(comps[*s as usize], Type::Rec(_)));
+                for (j, s) in slots.iter().enumerate() {
+                    let c = &comps[*s as usize];
+                    if c.has_heap() && Some(j) != tail {
+                        let f = self.ins(format!("extractvalue {} {}, {}", inner, x, j + 1));
+                        self.drop_value(&v(f, lt(c)), c);
+                    }
+                }
+                let rest = tail.map(|j| (self.ins(format!("extractvalue {} {}, {}", inner, x, j + 1)), comps[slots[j] as usize].clone()));
+                let bytes = self.variant_bytes(&vt);
+                self.node_free("%p", &bytes);
+                if let Some((f, Type::Rec(j))) = rest {
+                    self.rec_drops.insert((j, mode));
+                    self.emit(format!("tail call void @{}(ptr {})", rec_drop_name(j, mode), f));
+                }
+                self.emit("ret void");
+            }
+            self.block(&ldef);
+            self.emit("unreachable");
+            let text = self.finish(&format!("define internal void @{}(ptr %p)", rec_drop_name(i, mode)));
+            self.f = saved_f;
+            self.env = saved_env;
+            self.mem_vars = saved_mem_vars;
+            self.divmod = saved_divmod;
+            self.part_values = saved_parts;
+            self.vec_fail = saved_vec_fail;
+            self.in_task = saved_task;
+            self.task_shared = saved_shared;
+            self.task_marks = saved_marks;
+            self.variant_shared = saved_variant;
+            self.funcs.push(text);
+            return Ok(());
+        }
+        let (t, bytes) = self.node_payload("%p", i);
         let comps = match &layout {
             Type::Tuple(ts) => ts.clone(),
             _ => Vec::new(),
@@ -5323,15 +5690,13 @@ impl<'p> Gen<'p> {
             }
         }
         let rest = tail.map(|k| (self.ins(format!("extractvalue {} {}, {}", lay, t, k)), comps[k].clone()));
-        let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
-        let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
         self.node_free("%p", &bytes);
         if let Some((f, Type::Rec(j))) = rest {
-            self.rec_drops.insert((j, atomic));
-            self.emit(format!("tail call void @{}(ptr {})", rec_drop_name(j, atomic), f));
+            self.rec_drops.insert((j, mode));
+            self.emit(format!("tail call void @{}(ptr {})", rec_drop_name(j, mode), f));
         }
         self.emit("ret void");
-        let text = self.finish(&format!("define internal void @{}(ptr %p)", rec_drop_name(i, atomic)));
+        let text = self.finish(&format!("define internal void @{}(ptr %p)", rec_drop_name(i, mode)));
         self.f = saved_f;
         self.env = saved_env;
         self.mem_vars = saved_mem_vars;
@@ -5340,6 +5705,7 @@ impl<'p> Gen<'p> {
         self.vec_fail = saved_vec_fail;
         self.in_task = saved_task;
         self.task_shared = saved_shared;
+        self.task_marks = saved_marks;
         self.variant_shared = saved_variant;
         self.funcs.push(text);
         Ok(())
@@ -5359,7 +5725,6 @@ impl<'p> Gen<'p> {
         let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
-        let nt = self.rec_node_ty(i);
         let layout = self.p.recs[i as usize].layout.clone();
         let lay = lt(&layout);
         let pn = self.ins("icmp eq ptr %p, null".to_string());
@@ -5372,7 +5737,6 @@ impl<'p> Gen<'p> {
         let both = self.ins(format!("and i1 {}, {}", pn, qn));
         self.emit(format!("ret i1 {}", both));
         self.block(&lgo);
-        let _ = &nt;
         let tp = self.node_tuple("%p", i);
         let tq = self.node_tuple("%q", i);
         let comps = match &layout {
@@ -5486,10 +5850,8 @@ impl<'p> Gen<'p> {
         let saved_parts = std::mem::take(&mut self.part_values);
         let saved_vec_fail = self.vec_fail.take();
         let saved_task = std::mem::replace(&mut self.in_task, false);
-        let nt = self.rec_node_ty(i);
         let r = self.p.recs[i as usize].clone();
         let lay = lt(&r.layout);
-        let _ = &nt;
         let t = self.node_tuple("%p", i);
         let res = self.print_value(&v(t, lay), &r.layout, &r.shape);
         self.emit("ret void");
@@ -6090,6 +6452,19 @@ impl<'p> Gen<'p> {
             }
             // a `let` of a split `fold` (D260): its value for this element,
             // computed before the loop
+            // `let tmp = unbox t in proj s tmp` (the reading of a slot of a
+            // pattern): a node holding its own variant's slots alone read at
+            // the place of that slot (D682)
+            Let { var, init, body, drop: false, .. }
+                if matches!(&init.kind, Unbox(n) if matches!(n.ty, Type::Rec(i) if self.node_variants(i).is_some()))
+                    && matches!(&body.kind, Proj(b, _) if matches!(b.kind, Var(x, _) if x == *var)) =>
+            {
+                let (Unbox(n), Proj(_, s)) = (&init.kind, &body.kind) else { unreachable!() };
+                let Type::Rec(i) = n.ty else { unreachable!() };
+                let p = self.ex(n, 1)?;
+                let r = self.node_slot_read(&p.r, i, *s);
+                Ok(v(r, lt(&e.ty)))
+            }
             Let { var, body, .. } if w == 1 && self.split_vars.contains_key(var) => {
                 let (slot, t, kvar) = self.split_vars[var].clone();
                 let k = self.env.get(&kvar).cloned().ok_or_else(|| format!("codegen: unbound variable %{}", kvar))?;
@@ -6433,6 +6808,15 @@ impl<'p> Gen<'p> {
                     acc = "zeroinitializer".into();
                 }
                 Ok(v(acc, t))
+            }
+            // a slot of a node holding its own variant's slots alone (D682):
+            // read at its place, not the whole tuple
+            Proj(x, s) if matches!(&x.kind, Unbox(n) if matches!(n.ty, Type::Rec(i) if self.node_variants(i).is_some())) => {
+                let Unbox(n) = &x.kind else { unreachable!() };
+                let Type::Rec(i) = n.ty else { unreachable!() };
+                let p = self.ex(n, 1)?;
+                let r = self.node_slot_read(&p.r, i, *s);
+                Ok(v(r, lt(&e.ty)))
             }
             Proj(x, i) | Take(x, i) => {
                 let xv = self.ex(x, 1)?;
@@ -7025,18 +7409,14 @@ impl<'p> Gen<'p> {
                     }
                 }
                 let t = self.ex(x, 1)?;
-                let nt = self.rec_node_ty(i);
-                let end = self.ins(format!("getelementptr {}, ptr null, i32 1", nt));
-                let bytes = self.ins(format!("ptrtoint ptr {} to i64", end));
-                // a cell of the region of a builder (D200), else of the
-                // allocator of nodes (D166, D176)
-                let p = match self.region.clone() {
-                    Some(rg) => self.region_alloc(&rg, &bytes),
-                    None => self.node_alloc(&bytes),
+                let tag = match &x.kind {
+                    ExprKind::Tuple(es) => match es.first().map(|c| &c.kind) {
+                        Some(ExprKind::Lit(isc_ir::Lit::Int(k))) if *k >= 0 => Some(*k as usize),
+                        _ => None,
+                    },
+                    _ => None,
                 };
-                self.emit(format!("store i64 1, ptr {}", p));
-                let pt = self.ins(format!("getelementptr inbounds {}, ptr {}, i32 0, i32 1", nt, p));
-                self.emit(format!("store {} {}, ptr {}", t.t, t.r, pt));
+                let p = self.node_new(i, &t, tag);
                 Ok(v(p, "ptr"))
             }
             Unbox(x) => {
@@ -8444,6 +8824,8 @@ impl<'p> Gen<'p> {
         let c = self.ins(format!("sdiv i64 {}, {}", n1, bs));
         let pv = v(p.clone(), "ptr");
         let bsv = v(bs.clone(), "i64");
+        // (its result: the array of the map, D683)
+        self.task_out = Some(e.ty.clone());
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &[pv, bsv], &mut |g, extra, i| {
             let (src, n) = g.prepare_src(e)?;
             let start = g.ins(format!("mul i64 {}, {}", i, extra[1].r));
@@ -10622,6 +11004,45 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// At the entry of a task that counts its own nodes (D683): a new mark
+    /// for its iteration, the thread's (its first one taken from
+    /// `isc_token_threads` of the runtime: 65536 marks a thread) and the
+    /// next of its counter, never 0 in its low 16 bits; written shifted
+    /// where the code reads it. Returns the address of that word and the
+    /// mark it held (the iteration of a task that runs this loop), given
+    /// back at the exit.
+    fn task_mark(&mut self) -> (String, String) {
+        self.decls.insert("@isc_token_threads = external global i64".into());
+        let tp = self.token_word(TOKEN_WORD);
+        let np = self.token_word(TOKEN_NEXT_WORD);
+        let old = self.ins(format!("load i64, ptr {}", tp));
+        let last = self.ins(format!("load i64, ptr {}", np));
+        let first = self.ins(format!("icmp eq i64 {}, 0", last));
+        let (lnew, lgo) = (self.label(), self.label());
+        let lentry = self.current_label("entry");
+        self.cbr(&first, &lnew, &lgo);
+        self.block(&lnew);
+        let b = self.ins("atomicrmw add ptr @isc_token_threads, i64 65536 monotonic".to_string());
+        let base = self.ins(format!("add i64 {}, 65536", b));
+        self.br(&lgo);
+        self.block(&lgo);
+        let from = self.ins(format!("phi i64 [ {}, %{} ], [ {}, %{} ]", last, lentry, base, lnew));
+        let n = self.ins(format!("add i64 {}, 1", from));
+        let low = self.ins(format!("and i64 {}, 65535", n));
+        let wrapped = self.ins(format!("icmp eq i64 {}, 0", low));
+        let n1 = self.ins(format!("add i64 {}, 1", n));
+        let n2 = self.ins(format!("select i1 {}, i64 {}, i64 {}", wrapped, n1, n));
+        // (24 bits; the thread's part never 0)
+        let n3 = self.ins(format!("and i64 {}, 16777215", n2));
+        let n4 = self.ins(format!("or i64 {}, 65536", n3));
+        let small = self.ins(format!("icmp ult i64 {}, 65536", n3));
+        let mark = self.ins(format!("select i1 {}, i64 {}, i64 {}", small, n4, n3));
+        self.emit(format!("store i64 {}, ptr {}", mark, np));
+        let shifted = self.ins(format!("shl i64 {}, {}", mark, COUNT_BITS));
+        self.emit(format!("store i64 {}, ptr {}", shifted, tp));
+        (tp, old)
+    }
+
     /// Emits `define internal void @isc_task_N(ptr %ctx, i64 %i)`, whose body
     /// sees the free variables of `scope` (captured in a context struct, like
     /// the body of `bench`) and the `extra` values; returns the function, the
@@ -10634,6 +11055,9 @@ impl<'p> Gen<'p> {
         extra: &[V],
         body: &mut dyn FnMut(&mut Self, &[V], &str) -> R<()>,
     ) -> R<(String, String, String)> {
+        let out = self.task_out.take();
+        // (how the code that runs this loop counts its nodes, D683)
+        let parent_marks = if self.in_task { self.task_marks } else { self.variant_marks };
         let mut caps = Vec::new();
         let mut bound = HashSet::new();
         for e in scope {
@@ -10646,6 +11070,17 @@ impl<'p> Gen<'p> {
             vals.push(x);
         }
         vals.extend(extra.iter().cloned());
+        // the mark of the iteration that runs this loop (D683), given to its
+        // tasks: the nodes they make belong to it, unless a task counts its
+        // own
+        let mark_at = if self.opts.isa.is_wasm() {
+            None
+        } else {
+            let tp = self.token_word(TOKEN_WORD);
+            let m = self.ins(format!("load i64, ptr {}", tp));
+            vals.push(v(m, "i64"));
+            Some(vals.len() - 1)
+        };
         let ctx_ty = if vals.is_empty() {
             "{ i1 }".to_string()
         } else {
@@ -10693,19 +11128,64 @@ impl<'p> Gen<'p> {
         for e in scope {
             self.rec_types_in(&e.ty, &mut shared);
         }
+        let shares = !shared.is_empty();
         let saved_shared = std::mem::replace(&mut self.task_shared, Some(shared));
+        // a task whose result holds no node counts the nodes its iteration
+        // makes alone (D683): no node it makes outlives the iteration, and
+        // every other node it reaches is older than the loop and outlives
+        // it (a copy and its free in the iteration are not counted, the
+        // world the threads share no longer written by them); its own nodes
+        // marked by the iteration, in the bits of their counts above
+        // COUNT_BITS. Not in WebAssembly; nor in a task that shares no
+        // node with the others (its counts plain, D175).
+        let own = shares && out.is_some_and(|t| {
+            let mut r = HashSet::new();
+            self.rec_types_in(&t, &mut r);
+            r.is_empty()
+        }) && !self.opts.isa.is_wasm();
+        // (the tasks of a loop that the iteration of such a task runs belong
+        // to that iteration: they count its nodes, atomically, and never
+        // the others)
+        let marks = if own {
+            COUNT_OWN
+        } else if parent_marks != 0 && !self.opts.isa.is_wasm() {
+            COUNT_OWN_ATOMIC
+        } else {
+            0
+        };
+        let saved_marks = std::mem::replace(&mut self.task_marks, marks);
         let mut loaded = Vec::new();
+        let mut launcher = None;
         for (i, c) in vals.iter().enumerate() {
             let g = self.ins(format!("getelementptr inbounds {}, ptr %ctx, i32 0, i32 {}", ctx_ty, i));
             let x = self.ins(format!("load {}, ptr {}", c.t, g));
             if i < caps.len() {
                 self.env.insert(caps[i], v(x, c.t.clone()));
+            } else if Some(i) == mark_at {
+                launcher = Some(x);
             } else {
                 loaded.push(v(x, c.t.clone()));
             }
         }
+        // (a new mark for a task that counts its own nodes; the launcher's
+        // for another, whatever iteration its thread was running)
+        let mark = if own {
+            Some(self.task_mark())
+        } else if let Some(m) = launcher {
+            let tp = self.token_word(TOKEN_WORD);
+            let old = self.ins(format!("load i64, ptr {}", tp));
+            self.emit(format!("store i64 {}, ptr {}", m, tp));
+            Some((tp, old))
+        } else {
+            None
+        };
         let wide = std::mem::take(&mut self.wide_task);
         let r = body(self, &loaded, "%i");
+        // (the mark of the iteration that called this one given back: a loop
+        // in a task, D683)
+        if let Some((tp, old)) = &mark {
+            self.emit(format!("store i64 {}, ptr {}", old, tp));
+        }
         self.emit("ret void");
         let attrs = if wide && self.opts.isa == Isa::Native && self.opts.isa.vector_registers().0 == 32 && self.opts.isa.vector_registers().1 == 32 {
             // AVX-512 on the host: 512-bit vectors for this task only
@@ -10724,6 +11204,7 @@ impl<'p> Gen<'p> {
         self.in_task = saved_task;
         self.stack_strs = saved_stack_strs;
         self.task_shared = saved_shared;
+        self.task_marks = saved_marks;
         self.region = saved_region;
         self.region_vars = saved_region_vars;
         r?;
@@ -11092,6 +11573,8 @@ impl<'p> Gen<'p> {
             self.block(&lgo);
             let dst = self.ins(format!("load ptr, ptr {}", pd));
             let extra = [v(dst.clone(), "ptr"), v(cdst.clone(), "i64"), v(stride.clone(), "i64")];
+            // (its result: the accumulator, D683)
+            self.task_out = Some(e.ty.clone());
             let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
                 let (src, n) = g.prepare_src(x)?;
                 let zv = g.ex(z, 1)?;
@@ -11194,6 +11677,8 @@ impl<'p> Gen<'p> {
         let dst = self.alloc_elems(&cn, t);
         let extra = [v(dst.clone(), "ptr"), v(cn.clone(), "i64"), v(bs.clone(), "i64")];
         let et = t.clone();
+        // (its result: the accumulator, D683)
+        self.task_out = Some(e.ty.clone());
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &extra, &mut |g, extra, j| {
             let (src, n) = g.prepare_src(x)?;
             let zv = g.ex(z, 1)?;
@@ -11523,6 +12008,8 @@ impl<'p> Gen<'p> {
         } else {
             self.alloc_elems(&n, &et)
         };
+        // (its result: the array of the map, D683)
+        self.task_out = Some(e.ty.clone());
         let (task, ctx, ctx_bytes) = self.outline_task(&[e], &[v(p.clone(), "ptr")], &mut |g, extra, i| {
             let xv = g.ex(x, 1)?;
             let el = if rows_in {

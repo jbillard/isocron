@@ -16684,3 +16684,87 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   computing sines of the parameters; no whole state read from a parameter,
   the jump back marked; the same results compiled on 4 threads, checked by
   the allocator and interpreted; both fail without the change).
+- **D682 — A node holds the slots of its own variant alone (2026-11-17).**
+  The tuple of a recursive sum type is its tag, then the slots of every
+  variant (`RecType::layout`); a node in memory was that whole tuple: 728
+  bytes for every `Hittable` of rtiow, a box of 80 included, past the 256
+  bytes the free lists of the thread serve (D176), and 11.1 MiB for the
+  world of its final scene (Rust 3.6 MiB). A node of a type of two variants
+  with slots or more now holds its count, its tag and the slots of its
+  variant alone (`variant_node_ty`), allocated and freed at that size
+  (`node_new`, `variant_bytes`). A slot a pattern reads (`proj s (unbox
+  t)`, and the `let tmp = unbox t in proj s tmp` the lowering makes) is
+  read at its place in the node of its variant (`node_slot_read`), after a
+  test of the tag that LLVM drops in the arm of that variant (a pattern may
+  test a slot before its tag: never read out of the node); the tag at its
+  place in every variant. A whole tuple (equality, print, a tuple passed
+  on) is loaded by the tag (`node_payload`), zeros in the slots of the
+  other variants, as before; a node is freed variant by variant. Read
+  whole at each `unbox` first, the tuples of 728 bytes were no longer
+  split by LLVM: 30 % slower. Found on the way: alone, the change made the
+  scene `sphere` on 8 threads 28 % slower (524 to 670 ms), the same
+  instructions in 28 % more cycles: its four textures, now nodes of 48
+  bytes, lay next to the nodes of the world every thread reads, and the
+  atomic counts of the textures (copied into each hit, D175) took those
+  lines away from the other cores (L1 misses 7 to 82 million, served by
+  the clean copy of another core: 0.6 to 30.9 million); rounded to 64 or
+  128 bytes, still 633 and 612 ms; without counts in the tasks, 393 ms with
+  either layout. Kept with D683, which writes no count of the world in a
+  task. Test `nodes_hold_their_variant_alone` (memory.rs: a type of five
+  variants from none to 13 slots; the node of a `Circle` 32 bytes; equal,
+  printed, freed in tasks, on 1 to 8 threads, checked by the allocator,
+  interpreted).
+- **D683 — A task counts the nodes its iteration made, and no other
+  (2026-11-17).** D175 made the counts of the types a task shares atomic:
+  in rtiow every hit copied a texture of the world (its count incremented
+  by every thread, a line taken from core to core), 27 % of the time of
+  the scene `sphere` on 8 threads. When the results of a loop hold no node
+  (`map`, `mapParallel`, `reduce` and its heavy form: their result type,
+  `task_out`), no node made by an iteration outlives it, and every node it
+  reaches that it did not make is older than the loop and outlives it: a
+  copy of such a node and its free within the iteration need not be
+  counted. Such a task gives its iteration a mark (`task_mark`: 24 bits,
+  the thread's part taken once from `isc_token_threads` of the runtime,
+  then a counter, never 0), kept in a word of `isc_node_thread` (its words
+  30 and 31: `heap.rs` asserts the cache of the nodes stops before them);
+  every node is made with the mark of the iteration that runs (`cell_new`:
+  the count in the low 40 bits, the mark above them, 0 outside such an
+  iteration). In such a task and the variants it calls (D678, keyed by the
+  mode), a count of a node of a shared type is kept only when the node
+  carries the mark of the iteration (`count_mine`): plainly
+  (`COUNT_OWN`, `isc_rec_drop_<i>_own`); a node of the world is read, never
+  written. The tasks of a loop that such an iteration runs (a function it
+  calls holding a loop of the threads) belong to that iteration: they take
+  its mark from their context and count its nodes atomically, never the
+  others (`COUNT_OWN_ATOMIC`, `_ownat`); every task sets the mark of its
+  iteration at its entry and gives back the one it found at its exit.
+  Plain and atomic counts test the low 40 bits. Not in WebAssembly, nor in
+  a task that shares no type (its counts plain). Two defects of the design
+  found by its test, failing on demand before their fixes: a task of an
+  inner loop marked its nodes with whatever iteration its thread was
+  running (thousands of blocks leaked, from 2 threads on), then, given its
+  launcher's mark but counting atomically every node, it incremented the
+  world through nodes the iteration then freed without counting the world
+  (167 blocks). rtiow (192 by 108, against the Rust program; with D682):
+  `sphere` on 8 threads 549 to 428 ms (Rust 676), on one 1720 to 1653 ms
+  (1753); `final` on 8 threads 651 to 622 ms (704), on one 2667 to 2453 ms
+  (2706); the same images; the Benchmarks Game within 0.7 %
+  (`binarytrees`, whose trees are made in tasks, 1177 to 1179 ms),
+  `bench/records/walk` 1025 to 995 ms. Tests `tasks_count_their_own_nodes`
+  (memory.rs: trees of each iteration holding parts of a world, a loop in
+  a function a task calls whose results hold nodes of the iteration, a
+  loop whose results hold nodes; 1 to 16 threads, checked by the
+  allocator, interpreted), `atomic_counts_only_for_shared_nodes` and
+  `functions_called_by_tasks_count_shared_nodes_atomically` (their tasks
+  now counting their own nodes; a loop whose results hold nodes still
+  atomic).
+- **D684 — No text in a node of a region (2026-11-17).** A tree that a
+  builder makes and its scope only lends to functions whose results hold
+  no tree is made in a region and freed with it (D200), its nodes never one
+  by one; a part of a node that holds memory of its own (a text, an array)
+  was accepted as a plain part, and was never freed: the five texts of a
+  tree of depth 6 that `made` tags (found by the test of D683, in D681 as
+  well). `builds` now accepts a part holding no node only when it holds no
+  memory of its own; such a tree is counted node by node. Test
+  `trees_of_regions_hold_no_texts` (memory.rs: checked by the allocator,
+  which reported the five blocks before).
