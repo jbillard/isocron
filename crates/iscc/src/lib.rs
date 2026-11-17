@@ -4,9 +4,33 @@ use std::path::{Path, PathBuf};
 
 mod icon;
 
+/// The stack of the thread that compiles (D692): the passes and the code
+/// generator recurse into the nested expressions of a function (each `let`
+/// one level down), and the editor of isocron-ui nests about 1600 of them in
+/// one function (3276 frames of `ex` and `ex_any`): over the 8 MiB of the
+/// main thread. Reserved, not used: only the pages touched count.
+const COMPILER_STACK: usize = 1 << 30;
+
+/// `f` run on a thread of COMPILER_STACK bytes of stack, its result given
+/// back (D692).
+pub fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(COMPILER_STACK)
+            .spawn_scoped(s, f)
+            .expect("a thread for the compiler")
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e))
+    })
+}
+
 /// Parses, type-checks, lowers and optimizes a program and the modules it
 /// imports. Errors are rendered as `file:line:col: error: message`.
 pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
+    on_big_stack(|| frontend_here(path, src))
+}
+
+fn frontend_here(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     let mut files = isc_types::source_files(path);
     let mut user = isc_syntax::parse(src, isc_types::USER_FILE).map_err(|d| d.render(&files))?;
     let loaded = isc_types::modules::load_modules(&mut user, Path::new(path), &mut files);
@@ -570,10 +594,10 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
     // the functions of the prelude compiled once (D611): the program
     // declares them, and is linked with their module
     let pre = pre_module(&opts.codegen, cache)?;
-    let (mut ir, using) = match &pre {
-        Some((_, manifest)) => isc_codegen::emit_using(p, &opts.codegen, manifest)?,
-        None => (isc_codegen::emit_with(p, &opts.codegen)?, false),
-    };
+    let (mut ir, using) = on_big_stack(|| match &pre {
+        Some((_, manifest)) => isc_codegen::emit_using(p, &opts.codegen, manifest),
+        None => isc_codegen::emit_with(p, &opts.codegen).map(|ir| (ir, false)),
+    })?;
     let pre = pre.as_ref().filter(|_| using).map(|(o, _)| o.as_path());
     // a program for Windows starts without a C library unless it calls C
     // (D541): what MinGW's start files gave it then comes with its code

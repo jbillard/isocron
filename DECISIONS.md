@@ -16965,3 +16965,51 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   engine; on 1 and 4 threads, as interpreted, checked by the allocator).
   The type checker foresees `$classRuns` and `$rangeRuns` for `matches`
   (D629): a list of `isc-types`, nothing else of it changed.
+- **D691 — A small parallel loop runs on the calling thread, small as the
+  machine measures it (2026-11-17).** The editor of isocron-ui, its keys
+  replayed through its `update` without a window (5000 lines, `Text` and
+  `Key`), took 31 µs a key on one thread and 62 on 8 (73 on 8 physical
+  cores: not the hyperthreads): each key runs about seven parallel loops
+  of 20 to 64 tasks (the leaves of the lines of a document made again, the
+  root of their tree), and the choice of D357 kept most of them on the
+  pool, each faster there by its own measures (11 to 14 µs against 23 to
+  34 alone). Every loop forced alone: 34 µs a key on 8 threads. What the
+  measures of a loop do not see: its tasks leave what they made in the
+  caches and the heaps of the other cores, which the code after the loop
+  brings back and frees from afar (64 lines copied by the tasks, each a
+  text of another thread's heap), and the runs alone that D357 measured
+  came after runs on the pool, paying for it. Tried and dropped: counting a
+  run alone only after a run alone (no gain); measuring each mode by the
+  interval between two runs of the loop, its shortest over blocks of 8 (all
+  the program does until it comes back, the same in both modes): worse
+  (110 µs a key after 40000 keys against 87), the interval of a loop
+  holding the costs of the other loops' runs on the pool, their choices
+  mixed. Kept: a loop whose runs on the pool are shorter than
+  `seq_never()` runs alone, the pool tried again by two runs every RETRY
+  runs (a loop grown past it goes back to the pool); `seq_never()` is
+  twenty times what an empty job given to the pool and waited for costs
+  on the machine the program runs on, measured at the first loop that
+  chooses (the shortest of 16: `POOL_COST`), the size from which that cost
+  is 5 % of the loop at most; it replaces the 64000 cycles (20 µs) fixed by
+  D357 on this machine, which no longer hold elsewhere (cores, caches,
+  sockets, the waking of threads). Here: 11391 cycles with 8 threads, a
+  threshold of about 71 µs. The editor on 8 threads: 58.3 to 39.9 µs a key
+  after 1000 keys, 68.7 to 37.6 after 4000, 99.9 to 66.4 after 40000 (one
+  thread: 26.3, 32.4, 63.2: the 256 runs of each loop on the pool before
+  it chooses are the rest). The Benchmarks Game and walk within 0.6 % (11
+  runs, its loops far longer).
+- **D692 — The compiler on a thread of a large stack (2026-11-17).** The
+  release compiler of D690 (c6d8408) died of a stack overflow on five
+  programs of isocron-ui (`editor_check`, `click_scale_check`, ...): the
+  code generator recurses into the nested expressions of a function, two
+  frames a level (`ex`, `ex_any`), and a function of the editor nests about
+  1600 (3276 frames over the 8 MiB of the main thread); the frames of the
+  generator had grown with D686 and D689. The suite and the tests of
+  isocron-ui had run a compiler built in debug, which did not overflow.
+  `frontend` and the code generator of `build_in` now run on a thread of a
+  stack of 1 GiB, reserved, its pages used as touched (`on_big_stack`):
+  any depth the memory allows, for the binary and the library called by
+  the tests (whose threads have 2 MiB). The tests of isocron-ui are now run
+  with the compiler built in release. Test `deep_nests_compile`
+  (codegen.rs: a function of 3000 nested statements, compiled from the
+  thread of a test; the compiler of c6d8408 overflows on it).

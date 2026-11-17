@@ -4804,10 +4804,37 @@ fn stamp() -> u64 {
     0
 }
 
-/// Cycles above which a loop is never run on the calling thread alone: its
-/// run on the pool takes 20 µs, far above what giving it to the pool costs
-/// (about 1 µs, D357).
-const SEQ_NEVER: u64 = 64000;
+/// The cycles of a job given to the pool and waited for, measured on the
+/// machine the program runs on at the first loop that chooses (D691): the
+/// shortest of 16 empty jobs; 0 before.
+static POOL_COST: AtomicU64 = AtomicU64::new(0);
+
+/// A task that does nothing (the measure of POOL_COST).
+unsafe extern "C" fn nothing(_ctx: *mut c_void, _i: i64) {}
+
+/// The cycles of a run on the pool above which a loop is never run alone on
+/// the calling thread, and below which it always is (D357, D691): twenty
+/// times what giving a job to the pool costs on this machine (POOL_COST),
+/// the size from which that cost is 5 % of the loop at most. On the machine
+/// of D357 a job cost about 1 µs, and this was 20 µs (64000 cycles at 3.2
+/// GHz); it follows the machine: its cores, its caches, the time to wake its
+/// threads.
+fn seq_never() -> u64 {
+    let c = POOL_COST.load(Ordering::Relaxed);
+    if c != 0 {
+        return 20 * c;
+    }
+    let mut best = u64::MAX;
+    for _ in 0..16 {
+        let t0 = stamp();
+        // SAFETY: a task that reads nothing, its context empty (P1)
+        unsafe { parallel_for(thread_count() as i64, nothing, core::ptr::null_mut(), 0, false, false) };
+        best = best.min(stamp().wrapping_sub(t0));
+    }
+    let c = best.max(1);
+    POOL_COST.store(c, Ordering::Relaxed);
+    20 * c
+}
 /// The runs between two tries of the mode that was slower.
 const RETRY: u64 = 256;
 /// The runs of a loop on the pool before it is tried on the calling thread:
@@ -4817,14 +4844,16 @@ const RETRY: u64 = 256;
 /// runs a try costs at most 1.6 % of them.
 const RUNS_BEFORE_TRY: u64 = 256;
 
-/// A parallel loop at a place of the program (D357), `mode` that of
+/// A parallel loop at a place of the program (D357, D691), `mode` that of
 /// `isc_parallel_for` (0), `isc_parallel_for_dynamic` (1) or
 /// `isc_parallel_for_fill` (2):
 /// `site` keeps the cycles of its runs on the pool and of its runs on the
-/// calling thread (averages), its runs, and whether its last run was alone. The faster mode is taken; the other
-/// tried again once every RETRY runs; the calling thread never tried when a
-/// run on the pool took more than SEQ_NEVER cycles (a job given to the pool
-/// and waited for costs about 1 µs: 16 elements of 10 steps 96 ns on one
+/// calling thread (averages), its runs, and whether its last run was alone.
+/// On the pool for its first RUNS_BEFORE_TRY runs; then alone while its runs
+/// on the pool take less than `seq_never()` cycles (D691: what the pool saves
+/// there is less than what it costs after the loop, unmeasured), the pool
+/// tried again by two runs every RETRY runs; a job given to the pool and
+/// waited for costs about 1 µs (16 elements of 10 steps 96 ns on one
 /// thread, 1088 ns on four; 16 of 1000 steps 2247 against 1264). The tasks
 /// write each its own results, whatever the thread (D121): the same results
 /// either way.
@@ -4863,18 +4892,17 @@ pub unsafe extern "C" fn isc_parallel_for_site(n: i64, task: Task, ctx: *mut c_v
     }
     let (tp, ts) = (par.load(Ordering::Relaxed), seq.load(Ordering::Relaxed));
     let k = runs.fetch_add(1, Ordering::Relaxed);
-    let small = tp != 0 && tp < SEQ_NEVER && k >= RUNS_BEFORE_TRY;
-    // the calling thread alone unless the pool is faster by an eighth: at
-    // the same time it keeps the other cores free (a server whose turns are
-    // small); the other mode tried by two runs in turn
-    let alone = if !small {
-        false
-    } else if ts == 0 {
-        true
-    } else {
-        let better = ts <= tp + tp / 8;
-        if k % RETRY >= RETRY - 2 { !better } else { better }
-    };
+    let small = tp != 0 && k >= RUNS_BEFORE_TRY && tp < seq_never();
+    // (D691) a loop whose runs on the pool are under `seq_never()` runs alone,
+    // whatever its runs alone measure: there the pool saves at most a few
+    // µs, and a run on it leaves what its tasks made in the caches and the
+    // heaps of the other cores, which the code after the loop brings back
+    // and frees from afar, a cost no measure of the loop sees (the editor of
+    // isocron-ui: its loops of 20 to 64 tasks each faster on the pool by
+    // their own measures, each key 58 µs on 8 threads, 31 on one, 34 with
+    // every loop alone); the pool tried again by two runs every RETRY runs,
+    // so that a loop grown past `seq_never()` goes back to it
+    let alone = small && k % RETRY < RETRY - 2;
     // each time an average of the runs, seven eighths the one before: one
     // run slowed by the system does not turn the loop over for RETRY runs
     let mean = |old: u64, t: u64| if old == 0 { t.max(1) } else { (old * 7 + t) / 8 }.max(1);

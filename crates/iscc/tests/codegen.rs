@@ -479,3 +479,26 @@ action main(args: string[k]): i32 {
     assert_eq!(r.code, 101, "{}", r.stderr);
     assert_eq!(r.stderr.trim(), want.trim());
 }
+
+/// D692: a function of 3000 statements in a row, each a `let` nested in the
+/// one before: the passes and the code generator recurse that deep (two
+/// frames a level in the generator), over the 2 MiB of the thread of a test
+/// (and the 8 MiB of a main thread for the 1600 of the editor of
+/// isocron-ui): the compilation runs on a thread of its own with a large
+/// stack. Compiled from the thread of this test, its result right.
+#[test]
+fn deep_nests_compile() {
+    let mut src = String::from("function deep(x: i64): i64 {\n    const v0 = x + 1;\n");
+    for i in 1..3000 {
+        src.push_str(&format!("    const v{} = v{} * 3 % 1000003 + {};\n", i, i - 1, i % 7));
+    }
+    src.push_str("    return v2999;\n}\n\naction main(args: string[k]): i32 {\n    print(deep(args.length));\n    return 0;\n}\n");
+    // (the value computed apart)
+    let mut v: i64 = 1;
+    for i in 1..3000 {
+        v = v * 3 % 1000003 + i % 7;
+    }
+    let bin = compile(&src, "deep_nests");
+    let r = run_bin(&bin, &[]);
+    assert_eq!((r.code, r.stdout.trim()), (0, v.to_string().as_str()), "{}", r.stderr);
+}
