@@ -64,8 +64,13 @@ set the numbers of threads.
 
 `measure.py` (its steps in its header) runs under the protocol of the
 machine (`bench/machine.sh`) and writes `results/*.json`; the numbers are in
-`results/rtiow.md`. Those of 2026-11-16 (Isocron c1c4107, rustc 1.99.1, a
-Xeon E-2388G at a fixed 3.2 GHz), the port as written, before any tuning:
+`results/rtiow.md`, those before the compiler was changed for this program's
+shapes in `results/before/rtiow.md`.
+
+### Before any change (2026-11-16)
+
+Isocron c1c4107, rustc 1.99.1, a Xeon E-2388G at a fixed 3.2 GHz; the port
+as written:
 
 * **The same images**: every render of the two programs, on 8 threads and
   on 1, the two scenes, byte for byte.
@@ -108,3 +113,52 @@ What explains them (`perf`, on the same renders):
    writes it line by line; the final scene adds 8 MiB while it is made
    (seen on an image of 2 by 2 pixels; which of its arrays, not measured
    yet).
+
+### After the changes of the compiler (2026-11-17)
+
+Isocron 3e66f95, the same machine and protocol (`results/rtiow.md`). The
+port is the same, line for line: what changed is the compiler and its
+runtime (D679 to D688), each change for a shape this program showed,
+measured on the Benchmarks Game and `bench/records/walk` too, none tuned
+for this program.
+
+* **The same images**: every render, byte for byte, as before.
+* **8 threads**: `sphere` 0.867 s for Isocron, 2.798 s for Rust (2.73 s
+  before); `final` 1.395 s and 2.411 s (3.48 s before). Isocron spends 6.8
+  s of processor where Rust spends 22.2.
+* **1 thread**: `sphere` 6.65 s and 7.04 s (17.8 s before); `final` 9.85 s
+  and 10.72 s (10.37 s with `target-cpu=native`; 23.7 s before).
+* **Memory**: peaks of 1.3 MiB and 3.1 MiB (`sphere`), 3.6 and 3.9 MiB
+  (`final`) on one thread; 2.3 and 3.6, 4.9 and 4.3 MiB on 8; 5 thousand
+  blocks allocated and 858 thousand for a small `sphere` (Valgrind), 90
+  thousand and 1.7 million for a small `final`.
+* **Builds**: `iscc build` 2.6 s; the program 267 KiB (Rust's 721 KiB).
+
+What changed, against the causes above:
+
+* **Copies** (the first cause, one thread): large values given to and by
+  recursive functions stay in memory, at the place the caller gives
+  (D679); a state is written over the one given and a result at its place
+  (D680); the state of a loop of tail calls stays at its caller's
+  address, and LLVM no longer computes before such a loop what one of its
+  arms needs (it computed the sines of the checker texture at every call
+  of `textureValue`, whatever the texture: D681).
+* **Atomic counts on 8 threads** (the third): a task whose results hold no
+  node counts only the nodes made by its own iteration, so the threads
+  read the world and never write it (D683); a node holds the slots of its
+  own variant alone (D682: 728 bytes for every object of the world
+  before), each slot a pattern reads read at its place.
+* **Memory** (the fourth): the texts of the lines are appended in order
+  (D685: no array of a text a pixel), written to the file by parts of 64
+  KiB as they are made (D686: never the whole text, the header the start
+  of it, not a copy), the colors are stored as bytes (D687: the compiler
+  follows the values of the clamping of `intoU8`, NaN included, to the
+  interval 0 to 255 of each part of the tuple), and the first chunk of
+  the arrays of the allocator is in pages of 4 KiB, no longer a huge page
+  of 2 MiB made resident by the first array (D688).
+
+What remains, in memory, on `final` with 8 threads: each side of its
+boxes keeps its material by value (a node of 192 bytes; Rust's six sides
+of a box share one `Arc<Material>`), and each thread touches about 180
+KiB of its stack (Rust: under 56 KiB), the frames of the large functions
+(2.5 to 2.8 KiB for those of `hit`) never sharing their slots.
