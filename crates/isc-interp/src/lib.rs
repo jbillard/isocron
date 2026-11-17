@@ -1301,7 +1301,8 @@ impl<'a> Interp<'a> {
                 }
                 self.eval(body)?
             }
-            Copy(x) => deep_copy(self.eval(x)?),
+            // (the parts taken are never read again where they were, D693)
+            Copy(x) | CopyTaking(x, _) => deep_copy(self.eval(x)?),
             Zero => zero_value(&e.ty),
             Action(op, args) => self.action(e, *op, args)?,
             Box(x) => Value::Node(Rc::new(self.eval(x)?)),
@@ -1312,9 +1313,19 @@ impl<'a> Interp<'a> {
                 v => panic!("unbox of {:?}", v),
             },
             Call(f, args) => {
-                let mut vals = Vec::new();
-                for a in args {
-                    vals.push(self.eval(a)?);
+                // every argument computed before the callee takes any
+                // (D694): a variable moved there taken after the others
+                let moved = |a: &Expr| matches!(a.kind, Var(_, isc_ir::Use::Move));
+                let mut vals = vec![Value::Unit; args.len()];
+                for (k, a) in args.iter().enumerate() {
+                    if !moved(a) {
+                        vals[k] = self.eval(a)?;
+                    }
+                }
+                for (k, a) in args.iter().enumerate() {
+                    if moved(a) {
+                        vals[k] = self.eval(a)?;
+                    }
                 }
                 let fi = *f as usize;
                 // a mathematical function in its native form (D628)

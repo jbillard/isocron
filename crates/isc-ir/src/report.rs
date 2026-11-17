@@ -201,7 +201,7 @@ fn show(e: &Expr, p: &Program) -> String {
         Convert(x) => format!("{}({})", crate::print::type_str(&e.ty), show(x, p)),
         Len(x) => format!("length of {}", show(x, p)),
         // a copy has the text of what it copies
-        Copy(x) | CheckSize(_, _, x) | CheckNonNegative(_, x) => show(x, p),
+        Copy(x) | CopyTaking(x, _) | CheckSize(_, _, x) | CheckNonNegative(_, x) => show(x, p),
         Let { body, .. } => show(body, p),
         Slice(x, a, b) => format!("{}.slice({}, {})", show(x, p), show(a, p), show(b, p)),
         Window(x, k) => format!("window({}, {})", show(x, p), show(k, p)),
@@ -239,7 +239,7 @@ impl<'p> Walk<'p> {
             ArrayLit(es) => Some(es.len() as u64),
             Var(v, _) => self.lens.get(v).copied(),
             Map(ins, _) => ins.first().and_then(|i| self.len_of(i)),
-            Copy(x) | CheckSize(_, _, x) | CheckNonNegative(_, x) => self.len_of(x),
+            Copy(x) | CopyTaking(x, _) | CheckSize(_, _, x) | CheckNonNegative(_, x) => self.len_of(x),
             Update { target, .. } => self.len_of(target),
             Let { body, .. } => self.len_of(body),
             _ => None,
@@ -476,13 +476,24 @@ impl<'p> Walk<'p> {
     fn walk_in(&mut self, e: &'p Expr, ctx: Ctx<'p>) {
         use ExprKind::*;
         match &e.kind {
-            Copy(_) => {
+            Copy(_) | CopyTaking(..) => {
                 let (what, bytes) = self.size(e);
                 let why = self
                     .copy_reasons
                     .get_mut(&(e.span.file, e.span.line, e.span.col))
                     .and_then(|v| v.pop())
                     .unwrap_or_else(|| "a borrowed value must be owned here".into());
+                // (the parts nothing reads again moved out of their place,
+                // zeros left there, D693)
+                let why = match &e.kind {
+                    CopyTaking(_, ps) if ps.iter().any(|p| p.is_empty()) => format!("{}; moved rather than copied, never read again where it was (D693)", why),
+                    CopyTaking(_, ps) => format!(
+                        "{}; its parts {} moved rather than copied, never read again where they were (D693)",
+                        why,
+                        ps.iter().map(|p| p.iter().map(|k| format!(".{}", k)).collect::<String>()).collect::<Vec<_>>().join(", ")
+                    ),
+                    _ => why,
+                };
                 if matches!(e.ty, Type::Rec(_)) {
                     // a node is not copied: it gets one owner more
                     self.push(e, "refcount", what, bytes, format!("one owner more (the count is incremented): {}", why), None);
@@ -608,7 +619,7 @@ impl<'p> Walk<'p> {
                 Window(..) if i == 0 => Ctx::WindowSource,
                 Slice(..) if i == 0 => Ctx::ViewSource,
                 Index(..) if i == 0 && e.ty.is_array() => Ctx::ViewSource,
-                Copy(_) => Ctx::ViewSource,
+                Copy(_) | CopyTaking(..) => Ctx::ViewSource,
                 Bench(..) if i == 1 => Ctx::BenchResult,
                 _ if Some(i) == lam => Ctx::LambdaResult,
                 _ => Ctx::Read,

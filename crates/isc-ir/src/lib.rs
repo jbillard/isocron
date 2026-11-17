@@ -428,6 +428,13 @@ pub enum ExprKind {
     CheckNonNegative(Box<Expr>, Box<Expr>),
     /// Deep copy (inserted by the ownership pass).
     Copy(Box<Expr>),
+    /// The copy of a part of a value whose parts listed (paths in the value
+    /// copied: strings, arrays, integers of any size) nothing reads again:
+    /// those moved out of it rather than copied, zeros left in their place,
+    /// which its drop frees as nothing (D693). The place is a variable that
+    /// owns its value, then projections and indices, the last index into an
+    /// array of tuples or of owned values on the heap (passes::take_dead_parts).
+    CopyTaking(Box<Expr>, Vec<Vec<u32>>),
     /// The zero value of the type: 0, `false`, empty string, empty array,
     /// tuple of zeros (the unused slots of a value of a sum type).
     Zero,
@@ -692,7 +699,7 @@ impl Expr {
             Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
             Let { init, body, .. } => vec![init, body],
             Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter().collect(),
-            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
+            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
             Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => vec![a, b],
             If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => vec![a, b, c],
             Update { target, index, value, .. } => vec![index, value, target],
@@ -713,7 +720,7 @@ impl Expr {
             Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
             Let { init, body, .. } => vec![init, body],
             Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter_mut().collect(),
-            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
+            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
             Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => vec![a, b],
             If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => vec![a, b, c],
             Update { target, index, value, .. } => vec![index, value, target],

@@ -4958,6 +4958,64 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// `x` (of the type `t`, at `path` in the value copied) copied, but for
+    /// the parts at the paths `taken`, kept as they are: moved (D693).
+    fn copy_taking(&mut self, x: &V, t: &Type, taken: &[Vec<u32>], path: &mut Vec<u32>) -> V {
+        if taken.iter().any(|q| q == path) {
+            return x.clone();
+        }
+        let inside = taken.iter().any(|q| q.len() > path.len() && q.starts_with(path));
+        let Type::Tuple(ts) = t else { return self.copy_value(x, t) };
+        if !inside {
+            return self.copy_value(x, t);
+        }
+        let mut acc = "poison".to_string();
+        for (i, c) in ts.iter().enumerate() {
+            let f = self.ins(format!("extractvalue {} {}, {}", x.t, x.r, i));
+            path.push(i as u32);
+            let fc = self.copy_taking(&v(f, lt(c)), c, taken, path);
+            path.pop();
+            acc = self.ins(format!("insertvalue {} {}, {} {}, {}", x.t, acc, fc.t, fc.r, i));
+        }
+        v(acc, x.t.clone())
+    }
+
+    /// Zeros where the parts `taken` of the place `place` were (D693): its
+    /// last index into an array, the projections after it in the element;
+    /// each part a leaf of the element, a column of the array.
+    fn zero_taken(&mut self, place: &Expr, taken: &[Vec<u32>]) -> R<()> {
+        let mut fields = Vec::new();
+        let mut e = place;
+        loop {
+            match &e.kind {
+                ExprKind::Proj(x, j) => {
+                    fields.push(*j);
+                    e = x;
+                }
+                ExprKind::Index(a, i) => {
+                    fields.reverse();
+                    let av = self.ex(a, 1)?;
+                    let iv = self.ex(i, 1)?;
+                    let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", av.r));
+                    let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", av.r));
+                    let et = a.ty.elem().clone();
+                    let cols = if matches!(et, Type::Tuple(_)) { self.columns(&p, &n, &et) } else { vec![(Vec::new(), et.clone(), p.clone())] };
+                    for q in taken {
+                        let mut path = fields.clone();
+                        path.extend(q.iter().copied());
+                        let Some((_, leaf, base)) = cols.iter().find(|(lp, _, _)| *lp == path) else {
+                            return Err(format!("codegen: no column {:?} in an element of {}", path, isc_ir::print::type_str(&a.ty)));
+                        };
+                        let (leaf, base) = (leaf.clone(), base.clone());
+                        self.store_scalar(&base, &iv.r, &leaf, &v("zeroinitializer", mt(&leaf)), 1);
+                    }
+                    return Ok(());
+                }
+                _ => return Err("codegen: a copy taking parts of no element of an array".into()),
+            }
+        }
+    }
+
     fn copy_value(&mut self, x: &V, t: &Type) -> V {
         match t {
             Type::Array(e, _) if e.is_array() => {
@@ -7438,6 +7496,14 @@ impl<'p> Gen<'p> {
             Copy(x) => {
                 let xv = self.ex(x, 1)?;
                 Ok(self.copy_value(&xv, &x.ty))
+            }
+            // the parts nothing reads again moved out of their place, zeros
+            // left there, which its owner frees as nothing (D693)
+            CopyTaking(x, taken) => {
+                let xv = self.ex(x, 1)?;
+                let c = self.copy_taking(&xv, &x.ty, taken, &mut Vec::new());
+                self.zero_taken(x, taken)?;
+                Ok(c)
             }
             Action(op, args) => self.action(*op, args, e),
             Bench(r, body) => self.bench(r, body, e),

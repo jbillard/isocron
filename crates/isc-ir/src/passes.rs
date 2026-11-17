@@ -35,11 +35,949 @@ pub fn optimize(p: &mut Program) -> R<()> {
     for f in p.fns.iter_mut() {
         optimize_body(&mut f.body, &mut p.vars);
     }
+    element_updates(&mut p.body, &mut HashMap::new());
+    reads_first_in(&mut p.body);
+    for f in p.fns.iter_mut() {
+        element_updates(&mut f.body, &mut HashMap::new());
+        reads_first_in(&mut f.body);
+    }
     ownership(p)?;
     borrow_elements(p);
+    take_dead_parts(p);
     check_require_tail(p)?;
     // every memory decision checked, independently of the passes (D96)
     crate::verify::verify(p)
+}
+
+// ---------------------------------------------------------------------
+// the parts of a copy that nothing reads again, taken (D693)
+
+/// An index as `take_dead_parts` knows it: a scalar read from a variable
+/// through projections (the same value wherever it is read: variables are
+/// never written), a constant, or another expression.
+#[derive(Clone, Debug, PartialEq)]
+enum Ix {
+    Path(VarId, Vec<u32>),
+    Lit(i64),
+    Other,
+}
+
+/// A step from a value to one of its parts.
+#[derive(Clone, Debug, PartialEq)]
+enum Step {
+    Field(u32),
+    At(Ix),
+}
+
+/// What an expression is as a place: a variable and the steps from it, a
+/// tuple of places (the parts of a state given back together), or another
+/// value.
+#[derive(Clone, Debug)]
+enum Canon {
+    Place(VarId, Vec<Step>),
+    Tuple(Vec<Canon>),
+    Opaque,
+}
+
+/// How a place is used where it is read.
+#[derive(Clone, Copy, PartialEq)]
+enum Usage {
+    /// Read as a value (copied, compared, moved into another value).
+    Read,
+    /// Its length alone.
+    Len,
+    /// Freed, nothing read.
+    Drop,
+}
+
+/// The variables of a function body (or of a function called, its
+/// parameters bound to the places given) as places.
+#[derive(Default)]
+struct Frame {
+    canon: HashMap<VarId, Canon>,
+    /// The variables bound to a part of another (views): their definition.
+    expand: HashMap<VarId, Expr>,
+    /// The variables that own their value, and the number of lambdas around
+    /// their definition.
+    owned: HashMap<VarId, u32>,
+}
+
+struct Dead<'a> {
+    p: &'a Program,
+    cycles: &'a [bool],
+    site: *const Expr,
+    after: bool,
+    failed: bool,
+    /// The place copied: its variable, its steps, its parts not read again
+    /// so far (paths in the value copied), the arrays it is in with its
+    /// index in each.
+    root: VarId,
+    place: Vec<Step>,
+    leaves: Vec<Vec<u32>>,
+    ranges: Vec<(Vec<Step>, Ix)>,
+    /// Indices equal (true) or not in the branch walked.
+    facts: Vec<(Ix, Ix, bool)>,
+    lambdas: u32,
+    depth: u32,
+    /// The place copied, rebuilt from its owner (`CopyTaking`).
+    local: Option<Expr>,
+}
+
+/// The copies of a part of a variable that owns its value whose parts
+/// (strings, arrays) nothing reads again after them, there or in the
+/// functions the rest calls: those parts moved out of their place rather than
+/// copied, zeros left there (D693). The state of the editor of isocron-ui,
+/// at each key: the document of its tab copied (its history of 1000 changes)
+/// because the state is read again, by a function that compares a few fields
+/// of the old document with the new one, then puts the new one in its place;
+/// the history of the old one never read again. As Rust's `mem::take`,
+/// inferred. Only a part in an element of an array on the heap (its block
+/// owned by the variable, never shared: arrays have no count); not the
+/// nodes (shared), nor the values of sum types, nor the texts that are views
+/// (D555).
+fn take_dead_parts(p: &mut Program) {
+    let n = p.fns.len();
+    let cycles: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
+    for fi in 0..=n {
+        let (body, given): (&Expr, Vec<VarId>) = if fi < n {
+            let f = &p.fns[fi];
+            (&f.body, f.params.iter().enumerate().filter(|(k, _)| f.given.get(*k).copied().unwrap_or(false) || f.consumed.get(*k).copied().unwrap_or(false)).map(|(_, v)| *v).collect())
+        } else {
+            (&p.body, vec![p.args])
+        };
+        let mut sites = Vec::new();
+        copies(body, &mut sites);
+        let mut done = Vec::new();
+        for (k, site) in sites.into_iter().enumerate() {
+            let mut d = Dead {
+                p,
+                cycles: &cycles,
+                site,
+                after: false,
+                failed: false,
+                root: 0,
+                place: Vec::new(),
+                leaves: Vec::new(),
+                ranges: Vec::new(),
+                facts: Vec::new(),
+                lambdas: 0,
+                depth: 0,
+                local: None,
+            };
+            let mut fr = Frame::default();
+            for v in &given {
+                fr.owned.insert(*v, 0);
+            }
+            d.walk(body, Usage::Read, &mut fr);
+            if d.after && !d.failed && !d.leaves.is_empty() {
+                if let Some(place) = d.local {
+                    done.push((k, place, d.leaves));
+                }
+            }
+        }
+        if done.is_empty() {
+            continue;
+        }
+        let body = if fi < n { &mut p.fns[fi].body } else { &mut p.body };
+        let mut k = 0;
+        rewrite_copies(body, &mut k, &mut done);
+    }
+}
+
+/// The `copy` nodes of `e`, in the order of `rewrite_copies` (not those
+/// inside another, whose place it replaces).
+fn copies(e: &Expr, out: &mut Vec<*const Expr>) {
+    if matches!(e.kind, ExprKind::Copy(_)) {
+        out.push(e as *const Expr);
+        return;
+    }
+    for c in e.children() {
+        copies(c, out);
+    }
+}
+
+/// The `k`-th `copy` of `e` (counted as `copies`) made a `CopyTaking` of
+/// the place and parts `done` gives for it.
+fn rewrite_copies(e: &mut Expr, k: &mut usize, done: &mut Vec<(usize, Expr, Vec<Vec<u32>>)>) {
+    if matches!(e.kind, ExprKind::Copy(_)) {
+        if let Some(at) = done.iter().position(|(n, _, _)| *n == *k) {
+            let (_, place, leaves) = done.remove(at);
+            e.kind = ExprKind::CopyTaking(Box::new(place), leaves);
+        }
+        *k += 1;
+        return;
+    }
+    for c in e.children_mut() {
+        rewrite_copies(c, k, done);
+    }
+}
+
+/// The parts of a value of the type `t` that a copy may take (paths): its
+/// strings, integers of any size and arrays (not of rows), in its tuples
+/// (not those of sum types); not its nodes.
+fn takeable(p: &Program, t: &Type, path: &mut Vec<u32>, out: &mut Vec<Vec<u32>>) {
+    match t {
+        Type::Str | Type::Big => out.push(path.clone()),
+        Type::Array(e, _) if !e.is_array() => out.push(path.clone()),
+        Type::Tuple(ts) if !p.sum_slots.iter().any(|(s, _)| s == t) => {
+            for (j, c) in ts.iter().enumerate() {
+                path.push(j as u32);
+                takeable(p, c, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_prefix(a: &[u32], b: &[u32]) -> bool {
+    a.len() <= b.len() && b[..a.len()] == *a
+}
+
+impl Dead<'_> {
+    /// `e` as a place (a variable, projections, indices), or None.
+    fn canon(&self, e: &Expr, fr: &mut Frame) -> Option<Canon> {
+        match &e.kind {
+            ExprKind::Var(v, _) => Some(fr.canon.get(v).cloned().unwrap_or(Canon::Place(*v, Vec::new()))),
+            ExprKind::Proj(x, j) | ExprKind::Take(x, j) => Some(match self.canon(x, fr)? {
+                Canon::Place(r, mut s) => {
+                    s.push(Step::Field(*j));
+                    Canon::Place(r, s)
+                }
+                Canon::Tuple(cs) => cs.get(*j as usize).cloned().unwrap_or(Canon::Opaque),
+                Canon::Opaque => Canon::Opaque,
+            }),
+            ExprKind::Index(a, i) if !a.ty.elem().is_array() => Some(match self.canon(a, fr)? {
+                Canon::Place(r, mut s) => {
+                    s.push(Step::At(self.ix(i, fr)));
+                    Canon::Place(r, s)
+                }
+                _ => Canon::Opaque,
+            }),
+            ExprKind::Let { var, init, body, .. } => {
+                let c = self.canon(init, fr)?;
+                let old = fr.canon.insert(*var, c);
+                let r = self.canon(body, fr);
+                match old {
+                    Some(o) => fr.canon.insert(*var, o),
+                    None => fr.canon.remove(var),
+                };
+                r
+            }
+            _ => None,
+        }
+    }
+
+    /// The place of an argument (a tuple of places too).
+    fn canon_arg(&self, e: &Expr, fr: &mut Frame) -> Canon {
+        if let ExprKind::Tuple(es) = &e.kind {
+            return Canon::Tuple(es.iter().map(|x| self.canon_arg(x, fr)).collect());
+        }
+        self.canon(e, fr).unwrap_or(Canon::Opaque)
+    }
+
+    fn ix(&self, i: &Expr, fr: &mut Frame) -> Ix {
+        if let ExprKind::Lit(Lit::Int(n)) = i.kind {
+            return Ix::Lit(n);
+        }
+        match self.canon(i, fr) {
+            Some(Canon::Place(r, s)) => {
+                let mut fs = Vec::new();
+                for st in s {
+                    match st {
+                        Step::Field(j) => fs.push(j),
+                        Step::At(_) => return Ix::Other,
+                    }
+                }
+                Ix::Path(r, fs)
+            }
+            _ => Ix::Other,
+        }
+    }
+
+    /// Two indices equal (Some(true)), different, or not known.
+    fn ix_rel(&self, a: &Ix, b: &Ix) -> Option<bool> {
+        if *a == Ix::Other || *b == Ix::Other {
+            return None;
+        }
+        if a == b {
+            return Some(true);
+        }
+        if let (Ix::Lit(_), Ix::Lit(_)) = (a, b) {
+            return Some(false);
+        }
+        self.facts.iter().rev().find(|(x, y, _)| (x == a && y == b) || (x == b && y == a)).map(|(_, _, eq)| *eq)
+    }
+
+    /// The same place, every index known equal.
+    fn same_place(&self, a: &[Step], b: &[Step]) -> bool {
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(x, y)| match (x, y) {
+                (Step::Field(i), Step::Field(j)) => i == j,
+                (Step::At(i), Step::At(j)) => self.ix_rel(i, j) == Some(true),
+                _ => false,
+            })
+    }
+
+    /// `c` holds a place of the variable copied from.
+    fn touches(&self, c: &Canon) -> bool {
+        match c {
+            Canon::Place(r, _) => self.after && *r == self.root,
+            Canon::Tuple(cs) => cs.iter().any(|c| self.touches(c)),
+            Canon::Opaque => false,
+        }
+    }
+
+    /// A use of the place `c` after the copy: the parts it reads no longer
+    /// taken.
+    fn used(&mut self, c: &Canon, how: Usage) {
+        match c {
+            Canon::Tuple(cs) => {
+                for c in cs {
+                    self.used(c, how);
+                }
+            }
+            Canon::Opaque => {}
+            Canon::Place(r, s) => {
+                if *r != self.root {
+                    return;
+                }
+                let n = s.len().min(self.place.len());
+                for k in 0..n {
+                    match (&s[k], &self.place[k]) {
+                        (Step::Field(i), Step::Field(j)) if i != j => return,
+                        (Step::At(i), Step::At(j)) if self.ix_rel(i, j) == Some(false) => return,
+                        _ => {}
+                    }
+                }
+                if s.len() < self.place.len() {
+                    // a value holding the place: its length alone, or freed
+                    if how != Usage::Read {
+                        return;
+                    }
+                    self.leaves.clear();
+                    return;
+                }
+                if how == Usage::Drop {
+                    return;
+                }
+                // inside the place: its fields up to an index
+                let mut fs = Vec::new();
+                for st in &s[self.place.len()..] {
+                    match st {
+                        Step::Field(j) => fs.push(*j),
+                        Step::At(_) => break,
+                    }
+                }
+                self.leaves.retain(|l| !(is_prefix(l, &fs) || is_prefix(&fs, l)));
+            }
+        }
+    }
+
+    /// The value of the condition `c` from the indices of the place (in
+    /// their arrays) and the facts of the branch, if known.
+    fn truth(&self, c: &Expr, fr: &mut Frame) -> Option<bool> {
+        match &c.kind {
+            ExprKind::Lit(Lit::Bool(b)) => Some(*b),
+            ExprKind::Unary(UnOp::Not, x) => self.truth(x, fr).map(|b| !b),
+            ExprKind::If(a, b, d) => match self.truth(a, fr) {
+                Some(true) => self.truth(b, fr),
+                Some(false) => self.truth(d, fr),
+                None => {
+                    let (tb, td) = (self.truth(b, fr), self.truth(d, fr));
+                    if tb == td {
+                        tb
+                    } else {
+                        None
+                    }
+                }
+            },
+            ExprKind::Binary(op, x, y) if matches!(x.ty, Type::Int(_)) => {
+                let (ix, iy) = (self.ix(x, fr), self.ix(y, fr));
+                if matches!(op, BinOp::Eq | BinOp::Ne) {
+                    return self.ix_rel(&ix, &iy).map(|eq| eq == (*op == BinOp::Eq));
+                }
+                let zero = |e: &Expr| matches!(e.kind, ExprKind::Lit(Lit::Int(0)));
+                let len_of = |e: &Expr, fr: &mut Frame| -> Option<Vec<Step>> {
+                    let ExprKind::Len(a) = &e.kind else { return None };
+                    match self.canon(a, fr) {
+                        Some(Canon::Place(r, s)) if r == self.root => Some(s),
+                        _ => None,
+                    }
+                };
+                for (arr, i) in &self.ranges {
+                    // `i >= 0`, `i < len`, and the same turned round
+                    if self.ix_rel(&ix, i) == Some(true) {
+                        if zero(y) {
+                            match op {
+                                BinOp::Ge => return Some(true),
+                                BinOp::Lt => return Some(false),
+                                _ => {}
+                            }
+                        }
+                        if len_of(y, fr).is_some_and(|a| self.same_place(&a, arr)) {
+                            match op {
+                                BinOp::Lt => return Some(true),
+                                BinOp::Ge => return Some(false),
+                                _ => {}
+                            }
+                        }
+                    }
+                    if self.ix_rel(&iy, i) == Some(true) {
+                        if zero(x) {
+                            match op {
+                                BinOp::Le => return Some(true),
+                                BinOp::Gt => return Some(false),
+                                _ => {}
+                            }
+                        }
+                        if len_of(x, fr).is_some_and(|a| self.same_place(&a, arr)) {
+                            match op {
+                                BinOp::Gt => return Some(true),
+                                BinOp::Le => return Some(false),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// The fact a condition gives its branches: two indices equal, or not.
+    fn fact(&self, c: &Expr, fr: &mut Frame) -> Option<(Ix, Ix, bool)> {
+        match &c.kind {
+            ExprKind::Binary(op @ (BinOp::Eq | BinOp::Ne), x, y) if matches!(x.ty, Type::Int(_)) => {
+                let (a, b) = (self.ix(x, fr), self.ix(y, fr));
+                if a == Ix::Other || b == Ix::Other {
+                    return None;
+                }
+                Some((a, b, *op == BinOp::Eq))
+            }
+            ExprKind::Unary(UnOp::Not, x) => self.fact(x, fr).map(|(a, b, eq)| (a, b, !eq)),
+            _ => None,
+        }
+    }
+
+    /// The copy at the place: what it takes, if it may.
+    fn at_site(&mut self, x: &Expr, fr: &mut Frame) {
+        let Some(Canon::Place(root, steps)) = self.canon(x, fr) else {
+            self.failed = true;
+            return;
+        };
+        let Some(&lam) = fr.owned.get(&root) else {
+            self.failed = true;
+            return;
+        };
+        if lam != self.lambdas || self.p.views.contains(&root) || !steps.iter().any(|s| matches!(s, Step::At(_))) {
+            self.failed = true;
+            return;
+        }
+        let Some(local) = self.local(x, fr) else {
+            self.failed = true;
+            return;
+        };
+        let mut leaves = Vec::new();
+        takeable(self.p, &x.ty, &mut Vec::new(), &mut leaves);
+        if leaves.is_empty() {
+            self.failed = true;
+            return;
+        }
+        for (k, st) in steps.iter().enumerate() {
+            if let Step::At(i) = st {
+                self.ranges.push((steps[..k].to_vec(), i.clone()));
+            }
+        }
+        self.root = root;
+        self.place = steps;
+        self.leaves = leaves;
+        self.local = Some(local);
+        self.after = true;
+    }
+
+    /// The place `e` rebuilt from the variable that owns it: its views
+    /// replaced by their definitions; its indices constants or scalars read
+    /// from variables.
+    fn local(&self, e: &Expr, fr: &mut Frame) -> Option<Expr> {
+        let mk = |k: ExprKind| Expr::new(k, e.ty.clone(), e.span);
+        match &e.kind {
+            ExprKind::Var(v, _) => match fr.expand.get(v).cloned() {
+                Some(init) => {
+                    if self.p.views.contains(v) {
+                        return None;
+                    }
+                    self.local(&init, fr)
+                }
+                None => Some(mk(ExprKind::Var(*v, Use::Borrow))),
+            },
+            ExprKind::Proj(x, j) => Some(mk(ExprKind::Proj(Box::new(self.local(x, fr)?), *j))),
+            ExprKind::Index(a, i) => {
+                let i = match &i.kind {
+                    ExprKind::Lit(_) => (**i).clone(),
+                    _ if matches!(i.ty, Type::Int(_)) && pure_path(i) => self.local(i, fr)?,
+                    _ => return None,
+                };
+                Some(mk(ExprKind::Index(Box::new(self.local(a, fr)?), Box::new(i))))
+            }
+            ExprKind::Let { var, init, body, .. } => {
+                let old = fr.expand.insert(*var, (**init).clone());
+                let r = self.local(body, fr);
+                match old {
+                    Some(o) => fr.expand.insert(*var, o),
+                    None => fr.expand.remove(var),
+                };
+                r
+            }
+            _ => None,
+        }
+    }
+
+    /// The index expressions of the place `e` read.
+    fn indices(&mut self, e: &Expr, fr: &mut Frame) {
+        match &e.kind {
+            ExprKind::Index(a, i) => {
+                self.walk(i, Usage::Read, fr);
+                self.indices(a, fr);
+            }
+            ExprKind::Proj(x, _) | ExprKind::Take(x, _) => self.indices(x, fr),
+            ExprKind::Let { init, body, .. } => {
+                self.indices(init, fr);
+                self.indices(body, fr);
+            }
+            _ => {}
+        }
+    }
+
+    /// A function called with places of the variable: its body walked, its
+    /// parameters bound to them.
+    fn call(&mut self, g: u32, args: &[Expr], fr: &mut Frame) {
+        if self.cycles[g as usize] || self.depth >= 6 {
+            self.leaves.clear();
+            return;
+        }
+        let f = &self.p.fns[g as usize];
+        let mut inner = Frame::default();
+        for (k, a) in args.iter().enumerate() {
+            let c = self.canon_arg(a, fr);
+            inner.canon.insert(f.params[k], c);
+        }
+        let facts = std::mem::take(&mut self.facts);
+        self.depth += 1;
+        self.walk(&f.body, Usage::Read, &mut inner);
+        self.depth -= 1;
+        self.facts = facts;
+    }
+
+    fn walk(&mut self, e: &Expr, how: Usage, fr: &mut Frame) {
+        if self.failed || (self.after && self.leaves.is_empty()) {
+            return;
+        }
+        if std::ptr::eq(e, self.site) {
+            if let ExprKind::Copy(x) = &e.kind {
+                self.at_site(x, fr);
+            }
+            return;
+        }
+        // a path of the variable copied from: a use
+        if self.after && matches!(e.kind, ExprKind::Var(..) | ExprKind::Proj(..) | ExprKind::Index(..) | ExprKind::Take(..) | ExprKind::Let { .. }) {
+            if let Some(c) = self.canon(e, fr) {
+                if self.touches(&c) {
+                    self.used(&c, how);
+                    self.indices(e, fr);
+                    return;
+                }
+            }
+        }
+        match &e.kind {
+            ExprKind::Let { var, init, body, .. } => {
+                match self.canon(init, fr) {
+                    Some(c) => {
+                        if self.after {
+                            self.indices(init, fr);
+                        }
+                        // a part taken from a variable that owns it, or a
+                        // variable moved, owns its value; a view does not
+                        let owner = match &init.kind {
+                            ExprKind::Take(x, _) => matches!(self.canon(x, fr), Some(Canon::Place(r, _)) if fr.owned.contains_key(&r)),
+                            ExprKind::Var(w, Use::Move) => fr.owned.contains_key(w),
+                            _ => false,
+                        };
+                        if owner {
+                            let lam = self.lambdas;
+                            fr.owned.insert(*var, lam);
+                        } else {
+                            fr.expand.insert(*var, (**init).clone());
+                        }
+                        fr.canon.insert(*var, c);
+                    }
+                    None => {
+                        self.walk(init, Usage::Read, fr);
+                        if init.ty.has_heap() && borrowed_from(init, &|v| vec![v]).is_none() {
+                            let lam = self.lambdas;
+                            fr.owned.insert(*var, lam);
+                        }
+                    }
+                }
+                self.walk(body, how, fr);
+            }
+            ExprKind::If(c, t, f) => {
+                self.walk(c, Usage::Read, fr);
+                let known = if self.after { self.truth(c, fr) } else { None };
+                match known {
+                    Some(true) => self.walk(t, how, fr),
+                    Some(false) => self.walk(f, how, fr),
+                    None => {
+                        let fact = self.fact(c, fr);
+                        let before = self.after;
+                        let n = self.facts.len();
+                        if let Some(x) = fact.clone() {
+                            self.facts.push(x);
+                        }
+                        self.walk(t, how, fr);
+                        self.facts.truncate(n);
+                        // (the copy in that branch: the other is not after it)
+                        if !before && self.after {
+                            return;
+                        }
+                        if let Some((a, b, eq)) = fact {
+                            self.facts.push((a, b, !eq));
+                        }
+                        self.walk(f, how, fr);
+                        self.facts.truncate(n);
+                    }
+                }
+            }
+            ExprKind::Call(g, args) => {
+                let mut touched = false;
+                for a in args {
+                    let c = if self.after { Some(self.canon_arg(a, fr)) } else { None };
+                    if c.as_ref().is_some_and(|c| self.touches(c)) {
+                        touched = true;
+                        self.indices(a, fr);
+                    } else {
+                        self.walk(a, Usage::Read, fr);
+                    }
+                }
+                if touched {
+                    self.call(*g, args, fr);
+                }
+            }
+            ExprKind::Update { target, index, value, .. } => {
+                self.walk(index, Usage::Read, fr);
+                self.walk(value, Usage::Read, fr);
+                let c = if self.after { self.canon(target, fr) } else { None };
+                match c {
+                    Some(Canon::Place(r, s)) if r == self.root && self.after => {
+                        // the element of the place made anew: dropped, the
+                        // others kept in the result
+                        let i = self.ix(index, fr);
+                        let mut at = s.clone();
+                        at.push(Step::At(i));
+                        let n = at.len();
+                        let dropped = n <= self.place.len() && self.same_place(&at, &self.place[..n]);
+                        if !dropped {
+                            self.used(&Canon::Place(r, s), Usage::Read);
+                        }
+                        self.indices(target, fr);
+                    }
+                    _ => self.walk(target, Usage::Read, fr),
+                }
+            }
+            ExprKind::Len(x) => {
+                let c = if self.after { self.canon(x, fr) } else { None };
+                match c {
+                    Some(c) if self.touches(&c) => {
+                        self.used(&c, Usage::Len);
+                        self.indices(x, fr);
+                    }
+                    _ => self.walk(x, Usage::Read, fr),
+                }
+            }
+            ExprKind::Free(v, body) => {
+                if let Some(c) = fr.canon.get(v).cloned() {
+                    self.used(&c, Usage::Drop);
+                }
+                self.walk(body, how, fr);
+            }
+            _ => {
+                let lam = lambda_body_index(e);
+                for (i, c) in e.children().into_iter().enumerate() {
+                    if Some(i) == lam {
+                        self.lambdas += 1;
+                        self.walk(c, Usage::Read, fr);
+                        self.lambdas -= 1;
+                    } else {
+                        self.walk(c, Usage::Read, fr);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// reads before a call that may take (D695)
+
+/// The `const`s after a call that gives a variable whole to a function
+/// (`const [m1, fx] = updateOnce(m, i)`) that read that variable, depend on
+/// nothing bound after it and cannot fail, computed before the call (D695):
+/// the update of the editor of isocron-ui read the path of the tab shown
+/// before (`m.tabs[m.active].path`) after the call, which then could not own
+/// `m`, and copied the whole state (the histories of its documents) at each
+/// key. Pure code: computing them first changes nothing else.
+fn reads_first_in(body: &mut Expr) {
+    // the scalars bound to reads that cannot fail (the tests a pass before
+    // took out of a condition, D659): seen through, as their reads
+    fn scalars(e: &Expr, defs: &mut HashMap<VarId, Expr>) {
+        if let ExprKind::Let { var, init, .. } = &e.kind {
+            if !init.ty.has_heap() && never_fails(init, &mut Vec::new()) {
+                let mut x = (**init).clone();
+                through(&mut x, defs);
+                defs.insert(*var, x);
+            }
+        }
+        for c in e.children() {
+            scalars(c, defs);
+        }
+    }
+    let mut defs = HashMap::new();
+    scalars(body, &mut defs);
+    reads_first(body, &defs);
+}
+
+/// `e` with the scalars of `defs` replaced by their definitions.
+fn through(e: &mut Expr, defs: &HashMap<VarId, Expr>) {
+    if let ExprKind::Var(v, _) = e.kind {
+        if let Some(d) = defs.get(&v) {
+            *e = d.clone();
+        }
+        return;
+    }
+    for c in e.children_mut() {
+        through(c, defs);
+    }
+}
+
+fn reads_first(e: &mut Expr, defs: &HashMap<VarId, Expr>) {
+    for c in e.children_mut() {
+        reads_first(c, defs);
+    }
+    let ExprKind::Let { init, stmt: false, .. } = &e.kind else { return };
+    let mut given = HashSet::new();
+    whole_args(init, &mut given);
+    if given.is_empty() {
+        return;
+    }
+    // the lets of the chain below, those that may come first taken out
+    let mut bound: HashSet<VarId> = HashSet::new();
+    if let ExprKind::Let { var, .. } = &e.kind {
+        bound.insert(*var);
+    }
+    let mut first = Vec::new();
+    let ExprKind::Let { body, .. } = &mut e.kind else { return };
+    let mut at: &mut Expr = body;
+    loop {
+        let ExprKind::Let { var, init, stmt, .. } = &at.kind else { break };
+        let (var, stmt) = (*var, *stmt);
+        let mut free = HashSet::new();
+        free_vars(init, &mut free);
+        let movable = !stmt && free.iter().any(|v| given.contains(v)) && free.is_disjoint(&bound) && {
+            let mut seen = (**init).clone();
+            through(&mut seen, defs);
+            never_fails(&seen, &mut Vec::new())
+        };
+        if movable {
+            let taken = std::mem::replace(at, Expr::new(ExprKind::Zero, Type::Unit, at.span));
+            let ExprKind::Let { var, init, body, stmt, drop } = taken.kind else { unreachable!() };
+            first.push((var, init, stmt, drop, taken.span));
+            *at = *body;
+            continue;
+        }
+        bound.insert(var);
+        let ExprKind::Let { body, .. } = &mut at.kind else { unreachable!() };
+        at = body;
+    }
+    for (var, init, stmt, drop, sp) in first.into_iter().rev() {
+        let inner = std::mem::replace(e, Expr::new(ExprKind::Zero, Type::Unit, sp));
+        let ty = inner.ty.clone();
+        *e = Expr::new(ExprKind::Let { var, init, body: Box::new(inner), stmt, drop }, ty, sp);
+    }
+}
+
+/// The variables of heap values given whole to a function in `e`.
+fn whole_args(e: &Expr, out: &mut HashSet<VarId>) {
+    if let ExprKind::Call(_, args) = &e.kind {
+        for a in args {
+            if let ExprKind::Var(v, _) = a.kind {
+                if a.ty.has_heap() {
+                    out.insert(v);
+                }
+            }
+        }
+    }
+    for c in e.children() {
+        whole_args(c, out);
+    }
+}
+
+/// The variables `e` reads.
+fn free_vars(e: &Expr, out: &mut HashSet<VarId>) {
+    if let ExprKind::Var(v, _) = e.kind {
+        out.insert(v);
+    }
+    for c in e.children() {
+        free_vars(c, out);
+    }
+}
+
+/// `e` computes its value without failing (D695): reads of variables and
+/// of their parts, lengths, comparisons and the logic of booleans,
+/// conditions, an element read where a test keeps its index in its array
+/// (`i >= 0 && i < a.length ? a[i] : ...`).
+fn never_fails(e: &Expr, guards: &mut Vec<(Expr, Expr)>) -> bool {
+    match &e.kind {
+        ExprKind::Lit(_) | ExprKind::Var(..) | ExprKind::StrLit(_) | ExprKind::Zero => true,
+        ExprKind::Proj(x, _) | ExprKind::Len(x) | ExprKind::Unary(UnOp::Not, x) => never_fails(x, guards),
+        ExprKind::Binary(BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or, a, b) => never_fails(a, guards) && never_fails(b, guards),
+        ExprKind::If(c, t, f) => {
+            if !never_fails(c, guards) || !never_fails(f, guards) {
+                return false;
+            }
+            let n = guards.len();
+            in_range(c, guards);
+            let ok = never_fails(t, guards);
+            guards.truncate(n);
+            ok
+        }
+        ExprKind::Index(a, i) if !a.ty.elem().is_array() => never_fails(a, guards) && never_fails(i, guards) && guards.iter().any(|(ga, gi)| same(ga, a) && same(gi, i)),
+        ExprKind::Let { init, body, .. } => never_fails(init, guards) && never_fails(body, guards),
+        _ => false,
+    }
+}
+
+/// The indices a condition keeps in their arrays: `i >= 0 && i < a.length`
+/// (or `0 <= i`, `a.length > i`), its two tests in a chain of `&&`.
+fn in_range(c: &Expr, out: &mut Vec<(Expr, Expr)>) {
+    fn tests<'a>(c: &'a Expr, low: &mut Vec<&'a Expr>, high: &mut Vec<(&'a Expr, &'a Expr)>) {
+        match &c.kind {
+            ExprKind::If(a, b, f) if matches!(f.kind, ExprKind::Lit(Lit::Bool(false))) => {
+                tests(a, low, high);
+                tests(b, low, high);
+            }
+            ExprKind::Binary(op, x, y) => {
+                let zero = |e: &Expr| matches!(e.kind, ExprKind::Lit(Lit::Int(0)));
+                match (op, &x.kind, &y.kind) {
+                    (BinOp::Ge, _, _) if zero(y) => low.push(x),
+                    (BinOp::Le, _, _) if zero(x) => low.push(y),
+                    (BinOp::Lt, _, ExprKind::Len(a)) => high.push((a, x)),
+                    (BinOp::Gt, ExprKind::Len(a), _) => high.push((a, y)),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let (mut low, mut high) = (Vec::new(), Vec::new());
+    tests(c, &mut low, &mut high);
+    for (a, i) in high {
+        if low.iter().any(|l| same(l, i)) {
+            out.push(((*a).clone(), i.clone()));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// one element made anew (D693)
+
+/// A `map` over the places of an array that makes one element anew and keeps
+/// the others, `map(iota(xs.length), (k) => k == a ? t : xs[k])` (`a == k`,
+/// or `!=` with its branches the other way round), written as that element
+/// updated: `let k = a in k >= 0 && k < xs.length ? xs.with(k, t) : xs`
+/// (D693). The array is then updated where it is when it is not read again,
+/// `t` computed once, where the `map` copied each other element, in a loop
+/// given to the threads (the editor of isocron-ui: the tab of the document a
+/// key changed, and its other tabs, at each key).
+fn element_updates(e: &mut Expr, lens: &mut HashMap<VarId, Expr>) {
+    if let ExprKind::Let { var, init, .. } = &e.kind {
+        if let ExprKind::Len(x) = &init.kind {
+            if pure_path(x) {
+                lens.insert(*var, (**x).clone());
+            }
+        }
+    }
+    for c in e.children_mut() {
+        element_updates(c, lens);
+    }
+    if let Some(new) = element_update(e, lens) {
+        *e = new;
+    }
+}
+
+/// `e` reads a variable or a part of one (`m`, `m.tabs`): the same value
+/// wherever it is read in its scope.
+fn pure_path(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Var(..) => true,
+        ExprKind::Proj(x, _) => pure_path(x),
+        _ => false,
+    }
+}
+
+/// `e` as one element updated (`element_updates`), or None.
+fn element_update(e: &Expr, lens: &HashMap<VarId, Expr>) -> Option<Expr> {
+    let ExprKind::Map(ins, l) = &e.kind else { return None };
+    if ins.len() != 1 || l.params.len() != 1 {
+        return None;
+    }
+    let ExprKind::Iota(n) = &ins[0].kind else { return None };
+    let xs = match &n.kind {
+        ExprKind::Len(x) if pure_path(x) => (**x).clone(),
+        ExprKind::Var(v, _) => lens.get(v)?.clone(),
+        _ => return None,
+    };
+    if e.ty != xs.ty {
+        return None;
+    }
+    let k = l.params[0];
+    let ExprKind::If(c, t, f) = &l.body.kind else { return None };
+    let ExprKind::Binary(op @ (BinOp::Eq | BinOp::Ne), x, y) = &c.kind else { return None };
+    let is_k = |z: &Expr| matches!(z.kind, ExprKind::Var(v, _) if v == k);
+    let a = if is_k(x) {
+        y
+    } else if is_k(y) {
+        x
+    } else {
+        return None;
+    };
+    if reads_var(a, k) || reads_var(&xs, k) || !matches!(a.ty, Type::Int(_)) {
+        return None;
+    }
+    let (made, kept) = if *op == BinOp::Eq { (t, f) } else { (f, t) };
+    // (the others kept as they are: `xs[k]`)
+    let ExprKind::Index(arr, i) = &kept.kind else { return None };
+    if !is_k(i) || !same(arr, &xs) {
+        return None;
+    }
+    let sp = e.span;
+    let kt = a.ty.clone();
+    let kv = || Expr::var(k, kt.clone(), sp);
+    let lit = |x: Lit, t: Type| Expr::new(ExprKind::Lit(x), t, sp);
+    let bin = |o: BinOp, x: Expr, y: Expr| Expr::new(ExprKind::Binary(o, Box::new(x), Box::new(y)), Type::Bool, sp);
+    let len = Expr::new(ExprKind::Len(Box::new(xs.clone())), kt.clone(), sp);
+    let in_range = Expr::new(
+        ExprKind::If(Box::new(bin(BinOp::Ge, kv(), lit(Lit::Int(0), kt.clone()))), Box::new(bin(BinOp::Lt, kv(), len)), Box::new(lit(Lit::Bool(false), Type::Bool))),
+        Type::Bool,
+        sp,
+    );
+    let update = Expr::new(
+        ExprKind::Update { target: Box::new(xs.clone()), index: Box::new(kv()), value: Box::new((**made).clone()), require_unique: false },
+        e.ty.clone(),
+        sp,
+    );
+    let body = Expr::new(ExprKind::If(Box::new(in_range), Box::new(update), Box::new(xs)), e.ty.clone(), sp);
+    Some(Expr::new(ExprKind::Let { var: k, init: Box::new((**a).clone()), body: Box::new(body), stmt: false, drop: false }, e.ty.clone(), sp))
 }
 
 // ---------------------------------------------------------------------
@@ -3604,9 +4542,45 @@ struct Info {
     /// `if`, the `if` and its side (a lambda body has none) (D105).
     region_parent: Vec<u32>,
     region_side: Vec<Option<(u32, u8)>>,
+    /// The variable read at each read (D696), and the reads before the
+    /// definition of each variable.
+    reader: HashMap<usize, VarId>,
+    def_at: HashMap<VarId, usize>,
 }
 
 impl Info {
+    /// The views of `v` (variables bound to a part of it before `start`)
+    /// through which alone `v` is read from `end` on, on the path of its
+    /// read `i` (D696): copied, `v` may be given at `i`, the arguments of a
+    /// call from `start` to `end`. None if `v` itself is read after, or a
+    /// value that borrows it otherwise.
+    fn views_after(&self, v: usize, i: usize, start: usize, end: usize) -> Option<Vec<VarId>> {
+        let &(_, region, _) = self.uses[v].iter().find(|(j, _, _)| *j == i)?;
+        let top = self.def_region[v];
+        let ch = self.chain(region, top)?;
+        if ch[..ch.len() - 1].iter().any(|r| self.region_side[*r as usize].is_none()) {
+            return None;
+        }
+        let mut out = Vec::new();
+        for (j, r, _) in &self.uses[v] {
+            if *j < end || self.exclusive(region, *r, top) {
+                continue;
+            }
+            let w = *self.reader.get(j)?;
+            if w as usize == v || self.alias[w as usize].as_ref() != Some(&vec![v as VarId]) || self.def_at.get(&w).is_none_or(|&d| d >= start) {
+                return None;
+            }
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
     /// The regions from `r` up to `top` (both included), if `top` is above.
     fn chain(&self, mut r: u32, top: u32) -> Option<Vec<u32>> {
         let mut out = vec![r];
@@ -3649,6 +4623,17 @@ impl Info {
             return false;
         }
         self.uses[v].iter().filter(|(j, _, _)| *j > index).all(|(_, r, _)| self.exclusive(region, *r, top))
+    }
+    /// `last_on_its_path`, the uses read before `end` (in the arguments of
+    /// the same call after it) not counted (D694).
+    fn last_but_args(&self, v: usize, index: usize, end: usize) -> bool {
+        let Some(&(_, region, _)) = self.uses[v].iter().find(|(j, _, _)| *j == index) else { return false };
+        let top = self.def_region[v];
+        let Some(ch) = self.chain(region, top) else { return false };
+        if ch[..ch.len() - 1].iter().any(|r| self.region_side[*r as usize].is_none()) {
+            return false;
+        }
+        self.uses[v].iter().filter(|(j, _, _)| *j >= end).all(|(_, r, _)| self.exclusive(region, *r, top))
     }
     fn base(&self, v: VarId) -> Vec<VarId> {
         match &self.alias[v as usize] {
@@ -3751,6 +4736,7 @@ impl<'a> Walker<'a> {
             ExprKind::Var(v, _) => {
                 let i = self.index;
                 self.index += 1;
+                self.info.reader.insert(i, *v);
                 let bases = self.info.base(*v);
                 for b in bases {
                     self.info.uses[b as usize].push((i, region, self.user));
@@ -3758,6 +4744,7 @@ impl<'a> Walker<'a> {
                 return;
             }
             ExprKind::Let { var, init, body, .. } => {
+                self.info.def_at.insert(*var, self.index);
                 self.scan(init, region);
                 let v = *var as usize;
                 self.info.def_region[v] = region;
@@ -4127,8 +5114,33 @@ impl<'a> Rewriter<'a> {
             // requires it unique), as the inlined body would take it
             ExprKind::Call(g, args) => {
                 let g = *g as usize;
+                let mut owns = Vec::new();
+                for c in args.iter_mut() {
+                    owns.push(self.walk(c)?);
+                }
+                // every argument is computed before the callee takes any
+                // (D694, as `i` and `v` before `e` in `e.with(i, v)`): a
+                // variable given at its last read but for the arguments
+                // after it, none of which keeps a part of it, moved
+                let end = self.index;
+                for k in 0..args.len() {
+                    let (Own::Borrowed(_, Some(i)), ExprKind::Var(v, _)) = (&owns[k], &args[k].kind) else { continue };
+                    let (i, w) = (*i, *v as usize);
+                    if !self.callees.given(g, k) || self.info.candidates.contains(&i) || !self.info.owned[w] || self.info.alias[w].is_some() || self.literal_vars.contains_key(&(w as VarId)) {
+                        continue;
+                    }
+                    let info = &*self.info;
+                    let kept = args.iter().enumerate().any(|(j, a)| j != k && borrowed_from(a, &|x| info.base(x)).is_some_and(|b| b.contains(&(w as VarId))));
+                    if !kept && info.last_but_args(w, i, end) {
+                        if let ExprKind::Var(_, u) = &mut args[k].kind {
+                            *u = Use::Move;
+                        }
+                        self.info.moved[w] = true;
+                        owns[k] = Own::Fresh;
+                    }
+                }
                 for (k, c) in args.iter_mut().enumerate() {
-                    let o = self.walk(c)?;
+                    let o = owns[k].clone();
                     // a literal: the callee owns it as it is, never freed
                     // nor written (D361), not a copy in a block
                     if self.callees.given(g, k) {
@@ -4471,22 +5483,6 @@ fn ownership_body_with(
     copy_reasons: &mut Vec<(Span, String)>,
 ) -> R<bool> {
     let n = vars.len();
-    let mut info = Info {
-        alias: vec![None; n],
-        owned: vec![false; n],
-        def_region: vec![0; n],
-        uses: vec![Vec::new(); n],
-        candidates: HashSet::new(),
-        moved: vec![false; n],
-        region_parent: vec![0],
-        region_side: vec![None],
-    };
-    if let Some(v) = owned {
-        info.owned[v as usize] = true;
-    }
-    for &v in params {
-        info.owned[v as usize] = true;
-    }
     // (a view of a parameter owned given whole to a call that reads it too,
     // `f(a, a.hs[p])`: the view copied, the parameter given, D666)
     let mut mine: HashSet<VarId> = params.iter().copied().collect();
@@ -4494,23 +5490,52 @@ fn ownership_body_with(
     copy_views_given(body, &mine, callees);
     let mut split = Vec::new();
     split_tuples(body, &mut split);
-    {
-        let mut w = Walker { info: &mut info, index: 0, next_region: 0, next_if: 0, user: body.span };
-        w.scan(body, 0);
-    }
-    // a tuple split into its components owns nothing more (D138)
-    for r in split {
-        info.owned[r as usize] = false;
-    }
-    // candidates: the last use of an owned variable on its path (in its
-    // region, or in the branches of `if`s below it: one per branch, D105)
-    for v in 0..n {
-        if !info.owned[v] || info.alias[v].is_some() {
-            continue;
+    let build = |body: &Expr| -> Info {
+        let mut info = Info {
+            alias: vec![None; n],
+            owned: vec![false; n],
+            def_region: vec![0; n],
+            uses: vec![Vec::new(); n],
+            candidates: HashSet::new(),
+            moved: vec![false; n],
+            region_parent: vec![0],
+            region_side: vec![None],
+            reader: HashMap::new(),
+            def_at: HashMap::new(),
+        };
+        if let Some(v) = owned {
+            info.owned[v as usize] = true;
         }
-        let cands: Vec<usize> =
-            info.uses[v].iter().filter(|(i, r, _)| info.last_on_its_path(v, *i, *r)).map(|(i, _, _)| *i).collect();
-        info.candidates.extend(cands);
+        for &v in params {
+            info.owned[v as usize] = true;
+        }
+        {
+            let mut w = Walker { info: &mut info, index: 0, next_region: 0, next_if: 0, user: body.span };
+            w.scan(body, 0);
+        }
+        // a tuple split into its components owns nothing more (D138)
+        for r in &split {
+            info.owned[*r as usize] = false;
+        }
+        // candidates: the last use of an owned variable on its path (in its
+        // region, or in the branches of `if`s below it: one per branch, D105)
+        for v in 0..n {
+            if !info.owned[v] || info.alias[v].is_some() {
+                continue;
+            }
+            let cands: Vec<usize> =
+                info.uses[v].iter().filter(|(i, r, _)| info.last_on_its_path(v, *i, *r)).map(|(i, _, _)| *i).collect();
+            info.candidates.extend(cands);
+        }
+        info
+    };
+    let mut info = build(body);
+    // the views of a variable read after it is given whole to a function,
+    // through which alone it is read then: copied, the variable given (D696)
+    let views = given_views(body, &info, callees);
+    if !views.is_empty() {
+        copy_views(body, &views, vars, copy_reasons);
+        info = build(body);
     }
     {
         let mut rw =
@@ -4747,6 +5772,7 @@ impl Callees {
 /// function is consumed there. Kept only when the memory check of the
 /// function holds.
 pub(crate) fn decide_given(p: &mut Program) {
+    let unkept = unkept_params(p);
     let n = p.fns.len();
     let in_cycle: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
     // the order: a function after those it calls
@@ -4800,7 +5826,7 @@ pub(crate) fn decide_given(p: &mut Program) {
             for &g in &members {
                 decided[g] = true;
             }
-            decide_cycle(p, &members);
+            decide_cycle(p, &members, &unkept);
             continue;
         }
         // (a tuple too when the body makes it anew from its parts: the state
@@ -4820,8 +5846,14 @@ pub(crate) fn decide_given(p: &mut Program) {
         }
         // consumed on every path: none frees it (one that consumes it on
         // some paths only, lent, copies it there alone: `$replaceSlow`
-        // gives its text back only when nothing is replaced)
-        let kept: Vec<usize> = cands.iter().copied().filter(|&k| consumed_param(p, fi, k, &body)).collect();
+        // gives its text back only when nothing is replaced); or consumed
+        // on some paths and given a new value at every call, which no
+        // caller keeps (D693: lent, it was copied where it is consumed)
+        let kept: Vec<usize> = cands
+            .iter()
+            .copied()
+            .filter(|&k| consumed_param(p, fi, k, &body) || (moves_var(&body, p.fns[fi].params[k]) || takes_var(&body, p.fns[fi].params[k])) && unkept.contains(&(fi, k)))
+            .collect();
         if kept.is_empty() {
             continue;
         }
@@ -4872,12 +5904,229 @@ fn given_candidates(p: &Program, fi: usize) -> Vec<usize> {
         .collect()
 }
 
+/// The views to copy so that the variables they borrow are given whole to
+/// the functions called (D696, `Info::views_after`), each with the variable
+/// and the function.
+fn given_views(body: &Expr, info: &Info, callees: &Callees) -> Vec<(VarId, VarId, u32)> {
+    fn walk(e: &Expr, idx: &mut usize, info: &Info, callees: &Callees, out: &mut Vec<(VarId, VarId, u32)>) {
+        match &e.kind {
+            ExprKind::Var(..) => {
+                *idx += 1;
+                return;
+            }
+            ExprKind::Call(g, args) => {
+                let mut starts = Vec::new();
+                for a in args {
+                    starts.push(*idx);
+                    walk(a, idx, info, callees, out);
+                }
+                let end = *idx;
+                for (k, a) in args.iter().enumerate() {
+                    let ExprKind::Var(v, _) = a.kind else { continue };
+                    let (i, w) = (starts[k], v as usize);
+                    if !callees.given(*g as usize, k) || !info.owned[w] || info.alias[w].is_some() || info.candidates.contains(&i) || info.last_but_args(w, i, end) {
+                        continue;
+                    }
+                    if args.iter().enumerate().any(|(j, b)| j != k && borrowed_from(b, &|x| info.base(x)).is_some_and(|bs| bs.contains(&v))) {
+                        continue;
+                    }
+                    if let Some(vs) = info.views_after(w, i, starts[0], end) {
+                        for x in vs {
+                            if !out.iter().any(|(y, _, _)| *y == x) {
+                                out.push((x, v, *g));
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        for c in e.children() {
+            walk(c, idx, info, callees, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(body, &mut 0, info, callees, &mut out);
+    out
+}
+
+/// The definitions of the views `views` copied (D696), with the reason in
+/// the memory report.
+fn copy_views(e: &mut Expr, views: &[(VarId, VarId, u32)], vars: &[VarInfo], reasons: &mut Vec<(Span, String)>) {
+    if let ExprKind::Let { var, init, .. } = &mut e.kind {
+        if let Some((_, v, _)) = views.iter().find(|(x, _, _)| x == var) {
+            let at = init.span;
+            let inner = std::mem::replace(&mut **init, Expr::new(ExprKind::Zero, Type::Unit, at));
+            let (ty, sp) = (inner.ty.clone(), inner.span);
+            **init = Expr::new(ExprKind::Copy(Box::new(inner)), ty, sp);
+            reasons.push((sp, format!("a part of `{}` read after `{}` is given whole to a function: the part copied, not the whole (D696)", vars[*v as usize].name, vars[*v as usize].name)));
+        }
+    }
+    for c in e.children_mut() {
+        copy_views(c, views, vars, reasons);
+    }
+}
+
+/// The parameters that every call of their function gives a value it keeps
+/// nowhere (D695): a new value, or a variable owned at its last read (the
+/// arguments after it in the call apart, none keeping a part of it, D694),
+/// the parameters of the caller so given owned. The greatest such set: every
+/// candidate assumed so given first, then those a call keeps taken out until
+/// none is (a state handed down a chain of functions, each giving it to the
+/// next at its last read: `update` to `updateOnce` to `typed` in the editor
+/// of isocron-ui, the loop of the program around them).
+fn unkept_params(p: &Program) -> HashSet<(usize, usize)> {
+    let n = p.fns.len();
+    let cycles: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
+    // (in a cycle, its tuples alone: its arrays are the accumulators of its
+    // loop, D351, D644)
+    let mut cands: Vec<Vec<usize>> = (0..n)
+        .map(|fi| {
+            if fi as u32 >= p.text_fns {
+                return Vec::new();
+            }
+            given_candidates(p, fi).into_iter().filter(|&k| !cycles[fi] || matches!(p.vars[p.fns[fi].params[k] as usize].ty, Type::Tuple(_))).collect()
+        })
+        .collect();
+    let owned_of = |fi: usize, cands: &Vec<Vec<usize>>| -> Vec<VarId> {
+        let f = &p.fns[fi];
+        (0..f.params.len()).filter(|k| cands[fi].contains(k) || f.given[*k] || f.consumed[*k]).map(|k| f.params[k]).collect()
+    };
+    // the calls of each body (the functions, then the program) with what
+    // each gives at a candidate place
+    let mut sites: Vec<Vec<(u32, usize, bool)>> = (0..=n)
+        .map(|b| if b < n { call_sites(p, &p.fns[b].body, None, &owned_of(b, &cands), &cands) } else { call_sites(p, &p.body, Some(p.args), &[], &cands) })
+        .collect();
+    loop {
+        let mut ok: HashMap<(usize, usize), bool> = HashMap::new();
+        for ss in &sites {
+            for &(g, k, unkept) in ss {
+                if cands[g as usize].contains(&k) {
+                    let e = ok.entry((g as usize, k)).or_insert(true);
+                    *e = *e && unkept;
+                }
+            }
+        }
+        let mut changed = Vec::new();
+        for fi in 0..n {
+            let before = cands[fi].len();
+            cands[fi].retain(|k| ok.get(&(fi, *k)).copied().unwrap_or(false));
+            if cands[fi].len() != before {
+                changed.push(fi);
+            }
+        }
+        if changed.is_empty() {
+            break;
+        }
+        for fi in changed {
+            sites[fi] = call_sites(p, &p.fns[fi].body, None, &owned_of(fi, &cands), &cands);
+        }
+    }
+    (0..n).flat_map(|fi| cands[fi].iter().map(move |&k| (fi, k))).collect()
+}
+
+/// The calls of `body` (its parameters `params` owned, or the variable
+/// `owned`) to a candidate place `k` of a function `g`: whether it gives
+/// there a value it keeps nowhere (`unkept_params`).
+fn call_sites(p: &Program, body: &Expr, owned: Option<VarId>, params: &[VarId], cands: &[Vec<usize>]) -> Vec<(u32, usize, bool)> {
+    fn calls_candidates(e: &Expr, cands: &[Vec<usize>]) -> bool {
+        matches!(&e.kind, ExprKind::Call(g, _) if !cands[*g as usize].is_empty()) || e.children().into_iter().any(|c| calls_candidates(c, cands))
+    }
+    if !calls_candidates(body, cands) {
+        return Vec::new();
+    }
+    let mut body = body.clone();
+    let nv = p.vars.len();
+    let mut info = Info {
+        alias: vec![None; nv],
+        owned: vec![false; nv],
+        def_region: vec![0; nv],
+        uses: vec![Vec::new(); nv],
+        candidates: HashSet::new(),
+        moved: vec![false; nv],
+        region_parent: vec![0],
+        region_side: vec![None],
+        reader: HashMap::new(),
+        def_at: HashMap::new(),
+    };
+    for v in owned.iter().chain(params) {
+        info.owned[*v as usize] = true;
+    }
+    let mut split = Vec::new();
+    split_tuples(&mut body, &mut split);
+    {
+        let mut w = Walker { info: &mut info, index: 0, next_region: 0, next_if: 0, user: body.span };
+        w.scan(&body, 0);
+    }
+    for r in split {
+        info.owned[r as usize] = false;
+    }
+    for v in 0..nv {
+        if !info.owned[v] || info.alias[v].is_some() {
+            continue;
+        }
+        let cs: Vec<usize> = info.uses[v].iter().filter(|(i, r, _)| info.last_on_its_path(v, *i, *r)).map(|(i, _, _)| *i).collect();
+        info.candidates.extend(cs);
+    }
+    // the reads numbered as the walker numbers them
+    fn walk(e: &Expr, idx: &mut usize, info: &Info, cands: &[Vec<usize>], out: &mut Vec<(u32, usize, bool)>) {
+        match &e.kind {
+            ExprKind::Var(..) => {
+                *idx += 1;
+                return;
+            }
+            ExprKind::Call(g, args) => {
+                let mut starts = Vec::new();
+                for a in args {
+                    starts.push(*idx);
+                    walk(a, idx, info, cands, out);
+                }
+                let end = *idx;
+                for (k, a) in args.iter().enumerate() {
+                    if !cands[*g as usize].contains(&k) {
+                        continue;
+                    }
+                    let unkept = match borrowed_from(a, &|v| info.base(v)) {
+                        None => true,
+                        Some(_) => match a.kind {
+                            ExprKind::Var(v, _) => {
+                                let (i, w) = (starts[k], v as usize);
+                                let kept = args.iter().enumerate().any(|(j, b)| j != k && borrowed_from(b, &|x| info.base(x)).is_some_and(|bs| bs.contains(&v)));
+                                info.owned[w] && info.alias[w].is_none() && !kept && (info.candidates.contains(&i) || info.last_but_args(w, i, end) || info.views_after(w, i, starts[0], end).is_some())
+                            }
+                            _ => false,
+                        },
+                    };
+                    out.push((*g, k, unkept));
+                }
+                return;
+            }
+            _ => {}
+        }
+        for c in e.children() {
+            walk(c, idx, info, cands, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&body, &mut 0, &info, cands, &mut out);
+    out
+}
+
 /// `v` itself is an argument of a call in `e`, or a component of a new
 /// tuple (`{ b: b, es: [] }`, the accumulator of a `fold` made of a state
 /// given, D665)
 fn passed_whole(e: &Expr, v: VarId) -> bool {
+    // (the value of a `let` too: `{ ...t, doc: f(t.doc) }` with `f` a
+    // lambda that ignores its argument, `let x = t.doc in d`, D693)
+    fn tail(e: &Expr) -> &Expr {
+        match &e.kind {
+            ExprKind::Let { body, .. } | ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) => tail(body),
+            _ => e,
+        }
+    }
     if let ExprKind::Call(_, args) | ExprKind::Tuple(args) = &e.kind {
-        if args.iter().any(|a| matches!(a.kind, ExprKind::Var(w, _) if w == v)) {
+        if args.iter().any(|a| matches!(tail(a).kind, ExprKind::Var(w, _) if w == v)) {
             return true;
         }
     }
@@ -4900,7 +6149,7 @@ fn consumed_param(p: &Program, fi: usize, k: usize, body: &Expr) -> bool {
 /// (A function called by itself, or by functions it calls, was lent all
 /// its parameters: the state of an interpreter, passed down a recursive
 /// evaluation, was copied at each step.)
-fn decide_cycle(p: &mut Program, members: &[usize]) {
+fn decide_cycle(p: &mut Program, members: &[usize], unkept: &HashSet<(usize, usize)>) {
     // (the tuples alone: the arrays of a loop are its own, D351, D644)
     let cands: Vec<(usize, Vec<usize>)> = members
         .iter()
@@ -4930,7 +6179,16 @@ fn decide_cycle(p: &mut Program, members: &[usize]) {
             let mut body = apart(p, *fi, &originals[j], &chosen[j]);
             let params: Vec<VarId> = chosen[j].iter().map(|&k| p.fns[*fi].params[k]).collect();
             let res = ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new());
-            let mut keep: Vec<usize> = if res.is_err() { Vec::new() } else { chosen[j].iter().copied().filter(|&k| consumed_param(p, *fi, k, &body)).collect() };
+            // (or given a value no call keeps, D695)
+            let mut keep: Vec<usize> = if res.is_err() {
+                Vec::new()
+            } else {
+                chosen[j]
+                    .iter()
+                    .copied()
+                    .filter(|&k| consumed_param(p, *fi, k, &body) || unkept.contains(&(*fi, k)) && (moves_var(&body, p.fns[*fi].params[k]) || takes_var(&body, p.fns[*fi].params[k])))
+                    .collect()
+            };
             // (the memory check of this round: a part given whole to a
             // function that borrows it is lent at last)
             if keep.len() == chosen[j].len() {

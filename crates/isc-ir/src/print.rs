@@ -104,6 +104,7 @@ pub fn expr(e: &Expr, p: &Program, ind: usize, s: &mut String) {
         CheckSize(..) => "check_size".into(),
         CheckNonNegative(..) => "check_non_negative".into(),
         Copy(_) => "copy".into(),
+        CopyTaking(_, ps) => format!("copy taking {:?}", ps),
         Action(op, _) => format!("action {:?}", op),
         Bench(..) => "bench".into(),
         Call(f, _) => format!("call {}#{}", p.fns[*f as usize].name, f),

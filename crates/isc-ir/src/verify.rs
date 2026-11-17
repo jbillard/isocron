@@ -562,6 +562,12 @@ impl<'p> Checker<'p> {
                 Val::Fresh => fail(e.span, "new memory is copied and the original is never freed".into()),
                 _ => Ok(Val::Fresh),
             },
+            // (the parts taken leave zeros, which the owner frees as nothing,
+            // D693): a copy of a place borrowed
+            CopyTaking(x, _) => match self.eval(x)? {
+                Val::Fresh | Val::Scalar => fail(e.span, "a copy that takes parts of a value not in a place".into()),
+                _ => Ok(Val::Fresh),
+            },
             ArrayLit(es) => {
                 // the rows of an array of arrays are taken by the literal
                 for x in es {
@@ -744,8 +750,22 @@ impl<'p> Checker<'p> {
             // given (D637); its result is new
             Call(g, args) => {
                 let given = &self.p.fns[*g as usize].given;
+                // every argument computed before the callee takes any
+                // (D694): a variable moved there read after the others
+                let moved = |x: &Expr| matches!(x.kind, Var(_, Use::Move));
+                let mut vals = vec![None; args.len()];
                 for (k, x) in args.iter().enumerate() {
-                    let v = self.eval(x)?;
+                    if !moved(x) {
+                        vals[k] = Some(self.eval(x)?);
+                    }
+                }
+                for (k, x) in args.iter().enumerate() {
+                    if moved(x) {
+                        vals[k] = Some(self.eval(x)?);
+                    }
+                }
+                for (k, x) in args.iter().enumerate() {
+                    let v = vals[k].take().expect("each argument computed");
                     if given.get(k).copied().unwrap_or(false) {
                         self.consume(v, x)?;
                     } else {

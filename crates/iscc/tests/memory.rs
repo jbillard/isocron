@@ -1645,9 +1645,10 @@ fn parameters_given_to_called_functions() {
     // `requireUnique`), as the inlined body would; a function that gives it
     // in a tail call to another one given it too reuses its frame. One that
     // consumes it on some paths only (a tail call lending it to another
-    // function, a scalar returned first) is lent it, as before: it copies
-    // it there alone. The results of the interpreter, nothing lost or
-    // freed twice.
+    // function, a scalar returned first) is lent it when a call keeps its
+    // argument (`touch(w, true)`, `w` read after): it copies it there
+    // alone; given it when every call gives a new value (`firstOr`, D693).
+    // The results of the interpreter, nothing lost or freed twice.
     let src = "@noInline
 function bump(a: i64[n], i: i64): i64[n] {
     return requireUnique(a.with(i, a[i] + 1));
@@ -1699,20 +1700,21 @@ action main(args: string[k]): i32 {
     print(relay(fill(2, 5), 1));
     const w = fill(5, 3);
     print(map(iota(4), (i) => sum(plain(w, i))));
+    print(touch(w, true));
     print(reads(w) + reads(fill(2, 9)));
     return 0;
 }
 ";
     let want = interp_ok(src, &[]);
-    assert_eq!(want, "[100, 100, 100, 100, 100, 100, 100, 100, 100, 100]\n(7, 14)\n103\n4\n(0, 4)\nhey!\n[5, 6]\n[18, 18, 18, 18]\n19\n");
+    assert_eq!(want, "[100, 100, 100, 100, 100, 100, 100, 100, 100, 100]\n(7, 14)\n103\n4\n(0, 4)\nhey!\n[5, 6]\n[18, 18, 18, 18]\n112\n19\n");
     let bin = compile(src, "given");
     let run = run_bin(&bin, &[]);
     assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
     let p = iscc::frontend("given.isc", src).unwrap();
     let given = |n: &str| p.fns.iter().find(|f| f.name == n).map(|f| f.given.first() == Some(&true)).unwrap_or(false);
-    assert!(given("bump") && given("plain") && given("relay") && given("shout"), "{:?}", p.fns.iter().map(|f| (&f.name, &f.given)).collect::<Vec<_>>());
-    // read only, or consumed on some paths only: lent, as before
-    assert!(!given("count") && !given("reads") && !given("touch") && !given("firstOr"));
+    assert!(given("bump") && given("plain") && given("relay") && given("shout") && given("firstOr"), "{:?}", p.fns.iter().map(|f| (&f.name, &f.given)).collect::<Vec<_>>());
+    // read only, or consumed on some paths only and kept by a call: lent
+    assert!(!given("count") && !given("reads") && !given("touch"), "{:?}", p.fns.iter().map(|f| (&f.name, &f.given)).collect::<Vec<_>>());
     // the fold moves its accumulator into each call: no copy there; the
     // copies: `y` read after its call, `w` read by every task
     let copies: Vec<u32> = p.copy_reasons.iter().map(|(s, _)| s.line).collect();
@@ -2193,4 +2195,118 @@ fn a_state_read_before_it_is_given() {
     let copies: Vec<(u32, String)> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| (e.line, e.what.clone())).collect();
     assert!(copies.is_empty(), "the copies: {:?}", copies);
     clean(src, "host_state_vg", &["20", "3"]);
+}
+
+/// D693 to D696: a state in the shape of the editor of isocron-ui (tabs, the
+/// document of the active one with its history) changed at each step by
+/// functions that are called, without copying its history: the tab made
+/// anew by a `map` over the places of the array written as that element
+/// updated (D693); the document taken from the state for the function that
+/// changes it, its parts that nothing reads again (its history, its text)
+/// moved rather than copied, zeros left in the state (D693); a parameter
+/// consumed on some paths only given when no call keeps its argument, the
+/// callers' own parameters so given counted as owned (D695); the name of the
+/// tab shown before, read after the state is given, computed first (D695)
+/// and copied rather than the state (D696); an argument read again by the
+/// argument after it given all the same (D694). The same results as the
+/// interpreter, nothing lost or freed twice.
+#[test]
+fn states_updated_in_place_through_calls() {
+    let src = "type Snap = { stamp: i64, notes: string[] };
+type Doc = { version: i64, cursor: i64, undo: Snap[], text: string };
+type Tab = { name: string, doc: Doc };
+type State = { tabs: Tab[], active: i64, log: string[], moves: i64 };
+
+function capped(u: Snap[n]): Snap[] {
+    return n > 50 ? map(iota(50), (k) => u[n - 50 + k]) : u;
+}
+
+@noInline
+function edited(d: Doc, c: i64): Doc {
+    const undo = c % 3 != 0 ? d.undo : concat(d.undo, [{ stamp: d.version, notes: [`n${c}`] }]);
+    return { ...d, version: d.version + 1, cursor: (d.cursor + c) % 1000, undo: capped(undo) };
+}
+
+@noInline
+function changed(m: State, d: Doc): State {
+    const moved = m.active < 0 || m.active >= m.tabs.length || m.tabs[m.active].doc.cursor != d.cursor;
+    const tabs = map(iota(m.tabs.length), (k) => k == m.active ? { ...m.tabs[k], doc: d } : m.tabs[k]);
+    return { ...m, tabs: tabs, moves: m.moves + (moved ? 1 : 0) };
+}
+
+@noInline
+function once(m: State, c: i64): [State, i64] {
+    if (c < 0) {
+        return [{ tabs: [], active: 0, log: [], moves: m.moves }, 0] as const;
+    }
+    const d = m.tabs[m.active].doc;
+    return [changed(m, edited(d, c)), 1] as const;
+}
+
+function step(m: State, c: i64): State {
+    const [m1, n] = once(m, c);
+    const before = m.active >= 0 && m.active < m.tabs.length ? m.tabs[m.active].name : \"\";
+    const shown = m1.active >= 0 && m1.active < m1.tabs.length ? m1.tabs[m1.active].name : \"\";
+    return shown != before ? { ...m1, moves: m1.moves + 100 } : m1;
+}
+
+function steps(m: State, k: i64, n: i64): State {
+    return k >= n ? m : steps(step(m, k), k + 1, n);
+}
+
+@noInline
+function stamped(d: Doc, n: i64): Doc {
+    return { ...d, version: n };
+}
+
+action main(args: string[k]): i32 {
+    const doc = { version: 0, cursor: 0, undo: [], text: \"a\" };
+    const m0 = { tabs: [{ name: \"a.lua\", doc: doc }, { name: \"b.lua\", doc: doc }], active: 1, log: [\"ready\"], moves: 0 };
+    const m = steps(m0, 0, 400);
+    const d = m.tabs[1].doc;
+    print(`${d.version} ${d.cursor} ${d.undo.length} ${d.undo[0].stamp} ${d.undo[49].notes[0]} ${d.text.length} ${m.moves} ${m.log.length} ${m.tabs[0].doc.version}`);
+    const d3 = edited({ ...d, text: \"b\" }, 4);
+    const d4 = stamped(d3, d3.version + d3.undo.length);
+    print(d4.version);
+    return 0;
+}
+";
+    let want = interp_ok(src, &[]);
+    assert_eq!(want, "400 800 50 252 n399 1 399 1 0\n451\n");
+    let bin = compile(src, "in_place_states");
+    let run = run_bin(&bin, &[]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, want.as_str()), "{}", run.stderr);
+    let p = iscc::frontend("in_place.isc", src).unwrap();
+    let given = |n: &str| p.fns.iter().find(|f| f.name == n).map(|f| f.given.clone()).unwrap_or_default();
+    let names: Vec<_> = p.fns.iter().map(|f| (&f.name, &f.given)).collect();
+    assert_eq!((given("once"), given("changed"), given("edited"), given("stamped")), (vec![true, false], vec![true, true], vec![true, false], vec![true, false]), "{:?}", names);
+    let line = |m: &str| src.lines().position(|l| l.contains(m)).unwrap() as u32 + 1;
+    let at = |l: u32| p.copy_reasons.iter().filter(|(s, _)| s.line == l).map(|(_, r)| r.clone()).collect::<Vec<_>>();
+    // the copies of the program, those that take parts with their parts
+    fn copies(e: &isc_ir::Expr, out: &mut Vec<(u32, Option<Vec<Vec<u32>>>)>) {
+        match &e.kind {
+            isc_ir::ExprKind::Copy(_) => out.push((e.span.line, None)),
+            isc_ir::ExprKind::CopyTaking(_, ps) => out.push((e.span.line, Some(ps.clone()))),
+            _ => {}
+        }
+        for c in e.children() {
+            copies(c, out);
+        }
+    }
+    let mut all = Vec::new();
+    for f in p.fns.iter().filter(|f| !f.name.starts_with('$')) {
+        copies(&f.body, &mut all);
+    }
+    copies(&p.body, &mut all);
+    let of = |l: u32| all.iter().filter(|(k, _)| *k == l).map(|(_, t)| t.clone()).collect::<Vec<_>>();
+    // the document taken from the state: its text and history moved
+    assert_eq!(of(line("return [changed(m, edited(d, c)), 1]")), vec![Some(vec![vec![1], vec![2]])], "{:?}", all);
+    // the tab made anew: no copy of the others, nor of the new document;
+    // the name of the tab moved out of the old one
+    assert_eq!(of(line("const tabs = map(iota")), vec![Some(vec![vec![]])], "{:?}", all);
+    // the name of the tab before copied, not the state
+    let before = at(line("const before = m.active"));
+    assert!(before.len() == 1 && before[0].contains("(D696)"), "{:?}", p.copy_reasons);
+    assert!(of(line("const [m1, n] = once(m, c)")).is_empty() && of(line("const d4 = stamped(d3")).is_empty(), "{:?}", all);
+    clean(src, "in_place_states_vg", &[]);
 }

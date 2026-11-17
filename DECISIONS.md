@@ -17013,3 +17013,95 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   with the compiler built in release. Test `deep_nests_compile`
   (codegen.rs: a function of 3000 nested statements, compiled from the
   thread of a test; the compiler of c6d8408 overflows on it).
+- **D693 — The parts of a copy that nothing reads again moved; one element
+  made anew updated where it is; a parameter given when no call keeps its
+  argument (2026-11-17).** The editor of isocron-ui, its keys replayed
+  through its `update` (5000 lines, one thread, the protocol of the
+  machine): 27 to 31 µs a key while its history of changes is short, 73 to
+  78 µs once it holds its 1000 changes; each key copied the document of
+  the tab shown with its history (1000 snapshots, a count of a node each,
+  incremented then decremented) and freed the old one. Found by a program
+  of the same shape (a state, its tabs, a document with its history):
+  0.6 µs a step with 50 snapshots, 16.4 µs with 1000. Three general
+  changes, each on its own measured there:
+  - `map(iota(xs.length), (k) => k == a ? t : xs[k])` (or `a == k`, or
+    `!=` the other way round), one element made anew and the others kept,
+    is written `let k = a in k >= 0 && k < xs.length ? xs.with(k, t) : xs`
+    (`element_updates`, before the ownership pass): updated where it is
+    when not read again, `t` computed once, where each other element was
+    copied in a loop given to the threads.
+  - A parameter consumed on some paths only is given when no call keeps
+    its argument (`unkept_params`, D695): it was lent, and copied where it
+    was consumed (the new document put into the tab). The candidates of
+    D637 and D654 (a tuple given whole: the value of a `let` seen through,
+    `let x = t.doc in d` of a lambda that ignores its argument).
+  - A copy of a part of a variable that owns its value (`m.tabs[m.active].doc`,
+    `m` read again after) whose parts (strings, arrays, integers of any
+    size, in plain tuples; not nodes, nor values of sum types, nor views of
+    texts, D555) nothing reads again after it, there or in the functions
+    the rest calls with the variable (their bodies walked with their
+    parameters bound to the places given, six calls deep, none in a cycle):
+    those parts moved rather than copied, zeros left in their place, which
+    its owner frees as nothing (`isc_free(null)`, as the fields of the
+    other variants of a sum, D448). `CopyTaking` in the IR (the
+    interpreter copies; the verifier as a copy of a place): its place
+    rebuilt from the variable that owns it, its last index into an array
+    of the heap (a column of each leaf, zeroed there). The walk
+    (`take_dead_parts`, after the ownership pass): the places as a
+    variable and its steps, an index as a constant or a scalar read from a
+    variable (the same value wherever it is read); the facts of the
+    branches (`k == a`, `k != a`) and the indices of the place within
+    their arrays (a branch where `m.active < 0 || m.active >=
+    m.tabs.length` never taken after the copy); an element made anew at
+    the index of the place (`with`) dropped, nothing read; a length of an
+    array holding the place read alone. Not in a loop the variable is
+    defined outside of (the next turn reads the place again). The memory report
+    gives the parts moved (`its parts .1, .2 moved rather than copied`).
+  The program of the same shape: 0.13 µs a step with 50 snapshots, 0.79
+  with 1000 (what remains: each snapshot pushed every 20 steps copies the
+  history, the elements of a `concat` and of a slice of the last 1000).
+  Test `states_updated_in_place_through_calls` (memory.rs: the same
+  results as the interpreter, the parameters given, the parts moved,
+  Valgrind); `parameters_given_to_called_functions` (D637) now gives
+  `firstOr` (consumed on some paths, every call a new value) and keeps
+  `touch` lent by a call that keeps its argument.
+- **D694 — The arguments of a call computed before the callee takes any
+  (2026-11-17).** As `i` and `v` before `e` in `e.with(i, v)` (SPEC section
+  8): a variable given to a function at its last read but for the
+  arguments after it in the same call, none of which keeps a part of it
+  (`docChanged({ ...m, field: CODE }, d1, [codeMenu(d1)])`), is moved, not
+  copied (`Info::last_but_args`). The interpreter and the verifier take
+  such a variable after the other arguments.
+- **D695 — Reads before a call that may take; given decided over the
+  whole program (2026-11-17).** The `update` of the editor read the path of
+  the tab shown before after `updateOnce(m, i)`: `updateOnce` could not
+  own `m`, and copied the whole state at each key (its histories). (1) The
+  `const`s after a call that gives a variable whole that read that
+  variable, depend on nothing bound after it and cannot fail (reads,
+  comparisons, conditions, an element under a test that keeps its index
+  in its array, seen through the scalars a pass took out of the test,
+  D659) are computed before it (`reads_first`): pure code. (2) A parameter
+  is given when every call gives a value it keeps nowhere: new, or a
+  variable owned at its last read (D694), the caller's own parameters so
+  given owned (`unkept_params`): the greatest such set, every candidate
+  assumed given first, those a call keeps taken out until none is; each
+  body walked again only when its own parameters change. Used by the
+  functions called (D637) and by those of a cycle (D654), beside
+  "consumed on every path". A state handed down a chain of functions, the
+  loop of the program around them, is now given at each step. One call
+  that keeps its argument still lends it everywhere (a copy at that call
+  alone would do when the function consumes it on its main paths), and a
+  tuple rebuilt with a component computed from it (`text: d.text + "x"`)
+  is no candidate (D654): next.
+- **D696 — A part copied so that the whole is given (2026-11-17).** A
+  variable given whole to a function and read after the call only through
+  views of it bound before the call (`before`, the path of the tab shown,
+  a text of the state): those views copied, the variable moved (a copy of
+  a part is never dearer than one of the whole: Rust's `.clone()` of the
+  path before giving the state). `Info::views_after`; the memory report
+  gives the copy (`a part of m read after m is given whole to a function:
+  the part copied, not the whole`). The editor of isocron-ui with D693 to
+  D696, the protocol of the machine, one thread, 5000 lines: 23.0 µs a key
+  with 50 changes (27.0 to 30.7 before), 32 to 38 µs with 1000 (73 to 78
+  before); what remains of the slope: the document grows by 1000 lines,
+  and each snapshot pushed copies the history.
