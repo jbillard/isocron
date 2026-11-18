@@ -269,7 +269,9 @@ fn text_functions_emitted_when_reached() {
     let ll = ir("print(1.5 * f64(args.length + 1));\n    print(5e-324 * f64(args.length + 1));\n    print(0.0 / (f64(args.length) * 0.0));", "text_fns_print");
     assert!(ll.contains("_buf(ptr %tb, double %a0)") && !ll.contains("_buf(ptr %tb, float %a0)"), "the variant for `print` of a `f64` alone");
     assert_eq!(has(&ll), (false, false, false), "`print` of a `f64`");
-    assert!(ll.lines().count() < 7000, "`print` of a `f64`: {} lines of LLVM IR", ll.lines().count());
+    // (8213 since D718: the entries and the paths of the allocator of the
+    // texts in every program, as those of the small blocks)
+    assert!(ll.lines().count() < 9000, "`print` of a `f64`: {} lines of LLVM IR", ll.lines().count());
     let ll = ir("print(toString(1.5 * f64(args.length + 1)).length);", "text_fns_text");
     assert!(!ll.contains("_buf("), "a variant for `print` in a program that prints no float");
     assert_eq!(has(&ll), (true, false, true), "`toString` of a `f64`");

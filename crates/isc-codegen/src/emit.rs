@@ -1932,7 +1932,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
             "\ndefine internal void @isc.kernel.start() noinline nounwind {{\nentry:\n  %first = call ptr @isc_alloc(i64 1)\n  call void @isc_free(ptr %first)\n  %mode = load i8, ptr @isc_heap_mode\n  %on = icmp eq i8 %mode, 2\n  br i1 %on, label %go, label %done\ngo:\n  %b = call tailcc i64 @isc_fn_{start}()\n  br label %done\ndone:\n  ret void\n}}\n\
              \ndefine internal noalias ptr @isc.late.alloc(i64 %n) noinline nounwind {{\n{small}  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc(i64 %n)\n  ret ptr %q\n}}\n\
              \ndefine internal noalias ptr @isc.late.alloc_zeroed(i64 %n) noinline nounwind {{\n{small}  call void @llvm.memset.p0.i64(ptr %p, i8 0, i64 %n, i1 false)\n  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc_zeroed(i64 %n)\n  ret ptr %q\n}}\n\
-             \ndefine internal noalias ptr @isc.late.alloc_text(i64 %n) noinline nounwind {{\nentry:\n  %m = add i64 %n, -1\n  %small = icmp ult i64 %m, {text_small}\n  br i1 %small, label %fast, label %slow\nfast:\n  %a = call tailcc i64 @isc_fn_{alloc_text}(i64 %n)\n  %p = inttoptr i64 %a to ptr\n  ret ptr %p\nslow:\n  %q = call noalias ptr @isc.late.alloc(i64 %n)\n  ret ptr %q\n}}\n\
+             \ndefine internal noalias ptr @isc.late.alloc_text(i64 %n) noinline nounwind {{\nentry:\n  %m = add i64 %n, -1\n  %small = icmp ult i64 %m, {text_small}\n  br i1 %small, label %fast, label %mid\nfast:\n  %a = call tailcc i64 @isc_fn_{alloc_text}(i64 %n)\n  %p = inttoptr i64 %a to ptr\n  ret ptr %p\nmid:\n  %kept = icmp ult i64 %m, {kernel_small}\n  br i1 %kept, label %kernel, label %slow\nkernel:\n  %b = call tailcc i64 @isc_fn_{alloc}(i64 %n)\n  %q = inttoptr i64 %b to ptr\n  ret ptr %q\nslow:\n  %r = call noalias ptr @isc_alloc(i64 %n)\n  ret ptr %r\n}}\n\
              \ndefine internal void @isc.late.free(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n\
              \ndefine internal void @isc.late.free_text(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free_str}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n\
              \ndefine internal void @isc.kernel.free(ptr %p) nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  ret void\n}}\n\
@@ -1941,8 +1941,10 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
             small = small,
             free = free,
             alloc_text = alloc_text,
+            alloc = alloc,
             free_str = free_str,
             text_small = KERNEL_TEXT_SMALL,
+            kernel_small = KERNEL_SMALL,
             strs = free_strs_text(free_str)
         );
     }

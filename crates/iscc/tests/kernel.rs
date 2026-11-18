@@ -289,7 +289,10 @@ fn the_generated_code_allocates_in_the_arena() {
     // of the module; the runtime's allocator called by those entries alone
     let ll = std::fs::read_to_string(out.with_extension("ll")).unwrap();
     assert!(ll.contains("call noalias ptr @isc.late.alloc(") && ll.contains("call void @isc.late.free(ptr "), "the entries are not called");
-    assert_eq!(ll.matches("@isc_alloc(i64 ").count(), 3, "the allocator of the runtime called outside the entries");
+    // (the slow paths of `isc.late.alloc` and `isc.late.alloc_text` (D718),
+    // `isc.runtime.alloc` of the kernel and the first block of
+    // `isc.kernel.start`)
+    assert_eq!(ll.matches("@isc_alloc(i64 ").count(), 4, "the allocator of the runtime called outside the entries");
     // (the slow paths of `isc.late.free`, `isc.late.free_text` (D718) and
     // `isc.late.free_strs`, and the first block of `isc.kernel.start`)
     assert_eq!(ll.matches("call void @isc_free(").count(), 4, "the free of the runtime called outside the entries");

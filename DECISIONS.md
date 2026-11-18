@@ -17604,3 +17604,11 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     (`parseIso`, +7.9 % there) has the same instructions and 10 % fewer
     cycles (220 against 245 million, the loads cut by a line of the cache
     1600 in both).
+  - The cost in every program: the entries and paths of the allocator of
+    the texts, as those of the small blocks (`print` of a `f64` alone 8213
+    lines of LLVM IR built whole, the limit of its test 7000 to 9000; with
+    the module of the prelude, 649 to 1140 lines and 73 to 77 ms to build).
+    Suite 510 found the slow path of `isc.late.alloc_text` calling
+    `isc.late.alloc` (every program then looked as if it allocated, the
+    test of `output.rs`): it calls the fast path of `$kAlloc` and the
+    runtime itself.
