@@ -726,46 +726,157 @@ impl Expr {
         Expr::new(ExprKind::Var(v, Use::Borrow), ty, span)
     }
 
-    /// Calls `f` on each direct child expression (lambda bodies included).
-    pub fn children(&self) -> Vec<&Expr> {
+    /// The direct child expressions (lambda bodies included).
+    pub fn children(&self) -> Kids<&Expr> {
         use ExprKind::*;
         match &self.kind {
-            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
-            Let { init, body, .. } => vec![init, body],
-            Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter().collect(),
-            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) | InputPieces(e) => vec![e],
-            Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => vec![a, b],
-            If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => vec![a, b, c],
-            Update { target, index, value, .. } => vec![index, value, target],
-            Map(ins, l) => {
-                let mut v: Vec<&Expr> = ins.iter().collect();
-                v.push(&l.body);
-                v
+            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => Kids::few([None, None, None]),
+            Let { init, body, .. } => Kids::few([Some(init), Some(body), None]),
+            Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => Kids::from_iter(es.len(), es.iter()),
+            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) | InputPieces(e) => {
+                Kids::few([Some(e), None, None])
             }
-            Filter(x, l) | Tasks(x, l) => vec![x, &l.body],
-            Reduce(x, l, e) | Scan(x, l, e) => vec![x, e, &l.body],
-            Fold(x, i, l) => vec![x, i, &l.body],
+            Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => Kids::few([Some(a), Some(b), None]),
+            If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => Kids::few([Some(a), Some(b), Some(c)]),
+            Update { target, index, value, .. } => Kids::few([Some(index), Some(value), Some(target)]),
+            Map(ins, l) => Kids::from_iter(ins.len() + 1, ins.iter().chain(std::iter::once(&*l.body))),
+            Filter(x, l) | Tasks(x, l) => Kids::few([Some(x), Some(&l.body), None]),
+            Reduce(x, l, e) | Scan(x, l, e) => Kids::few([Some(x), Some(e), Some(&l.body)]),
+            Fold(x, i, l) => Kids::few([Some(x), Some(i), Some(&l.body)]),
         }
     }
 
-    pub fn children_mut(&mut self) -> Vec<&mut Expr> {
+    pub fn children_mut(&mut self) -> Kids<&mut Expr> {
         use ExprKind::*;
         match &mut self.kind {
-            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
-            Let { init, body, .. } => vec![init, body],
-            Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter_mut().collect(),
-            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) | InputPieces(e) => vec![e],
-            Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => vec![a, b],
-            If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => vec![a, b, c],
-            Update { target, index, value, .. } => vec![index, value, target],
-            Map(ins, l) => {
-                let mut v: Vec<&mut Expr> = ins.iter_mut().collect();
-                v.push(&mut l.body);
-                v
+            Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => Kids::few([None, None, None]),
+            Let { init, body, .. } => Kids::few([Some(init), Some(body), None]),
+            Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => {
+                let n = es.len();
+                Kids::from_iter(n, es.iter_mut())
             }
-            Filter(x, l) | Tasks(x, l) => vec![x, &mut l.body],
-            Reduce(x, l, e) | Scan(x, l, e) => vec![x, e, &mut l.body],
-            Fold(x, i, l) => vec![x, i, &mut l.body],
+            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) | InputPieces(e) => {
+                Kids::few([Some(e), None, None])
+            }
+            Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => Kids::few([Some(a), Some(b), None]),
+            If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => Kids::few([Some(a), Some(b), Some(c)]),
+            Update { target, index, value, .. } => Kids::few([Some(index), Some(value), Some(target)]),
+            Map(ins, l) => {
+                let n = ins.len() + 1;
+                Kids::from_iter(n, ins.iter_mut().chain(std::iter::once(&mut *l.body)))
+            }
+            Filter(x, l) | Tasks(x, l) => Kids::few([Some(x), Some(&mut l.body), None]),
+            Reduce(x, l, e) | Scan(x, l, e) => Kids::few([Some(x), Some(e), Some(&mut l.body)]),
+            Fold(x, i, l) => Kids::few([Some(x), Some(i), Some(&mut l.body)]),
         }
     }
 }
+
+/// The children of an expression (D716): three at most without a block of
+/// the heap (most nodes have one to three), a vector beyond. Every walk of
+/// the compiler reads them: as vectors, their blocks were a third of the
+/// time of the front end of a large program (`malloc` and `free`).
+pub enum Kids<T> {
+    /// Up to three, the first ones `Some`.
+    Few([Option<T>; 3]),
+    Many(Vec<T>),
+}
+
+impl<T> Kids<T> {
+    fn few(a: [Option<T>; 3]) -> Self {
+        Kids::Few(a)
+    }
+
+    fn from_iter(n: usize, it: impl Iterator<Item = T>) -> Self {
+        if n <= 3 {
+            let mut a = [None, None, None];
+            for (slot, x) in a.iter_mut().zip(it) {
+                *slot = Some(x);
+            }
+            Kids::Few(a)
+        } else {
+            Kids::Many(it.collect())
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Kids::Few(a) => a.iter().filter(|x| x.is_some()).count(),
+            Kids::Many(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<T> std::ops::Index<usize> for Kids<T> {
+    type Output = T;
+    fn index(&self, i: usize) -> &T {
+        match self {
+            Kids::Few(a) => a[i].as_ref().expect("no such child"),
+            Kids::Many(v) => &v[i],
+        }
+    }
+}
+
+impl<T> std::ops::IndexMut<usize> for Kids<T> {
+    fn index_mut(&mut self, i: usize) -> &mut T {
+        match self {
+            Kids::Few(a) => a[i].as_mut().expect("no such child"),
+            Kids::Many(v) => &mut v[i],
+        }
+    }
+}
+
+impl<T> IntoIterator for Kids<T> {
+    type Item = T;
+    type IntoIter = KidsIter<T>;
+    fn into_iter(self) -> KidsIter<T> {
+        match self {
+            Kids::Few(a) => KidsIter::Few(a.into_iter()),
+            Kids::Many(v) => KidsIter::Many(v.into_iter()),
+        }
+    }
+}
+
+/// The iterator of `Kids`.
+pub enum KidsIter<T> {
+    Few(std::array::IntoIter<Option<T>, 3>),
+    Many(std::vec::IntoIter<T>),
+}
+
+impl<T> Iterator for KidsIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        match self {
+            KidsIter::Few(it) => it.next().flatten(),
+            KidsIter::Many(it) => it.next(),
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = match self {
+            KidsIter::Few(it) => it.as_slice().iter().filter(|x| x.is_some()).count(),
+            KidsIter::Many(it) => it.len(),
+        };
+        (n, Some(n))
+    }
+}
+
+impl<T> DoubleEndedIterator for KidsIter<T> {
+    fn next_back(&mut self) -> Option<T> {
+        match self {
+            KidsIter::Few(it) => loop {
+                match it.next_back() {
+                    Some(Some(x)) => return Some(x),
+                    Some(None) => continue,
+                    None => return None,
+                }
+            },
+            KidsIter::Many(it) => it.next_back(),
+        }
+    }
+}
+
+impl<T> ExactSizeIterator for KidsIter<T> {}

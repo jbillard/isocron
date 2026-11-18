@@ -448,7 +448,9 @@ fn compile_split(texts: &[String], obj: &Path, isa: crate::emit::Isa, windows: b
                     .spawn_scoped(scope, move || {
                         let t0 = std::time::Instant::now();
                         let r = compile_llvm(text, path, None, isa, windows, msvc, None, false).map(|_| ());
-                        crate::phase_time(&format!("  part {} ({} lines)", k, text.lines().count()), t0);
+                        if crate::timing() {
+                            crate::phase_time(&format!("  part {} ({} lines)", k, text.lines().count()), t0);
+                        }
                         r
                     })
                     .expect("cannot start a thread of the compiler")

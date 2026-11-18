@@ -606,7 +606,9 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
         Some((_, manifest)) => isc_codegen::emit_using(p, &opts.codegen, manifest),
         None => isc_codegen::emit_with(p, &opts.codegen).map(|ir| (ir, false)),
     })?;
-    isc_codegen::phase_time(&format!("IR of LLVM made ({} lines)", ir.lines().count()), t0);
+    if isc_codegen::timing() {
+        isc_codegen::phase_time(&format!("IR of LLVM made ({} lines)", ir.lines().count()), t0);
+    }
     let pre = pre.as_ref().filter(|_| using).map(|(o, _)| o.as_path());
     // a program for Windows starts without a C library unless it calls C
     // (D541): what MinGW's start files gave it then comes with its code

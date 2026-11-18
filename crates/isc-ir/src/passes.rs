@@ -2660,7 +2660,7 @@ fn rebuild_at(e: &mut Expr, v: VarId, al: &HashSet<VarId>, comps: &HashMap<VarId
         _ => {
             // (any other child that reads `v` counts as read after: the
             // order of evaluation of a node is its own)
-            let mut children = e.children_mut();
+            let mut children: Vec<&mut Expr> = e.children_mut().into_iter().collect();
             let reads: Vec<bool> = children.iter().map(|c| reads_any(c, al)).collect();
             let total = reads.iter().filter(|r| **r).count();
             let mut any = false;
@@ -4581,15 +4581,12 @@ fn fuse(e: &mut Expr, counts: &HashMap<VarId, usize>) -> bool {
     // consumer(.., wrapped producer, ..) => float the wrappers out
     let slots = fusable_slots(e);
     if !slots.is_empty() && e.children().into_iter().all(is_pure) {
-        for (i, c) in e.children_mut().into_iter().enumerate() {
-            if slots.contains(&i)
-                && matches!(c.kind, ExprKind::Let { stmt: false, .. } | ExprKind::CheckSize(..) | ExprKind::CheckNonNegative(..))
-                && is_wrapped_producer(c)
-            {
-                let _ = c;
-                float_slot(e, i);
-                return true;
-            }
+        let hit = e.children().into_iter().enumerate().position(|(i, c)| {
+            slots.contains(&i) && matches!(c.kind, ExprKind::Let { stmt: false, .. } | ExprKind::CheckSize(..) | ExprKind::CheckNonNegative(..)) && is_wrapped_producer(c)
+        });
+        if let Some(i) = hit {
+            float_slot(e, i);
+            return true;
         }
     }
     changed

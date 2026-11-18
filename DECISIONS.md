@@ -17487,3 +17487,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   clone counts once more. The same IR, byte for byte (the corpus, the
   largest program of isocron-ui); its front end (`iscc ir`) 16.4 to 8.9 s,
   its peak 912 to 544 MiB.
+
+- **D716 — The children of a node without a block of the heap
+  (2026-11-18).** After D715 the front end of the largest program of
+  isocron-ui spent a third of its time in `malloc` and `free`, and
+  `Expr::children` and `children_mut` led its functions: every walk of the
+  compiler asks a node for its children (216 places), each answer a new
+  vector. Now `Kids`: up to three children (most nodes have one to three)
+  in an array of the stack, a vector beyond; read as before (an iterator
+  both ways, `len`, an index). The same IR, byte for byte (the corpus, the
+  largest program of isocron-ui); its front end (`iscc ir`) 9.0 to 7.2 s.
+  The time of the phases of `ISC_TIME` made only when it is set (it
+  counted the lines of the IR at each build). The 23 programs of the tests
+  of isocron-ui, after D715 and before this: 281 s in all (817 before
+  D710), the largest 51.6 s (213).

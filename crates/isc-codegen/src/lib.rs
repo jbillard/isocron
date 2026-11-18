@@ -13,8 +13,14 @@ pub use emit::{emit, emit_pre, emit_using, emit_with, pre_declarations, Isa, Opt
 /// front end, the generated IR, the passes of LLVM, its code generator, the
 /// link).
 pub fn phase_time(label: &str, since: std::time::Instant) {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var_os("ISC_TIME").is_some()) {
+    if timing() {
         eprintln!("iscc time: {:<28} {:8.2} s", label, since.elapsed().as_secs_f64());
     }
+}
+
+/// Whether `ISC_TIME` asks for the time of the phases (a label that costs
+/// something to make is made only then).
+pub fn timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ISC_TIME").is_some())
 }
