@@ -17296,3 +17296,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   fewer (a sort read by its last element alone is never made). Test
   `a_length_computes_no_element` (phase5.rs). The Benchmarks Game, rtiow,
   walk and countwords the same IR as measured for D701 to D703.
+
+- **D705 — The parts of a tuple computed before it takes any (2026-11-18).**
+  As the arguments of a call (D694): a variable given to a tuple (or a row
+  to an array literal) at its last read but for the parts after it, none of
+  which keeps a part of it, is moved, not copied. `$textCounts` made the
+  `Map` of the counts of countwords as `[ks, vs, $hashIndex(ks)]`: the keys
+  were copied whole (32187 texts) because the index read them after the
+  tuple took them. The other parts may only read it (its length, an
+  element, an operation of texts or arrays, the input of a loop: `only_
+  reads`): rtiow's scene `[.., boundary, medium(boundary, ..), ..]` gave
+  `boundary` to a node made by `medium` too (moved twice, the verifier
+  refused it). The interpreter and the verifier take such a variable after
+  the other parts. k-nucleotide: five copies of keys fewer (the `Map` of
+  `countBy`), 1101.6 to 1099.3 ms; the rest of the corpus the same IR.
+
+- **D706 — The elements read once by a `map` of the places of an array
+  moved (2026-11-18).** The gather of a permutation (D548) moved the
+  elements of an array read for the last time; the gather by the identity
+  copied them: `let y = map(iota(n), (i) => .. x[i] ..)`, each element
+  read once, in no branch and no function, on the way the body of `x` is
+  evaluated (no lambda, no branch), what comes before it reading the length
+  of `x` at most, nothing after it reading `x` (`identity_gather`): each
+  element read is moved; the elements from the length of `y` on, never
+  read (the keys of a table beyond its count), are freed right after the
+  `map` (`gathers` of the code generator), the block of `x` alone with its
+  binding. `entries` of a `Map` (`$pairs`: each key into a pair), the keys
+  of the table of `$countText` made the keys of the `Map`. Test
+  `texts_moved_into_tuples_and_gathers` (memory.rs, with D705: 300000 texts
+  of 40 bytes, the most memory at least 8 MiB below the same program that
+  reads its array again; the keys up to a count, the others freed, under
+  the checked allocator).

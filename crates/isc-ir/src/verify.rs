@@ -511,8 +511,22 @@ impl<'p> Checker<'p> {
                 }
             }
             Tuple(es) => {
-                for x in es {
-                    let v = self.eval(x)?;
+                // every part computed before the tuple takes any (D705): a
+                // variable moved there read after the others
+                let moved = |x: &Expr| matches!(x.kind, Var(_, Use::Move));
+                let mut vals = vec![None; es.len()];
+                for (k, x) in es.iter().enumerate() {
+                    if !moved(x) {
+                        vals[k] = Some(self.eval(x)?);
+                    }
+                }
+                for (k, x) in es.iter().enumerate() {
+                    if moved(x) {
+                        vals[k] = Some(self.eval(x)?);
+                    }
+                }
+                for (k, x) in es.iter().enumerate() {
+                    let v = vals[k].take().expect("each part computed");
                     self.consume(v, x)?;
                 }
                 Ok(fresh(heap))
@@ -586,9 +600,22 @@ impl<'p> Checker<'p> {
                 _ => Ok(Val::Fresh),
             },
             ArrayLit(es) => {
-                // the rows of an array of arrays are taken by the literal
-                for x in es {
-                    let v = self.eval(x)?;
+                // the rows of an array of arrays are taken by the literal,
+                // once every row is computed (D705)
+                let moved = |x: &Expr| matches!(x.kind, Var(_, Use::Move));
+                let mut vals = vec![None; es.len()];
+                for (k, x) in es.iter().enumerate() {
+                    if !moved(x) {
+                        vals[k] = Some(self.eval(x)?);
+                    }
+                }
+                for (k, x) in es.iter().enumerate() {
+                    if moved(x) {
+                        vals[k] = Some(self.eval(x)?);
+                    }
+                }
+                for (k, x) in es.iter().enumerate() {
+                    let v = vals[k].take().expect("each row computed");
                     self.consume(v, x)?;
                 }
                 Ok(Val::Fresh)

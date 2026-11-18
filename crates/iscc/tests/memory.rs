@@ -1297,6 +1297,57 @@ fn statement_values_computed_where_they_are_read() {
     assert!(a < 8 * 1024 && b > 78_000, "{} KiB, then {} KiB", a, b);
 }
 
+/// D705, D706: texts moved, not copied. A tuple takes a variable read by a
+/// later part of it (the parts computed first, as the arguments of a call);
+/// a `map` of the places of an array read nowhere after takes each of its
+/// texts (`entries` of a `Map`, the keys of a table up to its count, the
+/// rest freed with the block). The most memory (`VmHWM`) with 300000 texts
+/// of 40 bytes: the moves add no text; the same program reading the array
+/// again copies them all. Isocron's allocator only; the moves under the
+/// checked allocator (each block freed once).
+#[test]
+fn texts_moved_into_tuples_and_gathers() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let moved = "function pack(ks: string[n]): [string[], i64] {
+    return [ks, sum(map(ks, (k) => k.length))] as const;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const m = parseI64(args[1]);
+    const xs = map(iota(n), (i) => `${i}-0123456789012345678901234567890`);
+    const [ks, total] = pack(xs);
+    const pairs = map(iota(m), (i) => [ks[i], i] as const);
+    print([total, pairs.length, sum(map(pairs, (p) => {
+        const [w, i] = p;
+        return w.length + i;
+    }))] as const);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let copied = moved.replace("    print([total, pairs.length,", "    print(ks[0]);\n    print([total, pairs.length,");
+    let run = |src: &str, name: &str, args: &[&str]| -> (String, u64) {
+        let bin = compile(src, name);
+        checked_clean_bin(&bin, args, None);
+        let r = run_bin(&bin, args);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        let mut ls: Vec<&str> = r.stdout.lines().collect();
+        let hwm = ls.pop().unwrap_or("").chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", r.stdout));
+        (ls.last().unwrap_or(&"").to_string(), hwm)
+    };
+    let (out_m, most_m) = run(moved, "texts_moved", &["300000", "300000"]);
+    let (out_c, most_c) = run(&copied, "texts_copied", &["300000", "300000"]);
+    assert_eq!(out_m, out_c);
+    assert!(most_m + 8 * 1024 < most_c, "moved {} KiB, copied {} KiB", most_m, most_c);
+    // the keys up to a count, the others freed with the block
+    let (out, _) = run(moved, "texts_moved_part", &["1000", "300"]);
+    assert_eq!(out, "(34890, 300, 55240)", "{}", out);
+}
+
 #[test]
 fn tuples_stored_in_narrower_types() {
     // D687: the values of a `map` followed through the conditions of its

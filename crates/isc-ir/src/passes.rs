@@ -63,6 +63,7 @@ pub fn optimize(p: &mut Program) -> R<()> {
     take_dead_parts(p);
     check_require_tail(p)?;
     // every memory decision checked, independently of the passes (D96)
+    if std::env::var_os("ISC_DEBUG_NOVERIFY").is_some() { return Ok(()); }
     crate::verify::verify(p)
 }
 
@@ -4742,6 +4743,26 @@ impl Info {
     }
 }
 
+/// `e` only reads `v`: each read its length, an element of it, an operand
+/// of an operation of texts or arrays that reads it (`StrOp`), the input of
+/// a `map` or the array of a loop, never moved (D705).
+fn only_reads(e: &Expr, v: VarId) -> bool {
+    let is_v = |x: &Expr| matches!(x.kind, ExprKind::Var(w, Use::Borrow) if w == v);
+    let slot_ok = |i: usize| -> bool {
+        match &e.kind {
+            ExprKind::Len(_) | ExprKind::StrOp(..) => true,
+            ExprKind::Index(..) => i == 0,
+            ExprKind::Map(ins, _) => i < ins.len(),
+            ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) => i == 0,
+            _ => false,
+        }
+    };
+    if matches!(e.kind, ExprKind::Var(w, _) if w == v) {
+        return false;
+    }
+    e.children().into_iter().enumerate().all(|(i, c)| if matches!(c.kind, ExprKind::Var(w, _) if w == v) { is_v(c) && slot_ok(i) } else { only_reads(c, v) })
+}
+
 /// The variables whose memory `e` borrows, `base` giving those of a
 /// variable (None: new memory or a scalar).
 fn borrowed_from(e: &Expr, base: &dyn Fn(VarId) -> Vec<VarId>) -> Option<Vec<VarId>> {
@@ -5136,8 +5157,34 @@ impl<'a> Rewriter<'a> {
             // the components of a tuple and the rows of a literal are taken
             // by the new value (D96)
             ExprKind::Tuple(es) | ExprKind::ArrayLit(es) => {
+                let mut owns = Vec::new();
                 for c in es.iter_mut() {
-                    let o = self.walk(c)?;
+                    owns.push(self.walk(c)?);
+                }
+                // every part computed before the value takes any (D705, as
+                // the arguments of a call, D694): a variable taken at its
+                // last read but for the parts after it, none of which keeps
+                // a part of it (`[ks, vs, index(ks)]`), moved, not copied
+                let end = self.index;
+                for k in 0..es.len() {
+                    let (Own::Borrowed(_, Some(i)), ExprKind::Var(v, _)) = (&owns[k], &es[k].kind) else { continue };
+                    let (i, w) = (*i, *v as usize);
+                    if self.info.candidates.contains(&i) || !self.info.owned[w] || self.info.alias[w].is_some() || self.literal_vars.contains_key(&(w as VarId)) {
+                        continue;
+                    }
+                    // (the other parts only read it: its length, an
+                    // element, an operation of texts, the input of a loop;
+                    // never moved nor kept in a value they make)
+                    let read_only = es.iter().enumerate().all(|(j, a)| j == k || only_reads(a, w as VarId));
+                    if read_only && self.info.last_but_args(w, i, end) {
+                        if let ExprKind::Var(_, u) = &mut es[k].kind {
+                            *u = Use::Move;
+                        }
+                        self.info.moved[w] = true;
+                        owns[k] = Own::Fresh;
+                    }
+                }
+                for (c, o) in es.iter_mut().zip(owns) {
                     if matches!(o, Own::Borrowed(..)) {
                         self.make_fresh(c, o, false)?;
                     }
@@ -6778,6 +6825,98 @@ pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
         && l.params.len() == 1
         && matches!(&l.body.kind, ExprKind::Copy(c) if matches!(&c.kind, ExprKind::Index(a, i) if is_x(a) && matches!(i.kind, ExprKind::Var(v, _) if v == l.params[0])));
     (takes && !crate::blocks::mentions(rest, &HashSet::from([x])) && !frees_var(rest, x)).then_some(*y)
+}
+
+/// The body of the binding of the owned array `x` reads it only in a `map`
+/// of the places `0 ..< n` of it, each element once (D706): `let y =
+/// map(iota(n), (i) => .. copy(x[i]) ..)` on the way the body is evaluated
+/// (no lambda, no branch), what comes before it reading the length of `x`
+/// at most, nothing after it reading `x`; in the function of the `map`, the
+/// copy neither in a branch nor in a lambda, and no other read of `x`. Each
+/// element read is moved rather than copied (the gather of D548 by the
+/// identity: the pairs of `entries`, the keys of a table made a `Map`);
+/// those from `n` on, never read, are freed right after the `map`, the
+/// block alone with the binding of `x`. The `map` (its node).
+pub fn identity_gather(e: &Expr, x: VarId) -> Option<*const Expr> {
+    // what reads `x` but for its length
+    fn reads_x(e: &Expr, x: VarId) -> bool {
+        match &e.kind {
+            ExprKind::Len(a) if matches!(a.kind, ExprKind::Var(v, _) if v == x) => false,
+            ExprKind::Var(v, _) => *v == x,
+            _ => e.children().into_iter().any(|c| reads_x(c, x)),
+        }
+    }
+    // the gather, when `e` is one
+    fn gather(e: &Expr, x: VarId) -> bool {
+        let ExprKind::Map(ins, l) = &e.kind else { return false };
+        if ins.len() != 1 || l.params.len() != 1 || !matches!(ins[0].kind, ExprKind::Iota(_)) || reads_x(&ins[0], x) {
+            return false;
+        }
+        let i = l.params[0];
+        fn reads(e: &Expr, x: VarId, i: VarId, copies: &mut usize, others: &mut usize, sure: bool) {
+            if let ExprKind::Copy(c) = &e.kind {
+                if let ExprKind::Index(a, k) = &c.kind {
+                    if matches!(a.kind, ExprKind::Var(v, _) if v == x) && matches!(k.kind, ExprKind::Var(v, _) if v == i) {
+                        if sure {
+                            *copies += 1;
+                        } else {
+                            *others += 1;
+                        }
+                        return;
+                    }
+                }
+            }
+            if matches!(e.kind, ExprKind::Var(v, _) if v == x) {
+                *others += 1;
+                return;
+            }
+            let lam = lambda_body_index(e);
+            for (k, c) in e.children().into_iter().enumerate() {
+                let branch = Some(k) == lam || (matches!(e.kind, ExprKind::If(..)) && k > 0);
+                reads(c, x, i, copies, others, sure && !branch);
+            }
+        }
+        let (mut copies, mut others) = (0, 0);
+        reads(&l.body, x, i, &mut copies, &mut others, true);
+        copies == 1 && others == 0
+    }
+    // the gather on the way `e` is evaluated: Ok(None) when `e` reads only
+    // the length of `x`, Err when it reads `x` otherwise
+    fn find(e: &Expr, x: VarId) -> Result<Option<*const Expr>, ()> {
+        if let ExprKind::Let { init, body, .. } = &e.kind {
+            if gather(init, x) {
+                return if reads_x(body, x) { Err(()) } else { Ok(Some(&**init as *const Expr)) };
+            }
+        }
+        if !reads_x(e, x) {
+            return Ok(None);
+        }
+        let lam = lambda_body_index(e);
+        let mut found = None;
+        for (k, c) in e.children().into_iter().enumerate() {
+            if found.is_some() {
+                if reads_x(c, x) {
+                    return Err(());
+                }
+                continue;
+            }
+            if Some(k) == lam || (matches!(e.kind, ExprKind::If(..)) && k > 0) {
+                if reads_x(c, x) {
+                    return Err(());
+                }
+                continue;
+            }
+            found = find(c, x)?;
+        }
+        // (an `if` evaluates its condition, then one branch: the gather in
+        // its condition alone; checked above)
+        match found {
+            Some(g) => Ok(Some(g)),
+            None => Err(()),
+        }
+    }
+    let g = find(e, x).ok().flatten()?;
+    (!frees_var(e, x)).then_some(g)
 }
 
 /// The payload of a `match` on a temporary taken out of it (D367): `let

@@ -622,6 +622,10 @@ pub struct Gen<'p> {
     /// The owned arrays whose elements the gather of a permutation takes
     /// (D548): read without a copy, the array freed alone.
     moving: HashSet<VarId>,
+    /// The gathers by the identity of arrays whose elements move (D706):
+    /// the `map` (its node) and the array, whose elements it did not read
+    /// are freed right after it.
+    gathers: HashMap<usize, VarId>,
     /// The owned arrays of elements that own memory read by a `concat`
     /// alone, then freed (D638): their elements moved into it when both
     /// sides are, each side then bound to its block alone.
@@ -1704,6 +1708,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         literal_test: false,
         taking: HashSet::new(),
         moving: HashSet::new(),
+        gathers: HashMap::new(),
         giving: HashSet::new(),
         rebound: Vec::new(),
         freed_early: HashSet::new(),
@@ -6828,6 +6833,20 @@ impl<'p> Gen<'p> {
                 if let Some(b) = &buf {
                     self.stack_strs.insert(iv.r.clone(), b.clone());
                 }
+                // the gather of an array whose elements it moved (D706): the
+                // elements past its length, never read, freed
+                if let Some(x) = self.gathers.get(&(&**init as *const Expr as usize)).copied() {
+                    let xv = self.env[&x].clone();
+                    let et = self.p.vars[x as usize].ty.elem().clone();
+                    let xp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                    let xn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+                    let yn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", iv.r));
+                    self.for_range_scalar(&yn, &xn, 1, &mut |g, i| {
+                        let el = g.load_elem(&xp, &xn, i, &et, 1);
+                        g.drop_value(&el, &et);
+                        Ok(())
+                    })?;
+                }
                 // a text taken out of a tuple: tested as a literal wherever it
                 // is freed (at the end of its scope, by a `free`, before the
                 // jump of a tail call; D518). (A name of a register: one met
@@ -6858,15 +6877,17 @@ impl<'p> Gen<'p> {
                     self.taking.insert(*var);
                 }
                 // its elements to the gather of a permutation of it, which
-                // moves them (D548): its block alone freed after
-                let moves = *drop
-                    && !early
-                    && w == 1
-                    && !self.p.views.contains(var)
-                    && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e))
-                    && isc_ir::passes::permutation_gather(body, *var).is_some();
+                // moves them (D548), or to a `map` of its places from 0 that
+                // reads each once (D706): its block alone freed after, with
+                // the elements that `map` did not read
+                let movable = *drop && !early && w == 1 && !self.p.views.contains(var) && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e));
+                let gather = if movable && isc_ir::passes::permutation_gather(body, *var).is_none() { isc_ir::passes::identity_gather(body, *var) } else { None };
+                let moves = movable && (gather.is_some() || isc_ir::passes::permutation_gather(body, *var).is_some());
                 if moves {
                     self.moving.insert(*var);
+                }
+                if let Some(g) = gather {
+                    self.gathers.insert(g as usize, *var);
                 }
                 // its elements to the `concat` that reads it alone (D638):
                 // its block alone freed after, when they were moved
@@ -6877,6 +6898,9 @@ impl<'p> Gen<'p> {
                 self.take_let_dest(e);
                 let r = self.ex(body, w);
                 self.moving.remove(var);
+                if let Some(g) = gather {
+                    self.gathers.remove(&(g as usize));
+                }
                 self.freed_early.remove(var);
                 let iv = if takes || gives {
                     self.taking.remove(var);

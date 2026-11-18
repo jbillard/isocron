@@ -1054,9 +1054,19 @@ impl<'a> Interp<'a> {
                 self.eval(body)?
             }
             Tuple(es) => {
-                let mut vs = Vec::new();
-                for x in es {
-                    vs.push(self.eval(x)?);
+                // every part computed before the tuple takes any (D705): a
+                // variable moved there taken after the others
+                let moved = |a: &Expr| matches!(a.kind, Var(_, isc_ir::Use::Move));
+                let mut vs = vec![Value::Unit; es.len()];
+                for (k, x) in es.iter().enumerate() {
+                    if !moved(x) {
+                        vs[k] = self.eval(x)?;
+                    }
+                }
+                for (k, x) in es.iter().enumerate() {
+                    if moved(x) {
+                        vs[k] = self.eval(x)?;
+                    }
                 }
                 Value::Tuple(Rc::new(vs))
             }
@@ -1126,9 +1136,21 @@ impl<'a> Interp<'a> {
                 None => Value::Int(self.array(x)?.len() as i64),
             },
             ArrayLit(es) => {
+                // (a row moved there taken after the others, D705)
+                let moved = |a: &Expr| matches!(a.kind, Var(_, isc_ir::Use::Move));
+                let mut vs = vec![Value::Unit; es.len()];
+                for (k, x) in es.iter().enumerate() {
+                    if !moved(x) {
+                        vs[k] = self.eval(x)?;
+                    }
+                }
+                for (k, x) in es.iter().enumerate() {
+                    if moved(x) {
+                        vs[k] = self.eval(x)?;
+                    }
+                }
                 let mut a = Array::with_capacity(e.ty.elem(), es.len());
-                for x in es {
-                    let v = self.eval(x)?;
+                for v in vs {
                     a.push(v);
                 }
                 Value::Array(Rc::new(a))
