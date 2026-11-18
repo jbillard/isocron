@@ -42,10 +42,9 @@ fn each_allocation_has_its_rule() {
     let d = dump(&es);
     // read from a file: an input, no rule
     assert!(find(&es, "alloc", 2)[0].why.contains("read from a file"), "{}", d);
-    // read once by `sum` and `max` together (F3), but a statement of an
-    // action: computed before the next statement (section 12)
-    let x = find(&es, "alloc", 3);
-    assert!(x[0].why.contains("section 12"), "{}", d);
+    // read by the next statement alone, no effect between: computed there
+    // (D701), read once by `sum` and `max` together (F3): never made
+    assert!(find(&es, "alloc", 3).is_empty(), "{}", d);
     // used twice: M1
     let y = find(&es, "alloc", 9);
     assert_eq!(y[0].rule, Some("M1"), "{}", d);
@@ -68,6 +67,26 @@ fn each_allocation_has_its_rule() {
     // the fold
     assert_eq!(find(&es, "bounds", 17).len(), 2, "{}", d);
     assert!(find(&es, "bounds", 2)[0].what == "args[0]", "{}", d);
+}
+
+#[test]
+fn a_statement_value_before_an_effect_is_made_whole() {
+    // a clock read between the statement and the one that reads it: its
+    // value computed before (section 12, D701)
+    let es = report(
+        "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const x = map(iota(n), (i) => f64(i) * 2.0);
+    const t0 = clock();
+    print(sum(x) + max(x));
+    print(clock() - t0);
+    return 0;
+}
+",
+    );
+    let d = dump(&es);
+    let x = find(&es, "alloc", 3);
+    assert!(x[0].why.contains("section 12"), "{}", d);
 }
 
 #[test]

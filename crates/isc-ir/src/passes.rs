@@ -31,10 +31,27 @@ type R<T> = std::result::Result<T, Diagnostic>;
 
 /// Runs all passes.
 pub fn optimize(p: &mut Program) -> R<()> {
+    // the pure values of the statements of an action computed where they
+    // are read, when no effect runs in between (D701)
+    let eff = crate::statements::effectful_fns(p);
+    crate::statements::statement_values(&mut p.body, &eff);
+    for f in p.fns.iter_mut() {
+        crate::statements::statement_values(&mut f.body, &eff);
+    }
+    // an input read whole for a `fold` of its runs alone: read by parts
+    // (D702)
+    let runs = std::mem::take(&mut p.runs);
+    crate::statements::input_pieces(&mut p.body, &runs, &eff, &mut p.vars);
+    for f in p.fns.iter_mut() {
+        crate::statements::input_pieces(&mut f.body, &runs, &eff, &mut p.vars);
+    }
     optimize_body(&mut p.body, &mut p.vars);
     for f in p.fns.iter_mut() {
         optimize_body(&mut f.body, &mut p.vars);
     }
+    // the elements of a `map` that are loops made before a `reduce` of the
+    // fixed form, in the statements of `main` (D703)
+    crate::statements::made_before_reduce(&mut p.body, &mut p.vars);
     element_updates(&mut p.body, &mut HashMap::new());
     reads_first_in(&mut p.body);
     for f in p.fns.iter_mut() {
@@ -1020,6 +1037,9 @@ fn copy_prop(e: &mut Expr, ren: &mut HashMap<VarId, VarId>) {
 pub fn is_producer(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Map(..) | ExprKind::Iota(_) | ExprKind::Fill(..) | ExprKind::Zeros(_) => true,
+        // the parts of the input, read by the `fold` they are the source of
+        // (D702)
+        ExprKind::InputPieces(_) => true,
         // a slice of a producer computes only its elements (F1, views)
         ExprKind::Slice(x, _, _) => is_producer(x),
         _ => false,
@@ -1070,6 +1090,8 @@ fn views_elems(e: &Expr) -> bool {
         // be the inputs')
         ExprKind::Map(_, l) => row_view(&l.body) && borrowed_from(&l.body, &|v| vec![v]).is_some_and(|vs| !vs.iter().any(|v| l.params.contains(v))),
         ExprKind::Slice(x, _, _) => views_elems(x),
+        // (views of the buffer of the input, D702)
+        ExprKind::InputPieces(_) => true,
         _ => false,
     }
 }
@@ -1136,7 +1158,7 @@ pub(crate) fn fusable_slots(e: &Expr) -> Vec<usize> {
 
 pub fn is_pure(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::Action(..) | ExprKind::Bench(..) | ExprKind::Tasks(..) => false,
+        ExprKind::Action(..) | ExprKind::Bench(..) | ExprKind::Tasks(..) | ExprKind::InputPieces(_) => false,
         _ => e.children().into_iter().all(is_pure),
     }
 }

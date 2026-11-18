@@ -231,6 +231,9 @@ struct Env<'p> {
 pub struct Lower<'p> {
     p: &'p TProgram,
     vars: Vec<VarInfo>,
+    /// The runs of a class inlined (D690), for `statements::input_pieces`
+    /// (D702).
+    runs: Vec<RunsSite>,
     /// The expression being lowered is of the prelude (`VarInfo::prelude`).
     in_prelude: bool,
     shapes: Vec<Shape>,
@@ -311,6 +314,7 @@ impl<'p> Lower<'p> {
         Lower {
             p,
             vars: Vec::new(),
+            runs: Vec::new(),
             in_prelude: false,
             shapes: Vec::new(),
             copy_reasons: Vec::new(),
@@ -443,7 +447,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
     let text_fns = fns.len() as u32;
-    Ok(Program { files: Vec::new(), args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
+    Ok(Program { files: Vec::new(), args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), runs: Vec::new(), stdin_check: None, int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -495,6 +499,14 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
     // (a function of the prelude looked up when it is needed: its body is
     // then checked, D629)
     let named = |want: bool, name: &str| if want { prelude_fn(p, name, sp) } else { Ok(None) };
+    // the check of the parts of the standard input read by parts (D702):
+    // lowered when the program reads its input as a text (before the texts
+    // of integers: it writes one)
+    let reads = reads_stdin_text(&body) || l.fns.iter().flatten().any(|f| reads_stdin_text(&f.body));
+    let stdin_check = match named(reads, "$stdinCheck")? {
+        Some(a) => Some(l.lower_fn(a, vec![], vec![None; 2], vec![None; 2], sp)?),
+        None => None,
+    };
     // the text of an integer written by the prelude (D588): its functions
     // lowered when the program writes one
     let writes = writes_int_text(&body) || l.fns.iter().flatten().any(|f| writes_int_text(&f.body));
@@ -558,6 +570,8 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         sys_paths: [0, 1, 2].map(|k| isc_types::check::system_paths(p, k)),
         sum_slots: sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow()),
         views: Default::default(),
+        runs: std::mem::take(&mut l.runs),
+        stdin_check,
         int_text,
         float_text,
         float_name,
@@ -607,6 +621,11 @@ fn pads_text(e: &Expr) -> bool {
 }
 
 /// `e` writes a text in another case (`toUpperCase`, `toLowerCase`).
+/// `e` reads the standard input as a text (D702).
+fn reads_stdin_text(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Action(ActionOp::ReadStdinText, _)) || e.children().into_iter().any(reads_stdin_text)
+}
+
 fn writes_case_text(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::StrOp(StrOp::ToUpper | StrOp::ToLower, _)) || e.children().into_iter().any(writes_case_text)
 }
@@ -2236,6 +2255,15 @@ impl<'p> Lower<'p> {
     /// primitive it is written for (D626: `Number` of a text,
     /// `replace` and `replaceAll` of texts, the readers of CSV): its panics
     /// there, as those of the runtime's function it replaced.
+    /// The runs of a class inlined (`$rangeRuns`, `$classRuns`), their text
+    /// bound by the first `let`: noted (D702).
+    fn runs_site(&mut self, r: Expr, class: Vec<u8>) -> Expr {
+        if let ExprKind::Let { var, .. } = &r.kind {
+            self.runs.push(RunsSite { var: *var, class });
+        }
+        r
+    }
+
     fn prelude_call(&mut self, name: &str, args: Vec<Expr>, ret: &Type, span: Span) -> R<Expr> {
         // (under `iscc run`, the name of its native form: `native:` and its
         // name, D616)
@@ -2878,6 +2906,7 @@ impl<'p> Lower<'p> {
                     return Err(Diagnostic::new(args[1].span, format!("{}", e)));
                 }
                 let table = ascii_class_runs(src, fl).expect("a class of bytes");
+                let class: Vec<u8> = table.to_vec();
                 let u8t = Type::Int(IntKind::U8);
                 let s = self.expr(env, &args[0])?;
                 // the intervals of the class, or of its complement: four at
@@ -2899,7 +2928,8 @@ impl<'p> Lower<'p> {
                 let Some((mut rs, out)) = chosen else {
                     let lits = table.into_iter().map(|x| Lit::Int(x as i64)).collect();
                     let t = Expr::new(ExprKind::ConstArray(lits), Type::Array(Box::new(u8t), Fixed(Some(256))), span);
-                    return self.prelude_call("$classRuns", vec![s, t], &ty, span);
+                    let r = self.prelude_call("$classRuns", vec![s, t], &ty, span)?;
+                    return Ok(self.runs_site(r, class));
                 };
                 // (empty intervals: 1 .. 0)
                 rs.resize(4, (1, 0));
@@ -2909,7 +2939,8 @@ impl<'p> Lower<'p> {
                     call.push(Expr::lit(Lit::Int(hi as i64), u8t.clone(), span));
                 }
                 call.push(Expr::lit(Lit::Bool(out), Type::Bool, span));
-                return self.prelude_call("$rangeRuns", call, &ty, span);
+                let r = self.prelude_call("$rangeRuns", call, &ty, span)?;
+                return Ok(self.runs_site(r, class));
             }
             // strings (D134)
             // `replace` and `replaceAll` of a text: written in Isocron

@@ -1264,6 +1264,39 @@ fn the_first_array_takes_small_pages() {
     assert!(small < 1536 && large < 1536, "{} KiB, then {} KiB", small, large);
 }
 
+/// D701: the values of the statements of an action read by the next one,
+/// no effect between, computed there: an array of 80 MB summed by the next
+/// statement is never made (`VmHWM` under 8 MiB); with a clock read between
+/// them it is made whole before the clock (section 12). Isocron's allocator
+/// only.
+#[test]
+fn statement_values_computed_where_they_are_read() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let fused = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => i * 3 + 1);
+    const s = sum(xs);
+    print(s);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let whole = fused.replace("    const s = sum(xs);\n", "    const t0 = clock();\n    const s = sum(xs);\n");
+    let most = |src: &str, name: &str| -> u64 {
+        let bin = compile(src, name);
+        let r = run_bin(&bin, &["10000000"]);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        let mut ls = r.stdout.lines();
+        assert_eq!(ls.next(), Some("149999995000000"), "{}", r.stdout);
+        ls.next().unwrap_or("").chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", r.stdout))
+    };
+    let (a, b) = (most(fused, "statement_values_fused"), most(&whole, "statement_values_whole"));
+    assert!(a < 8 * 1024 && b > 78_000, "{} KiB, then {} KiB", a, b);
+}
+
 #[test]
 fn tuples_stored_in_narrower_types() {
     // D687: the values of a `map` followed through the conditions of its

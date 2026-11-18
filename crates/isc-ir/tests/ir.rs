@@ -233,8 +233,10 @@ action main(args: string[k]): i32 {
 }
 
 /// Rule F3 (D100): the four `reduce`s of `stats` become one; the two of
-/// `dep` stay apart (the second uses the first); in an action, two
-/// statements are not grouped (section 12), one expression is.
+/// `dep` stay apart (the second uses the first); in an action, the values
+/// of two statements read by the next one, no effect between, are computed
+/// there (D701) and grouped with it; with a clock read between, they are
+/// not (section 12).
 #[test]
 fn independent_reductions_are_grouped() {
     let p = build(
@@ -262,8 +264,50 @@ action main(args: string[k]): i32 {
 ",
     );
     let reduces = count(&p.body, &|k| matches!(k, ExprKind::Reduce(..)));
-    // stats: 1; dep: 2; the statements `a`, `b`: 2; the last expression: 1
-    assert_eq!(reduces, 6, "{}", print::program(&p));
+    // stats: 1; dep: 2; the statements `a`, `b` and the last expression: 1
+    assert_eq!(reduces, 4, "{}", print::program(&p));
+    let p = build(
+        "action main(args: string[k]): i32 {
+    const x = readF64(args[0]);
+    const a = sum(x);
+    const t0 = clock();
+    const b = max(x);
+    print(a + b + sum(x) + min(x));
+    print(clock() - t0);
+    return 0;
+}
+",
+    );
+    let reduces = count(&p.body, &|k| matches!(k, ExprKind::Reduce(..)));
+    // `a` before the clock: alone; `b` and the last expression: 1
+    assert_eq!(reduces, 2, "{}", print::program(&p));
+}
+
+/// D703: in the statements of `main`, a `reduce` of tuples (the fixed form)
+/// of a `map` whose elements are loops has the `map` made first (its
+/// elements shared out among the threads), then reduced; a `reduce` of an
+/// exact operator on scalars keeps it fused (D201 shares its elements).
+#[test]
+fn elements_that_are_loops_made_before_a_reduce_of_the_fixed_form() {
+    let p = build(
+        "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const r = reduce(map(iota(n), (c) => [sum(map(iota(c), (i) => i * i)), c] as const), (a, b) => {
+        const [s1, m1] = a;
+        const [s2, m2] = b;
+        return [s1 + s2, Math.max(m1, m2)] as const;
+    }, [0, 0] as const);
+    print(r);
+    print(sum(map(iota(n), (c) => sum(map(iota(c), (i) => i * i)))));
+    return 0;
+}
+",
+    );
+    let made = count(&p.body, &|k| matches!(k, ExprKind::Let { init, .. } if matches!(init.kind, ExprKind::Map(..))));
+    let fused = count(&p.body, &|k| matches!(k, ExprKind::Reduce(x, ..) if matches!(x.kind, ExprKind::Map(..))));
+    assert!(made >= 1 && fused >= 1, "{}", print::program(&p));
+    let tuples = count(&p.body, &|k| matches!(k, ExprKind::Reduce(x, ..) if matches!(x.kind, ExprKind::Var(..)) && matches!(x.ty.elem(), isc_ir::Type::Tuple(_))));
+    assert_eq!(tuples, 1, "{}", print::program(&p));
 }
 
 /// A recursive function is not inlined (SPEC section 11, D102): one function

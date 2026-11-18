@@ -988,6 +988,16 @@ impl<'a> Interp<'a> {
         Ok(match &e.kind {
             StrLit(s) => Value::Str(Rc::from(s.as_str())),
             StrOp(op, es) => return self.str_op(e, *op, es),
+            // the parts of the input (D702): the whole input read at once,
+            // one part (none when it is empty), checked as `readStdinText`
+            InputPieces(_) => {
+                let b = rt::read_stdin().map_err(|m| Panic { line: e.span.line, col: e.span.col, msg: m })?;
+                match String::from_utf8(b) {
+                    Ok(t) if t.is_empty() => Value::Array(Rc::new(Array::Str(Vec::new()))),
+                    Ok(t) => Value::Array(Rc::new(Array::Str(vec![Rc::from(t)]))),
+                    Err(err) => return panic_at(e, rt::text(&isc_runtime_core::Panic::StdinNotUtf8(err.utf8_error().valid_up_to() as i64))),
+                }
+            }
             ConstArray(ls) => {
                 let mut a = Array::with_capacity(e.ty.elem(), ls.len());
                 for l in ls {

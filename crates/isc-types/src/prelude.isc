@@ -4115,6 +4115,57 @@ function $asciiRun(b: u8[k], i: i64): i64 {
     return high != 0u64 ? (63 - leadingZeros(high & (0u64 - high))) >> 3 : whole ? 8 : k - i;
 }
 
+// ---------------------------------------------------------------------
+// The standard input read by parts (D702): each part checked as UTF-8 as
+// `readStdinText` checks the whole input (as Rust's `str::from_utf8`: the
+// place of the first sequence of bytes that is no character, one cut by
+// the end of the input too). A part ends after a byte of ASCII, or at the
+// end of the input: the parts checked one by one find the same place.
+
+// The part `b` of the standard input that starts at its byte `at`: "" when
+// it is UTF-8, else the message of the panic of `readStdinText`. Called by
+// the code generator for each part (`Program::stdin_check`).
+function $stdinCheck(b: u8[n], at: i64): string {
+    const bad = $utf8Bad(b);
+    return bad < 0 ? "" : "readStdinText: the standard input is not UTF-8 text (invalid from byte " + toString(at + bad) + ")";
+}
+
+// The place of the first sequence of `b` that is no character of UTF-8, -1
+// when there is none: bytes that are all ASCII told at once (by vectors),
+// else `$utf8From`.
+function $utf8Bad(b: u8[n]): i64 {
+    return reduce(b, (x, y) => x | y, 0u8) < 0x80u8 ? -1 : $utf8From(b, 0);
+}
+
+// `$utf8Bad` from `i`, the start of a character. A first byte and the
+// bytes that follow it as Unicode's table 3-7 has them (the second byte
+// after E0, ED, F0 and F4 in its narrower range: no longer form than
+// needed, no surrogate, nothing past U+10FFFF); the bytes of ASCII passed
+// up to 8 at a time (`$asciiRun`).
+function $utf8From(b: u8[n], i: i64): i64 {
+    if (i >= n) {
+        return -1;
+    }
+    const c = b[i];
+    if (c < 0x80u8) {
+        return $utf8From(b, i + $asciiRun(b, i));
+    }
+    const k = c < 0xC2u8 ? 0 : c < 0xE0u8 ? 2 : c < 0xF0u8 ? 3 : c < 0xF5u8 ? 4 : 0;
+    if (k == 0 || i + k > n) {
+        return i;
+    }
+    const lo = c == 0xE0u8 ? 0xA0u8 : c == 0xF0u8 ? 0x90u8 : 0x80u8;
+    const hi = c == 0xEDu8 ? 0x9Fu8 : c == 0xF4u8 ? 0x8Fu8 : 0xBFu8;
+    const c1 = b[i + 1];
+    const ok = c1 >= lo && c1 <= hi && (k < 3 || $utf8Next(b[i + 2])) && (k < 4 || $utf8Next(b[i + 3]));
+    return ok ? $utf8From(b, i + k) : i;
+}
+
+// A byte that continues a character: `10xxxxxx`.
+function $utf8Next(x: u8): boolean {
+    return x >= 0x80u8 && x <= 0xBFu8;
+}
+
 // A text of `n` spaces: every place in it is between two characters. (Its
 // bytes are known to be ASCII when the program is compiled: nothing is
 // checked when it runs, D450.)

@@ -17171,3 +17171,95 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (`pairs(...).length` of `vector_filter_guards.isc`, whose test counts the
   compressions of the filters made: the program now makes them too). Test
   `folds_read_filters_by_windows` (bitwise.rs).
+
+- **D701 — The pure values of the statements of an action computed where
+  they are read (2026-11-18, the author's choice among three).** Section 12
+  made the value of every `const` of an action whole before the next
+  statement, so that a pure computation could not leave a zone timed by
+  `clock()`; `const words = matches(text, r)` read by the next statement
+  alone was made whole (countwords, 307.6 MiB as written, 82.8 MiB in one
+  statement). Three ways were put to the author: keep the rule; keep it and
+  compute the elements again where they are read (as D293); relax it when
+  no effect lies between. The third was chosen: the value of a `const`
+  whose computation is pure is computed in the statement that reads it
+  when every statement between them is pure, that statement reads it before
+  any effect of its own (pure, or pure `let`s around an action or a call of
+  one whose arguments are pure), never in a lambda nor in a `bench`, and no
+  later statement reads it (`statements::statement_values`, before the
+  other passes: a `let` that is no statement, fused there as in a
+  function). Nothing can see the difference: no clock read, no output, no
+  action in between; but for the panic reported when several pure values
+  moved together can panic, unspecified as in a function (section 5); a
+  value read nowhere is still computed at its place.
+  An effect between them keeps the rule (`const x = ...; const t0 =
+  clock(); f(x)`: `x` whole before the clock). The Benchmarks Game changes
+  where its programs bind pure values before the statement that reads them
+  (binarytrees, fannkuchredux, spectralnorm, rtiow, walk), the same times
+  within 0.6 % but fannkuch-redux, 21.4 % slower until D703.
+  Tests `statement_values_computed_where_they_are_read` (memory.rs),
+  `a_statement_value_before_an_effect_is_made_whole` (report.rs),
+  `independent_reductions_are_grouped` (ir.rs).
+
+- **D702 — The standard input read by parts (2026-11-18).** Even computed
+  where they are read (D701), the words of countwords kept the input whole
+  and its copy in lower case (82.8 MiB; the author: "beaucoup beaucoup
+  trop"). `const t = readStdinText()` (in a case or not) read once, by the
+  runs of a class of ASCII bytes of it (`matches(t, /[c]+/g)`, D690, the
+  lowering notes where it inlined `$rangeRuns` or `$classRuns`: `RunsSite`)
+  whose values a `fold` or a length reads (through `let`s read once and
+  `map`s or `filter`s of them alone), in the statement that reads `t` with
+  no effect between (D701) nor before the `fold` in that statement, which
+  evaluates it once (no lambda, no branch on the way): the `fold` runs over
+  the parts of the input (`InputPieces`, `statements::input_pieces`), and
+  for each part over the runs of its text in the same case. A part ends
+  after the last byte read that is ASCII and out of the class in the case
+  of the text (a table of 256 bytes): no run crosses it, no character is
+  cut, so the runs of the whole are those of the parts in order and the
+  case of the whole that of the parts (each character mapped alone, D608).
+  The code generator reads the input itself under Linux, a `syscall` of
+  `read` on the descriptor 0 into a buffer of 64 KiB (no new function of
+  the runtime, D622: a primitive of the compiler, as section 17 plans
+  `sysRead`), looks for the last such byte among those just read, folds the
+  part, moves the rest to the start of the buffer and reads after it; the
+  buffer doubles when it is full of bytes none of which ends a part (a run
+  longer than it); a read interrupted by a signal is read again, one that
+  fails leaves the rest to the runtime (`isc_read_stdin`, whose panic is
+  that of the whole read). Each part is checked as UTF-8 by the prelude
+  (`$stdinCheck`: the bytes all ASCII told by vectors, else Unicode's table
+  3-7; its byte counted from the start of the input), the panic that of
+  `readStdinText` at its place. Each part is a view of the buffer during the
+  step of the `fold` alone: the accumulator owns its value (a part kept is
+  copied). The interpreter, Windows and WebAssembly read the input whole,
+  one part. The type of the accumulator of the `fold` of each part is that
+  of the function of the `fold`: the type of its first value fixed the
+  sizes of the table of `$countText` (1024 slots, 512 keys), which the code
+  generator wrote back at each part (found by a table that grew in the
+  first part and was read with its first sizes in the second). The one
+  thing that changes beyond the memory: a panic of the computation of a
+  part comes before that of the read of a later part (bytes that are not
+  UTF-8 there), which the whole read reported first. countwords: 82.8 to
+  19.5 MiB at its peak, 10.2 while it counts (its table of 32187 words in
+  the chunks of the allocator, huge pages), 0.8 MiB for the number of its
+  words (0.023 s for 43 MB); 24 MB of 200 words counted in 1.3 MiB. Tests
+  in input_parts.rs (the interpreter's outputs and panics, a pipe and a
+  file, a run of 100 KB, cases whose texts change length, Valgrind, the
+  memory, the forms read whole).
+
+- **D703 — The elements that are loops made before a `reduce` of the fixed
+  form (2026-11-18).** D701 computed the chunks of fannkuch-redux in the
+  statement of their `reduce`, fused into it: a `reduce` of tuples, whose
+  fixed form (section 10) groups its elements by blocks of 4096, put its
+  few chunks on one thread (2839 to 3447 ms on 4 threads; the same form in
+  a function had the same fault). In the statements of `main`, outside the
+  functions given to arrays, a `reduce` of tuples of a `map` whose
+  elements are loops
+  (`blocks::inner_loop`) has the `map` made first (`statements::
+  made_before_reduce`, after the other passes of the body), its elements
+  shared out by chunks as any such `map` (D143), then reduced: the same
+  bits, the grouping of the fixed form unchanged. fannkuch-redux 2844.5 to
+  2839.0 ms; the rest of the corpus the same IR as with D701. A `reduce`
+  of scalars keeps its fusion (its blocks parallel once there are many
+  elements; first done for floats too, the sums of the windows of `wsum` of
+  report.rs were made whole): a few elements that are loops reduced as
+  floats stay on one thread, a case left to the code generator, which
+  knows their number.

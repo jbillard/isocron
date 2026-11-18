@@ -365,6 +365,9 @@ impl<'p> Checker<'p> {
             // data of the program (D173): borrowed from no variable, never
             // given away nor freed
             ConstArray(_) | ConstStrs(_) => Ok(Val::View(Vec::new())),
+            // the parts of the input (D702): read only as the source of a
+            // `fold` (`eval_src`), views of its buffer
+            InputPieces(_) => fail(e.span, "the parts of the input read elsewhere than by a `fold`".into()),
             // a string literal: borrowed data of the program (D301); a
             // `bigint` literal is made
             StrLit(_) if e.ty == Type::Str => Ok(Val::View(Vec::new())),

@@ -106,6 +106,7 @@ pub fn expr(e: &Expr, p: &Program, ind: usize, s: &mut String) {
         Copy(_) => "copy".into(),
         CopyTaking(_, ps) => format!("copy taking {:?}", ps),
         Action(op, _) => format!("action {:?}", op),
+        InputPieces(_) => "input pieces".into(),
         Bench(..) => "bench".into(),
         Call(f, _) => format!("call {}#{}", p.fns[*f as usize].name, f),
         Box(_) => "box".into(),

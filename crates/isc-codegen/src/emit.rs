@@ -170,7 +170,9 @@ fn text_fns_reached(p: &Program) -> HashSet<u32> {
     // (D608, lowered when the program changes a case), the entries of the
     // allocator (D605, in every program)
     let kernel = p.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
-    for f in p.digit_words.into_iter().chain(p.case_text).chain(kernel) {
+    // (the check of the parts of the input read by parts, D702, when it is)
+    let parts = p.stdin_check.filter(|_| has_input_pieces(&p.body) || p.fns.iter().any(|f| has_input_pieces(&f.body)));
+    for f in p.digit_words.into_iter().chain(p.case_text).chain(parts).chain(kernel) {
         if f >= p.text_fns && out.insert(f) {
             todo.push(f);
         }
@@ -179,6 +181,11 @@ fn text_fns_reached(p: &Program) -> HashSet<u32> {
         scan(p, &p.fns[f as usize].body, &mut out, &mut todo);
     }
     out
+}
+
+/// `e` reads the standard input by parts (D702).
+fn has_input_pieces(e: &Expr) -> bool {
+    matches!(e.kind, ExprKind::InputPieces(_)) || e.children().into_iter().any(has_input_pieces)
 }
 
 /// The lambda of a `scan` is a predefined associative operator of SPEC
@@ -7437,6 +7444,9 @@ impl<'p> Gen<'p> {
             Scan(x, l, z) => self.scan(e, x, l, z),
             Filter(x, l) => self.filter(e, x, l),
             Tasks(x, l) => self.tasks(e, x, l),
+            // the standard input read by parts (D702)
+            Fold(x, init, l) if matches!(x.kind, InputPieces(_)) => self.fold_input(x, init, l),
+            InputPieces(_) => Err("codegen: the parts of the input read elsewhere than by a `fold`".into()),
             // the text of a write, written by parts (D686)
             Fold(x, init, l) if w == 1 && self.text_sink.as_ref().is_some_and(|s| s.0 == e as *const Expr as usize) => {
                 let sink = self.text_sink.take().unwrap();
@@ -13827,6 +13837,205 @@ impl<'p> Gen<'p> {
             g.block(&lnext);
             Ok(())
         })?;
+        let r = self.ins(format!("load {}, ptr {}", alt, acc));
+        Ok(v(r, alt))
+    }
+
+    /// A `fold` over the parts of the standard input (D702, `InputPieces`).
+    /// Under Linux, the input read by the system (`read` of the descriptor
+    /// 0, a `syscall` written here: no function of the runtime, D622) into
+    /// a buffer of INPUT_PART bytes: each part the bytes read up to the
+    /// last one the table marks (looked for among those just read: the
+    /// others hold none), checked as UTF-8 (`$stdinCheck`: the message of
+    /// `readStdinText`'s panic, at the place of the read), then folded; the
+    /// bytes after it moved to the start of the buffer and the input read
+    /// after them; the buffer doubled when it is full of bytes none of which
+    /// the table marks; at the end of the input, the rest, when there is
+    /// one. A read interrupted by a signal is read again; one that fails
+    /// leaves the rest of the input to the runtime (`isc_read_stdin`),
+    /// which says the error as the whole read did, or reads it. Elsewhere
+    /// (Windows, WebAssembly), the input read whole by the runtime, one part.
+    fn fold_input(&mut self, x: &Expr, init: &Expr, l: &Lambda) -> R<V> {
+        const INPUT_PART: i64 = 1 << 16;
+        let ExprKind::InputPieces(cut) = &x.kind else { unreachable!() };
+        let pos = Self::pos(x.span);
+        let Some(check) = self.p.stdin_check else {
+            return Err("codegen: the parts of the input, their check not lowered".into());
+        };
+        let cc = self.fn_cc();
+        let iv = self.ex(init, 1)?;
+        let at = init.ty.clone();
+        let alt = lt(&at);
+        let acc = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, iv.r, acc));
+        // a step of the fold: the part of `n` bytes at `p`, from the byte
+        // `from` of the input
+        let step = |g: &mut Self, p: &str, n: &str, from: &str| -> R<()> {
+            let part = g.arr(p, n);
+            let msg = g.ins(format!("call {}{{ ptr, i64 }} @isc_fn_{}({{ ptr, i64 }} {}, i64 {})", cc, check, part.r, from));
+            let ml = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", msg));
+            let bad = g.ins(format!("icmp ne i64 {}, 0", ml));
+            let (lbad, lok) = (g.label(), g.label());
+            g.cbr(&bad, &lbad, &lok);
+            g.block(&lbad);
+            let mp = g.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", msg));
+            g.emit(format!("call void @isc_panic_text(ptr {}, i64 {}, ptr {}, i64 0, ptr {}, i64 0, {})", mp, ml, mp, mp, pos));
+            g.emit("unreachable");
+            g.block(&lok);
+            g.drop_value(&v(msg, "{ ptr, i64 }"), &Type::Str);
+            let a = g.ins(format!("load {}, ptr {}", alt, acc));
+            let av = v(a, alt.clone());
+            g.bind(l.params[0], av.clone());
+            g.bind(l.params[1], part);
+            let r = g.ex(&l.body, 1)?;
+            if l.drop_params[0] {
+                g.drop_value(&av, &at);
+            }
+            g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+            Ok(())
+        };
+        if self.opts.windows || self.opts.isa.is_wasm() {
+            let slot = self.alloca("{ ptr, i64 }");
+            self.emit(format!("call void @isc_read_stdin(ptr {}, {})", slot, pos));
+            let all = self.ins(format!("load {{ ptr, i64 }}, ptr {}", slot));
+            let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", all));
+            let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", all));
+            let some = self.ins(format!("icmp sgt i64 {}, 0", n));
+            let (lone, lend) = (self.label(), self.label());
+            self.cbr(&some, &lone, &lend);
+            self.block(&lone);
+            step(self, &p, &n, "0")?;
+            self.br(&lend);
+            self.block(&lend);
+            self.drop_value(&v(all, "{ ptr, i64 }"), &Type::Array(Box::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY));
+            let r = self.ins(format!("load {}, ptr {}", alt, acc));
+            return Ok(v(r, alt));
+        }
+        self.decls.insert("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)".into());
+        let table = self.ex(cut, 1)?;
+        let tp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", table.r));
+        self.emit("call void @isc_flush()");
+        let (bufs, caps, fills, froms, ends, plens, scans) =
+            (self.alloca("ptr"), self.alloca("i64"), self.alloca("i64"), self.alloca("i64"), self.alloca("i1"), self.alloca("i64"), self.alloca("i64"));
+        let b0 = self.ins(format!("call ptr @isc_alloc(i64 {})", INPUT_PART));
+        self.emit(format!("store ptr {}, ptr {}", b0, bufs));
+        self.emit(format!("store i64 {}, ptr {}", INPUT_PART, caps));
+        self.emit(format!("store i64 0, ptr {}", fills));
+        self.emit(format!("store i64 0, ptr {}", froms));
+        self.emit(format!("store i1 false, ptr {}", ends));
+        let [ltop, lgrow, lread, lsys, lgot, lerr, lok, lend, ladd, lscan, lbyte, lnext, lhit, lcut, lpart, ldone] = [(); 16].map(|_| self.label());
+        self.br(&ltop);
+        // room in the buffer, or a buffer twice as large
+        self.block(&ltop);
+        let f = self.ins(format!("load i64, ptr {}", fills));
+        let c = self.ins(format!("load i64, ptr {}", caps));
+        let full = self.ins(format!("icmp eq i64 {}, {}", f, c));
+        self.cbr(&full, &lgrow, &lread);
+        self.block(&lgrow);
+        let c2 = self.ins(format!("shl i64 {}, 1", c));
+        let nb = self.ins(format!("call ptr @isc_alloc(i64 {})", c2));
+        let ob = self.ins(format!("load ptr, ptr {}", bufs));
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", nb, ob, f));
+        self.emit(format!("call void @isc_free(ptr {})", ob));
+        self.emit(format!("store ptr {}, ptr {}", nb, bufs));
+        self.emit(format!("store i64 {}, ptr {}", c2, caps));
+        self.br(&lread);
+        // the bytes read after those in the buffer
+        self.block(&lread);
+        let b = self.ins(format!("load ptr, ptr {}", bufs));
+        let f = self.ins(format!("load i64, ptr {}", fills));
+        let c = self.ins(format!("load i64, ptr {}", caps));
+        let dst = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, f));
+        let room = self.ins(format!("sub i64 {}, {}", c, f));
+        self.br(&lsys);
+        self.block(&lsys);
+        let r = self.ins(format!(
+            "call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},{{rsi}},{{rdx}},~{{rcx}},~{{r11}},~{{memory}},~{{dirflag}},~{{fpsr}},~{{flags}}\"(i64 0, i64 0, ptr {}, i64 {})",
+            dst, room
+        ));
+        // (EINTR)
+        let intr = self.ins(format!("icmp eq i64 {}, -4", r));
+        self.cbr(&intr, &lsys, &lgot);
+        self.block(&lgot);
+        let neg = self.ins(format!("icmp slt i64 {}, 0", r));
+        self.cbr(&neg, &lerr, &lok);
+        // an error: the rest of the input read by the runtime (or its panic)
+        // after the bytes in the buffer, then the end
+        self.block(&lerr);
+        let slot = self.alloca("{ ptr, i64 }");
+        self.emit(format!("call void @isc_read_stdin(ptr {}, {})", slot, pos));
+        let rest = self.ins(format!("load {{ ptr, i64 }}, ptr {}", slot));
+        let rp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", rest));
+        let rn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", rest));
+        let need = self.ins(format!("add i64 {}, {}", f, rn));
+        let size = self.ins(format!("add i64 {}, 1", need));
+        let nb = self.ins(format!("call ptr @isc_alloc(i64 {})", size));
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", nb, b, f));
+        let at_end = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", nb, f));
+        self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at_end, rp, rn));
+        self.emit(format!("call void @isc_free(ptr {})", b));
+        self.drop_value(&v(rest, "{ ptr, i64 }"), &Type::Array(Box::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY));
+        self.emit(format!("store ptr {}, ptr {}", nb, bufs));
+        self.emit(format!("store i64 {}, ptr {}", size, caps));
+        self.emit(format!("store i64 {}, ptr {}", need, fills));
+        self.emit(format!("store i1 true, ptr {}", ends));
+        self.br(&lcut);
+        self.block(&lok);
+        let none = self.ins(format!("icmp eq i64 {}, 0", r));
+        self.cbr(&none, &lend, &ladd);
+        self.block(&lend);
+        self.emit(format!("store i1 true, ptr {}", ends));
+        self.br(&lcut);
+        // the last byte the table marks among those just read
+        self.block(&ladd);
+        let f2 = self.ins(format!("add i64 {}, {}", f, r));
+        self.emit(format!("store i64 {}, ptr {}", f2, fills));
+        self.emit(format!("store i64 {}, ptr {}", f2, scans));
+        self.br(&lscan);
+        self.block(&lscan);
+        let i = self.ins(format!("load i64, ptr {}", scans));
+        let done = self.ins(format!("icmp eq i64 {}, {}", i, f));
+        self.cbr(&done, &ltop, &lbyte);
+        self.block(&lbyte);
+        let im = self.ins(format!("sub i64 {}, 1", i));
+        let bp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, im));
+        let byte = self.ins(format!("load i8, ptr {}", bp));
+        let ix = self.ins(format!("zext i8 {} to i64", byte));
+        let mp = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", tp, ix));
+        let mark = self.ins(format!("load i8, ptr {}", mp));
+        let hit = self.ins(format!("icmp ne i8 {}, 0", mark));
+        self.cbr(&hit, &lhit, &lnext);
+        self.block(&lnext);
+        self.emit(format!("store i64 {}, ptr {}", im, scans));
+        self.br(&lscan);
+        self.block(&lhit);
+        self.emit(format!("store i64 {}, ptr {}", i, plens));
+        self.br(&lpart);
+        // the end of the input: the rest, if any
+        self.block(&lcut);
+        let f = self.ins(format!("load i64, ptr {}", fills));
+        let empty = self.ins(format!("icmp eq i64 {}, 0", f));
+        self.emit(format!("store i64 {}, ptr {}", f, plens));
+        self.cbr(&empty, &ldone, &lpart);
+        // a part: folded, the bytes after it moved to the start
+        self.block(&lpart);
+        let b = self.ins(format!("load ptr, ptr {}", bufs));
+        let n = self.ins(format!("load i64, ptr {}", plens));
+        let from = self.ins(format!("load i64, ptr {}", froms));
+        step(self, &b, &n, &from)?;
+        let b = self.ins(format!("load ptr, ptr {}", bufs));
+        let f = self.ins(format!("load i64, ptr {}", fills));
+        let left = self.ins(format!("sub i64 {}, {}", f, n));
+        let src = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", b, n));
+        self.emit(format!("call void @llvm.memmove.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", b, src, left));
+        self.emit(format!("store i64 {}, ptr {}", left, fills));
+        let from2 = self.ins(format!("add i64 {}, {}", from, n));
+        self.emit(format!("store i64 {}, ptr {}", from2, froms));
+        let end = self.ins(format!("load i1, ptr {}", ends));
+        self.cbr(&end, &lcut, &ltop);
+        self.block(&ldone);
+        let b = self.ins(format!("load ptr, ptr {}", bufs));
+        self.emit(format!("call void @isc_free(ptr {})", b));
         let r = self.ins(format!("load {}, ptr {}", alt, acc));
         Ok(v(r, alt))
     }

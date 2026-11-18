@@ -20,6 +20,7 @@ pub mod print;
 pub mod ranges;
 pub mod report;
 pub mod requirements;
+pub mod statements;
 pub mod verify;
 
 pub use isc_syntax::ast::{BinOp, UnOp};
@@ -463,6 +464,15 @@ pub enum ExprKind {
     /// pass in the branch of an `if` that does not consume a variable the
     /// other branch moves (D105).
     Free(VarId, Box<Expr>),
+    /// The standard input read by parts (D702), only as the source of a
+    /// `fold` (`statements::input_pieces` makes it there, in an action):
+    /// texts, each a view of the bytes read so far up to the last one
+    /// that the table (256 bytes of 0 or 1) marks, the last one the rest
+    /// of the input; checked as UTF-8 as `readStdinText` checks the whole
+    /// input, its panic at this place. Each text lives during the step of
+    /// the `fold` that reads it alone. Elsewhere (and in the interpreter):
+    /// the whole input, one text (none for an empty input).
+    InputPieces(Box<Expr>),
 }
 
 /// A recursive sum type, for its type arguments: the tuple a node holds (the
@@ -475,6 +485,16 @@ pub struct RecType {
 }
 
 /// A recursive function, specialized for its type arguments.
+/// A text whose runs of a class of bytes the lowering inlined (D690,
+/// D702): `var` the parameter of the text of `$rangeRuns` or `$classRuns`
+/// (bound by the first `let` of the inlined body), `class` the bytes of
+/// the class (256 entries, 1 in it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunsSite {
+    pub var: VarId,
+    pub class: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Function {
     pub name: String,
@@ -556,6 +576,16 @@ pub struct Program {
     /// or a text that lives longer (D555): each owns its block alone, freed
     /// without its texts, and is never moved (`passes::borrow_elements`).
     pub views: std::collections::BTreeSet<VarId>,
+    /// The runs of a class of bytes of a text (`matches(s, /[c]+/g)`, D690)
+    /// as the lowering inlined them: the variable of the text in the
+    /// prelude's function and the class, for `statements::input_pieces`
+    /// (D702).
+    pub runs: Vec<RunsSite>,
+    /// The function of the prelude that checks a part of the standard
+    /// input read by parts as UTF-8 (`$stdinCheck`, D702), lowered when
+    /// the program reads its input as a text: the code generator calls it
+    /// for each part of an `InputPieces`.
+    pub stdin_check: Option<u32>,
     /// The functions of the prelude that write the text of an `i64` and of
     /// a `u64` (`$rtIntText`, `$rtUintText`, D588), lowered when the program
     /// writes one: the code generator calls them for `toString` of an
@@ -699,7 +729,7 @@ impl Expr {
             Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
             Let { init, body, .. } => vec![init, body],
             Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter().collect(),
-            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
+            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) | InputPieces(e) => vec![e],
             Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => vec![a, b],
             If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => vec![a, b, c],
             Update { target, index, value, .. } => vec![index, value, target],
@@ -720,7 +750,7 @@ impl Expr {
             Lit(_) | Var(..) | Zero | StrLit(_) | ConstArray(_) | ConstStrs(_) => vec![],
             Let { init, body, .. } => vec![init, body],
             Tuple(es) | ArrayLit(es) | Action(_, es) | Call(_, es) | Math(_, es) | StrOp(_, es) => es.iter_mut().collect(),
-            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) => vec![e],
+            Proj(e, _) | Take(e, _) | Unary(_, e) | Convert(e) | Sqrt(e) | Len(e) | Zeros(e) | Iota(e) | Copy(e) | CopyTaking(e, _) | Box(e) | Unbox(e) | Free(_, e) | InputPieces(e) => vec![e],
             Binary(_, a, b) | Pow(a, b) | Index(a, b) | Fill(a, b) | Bench(a, b) | CheckNonNegative(a, b) | Window(a, b) => vec![a, b],
             If(a, b, c) | CheckSize(a, b, c) | Slice(a, b, c) => vec![a, b, c],
             Update { target, index, value, .. } => vec![index, value, target],
