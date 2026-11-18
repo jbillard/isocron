@@ -546,10 +546,16 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         Some(a) => Some(l.lower_fn(a, vec![], vec![None; 6], vec![None; 6], sp)?),
         None => None,
     };
-    // the allocator of the small blocks (D605): its three entries, called
+    // the allocator of the small blocks (D605): its five entries (the texts, D718), called
     // by the generated code alone
-    let kernel = match (named(true, "$kStart")?, named(true, "$kAlloc")?, named(true, "$kFree")?) {
-        (Some(a), Some(b), Some(c)) => Some((l.lower_fn(a, vec![], vec![], vec![], sp)?, l.lower_fn(b, vec![], vec![None], vec![None], sp)?, l.lower_fn(c, vec![], vec![None], vec![None], sp)?)),
+    let kernel = match (named(true, "$kStart")?, named(true, "$kAlloc")?, named(true, "$kFree")?, named(true, "$kAllocText")?, named(true, "$kFreeStr")?) {
+        (Some(a), Some(b), Some(c), Some(d), Some(e)) => Some((
+            l.lower_fn(a, vec![], vec![], vec![], sp)?,
+            l.lower_fn(b, vec![], vec![None], vec![None], sp)?,
+            l.lower_fn(c, vec![], vec![None], vec![None], sp)?,
+            l.lower_fn(d, vec![], vec![None], vec![None], sp)?,
+            l.lower_fn(e, vec![], vec![None], vec![None], sp)?,
+        )),
         _ => None,
     };
     let fns = std::mem::take(&mut l.fns).into_iter().map(|f| f.expect("a recursive function lowered")).collect();

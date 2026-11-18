@@ -628,7 +628,7 @@ pub struct Program {
     pub case_text: Option<u32>,
     /// The entries of the allocator written in Isocron (D605), lowered for
     /// every program: `$kStart`, `$kAlloc`, `$kFree`.
-    pub kernel: Option<(u32, u32, u32)>,
+    pub kernel: Option<(u32, u32, u32, u32, u32)>,
 }
 
 impl Program {
@@ -637,7 +637,7 @@ impl Program {
     /// the generated code alone.
     pub fn kernel_fns(&self) -> std::collections::HashSet<u32> {
         let mut seen = std::collections::HashSet::new();
-        let mut todo: Vec<u32> = self.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
+        let mut todo: Vec<u32> = self.kernel.map(|(a, b, c, d, e)| vec![a, b, c, d, e]).unwrap_or_default();
         while let Some(f) = todo.pop() {
             if seen.insert(f) {
                 calls_of(&self.fns[f as usize].body, &mut todo);

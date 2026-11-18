@@ -169,7 +169,7 @@ fn text_fns_reached(p: &Program) -> HashSet<u32> {
     // when the program pads one), the cases of a text that is not ASCII
     // (D608, lowered when the program changes a case), the entries of the
     // allocator (D605, in every program)
-    let kernel = p.kernel.map(|(a, b, c)| vec![a, b, c]).unwrap_or_default();
+    let kernel = p.kernel.map(|(a, b, c, d, e)| vec![a, b, c, d, e]).unwrap_or_default();
     // (the check of the parts of the input read by parts, D702, when it is)
     let parts = p.stdin_check.filter(|_| has_input_pieces(&p.body) || p.fns.iter().any(|f| has_input_pieces(&f.body)));
     for f in p.digit_words.into_iter().chain(p.case_text).chain(parts).chain(kernel) {
@@ -1890,9 +1890,22 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
     let mut kernel_text = String::new();
     // (on Linux: the arena is not reserved under Windows nor in WebAssembly
     // yet, where the generated code calls the runtime as before)
-    if let (Some((start, alloc, free)), false) = (p.kernel, opts.isa.is_wasm() || opts.windows) {
+    // A text (`isc_alloc_text`, D718): a block of the region of the texts
+    // of the allocator when it is wired, else the runtime's.
+    let wired_kernel = p.kernel.is_some() && !(opts.isa.is_wasm() || opts.windows);
+    if !wired_kernel {
+        for f in g.funcs.iter_mut() {
+            if f.contains("@isc_alloc_text(") || f.contains("@isc_free_text(") {
+                *f = f.replace("@isc_alloc_text(", "@isc_alloc(").replace("@isc_free_text(", "@isc_free(");
+            }
+        }
+        main = main.replace("@isc_alloc_text(", "@isc_alloc(").replace("@isc_free_text(", "@isc_free(");
+    }
+    if let (Some((start, alloc, free, alloc_text, free_str)), false) = (p.kernel, opts.isa.is_wasm() || opts.windows) {
         let late = |text: &str| -> String {
-            text.replace("call noalias ptr @isc_alloc(", "call noalias ptr @isc.late.alloc(")
+            text.replace("call noalias ptr @isc_alloc_text(", "call noalias ptr @isc.late.alloc_text(")
+                .replace("call void @isc_free_text(ptr ", "call void @isc.late.free_text(ptr ")
+                .replace("call noalias ptr @isc_alloc(", "call noalias ptr @isc.late.alloc(")
                 .replace("call ptr @isc_alloc(", "call noalias ptr @isc.late.alloc(")
                 .replace("call noalias ptr @isc_alloc_zeroed(", "call noalias ptr @isc.late.alloc_zeroed(")
                 .replace("call ptr @isc_alloc_zeroed(", "call noalias ptr @isc.late.alloc_zeroed(")
@@ -1919,13 +1932,18 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
             "\ndefine internal void @isc.kernel.start() noinline nounwind {{\nentry:\n  %first = call ptr @isc_alloc(i64 1)\n  call void @isc_free(ptr %first)\n  %mode = load i8, ptr @isc_heap_mode\n  %on = icmp eq i8 %mode, 2\n  br i1 %on, label %go, label %done\ngo:\n  %b = call tailcc i64 @isc_fn_{start}()\n  br label %done\ndone:\n  ret void\n}}\n\
              \ndefine internal noalias ptr @isc.late.alloc(i64 %n) noinline nounwind {{\n{small}  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc(i64 %n)\n  ret ptr %q\n}}\n\
              \ndefine internal noalias ptr @isc.late.alloc_zeroed(i64 %n) noinline nounwind {{\n{small}  call void @llvm.memset.p0.i64(ptr %p, i8 0, i64 %n, i1 false)\n  ret ptr %p\nslow:\n  %q = call noalias ptr @isc_alloc_zeroed(i64 %n)\n  ret ptr %q\n}}\n\
+             \ndefine internal noalias ptr @isc.late.alloc_text(i64 %n) noinline nounwind {{\nentry:\n  %m = add i64 %n, -1\n  %small = icmp ult i64 %m, {text_small}\n  br i1 %small, label %fast, label %slow\nfast:\n  %a = call tailcc i64 @isc_fn_{alloc_text}(i64 %n)\n  %p = inttoptr i64 %a to ptr\n  ret ptr %p\nslow:\n  %q = call noalias ptr @isc.late.alloc(i64 %n)\n  ret ptr %q\n}}\n\
              \ndefine internal void @isc.late.free(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n\
+             \ndefine internal void @isc.late.free_text(ptr %p) noinline nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free_str}(i64 %a)\n  %ours = icmp ne i64 %c, 0\n  br i1 %ours, label %done, label %slow\ndone:\n  ret void\nslow:\n  call void @isc_free(ptr %p)\n  ret void\n}}\n\
              \ndefine internal void @isc.kernel.free(ptr %p) nounwind {{\nentry:\n  %a = ptrtoint ptr %p to i64\n  %c = call tailcc i64 @isc_fn_{free}(i64 %a)\n  ret void\n}}\n\
              {strs}",
             start = start,
             small = small,
             free = free,
-            strs = free_strs_text(free)
+            alloc_text = alloc_text,
+            free_str = free_str,
+            text_small = KERNEL_TEXT_SMALL,
+            strs = free_strs_text(free_str)
         );
     }
     // The functions compiled once (D611). In the module that holds them,
@@ -2354,6 +2372,11 @@ const NO_ARENA: u64 = 1 << 62;
 /// The bytes of the largest block of the kernel written in Isocron (16
 /// classes of 64 bytes); a larger one is the runtime's (D605).
 const KERNEL_SMALL: u64 = 1024;
+
+/// The texts of 1 to `KERNEL_TEXT_SMALL` bytes are blocks of the region of
+/// the texts of the allocator written in Isocron (`$kAllocText`, D718).
+const KERNEL_TEXT_SMALL: u64 = 56;
+
 
 /// The text of an integer not made (D348, D359): the integer (an `i64`), its
 /// sign, and its padding (the length, the byte of the fill, `padStart`).
@@ -4149,7 +4172,7 @@ impl<'p> Gen<'p> {
         // the fast paths of the allocator (D605): leaves, copied into the
         // entries of the generated code; their rare paths are `@cold`
         // functions that test the stack themselves
-        let kernel_entry = self.p.kernel.is_some_and(|(_, a, b)| i as u32 == a || i as u32 == b);
+        let kernel_entry = self.p.kernel.is_some_and(|(_, a, b, t, s)| i as u32 == a || i as u32 == b || i as u32 == t || i as u32 == s);
         // a function that only the prelude can name and that calls no
         // other but in tail position, its frame then given to the callee
         // (the reading of a float hands its text from one function to the
@@ -4940,9 +4963,11 @@ impl<'p> Gen<'p> {
             // only find it out (D518; tested for every text, the code around
             // other drops laid out otherwise by LLVM: `time.formatDateTime`
             // +8.2 %, `strings.template` +3.8 %)
+            // (`isc_free_text`: the path of a block of the region of the
+            // texts of the allocator copied here, D718)
             Type::Str if !self.literal_test && !self.part_values.contains(&x.r) => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
-                self.emit(format!("call void @isc_free(ptr {})", p));
+                self.emit(format!("call void @isc_free_text(ptr {})", p));
             }
             Type::Str => {
                 let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", x.r));
@@ -4954,7 +4979,7 @@ impl<'p> Gen<'p> {
                 let (lfree, ljoin) = (self.label(), self.label());
                 self.cbr(&lit, &ljoin, &lfree);
                 self.block(&lfree);
-                self.emit(format!("call void @isc_free(ptr {})", p));
+                self.emit(format!("call void @isc_free_text(ptr {})", p));
                 self.br(&ljoin);
                 self.block(&ljoin);
             }
@@ -5280,7 +5305,11 @@ impl<'p> Gen<'p> {
     /// holding `total`; `isc_str_reserve` otherwise (another block, a
     /// larger class, glibc's allocator). The layout read is that of
     /// `Header` in `heap.rs` (its class a `u32` at 0, its state a byte at 4),
-    /// asserted there when the runtime is compiled.
+    /// asserted there when the runtime is compiled. A block of the region of
+    /// the texts of the arena (D718) has a header of 8 bytes and is never on
+    /// 64 bytes: its room is the runtime's (`heap::text_room`). (Read here
+    /// too, its path in each of the 12 additions of `time.format` made the
+    /// loop spill its registers: +5.6 % of its instructions.)
     fn reserve_inline(&mut self, p: &str, n: &str, total: &str) -> String {
         if self.opts.isa.is_wasm() {
             return self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", p, n, total));
@@ -17017,12 +17046,13 @@ impl<'p> Gen<'p> {
     }
 
     /// A new block holding the `n` bytes at `p`, the copy of a text (D592):
-    /// `isc_alloc` (the empty block of the runtime for none), then the
+    /// `isc_alloc_text` (a block of the region of the texts of the
+    /// allocator, D718; the empty block of the runtime for none), then the
     /// bytes copied.
     fn text_copy(&mut self, p: &str, n: &str) -> V {
         // (a mark for the tests that count the copies of texts)
         self.emit("; text copy".to_string());
-        let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", n));
+        let dst = self.ins(format!("call noalias ptr @isc_alloc_text(i64 {})", n));
         self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", dst, p, n));
         self.arr(&dst, n)
     }
@@ -17037,6 +17067,10 @@ impl<'p> Gen<'p> {
         for (_, n) in &parts[1..] {
             total = self.ins(format!("add i64 {}, {}", total, n));
         }
+        // (a block with room past its bytes, not one of the region of the
+        // texts, D718: a text made of parts is often then added to, which
+        // the room of its class takes in place, `json.quote` +8 % in a
+        // block of 16 bytes)
         let dst = self.ins(format!("call noalias ptr @isc_alloc(i64 {})", total));
         let mut at = dst.clone();
         for (k, (p, n)) in parts.iter().enumerate() {

@@ -2502,7 +2502,9 @@ fn sorted_pairs_moved_where_printed() {
     let (out_c, most_c) = run(&copied, "pairs_copied", &["200000"]);
     assert_eq!(out_m, "38 1\n38 1\n38 1");
     assert_eq!(out_m, out_c);
-    assert!(most_m + 8 * 1024 < most_c, "moved {} KiB, copied {} KiB", most_m, most_c);
+    // (half the bytes of the keys at least: 200000 of 38 bytes, blocks of
+    // 48 bytes since D718)
+    assert!(most_m + 4 * 1024 < most_c, "moved {} KiB, copied {} KiB", most_m, most_c);
     // the interpreter's output
     let small = |src: &str| src.replace("    const status = lines(readText(\"/proc/self/status\"));\n    print(filter(status, (l) => l.startsWith(\"VmHWM\")));\n", "");
     let bin = compile(&small(moved), "pairs_moved_small");

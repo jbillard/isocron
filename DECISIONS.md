@@ -17532,7 +17532,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     call, and that cannot panic (`cannot_panic`), is not computed: an empty
     array takes its place (`unread_parts`, after the passes of ownership).
     The peak of countwords stays 15.4 MiB (the medium blocks are in huge
-    pages: 512 KiB less frees no page of 2 MiB), its work less.
+    pages: 512 KiB less frees no page of 2 MiB), its work less. Suite 509
+    found two faults of the first version: a part that moved a variable
+    (`[ks, vs, index]` whose `ks` is moved there) left it with no owner
+    (the check of the memory, D96: "`ks` is never freed", in `http`, in
+    18 tests); and an array whose type fixes its length (`[string,
+    string][1]`, the headers of a response copied and never read) made an
+    empty literal whose free read that length ("invalid free" in
+    `text_of_bodies_at_the_edges_of_utf8`). The part now takes nothing (no
+    variable moved, no `take`) and its type fixes no length.
   Test `sorted_pairs_moved_where_printed` (memory.rs: 200000 keys sorted
   in the text printed, 104.2 MB at the most against 128.8 with the
   compiler before, the program that reads the pairs again copies them; no
@@ -17543,3 +17551,56 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (D707); the copy of each part of the input in lower case and the array
   of the places of its words; the text of the output made whole before it
   is written.
+
+- **D718 — The short texts in a region of the arena of their own, blocks
+  of 16 to 64 bytes with a header of 8 (2026-11-19).** A text of 1 to 64
+  bytes took 128 bytes (a header of 64 bytes and a class of 64, D605): the
+  32187 keys of countwords 3.9 MiB of blocks, 6 MiB resident with the huge
+  page they spilled into, against 1.0 MiB in Rust (blocks of 32 bytes of
+  glibc). Now the copy of a text of 1 to 56 bytes by the generated code
+  (`text_copy`: the keys of a table, the texts put into arrays, records,
+  values decoded) takes a block of `$kAllocText` (`isc.late.alloc_text`),
+  in a region of the arena 256 GiB after its start: 3 classes of 16, 32 and
+  64 bytes with a header of 8 bytes (8, 24, 56 bytes of text), each block
+  on a multiple of its size (no text cut by the end of a line of the
+  cache), the text 8 bytes past the start of its block, never on 64 bytes.
+  The header: the class at 0, the state at 4 (a block freed twice is a
+  panic, as before), the next of its list at 8 when free, the batch before
+  it in the bytes 1 to 3 and 5 to 7 (48 bits: a block of 16 bytes holds no
+  more); the lists, batches and zone of the thread those of the blocks of
+  64 bytes of header, 512 bytes further in the zone. Never on 64 bytes, a
+  text of the region is no block for every path that reads the header of
+  64 bytes before a block (the runtime's `free` and `room`, the growth in
+  place by the generated code): those paths test nothing more. A text is
+  freed by `$kFreeStr` (`isc.late.free_text`, the drops of texts and of
+  arrays of texts): the path of the region copied there alone, any other
+  block as `$kFree`; `$kFree`, copied at every other free, keeps its code
+  and reaches the region (`$kFreeText`, by a call) from the failure of its
+  test of the header (a text given to the runtime: `room` reads the class
+  in the header, `free_strs_in` tells such a text from a line of `lines`,
+  both 8 bytes past a multiple of 16, by the arena). Concatenations stay
+  blocks with room past their bytes (texts then added to), longer texts
+  blocks of 64 bytes of header. countwords: 15.4 to 10.0 MiB at its peak,
+  6.4 while it counts (11.9), its keys 668 KiB, the same output; 173.3 ms
+  against 180.1 (the protocol, 11 runs). The rest of the corpus (the
+  Benchmarks Game, walk) within -0.7 to +0.3 %.
+  - Tried and changed on the way, each measured (instructions and cycles
+    of small programs alone, the primitives of `bench/primitives` A/B):
+    blocks without header, their states in a map of the region (a byte
+    for 16 bytes): +37 % of instructions a text copied and freed (the base
+    of the arena, the place of its byte, its own test); the path of the
+    region copied into every free of the generated code (`json.decode`
+    +7 %: its loops spilled their registers), or tested before the path
+    of a block of 64 bytes of header (+5 %), or both kinds in one path,
+    the places chosen by the kind of block (+11 %); the growth in place of
+    a text of the region inline (`time.format` +5.6 % of instructions:
+    spills); blocks of every multiple of 16 up to 256 bytes (a text of 60
+    bytes 8 past a multiple of 16 read two lines of the cache). Kept: a
+    text copied and freed 13 % fewer cycles, `toString` the same
+    instructions, `json.quote` the same instructions and cycles. In one
+    binary of `bench/primitives` several forms moved by 4 to 8 % one way
+    or the other between builds that changed only the place of code
+    (`toString.i64` -5 % then +3.9 %); alone, the slowest of them
+    (`parseIso`, +7.9 % there) has the same instructions and 10 % fewer
+    cycles (220 against 245 million, the loads cut by a line of the cache
+    1600 in both).

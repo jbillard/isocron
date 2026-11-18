@@ -4470,7 +4470,15 @@ action $kFree(p: u64): i64 {
     }
     const class = i64($load32(h));
     if ($load8(h + 4u64) != 0xA5u64 || class >= 16 || p % 64u64 != 0u64) {
-        return i64($kDamaged(0));
+        // a block of the region of the texts (D718), never on 64 bytes
+        // (the 64 bytes before it inside the region, committed from its
+        // start: read, not trusted): given back by a function of its own,
+        // here, so that the path of a block of 64 bytes of header, copied
+        // where each block is freed, is the same code as before (that of
+        // the texts copied there: `json.decode` +7 %, the loops that free
+        // spilling their registers; a test before it: +5 %; one path for
+        // both: +11 %)
+        return $kFreeText(p);
     }
     const held = $zoneLoad16(128 + class * 2);
     if (held >= 64u64) {
@@ -4513,6 +4521,249 @@ action $kSpill(class: i64, h: u64): i64 {
     $store64(h + 8u64, 0u64);
     $zoneStore64(class * 8, h);
     $zoneStore16(128 + class * 2, 1u64);
+    return 1;
+}
+
+// The texts of 1 to 56 bytes (D718): a region of the arena of their own,
+// 256 GiB after its start and 128 GiB long, whose blocks have a header of
+// 8 bytes: 3 classes of 16, 32 and 64 bytes with it (8, 24 and 56 bytes of
+// text), each block on a multiple of its size, so that no text is cut by
+// the end of a line of the cache (longer texts stay blocks of 64 bytes of
+// header, on 64 bytes), where a text of 7 bytes took 128 bytes (a header of
+// 64 bytes and a class of 64). Its bytes 8 past the start of its block,
+// never on 64 bytes: no path that reads the header of 64 bytes of a block
+// (the runtime's `free` and `room`, the growth of a text in place by the
+// generated code) takes one. The header: at 0 its class (a byte), at 4 its
+// state
+// (0xA5 in use, 0x5A free; a block given back that is not in use is a
+// panic), at 8, when free, the next block of its list (its first 8 bytes of
+// text); for the first block of a batch, at 1 to 3 and 5 to 7, the batch
+// given before it (its address, 48 bits: a block of 16 bytes holds no more).
+// The lists hold the headers. The words of the region in the arena: at 24
+// the next header never given (0: none yet), at 32 the end of its committed
+// bytes, at 40 the lock of both; at 320 + 16 * c the batches of free blocks
+// of the class c that the threads gave, at 328 + 16 * c their lock (a batch
+// is a list of 64 blocks). The zone of the thread: at 512 + 8 * c its list
+// of the class c, at 640 + 2 * c their count (at most 64), at 672 + 8 * c a
+// batch in reserve: the places of those of the blocks of 64 bytes of header
+// (`$kAlloc`), 512 bytes further. The region is committed by 256 KiB with
+// 64 bytes kept after its last block, so that a read in the page of a text
+// past its bytes (D573) never meets a page not committed.
+
+// A block for a text of `bytes` bytes (1 to 56): the first of the list of
+// the thread, or blocks from a batch, or new ones.
+@requireNoAlloc
+action $kAllocText(bytes: i64): u64 {
+    const class = bytes <= 8 ? 0 : (bytes <= 24 ? 1 : 2);
+    const head = $zoneLoad64(512 + class * 8);
+    // (no block, the word 0, is not in the arena: one test for both)
+    if (!$arenaHas(head, 16u64)) {
+        return $kRefillText(class, bytes);
+    }
+    if ($load8(head + 4u64) != 0x5Au64) {
+        return $kDamaged(1);
+    }
+    $zoneStore64(512 + class * 8, $load64(head + 8u64));
+    $zoneStore16(640 + class * 2, $zoneLoad16(640 + class * 2) - 1u64);
+    $store8(head + 4u64, 0xA5u64);
+    return head + 8u64;
+}
+
+// The batch given before the batch whose first header is `h`, and that
+// batch written there.
+action $kTextBatch(h: u64): u64 {
+    return $load8(h + 1u64) | ($load16(h + 2u64) << 8u64) | ($load8(h + 5u64) << 24u64) | ($load16(h + 6u64) << 32u64);
+}
+
+action $kSetTextBatch(h: u64, before: u64): i64 {
+    $store8(h + 1u64, before);
+    $store16(h + 2u64, before >> 8u64);
+    $store8(h + 5u64, before >> 24u64);
+    $store16(h + 6u64, before >> 32u64);
+    return 0;
+}
+
+// The list of the thread is empty: its batch in reserve, or a batch that a
+// thread gave, or 32 new blocks. Without an arena, the block is the
+// runtime's.
+@cold
+action $kRefillText(class: i64, bytes: i64): u64 {
+    const base = $arenaBase();
+    if (base == 0u64) {
+        return $runtimeAlloc(bytes);
+    }
+    if ($zoneLoad64(512 + class * 8) != 0u64) {
+        return $kDamaged(2);
+    }
+    const spare = $zoneLoad64(672 + class * 8);
+    if (spare != 0u64) {
+        $zoneStore64(672 + class * 8, 0u64);
+        return $kOpenText(class, spare);
+    }
+    const shared = base + 320u64 + u64(class) * 16u64;
+    const l = $kLock(shared + 8u64);
+    const b = $load64(shared);
+    if (b != 0u64) {
+        $store64(shared, $kTextBatch(b));
+    }
+    const u = $kUnlock(shared + 8u64);
+    if (b == 0u64) {
+        return $kCarveText(class);
+    }
+    return $kOpenText(class, b);
+}
+
+// The batch whose first header is `b` (64 blocks) becomes the list of the
+// thread, its first block given.
+action $kOpenText(class: i64, b: u64): u64 {
+    if (!$arenaHas(b, 16u64) || $load8(b + 4u64) != 0x5Au64) {
+        return $kDamaged(1);
+    }
+    $zoneStore64(512 + class * 8, $load64(b + 8u64));
+    $zoneStore16(640 + class * 2, 63u64);
+    $store8(b + 4u64, 0xA5u64);
+    return b + 8u64;
+}
+
+// 32 new blocks of the class after the last header given, under the lock
+// of that header (their pages committed by 256 KiB): the first given, the
+// others the list of the thread.
+@cold
+action $kCarveText(class: i64): u64 {
+    const base = $arenaBase();
+    const region = base + 274877906944u64;
+    const step = 16u64 << u64(class);
+    const l = $kLock(base + 40u64);
+    const at = $load64(base + 24u64);
+    // (the first header 64 bytes after the start of the region, each on a
+    // multiple of the size of its block)
+    const from = at == 0u64 ? region + 64u64 : at;
+    const start = (from + step - 1u64) / step * step;
+    const end = start + step * 32u64;
+    const was = $load64(base + 32u64);
+    const committed = was == 0u64 ? region : was;
+    if (end + 64u64 > committed) {
+        if (committed + 262144u64 > region + 137438953472u64) {
+            $panic("out of memory", "", "");
+        }
+        const code = $arenaCommit(committed, 262144u64);
+        if (code != 0) {
+            $panic("out of memory", "", "");
+        }
+        $store64(base + 32u64, committed + 262144u64);
+    }
+    $store64(base + 24u64, end);
+    const u = $kUnlock(base + 40u64);
+    const linked = $kLinkText(start + step, step, class, 31);
+    $zoneStore64(512 + class * 8, start + step);
+    $zoneStore16(640 + class * 2, 31u64);
+    $store8(start, u64(class));
+    $store8(start + 4u64, 0xA5u64);
+    return start + 8u64;
+}
+
+// `left` free blocks of the class from the header `h`, each `step` bytes
+// after the one before, each the next of the one before, the last the end
+// of their list.
+@requireTail
+action $kLinkText(h: u64, step: u64, class: i64, left: i64): i64 {
+    $store8(h, u64(class));
+    $store8(h + 4u64, 0x5Au64);
+    if (left <= 1) {
+        $store64(h + 8u64, 0u64);
+        return 0;
+    }
+    $store64(h + 8u64, h + step);
+    return $kLinkText(h + step, step, class, left - 1);
+}
+
+// A text given back (D718, the drops of texts and of arrays of texts by
+// the generated code, `isc.late.free_text`): a block of the region of the
+// texts by this path, copied there alone (the other frees keep the code of
+// `$kFree`, where it reaches `$kFreeText` by a call), the first of the list
+// of its class; any other block as `$kFree`.
+@requireNoAlloc
+action $kFreeStr(p: u64): i64 {
+    // (the test of a text of the region first: the path of a block of 64
+    // bytes of header first, a text reaching its own from the failure of
+    // that test, made `json.decode` 11 % slower, its loops laid out
+    // otherwise)
+    if (p % 16u64 == 8u64 && $arenaHas(p - 274877906944u64, 962072674305u64)) {
+        const h = p - 8u64;
+        const c = i64($load8(h));
+        if ($load8(h + 4u64) != 0xA5u64 || c >= 3) {
+            return i64($kDamaged(0));
+        }
+        const listed = $zoneLoad16(640 + c * 2);
+        if (listed >= 64u64) {
+            const given = $kSpillText(c, h);
+            return 1;
+        }
+        $store8(h + 4u64, 0x5Au64);
+        $store64(h + 8u64, $zoneLoad64(512 + c * 8));
+        $zoneStore64(512 + c * 8, h);
+        $zoneStore16(640 + c * 2, listed + 1u64);
+        return 1;
+    }
+    return $kFree(p);
+}
+
+// A block given back that is not one in use: the panic of `$kDamaged(0)`.
+@cold
+action $kBadFree(): i64 {
+    return i64($kDamaged(0));
+}
+
+// A block of the arena given back that `$kFree` did not find in use: a
+// block of the region of the texts (D718), the first of the list of its
+// class (a list of 64 blocks kept in reserve first, `$kSpillText`), else a
+// panic. (Every call in tail position: a function that hands its frame over
+// tests no stack, its rare callees test theirs.)
+@noInline
+action $kFreeText(p: u64): i64 {
+    // (one comparison: the bytes from `p` less the offset of the region, as
+    // many as the arena holds past the region less one, inside the arena
+    // exactly when `p` is in the region, its header too)
+    if (!$arenaHas(p - 274877906944u64, 962072674305u64) || p % 16u64 != 8u64) {
+        return $kBadFree();
+    }
+    const h = p - 8u64;
+    const c = i64($load8(h));
+    if ($load8(h + 4u64) != 0xA5u64 || c >= 3) {
+        return $kBadFree();
+    }
+    const listed = $zoneLoad16(640 + c * 2);
+    if (listed >= 64u64) {
+        return $kSpillText(c, h);
+    }
+    $store8(h + 4u64, 0x5Au64);
+    $store64(h + 8u64, $zoneLoad64(512 + c * 8));
+    $zoneStore64(512 + c * 8, h);
+    $zoneStore16(640 + c * 2, listed + 1u64);
+    return 1;
+}
+
+// The list of the thread is full (64 blocks) and the block of header `h` is
+// given back: the list becomes the batch in reserve of the thread, the batch
+// in reserve before goes to all the threads; `h` starts the list again.
+@cold
+action $kSpillText(class: i64, h: u64): i64 {
+    if (class < 0 || class >= 3) {
+        return i64($kDamaged(0));
+    }
+    const old = $zoneLoad64(672 + class * 8);
+    if (old != 0u64) {
+        const shared = $arenaBase() + 320u64 + u64(class) * 16u64;
+        const l = $kLock(shared + 8u64);
+        const w = $kSetTextBatch(old, $load64(shared));
+        $store64(shared, old);
+        const u = $kUnlock(shared + 8u64);
+    }
+    $zoneStore64(672 + class * 8, $zoneLoad64(512 + class * 8));
+    $store8(h + 4u64, 0x5Au64);
+    $store64(h + 8u64, 0u64);
+    $zoneStore64(512 + class * 8, h);
+    $zoneStore16(640 + class * 2, 1u64);
     return 1;
 }
 

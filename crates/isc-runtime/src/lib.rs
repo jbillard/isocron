@@ -1650,6 +1650,14 @@ fn usable_bytes(q: *mut u8) -> usize {
 }
 
 fn room(p: *mut u8) -> usize {
+    // a block of the region of the texts of the kernel (D718, never on 64
+    // bytes): its class in the map of the region
+    #[cfg(all(not(target_os = "wasi"), not(windows)))]
+    if p as usize % 64 != 0 && HEAP_MODE.load(Ordering::Relaxed) == 2 {
+        if let Some(r) = heap::text_room(p) {
+            return r;
+        }
+    }
     // only a block of the heap (aligned on 64 bytes) has room: not a literal
     // of the program (D361), a line of `lines`, the empty string, the null
     // string (the zero of a type, in the slots of the other variants of a
@@ -2499,7 +2507,13 @@ unsafe fn free_strs_in(n: usize, at: impl Fn(usize) -> *const u8) {
     let mut i = 0;
     while i < n {
         let s = at(i) as *mut u8;
-        if s as usize % 16 != 8 {
+        // (a text of the region of the texts of the kernel is 8 bytes past a
+        // multiple of 16 too, D718: a block of its own)
+        #[cfg(all(not(windows), not(target_os = "wasi")))]
+        let alone = s as usize % 16 != 8 || heap::in_arena(s);
+        #[cfg(any(windows, target_os = "wasi"))]
+        let alone = s as usize % 16 != 8;
+        if alone {
             // SAFETY: a string of the array, given up (the contract)
             unsafe { isc_free(s) };
             i += 1;

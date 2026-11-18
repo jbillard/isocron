@@ -1389,10 +1389,10 @@ action main(args: string[k]): i32 {
     let bin = compile(src, "literals_not_freed");
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     // the low bits of the pointer of a text tested against 4 before a call
-    // of `isc_free`
+    // of `isc_free` (a text by the entry of the texts, D718)
     let lines: Vec<&str> = ll.lines().collect();
     let tested = lines.iter().enumerate().any(|(k, l)| {
-        l.contains("call void @isc.late.free(ptr") && lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4"))
+        l.contains("call void @isc.late.free_text(ptr") && lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4"))
     });
     assert!(tested, "a text freed without the test of a literal");
     for n in ["0", "1", "10", "1000"] {
@@ -1437,7 +1437,8 @@ action main(args: string[k]): i32 {
     let start = ll.find(&format!("@isc_fn_{}(", wi)).expect("no function walk in the LLVM");
     let body = &ll[start..start + ll[start..].find("\n}\n").unwrap()];
     let lines: Vec<&str> = body.lines().collect();
-    let frees: Vec<usize> = (0..lines.len()).filter(|&k| lines[k].contains("call void @isc.late.free(ptr")).collect();
+    // (a text by the entry of the texts, D718)
+    let frees: Vec<usize> = (0..lines.len()).filter(|&k| lines[k].contains("call void @isc.late.free_text(ptr")).collect();
     assert!(!frees.is_empty(), "no text freed in walk");
     for k in frees {
         assert!(lines[k.saturating_sub(8)..k].iter().any(|p| p.contains("icmp eq i64") && p.trim_end().ends_with(", 4")), "a text of walk freed without the test of a literal: {}", lines[k]);

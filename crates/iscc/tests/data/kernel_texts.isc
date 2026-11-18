@@ -1,0 +1,66 @@
+// The test of the blocks of texts of the prelude on one thread (D718):
+// texts of 1 to 56 bytes, each after a header of 8 bytes, each block on a
+// multiple of its size.
+
+// the bytes asked for the block `i`
+function wanted(i: i64): i64 {
+    return 1 + (i * 37) % 56;
+}
+
+// the bytes of text of the class of the block `i` (16, 32 or 64 bytes with
+// its header, less the header)
+function held(i: i64): i64 {
+    const w = wanted(i);
+    return w <= 8 ? 8 : (w <= 24 ? 24 : 56);
+}
+
+// the blocks of `ps` (those of the requests `first`, `first + step`, ...)
+// are 8 bytes past a multiple of 16, in the region of the texts, and none
+// is over another: in the order of their addresses, each ends before the
+// header of the next
+function apart(ps: u64[n], base: u64, first: i64, step: i64): i64 {
+    const order = sortBy(iota(n), (i) => ps[i]);
+    const ok = count(iota(n - 1), (j) => ps[order[j]] + u64(held(first + step * order[j])) + 8u64 <= ps[order[j + 1]]);
+    const region = count(iota(n), (i) => (ps[i] - 8u64) % u64(held(first + step * i) + 8) == 0u64 && ps[i] - base - 274877906944u64 < 137438953472u64);
+    return region == n && ok == n - 1 ? 1 : 0;
+}
+
+action main(args: string[k]): i32 {
+    const base = $kStart();
+    print(base != 0u64 ? 1 : 0);
+    const n = 3000;
+    // n blocks, each marked at the first and the last 8 bytes of its class
+    // (one word: a block of 8 bytes of text, its mark the first)
+    const ps = map(iota(n), (i) => {
+        const p = $kAllocText(wanted(i));
+        $store64(p + u64(held(i) - 8), u64(i * 7 + 1));
+        $store64(p, u64(i));
+        return p;
+    });
+    print(apart(ps, base, 0, 1));
+    const whole = map(iota(n), (i) => $load64(ps[i]) == u64(i) && (held(i) == 8 || $load64(ps[i] + u64(held(i) - 8)) == u64(i * 7 + 1)) ? 1 : 0);
+    print(sum(whole));
+    // every other block freed, then the same requests again: nothing new
+    // is cut, and the blocks in use (those kept, those taken again) are
+    // apart
+    const cut = $load64(base + 24u64);
+    const freed = map(iota(n / 2), (i) => $kFree(ps[2 * i]));
+    const again = map(iota(n / 2), (i) => $kAllocText(wanted(2 * i)));
+    const live = map(iota(n), (i) => i % 2 == 0 ? again[i / 2] : ps[i]);
+    print([apart(live, base, 0, 1), $load64(base + 24u64) == cut ? 1 : 0]);
+    // the blocks kept were not touched
+    const kept = map(iota(n / 2), (i) => $load64(ps[2 * i + 1]) == u64(2 * i + 1) && (held(2 * i + 1) == 8 || $load64(ps[2 * i + 1] + u64(held(2 * i + 1) - 8)) == u64((2 * i + 1) * 7 + 1)) ? 1 : 0);
+    print(sum(kept));
+    // everything freed, then every request again: nothing new is cut, the
+    // blocks apart as the first time
+    const f1 = map(iota(n / 2), (i) => $kFree(again[i]));
+    const f2 = map(iota(n / 2), (i) => $kFree(ps[2 * i + 1]));
+    const qs = map(iota(n), (i) => $kAllocText(wanted(i)));
+    print([apart(qs, base, 0, 1), $load64(base + 24u64) == cut ? 1 : 0]);
+    // a block freed twice: a panic
+    const f3 = $kFree(qs[0]);
+    print(sum(freed) + sum(f1) + sum(f2) + f3 >= 0 ? 1 : 0);
+    const f4 = $kFree(qs[0]);
+    print(f4);
+    return 0;
+}

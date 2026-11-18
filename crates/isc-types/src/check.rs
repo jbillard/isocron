@@ -4376,7 +4376,7 @@ fn check_program_with(user: &ast::Program, prelude: &ast::Program, codecs: &Hash
 
 /// The functions of the prelude every program needs, called by the code
 /// generator alone: the allocator of the small blocks (D605).
-const ALWAYS_NEEDED: &[&str] = &["$kStart", "$kAlloc", "$kFree"];
+const ALWAYS_NEEDED: &[&str] = &["$kStart", "$kAlloc", "$kFree", "$kAllocText", "$kFreeStr"];
 
 /// The functions that the checked expression `e` needs (D629): those it
 /// calls or names, and those of the prelude that the lowering calls in the

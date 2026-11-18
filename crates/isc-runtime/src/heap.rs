@@ -671,6 +671,42 @@ pub extern "C" fn isc_arena_reserve(bytes: i64, free: Option<extern "C" fn(*mut 
     base as i64
 }
 
+/// The region of the texts of the arena (D718, `$kAllocText`): its offset
+/// from the start of the arena, its bytes. Its blocks have a header of 8
+/// bytes (their class `c` at 0, a byte, `16 << c` bytes with it, `c` below
+/// 3; their state at 4, `IN_USE` or `FREE`, as in `Header`), their bytes 8
+/// past a multiple of 16.
+#[cfg(not(windows))]
+pub const TEXT_AT: usize = 1 << 38;
+#[cfg(not(windows))]
+pub const TEXT_LEN: usize = 1 << 37;
+
+/// `p` inside the arena of the kernel written in Isocron (none: false).
+#[cfg(not(windows))]
+#[inline(always)]
+pub fn in_arena(p: *const u8) -> bool {
+    (p as usize).wrapping_sub(ARENA_AT.load(Ordering::Relaxed)) < ARENA_LEN.load(Ordering::Relaxed)
+}
+
+/// The bytes the block of the region of the texts `p` can hold (D718):
+/// those of its class when it is a block in use, else 0; None when `p` is
+/// not in that region.
+#[cfg(not(windows))]
+#[inline]
+pub fn text_room(p: *const u8) -> Option<usize> {
+    let base = ARENA_AT.load(Ordering::Relaxed);
+    let off = (p as usize).wrapping_sub(base).wrapping_sub(TEXT_AT);
+    if !in_arena(p) || off >= TEXT_LEN || off < 64 || p as usize % 16 != 8 {
+        return None;
+    }
+    // SAFETY: the 8 bytes before a text of the region, inside it (`off` at
+    // least 64), committed with the block before them (`$kCarveText`): its
+    // header when `p` is a block, bytes of another block otherwise (read,
+    // not trusted: the state says)
+    let (class, state) = unsafe { (core::ptr::read_volatile(p.sub(8)), core::ptr::read_volatile(p.sub(4))) };
+    Some(if state == IN_USE && class < 3 { (16 << class) - 8 } else { 0 })
+}
+
 /// The arena of the kernel written in Isocron, when the program gave the
 /// entry that frees its blocks (`isc_arena_reserve`): its first address, its
 /// bytes (0: none), that entry. Written once, before the program makes its
@@ -730,8 +766,12 @@ pub extern "C" fn isc_arena_commit(a: i64, bytes: i64, base: i64, size: i64) -> 
     // kernel, 1 MiB: a mapping that does not hold a whole huge page is
     // never given one), so a small program makes one call less.
     let end = a + bytes;
-    if end - base > HUGE as u64 {
-        let small_end = (base + CHUNK as u64).clamp(a, end);
+    // (the region of the texts the same way from its own start, always
+    // advised: committed by 256 KiB, D718)
+    let texts = off >= TEXT_AT as u64;
+    let start = if texts { base + TEXT_AT as u64 } else { base };
+    if end - start > HUGE as u64 || texts {
+        let small_end = (start + CHUNK as u64).clamp(a, end);
         // SAFETY: two parts of the pages just mapped; an advice changes no
         // contents
         unsafe {

@@ -165,24 +165,80 @@ fn small_blocks_on_several_threads() {
     }
 }
 
+/// D718: the blocks of texts of 1 to 56 bytes, each after a header of 8
+/// bytes: 3000 blocks of the 3 classes, each block on a multiple of its
+/// size, in the region, none over another, their marks whole; half of them
+/// freed and the same requests again: nothing new cut, the blocks kept not
+/// touched; everything freed and every request again: nothing new cut. A
+/// block freed twice is a panic. The same interpreted and compiled.
+#[test]
+fn small_texts_written_in_isocron() {
+    let src = include_str!("data/kernel_texts.isc");
+    let p = iscc::frontend_as_prelude("kernel.isc", src).unwrap_or_else(|e| panic!("{}", e));
+    let mut out = Vec::new();
+    let e = isc_interp::run(&p, &[], &mut out).unwrap_err().to_string();
+    assert!(e.contains("invalid free"), "interpreted: {}", e);
+    let want = "1\n1\n3000\n[1, 1]\n1500\n[1, 1]\n1\n";
+    assert_eq!(String::from_utf8(out).unwrap(), want, "interpreted");
+    let r = compiled(src, "kernel_texts");
+    assert_eq!((r.code, r.stdout.as_str()), (101, want), "{}", r.stderr);
+    assert!(r.stderr.contains("invalid free"), "{}", r.stderr);
+}
+
+/// D718: the blocks of texts on several threads, as the small blocks
+/// (`small_blocks_on_several_threads`): 16 tasks, 300 rounds of 200 blocks
+/// of 9 to 56 bytes each; no mark of a task is another's, the region cut
+/// stays small.
+#[test]
+fn small_texts_on_several_threads() {
+    let src = include_str!("data/kernel_threads.isc")
+        .replace("$kAlloc(", "$kAllocText(")
+        // (9 to 56 bytes: two words of text at least, the two marks apart)
+        .replace("1 + (i * 37) % 1024", "9 + (i * 37) % 48")
+        .replace("(wanted(i) + 63) / 64 * 64", "(wanted(i) <= 24 ? 24 : 56)")
+        .replace("$load64(base) - base", "$load64(base + 24u64) - base - 274877906944u64");
+    let p = iscc::frontend_as_prelude("kernel.isc", &src).unwrap_or_else(|e| panic!("{}", e));
+    let out = tmp("kernel_texts_threads");
+    let opts = iscc::BuildOptions {
+        output: out.clone(),
+        emit_llvm: None,
+        emit_asm: None,
+        debug: false,
+        codegen: isc_codegen::Options::default(),
+        link: Vec::new(),
+        glibc: false,
+        icon: None,
+    };
+    iscc::build(&p, &opts).unwrap_or_else(|e| panic!("{}", e));
+    let want = "[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n1\n";
+    for threads in [1, 2, 8, 16] {
+        for _ in 0..3 {
+            let r = run_bin_threads(&out, &[], Some(threads));
+            assert_eq!((r.code, r.stdout.as_str()), (0, want), "{} threads: {}", threads, r.stderr);
+        }
+    }
+}
+
 /// D605: the generated code takes its small blocks from the allocator
 /// written in Isocron. A program that builds texts moved the first byte
-/// never given of the arena; with the allocator of the system asked for
+/// never given of the region of the texts of the arena (D718); with the allocator of the system asked for
 /// (`ISC_ALLOC`), no arena is reserved, the blocks are the runtime's, and
 /// the program gives the same texts.
 #[test]
 fn the_generated_code_allocates_in_the_arena() {
     let src = "action main(args: string[k]): i32 {
     const xs = map(iota(200), (i) => toString(i * 7) + \"-\" + toString(i));
-    const base = $arenaBase();
-    print([base != 0u64 ? 1 : 0, base != 0u64 ? ($load64(base) > base + 4096u64 ? 1 : 0) : 0 - 1, $arenaHas(base, 1u64) ? 1 : 0]);
     print([xs[0], xs[199]]);
+    const base = $arenaBase();
+    print([base != 0u64 ? 1 : 0, base != 0u64 ? ($load64(base + 24u64) > base + 274877906944u64 ? 1 : 0) : 0 - 1, $arenaHas(base, 1u64) ? 1 : 0]);
     print(join(xs, \"\").length);
     return 0;
 }
 ";
     let p = iscc::frontend_as_prelude("kernel.isc", src).unwrap_or_else(|e| panic!("{}", e));
-    let texts = "[0-0, 1393-199]\n1330\n";
+    // (the texts printed before the arena is read: in an action of the
+    // prelude a pure value may be made where it is read, D605)
+    let (made, total) = ("[0-0, 1393-199]\n", "1330\n");
     // (a program linked without the C library has no other allocator than
     // Isocron's, D289: `ISC_ALLOC=glibc` changes nothing there; a program
     // built with `ISC_ALLOC=glibc` set, the second run of the suite, is
@@ -220,7 +276,7 @@ fn the_generated_code_allocates_in_the_arena() {
             let r = cmd.output().unwrap();
             assert_eq!(
                 (r.status.code(), String::from_utf8_lossy(&r.stdout).as_ref()),
-                (Some(0), format!("{}{}", first, texts).as_str()),
+                (Some(0), format!("{}{}{}", made, first, total).as_str()),
                 "the module of the prelude {}, glibc {}, ISC_ALLOC={:?}: {}",
                 cache.is_some(),
                 glibc,
@@ -234,7 +290,9 @@ fn the_generated_code_allocates_in_the_arena() {
     let ll = std::fs::read_to_string(out.with_extension("ll")).unwrap();
     assert!(ll.contains("call noalias ptr @isc.late.alloc(") && ll.contains("call void @isc.late.free(ptr "), "the entries are not called");
     assert_eq!(ll.matches("@isc_alloc(i64 ").count(), 3, "the allocator of the runtime called outside the entries");
-    assert_eq!(ll.matches("call void @isc_free(").count(), 3, "the free of the runtime called outside the entries");
+    // (the slow paths of `isc.late.free`, `isc.late.free_text` (D718) and
+    // `isc.late.free_strs`, and the first block of `isc.kernel.start`)
+    assert_eq!(ll.matches("call void @isc_free(").count(), 4, "the free of the runtime called outside the entries");
 }
 
 /// D605: a block of the runtime's allocator is not one of the arena:

@@ -110,13 +110,21 @@ fn unread_parts(e: &mut Expr) {
     fn calls(e: &Expr) -> bool {
         matches!(e.kind, ExprKind::Call(..)) || e.children().into_iter().any(calls)
     }
+    // (what takes a value would leave it with no owner: `[ks, vs, index]`
+    // whose `ks` is moved there, suite 509)
+    fn takes_any(e: &Expr) -> bool {
+        matches!(e.kind, ExprKind::Var(_, Use::Move) | ExprKind::Take(..) | ExprKind::CopyTaking(..)) || e.children().into_iter().any(takes_any)
+    }
     if unread.is_empty() || uses(body, r) != takes {
         return;
     }
     let ExprKind::Tuple(es) = &mut tail_var(init).kind else { return };
     for k in unread {
         let x = &mut es[k];
-        if x.ty.is_array() && !matches!(&x.kind, ExprKind::ArrayLit(v) if v.is_empty()) && is_pure(x) && cannot_panic(x) && !calls(x) {
+        // (an array whose type fixes its length, `[string, string][1]`,
+        // stays: its drop reads that length, not the empty literal's)
+        let free_length = matches!(&x.ty, Type::Array(_, Fixed(None)));
+        if free_length && !matches!(&x.kind, ExprKind::ArrayLit(v) if v.is_empty()) && is_pure(x) && cannot_panic(x) && !calls(x) && !takes_any(x) {
             *x = Expr { kind: ExprKind::ArrayLit(Vec::new()), ty: x.ty.clone(), span: x.span, reassoc: false };
         }
     }
