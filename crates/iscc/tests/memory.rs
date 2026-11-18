@@ -1645,7 +1645,10 @@ fn arrays_whose_texts_are_views_of_texts_that_live_longer() {
     let mut copies: Vec<u32> = isc_ir::report::entries(&p).iter().filter(|e| e.kind == "copy").map(|e| e.line).collect();
     copies.sort();
     copies.dedup();
-    assert_eq!(copies, vec![8, 29, 32, 38, 43, 65, 71], "the lines whose texts are copied");
+    // (not 43: the first of a sort of `xs` read where it is, a view of a
+    // text of `xs`; nor 71: the sort read by its last element alone in the
+    // statement that prints it, D701, never made)
+    assert_eq!(copies, vec![8, 29, 32, 38, 65], "the lines whose texts are copied");
     clean(src, "views_of_texts_vg", &["700"]);
 }
 

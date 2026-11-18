@@ -17263,3 +17263,36 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   report.rs were made whole): a few elements that are loops reduced as
   floats stay on one thread, a case left to the code generator, which
   knows their number.
+
+- **D704 — Faults that D701 showed (2026-11-18).** Suite 500 failed on the
+  values D701 computes in the statement that reads them; each fault was
+  reduced and fixed, the old rule having hidden it. (1) An element of a
+  `map` of views fused into an index (D697: `sortBy(xs, f)[0]`, also in a
+  function) was taken for new memory by `borrowed_from`: the `let` bound to
+  it freed a text of `xs` (the verifier refused it); it borrows what the
+  function of the `map` borrows. (2) A slice of such a `map` (`print(sort(xs)
+  .slice(0, 3))`) was fused into nothing: made whole as an array of views
+  and freed with the texts it viewed (garbage, a block freed twice, under
+  the checked allocator); a slice is no consumer that reads elements where
+  they are (`views_fuse_into`), its elements copied. (3) The reductions of
+  the windows of D115 (`window_cascade`) took any array of arrays: a
+  producer of rows fused there (`map(map(iota(3), (i) => y), (r) =>
+  max(r))`, also in a function) was made whole and never freed; only rows
+  read where they are now. (4) A `map` read by its length alone computes
+  none of its elements, as an index or a slice computes only those it reads
+  (rule F1, D101): the code generator did so, the interpreter computed them
+  all (and their panics); the interpreter now takes the length of a
+  producer without its elements, SPEC sections 5 and 7 say it (computing
+  them in the code generator instead made the length of the words of 43 MB
+  12 times slower: 0.024 to 0.281 s). (5) The texts written by parts (D686)
+  accept a `map` whose function cannot fail and an integer divided by a
+  constant other than zero (`quiet`): the lines of colors of a text, now
+  made in the statement of the write, were written whole. (6) `readStdinLines`
+  reads the input as a text: the check of D702 lowered for it too. Tests
+  whose panic changed with D701 updated (the panic among pure values moved
+  together, unspecified: `parseI64` and `parseF64` of strings.rs,
+  `slices_of_producers` of phase5.rs), others made to keep their values
+  whole (verify.rs, vector_index.rs); the copies of views_of_texts.isc two
+  fewer (a sort read by its last element alone is never made). Test
+  `a_length_computes_no_element` (phase5.rs). The Benchmarks Game, rtiow,
+  walk and countwords the same IR as measured for D701 to D703.

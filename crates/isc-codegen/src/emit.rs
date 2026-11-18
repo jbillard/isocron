@@ -7425,7 +7425,9 @@ impl<'p> Gen<'p> {
             }
             Map(..) if isc_ir::passes::is_stream(e) => self.materialize_stream(e),
             // the reductions of sliding windows, level by level (D115)
-            Map(ins, l) if ins.len() == 1 && ins[0].ty.elem().is_array() && window_reduce_of(l).is_some() => {
+            // (rows that are read where they are: a producer of rows, fused,
+            // would be made whole there and never freed)
+            Map(ins, l) if ins.len() == 1 && ins[0].ty.elem().is_array() && !isc_ir::passes::is_producer(&ins[0]) && window_reduce_of(l).is_some() => {
                 self.window_cascade(e)
             }
             // a `map` whose elements are arrays: an array of arrays (D126)

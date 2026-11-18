@@ -1089,7 +1089,9 @@ fn views_elems(e: &Expr) -> bool {
         // (views of the elements of its inputs: not yet, their memory would
         // be the inputs')
         ExprKind::Map(_, l) => row_view(&l.body) && borrowed_from(&l.body, &|v| vec![v]).is_some_and(|vs| !vs.iter().any(|v| l.params.contains(v))),
-        ExprKind::Slice(x, _, _) => views_elems(x),
+        // (not a slice of such a `map`: a slice is no consumer, it was made
+        // whole as an array of views, then freed with the texts it viewed:
+        // `print(sort(xs).slice(0, 3))`)
         // (views of the buffer of the input, D702)
         ExprKind::InputPieces(_) => true,
         _ => false,
@@ -1201,9 +1203,10 @@ fn use_in_slot_where(e: &Expr, v: VarId, ok: &dyn Fn(&Expr, usize) -> bool) -> b
 /// A producer of views fused into its consumer `e` at slot `i` (D697): a
 /// consumer that reads its elements where they are, not a `reduce` nor a
 /// `scan` of values that own memory, which makes its input whole and owns
-/// its elements (D134).
+/// its elements (D134), nor a slice, no consumer (made whole, it owns the
+/// texts of its elements).
 fn views_fuse_into(e: &Expr, i: usize) -> bool {
-    !(i == 0 && matches!(e.kind, ExprKind::Reduce(..) | ExprKind::Scan(..)))
+    !(i == 0 && matches!(e.kind, ExprKind::Reduce(..) | ExprKind::Scan(..) | ExprKind::Slice(..)))
 }
 
 pub(crate) fn lambda_body_index(e: &Expr) -> Option<usize> {
@@ -1468,9 +1471,10 @@ pub fn quiet_append_fold(e: &Expr) -> bool {
 }
 
 /// `e` cannot stop the program nor act: literals, variables, copies,
-/// tuples and their parts, lengths, `let`s, `if`s, the operations of
-/// scalars but the division and the remainder of integers (their
-/// arithmetic wraps, D329), the conversions that cannot fail (from a float
+/// tuples and their parts, lengths, `let`s, `if`s, `map`s of such values,
+/// the operations of scalars but the division and the remainder of
+/// integers by a value that may be zero (their arithmetic wraps, D329),
+/// the conversions that cannot fail (from a float
 /// it saturates; to a wider integer of the same sign), texts concatenated
 /// or made of a scalar, and `a[i]` of the array `whole` at the index `i` of
 /// a loop over its length.
@@ -1481,8 +1485,14 @@ fn quiet(e: &Expr, i: VarId, whole: Option<VarId>) -> bool {
         Lit(_) | Var(..) | StrLit(_) | Copy(_) | Tuple(_) | Proj(..) | Len(_) | If(..) | Let { .. } | Unary(..) | Iota(_) => true,
         // (a length is never negative)
         CheckNonNegative(k, _) => matches!(k.kind, Len(_)) || matches!(k.kind, Lit(crate::Lit::Int(c)) if c >= 0),
-        Binary(BinOp::Div | BinOp::Rem, ..) => float(&e.ty),
+        // (an integer divided by a constant that is not zero: it wraps,
+        // D329)
+        Binary(BinOp::Div | BinOp::Rem, _, d) => float(&e.ty) || matches!(d.kind, Lit(crate::Lit::Int(c)) if c != 0),
         Binary(..) => true,
+        // a `map` whose function is quiet (made where it is read instead:
+        // the colors of the lines of a text written by parts, once D701
+        // computes them in the statement of the write)
+        Map(..) => true,
         Convert(x) => match (&x.ty, &e.ty) {
             (Type::F64 | Type::F32, _) | (Type::Int(_) | Type::Bool, Type::F64 | Type::F32) | (Type::Bool, Type::Int(_)) => true,
             (Type::Int(f), Type::Int(t)) => t.bits() >= f.bits() && (f.signed() == t.signed() || (!f.signed() && t.bits() > f.bits())),
@@ -4747,6 +4757,13 @@ fn borrowed_from(e: &Expr, base: &dyn Fn(VarId) -> Vec<VarId>) -> Option<Vec<Var
         ExprKind::Proj(x, _) | ExprKind::Unbox(x) => borrowed_from(x, base),
         // views of an array of arrays: its windows, its rows (D95); slices
         // (rule F4, D97)
+        // an element of a `map` of views fused into its read (D697): a view
+        // of what the function of the `map` borrows (the `map` itself, made,
+        // is new memory)
+        ExprKind::Index(x, _) if matches!(x.kind, ExprKind::Map(..)) && views_elems(x) => {
+            let ExprKind::Map(_, l) = &x.kind else { unreachable!() };
+            borrowed_from(&l.body, base)
+        }
         ExprKind::Window(x, _) | ExprKind::Index(x, _) => borrowed_from(x, base),
         ExprKind::Slice(x, _, _) if e.ty.slice_is_view() => borrowed_from(x, base),
         // a slice or the bytes of a string (D303)

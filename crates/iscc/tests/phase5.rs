@@ -564,19 +564,46 @@ action main(args: string[k]): i32 {
 }
 ";
 
+/// D704: a `map` read by its length alone computes none of its elements
+/// (rule F1, as an index or a slice of it computes only those it reads):
+/// no panic of its elements, in the interpreter as in the compiled
+/// program; read whole, the panic of its element.
+#[test]
+fn a_length_computes_no_element() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const xs = map(iota(n), (i) => i * 2);
+    const far = map(iota(n), (q) => xs[q + 5]);
+    print(far.length);
+    return 0;
+}
+";
+    assert_eq!(interp_ok(src, &["10"]), "10\n");
+    let bin = compile(src, "length_no_element");
+    let r = run_bin(&bin, &["10"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "10\n"), "{}", r.stderr);
+    let whole = src.replace("    print(far.length);\n", "    print(far.length);\n    print(far[0]);\n");
+    let m = interp_panic(&whole, &["10"]);
+    let bin = compile(&whole, "length_whole");
+    let r = run_bin(&bin, &["10"]);
+    assert_eq!(r.code, 101, "{}", r.stderr);
+    assert!(r.stderr.contains(&m), "{} / {}", r.stderr, m);
+}
+
 #[test]
 fn slices_of_producers() {
     for (i, n) in [5usize, 5000, 70_001].iter().enumerate() {
         let x = write_f64s(&format!("sp_x{}.f64", n), &random_f64s(1600 + i as u64, *n));
         same_everywhere(SLICED_PRODUCERS, &format!("sliced{}", n), &[&x]);
     }
-    // out of bounds: the same panic
+    // out of bounds: the same panic (that of `mid`, computed in the
+    // statement of the write with `p`, D701, whose panic came first)
     let x = write_f64s("sp_short.f64", &random_f64s(1700, 3));
     let o = tmp("sp_short.out").to_string_lossy().to_string();
     let bin = compile(SLICED_PRODUCERS, "sliced_short");
     let r = run_bin_threads(&bin, &[&x, &o], Some(1));
     assert_eq!(r.code, 101, "{}", r.stderr);
-    assert!(r.stderr.contains("slice out of bounds: [1..4] of an array of length 3"), "{}", r.stderr);
+    assert!(r.stderr.contains("slice out of bounds: [2..1] of an array of length 3"), "{}", r.stderr);
 }
 
 /// The mathematical functions of the runtime (SPEC section 10, D108): the

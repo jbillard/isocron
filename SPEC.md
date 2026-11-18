@@ -299,7 +299,7 @@ Le langage est strict et pur : chaque argument est entièrement calculé avant l
 - **Strict** : appel par valeur. Aucune évaluation différée, aucun thunk.
 - **Pur** : une `function` ne lit ni n'écrit aucun état extérieur. Mêmes entrées, même résultat au bit près (hors `allowReassoc`, section 10).
 - **Ordre libre** : dans une `function`, l'ordre d'évaluation des sous-expressions indépendantes n'est pas spécifié. Il n'est pas observable, sauf pour le choix de la panne signalée. Dans une `action`, l'ordre des effets est imposé, et celui des calculs purs autant qu'un effet peut le voir (section 12, D701).
-- **Pannes (panic)** : accès hors bornes, division entière par zéro, exposant entier négatif, tailles incompatibles, dépassement de pile, erreur d'entrée/sortie. Une panne arrête le programme avec un message et la position dans le source. Si plusieurs pannes sont possibles, celle qui est signalée n'est pas spécifiée ; l'arrêt est garanti.
+- **Pannes (panic)** : accès hors bornes, division entière par zéro, exposant entier négatif, tailles incompatibles, dépassement de pile, erreur d'entrée/sortie. Une panne arrête le programme avec un message et la position dans le source. Si plusieurs pannes sont possibles, celle qui est signalée n'est pas spécifiée ; l'arrêt est garanti. Un élément d'un producteur fusionné que rien ne lit n'est pas calculé (section 7, D101, D704) : sa panne n'arrive pas.
 - **Bornes** : chaque indexation est vérifiée. Le compilateur doit supprimer les vérifications qu'il prouve inutiles ; celles qui restent figurent dans le memory report.
 - **Égalité** : tableaux, tuples et records se comparent par valeur. Il n'existe pas de notion d'identité.
 
@@ -352,6 +352,8 @@ Toutes les boucles s'écrivent avec ces primitives ; le tableau est toujours le 
 ## 7. Règles de fusion
 
 Une fusion évite de créer un tableau intermédiaire en mémoire ; les règles ci-dessous sont garanties, et ce sont les seules sur lesquelles `requireFused` s'appuie.
+
+Un producteur fusionné ne calcule que les éléments que son consommateur lit : une indexation en lit un, une tranche les siens (D101), la longueur aucun, celle d'un `map` étant celle de ses entrées (D704). L'interpréteur fait de même.
 
 Préalable : avant la fusion, toute fonction non récursive est intégrée à son point d'appel (inlining), et toute fonction d'ordre supérieur est spécialisée (section 11). Seule exception, une fonction trop grande pour être recopiée partout : plus de 4000 nœuds une fois ses appels intégrés, ou au moins 100 nœuds et plus de 2000 dans toutes ses copies. Elle est compilée une fois et appelée, comme une fonction récursive ; ni `main`, ni une fonction qui prend ou rend une fonction (D336). Les seuils sont choisis loin des programmes de calcul (le plus grand des dix programmes de mesure pèse 569 nœuds ; aucune de leurs fonctions n'est concernée, leur code est identique) : ils bornent la croissance du code que les décodeurs écrits pour chaque type feraient sinon exploser. Deux règles s'y ajoutent (D582, D584) : une fonction marquée `@cold` est toujours compilée une fois et appelée, et ses appels sont tenus pour improbables ; une fonction du prélude n'est jamais sortie pour sa taille, afin que ses positions restent celles de son appel (D111), et le prélude range ses chemins rares dans des fonctions `@cold`.
 

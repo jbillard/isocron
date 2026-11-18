@@ -1669,7 +1669,9 @@ fn parse_i64_written_in_isocron() {
     let bin10 = compile(ten, "parse_i64_ten");
     for (args, msg) in [
         (["12", "x"], "panic at line 3, column 18: parseI64: `x` is not a valid integer"),
-        (["x", "1"], "panic at line 2, column 23: parseI64: `x` is not a valid integer"),
+        // (the values computed in the statement that prints them, D701:
+        // the panic of the `map`s, whichever reads `x` first)
+        (["x", "1"], "panic at line 3, column 18: parseI64: `x` is not a valid integer"),
         (["7", "-"], "panic at line 3, column 18: parseI64: `-` is not a valid integer"),
     ] {
         let m = interp_panic(ten, &args);
@@ -3529,7 +3531,8 @@ fn parse_f64_written_in_isocron() {
     let bin = compile(calls, "parse_f64_calls");
     for (args, msg) in [
         (["1.5", "x"], "panic at line 3, column 18: parseF64: `x` is not a valid number"),
-        (["x", "1"], "panic at line 2, column 23: parseF64: `x` is not a valid number"),
+        // (D701: as the calls of `parseI64`)
+        (["x", "1"], "panic at line 3, column 18: parseF64: `x` is not a valid number"),
         (["2.5e-1", "1e"], "panic at line 3, column 18: parseF64: `1e` is not a valid number"),
     ] {
         let m = interp_panic(calls, &args);

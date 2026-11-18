@@ -983,6 +983,28 @@ impl<'a> Interp<'a> {
         Ok(w as usize)
     }
 
+    /// The length of a producer read by its length alone, its elements not
+    /// computed (rule F1: a `map` fused into its length computes none of
+    /// them, as the code generator does; D704): that of the first input of
+    /// a `map`, the count of an `iota` or a `zeros`, of a `fill` (its value
+    /// computed, as the code generator does). None for another array.
+    fn producer_len(&mut self, x: &Expr) -> R<Option<i64>> {
+        use ExprKind::*;
+        Ok(match &x.kind {
+            Map(ins, _) => match self.producer_len(&ins[0])? {
+                Some(n) => Some(n),
+                None => Some(self.array(&ins[0])?.len() as i64),
+            },
+            Iota(n) | Zeros(n) => Some(self.int(n)?),
+            Fill(n, v) => {
+                let k = self.int(n)?;
+                self.eval(v)?;
+                Some(k)
+            }
+            _ => None,
+        })
+    }
+
     pub fn eval(&mut self, e: &Expr) -> R<Value> {
         use ExprKind::*;
         Ok(match &e.kind {
@@ -1099,7 +1121,10 @@ impl<'a> Interp<'a> {
                 Value::Bool(false) => self.eval(f)?,
                 v => panic!("if on {:?}", v),
             },
-            Len(x) => Value::Int(self.array(x)?.len() as i64),
+            Len(x) => match self.producer_len(x)? {
+                Some(n) => Value::Int(n),
+                None => Value::Int(self.array(x)?.len() as i64),
+            },
             ArrayLit(es) => {
                 let mut a = Array::with_capacity(e.ty.elem(), es.len());
                 for x in es {

@@ -407,8 +407,9 @@ fn filters_compress_their_vectors() {
 /// remainder consecutive): bytes in lines of 61 read backwards (as
 /// reverse-complement), 64-bit elements in rows of 17, rows cut by the
 /// chunks of the threads, a range shorter than a row, an index past the end
-/// (the panic of the same element as the interpreter). Any number of
-/// threads.
+/// (the panic of the same element as the interpreter; `far` read by two
+/// statements, made whole: read by its length alone, none of its elements
+/// would be computed, D704). Any number of threads.
 #[test]
 fn maps_by_rows_of_their_divisor() {
     let src = "function lines(m: i64, base: (i: i64) => u8): u8[k] {
@@ -429,6 +430,7 @@ action main(args: string[k]): i32 {
     const k = parseI64(args[1]);
     const far = map(iota(n), (q) => bases[q / 61 * 60 + q % 61 + k]);
     print(far.length);
+    print(far[0]);
     return 0;
 }
 ";

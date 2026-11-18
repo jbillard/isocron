@@ -4457,8 +4457,9 @@ fn prim_needs(p: Prim, arg: Option<&Ty>, ret: &Ty, named: &mut dyn FnMut(&str)) 
         Prim::PadStart | Prim::PadEnd => named("$rtDigitWords"),
         Prim::ToFixed => named("$rtFixedText"),
         Prim::ToUpper | Prim::ToLower => named("$caseText"),
-        // (the parts of the input read by parts checked, D702)
-        Prim::ReadStdinText => {
+        // (the parts of the input read by parts checked, D702; the lines
+        // of the input are read as its text)
+        Prim::ReadStdinText | Prim::ReadStdinLines => {
             named("$stdinCheck");
             int_text(named);
         }

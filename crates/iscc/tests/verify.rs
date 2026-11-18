@@ -179,9 +179,11 @@ fn args_moved_and_freed_is_rejected() {
 
 #[test]
 fn a_slice_of_new_memory_is_rejected() {
+    // (`x` read by two statements: made, D701)
     let mut p = ir("action main(args: string[k]): i32 {
     const x = map(iota(20), (i) => f64(i));
     print(sum(x.slice(2, 8)));
+    print(x[0]);
     return 0;
 }
 ");
