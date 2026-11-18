@@ -17127,8 +17127,8 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   without a copy). The verifier checks that the elements of a fused `map`
   are views and that they borrow what its function borrows. A `filter`
   behind the check of its size (`filter(iota(n), p)`) has the check taken
-  out of the way when it is then fused (it was made whole). Test
-  `views_read_where_they_are_by_their_consumers` (memory.rs).
+  out of the way when it is bound by a `let` and then fused (it was made
+  whole). Test `views_read_where_they_are_by_their_consumers` (memory.rs).
 - **D698 — `countBy` of texts by a table written in Isocron (2026-11-18).**
   `countBy(xs, f)` grouped `map(xs, f)` made whole (`$groupCounts`, the
   runtime), then made each key again from `xs[first]`: `xs` read twice, so
@@ -17165,5 +17165,9 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   filtering again the part of the `filter` it reads (`windowed_task`),
   the `filter` never made whole but for a `fold` whose window is too wide
   (D293's rule). The words of `matches` counted by `countBy`: neither the
-  places of the words, nor the words. Test `folds_read_filters_by_windows`
-  (bitwise.rs).
+  places of the words, nor the words. A `filter` behind the check of its
+  size and read by windows has the check taken out of the way (as D697);
+  one read by its length alone is then counted by blocks, never made
+  (`pairs(...).length` of `vector_filter_guards.isc`, whose test counts the
+  compressions of the filters made: the program now makes them too). Test
+  `folds_read_filters_by_windows` (bitwise.rs).

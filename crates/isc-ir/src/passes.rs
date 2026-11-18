@@ -1110,14 +1110,11 @@ fn wrapped(e: &Expr) -> &Expr {
     }
 }
 
-/// A producer, or a `filter`, possibly wrapped in `let`s of scalars and
-/// size checks (a `filter` of an `iota(n)` checks `n` first: left wrapped,
-/// it was made whole for its consumer, D697).
+/// A producer possibly wrapped in `let`s of scalars and size checks.
 fn is_wrapped_producer(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Let { body, stmt: false, .. } => is_wrapped_producer(body),
         ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => is_wrapped_producer(b),
-        ExprKind::Filter(..) => true,
         _ => is_producer(e),
     }
 }
@@ -4445,9 +4442,10 @@ fn fuse(e: &mut Expr, counts: &HashMap<VarId, usize>) -> bool {
                     && crate::blocks::windowed_uses(body, *var)
                     && crate::blocks::mentions(body, &HashSet::from([*var])))
         };
+        // (a `filter` of an `iota(n)` checks `n` first: left wrapped, it was
+        // made whole for its consumer, D697)
         if matches!(init.kind, ExprKind::Let { stmt: false, .. } | ExprKind::CheckSize(..) | ExprKind::CheckNonNegative(..))
-            && is_wrapped_producer(init)
-            && (!matches!(wrapped(init).kind, ExprKind::Filter(..)) || filter_fused())
+            && (is_wrapped_producer(init) || (matches!(wrapped(init).kind, ExprKind::Filter(..)) && filter_fused()))
         {
             let w = split_wrapper(init);
             let inner = take(e);

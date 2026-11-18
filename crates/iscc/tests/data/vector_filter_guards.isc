@@ -16,6 +16,11 @@ function far(b: u8[]): i64[] {
     return filter(iota(b.length), (i) => b[i] == 120u8 && b[i + 5] == 120u8);
 }
 
+// at most the first three
+function firsts(a: i64[]): i64[] {
+    return a.slice(0, a.length < 3 ? a.length : 3);
+}
+
 action main(args: string[k]): i32 {
     const n = parseI64(args[0]);
     const b = bytes(join(map(iota(n), (i) => "GET /hello HTTP/1.1\r\nHost: bench\r\n\r\n"), ""));
@@ -24,7 +29,11 @@ action main(args: string[k]): i32 {
     const t = bytes(join(map(iota(n), (i) => i % 3 == 0 ? "aa" : "ab"), "") + "aa");
     print(pairs(t, 97u8).length);
     print(sum(pairs(t, 97u8)));
+    // (made whole: read by its length alone, a `filter` is only counted,
+    // D293, D700)
+    print(firsts(pairs(t, 97u8)));
     const x = bytes(join(map(iota(n), (i) => i % 7 == 0 ? "x....x" : "......"), "") + (n % 2 == 0 ? "x" : "."));
     print(far(x).length);
+    print(firsts(far(x)));
     return 0;
 }
