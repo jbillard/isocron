@@ -17442,3 +17442,17 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   corpus, rtiow (23 calls, the same image, 9 694.6 to 9 712.9 ms) and countwords
   (2: the free of the entries of its table, 179.1 to 177.1 ms) change; the
   rest the same IR.
+
+- **D713 — The tests of deep recursion one at a time (2026-11-18).** The
+  first pass of suite 505 (its objects all compiled again: D711 changed the
+  file of the back end, which the key of the cache of objects reads, D617)
+  had `phase3` killed by the kernel (code -9) after 1 220 s, two of its tests
+  running for more than 60 s: `recursive_types` and
+  `stack_overflow_is_a_panic`. Suite 406 had the same (a global lack of
+  memory, the kernel killed that file at 6.9 GB after 15 minutes of memory
+  stall). Measured alone: the interpreter of the tests (a thread of a stack
+  of 4 GiB, D102) takes 4.4 GiB to reach the overflow of the second, 2.1 GiB
+  for the list of 500 000 of the first: 6.5 GiB for the file, both at once.
+  Killed on demand: that test under a limit of 3 GiB (`systemd-run
+  -p MemoryMax=3G`), code 137. The two tests now take a lock: one at a time,
+  the file 4.4 GiB at its peak, what each checks the same.

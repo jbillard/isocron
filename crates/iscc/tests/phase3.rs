@@ -172,10 +172,18 @@ action main(args: string[k]): i32 {
     same_everywhere(src, "rec_tail", &["3000000"]);
 }
 
+/// The tests whose interpreter recurses deep (D102), one at a time (D713):
+/// its stack of 4 GiB filled up to the overflow (4.4 GiB at the peak), a
+/// list of 500 000 2.1 GiB. Both at once, this file took 6.5 GiB, which a
+/// first pass of the suite, its objects compiled again, could not give it:
+/// killed by the kernel (suites 406 and 505).
+static DEEP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A recursion too deep for the stack is a panic, with the same message
 /// compiled and interpreted.
 #[test]
 fn stack_overflow_is_a_panic() {
+    let _deep = DEEP.lock().unwrap_or_else(|e| e.into_inner());
     let src = "function grow(x: f64[n], k: i64): f64 {
     if (k == 0) {
         return sum(x);
@@ -268,6 +276,7 @@ action main(args: string[k]): i32 {
 
 #[test]
 fn recursive_types() {
+    let _deep = DEEP.lock().unwrap_or_else(|e| e.into_inner());
     // `length` is not a tail call: a depth the interpreter holds, built
     // with or without optimizations (D102, D127)
     for n in ["0", "10", "500000"] {
