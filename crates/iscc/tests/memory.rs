@@ -2460,3 +2460,57 @@ action main(args: string[k]): i32 {
     assert!(of(line("const [m1, n] = once(m, c)")).is_empty() && of(line("const d4 = stamped(d3")).is_empty(), "{:?}", all);
     clean(src, "in_place_states_vg", &[]);
 }
+
+/// D717: the gather of the permutation of a sort found on the way the body
+/// of the binding of its array is evaluated (here in the text that `print`
+/// writes, as in countwords): the texts of the pairs moved, not copied; a
+/// program that reads the pairs again after copies them. The `Map` whose
+/// entries alone are read computes no index of the hashes of its keys.
+#[test]
+fn sorted_pairs_moved_where_printed() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let moved = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const words = map(iota(n), (i) => `${i}-0123456789012345678901234567890`);
+    const counts = countBy(words, (w) => w);
+    const es = counts.entries();
+    print(join(map(sortBy(es, (e) => {
+        const [w, c] = e;
+        return -w.length;
+    }), (e) => {
+        const [w, c] = e;
+        return `${w.length} ${c}`;
+    }), \"\\n\"));
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let copied = moved.replace("    const status =", "    print(es[0]);\n    const status =");
+    let run = |src: &str, name: &str, args: &[&str]| -> (String, u64) {
+        let bin = compile(src, name);
+        checked_clean_bin(&bin, args, None);
+        let r = run_bin(&bin, args);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        let mut ls: Vec<&str> = r.stdout.lines().collect();
+        let hwm = ls.pop().unwrap_or("").chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", r.stdout));
+        (ls[..3].join("\n"), hwm)
+    };
+    let (out_m, most_m) = run(moved, "pairs_moved", &["200000"]);
+    let (out_c, most_c) = run(&copied, "pairs_copied", &["200000"]);
+    assert_eq!(out_m, "38 1\n38 1\n38 1");
+    assert_eq!(out_m, out_c);
+    assert!(most_m + 8 * 1024 < most_c, "moved {} KiB, copied {} KiB", most_m, most_c);
+    // the interpreter's output
+    let small = |src: &str| src.replace("    const status = lines(readText(\"/proc/self/status\"));\n    print(filter(status, (l) => l.startsWith(\"VmHWM\")));\n", "");
+    let bin = compile(&small(moved), "pairs_moved_small");
+    assert_eq!(run_bin(&bin, &["50"]).stdout, interp_ok(&small(moved), &["50"]));
+    // no index of hashes computed
+    fn hash_indexes(e: &isc_ir::Expr) -> usize {
+        usize::from(matches!(e.kind, isc_ir::ExprKind::StrOp(isc_ir::StrOp::HashIndex, _))) + e.children().into_iter().map(hash_indexes).sum::<usize>()
+    }
+    let p = iscc::frontend("pairs.isc", moved).unwrap();
+    assert_eq!(hash_indexes(&p.body), 0);
+}

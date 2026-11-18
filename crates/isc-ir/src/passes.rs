@@ -61,10 +61,65 @@ pub fn optimize(p: &mut Program) -> R<()> {
     ownership(p)?;
     borrow_elements(p);
     take_dead_parts(p);
+    unread_parts(&mut p.body);
+    for f in p.fns.iter_mut() {
+        unread_parts(&mut f.body);
+    }
     check_require_tail(p)?;
     // every memory decision checked, independently of the passes (D96)
     if std::env::var_os("ISC_DEBUG_NOVERIFY").is_some() { return Ok(()); }
     crate::verify::verify(p)
+}
+
+// ---------------------------------------------------------------------
+// the parts of a new tuple that nothing reads, not computed (D717)
+
+/// `let r = .. [a, b, c] in let x = take 0 r in let y = take 1 r in let z =
+/// take 2 r in rest` (a tuple taken apart, D138), `z` never read in `rest`
+/// (only freed) and `r` read nowhere else: `c`, an array computed without
+/// any effect, any call, and that cannot panic, is not computed; an empty
+/// array takes its place. The index of the hashes of the keys of a `Map`
+/// whose entries alone are read (`countBy` then `entries`): 512 KiB for
+/// 32187 keys, never read.
+fn unread_parts(e: &mut Expr) {
+    for c in e.children_mut() {
+        unread_parts(c);
+    }
+    let ExprKind::Let { var: r, init, body, .. } = &mut e.kind else { return };
+    if !matches!(init.ty, Type::Tuple(_)) {
+        return;
+    }
+    let r = *r;
+    let mut unread = Vec::new();
+    let mut takes = 0;
+    let mut at: &Expr = body;
+    while let ExprKind::Let { var: a, init: ti, body: b, .. } = &at.kind {
+        let ExprKind::Take(x, k) = &ti.kind else { break };
+        if !matches!(x.kind, ExprKind::Var(w, _) if w == r) {
+            break;
+        }
+        takes += 1;
+        if !crate::blocks::mentions(b, &HashSet::from([*a])) {
+            unread.push(*k as usize);
+        }
+        at = b;
+    }
+    fn uses(e: &Expr, r: VarId) -> usize {
+        usize::from(matches!(e.kind, ExprKind::Var(w, _) if w == r)) + e.children().into_iter().map(|c| uses(c, r)).sum::<usize>()
+    }
+    fn calls(e: &Expr) -> bool {
+        matches!(e.kind, ExprKind::Call(..)) || e.children().into_iter().any(calls)
+    }
+    if unread.is_empty() || uses(body, r) != takes {
+        return;
+    }
+    let ExprKind::Tuple(es) = &mut tail_var(init).kind else { return };
+    for k in unread {
+        let x = &mut es[k];
+        if x.ty.is_array() && !matches!(&x.kind, ExprKind::ArrayLit(v) if v.is_empty()) && is_pure(x) && cannot_panic(x) && !calls(x) {
+            *x = Expr { kind: ExprKind::ArrayLit(Vec::new()), ty: x.ty.clone(), span: x.span, reassoc: false };
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -6886,12 +6941,31 @@ fn takes_var(e: &Expr, v: VarId) -> bool {
 /// The body of the binding of the owned array `x` reads it only in the
 /// gather of a permutation of its indices (D548): `let t = argsort(x)` (or
 /// the `argsort` of a `map` of `x`, `sortBy`), then `let y = map(t, (i) =>
-/// copy(x[i]))`, then nothing more of `x`. Each element is taken once (a
+/// copy(x[i]))`, then nothing more of `x`; that `let t` on the way the body
+/// is evaluated (no lambda, no branch), what comes before it reading the
+/// length of `x` at most (`site_on_path`: the sorted pairs of countwords,
+/// in the text that `print` writes). Each element is taken once (a
 /// permutation): moved rather than copied, and `x` gives back its block
 /// alone. The variable `y`.
 pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
+    let mut y = None;
+    let site = |e: &Expr| {
+        let (v, ok) = permutation_site(e, x)?;
+        y = Some(v);
+        Some(if ok { Ok(e as *const Expr) } else { Err(()) })
+    };
+    site_on_path(e, x, &mut { site }).ok().flatten()?;
+    (!frees_var(e, x)).then_some(y?)
+}
+
+/// `e` the gather of a permutation of `x` (`permutation_gather`): `y`, and
+/// whether nothing after it reads `x` nor frees it, and the function of
+/// the keys does not read it (each `copy(x[i])` of the body of the binding
+/// is a move).
+fn permutation_site(e: &Expr, x: VarId) -> Option<(VarId, bool)> {
     let is_x = |e: &Expr| matches!(e.kind, ExprKind::Var(v, _) if v == x);
-    let map_of_x = |e: &Expr| matches!(&e.kind, ExprKind::Map(ins, _) if ins.len() == 1 && is_x(&ins[0]));
+    let xs = HashSet::from([x]);
+    let map_of_x = |e: &Expr| matches!(&e.kind, ExprKind::Map(ins, l) if ins.len() == 1 && is_x(&ins[0]) && !crate::blocks::mentions(&l.body, &xs));
     let ExprKind::Let { var: t, init, body, .. } = &e.kind else { return None };
     let perm = match &init.kind {
         ExprKind::StrOp(StrOp::ArgSort, a) => a.len() == 1 && (is_x(&a[0]) || map_of_x(&a[0])),
@@ -6909,7 +6983,53 @@ pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
         && matches!(ins[0].kind, ExprKind::Var(v, _) if v == *t)
         && l.params.len() == 1
         && matches!(&l.body.kind, ExprKind::Copy(c) if matches!(&c.kind, ExprKind::Index(a, i) if is_x(a) && matches!(i.kind, ExprKind::Var(v, _) if v == l.params[0])));
-    (takes && !crate::blocks::mentions(rest, &HashSet::from([x])) && !frees_var(rest, x)).then_some(*y)
+    takes.then(|| (*y, !crate::blocks::mentions(rest, &xs) && !frees_var(rest, x)))
+}
+
+/// What reads `x` but for its length.
+fn reads_but_len(e: &Expr, x: VarId) -> bool {
+    match &e.kind {
+        ExprKind::Len(a) if matches!(a.kind, ExprKind::Var(v, _) if v == x) => false,
+        ExprKind::Var(v, _) => *v == x,
+        _ => e.children().into_iter().any(|c| reads_but_len(c, x)),
+    }
+}
+
+/// The node where `site` holds (Ok: the node it gives; Err: a site that
+/// cannot be used) on the way `e` is evaluated (no lambda, no branch), what
+/// is evaluated before it reading `x` only for its length, nothing after
+/// it reading `x`: Ok(None) when `e` reads only the length of `x`, Err when
+/// it reads `x` otherwise.
+fn site_on_path(e: &Expr, x: VarId, site: &mut dyn FnMut(&Expr) -> Option<Result<*const Expr, ()>>) -> Result<Option<*const Expr>, ()> {
+    if let Some(r) = site(e) {
+        return r.map(Some);
+    }
+    if !reads_but_len(e, x) {
+        return Ok(None);
+    }
+    let lam = lambda_body_index(e);
+    let mut found = None;
+    for (k, c) in e.children().into_iter().enumerate() {
+        if found.is_some() {
+            if reads_but_len(c, x) {
+                return Err(());
+            }
+            continue;
+        }
+        if Some(k) == lam || (matches!(e.kind, ExprKind::If(..)) && k > 0) {
+            if reads_but_len(c, x) {
+                return Err(());
+            }
+            continue;
+        }
+        found = site_on_path(c, x, site)?;
+    }
+    // (an `if` evaluates its condition, then one branch: the site in its
+    // condition alone; checked above)
+    match found {
+        Some(g) => Ok(Some(g)),
+        None => Err(()),
+    }
 }
 
 /// The body of the binding of the owned array `x` reads it only in a `map`
@@ -6923,18 +7043,10 @@ pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
 /// those from `n` on, never read, are freed right after the `map`, the
 /// block alone with the binding of `x`. The `map` (its node).
 pub fn identity_gather(e: &Expr, x: VarId) -> Option<*const Expr> {
-    // what reads `x` but for its length
-    fn reads_x(e: &Expr, x: VarId) -> bool {
-        match &e.kind {
-            ExprKind::Len(a) if matches!(a.kind, ExprKind::Var(v, _) if v == x) => false,
-            ExprKind::Var(v, _) => *v == x,
-            _ => e.children().into_iter().any(|c| reads_x(c, x)),
-        }
-    }
     // the gather, when `e` is one
     fn gather(e: &Expr, x: VarId) -> bool {
         let ExprKind::Map(ins, l) = &e.kind else { return false };
-        if ins.len() != 1 || l.params.len() != 1 || !matches!(ins[0].kind, ExprKind::Iota(_)) || reads_x(&ins[0], x) {
+        if ins.len() != 1 || l.params.len() != 1 || !matches!(ins[0].kind, ExprKind::Iota(_)) || reads_but_len(&ins[0], x) {
             return false;
         }
         let i = l.params[0];
@@ -6965,42 +7077,12 @@ pub fn identity_gather(e: &Expr, x: VarId) -> Option<*const Expr> {
         reads(&l.body, x, i, &mut copies, &mut others, true);
         copies == 1 && others == 0
     }
-    // the gather on the way `e` is evaluated: Ok(None) when `e` reads only
-    // the length of `x`, Err when it reads `x` otherwise
-    fn find(e: &Expr, x: VarId) -> Result<Option<*const Expr>, ()> {
-        if let ExprKind::Let { init, body, .. } = &e.kind {
-            if gather(init, x) {
-                return if reads_x(body, x) { Err(()) } else { Ok(Some(&**init as *const Expr)) };
-            }
-        }
-        if !reads_x(e, x) {
-            return Ok(None);
-        }
-        let lam = lambda_body_index(e);
-        let mut found = None;
-        for (k, c) in e.children().into_iter().enumerate() {
-            if found.is_some() {
-                if reads_x(c, x) {
-                    return Err(());
-                }
-                continue;
-            }
-            if Some(k) == lam || (matches!(e.kind, ExprKind::If(..)) && k > 0) {
-                if reads_x(c, x) {
-                    return Err(());
-                }
-                continue;
-            }
-            found = find(c, x)?;
-        }
-        // (an `if` evaluates its condition, then one branch: the gather in
-        // its condition alone; checked above)
-        match found {
-            Some(g) => Ok(Some(g)),
-            None => Err(()),
-        }
-    }
-    let g = find(e, x).ok().flatten()?;
+    // the gather on the way `e` is evaluated
+    let mut site = |e: &Expr| match &e.kind {
+        ExprKind::Let { init, body, .. } if gather(init, x) => Some(if reads_but_len(body, x) { Err(()) } else { Ok(&**init as *const Expr) }),
+        _ => None,
+    };
+    let g = site_on_path(e, x, &mut site).ok().flatten()?;
     (!frees_var(e, x)).then_some(g)
 }
 

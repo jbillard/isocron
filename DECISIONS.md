@@ -17501,3 +17501,45 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   counted the lines of the IR at each build). The 23 programs of the tests
   of isocron-ui, after D715 and before this: 281 s in all (817 before
   D710), the largest 51.6 s (213).
+
+- **D717 — The pairs sorted where they are printed moved; the parts of a
+  tuple that nothing reads not computed (2026-11-18).** The author asked
+  why countwords took 17.1 MiB at its peak against 6.1 for Rust. Measured
+  (the mappings of the program at its peak, `/proc/PID/smaps`, and its
+  resident memory every 0.2 ms): 11.9 MiB while it counts (its 32187 keys,
+  3.9 MiB of blocks of 128 bytes in the arena of the small blocks, 6 MiB
+  resident in pages of 4 KiB then huge pages; its table of slots, 2 MiB,
+  and the array of its keys in the huge pages of the medium blocks, 4 MiB;
+  the parts of the input, their copy in lower case and the places of
+  their words, 1.2 MiB), 17.5 in its last 4 ms. Rust: its code and the C
+  library 1.9 MiB, its keys 1.0 (blocks of 32 bytes of glibc), its table
+  2.1, the pairs 1.0. Two causes of the end:
+  - the gather of the permutation of `sortBy` (D548) moved the elements of
+    an array only when the body of its binding began with the sort; the
+    pairs of `counts.entries()`, sorted inside the text that `print`
+    writes (`let tmp = let sep = .. in let t = argsort(..) in let y =
+    map(t, (i) => copy(x[i])) in fold(..) in print(tmp)`), were copied, each
+    key a new block. Now the sort and its gather are found on the way the
+    body is evaluated (`site_on_path`, shared with the gather by the
+    identity of D706: no lambda, no branch, what comes before reading the
+    length of the array at most, nothing after reading it); the function of
+    the keys of the sort must not read the array (each `copy(x[i])` of the
+    body is then a move). countwords 17.5 to 15.4 MiB, the same output;
+  - `countBy` makes a `Map` with the index of the hashes of its keys
+    (`HashIndex`, 512 KiB for 32187 keys), which `entries` never reads. A
+    part of a new tuple taken apart (`let z = take k r`, D138) and never
+    read, `r` read nowhere else, an array computed without any effect, any
+    call, and that cannot panic (`cannot_panic`), is not computed: an empty
+    array takes its place (`unread_parts`, after the passes of ownership).
+    The peak of countwords stays 15.4 MiB (the medium blocks are in huge
+    pages: 512 KiB less frees no page of 2 MiB), its work less.
+  Test `sorted_pairs_moved_where_printed` (memory.rs: 200000 keys sorted
+  in the text printed, 104.2 MB at the most against 128.8 with the
+  compiler before, the program that reads the pairs again copies them; no
+  `HashIndex` left; the checked allocator; the interpreter's output). What
+  is left, in order: a key of 1 to 64 bytes takes 128 bytes (the header of
+  64 bytes and the classes of 64 bytes of the small blocks, D605) where
+  glibc gives 32; the medium blocks resident by huge pages of 2 MiB
+  (D707); the copy of each part of the input in lower case and the array
+  of the places of its words; the text of the output made whole before it
+  is written.
