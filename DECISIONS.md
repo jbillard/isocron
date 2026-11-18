@@ -17327,3 +17327,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   of 40 bytes, the most memory at least 8 MiB below the same program that
   reads its array again; the keys up to a count, the others freed, under
   the checked allocator).
+
+- **D707 — Huge pages kept (2026-11-18, measured, refused).** At its peak
+  (15.3 MiB after D706), countwords held two huge pages of medium blocks
+  half used (4.0 MiB for 3.4 used) and its small blocks in the arena of the
+  allocator written in Isocron (8 MiB: 2 + 2 MiB of pages of 4 KiB, then
+  two huge pages). Two policies were measured (the protocol, 11 runs):
+  pages of 4 KiB until the heap took 32 MiB (chunks, arena, medium blocks),
+  then huge pages, the regions made before given them: countwords 10.5
+  MiB, but regex-redux +6.3 %, pidigits +1.7 %, reverse-complement +1.4 %,
+  fasta +0.6 % (heaps of 5 to 30 MB read densely, without huge pages);
+  pages of 4 KiB in the regions of the medium blocks but for the whole huge
+  pages of a block of 2 MiB or more: countwords 14.3 MiB, regex-redux
+  +4.8 %, reverse-complement +1.6 %. Both trade time for memory: neither
+  kept. What countwords holds is its small blocks: a block of the arena is
+  64 bytes after a header of 64 bytes, in classes of 64 bytes (D605), so a
+  key of 7 bytes takes 128 (its 32187 keys 4 MiB, against about 1 MiB of
+  blocks of 32 bytes in Rust): the next lever is the layout of the small
+  blocks, not the size of the pages.

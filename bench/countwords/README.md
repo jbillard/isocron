@@ -121,3 +121,27 @@ whole. Below that: reading the text by blocks.
 the fork and the exec it was the script's own memory (about 22 MiB, seen
 at random on one program or another, 21.7 MiB for the optimized Rust
 program in one measure); now only once the program runs.
+
+### After D701 to D706 (2026-11-18)
+
+Isocron e0b480b, the port the same, line for line:
+
+* **Times**: Isocron 0.225 s on one thread, 0.232 s on 8; Rust 0.570 s
+  (simple) and 0.251 s (optimized).
+* **Memory**: 15.3 MiB at its peak (307.6 MiB before); Rust 6.1 MiB.
+
+What changed: the pure values of the statements of an action are computed
+in the statement that reads them when no effect lies between (D701, the
+rule of SPEC section 12 relaxed at the author's choice): the words of
+`const words = matches(...)` are never made. The standard input read once
+by the runs of a class of bytes that a `fold` reads is read by parts of 64
+KiB (D702): neither the text nor its copy in lower case is ever whole. The
+keys of the table are moved, not copied, into the `Map`, its pairs and its
+sorted pairs (D705, D706).
+
+What remains, 10.3 MiB while it counts and 15.3 at the end: the 32187 keys
+in blocks of the allocator written in Isocron, each a block of 64 bytes
+after a header of 64 (4 MiB; Rust's are about 1 MiB), the huge pages of
+the heap partly used (measured with pages of 4 KiB instead: 10.5 MiB, but
+other programs up to 6.3 % slower, D707: kept), and the arrays of the end
+(the pairs, their keys of the sort, the text written).
