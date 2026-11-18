@@ -1,0 +1,32 @@
+optimized-c                    same output
+optimized-cpp                  same output
+optimized-go                   same output
+optimized-zig                  same output
+rust-optimized                 same output
+rust-optimized-customhashmap   same output
+rust-optimized-trie            same output
+rust-optimized-unsafe          same output
+rust-simple                    same output
+simple-c                       same output
+simple-cpp                     same output
+simple-go                      same output
+simple-zig                     same output
+isocron                        same output
+grep C                         min 0.038 s  median 0.038 s
+grep                           min 0.038 s  median 0.039 s
+wc -w C                        min 0.132 s  median 0.135 s
+wc -w                          min 0.154 s  median 0.155 s
+isocron                        min 0.175 s  median 0.178 s
+rust-optimized-trie            min 0.181 s  median 0.190 s
+optimized-zig                  min 0.191 s  median 0.193 s
+optimized-c                    min 0.195 s  median 0.197 s
+optimized-cpp                  min 0.202 s  median 0.204 s
+rust-optimized-customhashmap   min 0.211 s  median 0.212 s
+rust-optimized-unsafe          min 0.235 s  median 0.237 s
+rust-optimized                 min 0.250 s  median 0.255 s
+optimized-go                   min 0.324 s  median 0.326 s
+simple-zig                     min 0.414 s  median 0.418 s
+rust-simple                    min 0.550 s  median 0.568 s
+simple-c                       min 0.791 s  median 0.822 s
+simple-go                      min 0.808 s  median 0.832 s
+simple-cpp                     min 1.312 s  median 1.326 s

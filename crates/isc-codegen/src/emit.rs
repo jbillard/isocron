@@ -18184,6 +18184,29 @@ impl<'p> Gen<'p> {
                     v(self.ins(format!("xor i1 {}, true", same.r)), "i1")
                 }
             }
+            // an equality: two lengths that differ, else the bytes compared
+            // without a call up to 16 (`text_same`, D699; D708: the keys of
+            // a table of countwords compared by `memcmp` at each word, 22 %
+            // of its time, as no order is needed)
+            S::Cmp(b) if matches!(b, BinOp::Eq | BinOp::Ne) => {
+                let (p, n) = self.str_parts(&vals[0]);
+                let (q, m) = self.str_parts(&vals[1]);
+                let (lsame, ljoin) = (self.label(), self.label());
+                let lfrom = self.current_label("entry");
+                let lenne = self.ins(format!("icmp ne i64 {}, {}", n, m));
+                self.cbr(&lenne, &ljoin, &lsame);
+                self.block(&lsame);
+                let same = self.text_same(&p, &q, &n);
+                let lend = self.current_label(&lsame);
+                self.br(&ljoin);
+                self.block(&ljoin);
+                let eqv = self.ins(format!("phi i1 [ false, %{} ], [ {}, %{} ]", lfrom, same, lend));
+                if b == BinOp::Eq {
+                    v(eqv, "i1")
+                } else {
+                    v(self.ins(format!("xor i1 {}, true", eqv)), "i1")
+                }
+            }
             S::Cmp(b) => {
                 let (p, n) = self.str_parts(&vals[0]);
                 let (q, m) = self.str_parts(&vals[1]);

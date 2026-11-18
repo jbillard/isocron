@@ -145,3 +145,34 @@ after a header of 64 (4 MiB; Rust's are about 1 MiB), the huge pages of
 the heap partly used (measured with pages of 4 KiB instead: 10.5 MiB, but
 other programs up to 6.3 % slower, D707: kept), and the arrays of the end
 (the pairs, their keys of the sort, the text written).
+
+### Against every fast program of the original benchmark (2026-11-18)
+
+The programs of the original benchmark (benhoyt/countwords at d8c5cf3)
+built from their sources with the options of its `test.sh`, and Isocron's
+program, run in one container pinned to the CPU of the measures
+(`others/others.py`; gcc 14, g++ 14, Go 1.24, Rust 1.84, Zig 0.7.1 as in
+the original measures), 9 rounds interleaved, every output checked
+(`results/others.txt`); Isocron after D708 and D709:
+
+| Program | Min | Median |
+| --- | ---: | ---: |
+| **Isocron** (written plainly) | **0.175 s** | **0.178 s** |
+| Rust, optimized with a trie | 0.181 s | 0.190 s |
+| Zig, optimized | 0.191 s | 0.193 s |
+| C, optimized | 0.195 s | 0.197 s |
+| C++, optimized | 0.202 s | 0.204 s |
+| Rust, optimized with its own table | 0.211 s | 0.212 s |
+| Rust, optimized, `unsafe` | 0.235 s | 0.237 s |
+| Rust, optimized | 0.250 s | 0.255 s |
+| Go, optimized | 0.324 s | 0.326 s |
+| Zig, simple | 0.414 s | 0.418 s |
+| Rust, simple | 0.550 s | 0.568 s |
+| C, simple | 0.791 s | 0.822 s |
+| Go, simple | 0.808 s | 0.832 s |
+| C++, simple | 1.312 s | 1.326 s |
+| `wc -w` (reference) | 0.154 s | 0.155 s |
+
+Before D708 and D709 Isocron was sixth (0.222 s): its table found a key
+through four reads, each where the one before said, and compared it by
+`memcmp`. Its peak is now 17.1 MiB (Rust 6.1).

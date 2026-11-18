@@ -17345,3 +17345,31 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   key of 7 bytes takes 128 (its 32187 keys 4 MiB, against about 1 MiB of
   blocks of 32 bytes in Rust): the next lever is the layout of the small
   blocks, not the size of the pages.
+
+- **D708 — Texts compared for equality without a call (2026-11-18).** An
+  equality or an inequality of two texts computed an order: two lengths
+  that differed said no, then the first 8 bytes when both had 8 or more,
+  else `memcmp` of the bytes both have and the order of the lengths. Every
+  `==` of texts now asks only equality: the lengths, then `text_same`
+  (D699: up to 16 bytes by two loads of each that overlap, no call;
+  `memcmp` beyond). The keys of the table of countwords were compared by
+  `memcmp` at each word: 22 % of its time (perf). Only pidigits of the
+  corpus changes its IR: 335.6 to 335.9 ms.
+
+- **D709 — The table of `countBy` of texts in one array of slots
+  (2026-11-18).** The table of D698 found a key through four reads, each
+  where the one before said: its slot (the number of the key), the hash of
+  that key, its text, its bytes (55 % of countwords waited there, perf).
+  Now one array of `u64`, 4 words a slot, two slots in a line of the cache:
+  the tag (the hash, its highest bit set, its lowest byte the length of the
+  key up to 255; 0 an empty slot), the first 8 bytes of the key, its count,
+  its number; the keys kept in the order of their first elements, read only
+  for a key of more than 8 bytes (the tag and the first bytes say a shorter
+  key whole) and at the end. The slots twice as many as the keys at least,
+  placed again from their tags when they grow. countwords under the
+  protocol, in the same container as the programs of the original
+  benchmark built from their sources (gcc 14, g++ 14, Go 1.24, Rust 1.84,
+  Zig 0.7.1): Isocron 0.175 s, Rust optimized with a trie 0.184, Zig
+  optimized 0.191, C optimized 0.195, C++ optimized 0.201, Rust optimized
+  0.251, Go optimized 0.323 (before D708 and D709: Isocron 0.222, sixth).
+  Its peak 17.1 MiB (15.3 before: 2 MiB of slots against 1 MiB).

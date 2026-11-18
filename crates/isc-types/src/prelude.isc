@@ -205,72 +205,91 @@ function $countPick<T, K extends Key>(xs: T[n], f: (x: T) => K, g: i64[t], r: i6
 // once, at their first element, in the order of their first elements.
 function $countText<T>(xs: T[n], f: (x: T) => string): Map<string, i64> {
     const t = fold(xs, $textTable(), (a, x) => $textCount(a, x, f));
-    const [slots, keys, counts, hashes, used] = t;
-    return $textCounts(keys, counts, iota(used));
+    const [entries, keys, used] = t;
+    return $textCounts(entries, keys, iota(used));
 }
 
 // The map of the first keys `r` of the table of `$countText` and of their
-// counts.
-function $textCounts(keys: string[k], counts: i64[k], r: i64[m]): Map<string, i64> {
+// counts (each slot gives the count of its key at the number of its key).
+function $textCounts(entries: u64[e], keys: string[k], r: i64[m]): Map<string, i64> {
+    const counts = fold(iota(e / 4), fill(m, 0), (acc, s) => entries[4 * s] == 0u64 ? acc : acc.with(i64(entries[4 * s + 3]), i64(entries[4 * s + 2])));
     const ks = map(r, (g) => keys[g]);
-    return $mapOf(ks, map(r, (g) => counts[g]), $hashIndex(ks));
+    return $mapOf(ks, counts, $hashIndex(ks));
 }
 
-// The empty table of `$countText`: its slots (-1 empty, else the number of
-// a key), twice as many as its places of keys, so half empty at least; the
-// keys, their counts and their hashes in the order they came; their number.
-function $textTable(): [i64[], string[], i64[], u64[], i64] {
-    return [fill(1024, -1), fill(512, ""), fill(512, 0), fill(512, 0u64), 0];
+// The empty table of `$countText` (D708): its slots, 4 words each, one after
+// the other, two in a line of the cache: the tag of the key (its hash, its
+// highest bit set, its lowest byte the length of the key, up to 255: 0 an
+// empty slot), its first 8 bytes, its count, its number; twice as many slots
+// as keys at least. The keys in the order of their first elements (their
+// places twice as many when full), and their number. A key of 8 bytes or
+// fewer is found by its slot alone (its tag and its first bytes say it
+// whole): one line of the cache read for each element, where the table of
+// D698 read a slot, a hash, a key and its text, each where the one before
+// said (22 % of countwords waited there).
+function $textTable(): [u64[], string[], i64] {
+    return [fill(4096, 0u64), fill(512, ""), 0];
 }
 
 // The key `f(x)` counted in the table `a`: its slot found from its hash by
 // linear probing, its count plus one; a new key added (`$textAdd`). (The
 // table taken apart before the key is made: made first, the key left the
 // parts of the table borrowed, copied at each element.)
-function $textCount<T>(a: [i64[], string[], i64[], u64[], i64], x: T, f: (x: T) => string): [i64[], string[], i64[], u64[], i64] {
-    const [slots, keys, counts, hashes, used] = a;
+function $textCount<T>(a: [u64[], string[], i64], x: T, f: (x: T) => string): [u64[], string[], i64] {
+    const [entries, keys, used] = a;
     const w = f(x);
-    const c = slots.length;
-    const h = $textHash(w);
-    const s = $textSlot(slots, keys, hashes, w, h, i64(h & u64(c - 1)));
-    const g = slots[s];
-    if (g >= 0) {
-        return [slots, keys, counts.with(g, counts[g] + 1), hashes, used];
+    const b = bytes(w);
+    const n = b.length;
+    const head = n == 0 ? 0u64 : readWord(b, 0, n < 8 ? n : 8);
+    const tag = (($textHash(w) | 0x8000000000000000u64) & 0xFFFFFFFFFFFFFF00u64) | u64(n < 255 ? n : 255);
+    const s = $textFind(entries, keys, w, tag, head, n, i64((tag >> 8u64) & u64(entries.length / 4 - 1)));
+    if (s >= 0) {
+        return [entries.with(4 * s + 2, entries[4 * s + 2] + 1u64), keys, used];
     }
-    return $textAdd(slots, keys, counts, hashes, used, w, h, s);
+    return $textAdd(entries, keys, used, w, tag, head, -1 - s);
 }
 
-// The slot of the key `w` (of hash `h`) from `s`: the first one empty or
-// holding it.
-function $textSlot(slots: i64[c], keys: string[k], hashes: u64[k], w: string, h: u64, s: i64): i64 {
-    const g = slots[s];
-    return g < 0 || (hashes[g] == h && keys[g] == w) ? s : $textSlot(slots, keys, hashes, w, h, (s + 1) & (c - 1));
+// The slot of the key `w` (its tag, its first 8 bytes, its length `n`) from
+// `s`: the slot that holds it, else -1 less the first empty one.
+function $textFind(entries: u64[e], keys: string[k], w: string, tag: u64, head: u64, n: i64, s: i64): i64 {
+    const t = entries[4 * s];
+    if (t == 0u64) {
+        return -1 - s;
+    }
+    if (t == tag && entries[4 * s + 1] == head && (n <= 8 || keys[i64(entries[4 * s + 3])] == w)) {
+        return s;
+    }
+    return $textFind(entries, keys, w, tag, head, n, (s + 1) & (e / 4 - 1));
 }
 
-// A new key `w` in the empty slot `s`: copied at the end of the keys (their
-// places twice as many when full), its count 1; the slots twice as many,
-// every key placed again, when more than half would be full.
+// A new key `w` in the empty slot `s`: copied at the end of the keys, its
+// count 1; the slots twice as many, every key placed again, when more than
+// half would be full.
 @cold
-function $textAdd(slots: i64[c], keys: string[k], counts: i64[k], hashes: u64[k], used: i64, w: string, h: u64, s: i64): [i64[], string[], i64[], u64[], i64] {
-    const keys1 = used < k ? keys : keys.concat(fill(k, ""));
-    const counts1 = used < k ? counts : counts.concat(fill(k, 0));
-    const hashes1 = (used < k ? hashes : hashes.concat(fill(k, 0u64))).with(used, h);
-    const slots1 = 2 * (used + 1) > c ? $textPlace(fill(2 * c, -1), hashes1, 0, used + 1) : slots.with(s, used);
-    return [slots1, keys1.with(used, w), counts1.with(used, 1), hashes1, used + 1];
+function $textAdd(entries: u64[e], keys: string[k], used: i64, w: string, tag: u64, head: u64, s: i64): [u64[], string[], i64] {
+    const keys1 = (used < k ? keys : keys.concat(fill(k, ""))).with(used, w);
+    const e1 = entries.with(4 * s, tag).with(4 * s + 1, head).with(4 * s + 2, 1u64).with(4 * s + 3, u64(used));
+    const e2 = 2 * (used + 1) > e / 4 ? $textPlace(fill(2 * e, 0u64), e1, 0) : e1;
+    return [e2, keys1, used + 1];
 }
 
-// The keys `g ..< used` placed again into the empty slots `slots`.
-function $textPlace(slots: i64[c], hashes: u64[k], g: i64, used: i64): i64[c] {
-    if (g >= used) {
-        return slots;
+// The slots `s ..< o / 4` of `old` placed again into the empty `entries`
+// (their slot from their tag).
+function $textPlace(entries: u64[e], old: u64[o], s: i64): u64[e] {
+    if (s >= o / 4) {
+        return entries;
     }
-    const s = $textFree(slots, i64(hashes[g] & u64(c - 1)));
-    return $textPlace(slots.with(s, g), hashes, g + 1, used);
+    const t = old[4 * s];
+    if (t == 0u64) {
+        return $textPlace(entries, old, s + 1);
+    }
+    const d = $textEmpty(entries, i64((t >> 8u64) & u64(e / 4 - 1)));
+    return $textPlace(entries.with(4 * d, t).with(4 * d + 1, old[4 * s + 1]).with(4 * d + 2, old[4 * s + 2]).with(4 * d + 3, old[4 * s + 3]), old, s + 1);
 }
 
 // The first empty slot from `s`.
-function $textFree(slots: i64[c], s: i64): i64 {
-    return slots[s] < 0 ? s : $textFree(slots, (s + 1) & (c - 1));
+function $textEmpty(entries: u64[e], s: i64): i64 {
+    return entries[4 * s] == 0u64 ? s : $textEmpty(entries, (s + 1) & (e / 4 - 1));
 }
 
 // The hash of a text for `$countText`: its bytes 8 at a time (`readWord`),
