@@ -1523,6 +1523,69 @@ fn texts_of_a_sorted_array_freed_in_the_order_of_their_places() {
     checked_clean(src, "freed_by_places", &["200000"]);
 }
 
+/// The maps whose elements are views of a text that lives longer, fused
+/// into their consumers (D697): a `fold` over the words found by a
+/// `filter` of their starts, a `fold` that keeps one of them, a `reduce`
+/// that joins them, one read at an index in a loop and kept, a `count`.
+/// The same output as the interpreter, each block freed once (the checked
+/// allocator, valgrind), and no array of the words made but for the
+/// `reduce` (which owns its elements, D134).
+#[test]
+fn views_read_where_they_are_by_their_consumers() {
+    let src = include_str!("data/views_fused.isc");
+    let bin = compile(src, "views_fused");
+    for a in ["0", "1", "7", "300"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+        checked_clean_bin(&bin, &[a], None);
+    }
+    // no `let` of an array of the words (a `map` of slices, views or
+    // copies) but for the `reduce`, which owns its elements (D134)
+    fn arrays_of_slices(e: &isc_ir::Expr, out: &mut Vec<u32>) {
+        let slice = |e: &isc_ir::Expr| matches!(e.kind, isc_ir::ExprKind::StrOp(isc_ir::StrOp::Slice, _));
+        if let isc_ir::ExprKind::Let { init, .. } = &e.kind {
+            if let isc_ir::ExprKind::Map(_, l) = &init.kind {
+                if *init.ty.elem() == isc_ir::Type::Str && (slice(&l.body) || matches!(&l.body.kind, isc_ir::ExprKind::Copy(x) if slice(x))) {
+                    out.push(init.span.line);
+                }
+            }
+        }
+        for c in e.children() {
+            arrays_of_slices(c, out);
+        }
+    }
+    let p = iscc::frontend("views_fused.isc", src).unwrap();
+    let mut made = Vec::new();
+    arrays_of_slices(&p.body, &mut made);
+    let reduce = src.lines().position(|l| l.contains("print(reduce(")).unwrap() as u32 + 1;
+    assert_eq!(made, vec![reduce], "the lines of the arrays of words made");
+    clean(src, "views_fused_vg", &["300"]);
+}
+
+/// `countBy` whose keys are texts (D698): counted by the table of the
+/// prelude, the keys in the order of their first element, each counted as
+/// often as it comes (checked by the program against a count made another
+/// way), past the first sizes of the table (512 keys, 1024 slots), with an
+/// empty key, keys holding a zero byte, keys of more than 16 bytes that
+/// share their first 8; keys made by the function of `countBy`. The same
+/// output as the interpreter, each block freed once.
+#[test]
+fn counts_of_texts_by_a_table_of_the_prelude() {
+    let src = include_str!("data/counts_of_texts.isc");
+    let bin = compile(src, "counts_of_texts");
+    for a in ["0", "1", "40", "3000"] {
+        let want = interp_ok(src, &[a]);
+        let r = run_bin(&bin, &[a]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}: {}", a, r.stderr);
+        if a != "0" {
+            assert!(want.lines().nth(2) == Some("true"), "{}: {}", a, want);
+        }
+        checked_clean_bin(&bin, &[a], None);
+    }
+    clean(src, "counts_of_texts_vg", &["1200"]);
+}
+
 /// Arrays whose texts are views of the texts of a value that lives longer
 /// (D555): the sorts of an array read again after them, of such a view, of
 /// the lines of a text kept, of a parameter of a recursive function (the

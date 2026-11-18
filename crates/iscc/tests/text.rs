@@ -116,3 +116,34 @@ fn text_errors() {
     let e = iscc::frontend("t.isc", "action main(args: string[k]): i32 {\n    print(len(3));\n    return 0;\n}\n").unwrap_err();
     assert!(e.contains("string"), "{}", e);
 }
+
+/// D699: two texts of up to 16 bytes compared without a call (two loads of
+/// each that overlap, as `readWord`): every length from 0 to 20 (past 16:
+/// `memcmp`), texts that differ at one byte anywhere (first, middle, last,
+/// between), slices that end at the end of their text (nothing read past
+/// it, valgrind); the counts computed here.
+#[test]
+fn short_texts_compared_without_a_call() {
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const a = join(map(iota(n), (i) => `${(i * 7) % 10}`), \"\");
+    const b = join(map(iota(n), (i) => i % 23 == 0 ? \"x\" : `${(i * 7) % 10}`), \"\");
+    print(map(iota(21), (len) => count(iota(n - len + 1 > 0 ? n - len + 1 : 0), (s) => a.slice(s, s + len) == b.slice(s, s + len))));
+    print(map(iota(21), (len) => count(iota(n - len + 1 > 0 ? n - len + 1 : 0), (s) => a.slice(s, s + len) == a.slice(n - len, n))));
+    return 0;
+}
+";
+    let n = 300usize;
+    let a: Vec<u8> = (0..n).map(|i| b'0' + ((i * 7) % 10) as u8).collect();
+    let b: Vec<u8> = (0..n).map(|i| if i % 23 == 0 { b'x' } else { b'0' + ((i * 7) % 10) as u8 }).collect();
+    let line = |f: &dyn Fn(usize, usize) -> bool| -> String {
+        let cs: Vec<String> = (0..=20).map(|len| (0..=n - len).filter(|&s| f(s, len)).count().to_string()).collect();
+        format!("[{}]\n", cs.join(", "))
+    };
+    let want = line(&|s, len| a[s..s + len] == b[s..s + len]) + &line(&|s, len| a[s..s + len] == a[n - len..n]);
+    assert_eq!(interp_ok(src, &["300"]), want, "interpreted");
+    let bin = compile(src, "short_texts_compared");
+    let r = run_bin(&bin, &["300"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, want.as_str()), "{}", r.stderr);
+    valgrind_clean(src, "short_texts_compared", &["300"]);
+}

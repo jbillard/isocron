@@ -1,0 +1,42 @@
+// Maps whose elements are views of a text that lives longer, fused into
+// their consumers (D697): never an array of them, nothing copied but what a
+// consumer keeps.
+function inWord(x: u8): boolean {
+    return x != 32u8 && x != 10u8;
+}
+
+function wordEnd(b: u8[n], i: i64): i64 {
+    return i < n && inWord(b[i]) ? wordEnd(b, i + 1) : i;
+}
+
+function bound(t: i64[m], k: i64, first: i64, n: i64): i64 {
+    const at = k - first;
+    return at < 0 ? 0 : (at < m ? t[at] + 1 : n);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const text = join(map(iota(n), (i) => `w${i % 7}${i % 3 == 0 ? "-long-enough" : ""}${i % 5 == 0 ? "\n" : ""}`), " ");
+    const b = bytes(text);
+    // A: the words found by a filter of their starts, each a view of the
+    // text to its end, folded
+    const starts = filter(iota(b.length), (i) => inWord(b[i]) && (i == 0 || !inWord(b[i - 1])));
+    const total = fold(map(starts, (a) => text.slice(a, wordEnd(b, a))), 0, (acc, w) => acc + w.length * (w.length % 3 + 1));
+    print(total);
+    // B: the words by the places where a byte and the next differ in class,
+    // the longest one kept by a fold (copied into its accumulator)
+    const first = b.length > 0 && inWord(b[0]) ? 1 : 0;
+    const last = b.length > 0 && inWord(b[b.length - 1]) ? 1 : 0;
+    const t = filter(iota(b.length > 0 ? b.length - 1 : 0), (j) => inWord(b[j]) != inWord(b[j + 1]));
+    const m = (t.length + first + last) / 2;
+    const longest = fold(map(iota(m), (w) => text.slice(bound(t, 2 * w, first, b.length), bound(t, 2 * w + 1, first, b.length))), "", (best, w) => w.length > best.length ? w : best);
+    print(longest);
+    // C: joined by a reduce (each accumulator a new text)
+    print(reduce(map(iota(n < 6 ? n : 6), (i) => text.slice(i, i + 2)), (x, y) => x + "|" + y, ""));
+    // D: read at one index, in a loop, kept in a new array (copied)
+    const picks = map(iota(m > 0 ? 4 : 0), (j) => map(iota(m), (w) => text.slice(bound(t, 2 * w, first, b.length), bound(t, 2 * w + 1, first, b.length)))[(j * 5) % m]);
+    print(picks.join(","));
+    // E: counted by a filter of the words whose first byte is `w`
+    print(count(map(iota(m), (w) => text.slice(bound(t, 2 * w, first, b.length), bound(t, 2 * w + 1, first, b.length))), (w) => w.startsWith("w3")));
+    return 0;
+}

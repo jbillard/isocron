@@ -4386,7 +4386,13 @@ const ALWAYS_NEEDED: &[&str] = &["$kStart", "$kAlloc", "$kFree"];
 /// error of the compiler, which checks the program again whole).
 fn needs(g: &Globals, e: &TExpr, out: &mut Vec<FnId>) {
     match &e.kind {
-        TExprKind::FnRef { id, .. } | TExprKind::Call { callee: Callee::Fn { id, .. }, .. } => out.push(*id),
+        TExprKind::FnRef { id, .. } | TExprKind::Call { callee: Callee::Fn { id, .. }, .. } => {
+            out.push(*id);
+            // `countBy` of texts: the table of the prelude (D698)
+            if g.names.get("countBy") == Some(id) {
+                out.extend(g.names.get("$countText").copied());
+            }
+        }
         TExprKind::Call { callee: Callee::Prim(p), args, .. } => prim_needs(*p, args.first().map(|a| &a.ty), &e.ty, &mut |n| out.extend(g.names.get(n).copied())),
         TExprKind::PrimRef(p) => prim_needs(*p, None, &Ty::Unit, &mut |n| out.extend(g.names.get(n).copied())),
         _ => {}

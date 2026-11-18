@@ -1,0 +1,36 @@
+// A `fold` over a `map` of an `iota` that reads a `filter` by indices of
+// its index (D700): its loop by blocks of 4096, each reading the window of
+// the `filter` it needs, never the `filter` whole (but for a `fold` whose
+// window is too wide).
+function inWord(x: u8): boolean {
+    return x != 32u8;
+}
+
+function bound(t: i64[m], k: i64, first: i64, n: i64): i64 {
+    const at = k - first;
+    return at < 0 ? 0 : (at < m ? t[at] + 1 : n);
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const wide = args.length > 1;
+    const text = join(map(iota(n), (i) => `w${i % 13}${i % 4 == 0 ? "xyz" : ""}${i % 9 == 0 ? " " : ""}`), " ");
+    const b = bytes(text);
+    const first = b.length > 0 && inWord(b[0]) ? 1 : 0;
+    const last = b.length > 0 && inWord(b[b.length - 1]) ? 1 : 0;
+    const t = filter(iota(b.length > 0 ? b.length - 1 : 0), (j) => inWord(b[j]) != inWord(b[j + 1]));
+    const m = (t.length + first + last) / 2;
+    const places = t.length;
+    // each word a view of the text between two places of `t`
+    const total = fold(map(iota(m), (w) => text.slice(bound(t, 2 * w, first, b.length), bound(t, 2 * w + 1, first, b.length))), 0, (a, w) => a + w.length * (w.length % 5 + 1));
+    print(m);
+    print(total);
+    print(fold(map(iota(m), (w) => t[2 * w - (2 * w < places ? 0 : 1)]), 0, (a, x) => a ^ (x * 31 + a % 7)));
+    // with `wide`: places 40000 apart (a window too wide: `t` made whole for
+    // this `fold`), then one past the end of `t` (its panic)
+    if (wide) {
+        print(fold(map(iota(m), (w) => text.slice(bound(t, 2 * w, first, b.length), bound(t, 2 * w + 1 + (w % 2) * 40000, first, b.length))), 0, (a, w) => a + w.length));
+        print(fold(map(iota(m), (w) => t[2 * w + 2]), 0, (a, x) => a + x));
+    }
+    return 0;
+}

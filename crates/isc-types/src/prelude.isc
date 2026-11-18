@@ -197,6 +197,103 @@ function $countPick<T, K extends Key>(xs: T[n], f: (x: T) => K, g: i64[t], r: i6
     return $mapOf(keys, map(r, (i) => g[2 * m + i]), $hashIndex(keys));
 }
 
+// `countBy(xs, f)` whose keys are texts (D698; the lowering calls it in
+// the place of `countBy`): each key counted as it comes, in a table of
+// hashes written here (`$textCount`), its input read once and never made
+// whole: the words of a text found by `matches` then counted are read
+// where they are, never an array of all of them (D697). Its keys copied
+// once, at their first element, in the order of their first elements.
+function $countText<T>(xs: T[n], f: (x: T) => string): Map<string, i64> {
+    const t = fold(xs, $textTable(), (a, x) => $textCount(a, x, f));
+    const [slots, keys, counts, hashes, used] = t;
+    return $textCounts(keys, counts, iota(used));
+}
+
+// The map of the first keys `r` of the table of `$countText` and of their
+// counts.
+function $textCounts(keys: string[k], counts: i64[k], r: i64[m]): Map<string, i64> {
+    const ks = map(r, (g) => keys[g]);
+    return $mapOf(ks, map(r, (g) => counts[g]), $hashIndex(ks));
+}
+
+// The empty table of `$countText`: its slots (-1 empty, else the number of
+// a key), twice as many as its places of keys, so half empty at least; the
+// keys, their counts and their hashes in the order they came; their number.
+function $textTable(): [i64[], string[], i64[], u64[], i64] {
+    return [fill(1024, -1), fill(512, ""), fill(512, 0), fill(512, 0u64), 0];
+}
+
+// The key `f(x)` counted in the table `a`: its slot found from its hash by
+// linear probing, its count plus one; a new key added (`$textAdd`). (The
+// table taken apart before the key is made: made first, the key left the
+// parts of the table borrowed, copied at each element.)
+function $textCount<T>(a: [i64[], string[], i64[], u64[], i64], x: T, f: (x: T) => string): [i64[], string[], i64[], u64[], i64] {
+    const [slots, keys, counts, hashes, used] = a;
+    const w = f(x);
+    const c = slots.length;
+    const h = $textHash(w);
+    const s = $textSlot(slots, keys, hashes, w, h, i64(h & u64(c - 1)));
+    const g = slots[s];
+    if (g >= 0) {
+        return [slots, keys, counts.with(g, counts[g] + 1), hashes, used];
+    }
+    return $textAdd(slots, keys, counts, hashes, used, w, h, s);
+}
+
+// The slot of the key `w` (of hash `h`) from `s`: the first one empty or
+// holding it.
+function $textSlot(slots: i64[c], keys: string[k], hashes: u64[k], w: string, h: u64, s: i64): i64 {
+    const g = slots[s];
+    return g < 0 || (hashes[g] == h && keys[g] == w) ? s : $textSlot(slots, keys, hashes, w, h, (s + 1) & (c - 1));
+}
+
+// A new key `w` in the empty slot `s`: copied at the end of the keys (their
+// places twice as many when full), its count 1; the slots twice as many,
+// every key placed again, when more than half would be full.
+@cold
+function $textAdd(slots: i64[c], keys: string[k], counts: i64[k], hashes: u64[k], used: i64, w: string, h: u64, s: i64): [i64[], string[], i64[], u64[], i64] {
+    const keys1 = used < k ? keys : keys.concat(fill(k, ""));
+    const counts1 = used < k ? counts : counts.concat(fill(k, 0));
+    const hashes1 = (used < k ? hashes : hashes.concat(fill(k, 0u64))).with(used, h);
+    const slots1 = 2 * (used + 1) > c ? $textPlace(fill(2 * c, -1), hashes1, 0, used + 1) : slots.with(s, used);
+    return [slots1, keys1.with(used, w), counts1.with(used, 1), hashes1, used + 1];
+}
+
+// The keys `g ..< used` placed again into the empty slots `slots`.
+function $textPlace(slots: i64[c], hashes: u64[k], g: i64, used: i64): i64[c] {
+    if (g >= used) {
+        return slots;
+    }
+    const s = $textFree(slots, i64(hashes[g] & u64(c - 1)));
+    return $textPlace(slots.with(s, g), hashes, g + 1, used);
+}
+
+// The first empty slot from `s`.
+function $textFree(slots: i64[c], s: i64): i64 {
+    return slots[s] < 0 ? s : $textFree(slots, (s + 1) & (c - 1));
+}
+
+// The hash of a text for `$countText`: its bytes 8 at a time (`readWord`),
+// each word mixed in by a product whose high half is folded into its low
+// half, so that the low bits the table reads depend on every byte; the
+// length mixed in too ("a" and "a\0" read the same word).
+function $textHash(s: string): u64 {
+    const b = bytes(s);
+    const n = b.length;
+    return n == 0 ? 0u64 : n <= 8 ? $hashMix(readWord(b, 0, n) ^ (u64(n) << 56u64)) : $textHashFrom(b, 8, $hashMix(readWord(b, 0, 8)));
+}
+
+// The words of `b` from `i` (beyond its first 8 bytes) mixed into `h`, its
+// last word the last 8 bytes.
+function $textHashFrom(b: u8[n], i: i64, h: u64): u64 {
+    return i + 8 >= n ? $hashMix(h ^ readWord(b, n - 8, 8) ^ u64(n)) : $textHashFrom(b, i + 8, $hashMix(h ^ readWord(b, i, 8)));
+}
+
+function $hashMix(x: u64): u64 {
+    const y = x * 11400714819323198485u64;
+    return y ^ (y >> 32u64);
+}
+
 function get<K extends Key, V>(m: Map<K, V>, k: K): Option<V> {
     const [keys, values, index] = $mapParts(m);
     const i = $findIn(keys, index, k);

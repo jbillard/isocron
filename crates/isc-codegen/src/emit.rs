@@ -7452,6 +7452,14 @@ impl<'p> Gen<'p> {
                 self.fold_first(x, init, l, c)
             }
             Fold(x, init, l) if isc_ir::passes::is_stream(x) => self.fold_stream(x, init, l),
+            // read by windows of the arrays of `windowed_let` (D700)
+            Fold(x, init, l) if w == 1 && !self.in_task && !self.windowed.is_empty() && {
+                let reads = self.windowed_reads(x);
+                !reads.is_empty() && reads.iter().all(|(v, _)| isc_ir::blocks::windowed_fold_src(x, *v))
+            } =>
+            {
+                self.fold_windowed(x, init, l)
+            }
             Fold(x, init, l) if affine_recurrence(x, l).is_some() => {
                 let (f, value) = affine_recurrence(x, l).unwrap();
                 self.fold_affine(x, init, l, f, value)
@@ -13823,6 +13831,66 @@ impl<'p> Gen<'p> {
         Ok(v(r, alt))
     }
 
+    /// A `fold` over a `map` of an `iota` that reads arrays of
+    /// `windowed_let` (D700, `windowed_fold_src`): its loop by blocks of
+    /// FOLD_WINDOW elements, each block reading the windows of those arrays
+    /// it needs (`windowed_task`, as the blocks of `print_stream`, D293),
+    /// never the arrays whole (unless `windowed_stream_start` makes them
+    /// whole: indices that overflow, a window too wide).
+    fn fold_windowed(&mut self, x: &Expr, init: &Expr, l: &Lambda) -> R<V> {
+        const FOLD_WINDOW: i64 = 4096;
+        let reads = self.windowed_reads(x);
+        let (src, n) = self.prepare_src(x)?;
+        let (ok, wins) = self.windowed_stream_start(x, &reads, &n, FOLD_WINDOW)?;
+        // the variables as the blocks start from: the places of each array,
+        // or the array made whole
+        let starts: Vec<(VarId, V)> = reads.iter().map(|(v, _)| (*v, self.env[v].clone())).collect();
+        let filters: Vec<Expr> = reads.iter().map(|(v, _)| self.windowed[v].clone()).collect();
+        let xws: Vec<V> = wins.iter().map(|(_, xw, _)| xw.clone()).collect();
+        let iv = self.ex(init, 1)?;
+        let at = init.ty.clone();
+        let alt = lt(&at);
+        let acc = self.alloca(&alt);
+        self.emit(format!("store {} {}, ptr {}", alt, iv.r, acc));
+        let nb0 = self.ins(format!("add i64 {}, {}", n, FOLD_WINDOW - 1));
+        let nb = self.ins(format!("sdiv i64 {}, {}", nb0, FOLD_WINDOW));
+        self.for_range_scalar("0", &nb, 1, &mut |g, k| {
+            let start = g.ins(format!("mul i64 {}, {}", k, FOLD_WINDOW));
+            let lim = g.ins(format!("add i64 {}, {}", start, FOLD_WINDOW));
+            let short = g.ins(format!("icmp slt i64 {}, {}", n, lim));
+            let end = g.ins(format!("select i1 {}, i64 {}, i64 {}", short, n, lim));
+            for (v, b) in &starts {
+                g.bind(*v, b.clone());
+            }
+            let heaps = g.windowed_task(x, &reads, &filters, &ok, &xws, &n, &start, &end)?;
+            g.for_range(&start, &end, 1, &mut |g, i| {
+                let a = g.ins(format!("load {}, ptr {}", alt, acc));
+                let av = v(a, alt.clone());
+                let el = g.elem(&src, i, 1)?;
+                g.bind(l.params[0], av.clone());
+                g.bind(l.params[1], el);
+                let r = g.ex(&l.body, 1)?;
+                if l.drop_params[0] {
+                    g.drop_value(&av, &at);
+                }
+                g.emit(format!("store {} {}, ptr {}", alt, r.r, acc));
+                Ok(())
+            })?;
+            for hp in heaps {
+                g.free_if(&hp);
+            }
+            Ok(())
+        })?;
+        // the arrays made whole for it freed; their variables again the
+        // places and the length
+        for (v, xw, whole) in wins {
+            self.free_if(&whole);
+            self.bind(v, xw);
+        }
+        let r = self.ins(format!("load {}, ptr {}", alt, acc));
+        Ok(v(r, alt))
+    }
+
     /// The loop of a `fold` from its initial value `iv` (of type `at`).
     fn fold_loop(&mut self, src: &Src, n: &str, iv: &V, at: &Type, l: &Lambda) -> R<V> {
         let at = at.clone();
@@ -16608,10 +16676,65 @@ impl<'p> Gen<'p> {
         self.ins(format!("select i1 {}, i32 -1, i32 {}", neg, s1))
     }
 
-    /// An `i1`: the `m` bytes at `q` are those at `p` (D592).
+    /// An `i1`: the `m` bytes at `q` are those at `p` (D592). Up to 16
+    /// bytes without a call (D699): two loads of each that overlap, of 8
+    /// bytes (9 to 16), of 4 (4 to 8), or the first, middle and last byte
+    /// (1 to 3), as `readWord` reads its bytes; more, `memcmp`.
     fn text_same(&mut self, p: &str, q: &str, m: &str) -> String {
+        let (lbig, lsmall, l9, l8, l4, l1, ljoin) = (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        let small = self.ins(format!("icmp ule i64 {}, 16", m));
+        self.cbr(&small, &lsmall, &lbig);
+        self.block(&lbig);
         let c = self.memcmp(p, q, m);
-        self.ins(format!("icmp eq i32 {}, 0", c))
+        let big = self.ins(format!("icmp eq i32 {}, 0", c));
+        let from_big = self.current_label(&lbig);
+        self.br(&ljoin);
+        // the two words of `bits` bits at `p` and `q`, from 0 and from `m`
+        // less a word: equal or not
+        let pair = |g: &mut Self, ty: &str, bytes: i64| -> String {
+            let at = g.ins(format!("sub i64 {}, {}", m, bytes));
+            let (pa, qa) = (g.ins(format!("getelementptr i8, ptr {}, i64 {}", p, at)), g.ins(format!("getelementptr i8, ptr {}, i64 {}", q, at)));
+            let (x0, y0) = (g.ins(format!("load {}, ptr {}, align 1", ty, p)), g.ins(format!("load {}, ptr {}, align 1", ty, q)));
+            let (x1, y1) = (g.ins(format!("load {}, ptr {}, align 1", ty, pa)), g.ins(format!("load {}, ptr {}, align 1", ty, qa)));
+            let d0 = g.ins(format!("xor {} {}, {}", ty, x0, y0));
+            let d1 = g.ins(format!("xor {} {}, {}", ty, x1, y1));
+            let d = g.ins(format!("or {} {}, {}", ty, d0, d1));
+            g.ins(format!("icmp eq {} {}, 0", ty, d))
+        };
+        self.block(&lsmall);
+        let ge9 = self.ins(format!("icmp uge i64 {}, 9", m));
+        self.cbr(&ge9, &l9, &l8);
+        self.block(&l9);
+        let e9 = pair(self, "i64", 8);
+        self.br(&ljoin);
+        self.block(&l8);
+        let ge4 = self.ins(format!("icmp uge i64 {}, 4", m));
+        self.cbr(&ge4, &l4, &l1);
+        self.block(&l4);
+        let e4 = pair(self, "i32", 4);
+        self.br(&ljoin);
+        // no byte: equal, nothing read (an empty text may point past the
+        // end of its memory); else the first, the middle and the last byte
+        self.block(&l1);
+        let empty = self.ins(format!("icmp eq i64 {}, 0", m));
+        let l13 = self.label();
+        self.cbr(&empty, &ljoin, &l13);
+        self.block(&l13);
+        let mid = self.ins(format!("lshr i64 {}, 1", m));
+        let last = self.ins(format!("add i64 {}, -1", m));
+        let mut d = String::new();
+        for (k, at) in ["0".to_string(), mid, last].iter().enumerate() {
+            let pa = self.ins(format!("getelementptr i8, ptr {}, i64 {}", p, at));
+            let qa = self.ins(format!("getelementptr i8, ptr {}, i64 {}", q, at));
+            let x = self.ins(format!("load i8, ptr {}, align 1", pa));
+            let y = self.ins(format!("load i8, ptr {}, align 1", qa));
+            let dk = self.ins(format!("xor i8 {}, {}", x, y));
+            d = if k == 0 { dk } else { self.ins(format!("or i8 {}, {}", d, dk)) };
+        }
+        let e1 = self.ins(format!("icmp eq i8 {}, 0", d));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        self.ins(format!("phi i1 [ {}, %{} ], [ {}, %{} ], [ {}, %{} ], [ true, %{} ], [ {}, %{} ]", big, from_big, e9, l9, e4, l4, l1, e1, l13))
     }
 
     /// `s.toUpperCase()` (`upper`) or `s.toLowerCase()` of the text `p`,

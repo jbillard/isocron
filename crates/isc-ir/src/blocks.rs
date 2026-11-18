@@ -83,8 +83,27 @@ pub fn windowed_uses(e: &Expr, x: VarId) -> bool {
         ExprKind::Len(a) if is_x(a) => true,
         ExprKind::Var(v, _) => *v != x,
         ExprKind::Let { var, init, body, .. } if print_stream_ok(*var, init, body) => windowed_stream(init, x) && windowed_uses(body, x),
+        // a `fold` over a `map` of an `iota` that reads `x` by indices of
+        // the interval of its index: its loop by blocks, each block the
+        // window of `x` it reads (D700)
+        ExprKind::Fold(src, init, l) if windowed_fold_src(src, x) => windowed_uses(init, x) && windowed_uses(&l.body, x),
         _ => e.children().into_iter().all(|c| windowed_uses(c, x)),
     }
+}
+
+/// The input of a `fold` read by windows of `x` (D700): a `map` of one
+/// `iota`, whose function reads `x` by indices whose interval over a range
+/// of its index follows from it (`windowed_lambda`).
+pub fn windowed_fold_src(src: &Expr, x: VarId) -> bool {
+    let ExprKind::Map(ins, l) = &src.kind else { return false };
+    let [n] = ins.as_slice() else { return false };
+    if !matches!(n.kind, ExprKind::Iota(_)) || !mentions(&l.body, &HashSet::from([x])) {
+        return false;
+    }
+    let (mut bound, mut outer) = (HashSet::new(), Vec::new());
+    free_vars(src, &mut bound, &mut outer);
+    let outer: HashSet<VarId> = outer.into_iter().collect();
+    windowed_uses(n, x) && windowed_lambda(&l.body, x, l.params[0], &outer, &mut Vec::new())
 }
 
 /// `windowed_uses` in an array written by `print_stream_any`.

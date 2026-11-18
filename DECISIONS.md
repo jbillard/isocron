@@ -17105,3 +17105,65 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   with 50 changes (27.0 to 30.7 before), 32 to 38 µs with 1000 (73 to 78
   before); what remains of the slope: the document grows by 1000 lines,
   and each snapshot pushed copies the history.
+- **D697 — A `map` of views fused into its consumer (2026-11-18).** The
+  memory of countwords (434 MiB against 6 for Rust, `strace` and `gdb`):
+  the text lowered (41 MiB), the places of the words (125 MiB), the words
+  (125 MiB, 16 bytes each, views of the text) and a copy of them (125 MiB,
+  `countBy` of an identity function). A producer of elements that own
+  memory (texts, nodes) was never fused (D134: its consumer reads the
+  elements without freeing them). A `map` whose function gives a view of
+  memory bound outside it (a slice of a text, an element of an array, not
+  of its own parameters: `views_elems`, as the rows of D593) owns nothing:
+  now fused, into a consumer that reads its elements where they are (not a
+  `reduce` nor a `scan` of values that own memory, which make their input
+  whole and own its elements, D134); a `map` of a `filter` whose elements
+  own memory stays no stream (the code makes no such element one at a
+  time: `map(filter(iota(n), p), (j) => m.tabs[j])` of the editor of
+  isocron-ui failed to compile). The ownership pass leaves its
+  elements views and gives its consumer the variables they borrow (a
+  `sortBy(xs, f)[0]` borrows `xs`, not the temporary of the permutation);
+  a check of a size in front of a value is now as transparent as
+  `CheckSize` there (its value was taken for new: a view kept by a `map`
+  without a copy). The verifier checks that the elements of a fused `map`
+  are views and that they borrow what its function borrows. A `filter`
+  behind the check of its size (`filter(iota(n), p)`) has the check taken
+  out of the way when it is then fused (it was made whole). Test
+  `views_read_where_they_are_by_their_consumers` (memory.rs).
+- **D698 — `countBy` of texts by a table written in Isocron (2026-11-18).**
+  `countBy(xs, f)` grouped `map(xs, f)` made whole (`$groupCounts`, the
+  runtime), then made each key again from `xs[first]`: `xs` read twice, so
+  made whole. Its keys texts, the lowering now calls `$countText` of the
+  prelude (D622: no new Rust): a `fold` over `xs` that counts `f(x)` in a
+  table of hashes by linear probing (the slots twice the keys, the keys
+  copied once at their first element, in that order), the hash of a text
+  8 bytes at a time (`readWord`, a product whose high half is folded into
+  its low half). `xs` is read once: a producer of views (D697) is fused
+  into the `fold`, the words never stored. The integer keys keep D244.
+  The table is taken apart before the key `f(x)` is made: made first
+  (`$textCount(a, f(x))` inlined, a `let` of the key in front of the
+  parts), the parts were not taken (D654 takes a state apart where it is
+  rebuilt, and a value bound before its parts stops it), so borrowed and
+  copied at each element: the program of `map_groups_by_hashes`
+  (`countBy(iota(200000), (i) => \`w${i % 3001}\`)`) took 12.4 s, now
+  9 ms. That limit of D654 stays: next.
+  Test `counts_of_texts_by_a_table_of_the_prelude` (memory.rs: past 512
+  keys and 1024 slots, an empty key, zero bytes, keys of more than 16
+  bytes that share their first 8, the order and the counts checked another
+  way).
+- **D699 — Texts of up to 16 bytes compared without a call (2026-11-18).**
+  The equality of two texts of the same length called `memcmp` (`bcmp`),
+  12 % of countwords counted by a table. Now two loads of each that
+  overlap, of 8 bytes (9 to 16), of 4 (4 to 8), or the first, middle and
+  last byte (1 to 3), nothing read for an empty text (it may point past
+  its memory); `memcmp` beyond 16. Test `short_texts_compared_without_a_call`
+  (text.rs: every length to 20, a difference at every place, slices that
+  end at the end of their text, valgrind).
+- **D700 — A `fold` reads a `filter` by windows (2026-11-18).** The windows
+  of D293 were for the arrays written by blocks only. A `fold` over a `map`
+  of an `iota` whose function reads a `filter` by indices of the interval
+  of its index (`windowed_fold_src`) now runs by blocks of 4096, each block
+  filtering again the part of the `filter` it reads (`windowed_task`),
+  the `filter` never made whole but for a `fold` whose window is too wide
+  (D293's rule). The words of `matches` counted by `countBy`: neither the
+  places of the words, nor the words. Test `folds_read_filters_by_windows`
+  (bitwise.rs).

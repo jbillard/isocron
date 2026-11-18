@@ -2587,9 +2587,19 @@ impl<'p> Lower<'p> {
         let span = e.span;
         match callee {
             Callee::Fn { id, type_args } => {
-                let ta: Vec<Ty> = type_args.iter().map(|t| self.conc(env, t)).collect();
+                let mut ta: Vec<Ty> = type_args.iter().map(|t| self.conc(env, t)).collect();
                 let a = self.args(env, args)?;
-                self.inline_fn(*id, ta, a, size_checks, span)
+                let mut id = *id;
+                // `countBy` whose keys are texts: counted as they come, by
+                // the table of the prelude (D698)
+                let f = &self.p.fns[id];
+                if f.from_prelude && f.name == "countBy" && ta.len() == 2 && ta[1] == Ty::Str {
+                    if let Some(c) = prelude_fn(self.p, "$countText", span)? {
+                        id = c as FnId;
+                        ta.truncate(1);
+                    }
+                }
+                self.inline_fn(id, ta, a, size_checks, span)
             }
             Callee::Value(f) => {
                 let fv = self.fn_value(env, f)?;

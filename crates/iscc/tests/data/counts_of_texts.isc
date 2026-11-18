@@ -1,0 +1,30 @@
+// `countBy` whose keys are texts, by the table of the prelude (D698): the
+// counts and the order of the keys checked against a count made another
+// way (each key's first place and its number of equal words).
+function key(i: i64): string {
+    return i % 5 == 0 ? "" : i % 7 == 0 ? `a\0${i % 3}` : i % 11 == 0 ? `same-first-8-bytes-${(i * 31) % 97}` : `k${(i * 7919) % 1500}`;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const words = map(iota(n), (i) => key(i));
+    const c = countBy(words, (w) => w);
+    const ks = keys(c);
+    const vs = values(c);
+    print(ks.length);
+    print(sum(vs));
+    // the keys in the order of their first word, each counted as often as
+    // it is
+    const firsts = filter(iota(n), (i) => findIndex(words, (w) => w == words[i]) == i);
+    const order = firsts.length == ks.length && count(iota(ks.length), (j) => ks[j] != words[firsts[j]]) == 0;
+    const counted = count(iota(ks.length), (j) => vs[j] != count(words, (w) => w == ks[j])) == 0;
+    print(order && counted);
+    print(join(map(iota(ks.length < 12 ? ks.length : 12), (j) => `${ks[j].replaceAll("\0", "0")}:${vs[j]}`), ","));
+    // the keys made by the function of `countBy` from other values
+    const d = countBy(iota(n), (i) => `${i % 13}`);
+    print(join(map(entries(d), (e) => {
+        const [w, k] = e;
+        return `${w}=${k}`;
+    }), " "));
+    return 0;
+}

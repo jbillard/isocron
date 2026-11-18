@@ -261,8 +261,22 @@ impl<'p> Checker<'p> {
                             owners = union(owners, o);
                         }
                     }
-                    self.lambda(l, &elems, |_, _, _| Ok(()))?;
-                    Ok(Val::View(owners))
+                    // elements that own memory (texts, nodes): read by the
+                    // consumer without being freed, so views of memory that
+                    // lives longer, which the elements borrow (D697)
+                    let owning = e.ty.elem().has_heap() && !e.ty.elem().is_array();
+                    let mut borrowed = Vec::new();
+                    self.lambda(l, &elems, |_, v, b| match v {
+                        Val::View(o) if owning => {
+                            borrowed = o;
+                            Ok(())
+                        }
+                        _ if owning => fail(b.span, "a new value in a fused `map`, which its consumer never frees".into()),
+                        _ => Ok(()),
+                    })?;
+                    // (the elements borrow what its function borrows: an
+                    // element of an input is a view of that input's owners)
+                    Ok(Val::View(if owning { borrowed } else { owners }))
                 }
                 _ => {
                     for c in e.children() {

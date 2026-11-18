@@ -509,6 +509,32 @@ fn filters_read_by_windows() {
     }
 }
 
+/// D700: a `fold` over a `map` of an `iota` that reads a `filter` by
+/// indices of its index, by blocks of 4096, each block the window of the
+/// `filter` it reads (the windows of D293): the words of a text as views
+/// between two places of the filter, an element of the filter at a place
+/// chosen near the index; a window too wide (the filter made whole for that
+/// `fold`) and an index past the end (the panic of the program) on demand.
+/// Sizes around the blocks; the interpreter's output; nothing lost.
+#[test]
+fn folds_read_filters_by_windows() {
+    let src = include_str!("data/windowed_fold.isc");
+    let bin = compile(src, "windowed_fold");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("alloca [32768 x i8], align 64"), "no windows");
+    for a in [&["0"][..], &["1"], &["2"], &["5"], &["2047"], &["2048"], &["2049"], &["4100"], &["9000"], &["9000", "w"], &["3", "w"], &["0", "w"]] {
+        let want = interp(src, a);
+        let r = run_bin(&bin, a);
+        match want {
+            Outcome::Exit(c, out) => assert_eq!((r.code, r.stdout.as_str()), (c, out.as_str()), "{:?}: {}", a, r.stderr),
+            Outcome::Panic(msg, out) => {
+                assert_eq!((r.code, r.stdout.as_str(), r.stderr.trim_end()), (101, out.as_str(), msg.as_str()), "{:?}", a);
+            }
+        }
+    }
+    valgrind_clean(src, "windowed_fold", &["9000"]);
+}
+
 /// D437: the rest of a count (the elements after its whole vectors) in one
 /// vector whose lanes past the end are masked, on a target with masked
 /// loads of bytes; one element at a time on the others. There, 64 bytes a

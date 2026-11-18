@@ -1034,18 +1034,43 @@ pub fn is_stream(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Filter(..) => true,
         // (rows are written into one block, their count known first, D593)
-        ExprKind::Map(ins, _) => ins.len() == 1 && is_stream(&ins[0]) && !owns_elems(e) && !e.ty.elem().is_array(),
+        // (elements that own memory, views or not, D697: never a stream,
+        // whose code makes no such elements one at a time)
+        ExprKind::Map(ins, _) => ins.len() == 1 && is_stream(&ins[0]) && !elems_own_memory(e) && !e.ty.elem().is_array(),
         _ => false,
+    }
+}
+
+/// The elements of the array `e` own memory of their own (texts, nodes),
+/// views or not.
+fn elems_own_memory(e: &Expr) -> bool {
+    e.ty.is_array() && {
+        let t = e.ty.elem();
+        t.has_heap() && !t.is_array()
     }
 }
 
 /// An array whose elements own memory of their own (strings, nodes, D134),
 /// not rows: a producer of them is evaluated, never fused into its
-/// consumer, which reads its elements without freeing them.
+/// consumer, which reads its elements without freeing them. A producer
+/// whose elements are views of memory that lives longer has nothing to
+/// free (`views_elems`): still fused.
 pub fn owns_elems(e: &Expr) -> bool {
-    e.ty.is_array() && {
-        let t = e.ty.elem();
-        t.has_heap() && !t.is_array()
+    elems_own_memory(e) && !views_elems(e)
+}
+
+/// A `map` whose elements are views of memory that lives longer than it
+/// (D697): a slice of a text or an element of an array bound outside its
+/// `let`s (`row_view`, as the rows of D593). Fused, its consumer reads
+/// views where it read the elements of an array made whole: the words of a
+/// text counted as they are found, never an array of all of them.
+fn views_elems(e: &Expr) -> bool {
+    match &e.kind {
+        // (views of the elements of its inputs: not yet, their memory would
+        // be the inputs')
+        ExprKind::Map(_, l) => row_view(&l.body) && borrowed_from(&l.body, &|v| vec![v]).is_some_and(|vs| !vs.iter().any(|v| l.params.contains(v))),
+        ExprKind::Slice(x, _, _) => views_elems(x),
+        _ => false,
     }
 }
 
@@ -1071,16 +1096,28 @@ pub fn is_stream_slot(e: &Expr, i: usize) -> bool {
     i == 0
         && match &e.kind {
             ExprKind::Reduce(..) | ExprKind::Fold(..) => true,
-            ExprKind::Map(ins, _) => ins.len() == 1 && !owns_elems(e) && !e.ty.elem().is_array(),
+            ExprKind::Map(ins, _) => ins.len() == 1 && !elems_own_memory(e) && !e.ty.elem().is_array(),
             _ => false,
         }
 }
 
-/// A producer possibly wrapped in `let`s of scalars and size checks.
+/// What `is_wrapped_producer` finds under the wrappers.
+fn wrapped(e: &Expr) -> &Expr {
+    match &e.kind {
+        ExprKind::Let { body, stmt: false, .. } => wrapped(body),
+        ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => wrapped(b),
+        _ => e,
+    }
+}
+
+/// A producer, or a `filter`, possibly wrapped in `let`s of scalars and
+/// size checks (a `filter` of an `iota(n)` checks `n` first: left wrapped,
+/// it was made whole for its consumer, D697).
 fn is_wrapped_producer(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Let { body, stmt: false, .. } => is_wrapped_producer(body),
         ExprKind::CheckSize(_, _, b) | ExprKind::CheckNonNegative(_, b) => is_wrapped_producer(b),
+        ExprKind::Filter(..) => true,
         _ => is_producer(e),
     }
 }
@@ -1119,22 +1156,35 @@ fn count_uses(e: &Expr, counts: &mut HashMap<VarId, usize>) {
 /// Is the (single) use of `v` in `e` directly in a fusable slot, outside any
 /// lambda body?
 fn use_in_slot(e: &Expr, v: VarId) -> bool {
+    use_in_slot_where(e, v, &|_, _| true)
+}
+
+/// `use_in_slot` where the consumer `e` and its slot `i` also pass `ok`.
+fn use_in_slot_where(e: &Expr, v: VarId, ok: &dyn Fn(&Expr, usize) -> bool) -> bool {
     let slots = fusable_slots(e);
     let lambda_child = lambda_body_index(e);
     for (i, c) in e.children().into_iter().enumerate() {
         if let ExprKind::Var(w, _) = c.kind {
             if w == v {
-                return slots.contains(&i);
+                return slots.contains(&i) && ok(e, i);
             }
         }
         if Some(i) == lambda_child {
             continue; // uses inside a lambda body are repeated uses
         }
-        if use_in_slot(c, v) {
+        if use_in_slot_where(c, v, ok) {
             return true;
         }
     }
     false
+}
+
+/// A producer of views fused into its consumer `e` at slot `i` (D697): a
+/// consumer that reads its elements where they are, not a `reduce` nor a
+/// `scan` of values that own memory, which makes its input whole and owns
+/// its elements (D134).
+fn views_fuse_into(e: &Expr, i: usize) -> bool {
+    !(i == 0 && matches!(e.kind, ExprKind::Reduce(..) | ExprKind::Scan(..)))
 }
 
 pub(crate) fn lambda_body_index(e: &Expr) -> Option<usize> {
@@ -4374,7 +4424,8 @@ fn fuse(e: &mut Expr, counts: &HashMap<VarId, usize>) -> bool {
     // filter read by index there is bound again by `place_streams`)
     if let ExprKind::Let { var, init, body, stmt: false, .. } = &mut e.kind {
         let movable = (is_producer(init) && !owns_elems(init) && !computes_rows(init)) || matches!(init.kind, ExprKind::Filter(..));
-        if movable && counts.get(var).copied().unwrap_or(0) == 1 && use_in_slot(body, *var) {
+        let slot_ok = if views_elems(init) { use_in_slot_where(body, *var, &views_fuse_into) } else { use_in_slot(body, *var) };
+        if movable && counts.get(var).copied().unwrap_or(0) == 1 && slot_ok {
             let v = *var;
             let mut with = Some(take(init));
             replace_var(body, v, &mut with);
@@ -4384,8 +4435,20 @@ fn fuse(e: &mut Expr, counts: &HashMap<VarId, usize>) -> bool {
         }
     }
     // let v = W(P) in body  =>  W(let v = P in body), W a scalar let or a size check
-    if let ExprKind::Let { init, .. } = &mut e.kind {
-        if matches!(init.kind, ExprKind::Let { stmt: false, .. } | ExprKind::CheckSize(..) | ExprKind::CheckNonNegative(..)) && is_wrapped_producer(init) {
+    // (a wrapped `filter` only when the rule above then fuses it, D697, or
+    // when it is read by windows, D700)
+    if let ExprKind::Let { var, init, body, .. } = &mut e.kind {
+        // (or read by windows, D700: its wrappers out of the way)
+        let filter_fused = || {
+            (counts.get(var).copied().unwrap_or(0) == 1 && use_in_slot(body, *var))
+                || (crate::blocks::windowed_filter(*var, init, body).is_none()
+                    && crate::blocks::windowed_uses(body, *var)
+                    && crate::blocks::mentions(body, &HashSet::from([*var])))
+        };
+        if matches!(init.kind, ExprKind::Let { stmt: false, .. } | ExprKind::CheckSize(..) | ExprKind::CheckNonNegative(..))
+            && is_wrapped_producer(init)
+            && (!matches!(wrapped(init).kind, ExprKind::Filter(..)) || filter_fused())
+        {
             let w = split_wrapper(init);
             let inner = take(e);
             *e = fill_wrapper(w, inner);
@@ -4499,12 +4562,13 @@ fn bind_temporaries(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     }
     let slots = borrowing_slots(e);
     let fusable = fusable_slots(e);
+    let views_ok: Vec<bool> = (0..e.children().len()).map(|i| views_fuse_into(e, i)).collect();
     let mut lets: Vec<(VarId, Expr)> = Vec::new();
     for (i, c) in e.children_mut().into_iter().enumerate() {
         if !slots.contains(&i) || !c.ty.has_heap() || is_borrowed_expr(c) {
             continue;
         }
-        if fusable.contains(&i) && ((is_producer(c) && !owns_elems(c) && !computes_rows(c)) || matches!(c.kind, ExprKind::Filter(..))) {
+        if fusable.contains(&i) && ((is_producer(c) && !owns_elems(c) && !computes_rows(c) && (!views_elems(c) || views_ok[i])) || matches!(c.kind, ExprKind::Filter(..))) {
             continue;
         }
         vars.push(VarInfo { name: "tmp".into(), ty: c.ty.clone(), prelude: false });
@@ -4819,10 +4883,20 @@ struct Rewriter<'a> {
     /// owned, of the same scalars: written into it when the `map` is
     /// materialized (D207).
     reusable: HashMap<*const Expr, usize>,
+    /// The `map`s of views fused into their consumer (D697): no array is
+    /// made, their elements stay the views they are.
+    fused: HashSet<*const Expr>,
 }
 
 impl<'a> Rewriter<'a> {
     fn walk(&mut self, e: &mut Expr) -> R<Own> {
+        let slots = fusable_slots(e);
+        for (i, c) in e.children().into_iter().enumerate() {
+            if slots.contains(&i) && matches!(c.kind, ExprKind::Map(..)) && views_elems(c) && views_fuse_into(e, i) {
+                self.fused.insert(c as *const Expr);
+            }
+        }
+        let fused = self.fused.remove(&(e as *const Expr));
         let heap = e.ty.has_heap();
         // a slice of an array of tuples is a copy, not a view (D97)
         let view = !matches!(&e.kind, ExprKind::Slice(..)) || e.ty.slice_is_view();
@@ -4859,6 +4933,12 @@ impl<'a> Rewriter<'a> {
             ExprKind::CheckSize(a, b, body) => {
                 self.walk(a)?;
                 self.walk(b)?;
+                return self.walk(body);
+            }
+            // (its body borrowed: an element of a `map` of views fused into
+            // an index behind the check of its size, D697)
+            ExprKind::CheckNonNegative(k, body) => {
+                self.walk(k)?;
                 return self.walk(body);
             }
             // views: of the memory of their source (D95, D97); a slice or
@@ -5089,6 +5169,14 @@ impl<'a> Rewriter<'a> {
                     self.walk(i)?;
                 }
                 let o = self.walk(&mut l.body)?;
+                // fused into its consumer, which reads its elements without
+                // freeing them: views of memory that lives longer stay views,
+                // and the consumer reads them as borrowed from it (D697)
+                if fused {
+                    if let Own::Borrowed(vs, _) = o {
+                        return Ok(Own::Borrowed(vs, None));
+                    }
+                }
                 if matches!(o, Own::Borrowed(..)) {
                     self.make_fresh(&mut l.body, o, false)?;
                 }
@@ -5539,7 +5627,7 @@ fn ownership_body_with(
     }
     {
         let mut rw =
-            Rewriter { info: &mut info, vars, callees, literal_vars: HashMap::new(), index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new() };
+            Rewriter { info: &mut info, vars, callees, literal_vars: HashMap::new(), index: 0, copy_reasons: Vec::new(), branch_owns: HashMap::new(), reusable: HashMap::new(), fused: HashSet::new() };
         let o = rw.walk(body)?;
         if matches!(o, Own::Borrowed(..)) && body.ty.has_heap() {
             rw.make_fresh(body, o, false)?;
