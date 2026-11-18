@@ -92,3 +92,32 @@ once all are made (an array of 8.2 million words, another of their
 boundaries: `isc_group` about 60 % of the time, the pages of 434 MiB
 cleared about 15 %), where the Rust programs count each word as they find
 it; and the whole text read, then lowercased, where they read by blocks.
+
+### After D697 to D700 (2026-11-18)
+
+Isocron ea9cca1, the port the same, line for line:
+
+* **Times**: Isocron 0.243 s on one thread (0.307 s before), 0.206 s on 8
+  (0.263 s); Rust 0.572 s (simple) and 0.253 s (optimized).
+* **Memory**: 307.6 MiB at its peak (434 MiB before); Rust 6 MiB.
+
+What changed: `countBy` of texts counts each key as it comes, in a table
+of hashes written in the prelude (D698), its input read once (no copy of
+the words); a `map` of views of a text, the words of `matches`, is fused
+into its consumer (D697); texts of up to 16 bytes are compared without a
+call (D699); a `fold` reads a `filter` by windows (D700).
+
+What remains: the port names the words in a statement of an action
+(`const words = matches(...)`), and SPEC section 12 wants the value of
+such a `const` computed whole before the next statement: the words
+(125 MiB) and their places (125 MiB) are made. The same program with the
+words in the call of `countBy` (`countBy(matches(text, /[^ \n]+/g), (w) =>
+w)`, one statement), measured the same way against the optimized Rust
+program: 0.238 s and 82.8 MiB (0.243 s and 307.6 MiB as written; Rust
+0.252 s and 6.0 MiB), its peak the text read and the text lowered, both
+whole. Below that: reading the text by blocks.
+
+`measure.py memory` read the peak of a program from its fork on: between
+the fork and the exec it was the script's own memory (about 22 MiB, seen
+at random on one program or another, 21.7 MiB for the optimized Rust
+program in one measure); now only once the program runs.

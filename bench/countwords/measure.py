@@ -192,12 +192,17 @@ def run_step(args):
 
 def peak_memory(cmd, env):
     """The peak resident memory of `cmd` alone, in KiB (`VmHWM`, read every
-    millisecond until it exits)."""
+    millisecond until it exits). Only once the child runs the program: read
+    between its fork and its exec, it was this script's memory (about 22
+    MiB, seen at random on one program or another)."""
+    exe = os.path.realpath(cmd[0])
     with open(INPUT, "rb") as f:
         p = subprocess.Popen(cmd, stdin=f, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         hwm = 0
         while p.poll() is None:
             try:
+                if os.readlink("/proc/%d/exe" % p.pid) != exe:
+                    continue
                 for line in open("/proc/%d/status" % p.pid):
                     if line.startswith("VmHWM:"):
                         hwm = max(hwm, int(line.split()[1]))
