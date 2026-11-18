@@ -31,6 +31,13 @@ pub fn frontend(path: &str, src: &str) -> Result<isc_ir::Program, String> {
 }
 
 fn frontend_here(path: &str, src: &str) -> Result<isc_ir::Program, String> {
+    let t0 = std::time::Instant::now();
+    let r = frontend_inner(path, src);
+    isc_codegen::phase_time("front end and IR passes", t0);
+    r
+}
+
+fn frontend_inner(path: &str, src: &str) -> Result<isc_ir::Program, String> {
     let mut files = isc_types::source_files(path);
     let mut user = isc_syntax::parse(src, isc_types::USER_FILE).map_err(|d| d.render(&files))?;
     let loaded = isc_types::modules::load_modules(&mut user, Path::new(path), &mut files);
@@ -594,10 +601,12 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
     // the functions of the prelude compiled once (D611): the program
     // declares them, and is linked with their module
     let pre = pre_module(&opts.codegen, cache)?;
+    let t0 = std::time::Instant::now();
     let (mut ir, using) = on_big_stack(|| match &pre {
         Some((_, manifest)) => isc_codegen::emit_using(p, &opts.codegen, manifest),
         None => isc_codegen::emit_with(p, &opts.codegen).map(|ir| (ir, false)),
     })?;
+    isc_codegen::phase_time(&format!("IR of LLVM made ({} lines)", ir.lines().count()), t0);
     let pre = pre.as_ref().filter(|_| using).map(|(o, _)| o.as_path());
     // a program for Windows starts without a C library unless it calls C
     // (D541): what MinGW's start files gave it then comes with its code
@@ -626,7 +635,14 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
     // (WebAssembly from an iscc on Windows too)
     let windows = opts.codegen.windows && !wasm;
     let obj = opts.output.with_extension("o");
-    isc_codegen::backend::compile_for(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows, msvc)?;
+    // (a large program: its machine code in parts made at once, D711)
+    let parts = isc_codegen::backend::compile_parts(&ir, &obj, opts.emit_asm.as_deref(), opts.codegen.isa, windows, msvc)?;
+    let objs: Vec<PathBuf> = std::iter::once(obj.clone()).chain(parts.iter().cloned()).collect();
+    let remove_objs = || {
+        for o in &objs {
+            let _ = std::fs::remove_file(o);
+        }
+    };
     // the embedded runtime, written next to the object file for the linker
     // (an iscc on Windows: its own runtimes are those of Windows, for the
     // levels of its processor below, D382; RUNTIME_WINDOWS, the base level,
@@ -650,7 +666,7 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
         Ok(p) => (PathBuf::from(p), false),
         Err(_) => {
             if bytes.is_empty() {
-                let _ = std::fs::remove_file(&obj);
+                remove_objs();
                 return Err(format!(
                     "this iscc has no runtime for {}: install the Rust target (`rustup target add {}`) and build iscc again",
                     triple, triple
@@ -675,17 +691,17 @@ pub fn build_in(p: &isc_ir::Program, opts: &BuildOptions, cache: Option<&Path>) 
         _ => None,
     };
     let linked = if msvc {
-        link_windows_msvc(&obj, pre, res.as_deref(), &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
+        link_windows_msvc(&objs, pre, res.as_deref(), &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
     } else if windows {
-        link_windows(&obj, pre, res.as_deref(), &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
+        link_windows(&objs, pre, res.as_deref(), &rt, &opts.output, opts.debug, &opts.link, own_start, opts.codegen.windows_gui)
     } else if wasm {
-        link_wasm(&obj, pre, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
+        link_wasm(&objs, pre, &rt, &opts.output, opts.debug, triple, threads, &opts.link, wasi_alone)
     } else if !with_glibc(p, opts) {
-        link_linux_static(&obj, pre, &rt, &opts.output, opts.debug)
+        link_linux_static(&objs, pre, &rt, &opts.output, opts.debug)
     } else {
-        link(&obj, pre, &rt, &opts.output, opts.debug, &opts.link)
+        link(&objs, pre, &rt, &opts.output, opts.debug, &opts.link)
     };
-    let _ = std::fs::remove_file(&obj);
+    remove_objs();
     if let Some(f) = &res {
         let _ = std::fs::remove_file(f);
     }
@@ -874,7 +890,7 @@ fn subsystem(gui: bool) -> &'static str {
 /// next to the program for the linker), else those of `$ISC_MINGW_DIR`; a
 /// console executable whose main thread has a stack of 8 MiB, as on Linux.
 /// The linker: LLD in iscc (D248), else `windows_linker`.
-fn link_windows(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
+fn link_windows(obj: &[PathBuf], pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
     if own_start {
         return link_windows_alone(obj, pre, res, rt, out, debug, gui);
     }
@@ -889,7 +905,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, o
     a.push(out.into());
     a.push(lib.join("crt2.o").into());
     a.push(gcc.join("crtbegin.o").into());
-    a.push(obj.into());
+    a.extend(obj.iter().map(|o| o.into()));
     a.extend(pre.map(|p| p.into()));
     a.extend(res.map(|p| p.into()));
     a.extend(libs.iter().map(|l| lib_arg(l)));
@@ -915,7 +931,7 @@ fn link_windows(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, o
 /// API set only (their import libraries, from MinGW-w64: no code of MinGW
 /// in the program); a console executable whose main thread has a stack of
 /// 8 MiB.
-fn link_windows_alone(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, gui: bool) -> Result<(), String> {
+fn link_windows_alone(obj: &[PathBuf], pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, gui: bool) -> Result<(), String> {
     let tmp = out.with_extension("mingw");
     let lib = if MINGW_FILES.is_empty() {
         mingw_dirs()?.0
@@ -925,7 +941,7 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &P
     };
     let mut a: Vec<std::ffi::OsString> = ["-m", "i386pep", "--subsystem", subsystem(gui), "--stack", "8388608", "--gc-sections", "-e", "isc_win_start", "-o"].iter().map(|x| x.into()).collect();
     a.push(out.into());
-    a.push(obj.into());
+    a.extend(obj.iter().map(|o| o.into()));
     a.extend(pre.map(|p| p.into()));
     a.extend(res.map(|p| p.into()));
     a.push(rt.into());
@@ -957,7 +973,7 @@ fn link_windows_alone(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &P
 /// and those of the SDK found as Visual Studio's own tools find them, in
 /// the directories of `LIB` (set by a Developer Command Prompt): iscc never
 /// has them.
-fn link_windows_msvc(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
+fn link_windows_msvc(obj: &[PathBuf], pre: Option<&Path>, res: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String], own_start: bool, gui: bool) -> Result<(), String> {
     let mut a: Vec<std::ffi::OsString> = vec!["/nologo".into(), format!("/subsystem:{}", subsystem(gui)).into(), "/stack:8388608".into(), "/opt:ref".into(), "/machine:x64".into()];
     a.push(format!("/out:{}", out.display()).into());
     if debug {
@@ -972,7 +988,7 @@ fn link_windows_msvc(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Pa
             tmp.clone()
         };
         a.extend(["/entry:isc_win_start".into(), "/nodefaultlib".into()]);
-        a.push(obj.into());
+        a.extend(obj.iter().map(|o| o.into()));
         a.extend(pre.map(|p| p.into()));
         a.extend(res.map(|p| p.into()));
         a.push(rt.into());
@@ -983,7 +999,7 @@ fn link_windows_msvc(obj: &Path, pre: Option<&Path>, res: Option<&Path>, rt: &Pa
         if std::env::var_os("LIB").map(|v| v.is_empty()).unwrap_or(true) {
             return Err("a program with C for x86_64-windows-msvc is linked with Microsoft's C runtime, which iscc does not have: build it from a Developer Command Prompt of Visual Studio, whose `LIB` names the directories of its libraries and of the Windows SDK".into());
         }
-        a.push(obj.into());
+        a.extend(obj.iter().map(|o| o.into()));
         a.extend(pre.map(|p| p.into()));
         a.extend(res.map(|p| p.into()));
         for l in libs {
@@ -1024,9 +1040,10 @@ fn rust_sysroot() -> Result<PathBuf, String> {
 /// engine. With threads (wasi-threads), the memory is shared and imported,
 /// and `wasi_thread_start` is exported, as the proposal requires.
 #[allow(clippy::too_many_arguments)]
-fn link_wasm(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, triple: &str, threads: bool, libs: &[String], alone: bool) -> Result<(), String> {
+fn link_wasm(obj: &[PathBuf], pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, triple: &str, threads: bool, libs: &[String], alone: bool) -> Result<(), String> {
     if alone {
-        let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), obj.into()];
+        let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into()];
+        a.extend(obj.iter().map(|o| o.into()));
         a.extend(pre.map(|p| p.into()));
         a.push(rt.into());
         a.extend(["--gc-sections", "-z", "stack-size=8388608"].iter().map(|x| x.into()));
@@ -1051,7 +1068,8 @@ fn link_wasm(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool,
         }
         d
     };
-    let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), libc_dir.join("crt1-command.o").into(), obj.into()];
+    let mut a: Vec<std::ffi::OsString> = vec!["-o".into(), out.into(), libc_dir.join("crt1-command.o").into()];
+    a.extend(obj.iter().map(|o| o.into()));
     a.extend(pre.map(|p| p.into()));
     // the libraries of the `extern` functions, then the runtime before the C
     // library: its functions of memory (`strlen`, `memcmp`, `bcmp`, D543)
@@ -1091,7 +1109,7 @@ fn glibc_libraries() -> Result<Vec<PathBuf>, String> {
 /// executable, the start files of glibc embedded in iscc, the `libc.so.6`
 /// and `libm.so.6` of this machine (no development files needed): the
 /// program uses the glibc of the system, as when linked by `cc`.
-fn link_linux_lld(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+fn link_linux_lld(obj: &[PathBuf], pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
     let sys = glibc_libraries()?;
     let tmp = out.with_extension("crt");
     write_files(&tmp, GLIBC_FILES)?;
@@ -1100,7 +1118,7 @@ fn link_linux_lld(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: 
     a.push(out.into());
     a.push(tmp.join("Scrt1.o").into());
     a.push(tmp.join("crti.o").into());
-    a.push(obj.into());
+    a.extend(obj.iter().map(|o| o.into()));
     a.extend(pre.map(|p| p.into()));
     for d in ["/usr/local/lib", "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/lib64", "/usr/lib", "/lib"] {
         if Path::new(d).is_dir() {
@@ -1140,7 +1158,7 @@ fn link_linux_lld(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: 
 /// its relocations and makes its thread-local storage, the functions of
 /// the runtime for its threads (`isc_os_own`); nothing else than its object
 /// and the runtime.
-fn link_linux_static(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
+fn link_linux_static(obj: &[PathBuf], pre: Option<&Path>, rt: &Path, out: &Path, debug: bool) -> Result<(), String> {
     let mut a: Vec<std::ffi::OsString> = [
         "-static",
         "-pie",
@@ -1167,7 +1185,7 @@ fn link_linux_static(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debu
     .map(|x| x.into())
     .collect();
     a.push(out.into());
-    a.push(obj.into());
+    a.extend(obj.iter().map(|o| o.into()));
     a.extend(pre.map(|p| p.into()));
     a.push(rt.into());
     if !debug {
@@ -1185,7 +1203,7 @@ fn link_linux_static(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debu
 pub fn link_static_object(obj: &Path, out: &Path) -> Result<(), String> {
     let rt = out.with_extension("rt.a");
     std::fs::write(&rt, RUNTIME).map_err(|e| format!("cannot write `{}`: {}", rt.display(), e))?;
-    let r = link_linux_static(obj, None, &rt, out, false);
+    let r = link_linux_static(&[obj.to_path_buf()], None, &rt, out, false);
     let _ = std::fs::remove_file(&rt);
     r
 }
@@ -1249,7 +1267,14 @@ pub fn check_static_relocations(elf: &[u8]) -> Result<(usize, usize), String> {
 /// Links the program with the runtime (which needs only the C library, and
 /// `libm` for `fmod`). Unused sections are dropped and, unless `debug`, the
 /// symbols are stripped: the code that runs is the same, the file is smaller.
-fn link(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+fn link(obj: &[PathBuf], pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
+    let r = link_here(obj, pre, rt, out, debug, libs);
+    isc_codegen::phase_time("link", t0);
+    r
+}
+
+fn link_here(obj: &[PathBuf], pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs: &[String]) -> Result<(), String> {
     // LLD in iscc and the start files of glibc: no compiler needed (D248);
     // `$ISC_CC` asks for a C compiler as the linker all the same
     if isc_codegen::lld::available() && !GLIBC_FILES.is_empty() && std::env::var("ISC_CC").is_err() {
@@ -1257,7 +1282,7 @@ fn link(obj: &Path, pre: Option<&Path>, rt: &Path, out: &Path, debug: bool, libs
     }
     let cc = std::env::var("ISC_CC").unwrap_or_else(|_| "cc".into());
     let mut cmd = std::process::Command::new(&cc);
-    cmd.arg("-o").arg(out).arg(obj);
+    cmd.arg("-o").arg(out).args(obj);
     if let Some(p) = pre {
         cmd.arg(p);
     }

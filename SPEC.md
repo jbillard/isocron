@@ -657,6 +657,8 @@ Le compilateur applique toutes les garanties de la spécification sur sa propre 
 
 Les règles de fusion, l'unicité et les exigences sont décidées au middle-end, sur des règles écrites ici. Un échec d'exigence arrête la compilation avant LLVM.
 
+La compilation d'un programme donne le même IR à chaque fois (D710). Un gros module, de plus de deux parts de 100 000 lignes d'IR LLVM, est compilé en parts à la fois (D711). Son texte est coupé entre ses fonctions en autant de modules que de fils disponibles (`ISC_CODEGEN_THREADS`) ; chacun est optimisé et traduit en code machine par un fil, et les objets sont liés ensemble. Une fonction appelée par une seule autre va avec elle. Une petite fonction appelée par plusieurs est copiée dans chaque part qui l'appelle, pour que LLVM l'inline comme dans le module entier. Les programmes plus petits sont compilés entiers.
+
 ### Choix techniques
 
 Pour le POC, je recommande LLVM directement plutôt que MLIR : moins de couches, et la fusion se fait de toute façon dans l'IR propre à Isocron.

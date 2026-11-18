@@ -551,6 +551,36 @@ action main(args: string[k]): i32 {
     assert_eq!(ir.lines().filter(|l| l.contains(" table%") && l.trim_start().starts_with("let")).count(), 3, "{}", ir);
 }
 
+/// D710: the IR of a program is the same at each compilation. The
+/// variables of a function of the elements of a table (D230) were made
+/// again in the order of a hash set, its order not the same at each run (a
+/// program of isocron-ui compiled twice: other numbers of variables, so
+/// other texts of LLVM IR, and the cache of objects missed). Each new hash
+/// set has a seed of its own: five compilations in this process.
+#[test]
+fn the_ir_is_the_same_at_each_compilation() {
+    let src = "const P = [0.27, 0.12, 0.12, 0.27, 0.22];
+const CODES = \"acgtN\";
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const shift = parseI64(args[1]);
+    const values = map(iota(1000), (i) => (i * 7919) % 1000);
+    const cp = map(iota(5), (i) => fold(iota(i + 1), 0.0, (c, j) => c + P[j]));
+    const codes = bytes(CODES);
+    printBytes(map(iota(n), (t) => {
+        const r = f64(values[(t + shift) % 1000]) / 1000.0;
+        return codes[Math.min(count(cp, (c) => c <= r), 4)];
+    }));
+    return 0;
+}
+";
+    let first = isc_ir::print::program(&iscc::frontend("same_ir.isc", src).unwrap());
+    assert!(first.contains(" table%"), "no table: {}", first);
+    for _ in 0..4 {
+        assert_eq!(isc_ir::print::program(&iscc::frontend("same_ir.isc", src).unwrap()), first);
+    }
+}
+
 /// A lambda that reads a function of its context which reads values of its
 /// own (D563), given to a recursive function: those values parameters of
 /// its specialization too, through several functions (`h` reads `g`, which

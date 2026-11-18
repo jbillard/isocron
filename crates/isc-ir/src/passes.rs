@@ -155,7 +155,7 @@ struct Dead<'a> {
 /// (D555).
 fn take_dead_parts(p: &mut Program) {
     let n = p.fns.len();
-    let cycles: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
+    let cycles: Vec<bool> = CallCycles::of(p).cycles();
     for fi in 0..=n {
         let (body, given): (&Expr, Vec<VarId>) = if fi < n {
             let f = &p.fns[fi];
@@ -3057,28 +3057,116 @@ fn recursive_calls<'e>(e: &'e Expr, tail: bool, out: &mut Vec<(&'e Expr, bool)>)
     }
 }
 
-/// The functions `fi` reaches through calls, itself included if it is in a
-/// cycle.
-fn reachable(p: &Program, fi: u32) -> HashSet<u32> {
-    let mut seen = HashSet::new();
-    let mut todo = vec![fi];
-    while let Some(f) = todo.pop() {
-        let mut calls = Vec::new();
-        recursive_calls(&p.fns[f as usize].body, true, &mut calls);
-        for (c, _) in calls {
-            if let ExprKind::Call(g, _) = c.kind {
-                if seen.insert(g) {
-                    todo.push(g);
+/// The cycles of the calls between the functions (D710): the functions each
+/// body calls (`Call` alone, as `reachable` reads them), each body walked
+/// once, and the strongly connected components of that graph (Tarjan). Two
+/// functions reach each other when they are in the same component; a
+/// function is in a cycle when its component has another member or it calls
+/// itself. (The functions each one reached, found by walking their bodies,
+/// once for each function: 26 % of the front end of the largest program of
+/// isocron-ui.)
+pub(crate) struct CallCycles {
+    comp: Vec<usize>,
+    cyclic: Vec<bool>,
+}
+
+impl CallCycles {
+    pub(crate) fn of(p: &Program) -> CallCycles {
+        fn calls_in(e: &Expr, out: &mut Vec<usize>) {
+            if let ExprKind::Call(g, _) = e.kind {
+                out.push(g as usize);
+            }
+            for c in e.children() {
+                calls_in(c, out);
+            }
+        }
+        let n = p.fns.len();
+        let callees: Vec<Vec<usize>> = p
+            .fns
+            .iter()
+            .map(|f| {
+                let mut out = Vec::new();
+                calls_in(&f.body, &mut out);
+                out.sort_unstable();
+                out.dedup();
+                out
+            })
+            .collect();
+        // Tarjan's algorithm without recursion: each frame the function and
+        // the next of its callees to visit
+        const NONE: usize = usize::MAX;
+        let (mut index, mut low, mut on) = (vec![NONE; n], vec![0usize; n], vec![false; n]);
+        let mut comp = vec![NONE; n];
+        let (mut next, mut comps) = (0usize, 0usize);
+        let mut stack: Vec<usize> = Vec::new();
+        for root in 0..n {
+            if index[root] != NONE {
+                continue;
+            }
+            let mut frames: Vec<(usize, usize)> = vec![(root, 0)];
+            index[root] = next;
+            low[root] = next;
+            next += 1;
+            stack.push(root);
+            on[root] = true;
+            while let Some(&mut (f, ref mut k)) = frames.last_mut() {
+                if let Some(&g) = callees[f].get(*k) {
+                    *k += 1;
+                    if g >= n {
+                        continue;
+                    }
+                    if index[g] == NONE {
+                        index[g] = next;
+                        low[g] = next;
+                        next += 1;
+                        stack.push(g);
+                        on[g] = true;
+                        frames.push((g, 0));
+                    } else if on[g] {
+                        low[f] = low[f].min(index[g]);
+                    }
+                    continue;
+                }
+                frames.pop();
+                if let Some(&(parent, _)) = frames.last() {
+                    low[parent] = low[parent].min(low[f]);
+                }
+                if low[f] == index[f] {
+                    while let Some(g) = stack.pop() {
+                        on[g] = false;
+                        comp[g] = comps;
+                        if g == f {
+                            break;
+                        }
+                    }
+                    comps += 1;
                 }
             }
         }
+        let mut size = vec![0usize; comps];
+        for &c in &comp {
+            size[c] += 1;
+        }
+        let cyclic = (0..n).map(|f| size[comp[f]] > 1 || callees[f].binary_search(&f).is_ok()).collect();
+        CallCycles { comp, cyclic }
     }
-    seen
+
+    /// Whether `f` and `g` reach each other (`f` itself when it is in a
+    /// cycle).
+    pub(crate) fn together(&self, f: usize, g: usize) -> bool {
+        self.cyclic[f] && self.comp[f] == self.comp[g]
+    }
+
+    /// For each function, whether it is in a cycle.
+    pub(crate) fn cycles(&self) -> Vec<bool> {
+        self.cyclic.clone()
+    }
 }
 
 /// `requireTail`: every recursive call of the function is a direct tail
 /// call compiled as a loop.
 fn check_require_tail(p: &Program) -> R<()> {
+    let cycles = CallCycles::of(p);
     for (i, f) in p.fns.iter().enumerate() {
         let Some(at) = f.require_tail else { continue };
         let loops = tail_calls(i as u32, f);
@@ -3102,7 +3190,7 @@ fn check_require_tail(p: &Program) -> R<()> {
                         gname, c.span.line, arr
                     ));
                 }
-            } else if reachable(p, *g).contains(&(i as u32)) && !others.contains_key(&(c as *const Expr)) {
+            } else if cycles.together(*g as usize, i) && !others.contains_key(&(c as *const Expr)) {
                 // a mutual tail call reuses the frame (D113); another call
                 // in the cycle does not
                 let why = if tail { "passes an array that is not a parameter of the caller" } else { "is not in tail position" };
@@ -4042,6 +4130,10 @@ fn replace_loads(e: &mut Expr, t: VarId, idx: &Expr, with: &Expr) -> usize {
 fn rename_bound(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let mut bound = HashSet::new();
     bound_in(e, &mut bound);
+    // (in the order of their numbers: the program compiled the same way at
+    // each run, D710)
+    let mut bound: Vec<VarId> = bound.into_iter().collect();
+    bound.sort_unstable();
     let map: HashMap<VarId, VarId> = bound
         .into_iter()
         .map(|v| {
@@ -5946,7 +6038,8 @@ impl Callees {
 pub(crate) fn decide_given(p: &mut Program) {
     let unkept = unkept_params(p);
     let n = p.fns.len();
-    let in_cycle: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
+    let graph = CallCycles::of(p);
+    let in_cycle: Vec<bool> = graph.cycles();
     // the order: a function after those it calls
     let mut order = Vec::new();
     let mut state = vec![0u8; n];
@@ -5981,13 +6074,8 @@ pub(crate) fn decide_given(p: &mut Program) {
             if decided[fi] {
                 continue;
             }
-            let reach = reachable(p, fi as u32);
             let members: Vec<usize> = (0..n)
-                .filter(|&g| {
-                    in_cycle[g]
-                        && (g as u32) < p.text_fns
-                        && (g == fi || (reach.contains(&(g as u32)) && reachable(p, g as u32).contains(&(fi as u32))))
-                })
+                .filter(|&g| in_cycle[g] && (g as u32) < p.text_fns && (g == fi || graph.together(fi, g)))
                 .collect();
             // (decided at its last member in the order: every function
             // its members call outside it decided before)
@@ -6150,7 +6238,7 @@ fn copy_views(e: &mut Expr, views: &[(VarId, VarId, u32)], vars: &[VarInfo], rea
 /// of isocron-ui, the loop of the program around them).
 fn unkept_params(p: &Program) -> HashSet<(usize, usize)> {
     let n = p.fns.len();
-    let cycles: Vec<bool> = (0..n).map(|fi| reachable(p, fi as u32).contains(&(fi as u32))).collect();
+    let cycles: Vec<bool> = CallCycles::of(p).cycles();
     // (in a cycle, its tuples alone: its arrays are the accumulators of its
     // loop, D351, D644)
     let mut cands: Vec<Vec<usize>> = (0..n)

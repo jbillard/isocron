@@ -582,6 +582,9 @@ struct Func {
     /// expression, the slot of the remainder of its first lane and whether
     /// every lane of every row is at least 0.
     carried: HashMap<*const Expr, (String, String)>,
+    /// The two places of each type of value given to the functions that
+    /// copy or free values (D712).
+    value_slots: HashMap<String, (String, String)>,
 }
 
 pub struct Gen<'p> {
@@ -743,6 +746,8 @@ pub struct Gen<'p> {
     /// The tuples of sum types told apart by their type, with the slots of
     /// each variant: a value frees the fields of its variant only (D448).
     sum_slots: HashMap<Type, Vec<Vec<u32>>>,
+    /// The functions that copy or free values (D712), by what they do.
+    value_helpers: HashMap<ValueHelper, String>,
     /// The largest byte of each variable whose bytes are known (D450).
     byte_bounds: HashMap<VarId, u8>,
     /// The functions whose windowed `filter` (D293) reads a range of one of
@@ -1005,6 +1010,51 @@ fn plain_columns(t: &Type) -> bool {
         _ => t.is_scalar(),
     }
 }
+
+/// A function that copies or frees the values of a type (D712), with what
+/// decides how the counts of their nodes change (in a task or not, D175,
+/// D683) and whether the texts freed are tested as literals (D518).
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ValueHelper {
+    drop: bool,
+    ty: Type,
+    in_task: bool,
+    task_marks: u8,
+    variant_marks: u8,
+    literal_test: bool,
+}
+
+/// Whether the copy (or the free, `drop`) of a value of `t` is a function
+/// of its own, called where it happens (D712): a value with a loop over
+/// elements that own memory (an array of them, but an array of texts freed:
+/// one call of the runtime), or a tuple of `OUTLINED_PARTS` parts or more
+/// that own memory. Written where it happens, each copy of the state of a
+/// program (a tuple of 50 fields, its texts and its arrays of records) was
+/// hundreds of instructions: 18 % of the IR of a program of isocron-ui, its
+/// copies alone, and its frees 13 %. A smaller tuple stays where it is:
+/// rtiow copies tuples of three nodes in its loops, 8.1 % slower through a
+/// call (its value through the stack, three counts more).
+fn outlined(t: &Type, drop: bool) -> bool {
+    fn looped(t: &Type, drop: bool) -> bool {
+        match t {
+            Type::Tuple(ts) => ts.iter().any(|c| looped(c, drop)),
+            Type::Array(e, _) => holds_owned(e) && !(drop && **e == Type::Str),
+            _ => false,
+        }
+    }
+    fn parts(t: &Type) -> usize {
+        match t {
+            Type::Tuple(ts) => ts.iter().map(parts).sum(),
+            t if t.has_heap() => 1,
+            _ => 0,
+        }
+    }
+    looped(t, drop) || parts(t) >= OUTLINED_PARTS
+}
+
+/// The parts that own memory of a tuple copied or freed by a function of
+/// its own (D712).
+const OUTLINED_PARTS: usize = 6;
 
 fn holds_owned(t: &Type) -> bool {
     match t {
@@ -1670,6 +1720,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         windowed: HashMap::new(),
         windowed_origin: HashSet::new(),
         sum_slots: p.sum_slots.iter().cloned().collect(),
+        value_helpers: HashMap::new(),
         byte_bounds: isc_ir::passes::byte_bounds(p),
         count_users: count_users(p),
         count_needed: BTreeSet::new(),
@@ -4838,6 +4889,14 @@ impl<'p> Gen<'p> {
     // ----- memory management -----------------------------------------------
 
     fn drop_value(&mut self, x: &V, t: &Type) {
+        if self.value_helper(true, x, t).is_some() {
+            return;
+        }
+        self.drop_value_here(x, t)
+    }
+
+    /// `drop_value` written here.
+    fn drop_value_here(&mut self, x: &V, t: &Type) {
         match t {
             // one owner less: the node is freed by the last one (D103)
             Type::Rec(i) => {
@@ -4970,6 +5029,106 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// The copy (`drop`: the free) of `x`, of the type `t`, by a call of its
+    /// function (D712), made at its first use: the copy returned (`drop`: a
+    /// value of no use); nothing when it is written where it happens (see
+    /// `outlined`; in vector code, a value in lanes). The value passes
+    /// through two places on the stack of the caller, one for each type of
+    /// value in a function (a call after another: the same ones).
+    fn value_helper(&mut self, drop: bool, x: &V, t: &Type) -> Option<V> {
+        let ty = lt(t);
+        if !outlined(t, drop) || self.mask.is_some() || x.t != ty {
+            return None;
+        }
+        let key = ValueHelper {
+            drop,
+            ty: t.clone(),
+            in_task: self.in_task,
+            task_marks: self.task_marks,
+            variant_marks: self.variant_marks,
+            literal_test: drop && self.literal_test,
+        };
+        let name = match self.value_helpers.get(&key) {
+            Some(n) => n.clone(),
+            None => {
+                let n = format!("isc_value_{}.{}", if drop { "drop" } else { "copy" }, self.value_helpers.len());
+                self.value_helpers.insert(key.clone(), n.clone());
+                self.emit_value_helper(&key, &n);
+                n
+            }
+        };
+        let (a, out) = match self.f.value_slots.get(&ty) {
+            Some(s) => s.clone(),
+            None => {
+                let a = self.alloca(&ty);
+                let out = self.alloca(&ty);
+                self.f.value_slots.insert(ty.clone(), (a.clone(), out.clone()));
+                (a, out)
+            }
+        };
+        self.emit(format!("store {} {}, ptr {}", ty, x.r, a));
+        if drop {
+            self.emit(format!("call void @{}(ptr {})", name, a));
+            return Some(v("poison", ty));
+        }
+        self.emit(format!("call void @{}(ptr {}, ptr {})", name, out, a));
+        let r = self.ins(format!("load {}, ptr {}", ty, out));
+        Some(v(r, ty))
+    }
+
+    /// The function `name` of `key` (D712): its value read from the place
+    /// of its last parameter, copied there (written at the first) or freed,
+    /// in a context of its own, the function being emitted put aside.
+    fn emit_value_helper(&mut self, key: &ValueHelper, name: &str) {
+        let saved_f = std::mem::take(&mut self.f);
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_mem_vars = std::mem::take(&mut self.mem_vars);
+        let saved_divmod = std::mem::take(&mut self.divmod);
+        let saved_parts = std::mem::take(&mut self.part_values);
+        let saved_stack_strs = std::mem::take(&mut self.stack_strs);
+        let saved_vec_fail = self.vec_fail.take();
+        let saved_split_fail = self.split_fail.take();
+        let saved_region = self.region.take();
+        let saved_stream = self.stream.take();
+        let saved_text_buf = self.text_buf.take();
+        let saved_task = std::mem::replace(&mut self.in_task, key.in_task);
+        let saved_shared = self.task_shared.take();
+        let saved_marks = std::mem::replace(&mut self.task_marks, key.task_marks);
+        let saved_variant = self.variant_shared.take();
+        let saved_variant_marks = std::mem::replace(&mut self.variant_marks, key.variant_marks);
+        let saved_literal = std::mem::replace(&mut self.literal_test, key.literal_test);
+        let ty = lt(&key.ty);
+        let x = self.ins(format!("load {}, ptr %in", ty));
+        let header = if key.drop {
+            self.drop_value_here(&v(x, ty.clone()), &key.ty);
+            format!("define internal void @{}(ptr noalias nocapture readonly %in)", name)
+        } else {
+            let c = self.copy_value_here(&v(x, ty.clone()), &key.ty);
+            self.emit(format!("store {} {}, ptr %out", ty, c.r));
+            format!("define internal void @{}(ptr noalias nocapture writeonly %out, ptr noalias nocapture readonly %in)", name)
+        };
+        self.emit("ret void");
+        let text = self.finish(&format!("{}{}", header, self.attrs()));
+        self.f = saved_f;
+        self.env = saved_env;
+        self.mem_vars = saved_mem_vars;
+        self.divmod = saved_divmod;
+        self.part_values = saved_parts;
+        self.stack_strs = saved_stack_strs;
+        self.vec_fail = saved_vec_fail;
+        self.split_fail = saved_split_fail;
+        self.region = saved_region;
+        self.stream = saved_stream;
+        self.text_buf = saved_text_buf;
+        self.in_task = saved_task;
+        self.task_shared = saved_shared;
+        self.task_marks = saved_marks;
+        self.variant_shared = saved_variant;
+        self.variant_marks = saved_variant_marks;
+        self.literal_test = saved_literal;
+        self.funcs.push(text);
+    }
+
     /// `x` (of the type `t`, at `path` in the value copied) copied, but for
     /// the parts at the paths `taken`, kept as they are: moved (D693).
     fn copy_taking(&mut self, x: &V, t: &Type, taken: &[Vec<u32>], path: &mut Vec<u32>) -> V {
@@ -5029,6 +5188,14 @@ impl<'p> Gen<'p> {
     }
 
     fn copy_value(&mut self, x: &V, t: &Type) -> V {
+        if let Some(c) = self.value_helper(false, x, t) {
+            return c;
+        }
+        self.copy_value_here(x, t)
+    }
+
+    /// `copy_value` written here.
+    fn copy_value_here(&mut self, x: &V, t: &Type) -> V {
         match t {
             Type::Array(e, _) if e.is_array() => {
                 // into one block, rows contiguous (a window becomes a matrix)

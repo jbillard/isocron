@@ -17373,3 +17373,72 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   optimized 0.191, C optimized 0.195, C++ optimized 0.201, Rust optimized
   0.251, Go optimized 0.323 (before D708 and D709: Isocron 0.222, sixth).
   Its peak 17.1 MiB (15.3 before: 2 MiB of slots against 1 MiB).
+
+- **D710 — The cycles of the calls found once; the IR the same at each
+  compilation (2026-11-18).** The largest program of isocron-ui
+  (`tests/editor_check.isc`, 2.3 million lines of LLVM IR) took 213 s to
+  compile, 39 s of them in the front end, 26 % of which in `recursive_calls`:
+  whether a function is in a cycle of calls was found by walking the bodies
+  of all the functions it reaches, once for each function (three passes,
+  and for the members of a cycle once for each pair). Now the calls of each
+  body are read once and the strongly connected components of that graph
+  found by Tarjan's algorithm (`CallCycles`): the same answers. Its front
+  end 39 to 16 s. Comparing the IR before and after showed that the
+  compiler did not make the same IR twice: the variables of a function of
+  the elements of a table (D230) were made again in the order of a hash set
+  (`rename_bound`), each hash set with a seed of its own; other numbers of
+  variables, so another text of LLVM IR, which also missed the cache of
+  objects (D617). Made in the order of their numbers. Test
+  `the_ir_is_the_same_at_each_compilation` (functions.rs: five compilations
+  in one process; the compiler before, 7 runs of 8 different).
+
+- **D711 — A large module compiled in parts at once (2026-11-18).** LLVM
+  took the rest of those 213 s on one thread: its passes 61 s, its code
+  generator 108 s. The text of a module of more than two parts of 100 000
+  lines (`split::PART_LINES`; the programs of the measures have 58 000 at
+  most and are compiled whole, as before) is cut where its functions start
+  and end into as many modules as the threads this process may run on
+  (`$ISC_CODEGEN_THREADS`), each read, optimized (`default<O3>`, the late
+  inlining of D600) and made into an object by a thread of its own, the
+  objects linked together. The functions are put together as LLVM inlines
+  them: one called by one function alone goes with it (unless larger than
+  LLVM inlines even at its last call, 4 000 lines), a small one called by
+  several (500 lines at most, the entries of the allocator of D600 always)
+  is copied into each part that calls it, internal there as in the whole
+  module; the others start a group of their own, hidden (never exported).
+  The groups are shared by their lines, the largest first, each to the
+  part with the fewest. The variables are in every part, `linkonce_odr`
+  in a comdat of their name (the linker keeps one: the parallel sites, the
+  constants a part folds as the whole module did). A module with
+  debugging information, aliases, or that defines symbols for other
+  objects is compiled whole. The cache of objects keeps the parts
+  (`.p<k>.o`, their number in `.parts`). Chosen over cutting the module
+  after the passes of LLVM (tried: each thread read the whole optimized
+  module back and dropped the bodies of the others, under a lock for the
+  memory: its machine code 108 to 31 s, but 17 s of reading in turn, the
+  passes still on one thread and the peak 2.1 to 4.0 GiB: each context of
+  LLVM kept the constants and the types of the whole module). The largest
+  program of isocron-ui 213 to 59 s (on the 4 cores, 8 threads, this
+  session may use), its peak 2.2 GiB as before; the 23 programs of its
+  tests 817 to 317 s in all, each the same output. `ISC_TIME` prints the
+  time of each phase of a build. Tests in parts.rs (programs cut into 3
+  parts by `ISC_SPLIT_LINES`: the same output as whole; the parts from the
+  cache of objects).
+
+- **D712 — Copies and frees of large values by functions of their own
+  (2026-11-18).** Each copy of a value that owns memory was written where
+  it happens, part by part: a copy of the state of the editor (a tuple of
+  50 fields, its texts, its arrays of records) hundreds of instructions,
+  4 190 allocations in one function of 13 450 lines of Isocron IR
+  (`scripted.answered`, 283 000 lines of LLVM IR). In a program of
+  isocron-ui its copies were 18 % of its IR, its frees 13 %. Now the copy
+  or the free of a value with a loop over elements that own memory, or of
+  a tuple of 6 parts or more that own memory, is a function made once for
+  its type and the counts of its nodes (in a task or not, D175, D683; the
+  test of literals of D518), the value given through the stack. A smaller
+  tuple stays where it is: copied by a call, rtiow (tuples of three nodes in
+  its loops) was 8.1 % slower. The largest program of isocron-ui 2.33 to
+  1.72 million lines of IR, `scripted.answered` 283 000 to 54 000. Of the
+  corpus, rtiow (23 calls, the same image, 9 694.6 to 9 712.9 ms) and countwords
+  (2: the free of the entries of its table, 179.1 to 177.1 ms) change; the
+  rest the same IR.

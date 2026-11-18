@@ -5,7 +5,7 @@
 //! emitted as an object file (and optionally as assembly).
 
 use std::ffi::{c_char, c_void, CStr, CString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 type Ref = *mut c_void;
 
@@ -61,6 +61,7 @@ extern "C" {
     fn LLVMDisposeErrorMessage(m: *mut c_char);
     fn LLVMTargetMachineEmitToFile(tm: Ref, m: Ref, file: *const c_char, kind: i32, msg: *mut *mut c_char) -> i32;
 }
+
 
 const RETURN_STATUS: i32 = 2;
 
@@ -187,7 +188,19 @@ pub const WINDOWS_MSVC_TRIPLE: &str = "x86_64-pc-windows-msvc";
 /// `compile_with` for Windows too (`windows`: the object of
 /// `x86_64-pc-windows-gnu`, for the CPU that `isa` names).
 pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<(), String> {
-    compile_text(ir, obj, asm, isa, windows, msvc, None)
+    compile_text(ir, obj, asm, isa, windows, msvc, None, false).map(|_| ())
+}
+
+/// `compile_for` of a program: the machine code of a large module made in
+/// parts at once (D711), `obj` the first; the others returned, objects to
+/// link with it.
+pub fn compile_parts(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<Vec<PathBuf>, String> {
+    compile_text(ir, obj, asm, isa, windows, msvc, None, true)
+}
+
+/// The path of the part `k` (from 1) of the object `obj` (D711).
+pub fn part_path(obj: &Path, k: usize) -> PathBuf {
+    obj.with_extension(format!("p{}.o", k))
 }
 
 /// `compile_for` of the module compiled once (D611), which also gives the
@@ -196,7 +209,7 @@ pub fn compile_for(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::I
 /// for the programs that will declare these functions.
 pub fn compile_pre(ir: &str, obj: &Path, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<String, String> {
     let mut optimized = String::new();
-    compile_text(ir, obj, None, isa, windows, msvc, Some(&mut optimized))?;
+    compile_text(ir, obj, None, isa, windows, msvc, Some(&mut optimized), false)?;
     Ok(optimized)
 }
 
@@ -209,7 +222,7 @@ pub fn compile_pre(ir: &str, obj: &Path, isa: crate::emit::Isa, windows: bool, m
 /// (the three allocators change the linking, not the IR) and most of them
 /// again at the next commit. The module compiled once (D611), whose text
 /// as optimized is read back, is never taken from it.
-fn object_cache(ir: &str, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Option<(std::path::PathBuf, String)> {
+fn object_cache(ir: &str, isa: crate::emit::Isa, windows: bool, msvc: bool, split: bool) -> Option<(std::path::PathBuf, String)> {
     let dir = std::env::var_os("ISC_OBJECT_CACHE").filter(|v| !v.is_empty())?;
     let (mut major, mut minor, mut patch) = (0u32, 0u32, 0u32);
     // SAFETY: three places of this frame, written by LLVM during the call
@@ -225,26 +238,32 @@ fn object_cache(ir: &str, isa: crate::emit::Isa, windows: bool, msvc: bool) -> O
         }
     };
     feed(include_str!("backend.rs").as_bytes());
-    feed(format!("|{}.{}.{}|{:?}|{}|{}|{}|", major, minor, patch, isa, windows, msvc, host).as_bytes());
+    feed(format!("|{}.{}.{}|{:?}|{}|{}|{}|{}|", major, minor, patch, isa, windows, msvc, host, split).as_bytes());
     feed(ir.as_bytes());
     Some((std::path::PathBuf::from(dir), format!("{:016x}{:016x}", a, b)))
 }
 
-fn compile_text(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>) -> Result<(), String> {
-    let cache = if optimized.is_none() { object_cache(ir, isa, windows, msvc) } else { None };
+fn compile_text(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>, split: bool) -> Result<Vec<PathBuf>, String> {
+    let cache = if optimized.is_none() { object_cache(ir, isa, windows, msvc, split) } else { None };
     if let Some((dir, key)) = &cache {
         let (o, s) = (dir.join(format!("{}.o", key)), dir.join(format!("{}.s", key)));
-        let whole = o.is_file() && asm.is_none_or(|_| s.is_file());
-        if whole && std::fs::copy(&o, obj).is_ok() && asm.is_none_or(|a| std::fs::copy(&s, a).is_ok()) {
+        // (the parts of its machine code, D711: their number in `.parts`)
+        let parts: usize = std::fs::read_to_string(dir.join(format!("{}.parts", key))).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        let whole = o.is_file() && asm.is_none_or(|_| s.is_file()) && (1..=parts).all(|k| dir.join(format!("{}.p{}.o", key, k)).is_file());
+        if whole
+            && std::fs::copy(&o, obj).is_ok()
+            && asm.is_none_or(|a| std::fs::copy(&s, a).is_ok())
+            && (1..=parts).all(|k| std::fs::copy(dir.join(format!("{}.p{}.o", key, k)), part_path(obj, k)).is_ok())
+        {
             // (its time the last use: the suite removes the old ones)
             if let Ok(f) = std::fs::File::options().write(true).open(&o) {
                 let _ = f.set_modified(std::time::SystemTime::now());
             }
-            return Ok(());
+            return Ok((1..=parts).map(|k| part_path(obj, k)).collect());
         }
     }
-    let made = compile_llvm(ir, obj, asm, isa, windows, msvc, optimized);
-    if let (Ok(()), Some((dir, key))) = (&made, &cache) {
+    let made = compile_llvm(ir, obj, asm, isa, windows, msvc, optimized, split);
+    if let (Ok(parts), Some((dir, key))) = (&made, &cache) {
         // written under another name, then named: a reader never sees half
         static PARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let keep = |from: &Path, ext: &str| {
@@ -258,18 +277,40 @@ fn compile_text(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa,
             if let Some(a) = asm {
                 keep(a, "s");
             }
+            for (k, part) in parts.iter().enumerate() {
+                keep(part, &format!("p{}.o", k + 1));
+            }
+            if !parts.is_empty() {
+                let count = dir.join(format!("{}.parts.tmp{}", key, std::process::id()));
+                if std::fs::write(&count, parts.len().to_string()).is_ok() {
+                    let _ = std::fs::rename(&count, dir.join(format!("{}.parts", key)));
+                }
+            }
+            // (the first part last: the others are there when it is)
             keep(obj, "o");
         }
     }
     made
 }
 
-fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>) -> Result<(), String> {
+fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa, windows: bool, msvc: bool, optimized: Option<&mut String>, split: bool) -> Result<Vec<PathBuf>, String> {
     init_llvm();
+    // a large module: in parts compiled at once (D711)
+    if split && asm.is_none() && optimized.is_none() {
+        let t0 = std::time::Instant::now();
+        if let Some(texts) = crate::split::split_module(ir, codegen_threads()) {
+            crate::phase_time(&format!("module cut into {} parts", texts.len()), t0);
+            let t0 = std::time::Instant::now();
+            let made = compile_split(&texts, obj, isa, windows, msvc);
+            crate::phase_time("LLVM: the parts", t0);
+            return made;
+        }
+    }
     unsafe {
         let wasm = isa.is_wasm();
         let ctx = LLVMContextCreate();
         let name = cstr("isocron");
+        let t0 = std::time::Instant::now();
         let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir.as_ptr() as *const c_char, ir.len(), name.as_ptr());
         let mut m: Ref = std::ptr::null_mut();
         let mut msg: *mut c_char = std::ptr::null_mut();
@@ -314,9 +355,12 @@ fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa,
         LLVMSetTarget(m, triple.as_ptr());
         let dl = LLVMCreateTargetDataLayout(tm);
         LLVMSetModuleDataLayout(m, dl);
+        crate::phase_time("LLVM: IR read and checked", t0);
+        let t0 = std::time::Instant::now();
         let opts = LLVMCreatePassBuilderOptions();
         let passes = cstr("default<O3>");
         let err = LLVMRunPasses(m, passes.as_ptr(), tm, opts);
+        crate::phase_time("LLVM: passes O3", t0);
         LLVMDisposePassBuilderOptions(opts);
         if !err.is_null() {
             let em = LLVMGetErrorMessage(err);
@@ -354,7 +398,7 @@ fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa,
         if let Some(text) = optimized {
             *text = take_msg(LLVMPrintModuleToString(m));
         }
-        let mut result = Ok(());
+        let mut result = Ok(Vec::new());
         if let Some(a) = asm {
             let clone = LLVMCloneModule(m);
             let f = cstr(&a.to_string_lossy());
@@ -364,10 +408,12 @@ fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa,
             LLVMDisposeModule(clone);
         }
         if result.is_ok() {
+            let t0 = std::time::Instant::now();
             let f = cstr(&obj.to_string_lossy());
             if LLVMTargetMachineEmitToFile(tm, m, f.as_ptr(), OBJECT, &mut msg) != 0 {
                 result = Err(format!("cannot emit the object file: {}", take_msg(msg)));
             }
+            crate::phase_time("LLVM: machine code", t0);
         }
         LLVMDisposeTargetData(dl);
         LLVMDisposeModule(m);
@@ -375,4 +421,47 @@ fn compile_llvm(ir: &str, obj: &Path, asm: Option<&Path>, isa: crate::emit::Isa,
         LLVMContextDispose(ctx);
         result
     }
+}
+
+/// The threads that compile the parts of a large module (D711):
+/// `$ISC_CODEGEN_THREADS`, else the processors this process may run on.
+fn codegen_threads() -> usize {
+    if let Some(n) = std::env::var("ISC_CODEGEN_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        return n.max(1);
+    }
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+/// The objects of the parts of a large module (D711), each compiled by a
+/// thread of its own, as a whole module is: `obj`, then those returned.
+fn compile_split(texts: &[String], obj: &Path, isa: crate::emit::Isa, windows: bool, msvc: bool) -> Result<Vec<PathBuf>, String> {
+    let paths: Vec<PathBuf> = (0..texts.len()).map(|k| if k == 0 { obj.to_path_buf() } else { part_path(obj, k) }).collect();
+    let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = texts
+            .iter()
+            .zip(&paths)
+            .enumerate()
+            .map(|(k, (text, path))| {
+                std::thread::Builder::new()
+                    // (LLVM recurses in large functions)
+                    .stack_size(256 << 20)
+                    .spawn_scoped(scope, move || {
+                        let t0 = std::time::Instant::now();
+                        let r = compile_llvm(text, path, None, isa, windows, msvc, None, false).map(|_| ());
+                        crate::phase_time(&format!("  part {} ({} lines)", k, text.lines().count()), t0);
+                        r
+                    })
+                    .expect("cannot start a thread of the compiler")
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("a thread of the compiler panicked".into()))).collect()
+    });
+    let made: Result<Vec<()>, String> = results.into_iter().collect();
+    if let Err(e) = made {
+        for p in &paths {
+            let _ = std::fs::remove_file(p);
+        }
+        return Err(e);
+    }
+    Ok(paths.into_iter().skip(1).collect())
 }
