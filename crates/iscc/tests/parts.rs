@@ -68,3 +68,49 @@ fn the_parts_kept_by_the_object_cache() {
     let names: Vec<String> = std::fs::read_dir(&cache).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert!(names.iter().any(|n| n.ends_with(".p1.o")) && names.iter().any(|n| n.ends_with(".parts")), "{:?}", names);
 }
+
+/// D711: a program for Linux that reaches the module `win32` in a branch of
+/// Windows alone (D635), in parts. Whole, LLVM drops the functions of that
+/// module once it folds the branch; a part cannot drop one that the others
+/// see, nor fold a branch whose condition another part computes: their
+/// bodies named functions of Windows, which the linker of Linux has not
+/// (`CreateWindowExW` undefined, the editor of isocron-ui). Written for
+/// another system as a trap (the paths of the program checked for each
+/// system, D636): its IR names no function of Windows; linked in parts,
+/// the branch of Linux run.
+#[test]
+fn a_branch_of_windows_in_parts_for_linux() {
+    let src = "import * as win from \"win32\";
+import * as sys from \"sys\";
+
+action main(args: string[k]): i32 {
+    if (sys.platform() == \"windows\") {
+        if (args.length > 0) {
+            win.alert(\"Isocron\", args[0]);
+        }
+        match (win.open(\"Isocron\", 200, 100)) {
+            Ok(w) => win.close(w),
+            Err(e) => print(sys.message(e)),
+        };
+    } else {
+        print(fold(iota(10), 0, (a, i) => a + i));
+    }
+    return 0;
+}
+";
+    let d = dir("parts_win32");
+    let file = d.join("branch.isc");
+    std::fs::write(&file, src).unwrap();
+    let ll = d.join("branch.ll");
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_iscc")).arg("build").arg(&file).arg("-o").arg(d.join("whole")).arg("--emit-llvm").arg(&ll).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let ir = std::fs::read_to_string(&ll).unwrap();
+    assert!(ir.contains("@isc.win.open(") && ir.contains("call void @llvm.trap()"), "the functions of win32 as traps");
+    for f in ["CreateWindowExW", "MessageBoxW", "GetMessageW", "EnterCriticalSection"] {
+        assert!(!ir.contains(&format!("@{}(", f)), "{} named in a program for Linux", f);
+    }
+    let bin = d.join("branch");
+    let made = build(&file, &bin, &[("ISC_SPLIT_LINES", "200"), ("ISC_CODEGEN_THREADS", "3")]);
+    assert!(made.contains("module cut into 3 parts"), "{}", made);
+    assert_eq!(run(&bin, &[]), "45\n");
+}

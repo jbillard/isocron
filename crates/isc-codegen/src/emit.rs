@@ -1808,7 +1808,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
     // the array of the arguments and their strings (copies, D134), owned
     // by `main` unless it gave it away (D96)
     if p.drop_args {
-        let t = Type::Array(Box::new(Type::Str), isc_ir::Fixed::ANY);
+        let t = Type::Array(std::sync::Arc::new(Type::Str), isc_ir::Fixed::ANY);
         g.drop_value(&v(args.clone(), "{ ptr, i64 }"), &t);
     }
     // its output written, the allocator checked at its end (D546)
@@ -5342,7 +5342,7 @@ impl<'p> Gen<'p> {
     /// slots.
     fn variant_node_ty(&self, i: u32, slots: &[u32]) -> String {
         let comps = match &self.p.recs[i as usize].layout {
-            Type::Tuple(ts) => ts.clone(),
+            Type::Tuple(ts) => ts.to_vec(),
             other => vec![other.clone()],
         };
         let mut parts = vec![lt(&comps[0])];
@@ -5405,7 +5405,7 @@ impl<'p> Gen<'p> {
     fn node_slot_read(&mut self, p: &str, i: u32, s: u32) -> String {
         let vs = self.node_variants(i).unwrap_or_default();
         let comps = match &self.p.recs[i as usize].layout {
-            Type::Tuple(ts) => ts.clone(),
+            Type::Tuple(ts) => ts.to_vec(),
             other => vec![other.clone()],
         };
         let st = lt(&comps[s as usize]);
@@ -5888,7 +5888,7 @@ impl<'p> Gen<'p> {
         // its own)
         if let Some(vs) = self.node_variants(i) {
             let comps = match &layout {
-                Type::Tuple(ts) => ts.clone(),
+                Type::Tuple(ts) => ts.to_vec(),
                 other => vec![other.clone()],
             };
             let tp = self.ins("getelementptr inbounds { i64, i32 }, ptr %p, i32 0, i32 1".to_string());
@@ -5940,7 +5940,7 @@ impl<'p> Gen<'p> {
         }
         let (t, bytes) = self.node_payload("%p", i);
         let comps = match &layout {
-            Type::Tuple(ts) => ts.clone(),
+            Type::Tuple(ts) => ts.to_vec(),
             _ => Vec::new(),
         };
         let tail = comps.iter().rposition(|c| matches!(c, Type::Rec(_)));
@@ -6001,7 +6001,7 @@ impl<'p> Gen<'p> {
         let tp = self.node_tuple("%p", i);
         let tq = self.node_tuple("%q", i);
         let comps = match &layout {
-            Type::Tuple(ts) => ts.clone(),
+            Type::Tuple(ts) => ts.to_vec(),
             other => vec![other.clone()],
         };
         let tail = comps.iter().rposition(|c| matches!(c, Type::Rec(_)));
@@ -12170,7 +12170,7 @@ impl<'p> Gen<'p> {
     /// same way, level by level; each level frees the one before.
     fn reduce_owned(&mut self, x: &Expr, l: &Lambda, z: &Expr) -> R<V> {
         let t = l.body.ty.clone();
-        let at = Type::Array(Box::new(t.clone()), isc_ir::Fixed::ANY);
+        let at = Type::Array(std::sync::Arc::new(t.clone()), isc_ir::Fixed::ANY);
         let zv = self.ex(z, 1)?;
         let (av, p, n, fresh) = self.owned_src(x)?;
         let curp = self.alloca("ptr");
@@ -12252,7 +12252,7 @@ impl<'p> Gen<'p> {
         })?;
         self.drop_value(&zv, &t);
         if fresh {
-            self.drop_value(&av, &Type::Array(Box::new(t.clone()), isc_ir::Fixed::ANY));
+            self.drop_value(&av, &Type::Array(std::sync::Arc::new(t.clone()), isc_ir::Fixed::ANY));
         }
         Ok(self.arr(&out, &n))
     }
@@ -14100,7 +14100,7 @@ impl<'p> Gen<'p> {
             step(self, &p, &n, "0")?;
             self.br(&lend);
             self.block(&lend);
-            self.drop_value(&v(all, "{ ptr, i64 }"), &Type::Array(Box::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY));
+            self.drop_value(&v(all, "{ ptr, i64 }"), &Type::Array(std::sync::Arc::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY));
             let r = self.ins(format!("load {}, ptr {}", alt, acc));
             return Ok(v(r, alt));
         }
@@ -14167,7 +14167,7 @@ impl<'p> Gen<'p> {
         let at_end = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", nb, f));
         self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at_end, rp, rn));
         self.emit(format!("call void @isc_free(ptr {})", b));
-        self.drop_value(&v(rest, "{ ptr, i64 }"), &Type::Array(Box::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY));
+        self.drop_value(&v(rest, "{ ptr, i64 }"), &Type::Array(std::sync::Arc::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY));
         self.emit(format!("store ptr {}, ptr {}", nb, bufs));
         self.emit(format!("store i64 {}, ptr {}", size, caps));
         self.emit(format!("store i64 {}, ptr {}", need, fills));
@@ -14645,7 +14645,7 @@ impl<'p> Gen<'p> {
                 ExprKind::Var(w, _) if ins.len() == 1 && *w == m.params[0] => ins[0].clone(),
                 _ => Expr::new(
                     ExprKind::Map(ins.clone(), Lambda { params: m.params.clone(), body: Box::new(fs[i].clone()), drop_params: vec![false; m.params.len()] }),
-                    Type::Array(Box::new(ts[i].clone()), isc_ir::Fixed::ANY),
+                    Type::Array(std::sync::Arc::new(ts[i].clone()), isc_ir::Fixed::ANY),
                     x.span,
                 ),
             };
@@ -14767,7 +14767,7 @@ impl<'p> Gen<'p> {
         }
         self.br(&lend);
         self.block(&lend);
-        let tt = Type::Tuple(ts.clone());
+        let tt = Type::Tuple(ts.clone().into());
         let mut acc = "poison".to_string();
         for i in 0..k {
             let r = self.ins(format!("load {}, ptr {}", lt(&ts[i]), res[i]));

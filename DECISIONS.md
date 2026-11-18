@@ -17456,3 +17456,34 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   Killed on demand: that test under a limit of 3 GiB (`systemd-run
   -p MemoryMax=3G`), code 137. The two tests now take a lock: one at a time,
   the file 4.4 GiB at its peak, what each checks the same.
+
+- **D714 — A program in parts names no function of another system
+  (2026-11-18).** The tests of isocron-ui after D711: `display` and the
+  editor failed to link for Linux, `CreateWindowExW`, `PostMessageW` and
+  others undefined, named by the functions of the module `win32` (D636).
+  Whole, LLVM folds the condition `sys.platform() == "windows"` (the
+  constant of the target, D635) and drops those functions; in parts, a
+  part cannot fold a condition another part computes (a boolean given to a
+  function seen by the other parts: no constant propagated between parts),
+  nor drop a function the others see. The paths of a program are checked
+  for each system (D636): a primitive of `win32` reached by a program for
+  Linux is refused before the code is made, so its functions are never run
+  there. Now, for a target other than Windows, each function of `win32` is
+  written as its header and a trap, the functions of Windows not declared.
+  And the cutting of D711 keeps what LLVM keeps (`globaldce`): the functions
+  and variables reached from `main`, its body and the start of the code,
+  through every name a function or the value of a variable reads; the rest
+  is in no part. The editor of isocron-ui linked again (69 s), `display`
+  passed. Test `a_branch_of_windows_in_parts_for_linux` (parts.rs: its IR
+  names no function of Windows, as the compiler before did twice; linked in
+  three parts, run).
+
+- **D715 — Types share their parts (2026-11-18).** After D710 the front
+  end of the largest program of isocron-ui spent 13 % of its time cloning
+  types, 5 % dropping them and most of the rest in `malloc` and `free`: a
+  type is cloned at each node of the IR made, and the state of a program
+  is a tuple of 50 parts and more, each a text, an array of records.
+  `Type::Tuple` now holds `Arc<[Type]>` and `Type::Array` `Arc<Type>`: a
+  clone counts once more. The same IR, byte for byte (the corpus, the
+  largest program of isocron-ui); its front end (`iscc ir`) 16.4 to 8.9 s,
+  its peak 912 to 544 MiB.

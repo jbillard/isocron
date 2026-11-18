@@ -152,15 +152,76 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
     if parts < 2 || funcs.is_empty() {
         return None;
     }
-    // the calls between the functions, and the functions whose address is
-    // taken (in a function, a variable or metadata)
     let mut inside = vec![false; lines.len()];
     for f in &funcs {
         for k in f.header..f.end {
             inside[k] = true;
         }
     }
+    // what the program reaches, as LLVM finds it before it drops the rest
+    // (`globaldce`): from the functions seen outside the module (`main`,
+    // its body, the start of the code) and what lines other than functions
+    // and variables name (metadata), through every name read by a function
+    // or by the value of a variable. A function not reached is in no part,
+    // nor a variable: whole, the module had them dropped (the functions of
+    // the windows of Windows in a program for Linux, which name functions of
+    // Windows); in a part, seen by the others, they would be kept
+    let mut vindex: HashMap<&str, usize> = HashMap::new();
+    let mut vlines: Vec<usize> = Vec::new();
+    for (k, l) in lines.iter().enumerate() {
+        if let (false, Some((name, def))) = (inside[k], l.strip_prefix('@').and_then(|r| r.split_once(" = "))) {
+            if !def.starts_with("external ") {
+                vindex.insert(name, vlines.len());
+                vlines.push(k);
+            }
+        }
+    }
+    let (mut alive, mut alive_v) = (vec![false; funcs.len()], vec![false; vlines.len()]);
+    let mut todo: Vec<(bool, usize)> = Vec::new();
+    for (fi, f) in funcs.iter().enumerate() {
+        if !f.internal {
+            alive[fi] = true;
+            todo.push((true, fi));
+        }
+    }
+    for (k, l) in lines.iter().enumerate() {
+        if !inside[k] && !l.starts_with('@') {
+            for (name, _) in names_on(l) {
+                if let Some(&g) = index.get(name) {
+                    funcs[g].taken = true;
+                    if !alive[g] {
+                        alive[g] = true;
+                        todo.push((true, g));
+                    }
+                }
+            }
+        }
+    }
+    while let Some((is_fn, x)) = todo.pop() {
+        let range = if is_fn { funcs[x].header + 1..funcs[x].end } else { vlines[x]..vlines[x] + 1 };
+        for k in range {
+            for (name, _) in names_on(lines[k]) {
+                if let Some(&g) = index.get(name) {
+                    if !alive[g] {
+                        alive[g] = true;
+                        todo.push((true, g));
+                    }
+                } else if let Some(&v) = vindex.get(name) {
+                    if !alive_v[v] {
+                        alive_v[v] = true;
+                        todo.push((false, v));
+                    }
+                }
+            }
+        }
+    }
+    let dead_vars: HashSet<usize> = (0..vlines.len()).filter(|&v| !alive_v[v]).map(|v| vlines[v]).collect();
+    // the calls between the functions reached, and the functions whose
+    // address is taken (in a function or a variable reached)
     for fi in 0..funcs.len() {
+        if !alive[fi] {
+            continue;
+        }
         let mut callees = HashSet::new();
         for k in funcs[fi].header + 1..funcs[fi].end {
             for (name, called) in names_on(lines[k]) {
@@ -180,9 +241,9 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
         }
         funcs[fi].callees = callees;
     }
-    for (k, l) in lines.iter().enumerate() {
-        if !inside[k] {
-            for (name, _) in names_on(l) {
+    for (v, &k) in vlines.iter().enumerate() {
+        if alive_v[v] {
+            for (name, _) in names_on(lines[k]) {
                 if let Some(&g) = index.get(name) {
                     funcs[g].taken = true;
                 }
@@ -219,15 +280,16 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
         p
     }
     let mut visiting = vec![false; funcs.len()];
-    for fi in 0..funcs.len() {
+    for fi in (0..funcs.len()).filter(|&fi| alive[fi]) {
         resolve(fi, &funcs, &late, &mut place, &mut visiting);
     }
-    let place: Vec<Place> = place.into_iter().map(|p| p.unwrap_or(Place::Copied)).collect();
+    // (a function not reached: `None`, in no part)
+    let place: Vec<Option<Place>> = place;
     // the groups shared between the parts: the largest first, each to the
     // part with the fewest lines; the start of the program in the first
     let mut group_lines: HashMap<usize, usize> = HashMap::new();
     for (fi, p) in place.iter().enumerate() {
-        if let Place::Group(r) = p {
+        if let Some(Place::Group(r)) = p {
             *group_lines.entry(*r).or_insert(0) += size(&funcs[fi]);
         }
     }
@@ -244,7 +306,7 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
     // functions call
     let mut defines: Vec<Vec<bool>> = vec![vec![false; funcs.len()]; parts];
     for (fi, p) in place.iter().enumerate() {
-        if let Place::Group(r) = p {
+        if let Some(Place::Group(r)) = p {
             defines[part_of[r]][fi] = true;
         }
     }
@@ -252,7 +314,7 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
         let mut todo: Vec<usize> = (0..funcs.len()).filter(|&fi| d[fi]).collect();
         while let Some(fi) = todo.pop() {
             for &g in &funcs[fi].callees {
-                if place[g] == Place::Copied && !d[g] {
+                if place[g] == Some(Place::Copied) && !d[g] {
                     d[g] = true;
                     todo.push(g);
                 }
@@ -262,13 +324,13 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
     if std::env::var_os("ISC_TIME").is_some() {
         let mut top: Vec<(usize, &str)> = group_lines.iter().map(|(r, n)| (*n, funcs[*r].name.as_str())).collect();
         top.sort_unstable_by(|a, b| b.cmp(a));
-        let copied: Vec<usize> = defines.iter().map(|d| (0..funcs.len()).filter(|&fi| d[fi] && place[fi] == Place::Copied).map(|fi| size(&funcs[fi])).sum()).collect();
+        let copied: Vec<usize> = defines.iter().map(|d| (0..funcs.len()).filter(|&fi| d[fi] && place[fi] == Some(Place::Copied)).map(|fi| size(&funcs[fi])).sum()).collect();
         eprintln!("iscc split: {} groups, largest {:?}; parts {:?}; copied lines {:?}", top.len(), &top[..top.len().min(6)], load, copied);
     }
     // the text of each part
     let mut common = String::new();
     for (k, l) in lines.iter().enumerate() {
-        if inside[k] {
+        if inside[k] || dead_vars.contains(&k) {
             continue;
         }
         if let Some(rest) = l.strip_prefix('@') {
@@ -294,7 +356,7 @@ pub fn split_module(module: &str, threads: usize) -> Option<Vec<String>> {
         t.push_str(&common);
         for (fi, f) in funcs.iter().enumerate() {
             let header = lines[f.header];
-            let shown = place[fi] == Place::Group(fi) && f.internal;
+            let shown = place[fi] == Some(Place::Group(fi)) && f.internal;
             if d[fi] {
                 // (a group's first function seen by the other parts)
                 if shown {

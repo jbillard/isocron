@@ -1517,17 +1517,42 @@ failed:
 }"#;
 
 impl Gen<'_> {
+    /// Whether the target is Windows: the functions of this module are
+    /// written whole for it alone.
+    fn windows_target(&self) -> bool {
+        self.opts.windows && !self.opts.isa.is_wasm()
+    }
+
+    /// The definition `d` of a function of this module for the target:
+    /// itself under Windows; for another system, where no path of the
+    /// program reaches it (its paths are checked for each system, D635,
+    /// D636: it is written only in a branch of Windows, which LLVM drops),
+    /// its header and a trap. A module compiled in parts (D711) cannot drop
+    /// it once a part folds that branch, and its body named functions of
+    /// Windows that the linker of Linux does not have.
+    fn for_target(&mut self, d: &str) -> String {
+        if self.windows_target() {
+            return format!("{}\n", d);
+        }
+        self.decls.insert("declare void @llvm.trap()".to_string());
+        let header = d.lines().next().unwrap_or(d);
+        format!("{}\nentry:\n  call void @llvm.trap()\n  unreachable\n}}\n", header)
+    }
+
     /// The functions `defs` of `ALERT` and `PROGRAM` defined in the program,
     /// once each, and the functions of Windows they call (D643): none of
     /// the windows'.
     fn win_alert_defs(&mut self, defs: &[&str]) {
-        for d in ALERT_DECLS.iter() {
-            self.decls.insert(d.to_string());
+        if self.windows_target() {
+            for d in ALERT_DECLS.iter() {
+                self.decls.insert(d.to_string());
+            }
         }
         for d in defs {
             let name = d.split('@').nth(1).and_then(|r| r.split('(').next()).unwrap_or(d);
             if self.decls.insert(format!("; the module win32: @{}", name)) {
-                self.funcs.push(format!("{}\n", d));
+                let f = self.for_target(d);
+                self.funcs.push(f);
             }
         }
     }
@@ -1535,13 +1560,16 @@ impl Gen<'_> {
     /// The functions `defs` of the clipboard defined in the program, once
     /// each, and the functions of Windows they call (D646).
     fn clip_defs(&mut self, defs: &[&str]) {
-        for d in CLIP_DECLS.iter().chain(ALERT_DECLS.iter()) {
-            self.decls.insert(d.to_string());
+        if self.windows_target() {
+            for d in CLIP_DECLS.iter().chain(ALERT_DECLS.iter()) {
+                self.decls.insert(d.to_string());
+            }
         }
         for d in defs {
             let name = d.split('@').nth(1).and_then(|r| r.split('(').next()).unwrap_or(d);
             if self.decls.insert(format!("; the module win32: @{}", name)) {
-                self.funcs.push(format!("{}\n", d));
+                let f = self.for_target(d);
+                self.funcs.push(f);
             }
         }
     }
@@ -1550,14 +1578,17 @@ impl Gen<'_> {
     /// each, with those of the program (their blocks from its allocator, as
     /// `unix_defs`); the functions of Windows declared.
     fn win_defs(&mut self, defs: &[&str], capture: bool) {
-        for d in DECLS.iter().chain(LOCK_DECLS.iter()).chain(if capture { CAPTURE_DECLS.iter() } else { [].iter() }) {
-            self.decls.insert(d.to_string());
+        if self.windows_target() {
+            for d in DECLS.iter().chain(LOCK_DECLS.iter()).chain(if capture { CAPTURE_DECLS.iter() } else { [].iter() }) {
+                self.decls.insert(d.to_string());
+            }
+            self.decls.insert(CLASS.to_string());
         }
-        self.decls.insert(CLASS.to_string());
         for d in [PUSH, REPAINT, PROC, THREAD].iter().chain(defs) {
             let name = d.split('@').nth(1).and_then(|r| r.split('(').next()).unwrap_or(d);
             if self.decls.insert(format!("; the module win32: @{}", name)) {
-                self.funcs.push(format!("{}\n", d));
+                let f = self.for_target(d);
+                self.funcs.push(f);
             }
         }
     }

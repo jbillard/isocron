@@ -3016,7 +3016,7 @@ fn case_by_prelude(e: &mut isc_ir::Expr, f: u32) -> usize {
     let ExprKind::StrOp(_, mut xs) = std::mem::replace(&mut e.kind, ExprKind::Zero) else { unreachable!() };
     let x = xs.pop().unwrap();
     let sp = x.span;
-    let bytes = Expr::new(ExprKind::StrOp(StrOp::Bytes, vec![x.clone()]), Type::Array(Box::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY), sp);
+    let bytes = Expr::new(ExprKind::StrOp(StrOp::Bytes, vec![x.clone()]), Type::Array(std::sync::Arc::new(Type::Int(isc_ir::IntKind::U8)), isc_ir::Fixed::ANY), sp);
     e.kind = ExprKind::Call(f, vec![bytes, x, Expr::i64(0, sp), Expr::i64(0, sp), Expr::i64(0, sp), Expr::lit(Lit::Bool(upper), Type::Bool, sp)]);
     n += 1;
     n

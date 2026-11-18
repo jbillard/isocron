@@ -368,8 +368,8 @@ pub fn input_pieces(e: &mut Expr, runs: &[RunsSite], eff: &[bool], vars: &mut Ve
     put_back(cons.children_mut().into_iter().next().expect("a source"), &mut taken);
     let at = path_to(t, &|n| matches!(n.kind, ExprKind::Var(v, _) if v == mark)).expect("the place of the consumer");
     let u8t = Type::Int(IntKind::U8);
-    let table = Expr::new(ExprKind::ConstArray(cut), Type::Array(Box::new(u8t), Fixed(Some(256))), read_span);
-    let parts = Expr::new(ExprKind::InputPieces(Box::new(table)), Type::Array(Box::new(Type::Str), Fixed::ANY), read_span);
+    let table = Expr::new(ExprKind::ConstArray(cut), Type::Array(std::sync::Arc::new(u8t), Fixed(Some(256))), read_span);
+    let parts = Expr::new(ExprKind::InputPieces(Box::new(table)), Type::Array(std::sync::Arc::new(Type::Str), Fixed::ANY), read_span);
     let sp = cons.span;
     let new = match cons.kind {
         ExprKind::Fold(src, init, g) => {

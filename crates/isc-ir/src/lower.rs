@@ -426,7 +426,7 @@ fn extern_fns(p: &TProgram) -> Vec<ExternFn> {
             Ty::Bool => Type::Bool,
             Ty::Str | Ty::RegExp => Type::Str,
             Ty::BigInt => Type::Big,
-            Ty::Array(_, e) => Type::Array(Box::new(ty(e)), crate::Fixed::ANY),
+            Ty::Array(_, e) => Type::Array(std::sync::Arc::new(ty(e)), crate::Fixed::ANY),
             _ => Type::Unit,
         }
     }
@@ -439,7 +439,7 @@ fn extern_fns(p: &TProgram) -> Vec<ExternFn> {
 pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let mut l = Lower::new(p);
     let span = p.fns[id].span;
-    let args = l.new_var("args", Type::Array(Box::new(Type::Str), crate::Fixed::ANY));
+    let args = l.new_var("args", Type::Array(std::sync::Arc::new(Type::Str), crate::Fixed::ANY));
     let n = p.fns[id].params.len();
     let idx = l.lower_fn(id, type_args, vec![None; n], vec![None; n], span)?;
     let fns: Vec<Function> = l.fns.into_iter().map(|f| f.expect("a recursive function lowered")).collect();
@@ -470,7 +470,7 @@ pub fn lower(p: &TProgram) -> R<Program> {
 
 fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
     let main = &p.fns[p.main];
-    let args = l.new_var("args", Type::Array(Box::new(Type::Str), crate::Fixed::ANY));
+    let args = l.new_var("args", Type::Array(std::sync::Arc::new(Type::Str), crate::Fixed::ANY));
     let mut env = Env {
         fn_id: p.main,
         type_args: Rc::new(Vec::new()),
@@ -480,7 +480,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
     };
     env.locals.insert(main.params[0], Binding::Var(args));
     let sp = main.span;
-    l.bind_sizes(&mut env, &main.param_tys[0].clone(), Expr::var(args, Type::Array(Box::new(Type::Str), crate::Fixed::ANY), sp));
+    l.bind_sizes(&mut env, &main.param_tys[0].clone(), Expr::var(args, Type::Array(std::sync::Arc::new(Type::Str), crate::Fixed::ANY), sp));
     let body = l.expr(&mut env, &main.body)?;
     // the requirements of the functions met, and of those that are not
     // generic, met or not
@@ -888,7 +888,7 @@ impl<'p> Lower<'p> {
             }
             slots.push(mine);
         }
-        self.sum_types.borrow_mut().push((Type::Tuple(comps.clone()), slots.clone()));
+        self.sum_types.borrow_mut().push((Type::Tuple(comps.clone().into()), slots.clone()));
         Ok((comps, slots))
     }
 
@@ -910,7 +910,7 @@ impl<'p> Lower<'p> {
             vs.push((v.name.clone(), slots[k].clone(), shapes));
         }
         self.recs.borrow_mut()[idx as usize] =
-            Some(RecType { name: def.name.clone(), layout: Type::Tuple(comps), shape: Shape::Sum(vs) });
+            Some(RecType { name: def.name.clone(), layout: Type::Tuple(comps.into()), shape: Shape::Sum(vs) });
         Ok(idx)
     }
 
@@ -1004,7 +1004,7 @@ impl<'p> Lower<'p> {
                 // a recursive type: the tuple of the node (D103)
                 let unboxed;
                 let proj = if self.is_rec(env, ty) {
-                    unboxed = Expr::new(ExprKind::Unbox(Box::new(val.clone())), Type::Tuple(comps.clone()), span);
+                    unboxed = Expr::new(ExprKind::Unbox(Box::new(val.clone())), Type::Tuple(comps.clone().into()), span);
                     Box::new(move |i: u32, t: &Type| Expr::new(ExprKind::Proj(Box::new(unboxed.clone()), i), t.clone(), span))
                         as Box<dyn Fn(u32, &Type) -> Expr>
                 } else {
@@ -1063,11 +1063,11 @@ impl<'p> Lower<'p> {
             // `Map<K, V>` (D158): the keys, the values, the positions of the
             // keys sorted
             Ty::Sum { id, args, .. } if self.is_map(id) => Type::Tuple(vec![
-                Type::Array(Box::new(self.ty(env, &args[0], span)?), crate::Fixed::ANY),
-                Type::Array(Box::new(self.ty(env, &args[1], span)?), crate::Fixed::ANY),
-                Type::Array(Box::new(Type::Int(IntKind::I64)), crate::Fixed::ANY),
-            ]),
-            Ty::Sum { id, args, .. } => Type::Tuple(self.sum_layout(env, id, &args, span)?.0),
+                Type::Array(std::sync::Arc::new(self.ty(env, &args[0], span)?), crate::Fixed::ANY),
+                Type::Array(std::sync::Arc::new(self.ty(env, &args[1], span)?), crate::Fixed::ANY),
+                Type::Array(std::sync::Arc::new(Type::Int(IntKind::I64)), crate::Fixed::ANY),
+            ].into()),
+            Ty::Sum { id, args, .. } => Type::Tuple(self.sum_layout(env, id, &args, span)?.0.into()),
             // a record is a tuple of its fields, sorted by name
             Ty::Record(fs) => {
                 let mut out = Vec::new();
@@ -1077,8 +1077,8 @@ impl<'p> Lower<'p> {
                     }
                     out.push(self.ty(env, t, span)?);
                 }
-                self.plain_tuples.borrow_mut().insert(Type::Tuple(out.clone()));
-                Type::Tuple(out)
+                self.plain_tuples.borrow_mut().insert(Type::Tuple(out.clone().into()));
+                Type::Tuple(out.into())
             }
             Ty::Tuple(ts) => {
                 let mut out = Vec::new();
@@ -1088,8 +1088,8 @@ impl<'p> Lower<'p> {
                     }
                     out.push(self.ty(env, t, span)?);
                 }
-                self.plain_tuples.borrow_mut().insert(Type::Tuple(out.clone()));
-                Type::Tuple(out)
+                self.plain_tuples.borrow_mut().insert(Type::Tuple(out.clone().into()));
+                Type::Tuple(out.into())
             }
             Ty::Array(sz, e) => {
                 let et = self.ty(env, &e, span)?;
@@ -1100,7 +1100,7 @@ impl<'p> Lower<'p> {
                     Size::Var(_) | Size::Own => None,
                 };
                 // an array of nodes: pointers, one owner each (D130)
-                Type::Array(Box::new(et), crate::Fixed(fixed))
+                Type::Array(std::sync::Arc::new(et), crate::Fixed(fixed))
             }
             Ty::Fn(..) => return internal(span, "function type in value position"),
             Ty::Param(_) | Ty::Var(_) => return internal(span, "unresolved type"),
@@ -1350,7 +1350,7 @@ impl<'p> Lower<'p> {
                 }
                 if self.is_rec(env, &e.ty) {
                     // a new node on the heap (D103)
-                    let tuple = Expr::new(ExprKind::Tuple(out), Type::Tuple(comps), span);
+                    let tuple = Expr::new(ExprKind::Tuple(out), Type::Tuple(comps.into()), span);
                     return Ok(Expr::new(ExprKind::Box(Box::new(tuple)), ty, span));
                 }
                 Ok(Expr::new(ExprKind::Tuple(out), ty, span))
@@ -1418,7 +1418,7 @@ impl<'p> Lower<'p> {
                 // its type the target's, but for the fields of the new values
                 // (D642: the target's, the lengths it fixed, D204, were those
                 // of the old field: the new array read as one of their length)
-                let mut nts = comps.clone();
+                let mut nts = comps.to_vec();
                 for (i, v) in &news {
                     nts[*i as usize] = v.ty.clone();
                 }
@@ -1430,7 +1430,7 @@ impl<'p> Lower<'p> {
                         None => Expr::new(ExprKind::Proj(Box::new(Expr::var(r, ty.clone(), span)), k as u32), ct.clone(), span),
                     })
                     .collect();
-                let body = Expr::new(ExprKind::Tuple(fields), Type::Tuple(nts), span);
+                let body = Expr::new(ExprKind::Tuple(fields), Type::Tuple(nts.into()), span);
                 Ok(self.let_(r, t, body, false, span))
             }
             // `~x` (D633): `x ^ m`, `m` every bit of its type set (-1 for a
@@ -1554,7 +1554,7 @@ impl<'p> Lower<'p> {
         let inner = if vt.is_array() {
             let i64t = Type::Int(IntKind::I64);
             let p = self.new_var("i", i64t.clone());
-            let ids = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(Box::new(i64t), Fixed::ANY), span);
+            let ids = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(std::sync::Arc::new(i64t), Fixed::ANY), span);
             Expr::new(ExprKind::Map(vec![ids], Lambda { params: vec![p], body: Box::new(Expr::var(t, vt, sp)), drop_params: vec![false] }), ty, span)
         } else {
             Expr::new(ExprKind::Fill(Box::new(n), Box::new(Expr::var(t, vt, sp))), ty, span)
@@ -1591,7 +1591,7 @@ impl<'p> Lower<'p> {
         let vb = self.new_var("b", bt.clone());
         let len = |v: VarId, t: &Type| Expr::new(ExprKind::Len(Box::new(Expr::var(v, t.clone(), span))), Type::Int(IntKind::I64), span);
         let n = Expr::new(ExprKind::Binary(BinOp::Add, Box::new(len(va, &at)), Box::new(len(vb, &bt))), i64t.clone(), span);
-        let idx = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(Box::new(i64t.clone()), crate::Fixed::ANY), span);
+        let idx = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(std::sync::Arc::new(i64t.clone()), crate::Fixed::ANY), span);
         let i = self.new_var("i", i64t.clone());
         let iv = || Expr::var(i, Type::Int(IntKind::I64), span);
         let et = ty.elem().clone();
@@ -1606,7 +1606,7 @@ impl<'p> Lower<'p> {
     }
 
     fn map1(&mut self, x: Expr, p: VarId, body: Expr, ty: Type, span: Span) -> Expr {
-        let rty = Type::Array(Box::new(body.ty.clone()), crate::Fixed::ANY);
+        let rty = Type::Array(std::sync::Arc::new(body.ty.clone()), crate::Fixed::ANY);
         let _ = ty;
         Expr::new(
             ExprKind::Map(vec![x], Lambda { params: vec![p], body: Box::new(body), drop_params: vec![false] }),
@@ -1784,7 +1784,7 @@ impl<'p> Lower<'p> {
                         vec![Expr::var(a, ty.clone(), span), Expr::var(b, ty.clone(), span)],
                         Lambda { params: vec![p, q], body: Box::new(ev), drop_params: vec![false, false] },
                     ),
-                    Type::Array(Box::new(bt.clone()), crate::Fixed::ANY),
+                    Type::Array(std::sync::Arc::new(bt.clone()), crate::Fixed::ANY),
                     span,
                 );
                 let x = self.new_var("p", bt.clone());
@@ -1924,7 +1924,7 @@ impl<'p> Lower<'p> {
                 for (k, (p, &slot)) in subs.iter().zip(slots[*variant as usize].iter()).enumerate().rev() {
                     let mut base = Expr::var(t, val.ty.clone(), span);
                     if rec {
-                        base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone()), span);
+                        base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone().into()), span);
                     }
                     let pr = Expr::new(ExprKind::Proj(Box::new(base), slot), comps[slot as usize].clone(), span);
                     // a function: a branch on its code at each call (D153)
@@ -2197,7 +2197,7 @@ impl<'p> Lower<'p> {
                     // the matched value itself is a node; a part of it may
                     // be the zero of another variant
                     below = below || !matches!(base.kind, ExprKind::Var(..));
-                    base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone()), span);
+                    base = Expr::new(ExprKind::Unbox(Box::new(base)), Type::Tuple(comps.clone().into()), span);
                 }
                 for (k, (q, &slot)) in subs.iter().zip(slots[*variant as usize].iter()).enumerate() {
                     let pr = Expr::new(ExprKind::Proj(Box::new(base.clone()), slot), comps[slot as usize].clone(), span);
@@ -2317,7 +2317,7 @@ impl<'p> Lower<'p> {
             FuncVal::Table { fns, index } => {
                 let n = fns.len() as i64;
                 let i64t = Type::Int(IntKind::I64);
-                let iota = Expr::new(ExprKind::Iota(Box::new(Expr::i64(n, span))), Type::Array(Box::new(i64t.clone()), crate::Fixed::ANY), span);
+                let iota = Expr::new(ExprKind::Iota(Box::new(Expr::i64(n, span))), Type::Array(std::sync::Arc::new(i64t.clone()), crate::Fixed::ANY), span);
                 let idx = Expr::new(ExprKind::Convert(index.clone()), i64t.clone(), index.span);
                 let tag_e = Expr::new(ExprKind::Index(Box::new(iota), Box::new(idx)), i64t.clone(), index.span);
                 let tag = self.new_var("tag", i64t.clone());
@@ -2927,7 +2927,7 @@ impl<'p> Lower<'p> {
                 let chosen = if inside.len() <= 4 { Some((inside, false)) } else if outside.len() <= 4 { Some((outside, true)) } else { None };
                 let Some((mut rs, out)) = chosen else {
                     let lits = table.into_iter().map(|x| Lit::Int(x as i64)).collect();
-                    let t = Expr::new(ExprKind::ConstArray(lits), Type::Array(Box::new(u8t), Fixed(Some(256))), span);
+                    let t = Expr::new(ExprKind::ConstArray(lits), Type::Array(std::sync::Arc::new(u8t), Fixed(Some(256))), span);
                     let r = self.prelude_call("$classRuns", vec![s, t], &ty, span)?;
                     return Ok(self.runs_site(r, class));
                 };
@@ -3168,7 +3168,7 @@ impl<'p> Lower<'p> {
                 let a = self.expr(env, &args[0])?;
                 let b = self.expr(env, &args[1])?;
                 let (ta, tb) = (a.ty.elem().clone(), b.ty.elem().clone());
-                let pt = Type::Tuple(vec![ta.clone(), tb.clone()]);
+                let pt = Type::Tuple(vec![ta.clone(), tb.clone()].into());
                 self.plain_tuples.borrow_mut().insert(pt.clone());
                 let x = self.new_var("x", ta.clone());
                 let y = self.new_var("y", tb.clone());

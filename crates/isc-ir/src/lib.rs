@@ -40,9 +40,13 @@ pub enum Type {
     /// An integer of any size (D156): laid out, owned and freed as a
     /// string (its bytes: `isc_runtime_core::big`).
     Big,
-    Tuple(Vec<Type>),
-    /// An array; its length when the program fixes it (D204).
-    Array(Box<Type>, Fixed),
+    /// A tuple: its parts shared by the copies of the type (D713: a type is
+    /// cloned at each node of the IR made, the state of a program a tuple of
+    /// 50 parts and more).
+    Tuple(std::sync::Arc<[Type]>),
+    /// An array; its length when the program fixes it (D204). Its element
+    /// shared as the parts of a tuple.
+    Array(std::sync::Arc<Type>, Fixed),
     /// A value of the recursive type `Program::recs[i]`: a pointer to a
     /// node on the heap, with a reference count (D103).
     Rec(u32),

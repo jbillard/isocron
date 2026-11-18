@@ -1314,7 +1314,7 @@ fn appended_texts(m: Expr, sep: Expr, vars: &mut Vec<VarInfo>) -> Expr {
     // the element bound to the parameter of the function, its text to `piece`
     let body = let_(l.params[0], elem, let_(piece, *l.body, add));
     let lam = Lambda { params: vec![text, i], body: Box::new(body), drop_params: vec![false, false] };
-    let iota_n = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(Box::new(i64t), Fixed::ANY), span);
+    let iota_n = Expr::new(ExprKind::Iota(Box::new(n)), Type::Array(std::sync::Arc::new(i64t), Fixed::ANY), span);
     let fold = Expr::new(ExprKind::Fold(Box::new(iota_n), Box::new(Expr::new(ExprKind::StrLit(String::new()), Type::Str, span)), lam), Type::Str, span);
     let with_src = if iota || named { fold } else { let_(src_var, src, fold) };
     if empty_sep {
@@ -1673,7 +1673,7 @@ fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let ExprKind::Map(_, l) = &mut init.kind else { return };
     if let Type::Int(k) = *et {
         let narrow = parts[0].expect("a narrower type");
-        let nt = Type::Array(Box::new(Type::Int(narrow)), fixed);
+        let nt = Type::Array(std::sync::Arc::new(Type::Int(narrow)), fixed);
         let lb = take(&mut l.body);
         let sp = lb.span;
         *l.body = Expr::new(ExprKind::Convert(Box::new(lb)), Type::Int(narrow), sp);
@@ -1684,9 +1684,9 @@ fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     }
     // a tuple: its narrowed parts converted where the tuple is made, back
     // where an element is read
-    let Type::Tuple(ts) = *et.clone() else { unreachable!("a tuple") };
+    let Type::Tuple(ts) = (*et).clone() else { unreachable!("a tuple") };
     let nts: Vec<Type> = ts.iter().zip(&parts).map(|(t, p)| p.map_or(t.clone(), Type::Int)).collect();
-    let nelem = Type::Tuple(nts.clone());
+    let nelem = Type::Tuple(nts.clone().into());
     let end = let_end(&mut l.body);
     if !matches!(end.kind, ExprKind::Tuple(_)) {
         // (`let t = f in [t.0, t.1, ...]`)
@@ -1709,7 +1709,7 @@ fn narrow_arrays(e: &mut Expr, vars: &mut Vec<VarInfo>) {
         }
     }
     set_let_types(&mut l.body, &nelem);
-    let nt = Type::Array(Box::new(nelem), fixed);
+    let nt = Type::Array(std::sync::Arc::new(nelem), fixed);
     init.ty = nt.clone();
     vars[v as usize].ty = nt.clone();
     widen_tuple_reads(body, v, &nt, &et, vars);
@@ -1770,7 +1770,7 @@ fn widen_tuple_reads(e: &mut Expr, v: VarId, nt: &Type, wide: &Type, vars: &mut 
             let (Type::Tuple(ws), Type::Tuple(ns)) = (wide, nt.elem()) else { unreachable!("tuples") };
             let comps = ws
                 .iter()
-                .zip(ns)
+                .zip(ns.iter())
                 .enumerate()
                 .map(|(j, (w, n))| {
                     let part = Expr::new(ExprKind::Proj(Box::new(read.clone()), j as u32), n.clone(), sp);
@@ -3619,7 +3619,7 @@ fn combine(e: &mut Expr, vars: &mut Vec<VarInfo>, base: VarId, sites: &[(usize, 
         reduces.push(std::mem::replace(node, proj));
         tys.push(ty);
     }
-    let tt = Type::Tuple(tys.clone());
+    let tt = Type::Tuple(tys.clone().into());
     vars[rr as usize].ty = tt.clone();
     fix_rr_type(e, rr, &tt);
     // map: (v) -> (f_1(v), ..., f_k(v)); operator component by component
@@ -3659,7 +3659,7 @@ fn combine(e: &mut Expr, vars: &mut Vec<VarInfo>, base: VarId, sites: &[(usize, 
     let map_body = Expr::new(ExprKind::Tuple(cols), tt.clone(), sp);
     let src = Expr::new(
         ExprKind::Map(vec![Expr::var(base, base_ty, sp)], Lambda { params: vec![v], body: Box::new(map_body), drop_params: vec![false] }),
-        Type::Array(Box::new(tt.clone()), crate::Fixed::ANY),
+        Type::Array(std::sync::Arc::new(tt.clone()), crate::Fixed::ANY),
         sp,
     );
     let op = Lambda { params: vec![a, b], body: Box::new(Expr::new(ExprKind::Tuple(ops), tt.clone(), sp)), drop_params: vec![false, false] };
@@ -3844,7 +3844,7 @@ fn masked_reductions(e: &mut Expr, vars: &mut Vec<VarInfo>) {
     let rt = l.body.ty.clone();
     let body = Expr::new(ExprKind::If(Box::new(cond), Box::new(kept), Box::new((**z).clone())), rt.clone(), sp);
     let lam = Lambda { params: vec![p], body: Box::new(body), drop_params: vec![false] };
-    **x = Expr::new(ExprKind::Map(vec![src], lam), Type::Array(Box::new(rt), crate::Fixed::ANY), sp);
+    **x = Expr::new(ExprKind::Map(vec![src], lam), Type::Array(std::sync::Arc::new(rt), crate::Fixed::ANY), sp);
 }
 
 /// How the parent of an expression reads it.
@@ -4274,7 +4274,7 @@ fn table_function(m: &Expr, vars: &mut Vec<VarInfo>, lens: &HashMap<VarId, i64>)
         // H = map(t, (elem) -> h), its own variables
         let mut h = h;
         rename_bound(&mut h, vars);
-        let hty = Type::Array(Box::new(h.ty.clone()), crate::Fixed::ANY);
+        let hty = Type::Array(std::sync::Arc::new(h.ty.clone()), crate::Fixed::ANY);
         vars.push(VarInfo { name: "table".into(), ty: hty.clone(), prelude: false });
         let hv = (vars.len() - 1) as VarId;
         let tvar = Expr::var(t, vars[t as usize].ty.clone(), sp);
