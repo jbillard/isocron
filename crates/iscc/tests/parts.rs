@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 fn build(src: &Path, out: &Path, env: &[(&str, &str)]) -> String {
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_iscc"));
-    c.arg("build").arg(src).arg("-o").arg(out).env("ISC_TIME", "1").env_remove("ISC_SPLIT_LINES").env_remove("ISC_CODEGEN_THREADS");
+    // (the cache of objects of the suite would give the program whole)
+    c.arg("build").arg(src).arg("-o").arg(out).env("ISC_TIME", "1").env_remove("ISC_SPLIT_LINES").env_remove("ISC_CODEGEN_THREADS").env_remove("ISC_OBJECT_CACHE");
     for (k, v) in env {
         c.env(k, v);
     }
