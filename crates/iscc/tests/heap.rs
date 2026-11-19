@@ -10,8 +10,21 @@ use common::*;
 
 /// `bin` run with `args` on `threads` threads and `ISC_ALLOC` set to `alloc`
 /// (or unset): its exit code, its output and its error.
+/// The command that runs `bin` without transparent huge pages (D735):
+/// `prctl(PR_SET_THP_DISABLE)` before its `exec`, by Python as the measures
+/// of `bench/` do; its peaks counted in pages of 4 KiB. With huge pages
+/// (`always` on this machine) a peak jumps by 2 MiB at once, as the memory
+/// of the moment allows: the program of
+/// `a_medium_block_kept_too_large_is_cut`, the same bytes, peaked at 4392
+/// KiB in one series and 2416 in the next.
+fn command_of(bin: &std::path::Path) -> std::process::Command {
+    let mut c = std::process::Command::new("python3");
+    c.args(["-c", "import ctypes, os, sys; ctypes.CDLL(None).prctl(41, 1, 0, 0, 0); os.execv(sys.argv[1], sys.argv[1:])"]).arg(bin);
+    c
+}
+
 fn run_with(bin: &std::path::Path, args: &[&str], alloc: Option<&str>, threads: usize) -> (i32, String, String) {
-    let mut c = std::process::Command::new(bin);
+    let mut c = command_of(bin);
     c.args(args).env("ISC_THREADS", threads.to_string());
     match alloc {
         Some(a) => c.env("ISC_ALLOC", a),

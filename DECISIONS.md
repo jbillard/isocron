@@ -18079,3 +18079,15 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   connections and two requests on each, written while the server is
   stopped, `SIGSTOP`; the queue of a listener holds 128, nginx's 511: the
   test of 300 connections could not connect).
+
+- **D735 — The peaks of the tests of heap.rs measured without huge
+  pages (2026-11-19).** Suite 523 failed on
+  `a_medium_block_kept_too_large_is_cut` (D721): freed 4304 KiB, kept 4376.
+  Not the change of D734: the program freed early, the same bytes built by
+  the compilers of a298808 and of D734, peaked at 4392 KiB in a series of
+  five runs and at 2416 in the next (kept: 6440, then 4464): its memory in
+  huge pages or not as the memory of the machine allowed (`always` here),
+  a peak jumping by 2 MiB at once. The programs of heap.rs now run without
+  transparent huge pages (`prctl(PR_SET_THP_DISABLE)` before their `exec`,
+  by Python, as the measures of `bench/` do, D727): freed 2408 to 2412
+  KiB, kept 4464 to 4468 in three series, the 2 MiB of the array freed.
