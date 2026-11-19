@@ -4947,6 +4947,15 @@ fn only_reads(e: &Expr, v: VarId) -> bool {
     e.children().into_iter().enumerate().all(|(i, c)| if matches!(c.kind, ExprKind::Var(w, _) if w == v) { is_v(c) && slot_ok(i) } else { only_reads(c, v) })
 }
 
+/// The value of `e` may hold memory of a variable (a view of it, a part of
+/// it, the variable itself): not new memory, a literal nor a scalar (D720).
+/// (Each variable taken for a root that is none of those of `e`: a view of
+/// a `let` of `e` that is itself a view, `let t = kept[0] in proj 0 t`, is
+/// a view still.)
+pub fn borrows(e: &Expr) -> bool {
+    borrowed_from(e, &|_| vec![VarId::MAX]).is_some_and(|vs| !vs.is_empty())
+}
+
 /// The variables whose memory `e` borrows, `base` giving those of a
 /// variable (None: new memory or a scalar).
 fn borrowed_from(e: &Expr, base: &dyn Fn(VarId) -> Vec<VarId>) -> Option<Vec<VarId>> {

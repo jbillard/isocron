@@ -641,6 +641,10 @@ pub struct Gen<'p> {
     /// The variables freed at once, the rest of their scope not reading
     /// them (D117): not freed again before the jump of a tail call (D639).
     freed_early: HashSet<VarId>,
+    /// The variables freed right after the value of a `let` of the rest of
+    /// their scope, the last that reads them (D720): that `let`, each with
+    /// whether its init took a part of a tuple (D518).
+    free_after: HashMap<*const Expr, Vec<(VarId, bool)>>,
     /// The `lines` and `split` whose parts are views of their text (D555):
     /// the values of the variables of `Program::views`, whatever path of
     /// the generated code binds them.
@@ -1763,6 +1767,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         giving: HashSet::new(),
         rebound: Vec::new(),
         freed_early: HashSet::new(),
+        free_after: HashMap::new(),
         view_parts: view_parts(p),
         part_values: HashSet::new(),
         split_vars: HashMap::new(),
@@ -2809,6 +2814,56 @@ fn result_concats(e: &Expr, out: &mut Vec<*const Expr>) {
         Let { body, .. } | Free(_, body) => result_concats(body, out),
         _ => {}
     }
+}
+
+/// `map(iota(n), (i) => copy x[i])` whose elements have the type of those
+/// of `x`: the first `n` elements of `x` as they are (D720); `n` and the
+/// place of the read of `x[i]` (that of its message when `n` is past the
+/// length of `x`).
+fn prefix_of<'a>(e: &'a Expr, x: VarId, xt: &Type) -> Option<(&'a Expr, Span)> {
+    let ExprKind::Map(ins, l) = &e.kind else { return None };
+    let [ExprKind::Iota(n)] = ins.iter().map(|i| &i.kind).collect::<Vec<_>>()[..] else { return None };
+    let (ExprKind::Copy(c), [i]) = (&l.body.kind, &l.params[..]) else { return None };
+    let ExprKind::Index(a, k) = &c.kind else { return None };
+    let ok = matches!(a.kind, ExprKind::Var(v, _) if v == x) && matches!(k.kind, ExprKind::Var(v, _) if v == *i) && e.ty.elem() == xt.elem() && k.ty == Type::Int(IntKind::I64);
+    ok.then_some((&**n, c.span))
+}
+
+/// The `let` of `e` (the rest of the scope of `x`) whose value reads `x`
+/// last on the way `e` is evaluated (D720): through the values and the
+/// bodies of `let`s and the bodies of checks, never into a branch nor a
+/// lambda, so that it is evaluated once each time `e` is, and nothing
+/// after its value reads `x`. A variable bound on that way whose value may
+/// hold memory of `x` (`borrows`: a view, a part) is `x` as well: read
+/// after, it keeps `x` (`h = proj 0 t` read after the last read of `t`).
+/// None when the last read is elsewhere (a branch, a check, the end of
+/// `e`).
+fn last_read<'a>(e: &'a Expr, x: VarId, borrows: &dyn Fn(VarId, &Expr) -> bool) -> Option<&'a Expr> {
+    fn walk<'a>(e: &'a Expr, xs: &mut HashSet<VarId>, borrows: &dyn Fn(VarId, &Expr) -> bool) -> Option<&'a Expr> {
+        let mut cur = e;
+        loop {
+            match &cur.kind {
+                ExprKind::Let { var, init, body, .. } => {
+                    let reads = mentions(init, xs);
+                    if reads && borrows(*var, init) {
+                        xs.insert(*var);
+                    }
+                    if mentions(body, xs) {
+                        cur = body;
+                        continue;
+                    }
+                    if !reads {
+                        return None;
+                    }
+                    return Some(walk(init, &mut xs.clone(), borrows).unwrap_or(cur));
+                }
+                ExprKind::CheckSize(_, _, body) | ExprKind::CheckNonNegative(_, body) if mentions(body, xs) => cur = body,
+                ExprKind::Free(v, body) if !xs.contains(v) => cur = body,
+                _ => return None,
+            }
+        }
+    }
+    walk(e, &mut HashSet::from([x]), borrows)
 }
 
 /// `e` frees `v` somewhere (`Free`, D105).
@@ -7020,7 +7075,15 @@ impl<'p> Gen<'p> {
                 // over the ranges of an array, made by blocks in the pass of
                 // this `filter` over it (D426)
                 let made = if w == 1 && !self.in_task && !self.count_users.is_empty() { self.count_block(init, body) } else { None };
-                let iv = self.ex(init, w);
+                // the gather of the first elements of an array that the rest
+                // no longer reads, each as it is: that array itself, the
+                // elements past them freed (D720)
+                let gathered = self.gathers.get(&(&**init as *const Expr as usize)).copied();
+                let in_place = gathered.filter(|x| w == 1 && prefix_of(init, *x, &self.p.vars[*x as usize].ty).is_some());
+                let iv = match in_place {
+                    Some(x) => self.prefix_in_place(init, x),
+                    None => self.ex(init, w),
+                };
                 if made.is_some() {
                     self.count_req = None;
                 }
@@ -7033,7 +7096,7 @@ impl<'p> Gen<'p> {
                 }
                 // the gather of an array whose elements it moved (D706): the
                 // elements past its length, never read, freed
-                if let Some(x) = self.gathers.get(&(&**init as *const Expr as usize)).copied() {
+                if let Some(x) = gathered.filter(|_| in_place.is_none()) {
                     let xv = self.env[&x].clone();
                     let et = self.p.vars[x as usize].ty.elem().clone();
                     let xp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
@@ -7065,6 +7128,29 @@ impl<'p> Gen<'p> {
                     self.drop_var(*var, &iv);
                     self.freed_early.insert(*var);
                 }
+                // the variables of the `let`s around this one that its value
+                // read last (D720): freed now, their blocks alone when their
+                // elements were moved (a gather); once (a value emitted again
+                // frees nothing more)
+                if w == 1 {
+                    if let Some(xs) = self.free_after.get(&(e as *const Expr)).cloned() {
+                        for (x, part) in xs {
+                            if self.freed_early.contains(&x) {
+                                continue;
+                            }
+                            let Some(xv) = self.env.get(&x).cloned() else { continue };
+                            if self.moving.contains(&x) {
+                                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                                self.emit(format!("call void @isc_free(ptr {})", p));
+                            } else {
+                                let saved = std::mem::replace(&mut self.literal_test, part);
+                                self.drop_var(x, &xv);
+                                self.literal_test = saved;
+                            }
+                            self.freed_early.insert(x);
+                        }
+                    }
+                }
                 if let Some((a, block)) = &made {
                     self.counts.insert(*a, block.clone());
                 }
@@ -7093,13 +7179,35 @@ impl<'p> Gen<'p> {
                 if gives {
                     self.giving.insert(*var);
                 }
+                // freed where the rest reads it last, not at its end (D720):
+                // that read the value of a `let` that holds no memory of a
+                // variable (new memory, scalars)
+                let last = if *drop && !early && w == 1 && !takes && !gives && made.is_none() && init.ty.has_heap() {
+                    last_read(body, *var, &|y, value| self.p.views.contains(&y) || isc_ir::passes::borrows(value)).filter(|l| match &l.kind {
+                        ExprKind::Let { var: y, init: value, .. } => !self.p.views.contains(y) && !isc_ir::passes::borrows(value),
+                        _ => false,
+                    })
+                } else {
+                    None
+                };
+                if let Some(l) = last {
+                    self.free_after.entry(l as *const Expr).or_default().push((*var, matches!(init.kind, ExprKind::Take(..))));
+                }
                 self.take_let_dest(e);
                 let r = self.ex(body, w);
+                if let Some(l) = last {
+                    if let Some(xs) = self.free_after.get_mut(&(l as *const Expr)) {
+                        xs.retain(|(x, _)| x != var);
+                        if xs.is_empty() {
+                            self.free_after.remove(&(l as *const Expr));
+                        }
+                    }
+                }
                 self.moving.remove(var);
                 if let Some(g) = gather {
                     self.gathers.remove(&(g as usize));
                 }
-                self.freed_early.remove(var);
+                let freed = self.freed_early.remove(var) && !early;
                 let iv = if takes || gives {
                     self.taking.remove(var);
                     self.giving.remove(var);
@@ -7111,8 +7219,13 @@ impl<'p> Gen<'p> {
                     self.counts.remove(a);
                     self.emit(format!("call void @isc_free(ptr {})", block));
                 }
-                if *drop && !early && moves {
+                if *drop && !early && freed {
+                    // (freed at its last read, D720)
+                } else if *drop && !early && moves {
                     if let Ok(_) = &r {
+                        // (its block given to the gather of its first
+                        // elements: empty now, D720)
+                        let iv = self.env.get(var).cloned().unwrap_or_else(|| iv.clone());
                         let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", iv.r));
                         self.emit(format!("call void @isc_free(ptr {})", p));
                     }
@@ -8054,6 +8167,33 @@ impl<'p> Gen<'p> {
 
     /// A check in vector code: a jump to the replay of the vector when there
     /// is one (D185), the panic otherwise.
+    /// `init` the gather of the first `n` elements of `x`, each as it is
+    /// (`prefix_of`), `x` no longer read after it (D720): the block of `x`
+    /// with the length `n`, its elements past `n` freed, `x` empty from
+    /// here (its end frees nothing, a tail call either). An `n` past the
+    /// length of `x`: the panic of the read of `x[i]` at that length, as
+    /// the `map` gives.
+    fn prefix_in_place(&mut self, init: &Expr, x: VarId) -> R<V> {
+        let xt = self.p.vars[x as usize].ty.clone();
+        let Some((n, at)) = prefix_of(init, x, &xt) else { return Err("internal error: not a prefix".into()) };
+        let nv = self.ex(n, 1)?;
+        let xv = self.env[&x].clone();
+        let elem_ty = xt.elem().clone();
+        let xp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+        let xn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+        let ok = self.ins(format!("icmp ule i64 {}, {}", nv.r, xn));
+        self.guard(&ok, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 0, {})", xn, xn, Self::pos(at)));
+        self.for_range_scalar(&nv.r, &xn, 1, &mut |g, i| {
+            let el = g.load_elem(&xp, &xn, i, &elem_ty, 1);
+            g.drop_value(&el, &elem_ty);
+            Ok(())
+        })?;
+        let y0 = self.ins(format!("insertvalue {{ ptr, i64 }} poison, ptr {}, 0", xp));
+        let y = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", y0, nv.r));
+        self.env.insert(x, v("zeroinitializer", "{ ptr, i64 }"));
+        Ok(v(y, "{ ptr, i64 }"))
+    }
+
     fn vec_check(&mut self, ok: &str, panic_call: String) {
         match self.vec_fail.clone() {
             Some(lf) => {

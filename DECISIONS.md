@@ -17628,3 +17628,79 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `actions_that_end_by_a_call_keep_no_frame` (memory.rs: an action of the
   program and `forEach`, 3 million calls each: 24.9 MB at the most, 212.4
   MB with the compiler before; the interpreter's output).
+
+- **D720 — A value freed after the last read of the rest of its scope;
+  the first elements of an array that dies, that array (2026-11-19).** A
+  variable that owns memory was freed at the end of its scope: the
+  arrays of the end of countwords (its keys, the counts, the pairs, the
+  permutation of the sort) lived while the text printed was made, after
+  their last read. The `let` whose value reads it last on the way its
+  scope is evaluated (through the values and bodies of `let`s and the
+  bodies of checks; never into a branch nor a lambda: evaluated once each
+  time the scope is) now frees it right after that value (`last_read`,
+  `free_after` in the generated code), when that value holds no memory of
+  a variable (`passes::borrows`: new memory, a literal, scalars). A
+  variable bound on that way whose value may hold memory of it (a view, a
+  part, `h = proj 0 t`) counts as it: read later, it keeps it (found by
+  Valgrind on `histogram`, the tuple of `bench` freed while `h` was read).
+  `borrows` takes each variable for a root outside the value (the rule of
+  a `let` of `borrowed_from` took a view of a view bound by that `let` for
+  new memory: `let t = kept[0] in proj 0 t`, the test of D638 under
+  Valgrind). An array whose elements a gather moved (D548, D706) gives
+  back its block alone there. The paths of `let` other than the general
+  one keep the free at the end; a value emitted again frees nothing more
+  (`freed_early`). And `map(iota(n), (i) => copy x[i])` (the gather of
+  D706 by the identity) whose elements have the type of those of `x` is
+  the block of `x` itself (`prefix_in_place`): the elements past `n`
+  freed, `x` empty from there; `n` past the length of `x`, the panic the
+  read of `x[i]` gives at that length (the keys of `$textCounts`, 32187 of
+  32768 places: no array of 515 KB). Tests
+  `arrays_freed_at_their_last_read` (an array of 16 MB read by two `let`s,
+  then one made: 16.7 MB at the most against 33.1 with the compiler
+  before; a slice of it read later keeps it) and
+  `the_first_elements_of_an_array_that_dies_are_that_array` (500000 of
+  600000 texts moved into a record: 86.4 MB against 94.6; read after, the
+  array keeps its texts; the panic of the interpreter).
+
+- **D721 — A medium block kept too large is cut; the refills of a small
+  class from one block (2026-11-19).** Two policies of the allocator of
+  the runtime that kept memory resident for nothing:
+  - A thread keeps its last two medium blocks freed (D81), each given
+    again only to a request at most a quarter smaller. countwords freed
+    its table of 2 MiB there, then made its sorted pairs (772 KB) in new
+    pages while those of the table stayed. A request that no kept block
+    serves now gives the smallest kept block that is large enough back to
+    the lists (`free_medium`), where it is cut for it. Test
+    `a_medium_block_kept_too_large_is_cut` (heap.rs: an array of 2 MiB
+    freed, then three of 720 KB: 4392 KiB at the most, against 6440 when
+    the array is read after them; 6452 for both before).
+  - A refill of the cache of a small class took half of what a thread
+    keeps of it at once (about 66 KiB for the classes of 1 KiB and
+    more), the header of each block written: a class used once cost its
+    66 KiB resident (the text of countwords doubled from 128 bytes to 8
+    KiB: 400 KiB). The refills of a class now take 1, 2, 4... blocks up to
+    that half (`RAMP`, shared by the threads, read and written without a
+    lock: a stale value takes fewer blocks, never more). Test
+    `a_small_class_used_once_takes_one_block` (heap.rs: a block in each
+    of 20 classes of 1100 to 35000 bytes, 205 KB: 372 KiB more resident
+    against 1152).
+  - countwords with D720 and D721, its peak (`VmHWM`, the largest of 5
+    runs): 8.51 MiB to 7.09 when the system gives no huge page, 9.76 to
+    7.09 when it does (its medium blocks in two huge pages, not three);
+    by step, the medium block cut 8.51 to 7.76, the refills 7.76 to 7.34,
+    the frees at the last read 7.34 to 7.09 (the keys in place: no array
+    of 515 KB, the peak the same). The same output, 173.5 to 173.4 ms. The
+    corpus (11 runs, then 21): within -2.2 % (regex-redux, the same IR:
+    the allocator) and +0.5 %, but fannkuch-redux +1.3 % with the same
+    instructions (56.1 G), fewer misses of L2 (195 M against 270 M) and
+    1.5 % more cycles: D720 frees its permutations before the sums of a
+    chunk, two instructions earlier in its function, and its hot loop
+    lies 260 bytes further (perf); without D720, -0.3 %; both built with
+    their functions and loops aligned on 64 bytes
+    (`ISC_LLVM_ARGS="-align-all-functions=6 -align-loops=64"`), D720 is
+    0.4 % faster (2827.4 against 2839.5 ms). Rust's peak on the same
+    input: 6.04 MiB. What is left above it: the old table of 1 MiB
+    resident with the new one while its keys are placed again, the
+    blocks of the doublings of the table and of the keys freed and kept
+    by their classes (1 MiB), the three buffers of 257 KB of the radix
+    sort of `argsort` in new pages at the end.

@@ -88,3 +88,77 @@ fn the_checked_allocator_finds_the_faults() {
         }
     }
 }
+
+/// The last line a program prints, a number (KiB), and the lines before it.
+fn lines_and_last(bin: &std::path::Path, args: &[&str]) -> (String, u64) {
+    let (code, out, err) = run_with(bin, args, None, 1);
+    assert_eq!(code, 0, "{}", err);
+    let mut ls: Vec<&str> = out.lines().collect();
+    let n = ls.pop().unwrap_or("").chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", out));
+    (ls.join("\n"), n)
+}
+
+/// D721: the first refill of a small class takes one block, twice as many
+/// at each one after; it took half of what the thread keeps of the class
+/// at once, each block's header written: one block of each of 20 classes
+/// of 1100 to 35000 bytes (205 KB of texts) added 1152 KiB of resident
+/// memory, 372 now.
+#[test]
+fn a_small_class_used_once_takes_one_block() {
+    if std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action main(args: string[k]): i32 {
+    const before = rss();
+    const sizes = map(iota(20), (k) => i64(1100.0 * pow(1.2, f64(k))));
+    const texts = map(sizes, (s) => \"x\".repeat(s));
+    const after = rss();
+    print(sum(map(texts, (t) => t.length)));
+    print(after - before);
+    return 0;
+}
+
+action rss(): i64 {
+    const status = lines(readText(\"/proc/self/status\"));
+    const l = filter(status, (l) => l.startsWith(\"VmRSS\"))[0];
+    return parseI64(trim(l.slice(6, l.length - 3)));
+}
+";
+    let bin = compile(src, "heap_ramp");
+    let (out, grown) = lines_and_last(&bin, &[]);
+    assert_eq!(out, "205347");
+    assert!(grown < 700, "{} KiB more resident", grown);
+}
+
+/// D721: a medium block a thread keeps (freed last) that a request finds too
+/// large goes back to the lists, where that request is cut from it: an
+/// array of 2 MiB freed (at its last read, D720), then three of 720 KB
+/// take its pages (4392 KiB at the most), as many as when the array is
+/// read after them, and new ones (6440 KiB; 6452 for both before, the
+/// block kept with its pages while the three took new ones).
+#[test]
+fn a_medium_block_kept_too_large_is_cut() {
+    if std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const big = map(iota(262144), (i) => u64(i * n));
+    const s = sum(big) + big[n];
+    const t = big[2 * n];
+    const p = map(iota(90000), (i) => u64(i) + s % 3u64);
+    const q = map(iota(90000), (i) => u64(i * 2) + t % 3u64);
+    const r = map(iota(90000), (i) => u64(i * 3) + s % 5u64);
+    print(s + t + p[n] + q[2 * n] + r[3 * n] + p[89999] + q[89998] + r[89997]);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let kept = src.replace("    print(s + t + p[n]", "    print(big[5] + s + t + p[n]");
+    let (out, most) = lines_and_last(&compile(src, "heap_medium_cut"), &["7"]);
+    let (out_k, most_k) = lines_and_last(&compile(&kept, "heap_medium_kept"), &["7"]);
+    assert_eq!(out, "240517791311");
+    assert_eq!(out_k, "240517791346");
+    assert!(most + 1024 < most_k, "freed {} KiB, kept {} KiB", most, most_k);
+}

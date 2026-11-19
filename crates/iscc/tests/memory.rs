@@ -2560,3 +2560,100 @@ action main(args: string[k]): i32 {
     let small = src.replace("    const status = lines(readText(\"/proc/self/status\"));\n    print(filter(status, (l) => l.startsWith(\"VmHWM\")));\n", "");
     assert_eq!(run_bin(&compile(&small, "void_tail_calls_small"), &["30"]).stdout, interp_ok(&small, &["30"]));
 }
+
+/// The peak resident memory a program prints last (`VmHWM`, KiB) and the
+/// lines before it, the program run under the checked allocator first
+/// (nothing lost, nothing freed twice, no block read after its free).
+fn lines_and_peak(src: &str, name: &str, args: &[&str]) -> (String, u64) {
+    let bin = compile(src, name);
+    checked_clean_bin(&bin, args, None);
+    let r = run_bin(&bin, args);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let mut ls: Vec<&str> = r.stdout.lines().collect();
+    let hwm = ls.pop().unwrap_or("").chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", r.stdout));
+    (ls.join("\n"), hwm)
+}
+
+/// `src` without its last two lines of `main` (the peak read and printed).
+fn without_peak(src: &str) -> String {
+    src.replace("    const status = lines(readText(\"/proc/self/status\"));\n    print(filter(status, (l) => l.startsWith(\"VmHWM\")));\n", "")
+}
+
+/// D720: an array that two `let`s read, then never more, freed after the
+/// second, not at the end of its scope: the array made after it takes its
+/// place (16 MB each: 33.1 MB at the most before, 16.7 now). A view of it
+/// read later (`head`, a slice) keeps it until that read: freed after it,
+/// the slice would read freed memory (the view `h = proj 0 t` of
+/// `histogram`, found by Valgrind). The interpreter's output.
+#[test]
+fn arrays_freed_at_their_last_read() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const a = map(iota(n), (i) => (i * 7) % 1000);
+    const s = sum(a);
+    const m = a[n / 2] + a[n / 3];
+    const b = map(iota(n), (i) => (i * 11) % 1000 + (s + m) % 7);
+    print([s, m, sum(b), b[n / 3]] as const);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let view = src
+        .replace("    const s = sum(a);", "    const head = a.slice(0, 3);\n    const s = sum(a);")
+        .replace("    print([s, m, sum(b), b[n / 3]] as const);", "    print([s, m, sum(b), b[n / 3], head[2]] as const);");
+    let (out, most) = lines_and_peak(src, "last_read", &["2000000"]);
+    let (out_v, most_v) = lines_and_peak(&view, "last_read_view", &["2000000"]);
+    assert_eq!(out, "(999000000, 662, 1003000000, 328)");
+    assert_eq!(out_v, "(999000000, 662, 1003000000, 328, 14)");
+    assert!(most + 12 * 1024 < most_v, "freed at its last read {} KiB, kept by a view {} KiB", most, most_v);
+    for s in [src, view.as_str()] {
+        let small = without_peak(s);
+        assert_eq!(run_bin(&compile(&small, "last_read_small"), &["2000"]).stdout, interp_ok(&small, &["2000"]));
+    }
+}
+
+/// D720: `map(iota(m), (i) => ws[i])` of texts whose array `ws` is no
+/// longer read, its result moved into a record: the block of `ws` itself,
+/// its texts past `m` freed (500000 of 600000 texts: 86.4 MB at the most
+/// against 94.6, the array of 8 MB not made); read after, `ws` keeps its
+/// texts (copied). An `m` past the length of `ws`: the interpreter's panic
+/// (the read of `ws[i]` at that length).
+#[test]
+fn the_first_elements_of_an_array_that_dies_are_that_array() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "type Box = { items: string[], n: i64 };
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const m = parseI64(args[1]);
+    const ws = map(iota(n), (i) => `word-${i}`);
+    const first = map(iota(m), (i) => ws[i]);
+    const box: Box = { items: first, n: m };
+    print([box.items.length, box.items[m - 1].length] as const);
+    print(box.items[m - 1]);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let kept = src.replace("    print(box.items[m - 1]);", "    print(box.items[m - 1]);\n    print(ws[0]);");
+    let (out, most) = lines_and_peak(src, "prefix_in_place", &["600000", "500000"]);
+    let (out_k, most_k) = lines_and_peak(&kept, "prefix_copied", &["600000", "500000"]);
+    assert_eq!(out, "(500000, 11)\nword-499999");
+    assert_eq!(out_k, "(500000, 11)\nword-499999\nword-0");
+    assert!(most + 6 * 1024 < most_k, "in place {} KiB, copied {} KiB", most, most_k);
+    let small = without_peak(src);
+    let bin = compile(&small, "prefix_small");
+    for args in [["10", "7"], ["10", "10"], ["10", "1"]] {
+        assert_eq!(run_bin(&bin, &args).stdout, interp_ok(&small, &args), "{:?}", args);
+    }
+    let r = run_bin(&bin, &["10", "12"]);
+    assert_eq!(r.code, 101);
+    assert_eq!(r.stderr.trim(), interp_panic(&small, &["10", "12"]).trim());
+}

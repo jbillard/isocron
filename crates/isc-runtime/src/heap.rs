@@ -1030,6 +1030,15 @@ static mut SMALL_FREE: [*mut Header; SMALL_CLASSES] = [null_mut(); SMALL_CLASSES
 static mut SMALL_BATCHES: [*mut Header; SMALL_CLASSES] = [null_mut(); SMALL_CLASSES];
 static CLASS_LOCKS: [AtomicBool; SMALL_CLASSES] = [const { AtomicBool::new(false) }; SMALL_CLASSES];
 static CHUNK_LOCK: AtomicBool = AtomicBool::new(false);
+/// For each small class, the base 2 logarithm of the blocks of its next
+/// refill (D721): 1 block at its first, twice as many at each one after,
+/// up to the batch of the class. A refill of the whole batch at once wrote
+/// the header of each of its blocks: about 66 KiB resident for a class
+/// that a program used once (a text that doubles from 128 bytes to 8 KiB:
+/// 400 KiB). Shared by the threads, read and written without a lock (a
+/// refill of a thread that reads an old value takes fewer blocks, no
+/// more).
+static RAMP: [AtomicU8; SMALL_CLASSES] = [const { AtomicU8::new(0) }; SMALL_CLASSES];
 /// The chunk being carved of each group of sizes (`group`).
 static mut BUMP: [usize; 2] = [0; 2];
 static mut BUMP_END: [usize; 2] = [0; 2];
@@ -1386,7 +1395,12 @@ unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header
                 return b;
             }
         }
-        let batch = (THREAD_LIMIT[class] / 2).max(1) as usize;
+        let full = (THREAD_LIMIT[class] / 2).max(1) as usize;
+        let r = RAMP[class].load(Ordering::Relaxed);
+        let batch = full.min(1 << r);
+        if batch < full {
+            RAMP[class].store(r + 1, Ordering::Relaxed);
+        }
         let mut first: *mut Header = null_mut();
         let mut got = 0usize;
         let mut keep = |h: *mut Header| {
@@ -2202,6 +2216,26 @@ pub unsafe fn alloc(bytes: usize, zero: bool) -> *mut u8 {
                 }
             }
             if h.is_null() {
+                // a cached block too large for the request goes back to the
+                // lists, where it is cut for it (D721): kept, its pages
+                // stayed resident while the request took new ones
+                // (countwords: its table of 2 MiB freed and kept, its pairs
+                // sorted, 772 KB, in new pages)
+                let mut big = None;
+                for i in [0, 1] {
+                    let b = (*tc).medium[i];
+                    if !b.is_null() && (*b).len >= need && big.is_none_or(|j: usize| (*b).len < (*(*tc).medium[j]).len) {
+                        big = Some(i);
+                    }
+                }
+                if let Some(i) = big {
+                    let b = (*tc).medium[i];
+                    (*tc).medium[i] = null_mut();
+                    if state_of(b) != CACHED {
+                        invalid_free();
+                    }
+                    free_medium(b);
+                }
                 alloc_medium(bytes)
             } else {
                 h
