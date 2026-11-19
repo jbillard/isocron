@@ -2610,7 +2610,16 @@ fn arrays_freed_at_their_last_read() {
     assert_eq!(out, "(999000000, 662, 1003000000, 328)");
     assert_eq!(out_v, "(999000000, 662, 1003000000, 328, 14)");
     assert!(most + 12 * 1024 < most_v, "freed at its last read {} KiB, kept by a view {} KiB", most, most_v);
-    for s in [src, view.as_str()] {
+    // D723: the last read in the text of an integer that a concatenation
+    // writes (D348): freed there too (33.1 MB at the most with D720 alone)
+    let int_text = src
+        .replace("    const m = a[n / 2] + a[n / 3];", "    const label = `middle ${a[n / 2]}`;")
+        .replace("(s + m) % 7", "(s + label.length) % 7")
+        .replace("    print([s, m, sum(b), b[n / 3]] as const);", "    print(label);\n    print([s, sum(b), b[n / 3]] as const);");
+    let (out_i, most_i) = lines_and_peak(&int_text, "last_read_int", &["2000000"]);
+    assert_eq!(out_i, "middle 0\n(999000000, 1011000000, 332)");
+    assert!(most_i + 12 * 1024 < most_v, "freed in the text of an integer {} KiB, kept by a view {} KiB", most_i, most_v);
+    for s in [src, view.as_str(), int_text.as_str()] {
         let small = without_peak(s);
         assert_eq!(run_bin(&compile(&small, "last_read_small"), &["2000"]).stdout, interp_ok(&small, &["2000"]));
     }

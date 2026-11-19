@@ -7022,6 +7022,7 @@ impl<'p> Gen<'p> {
                                 xv.r.clone()
                             };
                             self.int_texts.insert(*var, IntText { x, signed: k.signed(), pad: None });
+                            self.free_after_value(e);
                             let r = self.ex(body, w);
                             self.int_texts.remove(var);
                             return r;
@@ -7037,6 +7038,7 @@ impl<'p> Gen<'p> {
                         let iv = self.ex(init, 1);
                         self.defer_pad = saved;
                         let iv = iv?;
+                        self.free_after_value(e);
                         if let Some(it) = self.padded.take() {
                             self.int_texts.insert(*var, it);
                             let r = self.ex(body, w);
@@ -7128,28 +7130,8 @@ impl<'p> Gen<'p> {
                     self.drop_var(*var, &iv);
                     self.freed_early.insert(*var);
                 }
-                // the variables of the `let`s around this one that its value
-                // read last (D720): freed now, their blocks alone when their
-                // elements were moved (a gather); once (a value emitted again
-                // frees nothing more)
                 if w == 1 {
-                    if let Some(xs) = self.free_after.get(&(e as *const Expr)).cloned() {
-                        for (x, part) in xs {
-                            if self.freed_early.contains(&x) {
-                                continue;
-                            }
-                            let Some(xv) = self.env.get(&x).cloned() else { continue };
-                            if self.moving.contains(&x) {
-                                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
-                                self.emit(format!("call void @isc_free(ptr {})", p));
-                            } else {
-                                let saved = std::mem::replace(&mut self.literal_test, part);
-                                self.drop_var(x, &xv);
-                                self.literal_test = saved;
-                            }
-                            self.freed_early.insert(x);
-                        }
-                    }
+                    self.free_after_value(e);
                 }
                 if let Some((a, block)) = &made {
                     self.counts.insert(*a, block.clone());
@@ -8167,6 +8149,30 @@ impl<'p> Gen<'p> {
 
     /// A check in vector code: a jump to the replay of the vector when there
     /// is one (D185), the panic otherwise.
+    /// The variables of the `let`s around the `let` `e` that its value
+    /// reads last (D720): freed once that value is made, their blocks alone
+    /// when their elements were moved (a gather); once (a value emitted
+    /// again frees nothing more). Called by the paths of `let` that make
+    /// the value before the body, after it.
+    fn free_after_value(&mut self, e: &Expr) {
+        let Some(xs) = self.free_after.get(&(e as *const Expr)).cloned() else { return };
+        for (x, part) in xs {
+            if self.freed_early.contains(&x) {
+                continue;
+            }
+            let Some(xv) = self.env.get(&x).cloned() else { continue };
+            if self.moving.contains(&x) {
+                let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+                self.emit(format!("call void @isc_free(ptr {})", p));
+            } else {
+                let saved = std::mem::replace(&mut self.literal_test, part);
+                self.drop_var(x, &xv);
+                self.literal_test = saved;
+            }
+            self.freed_early.insert(x);
+        }
+    }
+
     /// `init` the gather of the first `n` elements of `x`, each as it is
     /// (`prefix_of`), `x` no longer read after it (D720): the block of `x`
     /// with the length `n`, its elements past `n` freed, `x` empty from

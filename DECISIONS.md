@@ -17704,3 +17704,66 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     blocks of the doublings of the table and of the keys freed and kept
     by their classes (1 MiB), the three buffers of 257 KB of the radix
     sort of `argsort` in new pages at the end.
+
+- **D722 — Small pages for the first medium blocks, the small blocks up to
+  64 KiB: measured, refused (2026-11-19).** After D721, countwords held at
+  its peak two huge pages of medium blocks (4 MiB for 3.5 used) and, in
+  the chunk of its small arrays, the blocks of 64 to 256 KiB of the
+  doublings of its table and keys (about 1 MiB, each class keeping its
+  own) and, at its end, three buffers of 257 KB of the radix sort in new
+  pages while 3 MiB of medium blocks were free. Tried, each A/B against
+  D721 (countwords 21 runs, the corpus 11; `VmHWM`, the largest of 3):
+  - the small blocks up to 64 KiB (larger ones medium, cut and merged by
+    TLSF) and the first 8 MiB of the first medium region in pages of 4
+    KiB: countwords 7.09 to 6.23 MiB, fannkuch-redux -34 %, fasta -23 %;
+    but countwords +2.5 % and revcomp +1.6 % of time (the rest within
+    0.5 %); with 4 MiB of small pages, 7.44 MiB (the blocks overflow into
+    a huge page);
+  - the small pages alone (8 MiB, the small blocks up to 256 KiB as
+    before): countwords +2.7 %, revcomp +1.3 %, 6.60 MiB: the time is the
+    small pages' (the table of 2 MiB read at random through pages of 4
+    KiB);
+  - the small blocks up to 64 KiB alone (huge pages everywhere):
+    countwords -0.7 %, revcomp -0.2 %, but 7.43 MiB (its medium blocks
+    span more than 4 MiB: a third huge page);
+  - with the small pages, the free blocks written there giving their
+    pages back when a request takes new ones: the counting 6.2 to 5.4
+    MiB, but the end took pages again (the sort's buffers in blocks given
+    back rather than in the table freed), the peak 6.23 MiB.
+  As D707: time for memory, none kept. What is left above Rust (6.06 MiB
+  on the same runs) without it: the blocks of the doublings kept by their
+  classes, the buffers of the sort at the end.
+
+- **D723 — Where the frees of D720 stay at the end of a scope; two paths
+  more (2026-11-19).** Asked whether every variable could be freed at its
+  last read (and other items of the language), the reasons each owned
+  value of a `let` keeps its free were counted (a counting build of the
+  compiler, not kept): of the corpus (the Benchmarks Game, walk,
+  countwords: 207) and of the editor of isocron-ui (4031). Freed at the
+  last read by D720: 34 and 869; never read, freed at once (D117): 3 and
+  340; given to a concatenation that takes its block or its elements
+  (D533, D638): 0 and 939; the last read in the value of the scope
+  itself (a call, a `print`, a tuple given back: freeing it before gains
+  nothing): 136 and 1563; the last read in an `if` that ends the scope:
+  11 and 207 (a free in each branch would gain what each branch makes
+  after its last read: not done); a view of it read later (correct to
+  keep): 0 and 100; the last read in a `let` that another path of the
+  generated code makes: 22 and 11. Of those 22: 3 texts written as they
+  are printed (fasta: freeing before them would free what is read), 2 a
+  join read by parts (knucleotide, the same), 2 the product of bigints
+  made in one call with its use (pidigits: no gain), and 15 the text of an
+  integer written later by the concatenation that reads it (D348, D359:
+  knucleotide, regex-redux), whose value is made before its body: that
+  path and the padded one now free there too (`free_after_value`). No
+  parameter of a lambda is freed at the end of its body (0 of the 2179
+  lambdas of the editor: accumulators are moved from one round to the
+  next); the parameters a function is given are moved or freed at the end
+  of the branches that do not move them (D637, D105); `args` of `main` is
+  freed at its end (a few bytes). Other items: the parts of a tuple live
+  with it until its last read (only the parts never read are left out,
+  D717), the elements of an array with it (but those a gather moves), the
+  nodes of recursive types by their counts, the frames of the stack by
+  tail calls (D719), the input by parts (D697). Test
+  `arrays_freed_at_their_last_read`: an array whose last read is the
+  integer of a text made before the next array: 16.7 MB at the most
+  against 33.1 with D720 alone.
