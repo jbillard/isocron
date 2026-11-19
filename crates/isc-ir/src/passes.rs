@@ -6741,7 +6741,7 @@ pub fn ownership(p: &mut Program) -> R<()> {
 /// The gather of a permutation of an array read for the last time keeps its
 /// moves instead (D548: the elements taken, its block freed early).
 pub fn borrow_elements(p: &mut Program) {
-    let mut st = Elements::default();
+    let mut st = Elements { argsort: p.argsort_fn, ..Default::default() };
     st.walk(&mut p.body);
     for f in p.fns.iter_mut() {
         st.walk(&mut f.body);
@@ -6765,6 +6765,8 @@ struct Elements {
     removed: Vec<Span>,
     /// The arrays made by the gather of a permutation that moves (D548).
     keep: HashSet<VarId>,
+    /// `$argsortInt` (D724).
+    argsort: Option<u32>,
 }
 
 impl Elements {
@@ -6783,7 +6785,7 @@ impl Elements {
             }
             // its elements moved by the gather of a permutation (D548)
             if *drop && !self.views.contains(&y) && matches!(&init.ty, Type::Array(t, _) if !t.is_array() && t.has_heap()) {
-                if let Some(g) = permutation_gather(body, y) {
+                if let Some(g) = permutation_gather(body, y, self.argsort) {
                     self.keep.insert(g);
                 }
             }
@@ -6996,10 +6998,10 @@ fn takes_var(e: &Expr, v: VarId) -> bool {
 /// in the text that `print` writes). Each element is taken once (a
 /// permutation): moved rather than copied, and `x` gives back its block
 /// alone. The variable `y`.
-pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
+pub fn permutation_gather(e: &Expr, x: VarId, argsort: Option<u32>) -> Option<VarId> {
     let mut y = None;
     let site = |e: &Expr| {
-        let (v, ok) = permutation_site(e, x)?;
+        let (v, ok) = permutation_site(e, x, argsort)?;
         y = Some(v);
         Some(if ok { Ok(e as *const Expr) } else { Err(()) })
     };
@@ -7011,16 +7013,24 @@ pub fn permutation_gather(e: &Expr, x: VarId) -> Option<VarId> {
 /// whether nothing after it reads `x` nor frees it, and the function of
 /// the keys does not read it (each `copy(x[i])` of the body of the binding
 /// is a move).
-fn permutation_site(e: &Expr, x: VarId) -> Option<(VarId, bool)> {
+fn permutation_site(e: &Expr, x: VarId, argsort: Option<u32>) -> Option<(VarId, bool)> {
     let is_x = |e: &Expr| matches!(e.kind, ExprKind::Var(v, _) if v == x);
     let xs = HashSet::from([x]);
     let map_of_x = |e: &Expr| matches!(&e.kind, ExprKind::Map(ins, l) if ins.len() == 1 && is_x(&ins[0]) && !crate::blocks::mentions(&l.body, &xs));
+    // `argsort` of its argument: the primitive, or `$argsortInt` of the
+    // prelude (D724)
+    fn sorted_by(e: &Expr, argsort: Option<u32>) -> Option<&Expr> {
+        match &e.kind {
+            ExprKind::StrOp(StrOp::ArgSort, a) if a.len() == 1 => Some(&a[0]),
+            ExprKind::Call(f, a) if Some(*f) == argsort && a.len() == 1 => Some(&a[0]),
+            _ => None,
+        }
+    }
+    let sorts = |e| sorted_by(e, argsort);
     let ExprKind::Let { var: t, init, body, .. } = &e.kind else { return None };
     let perm = match &init.kind {
-        ExprKind::StrOp(StrOp::ArgSort, a) => a.len() == 1 && (is_x(&a[0]) || map_of_x(&a[0])),
-        ExprKind::Let { var: k, init: keys, body: sorted, .. } => {
-            map_of_x(keys) && matches!(&sorted.kind, ExprKind::StrOp(StrOp::ArgSort, a) if a.len() == 1 && matches!(a[0].kind, ExprKind::Var(v, _) if v == *k))
-        }
+        _ if sorts(init).is_some() => sorts(init).is_some_and(|a| is_x(a) || map_of_x(a)),
+        ExprKind::Let { var: k, init: keys, body: sorted, .. } => map_of_x(keys) && sorts(sorted).is_some_and(|a| matches!(a.kind, ExprKind::Var(v, _) if v == *k)),
         _ => false,
     };
     if !perm {

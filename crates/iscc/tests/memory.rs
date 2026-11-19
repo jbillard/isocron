@@ -2666,3 +2666,59 @@ action main(args: string[k]): i32 {
     assert_eq!(r.code, 101);
     assert_eq!(r.stderr.trim(), interp_panic(&small, &["10", "12"]).trim());
 }
+
+/// D724: `argsort` (and `sort`, `sortBy`) of integers of 64 bits is the
+/// radix sort of the prelude (`$argsortInt`): the keys less the least of
+/// them above their indices in one word, two arrays of their length where
+/// the runtime's takes four (1 million keys: 24.9 MB at the most against
+/// 41.3 for the same keys as floats, which the runtime sorts). Its order is
+/// the interpreter's: no element, one, two, equal keys, negative ones, keys
+/// over the whole range of `i64` (keys and indices in two words), pairs
+/// sorted by a key of theirs.
+#[test]
+fn integers_sorted_by_the_prelude() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let ints = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const keys = map(iota(n), (i) => -(((i * 2654435761) % 1000003) % (n / 3 + 1)));
+    const order = argsort(keys);
+    print([order[0], order[n / 2], order[n - 1]] as const);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let floats = ints.replace("(i) => -(((i", "(i) => -f64(((i");
+    let (out, most) = lines_and_peak(ints, "argsort_ints", &["1000000"]);
+    let (out_f, most_f) = lines_and_peak(&floats, "argsort_floats", &["1000000"]);
+    assert_eq!(out, "(138479, 164113, 569241)");
+    assert_eq!(out, out_f);
+    assert!(most + 8 * 1024 < most_f, "integers {} KiB, floats {} KiB", most, most_f);
+    let edges = "function check(c: i64[n]): i64 {
+    const o = argsort(c);
+    return sum(map(iota(n), (i) => o[i] * (i + 1)));
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const big = 9223372036854775807;
+    print([check(map(iota(n), (i) => 5)), check(map(iota(n), (i) => (i * 7919) % 13 - 6)), check(map(iota(n), (i) => i % 3 == 0 ? big : (i % 3 == 1 ? -big - 1 : i))), check(map(iota(n), (i) => -i)), check(map(iota(n), (i) => (i * 2654435761) % 1000003 * 1000000007))] as const);
+    const pairs = sortBy(map(iota(n), (i) => [i, (i * 37) % 11] as const), (e) => {
+        const [a, b] = e;
+        return b;
+    });
+    print(map(pairs, (e) => {
+        const [a, b] = e;
+        return a;
+    }).slice(0, n < 6 ? n : 6));
+    return 0;
+}
+";
+    let bin = compile(edges, "argsort_edges");
+    for n in ["0", "1", "2", "3", "10", "300"] {
+        assert_eq!(run_bin(&bin, &[n]).stdout, interp_ok(edges, &[n]), "{} keys", n);
+    }
+    assert_eq!(run_bin(&bin, &["10"]).stdout, "(330, 271, 279, 165, 280)\n[0, 3, 6, 9, 1, 4]\n");
+}

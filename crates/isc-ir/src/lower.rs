@@ -234,6 +234,8 @@ pub struct Lower<'p> {
     /// The runs of a class inlined (D690), for `statements::input_pieces`
     /// (D702).
     runs: Vec<RunsSite>,
+    /// The function `$argsortInt` once called (D724).
+    argsort_fn: Option<u32>,
     /// The expression being lowered is of the prelude (`VarInfo::prelude`).
     in_prelude: bool,
     shapes: Vec<Shape>,
@@ -315,6 +317,7 @@ impl<'p> Lower<'p> {
             p,
             vars: Vec::new(),
             runs: Vec::new(),
+            argsort_fn: None,
             in_prelude: false,
             shapes: Vec::new(),
             copy_reasons: Vec::new(),
@@ -447,7 +450,7 @@ pub fn probe(p: &TProgram, id: FnId, type_args: Vec<Ty>) -> R<Program> {
     let recs = l.recs.into_inner().into_iter().map(|r| r.expect("a recursive type laid out")).collect();
     let sums = sum_slots(&l.sum_types.borrow(), &l.plain_tuples.borrow());
     let text_fns = fns.len() as u32;
-    Ok(Program { files: Vec::new(), args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), runs: Vec::new(), stdin_check: None, int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None })
+    Ok(Program { files: Vec::new(), args, drop_args: false, copy_reasons: l.copy_reasons, fns, recs, body, vars: l.vars, shapes: l.shapes, choices: l.choices, reassoc_fns: l.reassoc_fns, externs: extern_fns(p), sys_paths: Default::default(), sum_slots: sums, views: Default::default(), runs: Vec::new(), stdin_check: None, int_text: None, float_text: None, float_name: None, fixed_text: None, digit_words: None, case_text: None, text_fns, kernel: None, argsort_fn: None })
 }
 
 pub fn lower(p: &TProgram) -> R<Program> {
@@ -586,6 +589,7 @@ fn lower_pass<'p>(p: &'p TProgram, l: &mut Lower<'p>) -> R<Program> {
         case_text,
         text_fns,
         kernel,
+        argsort_fn: l.argsort_fn,
     })
 }
 
@@ -2869,6 +2873,27 @@ impl<'p> Lower<'p> {
     fn prim(&mut self, env: &mut Env<'p>, p: Prim, args: &'p [TExpr], e: &'p TExpr) -> R<Expr> {
         let span = e.span;
         let ty = self.ty(env, &e.ty, span)?;
+        // `argsort` of integers of 64 bits: the radix sort of the prelude
+        // (D724), its function kept for the gather of a permutation (D548)
+        if matches!(p, Prim::ArgSort) && args.len() == 1 && matches!(&ty, Type::Array(..)) {
+            let at = self.ty(env, &args[0].ty, span)?;
+            if matches!(&at, Type::Array(t, _) if **t == Type::Int(IntKind::I64)) {
+                if let Some(id) = prelude_fn(self.p, "$argsortInt", span)? {
+                    let a = self.args(env, args)?;
+                    let r = self.inline_fn(id, Vec::new(), a, &[], span)?;
+                    fn call_of(e: &Expr) -> Option<u32> {
+                        match &e.kind {
+                            ExprKind::Call(f, _) => Some(*f),
+                            _ => e.children().into_iter().find_map(call_of),
+                        }
+                    }
+                    if let Some(f) = call_of(&r) {
+                        self.argsort_fn = Some(f);
+                    }
+                    return Ok(r);
+                }
+            }
+        }
         let kind = match p {
             // a constant of each call compiled (D386)
             Prim::IsPure => {

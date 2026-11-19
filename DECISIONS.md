@@ -17767,3 +17767,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `arrays_freed_at_their_last_read`: an array whose last read is the
   integer of a text made before the next array: 16.7 MB at the most
   against 33.1 with D720 alone.
+
+- **D724 — `argsort` of integers of 64 bits written in Isocron
+  (2026-11-19).** After D720, the end of countwords made, besides its keys
+  (257 KB, `-c` for each word), the four arrays of the radix sort of the
+  runtime (`isc_argsort`: the indices, the keys as unsigned, then a copy
+  of each for its passes): three of them in new pages, its peak. The
+  lowering now calls `$argsortInt` of the prelude (`@noInline`) for
+  `argsort` of `i64` (so `sort` and `sortBy` with such keys): least
+  significant byte first, stable, the keys less the least of them above
+  their indices in one word (`kb + ib <= 64`), so that a pass moves one
+  array and the indices are its low bits at the end; as many passes as the
+  bytes of the largest key; keys and indices that do not fit in a word,
+  pairs. Two arrays of the length of the keys at once instead of four,
+  and fewer instructions (the keys made then sorted, 1 million: 78.4 M
+  instructions against 118.8 M, 20.2 ms against 26.8; 32187: 4.60 M
+  against 6.05 M): the bar of D622, and one more part of the runtime no
+  longer used by such programs. The gather of a permutation (D548, D717)
+  knows its call (`Program::argsort_fn`), so the sorted elements are
+  still moved. The interpreter runs the same IR. countwords: 7.09 to 6.61
+  MiB at its peak, the same output, 173.1 to 172.8 ms; knucleotide (5
+  calls) 1100.1 to 1100.2 ms; `bench/primitives` A/B (21 runs of 200
+  rounds): `sort.i64` 13.57 to 8.49 ns an element (-37.4 %),
+  `sortBy.length` 8.05 to 6.09 (-24.4 %), the 3 other forms within 3 %. Test `integers_sorted_by_the_prelude`
+  (memory.rs: 1 million keys, 24.9 MB at the most against 41.3 for the
+  same keys as floats, sorted by the runtime; the order of the
+  interpreter of the compiler before for 0 to 300 keys, equal ones,
+  negative ones, over the whole range of `i64`, pairs sorted by a key).

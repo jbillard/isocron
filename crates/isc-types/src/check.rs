@@ -4439,6 +4439,12 @@ fn prim_needs(p: Prim, arg: Option<&Ty>, ret: &Ty, named: &mut dyn FnMut(&str)) 
         }
         Prim::ParseCsvF64 | Prim::ReadCsvF64 => named("$csvParse"),
         Prim::JsNumber => named("$jsNumber"),
+        // integers of 64 bits sorted by the prelude (D724): an array of
+        // them, or one whose element type a specialization fixes
+        Prim::ArgSort => match arg {
+            Some(Ty::Array(_, t)) if !matches!(**t, Ty::Int(IntKind::I64) | Ty::Param(_) | Ty::Var(_)) => {}
+            _ => named("$argsortInt"),
+        },
         Prim::Map => named("mapInOrder"),
         Prim::ToString => match arg {
             Some(Ty::Int(_)) => int_text(named),

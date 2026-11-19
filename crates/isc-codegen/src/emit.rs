@@ -7147,8 +7147,8 @@ impl<'p> Gen<'p> {
                 // reads each once (D706): its block alone freed after, with
                 // the elements that `map` did not read
                 let movable = *drop && !early && w == 1 && !self.p.views.contains(var) && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e));
-                let gather = if movable && isc_ir::passes::permutation_gather(body, *var).is_none() { isc_ir::passes::identity_gather(body, *var) } else { None };
-                let moves = movable && (gather.is_some() || isc_ir::passes::permutation_gather(body, *var).is_some());
+                let gather = if movable && isc_ir::passes::permutation_gather(body, *var, self.p.argsort_fn).is_none() { isc_ir::passes::identity_gather(body, *var) } else { None };
+                let moves = movable && (gather.is_some() || isc_ir::passes::permutation_gather(body, *var, self.p.argsort_fn).is_some());
                 if moves {
                     self.moving.insert(*var);
                 }

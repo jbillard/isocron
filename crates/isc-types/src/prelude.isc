@@ -125,6 +125,75 @@ function sortBy<T, K extends Ord>(x: T[n], key: (v: T) => K): T[n] {
     return map(argsort(map(x, key)), (i) => x[i]);
 }
 
+// `argsort` of integers of 64 bits (D724; the lowering calls it in the
+// place of the primitive): a radix sort, stable, least significant byte
+// first, over the keys less the least of them, each key above its index in
+// one word (a pass moves one array, not a key and an index), as many
+// passes as the bytes of the largest key; the same order as the runtime's
+// in two thirds of its instructions, two arrays of the length of the keys
+// instead of four. The keys and indices that do not fit in one word: two
+// arrays a pass.
+@noInline
+function $argsortInt(k: i64[n]): i64[n] {
+    if (n < 2) {
+        return iota(n);
+    }
+    const lo = reduce(k, (a, b) => a < b ? a : b, k[0]);
+    const hi = reduce(k, (a, b) => a > b ? a : b, k[0]);
+    const ib = 64 - leadingZeros(u64(n - 1));
+    const kb = 64 - leadingZeros(u64(hi) - u64(lo));
+    if (kb == 0) {
+        return iota(n);
+    }
+    if (kb + ib > 64) {
+        const wide = fold(iota((kb + 7) / 8), map(iota(n), (i) => [u64(k[i]) - u64(lo), i] as const), (p, b) => $radixPairs(p, 8 * b));
+        return map(wide, (e) => {
+            const [key, i] = e;
+            return i;
+        });
+    }
+    const packed = map(iota(n), (i) => ((u64(k[i]) - u64(lo)) << u64(ib)) | u64(i));
+    const sorted = fold(iota((kb + 7) / 8), packed, (p, b) => $radixPass(p, ib + 8 * b));
+    const mask = (1u64 << u64(ib)) - 1u64;
+    return map(sorted, (x) => i64(x & mask));
+}
+
+// The words `p` placed by their byte from bit `shift` (a pass of
+// `$argsortInt`): each in the order it comes among those of its byte.
+function $radixPass(p: u64[n], shift: i64): u64[n] {
+    const counts = fold(p, fill(256, 0), (c, x) => {
+        const d = i64((x >> u64(shift)) & 255u64);
+        return requireUnique(c.with(d, c[d] + 1));
+    });
+    const firsts = fold(iota(255), fill(256, 0), (s, d) => requireUnique(s.with(d + 1, s[d] + counts[d])));
+    const placed = fold(p, [fill(n, 0u64), firsts] as const, (acc, x) => {
+        const [o, s] = acc;
+        const d = i64((x >> u64(shift)) & 255u64);
+        return [requireUnique(o.with(s[d], x)), requireUnique(s.with(d, s[d] + 1))] as const;
+    });
+    const [o, s] = placed;
+    return o;
+}
+
+// The pairs (key, index) `p` placed by the byte of their key from bit
+// `shift` (the keys and indices that do not fit in one word).
+function $radixPairs(p: [u64, i64][n], shift: i64): [u64, i64][n] {
+    const counts = fold(p, fill(256, 0), (c, e) => {
+        const [key, i] = e;
+        const d = i64((key >> u64(shift)) & 255u64);
+        return requireUnique(c.with(d, c[d] + 1));
+    });
+    const firsts = fold(iota(255), fill(256, 0), (s, d) => requireUnique(s.with(d + 1, s[d] + counts[d])));
+    const placed = fold(p, [fill(n, [0u64, 0] as const), firsts] as const, (acc, e) => {
+        const [o, s] = acc;
+        const [key, i] = e;
+        const d = i64((key >> u64(shift)) & 255u64);
+        return [requireUnique(o.with(s[d], e)), requireUnique(s.with(d, s[d] + 1))] as const;
+    });
+    const [o, s] = placed;
+    return o;
+}
+
 // the elements in the reverse order (TypeScript's `toReversed`)
 function toReversed<T>(x: T[n]): T[n] {
     return map(iota(n), (i) => x[n - 1 - i]);

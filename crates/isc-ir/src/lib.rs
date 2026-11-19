@@ -629,6 +629,10 @@ pub struct Program {
     /// The entries of the allocator written in Isocron (D605), lowered for
     /// every program: `$kStart`, `$kAlloc`, `$kFree`.
     pub kernel: Option<(u32, u32, u32, u32, u32)>,
+    /// `$argsortInt` of the prelude, when the program sorts integers of 64
+    /// bits (D724): its calls are recognized as `argsort` by the gather of a
+    /// permutation (D548).
+    pub argsort_fn: Option<u32>,
 }
 
 impl Program {
