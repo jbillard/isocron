@@ -45,28 +45,29 @@ $ ISC_THREADS=8 ./harmonic 1000000000     # 80 ms on eight, the same bits
 
 ## Isocron is fast
 
-The fastest on the ten programs of [The Computer Language Benchmarks
+The fastest on 9 of the 10 programs of [The Computer Language Benchmarks
 Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/), against
 the fastest programs in C, C++, Rust and Go, all built and measured in the
 same Docker image on the same machine
-([protocol](bench/benchmarks_game/protocol.md)).
+([protocol](bench/benchmarks_game/protocol.md)). n-body is behind C since
+0.8.0, its loop no longer in vectors (DECISIONS D729): being fixed.
 
 <!-- results:begin -->
 
-**Isocron is the fastest on 10 of the 10 programs of the Benchmarks Game** (commit `7e6645c`, DECISIONS D618; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
+**Isocron is the fastest on 9 of the 10 programs of the Benchmarks Game** (commit `64f9888`, DECISIONS D730; 4 threads, Intel Xeon E-2388G; [details](results/benchmarks_game.md), [floors](results/floors.md)).
 
 | | benchmark | Isocron | fastest other | Isocron / fastest | floor | Isocron / floor |
 | :-: | :-- | --: | :-- | :-: | --: | :-: |
-| 🟢 | binary-trees | 660 ms | Rust 846 ms | $\color{green}{\textbf{0.78}}$ | 328.6 ms | $\color{orange}{2.0}$ |
-| 🟢 | fannkuch-redux | 1651 ms | C 2464 ms | $\color{green}{\textbf{0.67}}$ | 805.7 ms | $\color{orange}{2.0}$ |
+| 🟢 | binary-trees | 647 ms | Rust 844 ms | $\color{green}{\textbf{0.77}}$ | 328.6 ms | $\color{orange}{2.0}$ |
+| 🟢 | fannkuch-redux | 1650 ms | C 2464 ms | $\color{green}{\textbf{0.67}}$ | 805.7 ms | $\color{orange}{2.0}$ |
 | 🟢 | fasta | 5 ms | Rust 755 ms | $\color{green}{\textbf{0.01}}$ | 2.3 ms | $\color{orange}{2.2}$ |
-| 🟢 | k-nucleotide | 571 ms | C++ 1166 ms | $\color{green}{\textbf{0.49}}$ | 272.5 ms | $\color{orange}{2.1}$ |
-| 🟢 | mandelbrot | 638 ms | C++ 787 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
-| 🟡 | n-body | 1903 ms | C 1945 ms | $\color{orange}{\textbf{0.98}}$ | 1316.6 ms | $\color{green}{1.4}$ |
-| 🟢 | pidigits | 299 ms | C 682 ms | $\color{green}{\textbf{0.44}}$ | 195.5 ms | $\color{orange}{1.5}$ |
-| 🟢 | regex-redux | 82 ms | Rust 754 ms | $\color{green}{\textbf{0.11}}$ | 29.4 ms | $\color{orange}{2.8}$ |
-| 🟢 | reverse-complement | 23 ms | Rust 64 ms | $\color{green}{\textbf{0.36}}$ | 14.2 ms | $\color{orange}{1.6}$ |
-| 🟡 | spectral-norm | 195 ms | Rust 205 ms | $\color{orange}{\textbf{0.95}}$ | 107.3 ms | $\color{orange}{1.8}$ |
+| 🟢 | k-nucleotide | 570 ms | C++ 1168 ms | $\color{green}{\textbf{0.49}}$ | 272.5 ms | $\color{orange}{2.1}$ |
+| 🟢 | mandelbrot | 638 ms | C++ 788 ms | $\color{green}{\textbf{0.81}}$ | 436.3 ms | $\color{green}{1.5}$ |
+| 🔴 | n-body | 2373 ms | C 1944 ms | $\color{red}{\textbf{1.22}}$ | 1316.6 ms | $\color{orange}{1.8}$ |
+| 🟢 | pidigits | 302 ms | C 681 ms | $\color{green}{\textbf{0.44}}$ | 195.5 ms | $\color{orange}{1.5}$ |
+| 🟢 | regex-redux | 80 ms | Rust 752 ms | $\color{green}{\textbf{0.11}}$ | 29.4 ms | $\color{orange}{2.7}$ |
+| 🟢 | reverse-complement | 25 ms | Rust 67 ms | $\color{green}{\textbf{0.37}}$ | 14.2 ms | $\color{orange}{1.8}$ |
+| 🟡 | spectral-norm | 195 ms | Rust 204 ms | $\color{orange}{\textbf{0.96}}$ | 107.3 ms | $\color{orange}{1.8}$ |
 
 🟢 Isocron the fastest · 🟡 within 5 % of the fastest · 🔴 behind. Over the floor: $\color{green}{\text{up to 1.5}}$, $\color{orange}{\text{up to 3}}$, $\color{red}{\text{beyond}}$.
 
@@ -196,12 +197,12 @@ they link programs with are inside. Linux x86-64 (glibc 2.28 or later) and
 Windows 10 and 11:
 
 ```sh
-curl -LO https://github.com/jbillard/isocron/releases/download/v0.8.0/isocron-0.8.0-x86_64-linux.tar.gz
-tar -xzf isocron-0.8.0-x86_64-linux.tar.gz
-./isocron-0.8.0-x86_64-linux/iscc --version
+curl -LO https://github.com/jbillard/isocron/releases/download/v0.9.0/isocron-0.9.0-x86_64-linux.tar.gz
+tar -xzf isocron-0.9.0-x86_64-linux.tar.gz
+./isocron-0.9.0-x86_64-linux/iscc --version
 ```
 
-On Windows, unpack `isocron-0.8.0-x86_64-windows.zip` from the
+On Windows, unpack `isocron-0.9.0-x86_64-windows.zip` from the
 [releases](https://github.com/jbillard/isocron/releases) and run `iscc.exe`.
 Beside the compiler, `isc-lsp` is the language server of the editors
 ([editors](docs/language.md#editors-the-language-server-isc-lsp)).

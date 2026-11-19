@@ -17941,3 +17941,21 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the same elements): not kept. Open: the small arrays of a loop's state
   kept in registers (or written and read with the same width), without
   losing what D653 gives the large states of isocron-ui.
+
+- **D730 — The results measured again for 0.9.0 (2026-11-19).** At
+  64f9888, in the Docker image of the Benchmarks Game (`run.sh measure 4
+  12 native`, `apply parallel`, no transcoder): binary-trees 647 ms,
+  fannkuch-redux 1650, fasta 5, k-nucleotide 570, mandelbrot 638, n-body
+  2373, pidigits 302, regex-redux 80, reverse-complement 25,
+  spectral-norm 195: the fastest on 9 of the 10, n-body behind C (1944 ms,
+  D729). The k-nucleotide (685 ms) and reverse-complement (26 ms) of the
+  first measure of D728 not found again: measured alone in the same image,
+  578 and 24 ms, and on the physical cores outside it the binaries of
+  7e6645c and 64f9888 within 1 % (574.2 against 580.3 ms, 24.3 against
+  24.6), built with or without the cache of the prelude the same bytes:
+  the first measure ran while the machine was loaded (the load 9.4 over
+  15 minutes when it ended). countwords (0.167 s, 4.6 MiB at its peak,
+  Rust 0.250 s and 6.1 MiB) and rtiow (1 thread 6.98 and 9.75 s, Rust
+  7.04 and 10.73; 8 threads 0.86 and 1.36 s, Rust 2.78 and 2.39) measured
+  again, their peaks without huge pages. results/floors.md: the table
+  written by floors.py in the page kept around it.

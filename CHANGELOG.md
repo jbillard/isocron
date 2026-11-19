@@ -14,8 +14,8 @@ each change is general, measured on the Benchmarks Game and the forms of
 - Large values given to and by recursive functions stay in memory, at the
   place the caller gives; a state written over the one given; the state of
   a loop of tail calls kept where it was given (D679 to D681, D687, D693
-  to D696). rtiow on one thread 17.8 to 6.65 s (Rust 7.04 s), on eight
-  0.87 s (Rust 2.80 s).
+  to D696). rtiow on one thread 17.8 to 6.98 s (Rust 7.04 s), on eight
+  0.86 s (Rust 2.78 s).
 - Nodes of recursive types: a node holds the slots of its own variant
   alone, a task counts only the nodes its iteration made, no text in a
   node of a region (D678, D682 to D684).
@@ -27,7 +27,7 @@ each change is general, measured on the Benchmarks Game and the forms of
 - `countBy` of texts by a table written in Isocron, in compact arrays: its
   input read once, by parts from the standard input (D697, D698, D702,
   D709, D725). countwords 0.222 to 0.167 s, the fastest of its programs in
-  C, C++, Rust, Zig and Go, its peak 17.1 to 4.9 MiB (Rust 6.0).
+  C, C++, Rust, Zig and Go, its peak 17.1 to 4.6 MiB (Rust 6.1).
 - The pure values of the statements of an action computed in the
   statement that reads them when no effect lies between (D701, D703).
 - `argsort`, `sort` and `sortBy` of integers of 64 bits by a radix sort
@@ -59,7 +59,8 @@ each change is general, measured on the Benchmarks Game and the forms of
   rtiow and the primitives (times, peaks without huge pages, outputs),
   run before each push (D727).
 - Known: n-body slower since 0.8.0 (D653, its state updated in place: its
-  loop no longer in vectors; D729), not yet fixed.
+  loop no longer in vectors; D729), not yet fixed: 2373 ms against C
+  1944 (D730), the fastest on 9 of the 10 programs of the Benchmarks Game.
 
 ## 0.8.0 — 2026-11-13
 
