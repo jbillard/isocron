@@ -17852,3 +17852,38 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `maps` (21 runs of 200 rounds): no form moved by 3 %; the peaks of the
   corpus the same (within 0.6 %) but countwords -26.4 % and spectral-norm
   -3.0 %.
+
+- **D727 — A regression of rtiow found late; the values of a streamed text
+  bound before it; `bench/regress.py` (2026-11-19).** Asked to measure
+  rtiow again, its peak (`sphere`, 100 samples of 384 by 216, one thread)
+  was 5.3 MiB against 1.3 on 2026-11-17 (3e66f95). Measured without huge
+  pages (`prctl(PR_SET_THP_DISABLE)`: the system gives them or not by the
+  state of its memory, 2 MiB at a time), 3.39 MiB with the compiler of the
+  morning, 1.33 with 3e66f95: a regression of the compiler, found by
+  bisection (each commit built, the same render): 29f1326 1.34 MiB, 04adf72
+  (D701 to D703) 3.39. D701 computes the pure value of a statement in the
+  statement that reads it: the colors of the pixels (`map` of a call at
+  each pixel) went inside the value of the text that `writeText` writes
+  after its header, which was then no longer quiet (D686: a fold of
+  appends that cannot fail nor act): the text made whole, then a copy of it
+  after its header. `streamed_texts` now takes the `let`s that begin such
+  a value before it when what is left is quiet (`let s = (let c = m in f)
+  in ..` becomes `let c = m in let s = f in ..`: the same order of
+  evaluation), and the text is written by parts as it is made. rtiow
+  without huge pages, the same images: `sphere` one thread 3.02 (the
+  compiler of 277c0d4) to 0.96 MiB (Rust 3.22), `final` one thread 4.40 to
+  2.35 (3.82), eight threads 3.93 to 1.89 (3.64) and 5.63 to 3.59 (4.43).
+  Test `texts_written_as_made_after_values_computed_there` (memory.rs: a
+  million lines after a header, their values from a function not inlined:
+  8.7 MB at the most against 52.1, the file of the interpreter).
+  Why it was not seen: the suite checks the outputs, the leaks and some
+  peaks set by their tests; the A/B before a push measured the times of
+  the corpus and of the primitives, the peaks only since today, rtiow
+  never; and peaks measured with huge pages move by 2 MiB from one run to
+  the next. `bench/regress.py OLD NEW` now runs before each push, under the
+  protocol of the machine: each program built by both compilers (the
+  Benchmarks Game, walk, countwords, rtiow on 1 and 8 threads, every group
+  of `bench/primitives`), the times alternated, the peaks without huge
+  pages, the outputs compared; a time 1 % worse (a primitive 3 %), a peak
+  2 % and 64 KiB worse, an output that differs: a regression, explained by
+  a measure or refused.

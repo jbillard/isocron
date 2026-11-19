@@ -2768,3 +2768,47 @@ fn sorted_in_the_place_of_the_array_that_dies() {
     }
     assert_eq!(run_bin(&bin, &["5"]).stdout, "[item-703:3:8, item-397:2:5, item-856:2:4, item-550:1:1, item-0:1:0]\n43\n");
 }
+
+/// D727: a text written by `writeText` after its header, its lines made
+/// from values that a statement before computes by calls (the colors of the
+/// pixels of rtiow, computed in the statement of the write by D701): the
+/// text written by parts as it is made (D686), the values bound before it.
+/// D701 had put their computation inside the value of the text, which was
+/// then no longer quiet: the text made whole, then a copy after its header
+/// (1 million lines: 52.1 MB at the most, 8.7 now; rtiow 3.4 MiB, 1.0
+/// now). The file the interpreter writes.
+#[test]
+fn texts_written_as_made_after_values_computed_there() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "@noInline
+function shade(i: i64): i64 {
+    return (i * 2654435761) % 1000;
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const path = args[1];
+    const t0 = clock();
+    const colors = map(iota(n), (i) => shade(i));
+    const rows = map(colors, (c) => `${c} ${c + 1} ${c + 2}\\n`);
+    writeText(path, `P3\\n${n}\\n` + join(rows, \"\"));
+    print(clock() >= t0);
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let file = tmp("written_as_made.txt").to_string_lossy().to_string();
+    let (out, most) = lines_and_peak(src, "written_as_made", &["1000000", &file]);
+    assert_eq!(out, "true");
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), 11679011);
+    assert!(most < 20 * 1024, "{} KiB at the most", most);
+    let small = without_peak(src);
+    let bin = compile(&small, "written_as_made_small");
+    let mine = tmp("written_as_made_small.txt").to_string_lossy().to_string();
+    let theirs = tmp("written_as_made_interp.txt").to_string_lossy().to_string();
+    assert_eq!(run_bin(&bin, &["7", &mine]).stdout, interp_ok(&small, &["7", &theirs]));
+    assert_eq!(std::fs::read(&mine).unwrap(), std::fs::read(&theirs).unwrap());
+}

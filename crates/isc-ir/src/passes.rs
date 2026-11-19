@@ -1615,6 +1615,39 @@ fn streamed_texts(e: &mut Expr) {
     let ExprKind::Let { var, init, body, .. } = &mut e.kind else { return };
     let v = *var;
     if !quiet_text(init) {
+        // `let s = (let c = m in f) in ..`, `f` quiet and `m` not (the
+        // colors of the pixels of rtiow, computed in the statement of the
+        // write by D701: a call at each pixel): `let c = m in let s = f in
+        // ..`, the same order of evaluation, `f` then made at the write
+        // (D727: rtiow made its whole text, then a copy of it after its
+        // header, 3.4 MiB at its peak against 1.3)
+        let mut peel = 0;
+        let mut rest: &Expr = init;
+        while let ExprKind::Let { body: b, .. } = &rest.kind {
+            peel += 1;
+            rest = b;
+            if quiet_text(rest) {
+                break;
+            }
+        }
+        if peel == 0 || !quiet_text(rest) {
+            return;
+        }
+        let ExprKind::Let { var: s, init: value, body: after, drop, stmt } = take(e).kind else { unreachable!() };
+        let mut lets = Vec::new();
+        let mut value = *value;
+        for _ in 0..peel {
+            let ExprKind::Let { var, init, body, drop, stmt } = value.kind else { unreachable!() };
+            lets.push((var, init, drop, stmt, value.span));
+            value = *body;
+        }
+        let (ty, span) = (after.ty.clone(), after.span);
+        let mut inner = Expr::new(ExprKind::Let { var: s, init: Box::new(value), body: after, drop, stmt }, ty.clone(), span);
+        streamed_texts(&mut inner);
+        for (var, init, drop, stmt, sp) in lets.into_iter().rev() {
+            inner = Expr::new(ExprKind::Let { var, init, body: Box::new(inner), drop, stmt }, ty.clone(), sp);
+        }
+        *e = inner;
         return;
     }
     fn reads(e: &Expr, v: VarId) -> usize {
