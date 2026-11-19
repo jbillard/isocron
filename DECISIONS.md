@@ -17733,6 +17733,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   As D707: time for memory, none kept. What is left above Rust (6.06 MiB
   on the same runs) without it: the blocks of the doublings kept by their
   classes, the buffers of the sort at the end.
+  - Tried again after D724 (the end needing fewer blocks of 256 KiB): the
+    free blocks of 32 KiB and more of the cache of a thread, in the first
+    chunk of the arrays (pages of 4 KiB, none split), giving their pages
+    back when a medium block takes new pages and they stayed free since
+    the time before (a buffer of each round of a loop keeps them):
+    countwords 6.61 to 6.58 MiB (the blocks of the doublings of 256 KiB
+    freed after the last new medium block, taken again by the end): not
+    kept.
 
 - **D723 — Where the frees of D720 stay at the end of a scope; two paths
   more (2026-11-19).** Asked whether every variable could be freed at its
@@ -17794,3 +17802,53 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   same keys as floats, sorted by the runtime; the order of the
   interpreter of the compiler before for 0 to 300 keys, equal ones,
   negative ones, over the whole range of `i64`, pairs sorted by a key).
+
+- **D725 — The table of `countBy` of texts in compact arrays
+  (2026-11-19).** The table of D709 held for each key two slots of 32
+  bytes at least (its tag, its first 8 bytes, its count, its number) and
+  its text in the keys: 80 bytes a key, the slots of countwords 2 MiB,
+  with 1 MiB of the old ones while it grew and the keys 512 KB: its
+  medium blocks in two huge pages (4 MiB). Asked to go toward the floor
+  (about 0.8 MiB: 227 KB of text for 32187 words) where nothing is lost in
+  time, now: slots of one word (32 bits of the hash, the highest set,
+  above the number of the key; twice as many as keys at least), then by
+  the numbers of the keys, in the order of their first elements, their
+  first 8 bytes, their counts and their texts: 48 bytes a key. A key is
+  found by its slot (its tag) and its first bytes, its text compared when
+  it has more than 8; its count added to where its number says. Two lines
+  of the cache for a key found where D709 read one, in arrays of half the
+  size: counting alone (countwords without its sort and its output, 21
+  runs) 171.6 to 169.1 ms, fewer instructions (1.333 G against 1.412 G),
+  cycles (538 M against 546 M) and mispredicted branches. Measured on the
+  way, each against D709: the counts in the slots of 16 bytes (the first
+  bytes in the slot, the counts by number): no gain of memory (still two
+  huge pages), +3.8 %; the first bytes and the counts in one array of
+  entries: +1.6 %; the slot from the lowest bits of the hash: +2.0 % (as
+  many mispredicted branches more); from the bits of its tag (no hash
+  computed again when the slots double): +3.2 %. Kept: the bits past the
+  lowest byte, the hashes computed again from the texts when the slots
+  double (each key once a doubling). countwords counts in 4.7 MiB instead
+  of 6.3 (its medium blocks in one huge page).
+
+- **D726 — The gather of a permutation made in the place of the array that
+  dies (2026-11-19).** With D725 the end of countwords made the most of its
+  peak: its pairs (772 KB) and their sorted copy (772 KB) took a second
+  huge page. `map(t, (i) => copy x[i])` where `t` is the order of `x` or
+  of a `map` of it (D548: `sortBy`, `sort`), `x` no longer read after
+  (its elements already moved there) and `t` no longer read either, is now
+  `x` itself: each element moved once along the cycles of `t`
+  (`y[k] = x[t[k]]`), each place of `t` marked -1 once done, `x` empty from
+  there (`permute_in_place`); a length of `t` that differs from that of
+  `x` (never: the order of `x`), the panic of the read past the end. No
+  second array, no new pages for it. Test
+  `sorted_in_the_place_of_the_array_that_dies` (memory.rs: 300000 tuples
+  of a text, an array and an integer sorted: 135.6 MB at the most against
+  150.0 with the compiler before; read after, the array is copied, 193.6;
+  the interpreter's output for 0 to 40 elements). countwords with D725
+  and D726: 6.61 to 4.87 MiB at its peak (Rust 6.03 on the same runs,
+  optimized C 4.29), the same output, 172.5 to 167.4 ms. The corpus
+  against the compiler before them (11 runs, countwords 21): within
+  -0.3 % and +0.4 %, countwords -2.7 %; `bench/primitives` `sorts` and
+  `maps` (21 runs of 200 rounds): no form moved by 3 %; the peaks of the
+  corpus the same (within 0.6 %) but countwords -26.4 % and spectral-norm
+  -3.0 %.

@@ -2722,3 +2722,49 @@ action main(args: string[k]): i32 {
     }
     assert_eq!(run_bin(&bin, &["10"]).stdout, "(330, 271, 279, 165, 280)\n[0, 3, 6, 9, 1, 4]\n");
 }
+
+/// D726: the gather of a permutation of an array that dies (D548: `sortBy`,
+/// `sort`), the permutation not read after: that array itself, each
+/// element moved once along the cycles of the permutation, no second array
+/// (300000 tuples of a text, an array and an integer: 135.6 MB at the most
+/// against 150.0 with the compiler before; the array read after: copied,
+/// 193.6). The interpreter's output for no element, one, two, cycles and
+/// fixed places.
+#[test]
+fn sorted_in_the_place_of_the_array_that_dies() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    const items = map(iota(n), (i) => [`item-${(i * 7919) % 1009}`, fill(i % 3 + 1, i), (i * 37) % 11] as const);
+    const sorted = sortBy(items, (e) => {
+        const [w, xs, c] = e;
+        return -c;
+    });
+    print(map(sorted, (e) => {
+        const [w, xs, c] = e;
+        return `${w}:${xs.length}:${c}`;
+    }).slice(0, n < 8 ? n : 8));
+    print(sum(map(sorted, (e) => {
+        const [w, xs, c] = e;
+        return c * xs.length;
+    })));
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let kept = src.replace("    const status = lines", "    print(items[1]);\n    const status = lines");
+    let (out, most) = lines_and_peak(src, "permuted_in_place", &["300000"]);
+    let (out_k, most_k) = lines_and_peak(&kept, "permuted_copied", &["300000"]);
+    assert_eq!(out.lines().nth(1), Some("2999993"));
+    assert!(out_k.starts_with(&out));
+    assert!(most + 30 * 1024 < most_k, "in place {} KiB, the array read after {} KiB", most, most_k);
+    let small = without_peak(src);
+    let bin = compile(&small, "permuted_small");
+    for n in ["0", "1", "2", "5", "40"] {
+        assert_eq!(run_bin(&bin, &[n]).stdout, interp_ok(&small, &[n]), "{} elements", n);
+    }
+    assert_eq!(run_bin(&bin, &["5"]).stdout, "[item-703:3:8, item-397:2:5, item-856:2:4, item-550:1:1, item-0:1:0]\n43\n");
+}

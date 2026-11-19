@@ -629,6 +629,10 @@ pub struct Gen<'p> {
     /// the `map` (its node) and the array, whose elements it did not read
     /// are freed right after it.
     gathers: HashMap<usize, VarId>,
+    /// The arrays made by the gather of a permutation of an array (D548),
+    /// each with that array (D726: made in its place when the permutation
+    /// is not read after).
+    permuted: HashMap<VarId, VarId>,
     /// The owned arrays of elements that own memory read by a `concat`
     /// alone, then freed (D638): their elements moved into it when both
     /// sides are, each side then bound to its block alone.
@@ -1764,6 +1768,7 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
         taking: HashSet::new(),
         moving: HashSet::new(),
         gathers: HashMap::new(),
+        permuted: HashMap::new(),
         giving: HashSet::new(),
         rebound: Vec::new(),
         freed_early: HashSet::new(),
@@ -2864,6 +2869,18 @@ fn last_read<'a>(e: &'a Expr, x: VarId, borrows: &dyn Fn(VarId, &Expr) -> bool) 
         }
     }
     walk(e, &mut HashSet::from([x]), borrows)
+}
+
+/// `map(t, (i) => copy x[i])` (the gather of a permutation of `x`, D548):
+/// `t`.
+fn permutation_of(e: &Expr, x: VarId) -> Option<VarId> {
+    let ExprKind::Map(ins, l) = &e.kind else { return None };
+    let ([t], [i]) = (&ins[..], &l.params[..]) else { return None };
+    let ExprKind::Var(t, _) = t.kind else { return None };
+    let ExprKind::Copy(c) = &l.body.kind else { return None };
+    let ExprKind::Index(a, k) = &c.kind else { return None };
+    let ok = matches!(a.kind, ExprKind::Var(v, _) if v == x) && matches!(k.kind, ExprKind::Var(v, _) if v == *i) && e.ty.elem() == a.ty.elem() && ins[0].ty.elem() == &Type::Int(IntKind::I64);
+    ok.then_some(t)
 }
 
 /// `e` frees `v` somewhere (`Free`, D105).
@@ -7082,9 +7099,17 @@ impl<'p> Gen<'p> {
                 // elements past them freed (D720)
                 let gathered = self.gathers.get(&(&**init as *const Expr as usize)).copied();
                 let in_place = gathered.filter(|x| w == 1 && prefix_of(init, *x, &self.p.vars[*x as usize].ty).is_some());
-                let iv = match in_place {
-                    Some(x) => self.prefix_in_place(init, x),
-                    None => self.ex(init, w),
+                // the gather of a permutation of an array that dies, the
+                // permutation not read after: that array, its elements
+                // moved along the cycles of the permutation (D726)
+                let permute = self.permuted.get(var).copied().filter(|_| w == 1 && in_place.is_none()).and_then(|x| {
+                    let t = permutation_of(init, x)?;
+                    (self.moving.contains(&x) && !mentions(body, &HashSet::from([t]))).then_some((x, t))
+                });
+                let iv = match (in_place, permute) {
+                    (Some(x), _) => self.prefix_in_place(init, x),
+                    (None, Some((x, t))) => self.permute_in_place(init, x, t),
+                    (None, None) => self.ex(init, w),
                 };
                 if made.is_some() {
                     self.count_req = None;
@@ -7147,8 +7172,12 @@ impl<'p> Gen<'p> {
                 // reads each once (D706): its block alone freed after, with
                 // the elements that `map` did not read
                 let movable = *drop && !early && w == 1 && !self.p.views.contains(var) && matches!(&init.ty, Type::Array(e, _) if !e.is_array() && holds_owned(e));
-                let gather = if movable && isc_ir::passes::permutation_gather(body, *var, self.p.argsort_fn).is_none() { isc_ir::passes::identity_gather(body, *var) } else { None };
-                let moves = movable && (gather.is_some() || isc_ir::passes::permutation_gather(body, *var, self.p.argsort_fn).is_some());
+                let permuted = if movable { isc_ir::passes::permutation_gather(body, *var, self.p.argsort_fn) } else { None };
+                let gather = if movable && permuted.is_none() { isc_ir::passes::identity_gather(body, *var) } else { None };
+                let moves = movable && (gather.is_some() || permuted.is_some());
+                if let Some(y) = permuted {
+                    self.permuted.insert(y, *var);
+                }
                 if moves {
                     self.moving.insert(*var);
                 }
@@ -7177,6 +7206,9 @@ impl<'p> Gen<'p> {
                 }
                 self.take_let_dest(e);
                 let r = self.ex(body, w);
+                if let Some(y) = permuted {
+                    self.permuted.remove(&y);
+                }
                 if let Some(l) = last {
                     if let Some(xs) = self.free_after.get_mut(&(l as *const Expr)) {
                         xs.retain(|(x, _)| x != var);
@@ -8198,6 +8230,75 @@ impl<'p> Gen<'p> {
         let y = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 {}, 1", y0, nv.r));
         self.env.insert(x, v("zeroinitializer", "{ ptr, i64 }"));
         Ok(v(y, "{ ptr, i64 }"))
+    }
+
+    /// `init` the gather of the permutation `t` of `x` (`permutation_of`),
+    /// `x` and `t` no longer read after it (D726): the block of `x`, each
+    /// element moved once along the cycles of `t` (`y[k] = x[t[k]]`), each
+    /// place of `t` marked -1 once done; `x` empty from here. `t` the
+    /// order of `x` or of a `map` of it (D548): as long as it, each place
+    /// once; a length that differs, the panic of the read past the end.
+    fn permute_in_place(&mut self, init: &Expr, x: VarId, t: VarId) -> R<V> {
+        let elem_ty = self.p.vars[x as usize].ty.elem().clone();
+        let xv = self.env[&x].clone();
+        let tv = self.var_val(t).ok_or("codegen: an unbound permutation")?;
+        let xp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", xv.r));
+        let n = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", xv.r));
+        let tp = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", tv.r));
+        let tn = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", tv.r));
+        let same = self.ins(format!("icmp eq i64 {}, {}", tn, n));
+        let at = match &init.kind {
+            ExprKind::Map(_, l) => l.body.span,
+            _ => init.span,
+        };
+        self.guard(&same, format!("call void @isc_panic_bounds(i64 {}, i64 {}, i32 0, {})", n, n, Self::pos(at)));
+        let kslot = self.alloca("i64");
+        let jslot = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", kslot));
+        let (louter, lbody, lcheck, lfix, lcycle, linner, lstep, lclose, lnext, lend) =
+            (self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label(), self.label());
+        self.br(&louter);
+        self.block(&louter);
+        let k = self.ins(format!("load i64, ptr {}", kslot));
+        let more = self.ins(format!("icmp slt i64 {}, {}", k, n));
+        self.cbr(&more, &lbody, &lend);
+        self.block(&lbody);
+        let pkp = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", tp, k));
+        let pk = self.ins(format!("load i64, ptr {}", pkp));
+        let done = self.ins(format!("icmp slt i64 {}, 0", pk));
+        self.cbr(&done, &lnext, &lcheck);
+        self.block(&lcheck);
+        let fixed = self.ins(format!("icmp eq i64 {}, {}", pk, k));
+        self.cbr(&fixed, &lfix, &lcycle);
+        self.block(&lfix);
+        self.emit(format!("store i64 -1, ptr {}", pkp));
+        self.br(&lnext);
+        self.block(&lcycle);
+        let first = self.load_elem(&xp, &n, &k, &elem_ty, 1);
+        self.emit(format!("store i64 {}, ptr {}", k, jslot));
+        self.br(&linner);
+        self.block(&linner);
+        let j = self.ins(format!("load i64, ptr {}", jslot));
+        let pjp = self.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", tp, j));
+        let nx = self.ins(format!("load i64, ptr {}", pjp));
+        self.emit(format!("store i64 -1, ptr {}", pjp));
+        let closes = self.ins(format!("icmp eq i64 {}, {}", nx, k));
+        self.cbr(&closes, &lclose, &lstep);
+        self.block(&lstep);
+        let moved = self.load_elem(&xp, &n, &nx, &elem_ty, 1);
+        self.store_elem(&xp, &n, &j, &elem_ty, &moved, 1);
+        self.emit(format!("store i64 {}, ptr {}", nx, jslot));
+        self.br(&linner);
+        self.block(&lclose);
+        self.store_elem(&xp, &n, &j, &elem_ty, &first, 1);
+        self.br(&lnext);
+        self.block(&lnext);
+        let k1 = self.ins(format!("add i64 {}, 1", k));
+        self.emit(format!("store i64 {}, ptr {}", k1, kslot));
+        self.br(&louter);
+        self.block(&lend);
+        self.env.insert(x, v("zeroinitializer", "{ ptr, i64 }"));
+        Ok(xv)
     }
 
     fn vec_check(&mut self, ok: &str, panic_call: String) {
