@@ -433,6 +433,39 @@ fn v(r: impl Into<String>, t: impl Into<String>) -> V {
     V { r: r.into(), t: t.into(), uni: true }
 }
 
+/// The blocks of the state of a loop that owns it (D731). Each iteration
+/// passes the block of each of its arrays of scalars through this
+/// function: LLVM takes what it gives for a block of its own, as it takes
+/// a block just allocated (`noalias`), so that the arrays of that state
+/// are never the same memory for it (they never are: each value owns its
+/// block, D653 writes them in place). Opaque while the module is
+/// optimized (its value from an empty `asm`, so that nothing finds it is
+/// its argument), it reads and writes no memory but its argument's: a
+/// store of an iteration into a block stays before the next, which reads
+/// it. The backend inlines it after the passes (`LATE_INLINE`): no
+/// instruction.
+const OWN_FN: &str = "\ndefine internal noalias ptr @isc.late.own(ptr %p) noinline nounwind memory(argmem: readwrite) {\nentry:\n  %q = call ptr asm \"\", \"=r,0\"(ptr %p)\n  ret ptr %q\n}\n";
+
+/// The places of the blocks of arrays of scalars in a value of type `t`
+/// (its leaves `{ ptr, i64 }`, by their indices), for `own_blocks`.
+fn own_paths(t: &Type, at: &mut Vec<u32>, out: &mut Vec<Vec<u32>>) {
+    match t {
+        Type::Array(e, _) if !e.has_heap() => {
+            let mut p = at.clone();
+            p.push(0);
+            out.push(p);
+        }
+        Type::Tuple(ts) => {
+            for (k, e) in ts.iter().enumerate() {
+                at.push(k as u32);
+                own_paths(e, at, out);
+                at.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn lt(t: &Type) -> String {
     match t {
         Type::Int(k) => format!("i{}", k.bits()),
@@ -1897,6 +1930,10 @@ fn emit_mode(p: &Program, opts: &Options, mode: Pre) -> R<(String, PreManifest, 
     // use (`isc_heap_mode` 2): the runtime reads `ISC_ALLOC` at its first
     // allocation (D81), so a first block is taken from it and given back
     // before the mode is read.
+    // The blocks a loop owns, each of its own (D731): defined when used.
+    if g.funcs.iter().any(|f| f.contains("@isc.late.own(")) {
+        g.funcs.push(OWN_FN.to_string());
+    }
     let mut kernel_text = String::new();
     // (on Linux: the arena is not reserved under Windows nor in WebAssembly
     // yet, where the generated code calls the runtime as before)
@@ -4305,10 +4342,15 @@ impl<'p> Gen<'p> {
                 }
                 let s = self.alloca(&t);
                 let first = if by_address { self.ins(format!("load {}, ptr {}", t, entry[k])) } else { entry[k].clone() };
-                self.emit(format!("store {} {}, ptr {}", t, first, s));
                 // a state is consumed by each iteration: never freed by the
                 // loop (no flag)
                 let consumed = f.consumed.get(k).copied().unwrap_or(false);
+                // (the arrays of a state the loop owns: blocks of their own,
+                // once before the loop, D731; an iteration that updates them
+                // in place passes the same blocks on, which LLVM then keeps
+                // in registers from one iteration to the next)
+                let first = if consumed && !by_address && !self.opts.isa.is_wasm() { self.own_blocks(first, &ty) } else { first };
+                self.emit(format!("store {} {}, ptr {}", t, first, s));
                 let owned = if ty.has_heap() && !consumed {
                     let o = self.alloca("i1");
                     self.emit(format!("store i1 false, ptr {}", o));
@@ -9128,6 +9170,22 @@ impl<'p> Gen<'p> {
                 self.ex(&l.body, w)
             }
         }
+    }
+
+    /// The value `x` of a state of type `ty` that a loop owns, each block
+    /// of its arrays of scalars passed through `@isc.late.own` (D731).
+    fn own_blocks(&mut self, x: String, ty: &Type) -> String {
+        let mut paths = Vec::new();
+        own_paths(ty, &mut Vec::new(), &mut paths);
+        let t = lt(ty);
+        let mut cur = x;
+        for path in paths {
+            let at = path.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
+            let p = self.ins(format!("extractvalue {} {}, {}", t, cur, at));
+            let q = self.ins(format!("call noalias ptr @isc.late.own(ptr {})", p));
+            cur = self.ins(format!("insertvalue {} {}, ptr {}, {}", t, cur, q, at));
+        }
+        cur
     }
 
     fn materialize(&mut self, e: &Expr) -> R<V> {
@@ -14855,6 +14913,14 @@ impl<'p> Gen<'p> {
                     let mut r = "poison".to_string();
                     for (j, xv) in lanes[q][f].iter().enumerate() {
                         r = g.ins(format!("insertelement {} {}, {} {}, i32 {}", vt, r, st, xv.r, j));
+                    }
+                    // (a fence, no instruction: LLVM no longer makes these
+                    // vectors of lanes of wider ones, whose root it would
+                    // then compute on all their lanes, D731)
+                    if matches!(le.ty, Type::F64 | Type::F32) {
+                        let sfx = if le.ty == Type::F64 { "f64" } else { "f32" };
+                        g.decls.insert(format!("declare {} @llvm.arithmetic.fence.v{}{}({})", vt, W, sfx, vt));
+                        r = g.ins(format!("call {} @llvm.arithmetic.fence.v{}{}({} {})", vt, W, sfx, vt, r));
                     }
                     g.bind(*fv, V { r, t: vt, uni: false });
                 }

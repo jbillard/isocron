@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- n-body 15.7 % faster (2388 to 2014 ms in the A/B): the arrays of the
+  state of a loop it owns are blocks of their own for LLVM, the roots and
+  divisions of a split `fold` kept in pairs (D731).
+
 ## 0.9.0 — 2026-11-19
 
 Faster and smaller programs, and a faster compiler: the language is the

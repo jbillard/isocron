@@ -116,6 +116,32 @@ fn simd_is_visible_in_the_assembly() {
     }
 }
 
+/// D731: the state of a loop of tail calls that the loop owns, its arrays
+/// of scalars updated in place (D653), passes each of their blocks through
+/// `@isc.late.own` at each iteration: LLVM takes them for blocks of their
+/// own, never the same memory (n-body: 15 million loads a run blocked by a
+/// store they could not take their value from, 1.61 G instructions for 5
+/// million steps, now 1.28 G); inlined after the passes, no call left. The
+/// roots and divisions of a `fold` split (D260) stay in vectors of 2 lanes
+/// (a fence on their inputs): LLVM made roots of 4 lanes of them, then kept
+/// two (18 roots a step for 10). The output of the interpreter.
+#[test]
+fn states_of_loops_owned_and_roots_in_pairs() {
+    let src = include_str!("../../../examples/benchmarks_game/nbody.isc");
+    let bin = compile_asm(src, "c_nbody_asm");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    assert!(ll.contains("call noalias ptr @isc.late.own("), "the blocks of the state of `steps` not passed through `@isc.late.own`");
+    assert!(ll.contains("@llvm.arithmetic.fence.v2f64("), "no fence on the inputs of the roots of the split `fold`");
+    let asm = std::fs::read_to_string(bin.with_extension("s")).unwrap();
+    assert!(!asm.contains("isc.late.own"), "`@isc.late.own` still called");
+    let wide: Vec<&str> = asm.lines().filter(|l| l.contains("sqrtpd") && (l.contains("%ymm") || l.contains("%zmm"))).collect();
+    assert!(wide.is_empty(), "roots of more than 2 lanes: {:?}", wide);
+    for n in ["0", "1", "1000"] {
+        let r = run_bin(&bin, &[n]);
+        assert_eq!((r.code, r.stdout.as_str()), (0, interp_ok(src, &[n]).as_str()), "{} steps: {}", n, r.stderr);
+    }
+}
+
 #[test]
 fn multi_level_reduction_matches_fixed_form() {
     // 4097 * 4096 + 5 elements: three levels of blocks

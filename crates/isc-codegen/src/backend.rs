@@ -67,7 +67,7 @@ const RETURN_STATUS: i32 = 2;
 
 /// The functions of the generated code inlined after the optimization of
 /// the module (D600): the entries of the allocator written in Isocron.
-pub const LATE_INLINE: [&str; 5] = ["isc.late.alloc", "isc.late.alloc_zeroed", "isc.late.free", "isc.late.alloc_text", "isc.late.free_text"];
+pub const LATE_INLINE: [&str; 6] = ["isc.late.alloc", "isc.late.alloc_zeroed", "isc.late.free", "isc.late.alloc_text", "isc.late.free_text", "isc.late.own"];
 /// The index of the attributes of a function itself (LLVM's
 /// `LLVMAttributeFunctionIndex`).
 const FUNCTION_INDEX: u32 = u32::MAX;

@@ -17959,3 +17959,46 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   7.04 and 10.73; 8 threads 0.86 and 1.36 s, Rust 2.78 and 2.39) measured
   again, their peaks without huge pages. results/floors.md: the table
   written by floors.py in the page kept around it.
+
+- **D731 — The arrays of the state of a loop, blocks of their own for
+  LLVM; the roots of a split `fold` kept in pairs (2026-11-19).** n-body
+  slower since D653 (D729): the state of `steps`, updated in place, is six
+  arrays that LLVM could not tell apart (fresh blocks before, `noalias`).
+  Before the loop of the tail calls of a function, each block of an array
+  of scalars of a state the loop owns (`consumed`: given, or copied once
+  at its entry) passes through `@isc.late.own`, a function that returns
+  its argument, declared `noalias` like an allocation and opaque while the
+  module is optimized (its value from an empty `asm`, so that nothing finds
+  it is its argument; `memory(argmem: readwrite)`); the backend inlines it
+  after the passes (`LATE_INLINE`, D600): no instruction left. The claim
+  holds: each value owns its block (D653 writes them in place because of
+  it), a block given back is never read again. Once before the loop, not
+  at each iteration: an iteration that updates the state in place passes
+  the same blocks on, loop-invariant (641 M cycles for 5 million steps at
+  each iteration's entry 656 M). Alone it made n-body slower (845 M
+  cycles against 754 M): free to reorder the loads of the positions, LLVM
+  grouped the scalar sums `dx*dx + dy*dy + dz*dz` of the split `fold`
+  (D260) by four, then computed the root and the division of 4 lanes to
+  keep 2 of them (18 roots a step for 10; the divider busy 486 M cycles
+  against 298 M): the vectors of 2 lanes of the split `fold` are now made
+  behind `llvm.arithmetic.fence` (no instruction), which LLVM does not
+  look through. Tried and refused: the sums in vectors of 2 lanes too
+  (842 M), the fence alone (753 M, the loads still blocked by stores),
+  the alias scopes of D729. n-body (5 million steps, one core, the lowest
+  of 2): 1612 M instructions and 754 M cycles before, 1262 M and 641 M
+  now (ad9802e, before D653: 1182 M and 599 M), 15 M loads blocked by a
+  store to 8 K, the same output. Left: the state is still loaded and
+  stored at each step (30 values), where ad9802e kept it in registers;
+  LLVM's LICM does not promote it (60 accesses in the loop, no call, its
+  pointers invariant; its caps raised, the same binary). Test
+  `states_of_loops_owned_and_roots_in_pairs` (codegen.rs). bench/regress.py
+  against 64f9888: n-body 2388.1 to 2013.5 ms (-15.7 %), the other programs
+  of the corpus, countwords and rtiow within 0.4 % (times and peaks); four
+  forms of the primitives flagged (sort.i64 +12.7 %, includes.3 +4.0 %,
+  https get.system.small +8.2 %, request.system.small +9.5 %), measured
+  again alone, 31 runs alternated: within 1.2 % for their medians and
+  0.7 % for their lowest, so the noise of 11 runs (their ranges overlapped
+  from end to end; `sort.i64` has no loop changed: the prelude's loops
+  that own a state of arrays are `$fixedBlocks` and `$fixedUp`, the limbs
+  of `toFixed`, whose blocks pass through `@isc.late.own` too; the forms
+  of `numbers` within 3 %).
