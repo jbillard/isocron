@@ -18029,3 +18029,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `serve` 103.5 to 126.6 % of nginx, its memory 0.8 to 4.7 MiB against 5.5
   to 5.7 MiB (Rss 8.6): 7.2 to 1.2 times less.
   results/http_servers.md made again from these lines.
+
+- **D733 — The iterations of a loop of a constant count written by the
+  compiler: refused (2026-11-19).** After D731, n-body still loads and
+  stores its 30 values at each step, where ad9802e kept them in registers
+  (LLVM's LICM promotes none of them; its scan limits of memory raised,
+  `-memdep-block-scan-limit=10000`, n-body only slower: 1507 M
+  instructions and 651 M cycles against 1262 M and 630 M). Tried: the
+  loops of `for_range` of a constant count of 2 to `UNROLL_FULL` written
+  one iteration after the other by the compiler, the index a constant in
+  each, instead of a loop marked `llvm.loop.unroll.full` (D205) that LLVM
+  unrolls after its first passes over the loop holding it. n-body 630 to
+  616 M cycles (5 million steps), 2013.6 to 1977.5 ms in bench/regress.py
+  (-1.8 %), the state still loaded and stored at each step (36 accesses).
+  Against it, in the same A/B (against the compiler of a298808): `headerOf`
+  of `http` +30.7 % (18.08 to 23.62 ns, their ranges apart), `sha256`
+  +5.0 to +9.3 %, `trim` +10.1 %, `indexOf.1` +8.4 %, other forms of
+  `strings` +4 to +6 %. In the program of `http`: 204211 lines of assembly
+  against 202912, 11 calls more, `firstOf` 2.89 % of its cycles against
+  0.91 % (a function LLVM no longer inlines everywhere after the copies;
+  the cause of each form not measured further). Refused: the loop stays
+  one loop for LLVM.
