@@ -2812,3 +2812,44 @@ action main(args: string[k]): i32 {
     assert_eq!(run_bin(&bin, &["7", &mine]).stdout, interp_ok(&small, &["7", &theirs]));
     assert_eq!(std::fs::read(&mine).unwrap(), std::fs::read(&theirs).unwrap());
 }
+
+/// D728: a call of an action to itself, last, given a copy of a literal at
+/// the place of a text it is given (D644: `""` copied there), is the jump of
+/// its loop like any other new value: it was an ordinary call, a frame and
+/// the state of each round kept until the end (pidigits: 9.3 MiB at its
+/// peak before D644, 275 MiB after, 8.2 now). 3 million rounds: 71.9 MB at
+/// the most with the compiler before, 172 KB now. The interpreter's output.
+#[test]
+fn loops_given_a_copy_of_a_literal_stay_loops() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action rows(i: i64, n: i64, line: string): void {
+    if (i == n) {
+        if (line.length > 0) print(line);
+        return;
+    }
+    const full = line + String(i % 10);
+    if (full.length == 10) {
+        if (i % 100000 == 9) print(full);
+        return rows(i + 1, n, \"\");
+    }
+    return rows(i + 1, n, full);
+}
+
+action main(args: string[k]): i32 {
+    rows(0, parseI64(args[0]), \"\");
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let (out, most) = lines_and_peak(src, "loop_given_literal", &["3000000"]);
+    assert_eq!(out.lines().count(), 30);
+    assert!(most < 8 * 1024, "{} KiB at the most", most);
+    let small = without_peak(src);
+    let bin = compile(&small, "loop_given_literal_small");
+    for n in ["0", "9", "25", "300"] {
+        assert_eq!(run_bin(&bin, &[n]).stdout, interp_ok(&small, &[n]), "{} rounds", n);
+    }
+}

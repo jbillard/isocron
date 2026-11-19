@@ -209,11 +209,20 @@ def render(args):
 # ----- memory --------------------------------------------------------------------
 
 
+def no_huge_pages():
+    """In the child, before its `exec`: no transparent huge page for it."""
+    import ctypes
+    ctypes.CDLL(None).prctl(41, 1, 0, 0, 0)
+
+
 def peak_memory(cmd, env):
     """The peak resident memory of `cmd` alone, in KiB: `VmHWM` (the high
     water mark of the memory of its program, after its `exec`), read every
-    millisecond until it exits."""
-    p = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    millisecond until it exits. Without huge pages
+    (`prctl(PR_SET_THP_DISABLE)`, kept across the `exec`): the system gives
+    them or not by the state of its memory, and a peak moved by 2 MiB from
+    one run to the next (D727)."""
+    p = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=no_huge_pages)
     hwm = 0
     while p.poll() is None:
         try:
@@ -311,7 +320,7 @@ def report(args):
         lines.append("")
     mem = load("memory")
     if mem:
-        lines += ["## Peak resident memory (`VmHWM`)", "", "| Scene | Threads | Rust | Isocron |", "| --- | ---: | ---: | ---: |"]
+        lines += ["## Peak resident memory (`VmHWM`, without huge pages)", "", "| Scene | Threads | Rust | Isocron |", "| --- | ---: | ---: | ---: |"]
         for key, x in mem["renders"].items():
             lines.append("| %s (%d samples, %dx%d) | %d | %.1f MiB | %.1f MiB |" % (x["scene"], x["samples"], x["width"], x["height"], x["threads"], x["rust"] / 1024.0, x["isc"] / 1024.0))
         lines.append("")

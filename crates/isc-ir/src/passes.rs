@@ -3457,6 +3457,12 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
                             // there at its last use): the next iteration's,
                             // nothing to free
                             ExprKind::Var(v, Use::Move) if !self.f.params.contains(&v) => {}
+                            // a new value that is no variable, borrowing
+                            // none (a copy of a literal given to a place,
+                            // D644): the same (D728: pidigits made a frame
+                            // for each line it printed, 9.3 MiB at its peak
+                            // before D644, 275 MiB after)
+                            _ if !matches!(a.kind, ExprKind::Var(..)) && !borrows(a) => {}
                             ExprKind::Var(v, _) if self.parts.iter().any(|(w, _)| *w == v) => {
                                 let (_, r) = self.parts.iter().rev().find(|(w, _)| *w == v).unwrap();
                                 roots.extend(r.iter().copied());

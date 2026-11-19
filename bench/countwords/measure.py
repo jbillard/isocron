@@ -190,14 +190,23 @@ def run_step(args):
 # ----- memory ----------------------------------------------------------------------
 
 
+def no_huge_pages():
+    """In the child, before its `exec`: no transparent huge page for it."""
+    import ctypes
+    ctypes.CDLL(None).prctl(41, 1, 0, 0, 0)
+
+
 def peak_memory(cmd, env):
     """The peak resident memory of `cmd` alone, in KiB (`VmHWM`, read every
     millisecond until it exits). Only once the child runs the program: read
     between its fork and its exec, it was this script's memory (about 22
-    MiB, seen at random on one program or another)."""
+    MiB, seen at random on one program or another). Without huge pages
+    (`prctl(PR_SET_THP_DISABLE)`, kept across the `exec`): the system gives
+    them or not by the state of its memory, and a peak moved by 2 MiB from
+    one run to the next (D727)."""
     exe = os.path.realpath(cmd[0])
     with open(INPUT, "rb") as f:
-        p = subprocess.Popen(cmd, stdin=f, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(cmd, stdin=f, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=no_huge_pages)
         hwm = 0
         while p.poll() is None:
             try:
@@ -254,7 +263,7 @@ def report(args):
         lines.append("")
     mem = load("memory")
     if mem:
-        lines += ["## Peak resident memory (`VmHWM`)", "", "| Program | Threads | Peak |", "| --- | ---: | ---: |"]
+        lines += ["## Peak resident memory (`VmHWM`, without huge pages)", "", "| Program | Threads | Peak |", "| --- | ---: | ---: |"]
         for name, x in mem["programs"].items():
             label = names.get(name, name)
             if "%s" in label:

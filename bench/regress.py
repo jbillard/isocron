@@ -27,13 +27,13 @@ Under the protocol of the machine (`bench/machine.sh apply single` first).
 import argparse
 import ctypes
 import hashlib
-import importlib.util
 import os
 import socket
 import statistics
 import subprocess
 import sys
 import time
+import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.path.join(ROOT, "target", "regress")
@@ -110,11 +110,11 @@ def peak(cmd, stdin, threads):
     return hwm
 
 
-def compare_time(name, old, new, limit):
+def compare_time(name, old, new, limit, same_bin=False):
     mo, mn = statistics.median(old), statistics.median(new)
     d = 100 * (mn - mo) / mo
-    log("%-28s old %10.1f  new %10.1f  %+6.1f %%  [%.1f-%.1f / %.1f-%.1f]" % (name, mo, mn, d, min(old), max(old), min(new), max(new)))
-    if d > limit:
+    log("%-28s old %10.1f  new %10.1f  %+6.1f %%  [%.1f-%.1f / %.1f-%.1f]%s" % (name, mo, mn, d, min(old), max(old), min(new), max(new), "  (the same binary)" if same_bin else ""))
+    if d > limit and not same_bin:
         regressions.append("%s: time %+.1f %% (%.1f to %.1f)" % (name, d, mo, mn))
 
 
@@ -144,7 +144,7 @@ def programs(a, builds):
                 outs[v] = data.splitlines()[:1] if name == "walk" else data
         if outs["old"] != outs["new"]:
             regressions.append("%s: the outputs differ" % name)
-        compare_time(name, runs["old"], runs["new"], 1.0)
+        compare_time(name, runs["old"], runs["new"], 1.0, open(builds["old"][name], "rb").read() == open(builds["new"][name], "rb").read())
     if not a.only or "memory" in a.only:
         for name, src, args, stdin, threads in CORPUS:
             compare_peak(name + " (peak)", max(peak([builds["old"][name]] + args, stdin, threads) for _ in range(3)),
@@ -182,9 +182,12 @@ def primitives(a, compilers):
     alternated, the median of each form; a form 3 % slower, or whose
     checksums differ: a regression."""
     here = os.path.join(ROOT, "bench", "primitives")
-    spec = importlib.util.spec_from_file_location("prim_run", os.path.join(here, "run.py"))
-    R = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(R)
+    # (its functions alone: the file runs its `main` when it is executed)
+    path = os.path.join(here, "run.py")
+    src = open(path).read().split("\ndef main():")[0]
+    defs = {"__file__": path, "__name__": "prim_run_defs"}
+    exec(compile(src, path, "exec"), defs)
+    R = types.SimpleNamespace(**defs)
     cpu = R.bench_cpu()
     groups = sorted(f[:-4] for f in os.listdir(here) if f.endswith(".isc") and os.path.exists(os.path.join(here, f[:-4] + ".c")))
     for g in groups:
@@ -241,6 +244,8 @@ def primitives(a, compilers):
             if server:
                 server.kill()
                 server.wait()
+        # (two binaries the same byte for byte: what moves is the machine)
+        same_bin = open(bins["old"], "rb").read() == open(bins["new"], "rb").read()
         moved = 0
         for name in res["old"]:
             o = [x for x, _ in res["old"][name]]
@@ -255,9 +260,9 @@ def primitives(a, compilers):
             if abs(d) >= 3:
                 moved += 1
                 log("%-8s %-24s %10.3f -> %10.3f  %+6.1f %%  [%.3f-%.3f / %.3f-%.3f]" % (g, name, mo, mn, d, min(o), max(o), min(n), max(n)))
-            if d >= 3:
+            if d >= 3 and not same_bin:
                 regressions.append("%s %s: %+.1f %% (%.3f to %.3f ns)" % (g, name, d, mo, mn))
-        log("%-8s %d forms, %d moved by 3 %% or more" % (g, len(res["old"]), moved))
+        log("%-8s %d forms, %d moved by 3 %% or more%s" % (g, len(res["old"]), moved, " (the same binary)" if same_bin else ""))
 
 
 def main():

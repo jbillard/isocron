@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+## 0.9.0 — 2026-11-19
+
+Faster and smaller programs, and a faster compiler: the language is the
+same, no name removed. Two programs written plainly, a ray tracer ported
+from Rust (`bench/rtiow`) and the word count of benhoyt/countwords
+(`bench/countwords`), showed where the compiled code copied or kept memory;
+each change is general, measured on the Benchmarks Game and the forms of
+`bench/primitives` too.
+
+- Large values given to and by recursive functions stay in memory, at the
+  place the caller gives; a state written over the one given; the state of
+  a loop of tail calls kept where it was given (D679 to D681, D687, D693
+  to D696). rtiow on one thread 17.8 to 6.65 s (Rust 7.04 s), on eight
+  0.87 s (Rust 2.80 s).
+- Nodes of recursive types: a node holds the slots of its own variant
+  alone, a task counts only the nodes its iteration made, no text in a
+  node of a region (D678, D682 to D684).
+- Texts: written to a file by parts as they are made (D686, D727), texts
+  of up to 16 bytes compared without a call (D699, D708), texts of 1 to
+  56 bytes in a region of their own, blocks of 16 to 64 bytes (D718), the
+  runs of a class of bytes found without the engine of regular
+  expressions (D690).
+- `countBy` of texts by a table written in Isocron, in compact arrays: its
+  input read once, by parts from the standard input (D697, D698, D702,
+  D709, D725). countwords 0.222 to 0.167 s, the fastest of its programs in
+  C, C++, Rust, Zig and Go, its peak 17.1 to 4.9 MiB (Rust 6.0).
+- The pure values of the statements of an action computed in the
+  statement that reads them when no effect lies between (D701, D703).
+- `argsort`, `sort` and `sortBy` of integers of 64 bits by a radix sort
+  written in Isocron, two arrays where the runtime took four (D724):
+  `sort` of integers -37 %. The gather of a sort moves the elements of an
+  array that dies (D706, D717), in its own place (D726); the first
+  elements of an array that dies are that array (D720).
+- A value is freed right after the last read of the rest of its scope, not
+  at its end (D720, D723); the last call of an action that gives nothing
+  is a tail call (D719).
+- The allocator: a medium block kept too large is cut for a request, the
+  refills of a small class start from one block (D721); the first chunk of
+  the arrays in pages of 4 KiB (D688).
+- The compiler: the cycles of the calls found once, types that share
+  their parts, the children of a node without a block of the heap, copies
+  and frees of large values by functions of their own, a large module
+  compiled in parts on several threads, the compiler on a thread of a
+  large stack (D692, D710 to D716): the front end of the largest program
+  of isocron-ui 39 to 7.2 s, its code made by LLVM on several threads.
+- Windows: the wheel turned across, a character typed with Alt, the icon
+  of a program (D674, D675, D677).
+- Measured and refused (time for memory): small pages for the medium
+  blocks (D707, D722).
+- A text written by parts again when the values of its lines are
+  computed in the statement of the write (D727: rtiow 3.0 to 1.0 MiB on
+  one thread, Rust 3.2); a loop given a copy of a literal is still a loop
+  (D728: pidigits, slower and 30 times larger since 0.8.0, 275 to 8.2 MiB).
+- `bench/regress.py`: the A/B of two compilers over the corpus, countwords,
+  rtiow and the primitives (times, peaks without huge pages, outputs),
+  run before each push (D727).
+- Known: n-body slower since 0.8.0 (D653, its state updated in place: its
+  loop no longer in vectors; D729), not yet fixed.
+
 ## 0.8.0 — 2026-11-13
 
 What a library of graphical interfaces written in Isocron

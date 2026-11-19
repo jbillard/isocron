@@ -17887,3 +17887,57 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   pages, the outputs compared; a time 1 % worse (a primitive 3 %), a peak
   2 % and 64 KiB worse, an output that differs: a regression, explained by
   a measure or refused.
+  Its first run (277c0d4 against 7fb4fde) flagged one: rtiow `sphere` on
+  one thread, 6563 to 6966 ms (+6.1 %; `final` +0.9 %, eight threads
+  -0.6 % and 0.0 %). The same instructions (66.78 G), the same
+  mispredicted branches, fewer misses of L1, 6.4 % more cycles, 119 M more
+  loads blocked by a store at the same place of another page
+  (`ld_blocks_partial.address_alias` 572 M to 691 M); its three hottest
+  functions the same code byte for byte; the frame of `main` 128 bytes
+  smaller (0x1200 to 0x1180), so the whole render 128 bytes higher in its
+  stack, its stores against the data of the scene at other places modulo
+  4096. Built with its functions and loops aligned on 64 bytes, the same
+  gap; the same program with its main body called through frames of
+  about 80 bytes more (0 to 9 of them, a runtime of the experiment, not
+  kept): 20.92 to 21.03 G cycles at each of the ten places, as before
+  (20.93 G). A place of the stack, not work: kept, as D720's place of code
+  in fannkuch-redux. (The first run also showed that `bench/regress.py`
+  ran the `main` of `bench/primitives/run.py` when it loaded it: its
+  functions alone now.)
+
+- **D728 — A loop given a copy of a literal is still a loop
+  (2026-11-19).** The Benchmarks Game measured again in Docker for 0.9.0:
+  pidigits 299 → 335 ms since D618 (7e6645c), n-body 1903 → 2377 ms,
+  k-nucleotide 571 → 685, reverse-complement 23 → 26 (the same image,
+  machine and protocol). Bisected (each commit built, nbody and pidigits on
+  4 CPUs, the lowest of 5): pidigits 299.2 ms at e468dd4, 634.5 at
+  24618d2 (D643 to D648), 333.9 from d3efe22 on; its peak 9.3 MiB, then
+  2610, then 275. D644 gives a loop the text of its caller (`line` of
+  `digits`): `return digits(..., eliminate(t, d), "")` passes a copy of
+  the literal (`copy ""`), no variable, and `tail_calls` took only
+  variables for arguments that own memory: the call was an ordinary one, a
+  frame and its state kept for each line printed. A new value that is no
+  variable and borrows none (`passes::borrows`) is now taken as a new
+  array moved at its place (D644): the next iteration's, nothing to free.
+  pidigits: 274.7 to 8.2 MiB at its peak, 416 to 338 ms (one run), the
+  same output. Test `loops_given_a_copy_of_a_literal_stay_loops`
+  (memory.rs: 3 million rounds, 71.9 MB at the most before, 172 KB now;
+  the interpreter's output).
+
+- **D729 — n-body slower since D653: measured, not yet fixed
+  (2026-11-19).** Bisected: 1910.9 ms at ad9802e, 2389.9 at 0c3aaec (D653
+  to D657, in 0.8.0): the state of `steps` is given to it and updated in
+  place instead of copied each step. 1.18 G instructions for 5 million
+  steps before, 1.61 G after; the code of the loop over the pairs in
+  scalars (`vmulsd` 21 times, `vmovsd` 16 among the hot instructions)
+  where it was in vectors (`vmulpd`, `vaddpd`): the six arrays of the state
+  are parts of one value for LLVM, which cannot tell they are never the
+  same memory (fresh blocks before, `noalias`), and 14.9 M loads blocked
+  by a store they could not take their value from (8 K before). Tried:
+  the scopes of LLVM (`!alias.scope`, `!noalias`) on the elements of the
+  accumulator of a `fold` and of the variables bound outside it, a scope a
+  part of a tuple: 1.38 G instructions, but 44.3 M loads blocked and 960 M
+  cycles against 759 M (its vector loads moved before the scalar stores of
+  the same elements): not kept. Open: the small arrays of a loop's state
+  kept in registers (or written and read with the same width), without
+  losing what D653 gives the large states of isocron-ui.
