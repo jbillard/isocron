@@ -4,6 +4,6 @@
 #   isocron_only.sh SERVER CLIENT DURATION
 set -euo pipefail
 source <(sed -n '/^set -euo pipefail/,/^ISC_THREADS=\$nserver taskset/p' /work/measure.sh | sed '1d;$d')
-ISC_THREADS=$nserver taskset -c "$server_cpus" /tmp/hello 8080 & pid=$!
+ISC_THREADS=$nserver taskset -c "$server_cpus" /tmp/nothp /tmp/hello 8080 & pid=$!
 run isocron-serve 8080 / hello
 kill $pid; wait $pid 2>/dev/null || true

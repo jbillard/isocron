@@ -18002,3 +18002,30 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   that own a state of arrays are `$fixedBlocks` and `$fixedUp`, the limbs
   of `toFixed`, whose blocks pass through `@isc.late.own` too; the forms
   of `numbers` within 3 %).
+
+- **D732 — The servers of HTTP measured again with 0.9.0, their memory
+  too (2026-11-19).** Asked by the author ("tu pourrais refaire un
+  comparatif, en mesurant également la mémoire ?"). `measure.sh` gives for
+  each point the sum of the Pss of the processes of the server at rest,
+  then its highest while wrk runs (read every 0.1 s by a sampler on the
+  CPUs of the client), and that of their Rss; every server started by
+  `nothp.c` (`PR_SET_THP_DISABLE`, kept across `fork` and `execve`), its
+  memory in pages of 4 KiB as the peaks of D727. The `iscc` of the archive
+  of 0.9.0 mounted in the image `isocron-http` (built again: nginx 1.26.3,
+  lighttpd 1.4.79), `apply parallel`, 10 s a point. The server on 2 cores
+  and wrk on 6: `serve` 75145, 410388, 449512 and 413544 requests a second
+  with 1, 16, 256 and 1024 connections, nginx (2 workers) 72645, 365453,
+  371892 and 346518: 103.4, 112.3, 120.9 and 119.3 % of nginx (D535:
+  105.8 to 124.9 %), 92.0, 79.3, 79.6 and 75.4 % of the ceiling of 2
+  threads; its latency of 99 % 17 us, 56 us, 0.85 ms and 3.78 ms against
+  18 us, 44 us, 1.06 ms and 4.79 ms. Its memory: 556 KiB at rest, 748 KiB,
+  996 KiB, 1.6 MiB and 2.7 MiB at its highest; nginx 6.0 MiB at rest and
+  5.7 to 5.9 MiB (Rss 8.5 MiB for its 3 processes), lighttpd 1.4 to 5.2
+  MiB, the ceiling of 2 threads (glibc) 0.5 to 5.0 MiB (Rss 1.7 to 6.2
+  MiB). nginx keeps the same memory whatever the connections, Isocron's
+  grows with them (about 2 KiB a connection on 2 threads, 4 on 4) and
+  stays under nginx's: 8.1, 5.9, 3.5 and 2.2 times less (their Pss). On 4
+  cores (wrk the limit: the ceiling 2.72 to 3.75 of its cores busy)
+  `serve` 103.5 to 126.6 % of nginx, its memory 0.8 to 4.7 MiB against 5.5
+  to 5.7 MiB (Rss 8.6): 7.2 to 1.2 times less.
+  results/http_servers.md made again from these lines.
