@@ -17612,3 +17612,19 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     `isc.late.alloc` (every program then looked as if it allocated, the
     test of `output.rs`): it calls the fast path of `$kAlloc` and the
     runtime itself.
+
+- **D719 — The last call of an action that gives nothing, a tail call
+  (2026-11-19).** Measuring what printing by parts would give countwords
+  (a variant that prints each line with `forEach`), its peak was 25.9 MiB,
+  16 MiB of it the stack: `forEach` is written in the prelude as an action
+  that calls itself as its last statement (`f(x[i]); forEachFrom(x, f, i +
+  1);`), which the IR keeps as `let _ = call .. in ()`, no tail call, a
+  frame for each element. In the body of a function that gives nothing,
+  such a call at the end (through `let`s, `if`s, checks) is now the value
+  of the body (`void_tail_calls`, before the passes of ownership): a tail
+  call, a loop when the function calls itself. The variant 25.9 to 9.8 MiB,
+  the same output (and printing by parts would give countwords 0.2 MiB:
+  not done). Any action of a program written so is the same. Test
+  `actions_that_end_by_a_call_keep_no_frame` (memory.rs: an action of the
+  program and `forEach`, 3 million calls each: 24.9 MB at the most, 212.4
+  MB with the compiler before; the interpreter's output).

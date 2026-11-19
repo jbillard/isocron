@@ -2516,3 +2516,47 @@ fn sorted_pairs_moved_where_printed() {
     let p = iscc::frontend("pairs.isc", moved).unwrap();
     assert_eq!(hash_indexes(&p.body), 0);
 }
+
+/// D719: the last statement of an action that gives nothing, a call whose
+/// value is dropped (`let _ = f(..) in ()`), is a tail call: `forEach` (its
+/// loop in the prelude) and an action of the program that calls itself last
+/// run in a frame, where each call kept one (`forEach` of 32187 elements:
+/// 16 MiB of stack). 3 million calls of each; the most memory below 64 MiB
+/// (24.9 MB, the array of `iota` 24 of them; 212.4 MB before).
+#[test]
+fn actions_that_end_by_a_call_keep_no_frame() {
+    if memcheck() || std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action count(i: i64, n: i64, every: i64): void {
+    if (i < n) {
+        if (i % every == 0) {
+            print(i);
+        }
+        count(i + 1, n, every);
+    }
+}
+
+action main(args: string[k]): i32 {
+    const n = parseI64(args[0]);
+    count(0, n, n / 3);
+    forEach(iota(n), (i) => {
+        if (i % (n / 2) == 1) {
+            print(i);
+        }
+    });
+    const status = lines(readText(\"/proc/self/status\"));
+    print(filter(status, (l) => l.startsWith(\"VmHWM\")));
+    return 0;
+}
+";
+    let bin = compile(src, "void_tail_calls");
+    let r = run_bin(&bin, &["3000000"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let mut ls: Vec<&str> = r.stdout.lines().collect();
+    let hwm: u64 = ls.pop().unwrap_or("").chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or_else(|_| panic!("{}", r.stdout));
+    assert_eq!(ls.join(","), "0,1000000,2000000,1,1500001");
+    assert!(hwm < 64 * 1024, "{} KiB at the most", hwm);
+    let small = src.replace("    const status = lines(readText(\"/proc/self/status\"));\n    print(filter(status, (l) => l.startsWith(\"VmHWM\")));\n", "");
+    assert_eq!(run_bin(&compile(&small, "void_tail_calls_small"), &["30"]).stdout, interp_ok(&small, &["30"]));
+}

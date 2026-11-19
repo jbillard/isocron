@@ -58,6 +58,12 @@ pub fn optimize(p: &mut Program) -> R<()> {
         element_updates(&mut f.body, &mut HashMap::new());
         reads_first_in(&mut f.body);
     }
+    // the last call of an action that gives nothing, a tail call (D719)
+    for f in p.fns.iter_mut() {
+        if f.body.ty == Type::Unit {
+            void_tail_calls(&mut f.body);
+        }
+    }
     ownership(p)?;
     borrow_elements(p);
     take_dead_parts(p);
@@ -69,6 +75,32 @@ pub fn optimize(p: &mut Program) -> R<()> {
     // every memory decision checked, independently of the passes (D96)
     if std::env::var_os("ISC_DEBUG_NOVERIFY").is_some() { return Ok(()); }
     crate::verify::verify(p)
+}
+
+// ---------------------------------------------------------------------
+// the last call of an action that gives nothing, a tail call (D719)
+
+/// `let _ = f(..) in ()` at the end of the body of a function that gives
+/// nothing (the last statement of an action without `return`, the loop of
+/// `forEach` in the prelude): the call alone, the value of the body, so
+/// that it is a tail call (a loop when the function calls itself) where each
+/// call kept a frame: `forEach` of 32187 elements took 16 MiB of stack.
+fn void_tail_calls(e: &mut Expr) {
+    if let ExprKind::Let { init, body, .. } = &mut e.kind {
+        if matches!(body.kind, ExprKind::Lit(Lit::Unit)) && matches!(init.kind, ExprKind::Call(..)) && init.ty == Type::Unit {
+            let call = take(init);
+            *e = call;
+            return;
+        }
+    }
+    match &mut e.kind {
+        ExprKind::Let { body, .. } | ExprKind::CheckNonNegative(_, body) | ExprKind::CheckSize(_, _, body) => void_tail_calls(body),
+        ExprKind::If(_, t, f) => {
+            void_tail_calls(t);
+            void_tail_calls(f);
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------
