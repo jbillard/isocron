@@ -6697,30 +6697,58 @@ fn updates_unique(e: &Expr, v: VarId) -> bool {
 fn decide_accumulators(p: &mut Program) -> Vec<Vec<usize>> {
     let n = p.fns.len();
     let mut out = vec![Vec::new(); n];
-    for fi in 0..n {
-        let acc = accumulators(p, fi);
-        if acc.is_empty() {
-            continue;
-        }
+    // the accumulators `acc` of `fi` taken (consumed) when the ownership pass
+    // and the check of memory accept them together
+    fn accepted(p: &mut Program, fi: usize, acc: &[usize]) -> bool {
         let callees = Callees::of(p);
         let mut body = p.fns[fi].body.clone();
         let params: Vec<VarId> = acc.iter().map(|&k| p.fns[fi].params[k]).collect();
         if ownership_body_with(&mut body, &p.vars, None, &params, &callees, &mut Vec::new()).is_err() {
-            continue;
+            return false;
         }
-        for &k in &acc {
+        for &k in acc {
             p.fns[fi].consumed[k] = true;
         }
         let saved = std::mem::replace(&mut p.fns[fi].body, body);
         let ok = crate::verify::verify_fn(p, &p.fns[fi]).is_ok();
         p.fns[fi].body = saved;
         if !ok {
-            for &k in &acc {
+            for &k in acc {
                 p.fns[fi].consumed[k] = false;
             }
+        }
+        ok
+    }
+    for fi in 0..n {
+        let acc = accumulators(p, fi);
+        if acc.is_empty() {
             continue;
         }
-        out[fi] = acc;
+        // the greatest set accepted: all of them, else all but one, and so
+        // on (D734: the table of the connections of `serveLoop` refused with
+        // the list of those to read, which it never frees, then copied by
+        // each `fold` that updates it, at each turn)
+        let mut sets = vec![acc];
+        while let Some(set) = sets.first().cloned() {
+            if let Some(ok) = sets.iter().find(|s| accepted(p, fi, s)).cloned() {
+                out[fi] = ok;
+                break;
+            }
+            if set.len() <= 1 {
+                break;
+            }
+            let mut smaller: Vec<Vec<usize>> = Vec::new();
+            for s in &sets {
+                for j in 0..s.len() {
+                    let mut t = s.clone();
+                    t.remove(j);
+                    if !smaller.contains(&t) {
+                        smaller.push(t);
+                    }
+                }
+            }
+            sets = smaller;
+        }
     }
     // (the functions from `text_fns` on are called by the code generator,
     // which lends their arguments)

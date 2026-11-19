@@ -375,6 +375,58 @@ fn server_against_clients_of_the_test() {
     }
 }
 
+/// D734: many connections with requests at the same time. 120 connections
+/// opened (the queue of a listener holds 128 while the server is stopped)
+/// and two requests written at once on each while the server is stopped
+/// (`SIGSTOP`): when it goes on, they all have bytes (the kernel gives a
+/// wait 64 of them at most, the others the next waits). The 240
+/// answers, each connection's in their order, then the end of the server:
+/// a pure function (`serveLoop`, on 1 and 4 threads) and an action
+/// (`serveActionLoop`).
+#[test]
+fn server_answers_many_connections_at_once() {
+    use std::io::{BufRead, BufReader};
+    let src = include_str!("data/std_http_many.isc");
+    let bin = compile(src, "std_http_many");
+    for (mode, threads) in [("pure", "1"), ("pure", "4"), ("action", "1")] {
+        let mut child = std::process::Command::new(&bin)
+            .args(["240", mode])
+            .env("ISC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        let port: u16 = line.trim().parse().unwrap_or_else(|_| panic!("{}: no port: {:?}", mode, line));
+        let pid = child.id().to_string();
+        let signal = |s: &str| assert!(std::process::Command::new("kill").args([s, &pid]).status().unwrap().success());
+        signal("-STOP");
+        let mut conns: Vec<std::net::TcpStream> = (0..120)
+            .map(|_| {
+                let s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                s.set_read_timeout(Some(std::time::Duration::from_secs(60))).unwrap();
+                s
+            })
+            .collect();
+        for (c, s) in conns.iter_mut().enumerate() {
+            write!(s, "GET /a?{0}.0 HTTP/1.1\r\nHost: t\r\n\r\nGET /b?{0}.1 HTTP/1.1\r\nHost: t\r\n\r\n", c).unwrap();
+        }
+        signal("-CONT");
+        for (c, s) in conns.into_iter().enumerate() {
+            let mut r = BufReader::new(s);
+            let a = read_response(&mut r);
+            let b = read_response(&mut r);
+            assert_eq!((a.0, a.2, b.0, b.2), (200, format!("/a {}.0", c).into_bytes(), 200, format!("/b {}.1", c).into_bytes()), "{} on {} threads, connection {}", mode, threads, c);
+        }
+        let o = child.wait_with_output().unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+        assert_eq!((o.status.code(), rest.as_str()), (Some(0), "done\n"), "{} on {} threads: {}", mode, threads, String::from_utf8_lossy(&o.stderr));
+    }
+}
+
 /// D352: a handler that is an action (`serveOn`, D386): it prints each
 /// request and reads a file, the requests of one connection answered one at
 /// a time in their order; a pure function where an action is expected;

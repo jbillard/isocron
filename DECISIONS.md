@@ -18050,3 +18050,32 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   0.91 % (a function LLVM no longer inlines everywhere after the copies;
   the cause of each form not measured further). Refused: the loop stays
   one loop for LLVM.
+
+- **D734 — The accumulators of a loop: the greatest set the check of
+  memory accepts, not all or none (2026-11-19).** Asked by the author: why
+  the memory of the server of HTTP grows with the connections and nginx's
+  does not (D732). Measured (Docker, Isocron 0.9.0, without huge pages):
+  1000 connections open without a request add 44 KiB (45 bytes each); under
+  load, one thread, 452 KiB at rest, 2216 KiB at 1024 connections, and
+  2312 KiB after (kept by the allocator); 2 and 4 threads 2.9 and 4.9 MiB.
+  nginx 8.7 to 8.8 MiB of Rss whatever `worker_connections` (1024, 4096,
+  16384) and the connections. Not the batch of a turn: `net.wait` gives at
+  most 64 connections (`epoll_wait` of 64 events), and a turn bounded to 1,
+  16, 64 or 256 connections kept the same peak (2.5 to 2.7 MiB at 1024
+  connections; 1 and 16 lowered the requests a second, 108677 and 346466
+  against 399550: `rest.slice` copied at each turn), refused. The mappings
+  (`smaps`): the growth in the regions of the heap. DHAT (glibc's
+  allocator, 20000 requests, one thread): the live bytes at the peak 198 KB
+  with 16 connections, 300 KB with 1024, but four sites of `serveLoop`
+  allocating 24 KB (the table of the connections, 24 bytes each) at each
+  turn: the `fold`s of `arrive` and `afterAnswers` copied `ps` first (`ps`
+  is shared: an input). `accumulators` takes `ps` and `changed` for the
+  state of the loop, but the check of memory refused the two together
+  (`serveLoop` owns `changed` and never frees it), and `decide_accumulators`
+  took all or none: `ps` then lent, copied by each update. Now the
+  greatest set accepted: all of them, else all but one, and so on, the
+  check judging each. `serveLoop` owns its table: no copy of it in its IR.
+  Test `server_answers_many_connections_at_once` (std_http.rs: 120
+  connections and two requests on each, written while the server is
+  stopped, `SIGSTOP`; the queue of a listener holds 128, nginx's 511: the
+  test of 300 connections could not connect).

@@ -1,0 +1,29 @@
+import * as http from "http";
+import * as net from "net";
+
+// a server for many connections at once (D734): its port printed, then
+// `args[0]` requests answered by a pure function, or by an action when
+// `args[1]` is `action`
+function answer(r: http.Request): http.Response {
+    return http.textResponse(200, `${r.path} ${r.query}`);
+}
+
+action answerAction(r: http.Request): http.Response {
+    return http.textResponse(200, `${r.path} ${r.query}`);
+}
+
+action main(args: string[k]): i32 {
+    match (net.listen("127.0.0.1", 0)) {
+        Ok(l) => {
+            print(net.port(l));
+            const n = parseI64(args[0]);
+            const done = args[1] == "action" ? http.serveOn(l, answerAction, n) : http.serveOn(l, answer, n);
+            match (done) {
+                Ok(_) => print("done"),
+                Err(e) => print("serve failed"),
+            };
+        },
+        Err(e) => print("listen failed"),
+    };
+    return 0;
+}
