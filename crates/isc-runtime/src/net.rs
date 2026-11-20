@@ -183,6 +183,26 @@ struct ServerState<F: Copy> {
     /// Its connections, and those given to it not yet adopted (D739): read
     /// by the servers that share its listener.
     load: alloc::boxed::Box<core::sync::atomic::AtomicUsize>,
+    /// The tries of its waits before they sleep.
+    wake: Wake,
+}
+
+/// The tries of the waits of a server before they sleep: the counter of
+/// the processor when its last wait ended, the mean of its work between two
+/// waits (counts of the processor), the waits left without a try and the
+/// tries that found nothing in a row, whether its loops are no more than
+/// its processors (0: not yet known, 1: yes, 2: no) and its waits since it
+/// was counted, whether its thread asked for a short slice of time
+/// (`CROWDED_SLICE`).
+#[derive(Default)]
+struct Wake {
+    last: u64,
+    busy: u64,
+    skip: u32,
+    fails: u32,
+    allowed: u8,
+    checks: u32,
+    sliced: bool,
 }
 
 /// The room of the bytes of a wait kept for the next one, at most.
@@ -871,6 +891,8 @@ mod imp {
     const SYS_POLL: usize = 7;
     const SYS_FCNTL: usize = 72;
     const SYS_EPOLL_WAIT: usize = 232;
+    const SYS_SCHED_SETATTR: usize = 314;
+    const SYS_SCHED_GETATTR: usize = 315;
     const SYS_EPOLL_CTL: usize = 233;
     const SYS_EPOLL_CREATE1: usize = 291;
     const SOCK_NONBLOCK: usize = 0o4000;
@@ -962,7 +984,7 @@ mod imp {
             close_listener(l);
             return HandleCode { h: -1, code: net_code(r) };
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)) });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)), wake: Wake::default() });
         if shared {
             join(&st);
         }
@@ -1055,7 +1077,41 @@ mod imp {
     /// second on 4 cores, 2 to 6 % more on 2).
     const WAIT_EVENTS: usize = 16;
 
+    /// The slice of time a loop asks for while the loops of its listener
+    /// outnumber the processors (`sched_setattr`, the slice of SCHED_OTHER
+    /// since Linux 6.12; ignored before), in nanoseconds: they take the
+    /// processors from each other every 100 us, not at the ticks of the
+    /// system (D743: 4 loops on 2 processors, 16 connections, the latency of
+    /// 99 % 5.7 ms against 7.7 with the slice of the system, 5.75 for 0.9.0,
+    /// whose loops were given connections by a hash that could leave one
+    /// without any; 300 us 5.8 ms).
+    const CROWDED_SLICE: u64 = 100_000;
+
+    /// The thread of `st` asks for `CROWDED_SLICE` (once): its policy, its
+    /// priority and its nice read first and kept.
+    fn ask_short_slice(st: &mut ServerState<c_int>) {
+        st.wake.sliced = true;
+        // struct sched_attr, version 0 (48 bytes): size, policy, flags,
+        // nice, priority, runtime (the slice), deadline, period
+        let mut attr = [0u64; 6];
+        // SAFETY: `sched_getattr(0, attr, 48, 0)` writes 48 bytes at `attr`
+        if unsafe { syscall6(SYS_SCHED_GETATTR, 0, attr.as_mut_ptr() as usize, 48, 0, 0, 0) } < 0 {
+            return;
+        }
+        // (SCHED_OTHER only: a policy of real time keeps its own)
+        if attr[0] >> 32 != 0 {
+            return;
+        }
+        attr[0] = 48;
+        attr[3] = CROWDED_SLICE;
+        // SAFETY: `sched_setattr(0, attr, 0)` reads 48 bytes at `attr`
+        unsafe { syscall6(SYS_SCHED_SETATTR, 0, attr.as_ptr() as usize, 0, 0, 0, 0) };
+    }
+
     fn server_wait(st: &mut ServerState<c_int>, max: i64, ms: i64) -> WaitOut {
+        if !st.wake.sliced && !spin_allowed(st) {
+            ask_short_slice(st);
+        }
         let empty = || IscArray { ptr: empty_bytes(), len: 0 };
         let max = max.clamp(1, 1 << 24) as usize;
         let mut evs = [EpollEvent { events: 0, data: 0 }; WAIT_EVENTS];
@@ -1072,14 +1128,23 @@ mod imp {
                 return r;
             }
         }
+        let mut first = true;
         loop {
             let left = match deadline {
                 Some(d) => (d.saturating_sub(crate::isc_clock_ns()).div_ceil(1_000_000)).min(i32::MAX as u64) as isize,
                 None => -1,
             };
-            // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`, of this
-            // frame
-            let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, left as usize, 0, 0) });
+            let mut n = 0;
+            if first && left != 0 {
+                n = try_before_sleep(st, &mut evs);
+            }
+            first = false;
+            if n == 0 {
+                // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`, of this
+                // frame
+                n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, left as usize, 0, 0) });
+            }
+            st.wake.last = counter();
             if n < 0 {
                 st.keep_scratch((ids, lens, data));
                 return WaitOut { ids: empty(), lens: empty(), data: empty(), code: net_code(n) };
@@ -1092,6 +1157,85 @@ mod imp {
         let r = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
         st.keep_scratch((ids, lens, data));
         r
+    }
+
+    /// The counter of the processor (`rdtsc`), 0 where there is none.
+    fn counter() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: `rdtsc` reads a counter, nothing else
+        unsafe {
+            return core::arch::x86_64::_rdtsc();
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        0
+    }
+
+    /// The tries of a wait before it sleeps last at most the mean work of
+    /// the server between two waits, and at most this many counts of the
+    /// processor (about 60 us); a server with fewer connections than a wait
+    /// gives (`WAIT_EVENTS`) sleeps at once (D743: with few connections the
+    /// next request comes after the round trip of its client, longer than
+    /// a turn: on 4 cores at 16 connections, 4 a loop, the tries cost 2 %
+    /// more cycles a request than 0.9.0, none without them; half the work,
+    /// at 256 connections 5 rounds of 8 with 1 to 2.7 ms for 1 % of the
+    /// requests).
+    const TRY_MAX: u64 = 200_000;
+
+    /// Whether the loops of the listener of `st` are no more than the
+    /// processors the program may run on (a try that keeps a processor would
+    /// take it from another loop otherwise).
+    fn spin_allowed(st: &mut ServerState<c_int>) -> bool {
+        // (counted again at each of the first 64 waits, while the loops join
+        // their listener, then at every 4096th)
+        st.wake.checks = st.wake.checks.wrapping_add(1);
+        if st.wake.allowed == 0 || st.wake.checks < 64 || st.wake.checks % 4096 == 0 {
+            let l = st.listener;
+            let cpus = crate::cpu_count();
+            let loops = if st.shared { with_shared(|list| list.iter().find(|e| e.handles.contains(&l)).map_or(1, |e| e.servers.len())) } else { 1 };
+            st.wake.allowed = if loops <= cpus { 1 } else { 2 };
+        }
+        st.wake.allowed == 1
+    }
+
+    /// The events a server finds by waits that do not sleep before it
+    /// sleeps (D743): tried for at most its mean work between two waits
+    /// (`TRY_MAX` at most), their count (0: none found, it sleeps); a try
+    /// that found nothing leaves the next 1, 3, 7... 1023 waits without one.
+    /// A loop that its work keeps busy finds its next requests there instead
+    /// of sleeping and being woken for each (on 4 cores at 1024 connections
+    /// 200 thousand sleeps in 10 s against 17 thousand for 0.9.0, the latency
+    /// of 99 % 11 % higher; 57 thousand with tries of all its work, 18 %
+    /// lower); with one connection a loop never tries (the server busy 0.53
+    /// of a core, as without the tries, against 1.01 with tries without a
+    /// bound).
+    fn try_before_sleep(st: &mut ServerState<c_int>, evs: &mut [EpollEvent; WAIT_EVENTS]) -> isize {
+        let now = counter();
+        if st.wake.last != 0 && now != 0 {
+            let b = now.wrapping_sub(st.wake.last);
+            st.wake.busy = if st.wake.busy == 0 { b } else { (st.wake.busy * 7 + b) / 8 };
+        }
+        if now == 0 || st.conns.len() < WAIT_EVENTS || !spin_allowed(st) {
+            return 0;
+        }
+        if st.wake.skip > 0 {
+            st.wake.skip -= 1;
+            return 0;
+        }
+        let budget = st.wake.busy.min(TRY_MAX);
+        let n = loop {
+            // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`
+            let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, 0, 0, 0) });
+            if n != 0 || counter().wrapping_sub(now) >= budget {
+                break n;
+            }
+        };
+        if n > 0 {
+            st.wake.fails = 0;
+        } else if n == 0 {
+            st.wake.fails = (st.wake.fails + 1).min(10);
+            st.wake.skip = (1 << st.wake.fails) - 1;
+        }
+        n
     }
 
     /// The events `evs` of a wait: the connections waiting accepted, the
@@ -1897,7 +2041,7 @@ mod imp {
                 *out = HandleCode { h: -1, code };
                 return;
             }
-            let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared: false, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)) });
+            let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared: false, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)), wake: Wake::default() });
             *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
     
         }

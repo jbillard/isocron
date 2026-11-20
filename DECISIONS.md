@@ -18283,7 +18283,10 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     4 and 10, 6 and 8, 7 and 7, 8 and 6, 6 and 8, 5 and 9 connections; 7
     and 7 now each time); on one core 96 to 98 us, nginx 72 to 106. The
     publication: 40 us against 45 for nginx.
-  - Measured outside the points, with their causes. 4 loops on 2 cores
+  - Measured outside the points (corrected by D743: these were
+    regressions of the latency, kept here as explained, which the goal
+    forbade; measured again there without the probes that ran beside wrk,
+    the sampler of `measure.sh` among them). 4 loops on 2 cores
     (`ISC_THREADS=4`), 16 connections: the latency of 99 % is the slice of
     the scheduler for both, 4.93, 5.42, 5.85 and 5.42 ms for 0.9.0, 7.52,
     6.15, 5.06 and 7.81 now: 4 loops ready for 2 CPUs wait for each
@@ -18301,14 +18304,18 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     thousand. The latency of 99 % moves with the queue of wrk (15 runs of
     each at 1024: 1.86 to 5.14 ms for 0.9.0, 3.79 to 5.09 now, means 3.96
     and 4.75; 11 at 256: 0.57 to 2.91 and 0.79 to 3.43, means 1.55 and
-    2.03). Tried, refused: a loop trying its wait 200 times without sleep
+    2.03; every one of these runs with a sampler or a probe on the CPUs of
+    wrk, D743). Tried, refused: a loop trying its wait 200 times without sleep
     before it sleeps (`epoll_wait` of 0 ms): its context switches as
     0.9.0's, the latency of 99 % at 4 cores 3.69 ms at 1024 and 1.02 at
     256 (means of 3); but on 2 cores at 16 connections 413083 and 413257
     requests a second against 423962 and 417072 (-1.7 %), 99 % 51 and 52
     us against 41 and 49, and with one connection its loop keeps its core
     busy (100 % against 53 to 55 %, for 19 to 20 % more requests).
-  - `bench/regress.py` b035583 to d4bdcc1: five flagged; `padStart` and
+  - `bench/regress.py` b035583 to d4bdcc1 (corrected by D743: the three
+    flags that came again were regressions, called here places of code
+    and of blocks and kept, which the goal forbade; removed there, their
+    causes found): five flagged; `padStart` and
     `sys env` (+3.3 and +3.0 %, their ranges overlapping) not flagged again
     (the four groups again, 11 runs). `replaceAll.1` +12.3 % again (29.14
     to 32.72 ns): the same instructions (the program 1455.27 and 1455.30

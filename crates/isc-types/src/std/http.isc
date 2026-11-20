@@ -818,9 +818,11 @@ function arrive(ps: Pending[n], xs: net.Arrival[m]): [Pending[], i64[], i64[]] {
     const ended = map(filter(xs, (a) => a.bytes.length == 0), (a) => a.id);
     const grown = fold(iota(xs.length), ps, (acc, j) => at[j] >= 0 && xs[j].bytes.length > 0 ? acc.with(at[j], pendingOf(xs[j].id, concat(acc[at[j]].buf, xs[j].bytes))) : acc);
     // (the connections not in the table, in the order of their numbers: the
-    // places in `xs` sorted, not the records with their bytes, D738)
+    // places in `xs` sorted, not the records with their bytes, D738; a wait
+    // gives 16 at most, each placed by the count of those before it, D743:
+    // the radix sort of `sortBy` fills and reads two arrays of 256 counts)
     const news = filter(iota(xs.length), (j) => at[j] < 0 && xs[j].bytes.length > 0);
-    const order = news.length < 2 ? news : news.sortBy((j) => xs[j].id);
+    const order = news.length < 2 ? news : fold(iota(news.length), fill(news.length, 0), (o, i) => requireUnique(o.with(count(iota(news.length), (q) => xs[news[q]].id < xs[news[i]].id || (xs[news[q]].id == xs[news[i]].id && q < i)), news[i])));
     const added = map(order, (j) => pendingOf(xs[j].id, xs[j].bytes));
     // (a connection is numbered when it is accepted, its bytes may come after
     // those of one accepted later: the whole table sorted again; the new ones
@@ -1012,11 +1014,10 @@ export action serveServer(s: net.Server, handler: action (Request) => Response, 
 
 // the requests to `port` of every address of the machine answered by
 // `handler`, a pure function or an action, with no end: under Linux a loop
-// of events on each thread of the pool, each on a listener of its own of
-// `port` (D374: the kernel shares the connections out among them,
-// `SO_REUSEPORT`), the requests of two loops at the same time, as the
-// actions of `mapParallel` (D373, D385); one loop under Windows, with one
-// thread or for the port 0. A port that another socket listens to is
+// of events on each thread of the pool, all on one listener of `port`, each
+// new connection given to the loop that has the fewest (D739), the
+// requests of two loops at the same time, as the actions of `mapParallel`
+// (D373, D385); one loop under Windows, with one thread or for the port 0. A port that another socket listens to is
 // refused first by a listener of its own (`AlreadyExists`): a second
 // server, of this program or another, never shares it
 export action serve(port: i64, handler: action (Request) => Response): Result<void, IoError> {
@@ -1033,8 +1034,8 @@ export action serve(port: i64, handler: action (Request) => Response): Result<vo
     };
 }
 
-// one of the loops of `serve` (D374), on a listener of its own of `port`
-// (`Ok(0)` when it ends, which it does not)
+// one of the loops of `serve` (D374), on a handle of the listener of `port`
+// that the loops share (D739) (`Ok(0)` when it ends, which it does not)
 action serveShared(port: i64, handler: action (Request) => Response): Result<i64, IoError> {
     const [l, code] = sysListenShared("0.0.0.0", port);
     if (code != 0) {

@@ -4,7 +4,9 @@
 # one line each: server, connections, requests a second, the latency at
 # 50 % and 99 % (wrk), the cores busy, the memory of the server (all its
 # processes: the sum of their Pss at rest before the first run, then the
-# highest sums of their Pss and of their Rss while wrk runs, every 0.1 s;
+# highest sums of their Pss and of their Rss while wrk runs again as long,
+# every 0.1 s (the first run of wrk, for the requests, the latency and the
+# cores, alone: D743);
 # the Pss counts a page shared by n processes for 1/n in each, so that the
 # master and workers of nginx count their common pages once). The servers
 # answer `hello, world!`, all started without huge pages (`nothp.c`: in
@@ -84,20 +86,27 @@ run() {
     read -r idle _ < <(mem_of $pids)
     for c in 1 16 256 1024; do
         local t=$(( c < nclient ? c : nclient ))
-        local t0 spid mp mr
+        local t0 t1 spid mp mr
+        # the requests a second, the latency and the cores: nothing else
+        # running (D743: the sampler of the memory, on the CPUs of the
+        # client, took from wrk, the limit on 4 cores, and moved the latency
+        # of 99 % by up to 2 ms there)
         t0=$(ticks "$comm")
+        out=$(taskset -c "$client_cpus" wrk -t"$t" -c"$c" -d"${duration}s" --latency "http://127.0.0.1:$port$path" 2>&1)
+        t1=$(ticks "$comm")
+        # the memory: a second run as long, sampled
         touch /tmp/sampling
         # (the sampler on the CPUs of the client: nothing taken from the
         # server's)
         sample /tmp/sampling /tmp/peak $pids &
         spid=$!
         taskset -cp "$client_cpus" "$spid" > /dev/null
-        out=$(taskset -c "$client_cpus" wrk -t"$t" -c"$c" -d"${duration}s" --latency "http://127.0.0.1:$port$path" 2>&1)
+        taskset -c "$client_cpus" wrk -t"$t" -c"$c" -d"${duration}s" "http://127.0.0.1:$port$path" > /dev/null 2>&1
         rm -f /tmp/sampling
         wait "$spid"
         read -r mp mr < /tmp/peak
         local cores
-        cores=$(awk -v a="$t0" -v b="$(ticks "$comm")" -v hz="$hz" -v d="$duration" 'BEGIN {printf "%.2f", (b - a) / hz / d}')
+        cores=$(awk -v a="$t0" -v b="$t1" -v hz="$hz" -v d="$duration" 'BEGIN {printf "%.2f", (b - a) / hz / d}')
         rps=$(echo "$out" | awk '/Requests\/sec/ {print $2}')
         p50=$(echo "$out" | awk '$1 == "50%" {print $2}')
         p99=$(echo "$out" | awk '$1 == "99%" {print $2}')

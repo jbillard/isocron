@@ -368,7 +368,10 @@ fn filters_compress_their_vectors() {
     // elements stored as a vector (all kept), compressed (some), or not at
     // all (none); bytes, 32 and 64 bits, integers and floats, an `iota`
     // and a predicate reading an array, one block and several, against the
-    // interpreter
+    // interpreter. D743: compressed in registers of 64 bytes, then stored
+    // whole while the result has room after the place, else each kept
+    // element stored by itself (`tiny`: results of 0 to 3 elements, the
+    // filters of 40 to 103 elements)
     let src = "action main(args: string[k]): i32 {
     const n = 5 * 4096 + 37;
     const b = map(iota(n), (i) => u8((i * 7 + i / 61) % 256));
@@ -383,7 +386,9 @@ fn filters_compress_their_vectors() {
     const ys = filter(y, (v) => v % 3i32 == 1i32);
     const fs = filter(f, (v) => v >= 10.0f32);
     const small = filter(iota(100), (i) => i % 3 == 0);
+    const tiny = map(iota(64), (s) => sum(map(filter(iota(40 + s), (i) => (i * 7 + s) % 37 == 5), (x) => x + 1000)));
     print([nl.length, i64(sum(map(nl, (v) => u64(v)))), few.length, few.length > 0 ? few[few.length - 1] : -1, none.length, all.length, sum(all)] as const);
+    print(tiny);
     print([xs.length, sum(xs), ys.length, sum(map(ys, (v) => i64(v))), fs.length, f64(sum(fs))] as const);
     print(small);
     return 0;
@@ -394,7 +399,8 @@ fn filters_compress_their_vectors() {
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     let f = isc_codegen::backend::host_features();
     if ["+avx512f", "+avx512vl", "+avx512vbmi2", "+avx512bw"].iter().all(|x| f.split(',').any(|y| y == *x)) {
-        assert!(ll.contains("masked.compressstore.v32i8") && ll.contains("masked.compressstore.v16i64"), "the filters are not compressed");
+        assert!(ll.contains("vector.compress.v32i8") && ll.contains("vector.compress.v8i64"), "the filters are not compressed");
+        assert!(!ll.contains("masked.compressstore"), "a filter compressed into memory");
     }
     for t in [1, 4] {
         let run = run_bin_threads(&bin, &[], Some(t));
@@ -817,7 +823,7 @@ fn filters_with_guards_replay_their_masks() {
     let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
     let f = isc_codegen::backend::host_features();
     if f.split(',').any(|y| y == "+avx512f") {
-        assert!(ll.matches("masked.compressstore.v16i64").count() >= 6, "the filters with guards are not compressed");
+        assert!(ll.matches("vector.compress.v8i64(").count() >= 6, "the filters with guards are not compressed");
     }
     for a in ["5", "37", "201", "2001", "20001"] {
         let want = interp_ok(src, &[a]);

@@ -4299,6 +4299,21 @@ fn wake_all() {
     unsafe { isc_wasm_notify(GEN.gen.as_ptr() as *mut i32) };
 }
 
+/// The processors the program may run on (D743: the loops of `http.serve`
+/// given connections): those the system lets it use (Linux: its affinity),
+/// whatever `$ISC_THREADS`; WASI cannot know them: the threads of the pool
+/// there.
+pub(crate) fn cpu_count() -> usize {
+    #[cfg(not(target_os = "wasi"))]
+    {
+        default_threads()
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        thread_count()
+    }
+}
+
 /// Number of CPUs when `$ISC_THREADS` is not set: the CPUs the process may
 /// run on (Linux); WASI has no way to know it, so 4 there (DECISIONS D68).
 #[cfg(windows)]

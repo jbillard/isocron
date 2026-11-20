@@ -10557,7 +10557,12 @@ impl<'p> Gen<'p> {
             let pj = g.ins(format!("load i64, ptr {}", sj));
             let at = g.ins(format!("sub i64 {}, {}", pj, base));
             g.emit(format!("store i64 {}, ptr {}", at, pos));
-            g.write_kept(&src, l, &start, &end, &dst, &need, &pos, &et, w)
+            // (the place of the next block: `places` holds one more)
+            let j1 = g.ins(format!("add i64 {}, 1", j));
+            let sn = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j1));
+            let pn = g.ins(format!("load i64, ptr {}", sn));
+            let room = g.ins(format!("sub i64 {}, {}", pn, base));
+            g.write_kept(&src, l, &start, &end, &dst, &need, &room, &pos, &et, w)
         })?;
         // the element `i` of the array at `dst + (i - base)`
         let off = self.ins(format!("mul i64 {}, -{}", base, size));
@@ -10593,7 +10598,10 @@ impl<'p> Gen<'p> {
             let pj = g.ins(format!("load i64, ptr {}", sj));
             let pos = g.alloca("i64");
             g.emit(format!("store i64 {}, ptr {}", pj, pos));
-            g.write_kept(&src, l, &start, &end, out, k, &pos, &et, w)
+            let j1 = g.ins(format!("add i64 {}, 1", j));
+            let sn = g.ins(format!("getelementptr inbounds i64, ptr {}, i64 {}", places, j1));
+            let room = g.ins(format!("load i64, ptr {}", sn));
+            g.write_kept(&src, l, &start, &end, out, k, &room, &pos, &et, w)
         };
         if self.in_task {
             self.for_range_scalar("0", &c, 1, &mut |g, j| block(g, j, &places, &out, &k))?;
@@ -13009,11 +13017,12 @@ impl<'p> Gen<'p> {
     }
 
     /// The elements of `lo .. hi` of `src` that `l` keeps, written into
-    /// `out` (of `k` elements) from the place in the slot `pos`: `w` at a
-    /// time, compressed (`llvm.masked.compressstore`: `vpcompress`, D195),
-    /// then one at a time.
+    /// `out` (of `k` elements) from the place in the slot `pos`, its places
+    /// before `room` theirs (those of the next block after: a whole vector
+    /// stored only below it, D743): `w` at a time, compressed (`vpcompress`,
+    /// D195: in registers since D743, not into memory), then one at a time.
     #[allow(clippy::too_many_arguments)]
-    fn write_kept(&mut self, src: &Src, l: &Lambda, lo: &str, hi: &str, out: &str, k: &str, pos: &str, elem_ty: &Type, w: u32) -> R<()> {
+    fn write_kept(&mut self, src: &Src, l: &Lambda, lo: &str, hi: &str, out: &str, k: &str, room: &str, pos: &str, elem_ty: &Type, w: u32) -> R<()> {
         let mut from = lo.to_string();
         if w > 1 {
             let span = self.ins(format!("sub i64 {}, {}", hi, lo));
@@ -13025,21 +13034,36 @@ impl<'p> Gen<'p> {
                 "float" => "f32".to_string(),
                 t => t.to_string(),
             };
-            let name = format!("llvm.masked.compressstore.v{}{}", w, suffix);
-            self.decls.insert(format!("declare void @{}(<{} x {}>, ptr, <{} x i1>)", name, w, m, w));
+            // (compressed by parts of one register of 64 bytes: LLVM splits a
+            // wider compress itself, then stores its second part with an
+            // aligned move at a place that is not, D743)
+            let p = ((64 / esize(elem_ty).max(1)) as u32).clamp(1, w);
+            let rname = format!("llvm.experimental.vector.compress.v{}{}", p, suffix);
+            self.decls.insert(format!("declare <{p} x {m}> @{r}(<{p} x {m}>, <{p} x i1>, <{p} x {m}>)", p = p, m = m, r = rname));
             self.decls.insert(format!("declare i{w} @llvm.ctpop.i{w}(i{w})", w = w));
+            self.decls.insert(format!("declare i{p} @llvm.ctpop.i{p}(i{p})", p = p));
             self.for_range(lo, &vend, w as i64, &mut |g, i| {
                 let el = g.elem(src, i, w)?;
                 let el = g.widen(&el, w);
                 let keep = g.kept_mask(src, l, i, w, &el)?;
                 // none kept: nothing written; all kept: the vector stored;
-                // some: compressed into memory (the instruction is slow:
-                // only when it is needed)
+                // some: compressed in a register, then the whole vector
+                // stored when the result has room for it after the place
+                // (the lanes past the kept ones written over by the next
+                // ones, or left past its length), compressed into memory at
+                // its end only (D743: `vpcompress` into memory is slow, and a
+                // load that follows it at the same place of another page of
+                // 4 KiB waits until it is written: the line read after the
+                // places of the one before by `replaceAll`, 12 % slower or
+                // not as the blocks of the arena fell)
                 let bits = g.ins(format!("bitcast <{} x i1> {} to i{}", w, keep.r, w));
                 let none = g.ins(format!("icmp eq i{} {}, 0", w, bits));
                 let lsome = g.label();
                 let lall = g.label();
                 let lpart = g.label();
+                let lroom = g.label();
+                let ltail = g.label();
+                let lcount = g.label();
                 let ldone = g.label();
                 g.cbr(&none, &ldone, &lsome);
                 g.block(&lsome);
@@ -13053,9 +13077,75 @@ impl<'p> Gen<'p> {
                 g.emit(format!("store i64 {}, ptr {}", c_all, pos));
                 g.br(&ldone);
                 g.block(&lpart);
-                g.emit(format!("call void @{}(<{} x {}> {}, ptr {}, <{} x i1> {})", name, w, m, el.r, at, w, keep.r));
                 let kk = g.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
                 let k64 = g.ins(format!("zext i{} {} to i64", w, kk));
+                // the parts compressed, each with the count of its kept lanes
+                let mut packs = Vec::new();
+                for h in 0..w / p {
+                    let idx = (h * p..(h + 1) * p).map(|x| format!("i32 {}", x)).collect::<Vec<_>>().join(", ");
+                    let (ev, mv) = if p == w {
+                        (el.r.clone(), keep.r.clone())
+                    } else {
+                        (g.ins(format!("shufflevector <{w} x {m}> {v}, <{w} x {m}> poison, <{p} x i32> <{i}>", w = w, m = m, v = el.r, p = p, i = idx)), g.ins(format!("shufflevector <{w} x i1> {v}, <{w} x i1> poison, <{p} x i32> <{i}>", w = w, v = keep.r, p = p, i = idx)))
+                    };
+                    let cp = g.ins(format!("call <{p} x {m}> @{r}(<{p} x {m}> {v}, <{p} x i1> {k}, <{p} x {m}> poison)", p = p, m = m, r = rname, v = ev, k = mv));
+                    let hb = g.ins(format!("bitcast <{} x i1> {} to i{}", p, mv, p));
+                    let hc = g.ins(format!("call i{p} @llvm.ctpop.i{p}(i{p} {b})", p = p, b = hb));
+                    let hc64 = g.ins(format!("zext i{} {} to i64", p, hc));
+                    packs.push((cp, hc64));
+                }
+                // each part stored after the kept lanes of those before it, a
+                // whole register (its lanes past them written over by the
+                // next part, or left past the kept ones)
+                let store_parts = |g: &mut Self, base: &str| {
+                    let mut off = "0".to_string();
+                    for (cp, hc64) in &packs {
+                        let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, base, off));
+                        g.emit(format!("store <{} x {}> {}, ptr {}, align {}", p, m, cp, pa, esize(elem_ty)));
+                        off = g.ins(format!("add i64 {}, {}", off, hc64));
+                    }
+                };
+                let end = g.ins(format!("add i64 {}, {}", c, w));
+                let fits = g.ins(format!("icmp sle i64 {}, {}", end, room));
+                g.cbr(&fits, &lroom, &ltail);
+                g.block(&lroom);
+                store_parts(g, &at);
+                g.br(&lcount);
+                // (no room: each kept element read again from the source and
+                // stored by itself, by the bits of the mask: a store of a
+                // whole register, or of parts of it, is read back by wider or
+                // narrower loads that wait for it, D743)
+                g.block(&ltail);
+                let bslot = g.alloca(&format!("i{}", w));
+                let jslot = g.alloca("i64");
+                g.emit(format!("store i{} {}, ptr {}", w, bits, bslot));
+                g.emit(format!("store i64 0, ptr {}", jslot));
+                let lhead = g.label();
+                let lbody = g.label();
+                let lend = g.label();
+                g.br(&lhead);
+                g.block(&lhead);
+                let bv = g.ins(format!("load i{}, ptr {}", w, bslot));
+                let empty = g.ins(format!("icmp eq i{} {}, 0", w, bv));
+                g.cbr(&empty, &lend, &lbody);
+                g.block(&lbody);
+                g.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+                let b = g.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {v}, i1 true)", w = w, v = bv));
+                let b64 = g.ins(format!("zext i{} {} to i64", w, b));
+                let idx = g.ins(format!("add i64 {}, {}", i, b64));
+                let x = g.elem(src, &idx, 1)?;
+                let j = g.ins(format!("load i64, ptr {}", jslot));
+                let pa = g.ins(format!("getelementptr inbounds {}, ptr {}, i64 {}", m, at, j));
+                g.emit(format!("store {} {}, ptr {}, align {}", m, x.r, pa, esize(elem_ty)));
+                let j2 = g.ins(format!("add i64 {}, 1", j));
+                g.emit(format!("store i64 {}, ptr {}", j2, jslot));
+                let bm = g.ins(format!("sub i{} {}, 1", w, bv));
+                let bn = g.ins(format!("and i{} {}, {}", w, bv, bm));
+                g.emit(format!("store i{} {}, ptr {}", w, bn, bslot));
+                g.br(&lhead);
+                g.block(&lend);
+                g.br(&lcount);
+                g.block(&lcount);
                 let c2 = g.ins(format!("add i64 {}, {}", c, k64));
                 g.emit(format!("store i64 {}, ptr {}", c2, pos));
                 g.br(&ldone);
@@ -13091,7 +13181,7 @@ impl<'p> Gen<'p> {
         let out = self.alloc_elems(&k, elem_ty);
         let pos = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", pos));
-        self.write_kept(src, l, "0", n, &out, &k, &pos, elem_ty, w)?;
+        self.write_kept(src, l, "0", n, &out, &k, &k, &pos, elem_ty, w)?;
         Ok(self.arr(&out, &k))
     }
 
@@ -13203,7 +13293,7 @@ impl<'p> Gen<'p> {
             let pos = g.alloca("i64");
             g.emit(format!("store i64 {}, ptr {}", first, pos));
             let (out, k) = (extra[1].r.clone(), extra[2].r.clone());
-            g.write_kept(&src, l, &start, &end, &out, &k, &pos, &elem_ty, w)?;
+            g.write_kept(&src, l, &start, &end, &out, &k, &next, &pos, &elem_ty, w)?;
             g.br(&ldone);
             g.block(&ldone);
             Ok(())

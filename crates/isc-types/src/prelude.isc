@@ -138,13 +138,6 @@ function $argsortInt(k: i64[n]): i64[n] {
     if (n < 2) {
         return iota(n);
     }
-    if (n <= 16) {
-        // (a few keys: each placed by the count of those before it, D740;
-        // a pass of the radix sort fills and reads two arrays of 256
-        // counts, more work than the keys: the arrivals of a turn of the
-        // server of `http`, 8 to 64 numbers, sorted at each turn)
-        return fold(iota(n), fill(n, 0), (o, i) => requireUnique(o.with(count(iota(n), (j) => k[j] < k[i] || (k[j] == k[i] && j < i)), i)));
-    }
     const lo = reduce(k, (a, b) => a < b ? a : b, k[0]);
     const hi = reduce(k, (a, b) => a > b ? a : b, k[0]);
     const ib = 64 - leadingZeros(u64(n - 1));
@@ -4365,7 +4358,8 @@ function $lowerTexts(): string {
 // the count of its blocks.
 // The zone of the thread: at 8 * c the list of its free blocks of the class
 // c, at 128 + 2 * c their count (at most 64), at 160 + 8 * c a batch it
-// keeps in reserve, at 288 + 2 * c the cuts of new blocks of the class it
+// keeps in reserve, at 288 + 2 * c the refills of the class from its first
+// run of new blocks and at 320 + 8 * c the next block of that run not yet
 // made (`$kCarve`). A list changes hands whole, in one step, never walked
 // (D605): a thread that fills its list keeps it as its batch in reserve and
 // gives the batch it had to all the threads; a thread whose list is empty
@@ -4496,25 +4490,36 @@ action $kOpen(class: i64, b: u64): u64 {
 }
 
 // New blocks of the class cut after the last byte given, under the lock of
-// that byte (their pages committed by 2 MiB): the first one given, the
-// others the list of the thread. 2 at the first cut of the class by the
-// thread, then 4, 8, 16 and 32 (D737; at 288 + 2 * c of the zone, the cuts
-// of the class c so far, at most 4): 32 at once, each header written, made
-// a class that a thread used for one or two blocks at a time cost it 4 to
-// 35 KiB resident (the server of `http` on 4 threads, all the classes used
-// by each: 1.2 MB of the arena, against 0.2 with 16 connections).
+// that byte (their pages committed by 2 MiB): 32 at once, the first one
+// given, the others the list of the thread. At the first cut of the class
+// by the thread, the run of 32 reserved but 2 of its blocks made the list,
+// then 4, 8 and 16 at the next refills, then the 2 left (D737, D743; at 288
+// + 2 * c of the zone the refills of the class c from its run so far, at
+// 320 + 8 * c its next block not yet made): a class that a thread uses for
+// one or two blocks at a time touches the pages of those only (the server
+// of `http` on 4 threads, all the classes used by each: 1.2 MB of the arena
+// with the 32 headers written at once, against 0.2 with 16 connections),
+// and the blocks are where the runs of 32 put them (D737 cut 2, 4, 8 and 16
+// blocks after the last byte given: the first blocks of the classes close
+// to each other, at the same places of other pages of 4 KiB as the blocks
+// a loop writes and reads in turn often enough that a load waited for a
+// store of another block: `textResponse` 27 % slower over 4 of 12
+// placements of its texts, `replaceAll` 12 %).
 @cold
 action $kCarve(class: i64): u64 {
-    const base = $arenaBase();
     const step = u64(class + 1) * 64u64 + 64u64;
     const cuts = $zoneLoad16(288 + class * 2);
-    const count = cuts >= 4u64 ? 32 : 2 << i64(cuts);
-    if (cuts < 4u64) {
+    if (cuts >= 1u64 && cuts <= 4u64) {
+        const next = $zoneLoad64(320 + class * 8);
+        const count = cuts == 4u64 ? 2 : 2 << i64(cuts);
         $zoneStore16(288 + class * 2, cuts + 1u64);
+        $zoneStore64(320 + class * 8, next + step * u64(count));
+        return $kTake(class, next, step, count);
     }
+    const base = $arenaBase();
     const l = $kLock(base + 16u64);
     const start = $load64(base);
-    const end = start + step * u64(count);
+    const end = start + step * 32u64;
     const committed = $load64(base + 8u64);
     if (end > committed) {
         // (up to a multiple of 2 MiB from the base)
@@ -4527,6 +4532,18 @@ action $kCarve(class: i64): u64 {
     }
     $store64(base, end);
     const u = $kUnlock(base + 16u64);
+    if (cuts == 0u64) {
+        $zoneStore16(288 + class * 2, 1u64);
+        $zoneStore64(320 + class * 8, start + step * 2u64);
+        return $kTake(class, start, step, 2);
+    }
+    return $kTake(class, start, step, 32);
+}
+
+// `count` blocks of the class from `start`, each `step` bytes after the one
+// before: the first one given, the others the list of the thread (empty
+// before).
+action $kTake(class: i64, start: u64, step: u64, count: i64): u64 {
     const linked = $kLink(start + step, step, class, count - 1);
     $zoneStore64(class * 8, start + step);
     $zoneStore16(128 + class * 2, u64(count - 1));

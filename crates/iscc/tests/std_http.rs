@@ -610,6 +610,84 @@ fn loops_on_each_thread(src: &str, name: &str) {
     }
 }
 
+/// The connections that each set of `epoll` of the process `pid` watches
+/// (all its sockets but the listener), sorted.
+fn connections_per_loop(pid: u32) -> Vec<usize> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(format!("/proc/{}/fd", pid)).unwrap().flatten() {
+        if std::fs::read_link(e.path()).map(|l| l.to_string_lossy() == "anon_inode:[eventpoll]").unwrap_or(false) {
+            let info = std::fs::read_to_string(format!("/proc/{}/fdinfo/{}", pid, e.file_name().to_string_lossy())).unwrap_or_default();
+            out.push(info.lines().filter(|l| l.starts_with("tfd:") && !l.contains("data: ffffffffffffffff")).count());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The slices of time of the threads of the process `pid` (`se.slice` of
+/// their `sched`, Linux 6.12 and after: none before), in nanoseconds.
+fn slices_of(pid: u32) -> Vec<u64> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(format!("/proc/{}/task", pid)).unwrap().flatten() {
+        let sched = std::fs::read_to_string(e.path().join("sched")).unwrap_or_default();
+        if let Some(v) = sched.lines().find(|l| l.starts_with("se.slice")).and_then(|l| l.split_whitespace().last()).and_then(|v| v.parse().ok()) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// D743: 4 loops on 2 processors (`ISC_THREADS=4`, `taskset` of 2 CPUs),
+/// a pure function and an action: each loop given its share of 12
+/// connections and asking for slices of time of 100 us (4 loops always
+/// ready waited for each other at the ticks of the system, 5 to 8 ms for
+/// 1 % of the requests); on 4 processors the loops keep the slice of the
+/// system. A request on each connection, all answered.
+#[test]
+fn crowded_loops_ask_short_slices() {
+    let allowed = std::fs::read_to_string("/proc/self/status").unwrap();
+    let list = allowed.lines().find(|l| l.starts_with("Cpus_allowed_list:")).unwrap().split_whitespace().nth(1).unwrap().to_string();
+    let mut cpus: Vec<usize> = Vec::new();
+    for part in list.split(',') {
+        let (a, b): (usize, usize) = part.split_once('-').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())).unwrap_or_else(|| (part.parse().unwrap(), part.parse().unwrap()));
+        cpus.extend(a..=b);
+    }
+    if cpus.len() < 4 {
+        return;
+    }
+    let pure = compile(include_str!("data/std_http_serve_loops.isc"), "std_http_crowded_pure");
+    let action = compile(include_str!("data/std_http_serve_action_loops.isc"), "std_http_crowded_action");
+    let two = format!("{},{}", cpus[0], cpus[1]);
+    let four = format!("{},{},{},{}", cpus[0], cpus[1], cpus[2], cpus[3]);
+    for (bin, set, short) in [(&pure, &two, 4), (&action, &two, 4), (&pure, &four, 0)] {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut child = std::process::Command::new("taskset").args(["-c", set]).arg(bin).arg(port.to_string()).env("ISC_THREADS", "4").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let start = std::time::Instant::now();
+        while listeners_of(port) < 1 || listener_watches(child.id()).len() < 4 {
+            assert!(start.elapsed() < std::time::Duration::from_secs(60), "{:?} on {}: no server", bin, set);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut conns: Vec<_> = (0..12).map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+        let mut answered = 0;
+        for (i, s) in conns.iter_mut().enumerate() {
+            s.set_read_timeout(Some(std::time::Duration::from_secs(60))).unwrap();
+            write!(s, "GET /c{} HTTP/1.1\r\nHost: test\r\n\r\n", i).unwrap();
+            let (status, _, _) = read_response(&mut std::io::BufReader::new(s.try_clone().unwrap()));
+            answered += (status == 200) as usize;
+        }
+        let per_loop = connections_per_loop(child.id());
+        let slices = slices_of(child.id());
+        drop(conns);
+        child.kill().unwrap();
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(answered, 12, "{:?} on {}: {}", bin, set, String::from_utf8_lossy(&o.stderr));
+        assert_eq!(per_loop, vec![3, 3, 3, 3], "{:?} on {}", bin, set);
+        if !slices.is_empty() {
+            assert_eq!(slices.iter().filter(|&&s| s == 100_000).count(), short, "{:?} on {}: slices {:?}", bin, set, slices);
+        }
+    }
+}
+
 /// D395: `headerOf` compares the names byte by byte, the case of ASCII
 /// ignored, without making texts: the last header of a name, its case
 /// mixed; a name missing, empty, a prefix of another, longer; only the
