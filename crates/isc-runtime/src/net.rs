@@ -175,6 +175,14 @@ struct ServerState<F: Copy> {
     /// kept from one wait to the next with their room (D376): a wait reads
     /// into the room it reserved for each connection, then copies.
     scratch: (alloc::vec::Vec<i64>, alloc::vec::Vec<i64>, alloc::vec::Vec<u8>),
+
+    /// Whether its listener is one of `sysListenShared` that other servers
+    /// share (D739): each connection it accepts given to the server that
+    /// has the fewest.
+    shared: bool,
+    /// Its connections, and those given to it not yet adopted (D739): read
+    /// by the servers that share its listener.
+    load: alloc::boxed::Box<core::sync::atomic::AtomicUsize>,
 }
 
 /// The room of the bytes of a wait kept for the next one, at most.
@@ -190,6 +198,13 @@ impl<F: Copy> ServerState<F> {
 
     /// A connection added: its number.
     fn add(&mut self, fd: F) -> i64 {
+        self.load.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.adopt(fd)
+    }
+
+    /// A connection added that another server accepted and counted for this
+    /// one (D739): its number.
+    fn adopt(&mut self, fd: F) -> i64 {
         let id = self.next;
         self.next += 1;
         self.conns.push((id, fd));
@@ -214,7 +229,9 @@ impl<F: Copy> ServerState<F> {
 
     /// The connection `id` taken out: its socket.
     fn take(&mut self, id: i64) -> Option<F> {
-        self.conns.binary_search_by_key(&id, |c| c.0).ok().map(|i| self.conns.remove(i).1)
+        let i = self.conns.binary_search_by_key(&id, |c| c.0).ok()?;
+        self.load.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+        Some(self.conns.remove(i).1)
     }
 }
 
@@ -306,7 +323,6 @@ mod imp {
     const SOCK_CLOEXEC: usize = 0o2000000;
     const SOL_SOCKET: usize = 1;
     const SO_REUSEADDR: usize = 2;
-    const SO_REUSEPORT: usize = 15;
     const SO_RCVTIMEO: usize = 20;
     const SO_SNDTIMEO: usize = 21;
     const MSG_NOSIGNAL: usize = 0x4000;
@@ -425,11 +441,11 @@ mod imp {
         unsafe { out.write(r) };
     }
 
-    /// `sysListenShared(address, port)` (D374): a listener whose port the
-    /// other listeners of the program with this option share
-    /// (`SO_REUSEPORT`): the kernel shares the new connections out among
-    /// them (`socket(7)`: the option set on each socket before `bind`, all
-    /// of the same effective user).
+    /// `sysListenShared(address, port)` (D374, D739): a listener whose
+    /// connections the other listeners of the program on this address with
+    /// this option share: each a handle of one socket (its queue of
+    /// connections); the server woken accepts them, each given to the server
+    /// on the socket that has the fewest (`SharedListener`).
     ///
     /// # Safety
     /// As `isc_sys_connect`.
@@ -442,31 +458,209 @@ mod imp {
         unsafe { out.write(r) };
     }
 
+    /// The connections a listener keeps before they are accepted (D739: 128
+    /// before; wrk opening 1024 at once on the shared listener of 2 or 4
+    /// loops saw 0 to 484 of them refused, `ListenOverflows`, each trying
+    /// again a second later; none with 4096); the kernel bounds it by
+    /// `net.core.somaxconn`.
+    const BACKLOG: usize = 4096;
+
+    /// The listeners of `sysListenShared` (D739): for each address, one
+    /// socket, kept here, and the handles given to the program, each a
+    /// duplicate of it (`F_DUPFD_CLOEXEC`: the same queue of connections),
+    /// the socket closed with the last of them. The loops of `http.serve`
+    /// took a listener each (`SO_REUSEPORT`, D374), the kernel giving each
+    /// connection to one by a hash of its addresses: 12 connections on 2
+    /// loops were 6 and 6, 7 and 5, 8 and 4, even 2 and 10 (the latency of
+    /// 99 % of the requests 52, 57 to 60, 64 to 66 and 83 us, nginx's 45 to
+    /// 63 as its workers had 6 and 6 or 7 and 5). Now the loops share one
+    /// queue, the loop woken (`EPOLLEXCLUSIVE`) giving each connection it
+    /// accepts to the loop that has the fewest (`give`): 6 and 6 each time.
+    /// (Each loop accepting one connection at a time and the loop free first
+    /// taking the next, as nginx, was tried: the kernel wakes the set that
+    /// watched the listener first, 7 and 5 or 8 and 4 again, and 1024
+    /// connections waited for a turn each, 30 to 77 ms for 1 % of the
+    /// requests.)
+    struct SharedListener {
+        addr: [u8; 28],
+        len: usize,
+        socket: c_int,
+        handles: alloc::vec::Vec<c_int>,
+        servers: alloc::vec::Vec<SharedServer>,
+    }
+
+    /// A server on a handle of a shared listener: its set of `epoll`, its
+    /// load (`ServerState::load`, in its own block, freed after the server
+    /// leaves this list), the connections given to it not yet adopted.
+    struct SharedServer {
+        handle: c_int,
+        ep: c_int,
+        load: *const core::sync::atomic::AtomicUsize,
+        given: alloc::vec::Vec<c_int>,
+    }
+
+    /// The number in a set of `epoll` of a connection given to its server by
+    /// another (D739): this bit and its socket.
+    const GIVEN: u64 = 1 << 62;
+
+    /// The connection `c` that the server of the handle `l` accepted, given
+    /// to the server of its listener that has the fewest connections: true
+    /// when it went to another (watched by its set, `GIVEN`), false when it
+    /// stays (none has fewer, or the other's set refused it).
+    fn give(l: c_int, c: c_int) -> bool {
+        with_shared(|list| {
+            let Some(e) = list.iter_mut().find(|e| e.handles.contains(&l)) else { return false };
+            // SAFETY: each `load` is the block of a server in this list (it
+            // leaves the list, under this lock, before its block is freed)
+            let load = |s: &SharedServer| unsafe { (*s.load).load(core::sync::atomic::Ordering::Relaxed) };
+            let Some(mine) = e.servers.iter().find(|s| s.handle == l).map(|s| load(s)) else { return false };
+            let Some(at) = (0..e.servers.len()).filter(|&i| e.servers[i].handle != l).min_by_key(|&i| load(&e.servers[i])) else { return false };
+            if load(&e.servers[at]) >= mine {
+                return false;
+            }
+            let to = &mut e.servers[at];
+            let ev = EpollEvent { events: EPOLLIN, data: GIVEN | c as u64 };
+            // SAFETY: as `watch`; the set of a server in this list, open
+            if unsafe { syscall6(SYS_EPOLL_CTL, to.ep as usize, EPOLL_CTL_ADD, c as usize, &ev as *const EpollEvent as usize, 0, 0) } < 0 {
+                return false;
+            }
+            // SAFETY: as above
+            unsafe { (*to.load).fetch_add(1, core::sync::atomic::Ordering::Relaxed) };
+            to.given.push(c);
+            true
+        })
+    }
+
+    /// The connection `c` given to the server `st` by another (`give`):
+    /// its own, its number in its set of `epoll`.
+    fn adopt(st: &mut ServerState<c_int>, c: c_int) -> i64 {
+        let l = st.listener;
+        with_shared(|list| {
+            if let Some(s) = list.iter_mut().find(|e| e.handles.contains(&l)).and_then(|e| e.servers.iter_mut().find(|s| s.handle == l)) {
+                s.given.retain(|&g| g != c);
+            }
+        });
+        let id = st.adopt(c);
+        let ev = EpollEvent { events: EPOLLIN, data: id as u64 };
+        // SAFETY: as `watch`
+        unsafe { syscall6(SYS_EPOLL_CTL, st.ep as usize, EPOLL_CTL_MOD, c as usize, &ev as *const EpollEvent as usize, 0, 0) };
+        id
+    }
+
+    /// The server `st` on the shared listener of its handle (`give`).
+    fn join(st: &ServerState<c_int>) {
+        let (l, ep, load) = (st.listener, st.ep, &*st.load as *const core::sync::atomic::AtomicUsize);
+        with_shared(|list| {
+            if let Some(e) = list.iter_mut().find(|e| e.handles.contains(&l)) {
+                e.servers.push(SharedServer { handle: l, ep, load, given: alloc::vec::Vec::new() });
+            }
+        });
+    }
+
+    struct SharedListeners {
+        lock: core::sync::atomic::AtomicBool,
+        list: core::cell::UnsafeCell<alloc::vec::Vec<SharedListener>>,
+    }
+
+    // SAFETY: `list` is read and written only while `lock` is held
+    unsafe impl Sync for SharedListeners {}
+
+    static SHARED: SharedListeners = SharedListeners { lock: core::sync::atomic::AtomicBool::new(false), list: core::cell::UnsafeCell::new(alloc::vec::Vec::new()) };
+
+    fn with_shared<T>(f: impl FnOnce(&mut alloc::vec::Vec<SharedListener>) -> T) -> T {
+        while SHARED.lock.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        // SAFETY: the lock is held
+        let r = f(unsafe { &mut *SHARED.list.get() });
+        SHARED.lock.store(false, core::sync::atomic::Ordering::Release);
+        r
+    }
+
+    const F_DUPFD_CLOEXEC: usize = 1030;
+
     fn listen_on(a: &[u8], port: i64, shared: bool) -> HandleCode {
         let Some((addr, len, family)) = sockaddr(a, port, AF_INET6) else {
             return HandleCode { h: -1, code: -22 };
         };
+        if !shared {
+            return match open_listener(&addr[..len], family) {
+                Ok(fd) => HandleCode { h: fd as i64, code: 0 },
+                Err(code) => HandleCode { h: -1, code },
+            };
+        }
+        with_shared(|list| {
+            let at = match list.iter().position(|e| e.len == len && e.addr[..len] == addr[..len]) {
+                Some(i) => i,
+                None => match open_listener(&addr[..len], family) {
+                    Ok(fd) => {
+                        list.push(SharedListener { addr, len, socket: fd, handles: alloc::vec::Vec::new(), servers: alloc::vec::Vec::new() });
+                        list.len() - 1
+                    }
+                    Err(code) => return HandleCode { h: -1, code },
+                },
+            };
+            let d = call_ints(SYS_FCNTL, list[at].socket as usize, F_DUPFD_CLOEXEC, 0);
+            if d < 0 {
+                if list[at].handles.is_empty() {
+                    linux::close(list[at].socket);
+                    list.swap_remove(at);
+                }
+                return HandleCode { h: -1, code: net_code(d) };
+            }
+            list[at].handles.push(d as c_int);
+            HandleCode { h: d as i64, code: 0 }
+        })
+    }
+
+    /// A socket listening on the address `addr` (the bytes of a
+    /// `sockaddr`), reusable at once, or a code.
+    fn open_listener(addr: &[u8], family: u16) -> Result<c_int, i64> {
         let fd = socket(family, SOCK_STREAM);
         if fd < 0 {
-            return HandleCode { h: -1, code: net_code(fd) };
+            return Err(net_code(fd));
         }
         set_option(fd, SOL_SOCKET, SO_REUSEADDR, 1);
-        if shared {
-            let r = set_option(fd, SOL_SOCKET, SO_REUSEPORT, 1);
-            if r < 0 {
-                linux::close(fd as c_int);
-                return HandleCode { h: -1, code: net_code(r) };
-            }
-        }
-        let mut r = bind(fd, &addr[..len]);
+        let mut r = bind(fd, addr);
         if r >= 0 {
-            r = call_ints(SYS_LISTEN, fd as usize, 128, 0);
+            r = call_ints(SYS_LISTEN, fd as usize, BACKLOG, 0);
         }
         if r < 0 {
             linux::close(fd as c_int);
-            return HandleCode { h: -1, code: net_code(r) };
+            return Err(net_code(r));
         }
-        HandleCode { h: fd as i64, code: 0 }
+        Ok(fd as c_int)
+    }
+
+    /// Whether `l` is a handle of a listener of `sysListenShared`.
+    fn is_shared(l: c_int) -> bool {
+        with_shared(|list| list.iter().any(|e| e.handles.contains(&l)))
+    }
+
+    /// The listener `l` closed (none: -1): a handle of a shared one given
+    /// back, its socket closed with the last.
+    fn close_listener(l: i64) {
+        if l < 0 {
+            return;
+        }
+        with_shared(|list| {
+            if let Some(i) = list.iter().position(|e| e.handles.contains(&(l as c_int))) {
+                list[i].handles.retain(|&h| h != l as c_int);
+                // (its server out of the list, the connections given to it
+                // and not adopted closed)
+                if let Some(j) = list[i].servers.iter().position(|s| s.handle == l as c_int) {
+                    for &g in &list[i].servers[j].given {
+                        linux::close(g);
+                    }
+                    list[i].servers.swap_remove(j);
+                }
+                if list[i].handles.is_empty() {
+                    linux::close(list[i].socket);
+                    list.swap_remove(i);
+                }
+            }
+        });
+        linux::close(l as c_int);
     }
 
     /// `accept` on the listener `l`: the connection (or a negative code) and
@@ -652,7 +846,7 @@ mod imp {
     /// `out` the place of the result, the generated code's.
     #[no_mangle]
     pub unsafe extern "C" fn isc_sys_closelistener(out: *mut i64, l: i64) {
-        close_socket(l);
+        close_listener(l);
         // SAFETY: the contract of this function
         unsafe { out.write(0) };
     }
@@ -683,7 +877,9 @@ mod imp {
     const F_GETFL: usize = 3;
     const F_SETFL: usize = 4;
     const EPOLL_CTL_ADD: usize = 1;
+    const EPOLL_CTL_MOD: usize = 3;
     const EPOLLIN: u32 = 1;
+    const EPOLLEXCLUSIVE: u32 = 1 << 28;
     const POLLOUT: i16 = 4;
     const IPPROTO_TCP: usize = 6;
     const TCP_NODELAY: usize = 1;
@@ -715,6 +911,21 @@ mod imp {
         unsafe { syscall6(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, fd as usize, &ev as *const EpollEvent as usize, 0, 0) }
     }
 
+    /// The listener `fd` watched by the set `ep`; when it is shared (D739),
+    /// the set woken alone among those that watch it (`EPOLLEXCLUSIVE`, Linux
+    /// 4.5; before it, as any other).
+    fn watch_listener(ep: c_int, fd: c_int, shared: bool) -> isize {
+        if shared {
+            let ev = EpollEvent { events: EPOLLIN | EPOLLEXCLUSIVE, data: LISTENER };
+            // SAFETY: as `watch`
+            let r = unsafe { syscall6(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, fd as usize, &ev as *const EpollEvent as usize, 0, 0) };
+            if r != -22 {
+                return r;
+            }
+        }
+        watch(ep, fd, LISTENER)
+    }
+
     /// `poll` of `fd` for `events`, SEND_WAIT_MS at most: 0 at the end of
     /// the delay.
     fn wait_for(fd: c_int, events: i16) -> isize {
@@ -740,17 +951,21 @@ mod imp {
         let ep = call_ints(SYS_EPOLL_CREATE1, SOCK_CLOEXEC, 0, 0);
         let flags = if ep >= 0 { call_ints(SYS_FCNTL, l as usize, F_GETFL, 0) } else { ep };
         let mut r = if flags >= 0 { call_ints(SYS_FCNTL, l as usize, F_SETFL, flags as usize | SOCK_NONBLOCK) } else { flags };
+        let shared = is_shared(l as c_int);
         if r >= 0 {
-            r = watch(ep as c_int, l as c_int, LISTENER);
+            r = watch_listener(ep as c_int, l as c_int, shared);
         }
         if r < 0 {
             if ep >= 0 {
                 linux::close(ep as c_int);
             }
-            close_socket(l);
+            close_listener(l);
             return HandleCode { h: -1, code: net_code(r) };
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default() });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)) });
+        if shared {
+            join(&st);
+        }
         HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 }
     }
 
@@ -783,14 +998,14 @@ mod imp {
 
     fn server_open_tls(l: i64, cert: &[u8], key: &[u8]) -> HandleTextCode {
         let Some(d) = dl() else {
-            close_socket(l);
+            close_listener(l);
             return HandleTextCode { h: -1, text: text_of("TLS needs the C library of the system (the program is static)"), code: tls::NO_LIBRARY };
         };
         ignore_sigpipe();
         let ctx = match tls::server_ctx(d, cert, key) {
             Ok(c) => c,
             Err((code, t)) => {
-                close_socket(l);
+                close_listener(l);
                 return HandleTextCode { h: -1, text: text_of(&t), code };
             }
         };
@@ -831,10 +1046,19 @@ mod imp {
         unsafe { out.write(r) };
     }
 
+    /// The events of one wait of a server at most: the connections a turn of
+    /// `http.serve` reads and answers at once (D741: 64 before; a turn of 64
+    /// requests kept about 2 KB of small blocks for each until its end, which
+    /// the allocator then kept: on 4 loops at 1024 connections the arena and
+    /// the chunk of the runtime held 550 and 356 KiB more than at 16; with
+    /// 16, the server 1272 KiB against 1972 to 1992, as many requests a
+    /// second on 4 cores, 2 to 6 % more on 2).
+    const WAIT_EVENTS: usize = 16;
+
     fn server_wait(st: &mut ServerState<c_int>, max: i64, ms: i64) -> WaitOut {
         let empty = || IscArray { ptr: empty_bytes(), len: 0 };
         let max = max.clamp(1, 1 << 24) as usize;
-        let mut evs = [EpollEvent { events: 0, data: 0 }; 64];
+        let mut evs = [EpollEvent { events: 0, data: 0 }; WAIT_EVENTS];
         let (mut ids, mut lens, mut data) = st.take_scratch();
         // again while only connections were accepted (their bytes come with
         // the next wait), within the delay: as the interpreter, which gives
@@ -853,9 +1077,9 @@ mod imp {
                 Some(d) => (d.saturating_sub(crate::isc_clock_ns()).div_ceil(1_000_000)).min(i32::MAX as u64) as isize,
                 None => -1,
             };
-            // SAFETY: the kernel writes at most 64 events at `evs`, of this
+            // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`, of this
             // frame
-            let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, 64, left as usize, 0, 0) });
+            let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, left as usize, 0, 0) });
             if n < 0 {
                 st.keep_scratch((ids, lens, data));
                 return WaitOut { ids: empty(), lens: empty(), data: empty(), code: net_code(n) };
@@ -883,6 +1107,12 @@ mod imp {
                         break;
                     }
                     set_option(c, IPPROTO_TCP, TCP_NODELAY, 1);
+                    // (to the loop of the listener that has the fewest
+                    // connections, D739; a server of TLS keeps its own: its
+                    // session made here)
+                    if st.shared && st.tls == 0 && give(st.listener, c as c_int) {
+                        continue;
+                    }
                     let id = st.add(c as c_int);
                     if watch(st.ep, c as c_int, id as u64) < 0 {
                         st.take(id);
@@ -903,7 +1133,7 @@ mod imp {
                 }
                 continue;
             }
-            let id = tag as i64;
+            let id = if tag & GIVEN != 0 { adopt(st, (tag & !GIVEN) as c_int) } else { tag as i64 };
             let Some(fd) = st.fd(id) else { continue };
             if st.tls != 0 {
                 read_tls(st, id, max, ids, lens, data);
@@ -1080,7 +1310,7 @@ mod imp {
             for &(_, fd) in &st.conns {
                 linux::close(fd);
             }
-            linux::close(st.listener);
+            close_listener(st.listener as i64);
             linux::close(st.ep);
         }
         // SAFETY: the contract of this function
@@ -1667,7 +1897,7 @@ mod imp {
                 *out = HandleCode { h: -1, code };
                 return;
             }
-            let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default() });
+            let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared: false, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)) });
             *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
     
         }

@@ -2717,7 +2717,8 @@ action main(args: string[k]): i32 {
 }
 ";
     let bin = compile(edges, "argsort_edges");
-    for n in ["0", "1", "2", "3", "10", "300"] {
+    // (16 keys and fewer placed by counts, D740; 17 by the radix sort)
+    for n in ["0", "1", "2", "3", "10", "16", "17", "300"] {
         assert_eq!(run_bin(&bin, &[n]).stdout, interp_ok(edges, &[n]), "{} keys", n);
     }
     assert_eq!(run_bin(&bin, &["10"]).stdout, "(330, 271, 279, 165, 280)\n[0, 3, 6, 9, 1, 4]\n");

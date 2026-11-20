@@ -303,6 +303,38 @@ struct ThreadCache {
     /// count in the `len` of its first block; given to or taken from the
     /// list in one step.
     spare: [*mut Header; SPARE_CLASSES],
+    /// For each small class, the base 2 logarithm of the blocks of the
+    /// next refill of the thread that carves new ones (4 bits, the class
+    /// `2 * i` in the low ones of `ramp[i]`): 1 block at its first, twice
+    /// as many at each one after, up to the batch of the class (D721). A
+    /// refill of the whole batch at once wrote the header of each of its
+    /// blocks: about 66 KiB resident for a class that a program used once
+    /// (a text that doubles from 128 bytes to 8 KiB: 400 KiB). Of each
+    /// thread (D737): shared by the threads, the refills of a class that
+    /// one thread had made large took, for each other thread, its first
+    /// blocks of that class by 16 or 32 (the server of `http` on 4 threads,
+    /// in classes of 1 to 12 KiB that each thread used one or two of at a
+    /// time: 2.5 MB of its 3.8 MB carved, against 0.3 MB live at its peak).
+    ramp: [u8; SMALL_CLASSES / 2],
+}
+
+/// The base 2 logarithm of the blocks of the next refill of `class` by the
+/// thread of `tc` (`ThreadCache::ramp`).
+///
+/// # Safety
+/// `tc` the cache of the calling thread (H2).
+unsafe fn ramp_of(tc: *mut ThreadCache, class: usize) -> u32 {
+    // SAFETY: the contract
+    unsafe { ((*tc).ramp[class / 2] >> (class % 2 * 4)) as u32 & 15 }
+}
+
+/// The logarithm of `ramp_of` one more.
+///
+/// # Safety
+/// `tc` the cache of the calling thread (H2); `ramp_of` below 15.
+unsafe fn ramp_up(tc: *mut ThreadCache, class: usize) {
+    // SAFETY: the contract
+    unsafe { (*tc).ramp[class / 2] += 1 << (class % 2 * 4) };
 }
 
 /// The classes whose lists hold many blocks (64 bytes to 1 KiB: 128 to 256
@@ -315,6 +347,9 @@ struct ThreadCache {
 const SPARE_CLASSES: usize = 16;
 
 const _: () = assert!(core::mem::size_of::<ThreadCache>() <= 1024);
+// (the logarithms of `ramp` in 4 bits: at most 7, the batch of a class at
+// most THREAD_BLOCKS_MAX / 2 blocks)
+const _: () = assert!(SMALL_CLASSES % 2 == 0 && THREAD_BLOCKS_MAX / 2 <= 1 << 14);
 const _: () = assert!(THREAD_BLOCKS_MAX <= u16::MAX as usize);
 
 // 1024 bytes of zeros in the static TLS block of every thread. The runtime
@@ -1030,15 +1065,6 @@ static mut SMALL_FREE: [*mut Header; SMALL_CLASSES] = [null_mut(); SMALL_CLASSES
 static mut SMALL_BATCHES: [*mut Header; SMALL_CLASSES] = [null_mut(); SMALL_CLASSES];
 static CLASS_LOCKS: [AtomicBool; SMALL_CLASSES] = [const { AtomicBool::new(false) }; SMALL_CLASSES];
 static CHUNK_LOCK: AtomicBool = AtomicBool::new(false);
-/// For each small class, the base 2 logarithm of the blocks of its next
-/// refill (D721): 1 block at its first, twice as many at each one after,
-/// up to the batch of the class. A refill of the whole batch at once wrote
-/// the header of each of its blocks: about 66 KiB resident for a class
-/// that a program used once (a text that doubles from 128 bytes to 8 KiB:
-/// 400 KiB). Shared by the threads, read and written without a lock (a
-/// refill of a thread that reads an old value takes fewer blocks, no
-/// more).
-static RAMP: [AtomicU8; SMALL_CLASSES] = [const { AtomicU8::new(0) }; SMALL_CLASSES];
 /// The chunk being carved of each group of sizes (`group`).
 static mut BUMP: [usize; 2] = [0; 2];
 static mut BUMP_END: [usize; 2] = [0; 2];
@@ -1396,10 +1422,10 @@ unsafe fn refill(tc: *mut ThreadCache, class: usize, size: usize) -> *mut Header
             }
         }
         let full = (THREAD_LIMIT[class] / 2).max(1) as usize;
-        let r = RAMP[class].load(Ordering::Relaxed);
+        let r = ramp_of(tc, class);
         let batch = full.min(1 << r);
         if batch < full {
-            RAMP[class].store(r + 1, Ordering::Relaxed);
+            ramp_up(tc, class);
         }
         let mut first: *mut Header = null_mut();
         let mut got = 0usize;

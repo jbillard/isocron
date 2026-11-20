@@ -450,6 +450,53 @@ fn server_with_a_handler_that_is_an_action() {
     assert!(!d.join("isc-serve-action.txt").exists(), "the file of the test left");
 }
 
+/// D738: the table of a server holds the connections that have bytes not
+/// yet a request, not every connection: N connections opened, then one
+/// request on each, the last opened first (each connection's bytes after
+/// those of one numbered later: the table was sorted again at each turn,
+/// in arrays of each of its sizes), the server's peak (`VmHWM`, without
+/// huge pages) with 16 and 1000 connections. Before, 596 and 1532 KiB (950
+/// bytes a connection); now 572 and 620.
+#[test]
+fn server_memory_does_not_grow_with_idle_connections() {
+    use std::io::{BufRead, BufReader};
+    let bin = compile(include_str!("data/std_http_many.isc"), "std_http_many_idle");
+    let peak = |n: usize| -> u64 {
+        let mut child = std::process::Command::new("python3")
+            .args(["-c", "import ctypes, os, sys; ctypes.CDLL(None).prctl(41, 1, 0, 0, 0); os.execv(sys.argv[1], sys.argv[1:])"])
+            .arg(&bin)
+            .args([(n + 1).to_string().as_str(), "pure"])
+            .env("ISC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        let port: u16 = line.trim().parse().unwrap_or_else(|_| panic!("no port: {:?}", line));
+        let mut conns: Vec<BufReader<std::net::TcpStream>> = (0..n)
+            .map(|_| {
+                let s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                s.set_read_timeout(Some(std::time::Duration::from_secs(60))).unwrap();
+                BufReader::new(s)
+            })
+            .collect();
+        for i in (0..n).rev() {
+            write!(conns[i].get_mut(), "GET /a?{} HTTP/1.1\r\nHost: t\r\n\r\n", i).unwrap();
+            let r = read_response(&mut conns[i]);
+            assert_eq!((r.0, r.2), (200, format!("/a {}", i).into_bytes()), "connection {} of {}", i, n);
+        }
+        let status = std::fs::read_to_string(format!("/proc/{}/status", child.id())).unwrap();
+        let hwm = status.lines().find(|l| l.starts_with("VmHWM")).and_then(|l| l.split_whitespace().nth(1)).and_then(|k| k.parse().ok()).unwrap();
+        write!(conns[0].get_mut(), "GET /a?0 HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+        read_response(&mut conns[0]);
+        assert!(child.wait().unwrap().success());
+        hwm
+    };
+    let (few, many) = (peak(16), peak(1000));
+    assert!(many < few + 200, "{} KiB with 16 connections, {} with 1000", few, many);
+}
+
 /// The listening sockets of `port` (IPv4) of the machine.
 fn listeners_of(port: u16) -> usize {
     let t = std::fs::read_to_string("/proc/net/tcp").unwrap();
@@ -462,19 +509,38 @@ fn listeners_of(port: u16) -> usize {
         .count()
 }
 
-/// D374: `serve(port, handler)` runs a loop of events on each thread of the
-/// pool under Linux, each on a listener of its own of the port (the kernel
-/// shares the connections out): 4 listeners with 4 threads, 1 interpreted
-/// (one loop); a second server on the port refused; 64 connections of 50
-/// requests each all answered.
+/// The sets of `epoll` of the process `pid` that watch the listener of a
+/// server of `net` (its number in the set: `u64::MAX`), for each whether it
+/// is woken alone (`EPOLLEXCLUSIVE`).
+fn listener_watches(pid: u32) -> Vec<bool> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(format!("/proc/{}/fd", pid)).unwrap().flatten() {
+        if std::fs::read_link(e.path()).map(|l| l.to_string_lossy() == "anon_inode:[eventpoll]").unwrap_or(false) {
+            let info = std::fs::read_to_string(format!("/proc/{}/fdinfo/{}", pid, e.file_name().to_string_lossy())).unwrap_or_default();
+            for l in info.lines().filter(|l| l.starts_with("tfd:") && l.contains("data: ffffffffffffffff")) {
+                let events = l.split_whitespace().skip_while(|w| *w != "events:").nth(1).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0);
+                out.push(events & (1 << 28) != 0);
+            }
+        }
+    }
+    out
+}
+
+/// D374, D739: `serve(port, handler)` runs a loop of events on each thread
+/// of the pool under Linux, all on one listener of the port (one queue of
+/// connections), each loop woken alone and taking one connection at a
+/// time: one listener and 4 loops watching it alone with 4 threads, one
+/// loop interpreted; a second server on the port refused; 64 connections of
+/// 50 requests each all answered.
 #[test]
 fn serve_runs_a_loop_on_each_thread() {
     loops_on_each_thread(include_str!("data/std_http_serve_loops.isc"), "std_http_serve_loops");
 }
 
 /// D385: `serve(port, handler)` given an action too (D386), one that
-/// prints: 4 listeners with 4 threads, 1 interpreted, a second server
-/// refused, the requests of each connection answered in their order.
+/// prints: one listener and 4 loops on it with 4 threads (D739), one loop
+/// interpreted, a second server refused, the requests of each connection
+/// answered in their order.
 #[test]
 fn serve_action_runs_a_loop_on_each_thread() {
     loops_on_each_thread(include_str!("data/std_http_serve_action_loops.isc"), "std_http_serve_action_loops");
@@ -500,17 +566,21 @@ fn loops_on_each_thread(src: &str, name: &str) {
         };
         let mut child = c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
         let start = std::time::Instant::now();
-        while listeners_of(port) < loops {
-            assert!(start.elapsed() < std::time::Duration::from_secs(60), "{}: {} listeners", name, listeners_of(port));
+        let watching = |pid: u32| if name == "compiled" { listener_watches(pid).len() } else { 1 };
+        while listeners_of(port) < 1 || watching(child.id()) < loops {
+            assert!(start.elapsed() < std::time::Duration::from_secs(60), "{}: {} listeners, {} loops", name, listeners_of(port), watching(child.id()));
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(listeners_of(port), loops, "{}", name);
+        assert_eq!(listeners_of(port), 1, "{}", name);
+        if name == "compiled" {
+            assert_eq!(listener_watches(child.id()), vec![true; loops], "{}: each loop woken alone", name);
+        }
         // a second server on the port refused, whatever its threads: it
         // never joins the listeners of the first
         let mut second = std::process::Command::new(&bin);
         let o = second.arg(port.to_string()).env("ISC_THREADS", "4").output().unwrap();
         assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "error\n".to_string()), "{}: a second server", name);
-        assert_eq!(listeners_of(port), loops, "{}: after the second server", name);
+        assert_eq!(listeners_of(port), 1, "{}: after the second server", name);
         let threads: Vec<_> = (0..64)
             .map(|t| {
                 std::thread::spawn(move || {

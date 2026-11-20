@@ -83,7 +83,9 @@ pub fn statement_values(e: &mut Expr, eff: &[bool]) {
         // computed there all the same (section 12)
         return;
     }
-    let Some(k) = reader(body, v, eff) else { return };
+    let mut reads = Vec::new();
+    heap_reads(init, &mut reads);
+    let Some(k) = reader(body, v, eff, &reads) else { return };
     let ExprKind::Let { init, body, drop, .. } = std::mem::replace(&mut e.kind, ExprKind::Zero) else { unreachable!() };
     let mut rest = *body;
     let target = statement_at(&mut rest, k);
@@ -93,11 +95,28 @@ pub fn statement_values(e: &mut Expr, eff: &[bool]) {
     *e = rest;
 }
 
+/// The variables of types that own memory that `e` reads.
+fn heap_reads(e: &Expr, out: &mut Vec<VarId>) {
+    if let ExprKind::Var(w, _) = &e.kind {
+        if e.ty.has_heap() && !out.contains(w) {
+            out.push(*w);
+        }
+    }
+    for c in e.children() {
+        heap_reads(c, out);
+    }
+}
+
 /// The statement of the chain `e` that reads `v`, as the number of
 /// statements before it, when those statements are pure and the reader
 /// reads `v` before any of its effects, never in a lambda; `None`
-/// otherwise.
-fn reader(mut e: &Expr, v: VarId, eff: &[bool]) -> Option<usize> {
+/// otherwise. Never past a statement that reads for the last time a
+/// variable of `reads` (one that owns memory, which the value moved reads
+/// too): there it may be taken (given to a result, updated in place), and
+/// the value moved after it would read it later, so that it is copied
+/// there (D736: `again` of `afterAnswers` moved after `left`, which takes
+/// `cut`: the table of the connections copied at each turn of the server).
+fn reader(mut e: &Expr, v: VarId, eff: &[bool], reads: &[VarId]) -> Option<usize> {
     let mut k = 0;
     loop {
         match &e.kind {
@@ -106,6 +125,9 @@ fn reader(mut e: &Expr, v: VarId, eff: &[bool]) -> Option<usize> {
                     return (uses(body, v) == 0 && !read_in_lambda(init, v) && effects_last(init, eff)).then_some(k);
                 }
                 if !pure_in(init, eff) {
+                    return None;
+                }
+                if reads.iter().any(|&w| uses(init, w) > 0 && uses(body, w) == 0) {
                     return None;
                 }
                 e = body;
@@ -325,7 +347,7 @@ pub fn input_pieces(e: &mut Expr, runs: &[RunsSite], eff: &[bool], vars: &mut Ve
     if uses(body, x) != 1 {
         return;
     }
-    let Some(k) = reader(body, x, eff) else { return };
+    let Some(k) = reader(body, x, eff, &[]) else { return };
     // the statement that reads `x`, its runs and their consumer
     let ExprKind::Let { body, .. } = &mut e.kind else { unreachable!() };
     let t = statement_at(body, k);

@@ -138,6 +138,13 @@ function $argsortInt(k: i64[n]): i64[n] {
     if (n < 2) {
         return iota(n);
     }
+    if (n <= 16) {
+        // (a few keys: each placed by the count of those before it, D740;
+        // a pass of the radix sort fills and reads two arrays of 256
+        // counts, more work than the keys: the arrivals of a turn of the
+        // server of `http`, 8 to 64 numbers, sorted at each turn)
+        return fold(iota(n), fill(n, 0), (o, i) => requireUnique(o.with(count(iota(n), (j) => k[j] < k[i] || (k[j] == k[i] && j < i)), i)));
+    }
     const lo = reduce(k, (a, b) => a < b ? a : b, k[0]);
     const hi = reduce(k, (a, b) => a > b ? a : b, k[0]);
     const ib = 64 - leadingZeros(u64(n - 1));
@@ -4358,7 +4365,8 @@ function $lowerTexts(): string {
 // the count of its blocks.
 // The zone of the thread: at 8 * c the list of its free blocks of the class
 // c, at 128 + 2 * c their count (at most 64), at 160 + 8 * c a batch it
-// keeps in reserve. A list changes hands whole, in one step, never walked
+// keeps in reserve, at 288 + 2 * c the cuts of new blocks of the class it
+// made (`$kCarve`). A list changes hands whole, in one step, never walked
 // (D605): a thread that fills its list keeps it as its batch in reserve and
 // gives the batch it had to all the threads; a thread whose list is empty
 // takes its batch in reserve, or one that a thread gave, or cuts new
@@ -4487,14 +4495,23 @@ action $kOpen(class: i64, b: u64): u64 {
     return b + 64u64;
 }
 
-// 32 new blocks of the class cut after the last byte given, under the lock
-// of that byte (their pages committed by 2 MiB): the first one given, the
-// others the list of the thread.
+// New blocks of the class cut after the last byte given, under the lock of
+// that byte (their pages committed by 2 MiB): the first one given, the
+// others the list of the thread. 2 at the first cut of the class by the
+// thread, then 4, 8, 16 and 32 (D737; at 288 + 2 * c of the zone, the cuts
+// of the class c so far, at most 4): 32 at once, each header written, made
+// a class that a thread used for one or two blocks at a time cost it 4 to
+// 35 KiB resident (the server of `http` on 4 threads, all the classes used
+// by each: 1.2 MB of the arena, against 0.2 with 16 connections).
 @cold
 action $kCarve(class: i64): u64 {
     const base = $arenaBase();
     const step = u64(class + 1) * 64u64 + 64u64;
-    const count = 32;
+    const cuts = $zoneLoad16(288 + class * 2);
+    const count = cuts >= 4u64 ? 32 : 2 << i64(cuts);
+    if (cuts < 4u64) {
+        $zoneStore16(288 + class * 2, cuts + 1u64);
+    }
     const l = $kLock(base + 16u64);
     const start = $load64(base);
     const end = start + step * u64(count);

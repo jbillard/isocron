@@ -143,6 +143,46 @@ action rss(): i64 {
     assert!(grown < 700, "{} KiB more resident", grown);
 }
 
+/// D737: the blocks a thread carves at its first refills of a class are its
+/// own count's, 1, 2, 4..., not those of the thread that used the class
+/// most: one thread holds 64 texts of each of 27 sizes (15 classes of the
+/// arena, 100 to 996 bytes; 12 of the runtime, 1100 to 8800), then the
+/// threads of the pool take one text of each size each. On 4 threads that
+/// second part added 1384 KiB of resident memory (each thread's first
+/// blocks of a class carved by 16 or 32 at once), 68 to 72 now; 44 to 48
+/// on 1 thread before and after.
+#[test]
+fn the_first_blocks_of_a_class_of_a_thread_are_its_own() {
+    if std::env::var("ISC_ALLOC").is_ok() {
+        return;
+    }
+    let src = "action main(args: string[k]): i32 {
+    const sizes = concat(map(iota(15), (c) => 100 + 64 * c), map(iota(12), (k) => 1100 + 700 * k));
+    const warm = fold(sizes, 0, (n, s) => n + fold(iota(64), fill(64, \"\"), (acc, i) => acc.with(i, \"x\".repeat(s))).length);
+    const before = rss();
+    const lens = map(iota(64), (i) => sum(map(sizes, (s) => \"y\".repeat(s + i % 3).length)));
+    const after = rss();
+    print(warm);
+    print(sum(lens));
+    print(after - before);
+    return 0;
+}
+
+action rss(): i64 {
+    const status = lines(readText(\"/proc/self/status\"));
+    const l = filter(status, (l) => l.startsWith(\"VmRSS\"))[0];
+    return parseI64(trim(l.slice(6, l.length - 3)));
+}
+";
+    let bin = compile(src, "heap_thread_ramp");
+    let (code, out, err) = run_with(&bin, &[], None, 4);
+    assert_eq!(code, 0, "{}", err);
+    let ls: Vec<&str> = out.lines().collect();
+    assert_eq!(&ls[..2], &["1728", "4329381"], "{}", out);
+    let grown: u64 = ls[2].parse().unwrap();
+    assert!(grown < 400, "{} KiB more resident", grown);
+}
+
 /// D721: a medium block a thread keeps (freed last) that a request finds too
 /// large goes back to the lists, where that request is cut from it: an
 /// array of 2 MiB freed (at its last read, D720), then three of 720 KB

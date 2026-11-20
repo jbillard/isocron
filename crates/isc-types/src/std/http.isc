@@ -501,7 +501,9 @@ export action get(url: string): Result<Response, HttpError> {
 const REQUEST_BODY_LIMIT = 16777216;
 const READ_LIMIT = 65536;
 
-// the bytes received from a connection and not yet a request
+// the bytes received from a connection and not yet a request (only the
+// connections that have some are in the table of a server: one whose
+// requests were all answered leaves it, D738)
 type Pending = { id: i64, buf: u8[] };
 
 // a response ready to be sent: its connection, its bytes, whether the
@@ -810,12 +812,27 @@ function placeOf(ps: Pending[n], id: i64, lo: i64, hi: i64): i64 {
 // that ended (D354)
 function arrive(ps: Pending[n], xs: net.Arrival[m]): [Pending[], i64[], i64[]] {
     const at = map(xs, (a) => placeOf(ps, a.id, 0, ps.length));
+    // (the number of the last connection of the table, read before the
+    // table is given to `grown`)
+    const last = ps.length == 0 ? -1 : ps[ps.length - 1].id;
     const ended = map(filter(xs, (a) => a.bytes.length == 0), (a) => a.id);
     const grown = fold(iota(xs.length), ps, (acc, j) => at[j] >= 0 && xs[j].bytes.length > 0 ? acc.with(at[j], pendingOf(xs[j].id, concat(acc[at[j]].buf, xs[j].bytes))) : acc);
-    const fresh = map(filter(iota(xs.length), (j) => at[j] < 0 && xs[j].bytes.length > 0), (j) => pendingOf(xs[j].id, xs[j].bytes));
-    // (a connection is numbered when it is accepted, its first bytes may come
-    // after those of one accepted later: the whole table sorted again)
-    const all = fresh.length == 0 ? grown : concat(grown, fresh).sortBy((p) => p.id);
+    // (the connections not in the table, in the order of their numbers: the
+    // places in `xs` sorted, not the records with their bytes, D738)
+    const news = filter(iota(xs.length), (j) => at[j] < 0 && xs[j].bytes.length > 0);
+    const order = news.length < 2 ? news : news.sortBy((j) => xs[j].id);
+    const added = map(order, (j) => pendingOf(xs[j].id, xs[j].bytes));
+    // (a connection is numbered when it is accepted, its bytes may come after
+    // those of one accepted later: the whole table sorted again; the new ones
+    // put at its end when their numbers all come after its last (the
+    // numbers grow: the case of each new connection that sends at once,
+    // D736, and of an empty table, the common case since D738). The table
+    // given to `concat`, which grows its block in place, D638 and D736: the
+    // values `concat` reads computed before, so that it is their last read.)
+    const none = added.length == 0;
+    const first = none ? 0 : added[0].id;
+    const joined = concat(grown, added);
+    const all = none || first > last ? joined : joined.sortBy((p) => p.id);
     const kept = ended.length == 0 ? all : filter(all, (p) => count(ended, (e) => e == p.id) == 0);
     // (a connection that ended in the same turn not read; each once)
     const read = filter(iota(xs.length), (j) => xs[j].bytes.length > 0 && count(ended, (e) => e == xs[j].id) == 0 && count(iota(j), (q) => xs[q].id == xs[j].id && xs[q].bytes.length > 0) == 0);
@@ -864,10 +881,18 @@ action afterAnswers(s: net.Server, ps: Pending[n], changed: i64[c], readies: Rea
     const closing = map(filter(iota(changed.length), (i) => readies[i].closes || count(failed, (x) => x == ps[changed[i]].id) > 0), (i) => ps[changed[i]].id);
     closeAll(s, closing, 0);
     const cut = fold(iota(changed.length), ps, (acc, i) => readies[i].used == 0 ? acc : acc.with(changed[i], pendingOf(acc[changed[i]].id, acc[changed[i]].buf.slice(readies[i].used, acc[changed[i]].buf.length))));
-    const again = map(filter(iota(changed.length), (i) => readies[i].used > 0), (i) => cut[changed[i]].id);
-    const left = closing.length == 0 ? cut : filter(cut, (p) => count(closing, (x) => x == p.id) == 0);
+    // (those that gave requests and have bytes left, read again: more may be
+    // complete; those with none left out of the table, D738: it held each
+    // connection of the server, most with no byte, and grew with them:
+    // sorted again at each turn while they came, in arrays of each of its
+    // sizes, which the allocator kept)
+    const again = map(filter(iota(changed.length), (i) => readies[i].used > 0 && cut[changed[i]].buf.length > 0), (i) => cut[changed[i]].id);
+    const left = filter(cut, (p) => p.buf.length > 0 && count(closing, (x) => x == p.id) == 0);
     const live = filter(again, (id) => count(closing, (x) => x == id) == 0);
-    return [left, map(live, (id) => placeOf(left, id, 0, left.length))] as const;
+    // (the places found before `left` is given to the result: read after,
+    // it was copied, D736)
+    const places = map(live, (id) => placeOf(left, id, 0, left.length));
+    return [left, places] as const;
 }
 
 // the bytes of the responses to the requests ready from the `j`-th on,

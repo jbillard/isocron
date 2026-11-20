@@ -9319,7 +9319,12 @@ impl<'p> Gen<'p> {
         let (lfast, lslow, ljoin) = (self.label(), self.label(), self.label());
         self.cbr(&ok, &lfast, &lslow);
         self.block(&lfast);
-        let dst = self.alloc_elems(&nv.r, &et);
+        // the block of `a` grown in place when it has room, else one of
+        // twice its size (as a text continued, D351, and the arrays of
+        // D533): its columns moved to their places for `n` elements, the
+        // last first (each moves up), those of `b` copied after them (D736:
+        // the table of the connections of the server, made anew at each
+        // turn where some arrive)
         let cols = |g: &mut Self, p: &str, len: &str| -> Vec<(Type, String)> {
             if matches!(et, Type::Tuple(_)) {
                 g.columns(p, len, &et).into_iter().map(|(_, t, c)| (t, c)).collect()
@@ -9327,17 +9332,29 @@ impl<'p> Gen<'p> {
                 vec![(et.clone(), p.to_string())]
             }
         };
-        let (ca, cb, cd) = (cols(self, &pa, &la), cols(self, &pb, &lb), cols(self, &dst, &nv.r));
-        for (((leaf, sa), (_, sb)), (_, d)) in ca.iter().zip(&cb).zip(&cd) {
+        let used = self.array_bytes(&la, &et);
+        let need = self.array_bytes(&nv.r, &et);
+        let dst = self.ins(format!("call ptr @isc_str_reserve(ptr {}, i64 {}, i64 {})", pa, used, need));
+        self.decls.insert("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)".into());
+        let (ca, cb, cd) = (cols(self, &dst, &la), cols(self, &pb, &lb), cols(self, &dst, &nv.r));
+        for ((leaf, sa), (_, d)) in ca.iter().zip(&cd).rev() {
+            // (a column already at its place not moved: all of them when `b`
+            // is empty)
+            let first = self.ins(format!("mul i64 {}, {}", la, esize(leaf)));
+            let same = self.ins(format!("icmp eq ptr {}, {}", d, sa));
+            let bytes = self.ins(format!("select i1 {}, i64 0, i64 {}", same, first));
+            self.emit(format!("call void @llvm.memmove.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, sa, bytes));
+        }
+        for (((leaf, _), (_, sb)), (_, d)) in ca.iter().zip(&cb).zip(&cd) {
             let sz = esize(leaf);
             let first = self.ins(format!("mul i64 {}, {}", la, sz));
-            self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", d, sa, first));
             let at = self.ins(format!("getelementptr inbounds i8, ptr {}, i64 {}", d, first));
             let second = self.ins(format!("mul i64 {}, {}", lb, sz));
             self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", at, sb, second));
         }
         let fast = self.arr(&dst, &nv.r);
-        let ea = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 0, 1", av.r));
+        // (`a` gave its block: nothing of it left to free)
+        let ea = "zeroinitializer".to_string();
         let eb = self.ins(format!("insertvalue {{ ptr, i64 }} {}, i64 0, 1", bv.r));
         let lfast_end = self.current_label(&lfast);
         self.br(&ljoin);

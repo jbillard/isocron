@@ -18091,3 +18091,157 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   transparent huge pages (`prctl(PR_SET_THP_DISABLE)` before their `exec`,
   by Python, as the measures of `bench/` do, D727): freed 2408 to 2412
   KiB, kept 4464 to 4468 in three series, the 2 MiB of the array freed.
+
+- **D736 — The table of the connections of a server grown in place
+  (2026-11-20).** Asked by the author: the memory of `http.serve`
+  independent of the connections, its requests a second and its latency
+  kept (the goal of 2026-11-20, eight points measured). After D734, DHAT
+  (glibc's allocator, one thread, 1024 connections, 20000 requests) still
+  showed two sites of `serveLoop` allocating 24 KB at each turn (7.5 MB in
+  313 blocks each): `arrive` sorted the whole table again when a new
+  connection came (`sortBy`: a new array), and `concat` copied the table
+  its new entries joined, its block read after by `places`. Now:
+  - `arrive` puts the new connections at the end of the table when their
+    numbers all come after its last (the numbers grow: each new
+    connection that sends at once), the whole table sorted only when one
+    comes before;
+  - the table given to `concat` on a straight path, the values it reads
+    computed before (`last`, `places` of `afterAnswers`): its last read;
+  - the generated `concat` of an owned array grows the block of its first
+    operand in place (`isc_str_reserve`, doubling), its columns moved up
+    from the last (a column already in place moves no byte), the second's
+    copied after; the IR keeps a value from moving past the statement that
+    last reads a heap variable it reads (`statement_values`), which made
+    the table read after it was given.
+  DHAT: no site of `serveLoop` or `serveActionLoop` allocating a block of
+  the size of the table at each turn (the blocks left repeated at each
+  turn, 1.5 to 4.7 KB, are those of the 64 events of a wait at most: the
+  same with 16 connections, a quarter as large); the live bytes at the
+  peak 271 to 235 KB. The peak of the server during the ramp of 1024
+  connections (one thread) 1864 to 1076 KiB; Docker, 2 cores, 1024
+  connections: 2732 to 2000-2124 KiB, the requests a second +2 to +4 %.
+
+- **D737 — The first blocks of a class of a thread: by its own count
+  (2026-11-20).** After D736 the server still grew by 1 KB a connection on
+  2 threads and 3.4 KB on 4 (Docker, 16 to 1024 connections), while DHAT
+  saw 0.33 MB live at the peak of 4 loops. The mappings of the server
+  (`smaps`, 4 threads, 1024 connections): 2.5 MiB in the chunk of the
+  small blocks of the runtime, 1.5 in the arena of the kernel. A log of
+  the carves of the runtime (a counting build, not kept): 3.8 MB carved,
+  in classes of 1 to 12 KiB that each thread used one or two of at a time,
+  by 16 or 32 blocks at once: the ramp of the refills of a class (D721)
+  was shared by the threads, so that a thread's first refill of a class
+  took the batch another had earned. The arena of the kernel carved 32
+  blocks at the first refill of a class by a thread: 32 times 128 to 1088
+  bytes for each of the 16 classes and each thread (1.2 MB on 4 threads
+  when every class is used, as at 1024 connections; 0.2 at 16). Now:
+  - the ramp of each class is the thread's own (`ThreadCache::ramp`, 4
+    bits a class: 1024 bytes of cache kept);
+  - `$kCarve` cuts 2 blocks at the first refill of a class by a thread,
+    then 4, 8, 16 and 32 (the cuts counted at 288 + 2 * c of its zone).
+  4 threads, 1024 connections: the chunk 2548 to 996 KiB, the arena 1480
+  to 588. Docker, 1024 connections: 4676-5044 to 2264-2324 KiB on 4 cores,
+  1972-1984 to 1496-1564 on 2; the requests a second the same (2 rounds).
+  Test `the_first_blocks_of_a_class_of_a_thread_are_its_own` (heap.rs: one
+  thread holds 64 texts of each of 27 sizes, then the threads of the pool
+  take one of each: 1384 KiB more resident on 4 threads before, 68 to 72
+  now). Tried, refused:
+  - the lists of the arena of 16 blocks, not 64, and 16 blocks a cut:
+    -15 to -25 % of memory, but -2 to -4 % of the requests a second on 2
+    cores at 256 and 1024 connections (more spills);
+  - `THREAD_CLASS_BYTES` 32 KiB, not 128: -15 to -18 % of memory, -3 % of
+    the requests a second;
+  - 32 or 16 events a wait, not 64 (before D737): the same memory on 2
+    cores (2000 against 1952 and 2044 KiB at 1024 connections), the
+    requests a second within the noise.
+
+- **D738 — The table of a server holds the connections that have bytes
+  pending, not every connection (2026-11-20).** After D737, the log of the
+  carves showed, on 2 and 4 threads at 1024 connections, about 1 MB in
+  blocks of 3 to 18 KB, three a class and a thread, in a series of
+  classes: the table sorted again at each turn while the connections came
+  (their first bytes out of the order of their numbers: wrk opens them all
+  at once), `sortBy` making the keys, the passes of the radix sort, the
+  order and the sorted table (with the bytes of each pending request) at
+  each of its sizes, which the allocator kept. The table held every
+  connection the server had read, most with no byte left. Now a
+  connection whose requests were all answered and that has no byte left
+  leaves the table (`afterAnswers`), and is put back when it sends again;
+  the new connections of a wait are sorted by their places in it, not as
+  records with their bytes. The table holds the connections with a
+  request not yet complete, a few. Docker, 2 cores, 1024 connections:
+  1468-1544 to 1176-1252 KiB, the requests a second +2 % (430448 and
+  433988 against 420228 and 424952), at 256 +1 %; 4 cores 2280-2452 to
+  1976-1988 KiB. At 1 and 16 connections -1 to -3 % (the sort of the
+  arrivals of each turn, by the radix sort of `$argsortInt`: 0.31 % of the
+  cycles, and its tasks 0.15 %, perf with symbols): D740. Test
+  `server_memory_does_not_grow_with_idle_connections` (std_http.rs: 16
+  and 1000 connections opened, then one request on each, the last opened
+  first; the server's peak 596 and 1532 KiB before, 572 and 620 now).
+
+- **D739 — The loops of `serve` on one listener, each connection given to
+  the loop that has the fewest (2026-11-20).** The latency of 99 % of the
+  requests at 16 connections on 2 cores: 56 us against 44 for nginx
+  (results of D732). Measured (Docker, wrk 6 threads: 12 connections, 4
+  rounds, the connections of each loop counted in the sets of `epoll`,
+  `/proc/PID/fdinfo`): the kernel gave each connection to one of the
+  listeners of the loops (`SO_REUSEPORT`, D374) by a hash of its
+  addresses: 6 and 6, 7 and 5, 8 and 4, even 2 and 10, the latency of
+  99 % 52, 57 to 60, 64 to 66 and 83 us; nginx, its workers on one queue,
+  had 6 and 6 or 7 and 5: 45 to 51 and 59 to 63 us. With the same split
+  the two at the same latency; on one core (no split) Isocron 95 to 103
+  us, nginx 80 to 105; its median lower (25 to 30 us against 32 to 34),
+  sending each response as soon as it is made changed nothing (refused:
+  51 to 61 us against 52 to 59, -1 to -2 % of the requests a second in a
+  round, -5 to -10 % of memory). Now `sysListenShared` opens one socket
+  for an address and gives each loop a duplicate of it (one queue); the
+  loop that the kernel wakes (`EPOLLEXCLUSIVE`) accepts the connections
+  and gives each to the loop of the listener that has the fewest (`give`:
+  watched by that loop's set with a mark, adopted at its first bytes);
+  the queue of a listener holds 4096 connections, not 128 (wrk opening
+  1024 at once saw 0 to 484 refused with 128, `ListenOverflows`, each
+  trying again a second later; none with 4096). 12 connections: 6 and 6
+  each time, the latency of 99 % 49, 49, 54 and 49 us against nginx's 52,
+  51, 52 and 49 in the same rounds; the requests a second the same at 16
+  to 1024 connections. A server of TLS keeps the connections it accepts
+  (its session made there). Tried, refused:
+  - each loop accepting one connection at a time on the shared queue, the
+    kernel waking one (as nginx): 7 and 5, 5 and 7, 4 and 8 (the set that
+    watched the listener first woken first), and 1024 connections accepted
+    one a turn: -11 to -14 % of the requests a second in a round, the
+    latency of 99 % 30 to 77 ms at 1024 connections;
+  - the shared queue woken for every loop (no `EPOLLEXCLUSIVE`), one or all
+    connections accepted: 7 and 5, 4 and 8, 3 and 9 again.
+  Test `serve_runs_a_loop_on_each_thread` and its action: one listener, 4
+  loops watching it alone.
+
+- **D740 — The sort of a few integers by counts (2026-11-20).**
+  `$argsortInt` of 2 to 16 keys places each by the count of the keys
+  before it (stable: the equal ones by their places), without the passes
+  of the radix sort, which fill and read two arrays of 256 counts each:
+  the arrivals of each turn of the server (D738). With it (and D737 to
+  D739), 16 connections on 2 cores: 417114 and 422161 requests a second
+  against 412211 and 419857 for D737 (D738 without it: 402453 and 405360);
+  1 connection 74289 and 75609 against 75523 and 75807. Test
+  `argsort` of memory.rs: 16 and 17 keys too, the same order as the
+  interpreter's.
+
+- **D741 — 16 events a wait of a server, not 64 (2026-11-20).** After
+  D738, the server on 4 loops still grew by 920 bytes a connection from 16
+  to 1024 connections: its mappings, 550 KiB more in the arena of the
+  kernel and 356 in the chunk of the runtime. A turn answers the requests
+  of the connections of a wait together: 64 of them kept about 2 KB of
+  small blocks each until the end of the turn (their bytes, the heads and
+  frames read, the responses), which the allocator kept after. Now a wait
+  gives 16 connections at most (`WAIT_EVENTS`). Docker, 2 rounds, 1024
+  connections: 2 cores 944-964 KiB against 1176-1192 with 64 (the requests
+  a second 431417 and 449845 against 422964 and 436325), at 256 920 KiB
+  against 1148-1152 (465541 against 453270 and 459435); 4 cores 1272 KiB
+  against 1972-1992 (752352 and 768773 against 744046 and 768552). With 8:
+  868-908 KiB on 2 cores, 1156-1176 on 4, the requests a second 1 to 2 %
+  below 16 (421840 and 434352 on 2 cores): not kept. At 16 connections
+  and fewer each loop's wait gives all its connections either way. DHAT
+  (glibc, one thread, 1024 connections, 20000 requests): 199520 bytes live
+  at the peak in 11 blocks (the vectors of a wait), against 235 KB in 470
+  (D736) and 271 KB (D734); the one block of more than 1 KB at each turn
+  is of 16 events (1216 bytes).

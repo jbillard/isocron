@@ -5,6 +5,12 @@
 - n-body 15.7 % faster (2388 to 2014 ms in the A/B): the arrays of the
   state of a loop it owns are blocks of their own for LLVM, the roots and
   divisions of a split `fold` kept in pairs (D731).
+- The memory of the server of HTTP barely grows with its connections:
+  its table holds the connections with a request not yet complete, a turn
+  answers 16 connections at most, the allocators carve the first blocks
+  of a class of a thread by its own needs; the loops of `serve` share one
+  listener, each connection given to the loop that has the fewest (D736 to
+  D741).
 
 ## 0.9.0 — 2026-11-19
 
