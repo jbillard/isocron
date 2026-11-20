@@ -10,7 +10,10 @@
   answers 16 connections at most, the allocators carve the first blocks
   of a class of a thread by its own needs; the loops of `serve` share one
   listener, each connection given to the loop that has the fewest (D736 to
-  D741).
+  D741). On 2 cores, from 16 to 1024 connections: 820 to 920 KiB (0.9.0:
+  1.0 to 2.7 MiB), 5 to 7 % more requests a second, the latency of 99 %
+  with 16 connections 40 to 49 us (0.9.0: 48 to 73, nginx 42 to 55)
+  (D742).
 
 ## 0.9.0 — 2026-11-19
 

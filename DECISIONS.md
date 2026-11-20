@@ -18248,3 +18248,84 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   at the peak in 11 blocks (the vectors of a wait), against 235 KB in 470
   (D736) and 271 KB (D734); the one block of more than 1 KB at each turn
   is of 16 events (1216 bytes).
+
+- **D742 — The measures of D736 to D741 (2026-11-20).** The goal of
+  2026-11-20 (the memory of `http.serve` independent of its connections,
+  its requests a second and its latency kept), measured at d4bdcc1: the
+  `iscc` built again from it the same byte for byte as the one measured.
+  Docker (`bench/http_servers`), without huge pages; the analysis of
+  loudness of a media server on the same machine (one core taken until
+  06:05) moved the measures by 10 to 20 %: each one waited for 5 minutes
+  without it.
+  - DHAT (glibc, one thread, 1024 connections, 20000 requests): no site of
+    `serveLoop` or `serveActionLoop` allocating a block of the size of the
+    table at each turn; 199520 bytes live at the peak in 11 blocks (D741).
+  - The highest Pss of the server from 16 to 1024 connections: 2 cores, 2
+    threads, 876 and 880 to 968 and 976 KiB (93 and 98 bytes a
+    connection; 0.9.0 984 and 1004 to 2820 and 2828, 1.8 KB); 4 threads
+    on 2 cores 1036 and 1076 to 1248 and 1292 (215 and 219 bytes; 0.9.0
+    3.4 KB); 4 cores 1072 and 1092 to 1292 and 1312 (223 bytes; 0.9.0 3.8
+    and 4.0 KB).
+  - The requests a second on 2 cores, two rounds alternated with 0.9.0: 1
+    connection 75653 and 73454 against 74451 and 75118 (-0.3 %; the
+    publication 75104 against 75145 at D732), 16 +5.1 %, 256 +5.3 %, 1024
+    +7.2 %; 4 threads on those 2 cores -1.0 (74645 against 75396, each
+    round within 1.4 %), +3.7, +6.0 and +8.4 %.
+  - The latency on 2 cores, the same rounds: 50 % 12 and 12 us against
+    13 and 12, 27 and 27 against 30 and 25, 521 and 523 against 548 and
+    545 us, 2.23 and 2.20 against 2.41 and 2.37 ms; 99 % 16 and 18 against
+    18 and 16 us, 40 and 43 against 69 and 61 us, 0.70 and 1.79 against
+    0.96 and 0.88 ms (two rounds more: 0.91 and 0.90 against 0.85 and
+    0.98; the publication 0.87), 3.86 and 3.89 against 4.00 and 4.23 ms.
+  - The latency of 99 % at 16 connections (wrk 6 threads: 12 connections),
+    six rounds alternated: Isocron 45, 46, 46, 46, 49 and 48 us, nginx 55,
+    47, 53, 49, 42 and 53, 0.9.0 73, 58, 48, 57, 59 and 65 (its loops given
+    4 and 10, 6 and 8, 7 and 7, 8 and 6, 6 and 8, 5 and 9 connections; 7
+    and 7 now each time); on one core 96 to 98 us, nginx 72 to 106. The
+    publication: 40 us against 45 for nginx.
+  - Measured outside the points, with their causes. 4 loops on 2 cores
+    (`ISC_THREADS=4`), 16 connections: the latency of 99 % is the slice of
+    the scheduler for both, 4.93, 5.42, 5.85 and 5.42 ms for 0.9.0, 7.52,
+    6.15, 5.06 and 7.81 now: 4 loops ready for 2 CPUs wait for each
+    other's slices; since D739 each loop has 3 connections, all four
+    always ready, where the hash of `SO_REUSEPORT` could leave one without
+    any (a round of D738 gave 0, 9, 2 and 1: 72 us). With a loop for each
+    CPU (the pool's default) 40 us. On 4 cores the client is the limit (the
+    ceiling busy on 3.06 to 3.22 cores; wrk the same, 85 % of its cycles in
+    the kernel, `perf stat -p`): as many requests a second (+1.2 % in 4
+    rounds at 1024), the server's own cycles 30 % fewer (4 s at 1024:
+    10.5 to 11.0 G against 15.1 to 15.8 G), so its loops sleep between requests:
+    54 to 84 thousand context switches in 4 s against 3.4 to 8.5 thousand
+    at 1024, each woken by wrk (`sched_waking` of wrk 54 to 84 thousand
+    against 3.3 to 8.5), 464 to 619 thousand waits against 155 to 203
+    thousand. The latency of 99 % moves with the queue of wrk (15 runs of
+    each at 1024: 1.86 to 5.14 ms for 0.9.0, 3.79 to 5.09 now, means 3.96
+    and 4.75; 11 at 256: 0.57 to 2.91 and 0.79 to 3.43, means 1.55 and
+    2.03). Tried, refused: a loop trying its wait 200 times without sleep
+    before it sleeps (`epoll_wait` of 0 ms): its context switches as
+    0.9.0's, the latency of 99 % at 4 cores 3.69 ms at 1024 and 1.02 at
+    256 (means of 3); but on 2 cores at 16 connections 413083 and 413257
+    requests a second against 423962 and 417072 (-1.7 %), 99 % 51 and 52
+    us against 41 and 49, and with one connection its loop keeps its core
+    busy (100 % against 53 to 55 %, for 19 to 20 % more requests).
+  - `bench/regress.py` b035583 to d4bdcc1: five flagged; `padStart` and
+    `sys env` (+3.3 and +3.0 %, their ranges overlapping) not flagged again
+    (the four groups again, 11 runs). `replaceAll.1` +12.3 % again (29.14
+    to 32.72 ns): the same instructions (the program 1455.27 and 1455.30
+    M), alone at 2000 rounds 11.8 % more cycles with 4K aliasing 15.3 to
+    30.6 M and stores not forwarded 3.7 to 13.6 M; the same binary 28.8 to
+    36.3 ns as 0 to 1000 texts of 61 to 63 bytes are made before the lines
+    (0.9.0's 28.9 to 31.8): where the blocks fall, as D727's place of the
+    stack. `sortBy.length` +3.5 %: the same instructions (1.5 more a call,
+    the test `n <= 16` of D740), the same mispredicted branches, 13.6 M
+    micro-operations from the decoded cache instead of the loop stream
+    detector (`lsd.uops` 403.4 to 392.7 M): the place of the code of the
+    radix sort after D740's lines (D720). `json stringify` +3.1 %: the
+    same instructions (3599.55 and 3599.56 M), 20 M micro-operations more
+    from the decoders (`idq.mite_uops` 72 to 75 M, 96 M); the same program
+    with one line more, 149 to 150 ns for both: the place of the code.
+    Better: the peaks of rtiow's `final` -11.1 % (one thread) and -7.3 %
+    (eight), `http header` -3.9 %, `sys join` -6.0 %, `unix mapShared`
+    -8.3 %.
+  - Suite 526 on d4bdcc1; the tests of isocron-ui on the compiler of
+    106826a (that of d4bdcc1: only a test changed).
