@@ -18336,3 +18336,208 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     -8.3 %.
   - Suite 526 on d4bdcc1; the tests of isocron-ui on the compiler of
     106826a (that of d4bdcc1: only a test changed).
+
+- **D743 — The regressions left by D736 to D741 removed (2026-11-20).**
+  The goal of the afternoon of 2026-11-20 (asked by the author after
+  D742): no regression, an explained slowdown being one; D742 had kept as
+  explained three slower primitives and the latency of 99 % on 4 cores and
+  with 4 loops on 2 cores.
+  - The measures of latency. The sampler of the memory of `measure.sh`
+    (every 0.1 s, on the CPUs of the client) and the probes of the scripts
+    of D742 ran beside wrk; on 4 cores wrk is the limit, and they moved the
+    latency of 99 % by up to 2 ms. Measured again with nothing beside wrk
+    (the cores of the server read just before and just after it): at 256
+    connections on 4 cores 0.45 to 0.76 ms for 0.9.0, not 0.57 to 2.91.
+    `measure.sh` now runs wrk twice for each point: the requests, the
+    latency and the cores alone, then the memory sampled.
+  - `replaceAll.1` (+12.3 %): `filter` stored the elements it kept by
+    `vpcompress` into memory (`llvm.masked.compressstore`, D195); a load at
+    the same place of another page of 4 KiB as a masked store waits until
+    that store is written. `replaceAll` of one byte writes the places of the
+    byte in a line into the same block at each call (freed and taken again)
+    while it reads the next line: where the blocks of the arena fall (D737
+    changed it) made it wait or not (13.6 M stores not forwarded against
+    3.7 M, at 2000 rounds). Now the kept elements are compressed in
+    registers by parts of 64 bytes, each stored whole while the result has
+    room for it before the place of the next block (the lanes past the
+    kept ones written over by the next part), else each kept element read
+    again from its source and stored by itself, by the bits of the mask.
+    1.5 M stores not forwarded; 29.7 ns against 29.0 for b035583 at 2000
+    rounds; over 12 placements of the lines (0 to 1000 texts made before
+    them, the CPU of the measures, 5 runs alternated at each) the means of
+    the medians 29.280 ns for both, the worst 30.2 against 32.3. Tried,
+    refused:
+    - 32 blocks at each cut of the arena again (D737's ramp out):
+      `replaceAll` 28.8 to 29.7 ns, but the server grew by 439 to 443 bytes
+      a connection on 4 cores (the goal: 400 at most), 252 to 366 with 4
+      loops on 2;
+    - compressed in registers, stored whole only when the whole result had
+      room after the place: never for the 2 or 3 places of a line, 31.5 to
+      36.2 ns;
+    - a compress of 16 lanes of 64 bits left to LLVM: it splits it, then
+      stores the second half with an aligned move at a place that is not
+      (`vmovdqa64` at `rsp+0x188`): a crash;
+    - the parts stored into the frame, then copied: LLVM made the copy a
+      `memcpy`, whose loads of 16 bytes waited for the stores of 64 (8.5 M
+      blocked, 33.7 ns).
+    A whole vector stored past the end of a block's part overwrote the next
+    block's elements, written by another thread: `filters_compress_their_
+    vectors` failed on 4 threads (sums of floats differ, counts the same);
+    hence the bound of the place of the next block, passed by each caller.
+  - The first blocks of a class of a thread (D737). Its cuts of 2, 4, 8 and
+    16 blocks put the first blocks of the classes close to each other, at
+    the same places of other pages of 4 KiB as blocks that a loop writes and
+    reads in turn: `textResponse` alone (a program of its own, its texts
+    shifted by 0 to 200 texts made before them, 12 placements, 5 runs
+    alternated at each): 8.40 ns for b035583 at every placement, 10.7 to
+    12.7 ns at 4 of the 12 (4K aliasing 0.52 to 7.9 M), the mean of the
+    medians +11.1 %; in bench/regress.py +3.1 %, then not again. Now
+    `$kCarve` reserves a run of 32 blocks at the first refill of a class by
+    a thread, as before D737, but makes 2 of them the list, then 4, 8, 16
+    and the 2 left at the next refills (at 320 + 8 * c of the zone, the next
+    block of the run): the blocks where b035583 put them, the pages of the
+    blocks not yet made untouched. `textResponse` over the 12 placements:
+    the means of the medians 8.427 and 8.424 ns. Tried, refused: 32 blocks
+    made at each cut again (D737's ramp out): `replaceAll` back, but the
+    server grew by 439 to 443 bytes a connection on 4 cores (the goal: 400
+    at most).
+  - `sortBy.length` (+3.5 %): the lines of D740 in `$argsortInt` moved the
+    loop of its radix sort out of the loop stream detector. `$argsortInt` is
+    as before D740; the arrivals of a turn of `http` (16 at most) are
+    placed by the counts of those before them in `arrive` itself. sortBy
+    5.89 to 6.03 ns against 5.85 to 6.02.
+  - `json stringify` (+3.3 % with the filter as above, before the runs of
+    32 blocks): flagged again, then not in 11 runs alternated; over 10
+    placements of the code (a program of its own, a function of 0 to 54
+    steps before `main`, 5 runs alternated at each) the means of the
+    medians 141.48 ns for b035583, 140.45 now (-0.7 %). `unix mapShared`
+    (+7.7 %, its ranges overlapping): -5.9 % in 11 runs.
+  - The latency of 99 % on 4 cores (client-bound). With nothing beside
+    wrk, 8 rounds, 0.9.0 never above 2.6 ms at 1024 connections; every
+    compiler since D736 (d738, e64, final, fix6) 2 to 5 ms in 1 to 3 rounds
+    of 8: their loops, which need 30 % fewer cycles, slept between
+    requests, each woken by wrk (200 thousand sleeps in 10 s against 17
+    thousand; the time each thread waited for a CPU up to 242 ms in 10 s
+    against 130). Now a loop with at least a full wait of connections (16)
+    tries its set without sleeping for at most its mean work between two
+    waits (200 thousand counts of the processor at most, about 60 us)
+    before it sleeps (57 thousand sleeps in 10 s), and after a try that found
+    nothing leaves the next 1, 3, 7... 1023 waits without one
+    (`try_before_sleep`), only while the loops of its listener are no more
+    than the processors (counted again at each of the first 64 waits: the
+    loops join one after the other, and a count made at the first wait saw
+    1 or 2 of 4). Tried, refused (6 or 8 rounds):
+    - tries without a bound (200 waits of 0 ms): p99 -18 % at 1024, but with
+      one connection the server kept its core (1.01 cores against 0.53);
+    - tries for all the mean work, any count of connections: on 4 cores at
+      16 connections (4 a loop) 4.03 cores against 3.61 for 9.3 % more
+      requests, 2.2 % more cycles a request than 0.9.0 (the goal forbids
+      it); half of it, 2.1 %;
+    - tries for half the mean work from 16 connections: at 256 connections
+      on 4 cores 5 rounds of 8 with 1 to 2.7 ms for the latency of 99 %;
+  - 4 loops on 2 processors (`ISC_THREADS=4`). The 4 loops always ready
+    (D739 gives each its share) waited for each other at the ticks of the
+    system: at 16 connections the latency of 99 % 7.7 ms against 5.75 for
+    0.9.0 (whose hash of the addresses could leave a loop without
+    connections). Now a loop asks for slices of 100 us (`sched_setattr`,
+    the slice of SCHED_OTHER of Linux 6.12, its policy and nice read first
+    by `sched_getattr` and kept) while the loops of its listener outnumber
+    the processors: 5.66 ms (6 rounds; 300 us: 5.77). Test
+    `crowded_loops_ask_short_slices` (`se.slice` of each thread: 100000 on
+    2 processors, the slice of the system on 4). Tried, refused:
+    - `serve` running as many loops as processors for a pure function (a
+      new `sysCpus`): the 2 threads of the pool left idle took the tasks of
+      each `map` of the loops: 1024 connections 245829 requests a second
+      against 422991, the latency of 99 % 21.8 ms;
+    - the loops of a pure function past the processors given no
+      connection (marked by their waits): the latency of 99 % 41 us to 3.97
+      ms, but that of 50 % 35 to 81 % above 0.9.0 (2 loops of 6
+      connections answer a turn of 6 requests where 4 of 3 answered 3);
+    - a loop yielding its processor at each wait (`sched_yield`): p99 19.5
+      and 61 ms at 256 and 1024 connections;
+    - a new function of the runtime in Rust for the mark of a pure function
+      (`isc_sys_serverpure`): the frontier of D622 forbids it (test
+      `the_rust_left_is_the_frontier`).
+  - The measures of the goal, at a3b0a91 (Docker, the server alone on its
+    CPUs, nothing beside wrk, rounds alternated with 0.9.0; requests a
+    second: means, 0.9.0 then now; latency: medians). A pure handler, 8
+    rounds:
+
+    | cores, threads, connections | requests a second | p50 | p99 | cores busy |
+    | :-- | --: | --: | --: | --: |
+    | 2, 2, 1 | 75366, 75172 | 12, 12 us | 17, 17 us | 0.53, 0.52 |
+    | 2, 2, 16 | 401613, 420624 | 25, 26 us | 56, 41 us | 2.01, 2.02 |
+    | 2, 2, 256 | 446944, 468186 | 548, 524 us | 905, 860 us | 2.00, 2.00 |
+    | 2, 2, 1024 | 406273, 443171 | 2.40, 2.20 ms | 3.84, 3.91 ms | 1.98, 1.98 |
+    | 2, 4, 1 | 74848, 74795 | 12, 12 us | 16, 16 us | 0.54, 0.53 |
+    | 2, 4, 16 | 357054, 367772 | 18, 15 us | 5.63, 5.55 ms | 2.01, 2.02 |
+    | 2, 4, 256 | 436582, 470956 | 299, 263 us | 8.29, 8.27 ms | 2.00, 2.00 |
+    | 2, 4, 1024 | 426865, 460747 | 1.24, 1.09 ms | 9.36, 9.16 ms | 1.99, 1.98 |
+    | 4, 4, 1 | 75269, 76095 | 12, 12 us | 17, 17 us | 0.54, 0.53 |
+    | 4, 4, 16 | 668162, 729477 | 20, 19 us | 41, 30 us | 3.56, 3.86 |
+    | 4, 4, 256 | 805361, 800814 | 146, 150 us | 684, 573 us | 3.95, 3.92 |
+    | 4, 4, 1024 | 754975, 764329 | 605, 624 us | 4.08, 4.00 ms | 3.83, 3.76 |
+
+    Given an action, 6 rounds:
+
+    | cores, threads, connections | requests a second | p50 | p99 | cores busy |
+    | :-- | --: | --: | --: | --: |
+    | 2, 2, 1 | 75330, 75015 | 12, 12 us | 17, 16 us | 0.53, 0.53 |
+    | 2, 2, 16 | 408891, 419100 | 28, 27 us | 56, 46 us | 2.02, 2.02 |
+    | 2, 2, 256 | 448538, 467653 | 546, 521 us | 910, 880 us | 1.99, 1.99 |
+    | 2, 2, 1024 | 415030, 449343 | 2.35, 2.19 ms | 4.08, 3.48 ms | 1.98, 1.98 |
+    | 2, 4, 1 | 74852, 74755 | 12, 12 us | 17, 17 us | 0.53, 0.53 |
+    | 2, 4, 16 | 371238, 368317 | 18, 16 us | 5.82, 5.33 ms | 2.01, 2.02 |
+    | 2, 4, 256 | 440416, 467442 | 297, 265 us | 8.27, 8.27 ms | 2.00, 2.00 |
+    | 2, 4, 1024 | 436493, 465411 | 1.18, 1.08 ms | 9.29, 9.14 ms | 1.98, 1.98 |
+    | 4, 4, 1 | 76039, 75887 | 12, 12 us | 16, 16 us | 0.53, 0.53 |
+    | 4, 4, 16 | 659377, 730044 | 20, 19 us | 38, 30 us | 3.40, 3.89 |
+    | 4, 4, 256 | 811769, 811325 | 148, 150 us | 485, 408 us | 3.96, 3.96 |
+    | 4, 4, 1024 | 779874, 780093 | 603, 624 us | 1.91, 1.57 ms | 3.94, 3.86 |
+
+    The requests a second never 1 % below 0.9.0 (at worst -0.8 %, 2 cores
+    and 4 threads at 16 connections given an action, +1.5 % in 8 rounds
+    again), the latency of 50 % never 5 % above (+4.0 % on 2 cores at 16
+    connections, +3.1 and +3.5 % on 4 cores at 1024), that of 99 % never
+    5 % above (+1.8 % on 2 cores at 1024, 16 to 27 % lower on 4 cores at 16
+    and 256). The memory (`measure.sh`, its highest Pss from 16 to 1024
+    connections, 2 runs): 106 and 106 bytes a connection on 2 cores, 215
+    and 232 with 4 threads, 228 and 211 on 4 cores (0.9.0: 2194 to 4649).
+    The latency of 99 % at 16 connections on 2 cores against nginx, 6
+    rounds: 47 us against 50. The latency of 50 % at 16 connections on 2
+    cores moves with the hash of `SO_REUSEPORT` for 0.9.0: 24 or 25 us
+    when it splits the 12 connections of wrk unevenly (4 and 8, 5 and 7),
+    30 or 31 us when evenly (6 and 6), its latency of 99 % then 44 to 55 us
+    against 61 to 71; D739 splits evenly, 26 or 27 us at every round, 3 to
+    4 us below 0.9.0 at the same split (the medians of 0.9.0 over 6 series
+    of 8 rounds: 24.5 to 30 us).
+  - The cores. Busy for a request (their ticks over the requests), never
+    above 0.9.0 but in two cases: a pure handler on 4 cores at 256
+    connections, +0.03 % (3.92 cores against 3.95, the requests -0.6 %);
+    given an action on 4 cores at 16 connections +3.2 % in 6 rounds, +0.8 %
+    in 8 more, +1.0 and +1.3 % in 10 more against 0.9.0 twice (0.9.0
+    against itself: 0.3 %). The ticks are a sample: the kernel charges a
+    tick of 4 ms to the thread running at each (250 Hz; no CPU without
+    ticks, so the accounting of the time by the tick). Counted by the
+    processor instead (`perf stat -p` of the server for 6 s of each run,
+    its cycles of the program and of the kernel, the clock fixed at 3.2
+    GHz): 17142 cycles a request for 0.9.0 and 17246 now in 6 rounds (+0.6
+    %, the deviation of the difference 0.87 times its standard error),
+    17431 and 17370 in 14 more (-0.35 %, 0.57); the program 4133 and 4049,
+    the kernel 13298 and 13321; 0.53 waits a request against 0.69 (the
+    connections 5 a loop instead of 2 to 10: fewer events a wait), 125
+    switches for 1000 requests against 47. In those 14 rounds the ticks
+    of 0.9.0 gave 2.43 to 3.00 G cycles a second of ticks (2.86 on the
+    mean), those of now 2.98 to 3.04: the ticks of one server move by 20 %
+    from one round to the next there, not a measure at 1 %; with the
+    cycles, no difference. No wait keeps a core busy: with one connection
+    the server busy 0.53 cores as 0.9.0 (0.52 to 0.54).
+  - bench/regress.py against b035583 at a3b0a91: knucleotide +1.8 %, seven
+    forms of `strings` +3.2 to +7.8 % (their ranges 1.53 to 2.02 ns for
+    b035583 in that run), `sys env` +3.1 %; again: `strings` and `sys` in
+    11 runs, no form moved by 3 %; knucleotide in 15, -0.2 % (1099.7
+    against 1101.3 ms). Better: `http header` -3.9 %, the peaks of rtiow's
+    `final` -8.8 % (one thread) and -5.8 % (eight).
+  - Suite 532 on a3b0a91; the four series of the tests of isocron-ui with
+    its compiler (13 scenes and 22 checks, 10 scripts of Lua, the
+    generated views, the display).

@@ -10,10 +10,23 @@
   answers 16 connections at most, the allocators carve the first blocks
   of a class of a thread by its own needs; the loops of `serve` share one
   listener, each connection given to the loop that has the fewest (D736 to
-  D741). On 2 cores, from 16 to 1024 connections: 820 to 920 KiB (0.9.0:
-  1.0 to 2.7 MiB), 5 to 7 % more requests a second, the latency of 99 %
-  with 16 connections 40 to 49 us (0.9.0: 48 to 73, nginx 42 to 55)
-  (D742).
+  D741). On 2 cores, from 16 to 1024 connections: 884 to 988 KiB (0.9.0:
+  1.0 to 2.7 MiB), 5 to 9 % more requests a second, the latency of 99 %
+  with 16 connections 47 us in six rounds alternated with nginx (50)
+  (D742, D743).
+- No regression left by them (D743): a loop of a server with 16
+  connections or more tries its connections for at most its mean work
+  before it sleeps (on 4 cores its loops slept between requests, the
+  latency of 99 % 11 % above 0.9.0), loops that outnumber the processors
+  ask for slices of 100 us; `filter` compresses the elements it keeps in
+  registers instead of storing them by a masked compress, which made
+  later loads wait (`replaceAll` 12 % slower where its blocks fell); the
+  first blocks of a class of a thread are taken from a run of 32 at the
+  places they had before (`textResponse` 27 % slower at 4 of 12
+  placements of its texts). In 8 rounds alternated with 0.9.0 on 2 and 4
+  cores: as many or more requests a second (-0.6 to +9.2 %), the latency
+  of 50 and 99 % at most 4.0 and 1.8 % above, the cycles of a request the
+  same.
 
 ## 0.9.0 — 2026-11-19
 
