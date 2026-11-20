@@ -18177,7 +18177,10 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   cycles, and its tasks 0.15 %, perf with symbols): D740. Test
   `server_memory_does_not_grow_with_idle_connections` (std_http.rs: 16
   and 1000 connections opened, then one request on each, the last opened
-  first; the server's peak 596 and 1532 KiB before, 572 and 620 now).
+  first; the server's peak 596 and 1532 KiB before, 572 and 620 now; not
+  under the checking allocator, which keeps each block freed in its
+  quarantine, 4096 blocks or 64 MiB: suite 525 failed there, 896 and
+  1996 KiB).
 
 - **D739 — The loops of `serve` on one listener, each connection given to
   the loop that has the fewest (2026-11-20).** The latency of 99 % of the

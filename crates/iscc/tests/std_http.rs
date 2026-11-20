@@ -460,6 +460,11 @@ fn server_with_a_handler_that_is_an_action() {
 #[test]
 fn server_memory_does_not_grow_with_idle_connections() {
     use std::io::{BufRead, BufReader};
+    // (not under the checking allocator: it keeps each block freed in its
+    // quarantine, poisoned, its memory growing with the requests answered)
+    if std::env::var("ISC_ALLOC").as_deref() == Ok("check") {
+        return;
+    }
     let bin = compile(include_str!("data/std_http_many.isc"), "std_http_many_idle");
     let peak = |n: usize| -> u64 {
         let mut child = std::process::Command::new("python3")
