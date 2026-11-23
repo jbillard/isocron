@@ -18856,3 +18856,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     connections unevenly, or by the order in which the client opens
     them, would tune the server to wrk (the goal forbids it) and give up
     the even split of D739, whose latency of 99 % is the lower.
+
+- **D751 — The latency of 50 % at 16 connections on 2 cores given an
+  action over every round alternated (2026-11-23).** D749 pooled 28
+  rounds of 0.9.0 there: +8.0 %. All the rounds of the six series that
+  alternated 0.9.0 with a new compiler at that point (F, K, K2, R, and the
+  two tries below): 0.9.0 44 rounds, its median 26.0 us (25 rounds at 26
+  us or less, 18 at 30 or more, as its hash split the connections, D750);
+  the new compilers (a3b0a91, 55f7623, the archive of 0.9.1) 52 rounds,
+  27.0 us: +3.8 %. A series of 8 rounds gives -3.6 % to +10.2 % with the
+  same binaries, by the draws of 0.9.0: the flag of R not found again over
+  all of them, as those of the latency of 99 % over 16 rounds (D749).
+  Tried, not kept: the arrays made by `afterAnswers` after the responses
+  of a turn not made in the common turn (each connection of the table
+  answered, its bytes read whole, none closing, no send failed: the table
+  empty), 8 rounds alternated: 26.5 us against 27 for 0.9.1 (0.9.0 28.0,
+  its draws), the CPU time of a request 4818 against 4838 ns, the latency
+  of 99 % 53.5 against 48.0; a small gain the goal does not need, not
+  kept without the measures of the release again. Profile of that server
+  (perf, 6 s): 80 % of its cycles in the kernel (the receive and the send
+  of each request), 20 % in the program, 11 % in `serveActionLoop`, 0.4 %
+  in the dispatch of its small parallel loops.
