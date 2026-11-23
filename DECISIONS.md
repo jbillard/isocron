@@ -18763,3 +18763,58 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   failed): `personality(ADDR_NO_RANDOMIZE)` beside
   `prctl(PR_SET_THP_DISABLE)` before their `exec`. std_http.rs plain and
   with glibc, heap.rs in the three passes: green.
+
+- **D749 — The measures of the goal of 2026-11-20 with the compiler of the
+  archive of 0.9.1 (2026-11-23).** The server built by the published
+  `iscc` (its runtime built in the image of the release, rustc 1.100.0
+  against 1.99.1 on the host) is not the bytes of 55f7623's (D745): the
+  code of the program the same (its assembly identical), the runtime
+  placed otherwise (8100 bytes of the server differ). Measured again with
+  it (`r091`), in rounds alternated with 0.9.0:
+  - memory (`measure.sh`): 102 and 106 bytes a connection on 2 cores, 232
+    and 207 with 4 threads, 228 and 232 on 4 cores (0.9.0: 2271 to 4730);
+  - 8 rounds without an action: the requests a second -0.2 to +9.3 %; the
+    latency of 50 % at most +3.1 %; that of 99 % +6.2 % with one
+    connection on 2 cores and with 4 threads (17 us against 16: the step
+    of wrk) and +42.0 % with 4 threads at 16 connections; the CPU time of a
+    request (`schedstat`) -0.3 to -7.8 %;
+  - 8 rounds given an action: the requests -0.3 % at the least, the
+    latency of 99 % never above (one connection -5.9 %), the CPU time
+    -7.7 to +0.3 % (+0.26 and +0.28 % on 4 cores at 16 and 256, within
+    their standard errors 0.33 and 0.35), the latency of 50 % +10.2 % on 2
+    cores at 16 connections and +5.7 % on 4 cores at 256;
+  - the cases of the latency of 99 % again, 16 rounds of 0.9.0, 55f7623
+    and the archive alternated: one connection on 2 cores -5.9 %, with 4
+    threads -2.9 %, 4 threads at 16 connections -2.7 % (55f7623 -5.9, 0.0,
+    -4.4): their flags of 8 rounds not found again, the signs turned;
+  - the latency of 50 % on 4 cores at 256 connections given an action:
+    the new server 148 to 152 us at every round of every series (one 184),
+    0.9.0 139 to 226 us, its medians of 8 or 6 rounds 141.5 to 156 in six
+    series: pooled, 44 rounds each, 150 against 146 us (+2.7 %), the mean
+    150.7 against 159.2; that of 2 cores at 16 connections moves with the
+    hash of `SO_REUSEPORT` of 0.9.0 (D743): its rounds 24 to 26 us when it
+    splits the 12 connections unevenly, 30 to 31 when evenly, the new
+    server 26 to 27 at every round; pooled without an action 26 against
+    25 us (+4.0 %, 24 rounds each), given an action 27 against 25 (+8.0 %,
+    36 and 28 rounds: 0.9.0 at 24 to 26 us in 17 of them). At the same
+    split the new server is 3 to 4 us below 0.9.0 (D743), its latency of
+    99 % 22 % below and its requests a second 2.8 % above; its median
+    stays above the draws of 0.9.0 that split unevenly; the only way under
+    them would be to split the connections unevenly on purpose (not
+    tried: it would lengthen the tail the even split shortened). Not changed;
+    the letter of the point 3 not met there, given an action.
+  - The latency of 99 % at 16 connections on 2 cores against nginx, 6
+    rounds: 39 us against 47.
+  - bench/regress.py against b035583: the programs within their noise
+    (n-body -2.8 %), one form flagged, `sys normalize` +3.2 %; `sys` again
+    alone, 11 runs: not found again against b035583 (`sys env` +4.6 %, its
+    ranges overlapping: 19.4 to 22.6 and 20.5 to 21.7 ns), against
+    55f7623 built on the host +3.8 % (94.6 to 98.2 ns, the same assembly).
+    `path.normalize` alone, the same instructions (1685991762 and
+    1685991063), its time a matter of places: a function of 6n steps
+    before `main` (30 places of the code) +0.8 % on the mean for the
+    archive, +0.6 % for 52f507b built on the host, +0.6 % for a3b0a91
+    (D743), -0.2 % for a129c5d (D742), 23 of the 30 slower; k texts made
+    before its paths (12 places of the blocks) -2.2 % on the mean, faster
+    at every one; at the place of the code where the archive was 4.5 %
+    slower, 11.4 M loads blocked by the 4K aliasing against 10.2 M.
