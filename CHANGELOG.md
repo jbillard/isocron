@@ -2,9 +2,12 @@
 
 ## Unreleased
 
-- n-body 15.7 % faster (2388 to 2014 ms in the A/B): the arrays of the
+- n-body ahead of C again: 2373 to 1902 ms in the Benchmarks Game (C 1944,
+  Rust 1947), Isocron the fastest on the 10 programs. The arrays of the
   state of a loop it owns are blocks of their own for LLVM, the roots and
-  divisions of a split `fold` kept in pairs (D731).
+  divisions of a split `fold` kept in pairs (D731); a loop of tail calls
+  that updates arrays of its state in place is left to LICM, which keeps
+  them in registers from one iteration to the next (D744).
 - The memory of the server of HTTP barely grows with its connections:
   its table holds the connections with a request not yet complete, a turn
   answers 16 connections at most, the allocators carve the first blocks

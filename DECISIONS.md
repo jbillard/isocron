@@ -18610,3 +18610,26 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     without the change); `scans_of_tail_calls_keep_their_mark`: a scan of
     bytes by tail calls (`firstOf` of `http`) keeps its mark;
     `states_of_loops_stay_where_given` (D681) passes.
+  - Suite 534 on 45e606b; the four series of the tests of isocron-ui with
+    its compiler (13 scenes and 22 checks, 10 scripts of Lua, the
+    generated views, the display).
+  - The Benchmarks Game measured again at 45e606b (image, builds, the 102
+    outputs the same as the references, `run.sh measure 4 12 native` under
+    `apply parallel`): n-body 1902 ms against C 1944, Rust 1947 and C++
+    1982 (2373 at 64f9888, D730): Isocron the fastest on the 10 programs;
+    n-body 1.4 times its floor (1.8). The nine others within 0.4 % of D730
+    (knucleotide 572 against 570 ms, the rest the same); the other
+    languages within 0.7 % but for k-nucleotide in C and Go (-1.5 and -1.8
+    %), regex-redux in C++ (+7.1 %) and reverse-complement (C -2.9 %, Go
+    -1.8 %, C++ -1.9 %, Rust -4.5 %). A first measure an hour
+    before, kept out: the programs on 4 threads slower for every language
+    (binarytrees C +6.4 %, Rust +6.0 %, Isocron +7.1 %; knucleotide Rust
+    +16.6 %, Isocron +17.2 %), the sequential ones not (pidigits the same):
+    three processes of a browser of the owner of the machine 10 to 23 % of
+    a CPU each on the siblings of three CPUs of the measure (`apply
+    parallel` gives the others those threads); measured again once they
+    were idle (the busiest other processes read every 30 s: the browser at
+    10 % at most, brief peaks of a process `python` and of the terminal,
+    the times of every language back to those of D730). n-body in the
+    first 1880 ms against Rust 1947 and C 1979. results/benchmarks_game.md,
+    the README and results/floors.md from the second.
