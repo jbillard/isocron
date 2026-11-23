@@ -18907,3 +18907,24 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   generic changes of the turn tried gave +2 and -0.5 us (D750, D751).
   The point 3 is not met at that one point; reported, not pushed as
   done.
+
+- **D753 — What the latency of 50 % at 16 connections on 2 cores asks of
+  the server (2026-11-23).** Saturated (its loops 200 to 340 switches in
+  10 s: they never wait), a loop of n connections that answers T/2
+  requests a second keeps each about n x 2/T; while the two loops answer
+  as many (5 and 7, 6 and 6), the median is that of the loop with fewer.
+  Measured against that model, the medians of all the rounds of six
+  series given an action and one without, by split: 0.9.0 5 and 7 (23
+  rounds) 24.0 us, the model 24.4; 0.9.0 6 and 6 (15) 31.0 and 29.0; the
+  new server 6 and 6 (48, the archive of 0.9.1) 27.0 and 28.6; the server
+  of D752 5 and 7 (8) 23.0 and 23.9 (at 4 and 8 or less even the loop with
+  fewer is no longer saturated, the model out). For the new server at 6
+  and 6 to keep within 5 % of 0.9.0 at 5 and 7, 6 x 2/T_new <= 1.05 x 5 x
+  2/T_old: T_new >= 1.143 T_old. It answers 2.3 % more (419151 against
+  409637 requests a second). 80 % of its cycles are the kernel's for the
+  receive and the send of each request (D751), the same for any server
+  that reads and sends each request once: 14.3 % more requests means
+  12.5 % fewer cycles a request, 62 % of those of the program, a turn
+  2.7 times cheaper than now; else the split of 5 and 7 (D752), a tuning
+  to the 12 connections of wrk. The blocking of the point 3 at that point,
+  measured.
