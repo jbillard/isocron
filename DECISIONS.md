@@ -18818,3 +18818,41 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     before its paths (12 places of the blocks) -2.2 % on the mean, faster
     at every one; at the place of the code where the archive was 4.5 %
     slower, 11.4 M loads blocked by the 4K aliasing against 10.2 M.
+
+- **D750 — `path.normalize` over places of the code and of the blocks;
+  the latency of 50 % at 16 connections on 2 cores and the split of the
+  connections (2026-11-23).** After D749, two points of the goal of
+  2026-11-20 not met to the letter.
+  - `sys normalize` (point 6): the same instructions with every compiler;
+    over 30 places of the code alone +0.8 % for the archive of 0.9.1,
+    over 12 of the blocks alone -2.2 %. The function before `main`
+    moves `.data` and `.bss` too (they follow `.text`): one sweep was not
+    the code alone. Over 40 places, 10 of the code times 4 of the blocks
+    (0, 13, 100 and 1000 texts made before the paths), 5 runs alternated
+    at each: 96.439 ns for the archive of 0.9.1 against 96.474 for
+    b035583, -0.04 % (by place -0.01 %, standard error 0.31, slower at 18
+    of the 40): not slower on the mean, as the goal asks of a sweep. The
+    loads blocked at the place where the archive was 4.5 % slower: the
+    byte of the header at `p - 8` read by `room` (the runtime) after the
+    bytes of another text were written at the same place of another page
+    of 4 KiB, the same loads in both, more often there.
+  - The latency of 50 % at 16 connections on 2 cores given an action
+    (point 3): 0.9.0's for each split of the 14 connections between its
+    two loops by the hash of `SO_REUSEPORT` (the counts of each set of
+    `epoll` at 5 s, 32 rounds of four series): 7 and 7, 30 to 32 us (its
+    latency of 99 % 41 to 44 us, 58 to 67 in one series); 8 and 6, 24 to
+    25 (50 to 56); 9 and 5, 25 to 27 (61 to 62); 10 and 4, 30 (69 to 71).
+    The new server splits them 7 and 7 at every round (D739: each
+    connection to the loop that has the fewest): 26 to 27 us, 4 to 5 us
+    below 0.9.0 at the same split, its latency of 99 % 39 to 48. Its
+    median stays above 0.9.0's draws of 8 and 6, which the hash gave in
+    most rounds. Tried, refused: each response sent as soon as it is made
+    (`respondFrom` sending, `afterAnswers` given the failed ones), the
+    first request of a turn answered before the last is made: 8 rounds
+    alternated, the latency of 50 % 29 us at every round against 27
+    (0.9.0 26.5, its draws), that of 99 % 45.5 against 48.5, the
+    requests the same; a send between the responses delays the next
+    ones more than it brings the first forward. Not done: splitting the
+    connections unevenly, or by the order in which the client opens
+    them, would tune the server to wrk (the goal forbids it) and give up
+    the even split of D739, whose latency of 99 % is the lower.
