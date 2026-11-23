@@ -136,10 +136,70 @@ fn states_of_loops_owned_and_roots_in_pairs() {
     assert!(!asm.contains("isc.late.own"), "`@isc.late.own` still called");
     let wide: Vec<&str> = asm.lines().filter(|l| l.contains("sqrtpd") && (l.contains("%ymm") || l.contains("%zmm"))).collect();
     assert!(wide.is_empty(), "roots of more than 2 lanes: {:?}", wide);
+    // (the loop of `steps` updates the arrays of its state in place and
+    // passes on no part of what it was given: left to LICM, D744, its jump
+    // back not marked `llvm.licm.disable`)
+    let licm_off = |jump: &str| {
+        let Some(id) = jump.split("!llvm.loop !").nth(1) else { return false };
+        let Some(def) = ll.lines().find(|l| l.starts_with(&format!("!{} = distinct", id.trim()))) else { return false };
+        let kind = def.rsplit('!').next().unwrap().trim_end_matches('}').trim();
+        ll.lines().any(|l| l.starts_with(&format!("!{} = !{{!\"llvm.licm.disable\"}}", kind)))
+    };
+    let steps: Vec<&str> = ll.split("\ndefine ").filter(|f| f.contains("call noalias ptr @isc.late.own(")).collect();
+    assert!(!steps.is_empty(), "no function of `steps` in the IR");
+    for f in &steps {
+        let marked: Vec<&str> = f.lines().filter(|l| l.trim_start().starts_with("br ") && licm_off(l)).collect();
+        assert!(marked.is_empty(), "the loop of `steps` marked `llvm.licm.disable`: {:?}", marked);
+    }
+    // (its state kept in registers from one step to the next: the smallest
+    // loop holding the roots of a step reads and writes no memory but its
+    // frame and its constants)
+    let lines: Vec<&str> = asm.lines().collect();
+    let labels: std::collections::HashMap<&str, usize> =
+        lines.iter().enumerate().filter(|(_, l)| l.starts_with(".LBB")).filter_map(|(i, l)| l.split(':').next().map(|n| (n, i))).collect();
+    let mut step: Option<&[&str]> = None;
+    for (i, l) in lines.iter().enumerate() {
+        let target = l.trim_start().strip_prefix('j').and_then(|r| r.split_whitespace().nth(1));
+        let Some(&at) = target.and_then(|t| labels.get(t)) else { continue };
+        let body = &lines[at.min(i)..=i];
+        if at < i && body.iter().filter(|b| b.contains("sqrtpd")).count() >= 5 && step.is_none_or(|s| body.len() < s.len()) {
+            step = Some(body);
+        }
+    }
+    let step = step.expect("no loop holding the roots of a step");
+    let memory: Vec<&str> = step.iter().copied().filter(|l| l.contains("(%r") && !l.contains("(%rsp)") && !l.contains("(%rip)")).collect();
+    assert!(memory.is_empty(), "the state of `steps` read or written at each step: {:?}", memory);
     for n in ["0", "1", "1000"] {
         let r = run_bin(&bin, &[n]);
         assert_eq!((r.code, r.stdout.as_str()), (0, interp_ok(src, &[n]).as_str()), "{} steps: {}", n, r.stderr);
     }
+}
+
+#[test]
+fn scans_of_tail_calls_keep_their_mark() {
+    // a loop of tail calls with no array of its state updated in place: a
+    // scan of a few bytes, its jump back marked `llvm.licm.disable` (D681,
+    // D744: `time.format` 33 % slower, `trim`, `parseUrl`, `normalize` 5 to
+    // 9 % with LICM over such loops)
+    let src = r#"function firstOf(b: u8[n], at: i64, c: u8, d: u8): i64 {
+    return at >= b.length || b[at] == c || b[at] == d ? at : firstOf(b, at + 1, c, d);
+}
+
+action main(args: string[k]): i32 {
+    print(map(args, (a) => firstOf(bytes(a), 0, 47u8, 63u8)));
+    return 0;
+}
+"#;
+    let bin = compile_asm(src, "c_scan_mark");
+    let ll = std::fs::read_to_string(bin.with_extension("ll")).unwrap();
+    let scan = ll.split("\ndefine ").find(|f| f.lines().next().is_some_and(|l| l.contains("({ ptr, i64 } %a0, i64 %a1, i8 %a2, i8 %a3)"))).expect("no function `firstOf`");
+    let jump = scan.lines().find(|l| l.trim_start().starts_with("br label %") && l.contains("!llvm.loop !")).expect("the jump back of `firstOf` not marked");
+    let id = jump.split("!llvm.loop !").nth(1).unwrap().trim();
+    let def = ll.lines().find(|l| l.starts_with(&format!("!{} = distinct", id))).unwrap();
+    let kind = def.rsplit('!').next().unwrap().trim_end_matches('}').trim();
+    assert!(ll.lines().any(|l| l.starts_with(&format!("!{} = !{{!\"llvm.licm.disable\"}}", kind))), "{}", def);
+    let r = run_bin(&bin, &["a/b", "xyz", "?q", ""]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, interp_ok(src, &["a/b", "xyz", "?q", ""]).as_str()), "{}", r.stderr);
 }
 
 #[test]

@@ -18541,3 +18541,72 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   - Suite 532 on a3b0a91; the four series of the tests of isocron-ui with
     its compiler (13 scenes and 22 checks, 10 scripts of Lua, the
     generated views, the display).
+
+- **D744 — A loop of tail calls that updates arrays of its state in place
+  is left to LICM: the state of n-body in registers again (2026-11-23).**
+  Seen by the author on the page of the project: n-body not the fastest
+  (2373 ms against C's 1944, D730). At 9f0aec0, one core, 50 million
+  steps, 5 runs alternated: 2026.6 ms and 6427 M cycles, C (gcc #9) 1957.1
+  ms and 6205 M, Rust (#9) 1959.0 ms, the binary of ad9802e (before D653)
+  1925.0 ms and 6102 M. The loop of `steps` read and wrote its state at
+  each step (18 accesses to the blocks of the velocities and positions in
+  the loop holding the roots), where ad9802e kept it in registers. D731
+  made the six arrays blocks of their own for LLVM and found that LICM
+  still promoted none of them ("its caps raised, the same binary"): the
+  cause is D681, the jump back of every loop of tail calls marked
+  `llvm.licm.disable`, so that LICM never ran on it (D681 was measured
+  before D731, when the arrays of the state could not be told apart:
+  nothing to promote then). Without any mark n-body is 1925.2 ms (6102 M
+  cycles), as ad9802e.
+  - The mark keeps LICM from speculating: moving before the loop what a
+    block run at some iterations only computes from values the loop does
+    not change (D681: the sines of the arm `Checker` of `textureValue` of
+    rtiow). LLVM has LICM without speculation (`licm<no-allowspeculation>`)
+    but only for the whole pipeline, not for one loop. Tried, refused:
+    - the mark kept through `default<O3>`, then taken off (its string
+      replaced through a named node `!isc.tail.loops`) and
+      `licm<no-allowspeculation>` run after it: the state in registers, but
+      the vectors of SLP already made over the memory: 1952.0 ms (6189 M
+      cycles), 0.3 % under C;
+    - the mark only on the loops whose tail calls pass on a part of a
+      parameter (the node a node wraps: `hit`, `textureValue`, `bbox` of
+      rtiow), the loops that pass on a count or a state left to LICM:
+      n-body 1911.9 against 2013.6 ms in bench/regress.py, rtiow the same,
+      but `time format` +33.2 %, `trim` +8.8 %, `normalize` +6.2 %,
+      `parseUrl` +4.7 % (their ranges apart). `time.format` alone (4096
+      instants, 200 rounds): 105.7 ns a call against 83.5, 1271 M
+      instructions against 1051 M: LICM moved before the loop of
+      `formatFrom` the digits of every field that the arms of `withField`
+      compute (the division of the nanoseconds by 1000000, the divisions
+      by 100, the counts of digits of the year, the month, the offset...),
+      in a scan of the bytes of the pattern: the speculation of D681.
+  - Now the jump back is left unmarked only when the loop updates arrays
+    of scalars of its state in place (`own_paths` of a parameter the loop
+    consumes: its blocks passed through `@isc.late.own`, D731) and no tail
+    call passes on a part of a parameter (`TailCall::descends`): a loop
+    whose state lives in blocks, which only LICM's promotion keeps in
+    registers from one iteration to the next. In rtiow `floatsFrom`,
+    `vecsFrom` and `permuted` (arrays built in place) lose the mark, in
+    n-body `steps`, in `http` `sendAll` (its prologue: two instructions in
+    another order, one fewer; the rest of the server of
+    bench/http_servers the same bytes at the same places). n-body: the
+    loop of `steps` reads and writes no memory but its frame (30 spills);
+    1886.0 ms and 5978 M cycles against 1979.4 and 6276 M for 9f0aec0 and
+    1957.6 for C (3 runs alternated later in the morning: -4.7 %), the
+    cycles and instructions of the build without any mark.
+  - bench/regress.py against 9f0aec0: n-body 2005.9 to 1911.5 ms (-4.7 %),
+    the other programs whose binaries differ within their noise
+    (knucleotide -0.2 %, spectralnorm +0.0 %, countwords +0.1 %, rtiow
+    -0.1 to +0.2 % on 1 and 8 threads, the peaks within 4 KiB);
+    binarytrees, fannkuchredux, fasta, mandelbrot, pidigits, regexredux,
+    revcomp, walk and 7 of the 18 groups of the primitives the same
+    binaries (the 11 others: no form moved by 3 %) (fasta -2.6 % between its two identical builds); `sha256
+    hex.32` +6.7 % and `sys isAbsolute` +3.6 % in groups whose binaries are
+    the same byte for byte: the machine. No regression.
+  - Tests: `states_of_loops_owned_and_roots_in_pairs` (codegen.rs): the
+    jumps of the function of `steps` (the one passing its blocks through
+    `@isc.late.own`) not marked, and the smallest loop holding the roots of
+    a step accesses no memory but its frame and its constants (fails
+    without the change); `scans_of_tail_calls_keep_their_mark`: a scan of
+    bytes by tail calls (`firstOf` of `http`) keeps its mark;
+    `states_of_loops_stay_where_given` (D681) passes.

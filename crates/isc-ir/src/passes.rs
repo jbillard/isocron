@@ -3345,6 +3345,10 @@ pub struct TailCall {
     pub moved: Vec<(usize, VarId)>,
     pub lent: Vec<usize>,
     pub free_first: Vec<VarId>,
+    /// The call passes on a part of a parameter (the node a node wraps,
+    /// the tail of a list, a row): its loop walks into the value it was
+    /// given, a few iterations of different arms (D744).
+    pub descends: bool,
 }
 
 /// The direct tail calls of function `fi` that can be jumps: each array
@@ -3437,6 +3441,7 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
                     let mut moved = Vec::new();
                     let mut lent = Vec::new();
                     let mut roots = Vec::new();
+                    let mut descends = false;
                     // an owned parameter given again at its place (D351): it
                     // stays in its slot, the next iteration owns it, not freed
                     let mut kept = Vec::new();
@@ -3467,13 +3472,14 @@ pub fn tail_calls(fi: u32, f: &Function) -> HashMap<*const Expr, TailCall> {
                                 let (_, r) = self.parts.iter().rev().find(|(w, _)| *w == v).unwrap();
                                 roots.extend(r.iter().copied());
                                 lent.push(k);
+                                descends = true;
                             }
                             _ => return,
                         }
                     }
                     let free_first = self.pending.iter().copied().filter(|v| !moved.iter().any(|(_, w)| w == v) && !kept.contains(v)).collect();
                     self.roots.push((e as *const Expr, roots));
-                    self.out.insert(e as *const Expr, TailCall { moved, lent, free_first });
+                    self.out.insert(e as *const Expr, TailCall { moved, lent, free_first, descends });
                 }
                 _ => {}
             }

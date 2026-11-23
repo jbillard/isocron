@@ -253,11 +253,15 @@ const UNROLL_IDS: u64 = 1 << 20;
 /// The numbers of the metadata of the loops of tail calls (D681): each
 /// marked `llvm.licm.disable`. The body of such a loop is the body of a
 /// function, most often a `match` whose few arms loop (a node wrapping
-/// another) while the others return; LLVM would move before the loop what
-/// an arm computes from the parameters the loop passes on as they are (the
-/// sine of a checker texture computed at each call of `textureValue`,
-/// whatever its texture: rtiow), and the loops that walk lists and texts
-/// lose nothing measurable without it.
+/// another) while the others return, or a scan of a few bytes; LLVM would
+/// move before the loop what an arm computes from the parameters the loop
+/// passes on as they are (the sine of a checker texture computed at each
+/// call of `textureValue`, whatever its texture: rtiow; the fields of
+/// `time.format`, D744), and the loops that walk lists and texts lose
+/// nothing measurable without it. Not marked (D744): a loop that updates
+/// arrays of scalars of its state in place (D731) and passes on no part of
+/// what it was given; only LICM keeps those arrays in registers from one
+/// iteration to the next (the bodies of n-body).
 const TAIL_LOOP_IDS: u64 = 1 << 22;
 /// The numbers of the metadata of the kernel's memory (D605): the base of
 /// the arena, the words of the arena and those of the zone of the thread
@@ -1307,6 +1311,9 @@ struct TailLoop {
     /// Per parameter: its slot, and for an array the slot of a flag set when
     /// the loop owns its value (a temporary moved into it by a tail call).
     slots: Vec<(String, Option<String>, Type)>,
+    /// Its jump back not marked `llvm.licm.disable`: arrays of its state
+    /// updated in place, no jump passing on a part of a parameter (D744).
+    licm: bool,
 }
 
 
@@ -4328,6 +4335,7 @@ impl<'p> Gen<'p> {
         let saved_tail_id = std::mem::replace(&mut self.tail_loop_id, 0);
         if !calls.is_empty() {
             let mut slots = Vec::new();
+            let mut owns_arrays = false;
             for (k, var) in f.params.iter().enumerate() {
                 let ty = self.p.vars[*var as usize].ty.clone();
                 let t = lt(&ty);
@@ -4349,7 +4357,13 @@ impl<'p> Gen<'p> {
                 // once before the loop, D731; an iteration that updates them
                 // in place passes the same blocks on, which LLVM then keeps
                 // in registers from one iteration to the next)
-                let first = if consumed && !by_address && !self.opts.isa.is_wasm() { self.own_blocks(first, &ty) } else { first };
+                let own = consumed && !by_address && !self.opts.isa.is_wasm();
+                let first = if own { self.own_blocks(first, &ty) } else { first };
+                if own {
+                    let mut paths = Vec::new();
+                    own_paths(&ty, &mut Vec::new(), &mut paths);
+                    owns_arrays |= !paths.is_empty();
+                }
                 self.emit(format!("store {} {}, ptr {}", t, first, s));
                 let owned = if ty.has_heap() && !consumed {
                     let o = self.alloca("i1");
@@ -4376,7 +4390,10 @@ impl<'p> Gen<'p> {
                 let x = self.ins(format!("load {}, ptr {}", t, s));
                 self.env.insert(*var, v(x, t));
             }
-            self.tail = Some(TailLoop { calls, head, slots });
+            // (left to LICM: a loop that updates arrays of its state in
+            // place and walks into nothing it was given, D744)
+            let licm = owns_arrays && !calls.values().any(|c| c.descends);
+            self.tail = Some(TailLoop { calls, head, slots, licm });
         }
         let ret = lt(&f.body.ty);
         // (the result written at its place, D680: `%out`, its state over the
@@ -4609,13 +4626,19 @@ impl<'p> Gen<'p> {
             self.emit(format!("store {} {}, ptr {}", t, x.r, s));
         }
         let head = tl.head.clone();
+        let licm = tl.licm;
         self.tail = Some(tl);
-        // (nothing of the body moved before the loop by LLVM, D681)
-        if self.tail_loop_id == 0 {
-            self.tail_loops += 1;
-            self.tail_loop_id = TAIL_LOOP_IDS + self.tail_loops as u64;
+        // (nothing of the body moved before the loop by LLVM, D681, but in
+        // a loop whose state LICM keeps in registers, D744)
+        if !licm {
+            if self.tail_loop_id == 0 {
+                self.tail_loops += 1;
+                self.tail_loop_id = TAIL_LOOP_IDS + self.tail_loops as u64;
+            }
+            self.emit(format!("br label %{}, !llvm.loop !{}", head, self.tail_loop_id));
+        } else {
+            self.br(&head);
         }
-        self.emit(format!("br label %{}, !llvm.loop !{}", head, self.tail_loop_id));
         // the rest of the expression is never reached
         let dead = self.label();
         self.block(&dead);
