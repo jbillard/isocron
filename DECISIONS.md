@@ -18877,3 +18877,33 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   (perf, 6 s): 80 % of its cycles in the kernel (the receive and the send
   of each request), 20 % in the program, 11 % in `serveActionLoop`, 0.4 %
   in the dispatch of its small parallel loops.
+
+- **D752 — The latency of 50 % at 16 connections on 2 cores against the
+  draws of 0.9.0: a blocking (2026-11-23).** The point 3 asks every series
+  of 8 rounds alternated with 0.9.0 to keep the latency of 50 % within
+  5 %. At 2 cores and 16 connections given an action, series by series
+  (0.9.0 then the new compiler): F 28.0 and 27.0 us (6 rounds), K 24.5 and
+  27.0 (6), K2 28.0 and 27.0, R 24.5 and 27.0, the try of D750 26.5 and
+  27.0, the try of D751 28.0 and 27.0 (8 each): the new server 27.0 at
+  every series (26 or 27 at every round), 0.9.0 24.5 to 28.0 as its hash
+  split the 12 connections of wrk between its two loops; two series above
+  5 %, +10.2 %. Both servers measured by split (the counts of each set of
+  `epoll`): 0.9.0 6 and 6, the latency of 50 % 30 to 32 us and of 99 %
+  41 to 44 (58 to 67 in one series); 7 and 5, 24 to 25 and 50 to 56. Tried: a server keeps the
+  connections it accepts while it has at most one more than the loop with
+  the fewest (`SLACK` in `give`, half the connections given from a loop to
+  another), 8 rounds alternated: its splits 6 and 6 or 7 and 5 from one
+  round to the next, 7 and 5 giving 23 to 24 us and 50 to 57, 6 and 6
+  27 to 31 and 44 to 57; its median 26.0 against 0.9.0's 24.5 (+6.1 %) given an
+  action, 25.0 against 25.5 without; not kept. The split trades the
+  latency of 50 % against that of 99 % for both servers; 0.9.0 draws its
+  split at each run: a series where it draws 7 and 5 asks the new server
+  for 25.7 us at most (7 and 5 for it too), one where it draws 6 and 6
+  for 46 us at most at 99 % (6 and 6 for it too). No rule of the split,
+  fixed or drawn, holds both at every series; a split set to 7 and 5
+  would fit these 12 connections and these 2 loops, the tuning to the
+  bench the goal forbids. Left: a server about 5 % faster a request at an
+  even split; 80 % of its cycles are the kernel's (D751), and the two
+  generic changes of the turn tried gave +2 and -0.5 us (D750, D751).
+  The point 3 is not met at that one point; reported, not pushed as
+  done.
