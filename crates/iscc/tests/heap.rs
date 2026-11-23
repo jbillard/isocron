@@ -16,10 +16,13 @@ use common::*;
 /// (`always` on this machine) a peak jumps by 2 MiB at once, as the memory
 /// of the moment allows: the program of
 /// `a_medium_block_kept_too_large_is_cut`, the same bytes, peaked at 4392
-/// KiB in one series and 2416 in the next.
+/// KiB in one series and 2416 in the next. And without the random places
+/// of the heap and the mappings (`ADDR_NO_RANDOMIZE`, D748): with glibc's
+/// allocator they moved the peak of the server of std_http.rs by 100 KiB
+/// from one run to the next.
 fn command_of(bin: &std::path::Path) -> std::process::Command {
     let mut c = std::process::Command::new("python3");
-    c.args(["-c", "import ctypes, os, sys; ctypes.CDLL(None).prctl(41, 1, 0, 0, 0); os.execv(sys.argv[1], sys.argv[1:])"]).arg(bin);
+    c.args(["-c", "import ctypes, os, sys; c = ctypes.CDLL(None); c.prctl(41, 1, 0, 0, 0); c.personality(0x0040000); os.execv(sys.argv[1], sys.argv[1:])"]).arg(bin);
     c
 }
 

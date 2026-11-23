@@ -1,5 +1,5 @@
 {
- "date": "2026-11-19T17:32:08",
+ "date": "2026-11-23T15:10:28",
  "renders": {
   "sphere-384x216-1": {
    "scene": "sphere",
@@ -7,8 +7,8 @@
    "width": 384,
    "height": 216,
    "threads": 1,
-   "rust": 3236,
-   "isc": 976
+   "rust": 3300,
+   "isc": 968
   },
   "final-384x216-1": {
    "scene": "final",
@@ -16,8 +16,8 @@
    "width": 384,
    "height": 216,
    "threads": 1,
-   "rust": 4000,
-   "isc": 2404
+   "rust": 3912,
+   "isc": 2196
   },
   "sphere-2x2-1": {
    "scene": "sphere",
@@ -25,7 +25,7 @@
    "width": 2,
    "height": 2,
    "threads": 1,
-   "rust": 3040,
+   "rust": 3108,
    "isc": 420
   },
   "final-2x2-1": {
@@ -34,8 +34,8 @@
    "width": 2,
    "height": 2,
    "threads": 1,
-   "rust": 3712,
-   "isc": 1968
+   "rust": 3792,
+   "isc": 1760
   },
   "sphere-384x216-8": {
    "scene": "sphere",
@@ -43,8 +43,8 @@
    "width": 384,
    "height": 216,
    "threads": 8,
-   "rust": 3644,
-   "isc": 1936
+   "rust": 3692,
+   "isc": 1940
   },
   "final-384x216-8": {
    "scene": "final",
@@ -52,8 +52,8 @@
    "width": 384,
    "height": 216,
    "threads": 8,
-   "rust": 4420,
-   "isc": 3672
+   "rust": 4496,
+   "isc": 3452
   },
   "sphere-2x2-8": {
    "scene": "sphere",
@@ -61,8 +61,8 @@
    "width": 2,
    "height": 2,
    "threads": 8,
-   "rust": 3044,
-   "isc": 620
+   "rust": 3136,
+   "isc": 608
   },
   "final-2x2-8": {
    "scene": "final",
@@ -70,8 +70,8 @@
    "width": 2,
    "height": 2,
    "threads": 8,
-   "rust": 3848,
-   "isc": 2316
+   "rust": 3868,
+   "isc": 2092
   }
  }
 }

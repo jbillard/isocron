@@ -468,7 +468,12 @@ fn server_memory_does_not_grow_with_idle_connections() {
     let bin = compile(include_str!("data/std_http_many.isc"), "std_http_many_idle");
     let peak = |n: usize| -> u64 {
         let mut child = std::process::Command::new("python3")
-            .args(["-c", "import ctypes, os, sys; ctypes.CDLL(None).prctl(41, 1, 0, 0, 0); os.execv(sys.argv[1], sys.argv[1:])"])
+            // (without huge pages, PR_SET_THP_DISABLE; and without the
+            // random places of the heap and the mappings, ADDR_NO_RANDOMIZE,
+            // D748: with glibc's allocator the peaks moved with them, 2140 to
+            // 2244 KiB with 16 connections from one run to the next, the
+            // growth -88 to +228 KiB; without them +32 every time)
+            .args(["-c", "import ctypes, os, sys; c = ctypes.CDLL(None); c.prctl(41, 1, 0, 0, 0); c.personality(0x0040000); os.execv(sys.argv[1], sys.argv[1:])"])
             .arg(&bin)
             .args([(n + 1).to_string().as_str(), "pure"])
             .env("ISC_THREADS", "1")
@@ -516,10 +521,13 @@ fn listeners_of(port: u16) -> usize {
 
 /// The sets of `epoll` of the process `pid` that watch the listener of a
 /// server of `net` (its number in the set: `u64::MAX`), for each whether it
-/// is woken alone (`EPOLLEXCLUSIVE`).
+/// is woken alone (`EPOLLEXCLUSIVE`). None yet while its descriptors cannot
+/// be read: during an `exec` (of `taskset`, then of the server) the kernel
+/// makes the process not dumpable, its `/proc/PID/fd` root's (D747).
 fn listener_watches(pid: u32) -> Vec<bool> {
     let mut out = Vec::new();
-    for e in std::fs::read_dir(format!("/proc/{}/fd", pid)).unwrap().flatten() {
+    let Ok(fds) = std::fs::read_dir(format!("/proc/{}/fd", pid)) else { return out };
+    for e in fds.flatten() {
         if std::fs::read_link(e.path()).map(|l| l.to_string_lossy() == "anon_inode:[eventpoll]").unwrap_or(false) {
             let info = std::fs::read_to_string(format!("/proc/{}/fdinfo/{}", pid, e.file_name().to_string_lossy())).unwrap_or_default();
             for l in info.lines().filter(|l| l.starts_with("tfd:") && l.contains("data: ffffffffffffffff")) {
@@ -529,6 +537,29 @@ fn listener_watches(pid: u32) -> Vec<bool> {
         }
     }
     out
+}
+
+/// D747: the watches of a process read while it runs its `exec`s (`taskset`,
+/// then the program it starts) are none yet, not a failure: suite 536 failed
+/// once on `Permission denied` there, a listener already on the port (one
+/// of a test run beside it) letting `crowded_loops_ask_short_slices` read
+/// the descriptors of its child before the server was started. Here 200
+/// children read from their start to their end (about 1 % of such reads
+/// refused on this machine).
+#[test]
+fn listener_watches_of_a_process_in_exec() {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let list = status.lines().find(|l| l.starts_with("Cpus_allowed_list:")).unwrap().split_whitespace().nth(1).unwrap().to_string();
+    let cpu = list.split([',', '-']).next().unwrap().to_string();
+    let mut reads = 0;
+    for _ in 0..200 {
+        let mut child = std::process::Command::new("taskset").args(["-c", &cpu, "sleep", "0.01"]).spawn().unwrap();
+        while child.try_wait().unwrap().is_none() {
+            assert!(listener_watches(child.id()).is_empty());
+            reads += 1;
+        }
+    }
+    assert!(reads > 200);
 }
 
 /// D374, D739: `serve(port, handler)` runs a loop of events on each thread

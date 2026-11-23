@@ -18633,3 +18633,133 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
     the times of every language back to those of D730). n-body in the
     first 1880 ms against Rust 1947 and C 1979. results/benchmarks_game.md,
     the README and results/floors.md from the second.
+
+- **D745 — The measures of the goal of 2026-11-20 again at 55f7623
+  (2026-11-23).** D744 changed the server of bench/http_servers in one
+  function (`sendAll`, two instructions of its prologue in another
+  order), judged until then by its bytes; the goal asks for measures: all
+  of them again with the compiler of 55f7623 (`k744`).
+  - Memory (`measure.sh`, 2 runs): the growth of the highest Pss from 16
+    to 1024 connections 106 and 106 bytes a connection on 2 cores, 219 and
+    199 with 4 threads, 228 and 232 on 4 cores (0.9.0: 2239 to 4685).
+  - 8 rounds alternated with 0.9.0, nothing beside wrk: the requests a
+    second -0.7 % at the least (2 cores and 4 threads at 16 connections,
+    the first 6 rounds; +0.1 % over 8), up to +8.4 %; the latency of 50 %
+    +3.9 % at the most, that of 99 % never above (-46.7 % on 4 cores at
+    256 connections, 0.43 to 2.55 ms from one round to the next).
+  - Given an action, 6 rounds: the latency of 50 % +10.2 % at 2 cores and
+    16 connections, that of 99 % +15.2 % at 2 cores and 1024, +13.3 % with
+    4 threads at 16, +28.0 % on 4 cores at 1024 (0.9.0 there 1320 to 2740
+    us); those cases measured again, 8 rounds of 0.9.0, 9f0aec0 and
+    55f7623 alternated: the latency of 50 % of 55f7623 -3.6, -8.8, -11.1
+    and +3.9 % (2:2:16, 2:2:1024, 2:4:16, 4:4:1024), that of 99 % -23.3,
+    -3.8, +3.6, -6.1 (4:4:16) and +4.7 %, the requests a second -0.0 to
+    +8.5 %; 9f0aec0 the same (its latency of 99 % at 4:4:1024 +6.1 %
+    there, -17.8 % in D743): the noise of the client, nothing from the
+    change of `sendAll`.
+  - The latency of 99 % at 16 connections on 2 cores against nginx, 6
+    rounds: 46 us against 52.
+  - The cores (point 5). The ticks of 8 rounds flagged +0.3 % CPU a request
+    with 4 threads on 2 cores at 16 connections (the requests +0.1 %),
+    the 6 rounds given an action +0.7 % there and +0.8 % on 4 cores at 16.
+    Counted by perf (perfwatch.sh, 10 rounds): +3.4 % cycles a request
+    with 4 threads on 2 cores at 16, -8.5 % by the ticks of the same runs,
+    but the requests a second there +8.2 % against +0.1 % without perf:
+    its tracepoints of the system calls (`syscalls:sys_enter_*`) make each
+    call dearer, more for the server that makes more of them. Without
+    them (the counters of the processor, `task-clock` and the switches,
+    10 rounds): +3.0 % cycles (standard error 0.6), -2.5 % CPU time
+    (`task-clock`, 0.9); given an action +2.4 % (0.3) and -2.6 % (0.4),
+    on 4 cores +0.1 % and -1.1 %; the requests still +6 % under perf.
+    0.9.0 changes threads 14 times more there (351302 switches in 6 s
+    against 25285: the slices of 100 us of D743 for loops that outnumber
+    the processors), and its cycles are 3.03 GHz of its CPU time against
+    3.18 for 55f7623, the clock fixed at 3.2: the time of the switches,
+    where the counters of a task attached by perf are stopped, in its CPU
+    time but not in its cycles; perf, attached, adds its own work to each
+    switch. Measured without perf: the time on a CPU of the threads of
+    the server read from `schedstat` (ns) just before and just after wrk
+    (clean2.sh), 10 rounds alternated: CPU time a request -1.59 % (standard
+    error 0.78) with 4 threads on 2 cores at 16 connections, -1.39 %
+    (0.44) on 4 cores at 16, +0.58 % (0.67) on 4 cores at 256 (3.932
+    cores against 3.926, the requests -0.37 %; -0.4 % in the 8 rounds of
+    the ticks: noise around 0), given an action -0.76 % (1.12) with 4 threads on 2 cores at 16 and
+    +0.89 % (0.80) on 4 cores at 16 (3.886 cores against 3.577, the
+    requests +8.5 %; by `task-clock` under perf -1.1 %, by its cycles
+    +0.1 %: no difference measured); the ticks within
+    0.1 % of `schedstat` over the 10 s of a run. D743 judged the server
+    given an action on 4 cores at 16 by perf with the tracepoints (equal
+    cycles): its conclusion holds without them (+0.1 % cycles, -1.1 % CPU
+    time). With one connection the server busy 0.52 to 0.53 cores, 0.9.0
+    0.53 to 0.54: no wait keeps a core busy.
+  - bench/regress.py against b035583: the programs within their noise
+    (n-body -5.0 %), 8 forms of the primitives flagged (6 of `strings`
+    +3.1 to +5.8 %, `sys join` +3.7 %, `unix writeSharedU32.1m` +3.2 %);
+    `strings`, `sys` and `unix` again alone, 11 runs alternated: no form
+    moved by 3 %.
+  - results/http_servers.md: the tables of 55f7623 (one run a point): the
+    requests a second within -1.9 and +2.4 % of those of a3b0a91 on 2
+    cores, -1.9 to +9.5 % on 4 (wrk the limit there: the ceiling of 4
+    threads +9.5 %); the latencies of one run move more (on 4 cores that
+    of 99 % by up to 48 %, every server), hence the rounds alternated
+    above.
+
+- **D746 — Release 0.9.1 (2026-11-23).** Asked by the author ("il faudra
+  ensuite pousser une release en mineur ou hotfix"): 0.9.1, a release of
+  fixes, since 0.9.0 brings no new name, no change of the language or of
+  the library, only what was slower or larger made faster or smaller
+  (n-body since 0.8.0, D744; the memory of the server of HTTP, D736 to
+  D741; what they slowed, D743) and measured again (D744, D745). The
+  Benchmarks Game measured at 45e606b (D744), the server of HTTP at
+  55f7623 (D745); rtiow and countwords measured again for it (target/release/iscc of
+  55f7623): rtiow on one thread 6.97 and 9.76 s (0.9.0: 6.98 and 9.75;
+  Rust 7.02 and 10.71), on 8 threads 0.86 and 1.37 s (0.86 and 1.36; Rust
+  2.79 and 2.41), its peaks 0.4 to 3.4 MiB (0.4 to 3.6); countwords 0.169 s
+  (0.167; Rust 0.253 against 0.250 in the runs of 0.9.0: the machine).
+  The steps of 0.9.0 (scratchpad rel091/, from rel90/): the versions
+  (`bump.py`), the suite on the commit of the release, its sources by
+  `git archive`, the compilers built in the images of tools/release
+  (Linux, Windows), the tests of Windows in the machine of Windows with
+  that `iscc.exe`, the archives (`package.sh`), the self-tests of both,
+  the tests of isocron-ui and the server of the README (on the port
+  18080) with the `iscc` of the archive, then `publish.sh`.
+
+- **D747 — The descriptors of a process read during its `exec` (2026-11-23).**
+  Suite 536 (the commit of release 0.9.1) failed once, in the first of its
+  three passes: `crowded_loops_ask_short_slices` (std_http.rs, D743) on
+  `Permission denied` reading `/proc/PID/fd` of its child (`taskset`, which
+  starts the server). The kernel makes a process not dumpable during an
+  `exec` (it closes the descriptors marked `CLOEXEC` before it makes the
+  process dumpable again), and the directory of the descriptors of a
+  process not dumpable is root's: on this machine, 300 children `taskset
+  -c 1 sleep 0.01` read from their start to their end, 3407 of 317562
+  reads refused. The test reads the descriptors of its child once a
+  listener is on its port; a listener already there (a server of another
+  test run beside it on the same port: each takes a free port by binding
+  0 then closing it, and the suite runs four files at once) let it read
+  them while its child ran its `exec`s; that collision cannot be shown
+  after the fact, the window can. `listener_watches` now gives no watch
+  while the descriptors cannot be read (the loop waits for the server as
+  before); `connections_per_loop` and `slices_of`, read once the server
+  answers, still fail on an error. Test `listener_watches_of_a_process_in_exec`
+  (200 children read from their start to their end: fails at once
+  without the change); std_http.rs passes whole. The release waits for a
+  suite green on its commit.
+
+- **D748 — The peaks of the tests measured without the random places of
+  the memory (2026-11-23).** Suite 537 (the commit of release 0.9.1 with
+  D747) failed once, in its pass with glibc's allocator:
+  `server_memory_does_not_grow_with_idle_connections` (std_http.rs, D738),
+  2104 KiB with 16 connections and 2332 with 1000 (its bound: 200 more).
+  The same binary measured again 40 times as the test does: with glibc's
+  allocator the growth -88 to +180 KiB, the peak with 16 connections alone
+  2140 to 2244 KiB from one run to the next; with Isocron's +20 to +84.
+  Without the random places of the heap and the mappings (`setarch -R`,
+  `ADDR_NO_RANDOMIZE`), 10 runs each: glibc's 2292 and 2324 KiB, +32 every
+  time; Isocron's 660 and 700, +40 every time: the scatter was where glibc
+  placed its heap and its mappings, the growth of the server a few dozen
+  KiB. The programs whose peaks the tests read now start without them too
+  (std_http.rs; `command_of` of heap.rs, the same wrapper, which never
+  failed): `personality(ADDR_NO_RANDOMIZE)` beside
+  `prctl(PR_SET_THP_DISABLE)` before their `exec`. std_http.rs plain and
+  with glibc, heap.rs in the three passes: green.

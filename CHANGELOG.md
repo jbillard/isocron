@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 — 2026-11-23
+
+Fixes and speed, the language the same: n-body, behind C since 0.8.0, is
+ahead again, and the server of HTTP keeps its memory whatever its
+connections. The Benchmarks Game and the server measured again against
+0.9.0 (D744, D745), each change against the one before by
+`bench/regress.py` (DECISIONS D731 to D746).
 
 - n-body ahead of C again: 2373 to 1902 ms in the Benchmarks Game (C 1944,
   Rust 1947), Isocron the fastest on the 10 programs. The arrays of the
@@ -13,10 +19,10 @@
   answers 16 connections at most, the allocators carve the first blocks
   of a class of a thread by its own needs; the loops of `serve` share one
   listener, each connection given to the loop that has the fewest (D736 to
-  D741). On 2 cores, from 16 to 1024 connections: 884 to 988 KiB (0.9.0:
-  1.0 to 2.7 MiB), 5 to 9 % more requests a second, the latency of 99 %
-  with 16 connections 47 us in six rounds alternated with nginx (50)
-  (D742, D743).
+  D741). On 2 cores, from 16 to 1024 connections: 868 to 968 KiB (0.9.0:
+  1.0 to 3.1 MiB), 5 to 7 % more requests a second, the latency of 99 %
+  with 16 connections 46 us in six rounds alternated with nginx (52)
+  (D742, D743, D745).
 - No regression left by them (D743): a loop of a server with 16
   connections or more tries its connections for at most its mean work
   before it sleeps (on 4 cores its loops slept between requests, the
@@ -27,9 +33,9 @@
   first blocks of a class of a thread are taken from a run of 32 at the
   places they had before (`textResponse` 27 % slower at 4 of 12
   placements of its texts). In 8 rounds alternated with 0.9.0 on 2 and 4
-  cores: as many or more requests a second (-0.6 to +9.2 %), the latency
-  of 50 and 99 % at most 4.0 and 1.8 % above, the cycles of a request the
-  same.
+  cores (D745, at the release): as many or more requests a second (-0.7
+  to +8.4 %), the latency of 50 % at most 3.9 % above and that of 99 %
+  never above, the CPU time of a request the same.
 
 ## 0.9.0 — 2026-11-19
 
