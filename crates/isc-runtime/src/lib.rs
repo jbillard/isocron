@@ -4896,6 +4896,14 @@ pub unsafe extern "C" fn isc_parallel_for_site(n: i64, task: Task, ctx: *mut c_v
     // SAFETY: the four words of this loop (the contract)
     let [par, seq, runs, last] = unsafe { &*site };
     let (dynamic, contiguous) = (mode == 1, mode == 2);
+    // one task: run here, in a task too (the pool busy), where
+    // `parallel_job` would offer it to the idle threads and run it here all
+    // the same (D754: the loops of a server, in a task each)
+    if n == 1 {
+        // SAFETY: the task with its context, its only `i` (P1)
+        unsafe { task(ctx, 0) };
+        return;
+    }
     // a loop inside a task (the pool busy): neither the pool nor the
     // calling thread to choose, no clock read, nothing written to the words
     // of the site (D410: written at each loop by each thread of a server,

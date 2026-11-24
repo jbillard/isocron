@@ -587,10 +587,12 @@ function two(x: i64): string {
 // headers that the server writes itself left out of those of `r`, their
 // names compared by bytes (no text made)
 function responseBytes(r: Response, keep: boolean, head: boolean, date: string): u8[] {
-    const ok = r.status >= 100 && r.status <= 999 && count(r.headers, (h) => {
+    // (the first header that cannot be sent, searched in order: a count of
+    // them was a reduction whose elements are loops, made by a task, D754)
+    const ok = r.status >= 100 && r.status <= 999 && findIndex(r.headers, (h) => {
         const [k, v] = h;
         return !tokenOk(k) || !valueOk(v);
-    }) == 0;
+    }) < 0;
     const x = ok ? r : textResponse(500, "the response of the handler cannot be sent (its status or a header)");
     const none = x.status == 204 || x.status == 304 || x.status < 200;
     // the head one text continued in its block (rule A, D351): its first
@@ -749,18 +751,30 @@ function requestAt(b: u8[], a: i64, z: i64, h: Head, length: i64): Request {
     return { method: text(a, h.sp1), path: q < 0 ? target : target.slice(0, q), query: q < 0 ? "" : target.slice(q + 1, target.length), headers: headers, body: b.slice(z, z + length) };
 }
 
+// a request ready in the bytes of a connection: its head from `start` to
+// `end` (after its CR LF CR LF), its frame and the places that cut its head
+type Item = { start: i64, end: i64, frame: Frame, head: Head };
+
 // the requests ready at the start of the bytes of a connection: those
 // complete up to the first that has a body, closes the connection or is a
 // fault (a pipeline of requests answered at once, in order): their places
 // and frames, the bytes they take, whether the connection is closed after
-type Ready = { starts: i64[], ends: i64[], frames: Frame[], heads: Head[], used: i64, closes: boolean };
+// (D754: one array of their records, four arrays of their parts before,
+// each made and freed at each turn)
+type Ready = { items: Item[], used: i64, closes: boolean };
 
 function nothingReady(): Ready {
-    return { starts: [], ends: [], frames: [], heads: [], used: 0, closes: false };
+    return { items: [], used: 0, closes: false };
 }
 
 function tooLong(buf: u8[]): Ready {
-    return { starts: [0], ends: [buf.length], frames: [fault(431)], heads: [headOf(buf, 0, 0)], used: buf.length, closes: true };
+    return { items: [{ start: 0, end: buf.length, frame: fault(431), head: headOf(buf, 0, 0) }], used: buf.length, closes: true };
+}
+
+// the request whose head is `buf` from `a` to `z`
+function itemOf(buf: u8[], a: i64, z: i64): Item {
+    const h = headOf(buf, a, z);
+    return { start: a, end: z, frame: frameOf(buf, a, z, h), head: h };
 }
 
 function readyOf(buf: u8[]): Ready {
@@ -769,22 +783,20 @@ function readyOf(buf: u8[]): Ready {
         // a head longer than the limit: 431 (all its bytes taken)
         return buf.length > HEAD_LIMIT ? tooLong(buf) : nothingReady();
     }
-    const starts = map(iota(ends.length), (k) => k == 0 ? 0 : ends[k - 1]);
-    const heads = map(iota(ends.length), (k) => headOf(buf, starts[k], ends[k]));
-    const frames = map(iota(ends.length), (k) => frameOf(buf, starts[k], ends[k], heads[k]));
+    const items = map(iota(ends.length), (k) => itemOf(buf, k == 0 ? 0 : ends[k - 1], ends[k]));
     // the first that stops the pipeline
-    const stop = min(map(iota(ends.length), (k) => frames[k].fault != 0 || !frames[k].keep || frames[k].length > 0 ? k : ends.length));
-    const whole = stop < ends.length && (frames[stop].fault != 0 || ends[stop] + frames[stop].length <= buf.length);
-    const take = stop == ends.length ? ends.length : (whole ? stop + 1 : stop);
+    const stop = min(map(iota(items.length), (k) => items[k].frame.fault != 0 || !items[k].frame.keep || items[k].frame.length > 0 ? k : items.length));
+    const whole = stop < items.length && (items[stop].frame.fault != 0 || items[stop].end + items[stop].frame.length <= buf.length);
+    const take = stop == items.length ? items.length : (whole ? stop + 1 : stop);
     const last = take - 1;
-    const used = take == 0 ? 0 : (frames[last].fault != 0 ? buf.length : ends[last] + frames[last].length);
-    const closes = take > 0 && (frames[last].fault != 0 || !frames[last].keep);
-    // all of them taken (the common case): the arrays as they are, without
-    // the copies of a slice (one of records is a new array, D377)
-    if (take == ends.length) {
-        return { starts: starts, ends: ends, frames: frames, heads: heads, used: used, closes: closes };
+    const used = take == 0 ? 0 : (items[last].frame.fault != 0 ? buf.length : items[last].end + items[last].frame.length);
+    const closes = take > 0 && (items[last].frame.fault != 0 || !items[last].frame.keep);
+    // all of them taken (the common case): the array as it is, without
+    // the copy of a slice (one of records is a new array, D377)
+    if (take == items.length) {
+        return { items: items, used: used, closes: closes };
     }
-    return { starts: starts.slice(0, take), ends: ends.slice(0, take), frames: frames.slice(0, take), heads: heads.slice(0, take), used: used, closes: closes };
+    return { items: items.slice(0, take), used: used, closes: closes };
 }
 
 // the end of each head of `buf` (after its CR LF CR LF)
@@ -811,6 +823,20 @@ function placeOf(ps: Pending[n], id: i64, lo: i64, hi: i64): i64 {
 // places of the connections that received bytes, and the numbers of those
 // that ended (D354)
 function arrive(ps: Pending[n], xs: net.Arrival[m]): [Pending[], i64[], i64[]] {
+    // (the table empty, the common case since D738, each connection once in
+    // the wait (its pairs counted flat): those that sent bytes, each placed
+    // by the count of the numbers below its own, then the place of each
+    // read; without the places found by halving, the table grown, joined
+    // and filtered, D754. Folds, not maps of counts: a map or a count whose
+    // elements are loops is made by tasks of the pool, its loops published
+    // for threads that a server never has free, 4.4 % of its cycles)
+    if (ps.length == 0 && count(iota(m * m), (t) => t % m < t / m && xs[t % m].id == xs[t / m].id) == 0) {
+        const sent = filter(iota(m), (j) => xs[j].bytes.length > 0);
+        const order = fold(iota(sent.length), fill(sent.length, 0), (o, i) => requireUnique(o.with(count(sent, (q) => xs[q].id < xs[sent[i]].id), sent[i])));
+        const place = fold(iota(order.length), fill(m, 0), (o, r) => requireUnique(o.with(order[r], r)));
+        const table = map(order, (j) => pendingOf(xs[j].id, xs[j].bytes));
+        return [table, map(sent, (j) => place[j]), map(filter(xs, (a) => a.bytes.length == 0), (a) => a.id)] as const;
+    }
     const at = map(xs, (a) => placeOf(ps, a.id, 0, ps.length));
     // (the number of the last connection of the table, read before the
     // table is given to `grown`)
@@ -882,6 +908,12 @@ action afterAnswers(s: net.Server, ps: Pending[n], changed: i64[c], readies: Rea
     const failed = sendAll(s, outs, 0, []);
     const closing = map(filter(iota(changed.length), (i) => readies[i].closes || count(failed, (x) => x == ps[changed[i]].id) > 0), (i) => ps[changed[i]].id);
     closeAll(s, closing, 0);
+    // each connection of the table read, all its bytes taken, none closed
+    // (the common case: each read brought whole requests, D738): the table
+    // empty, none to read again, without the arrays of the cut (D754)
+    if (closing.length == 0 && changed.length == ps.length && count(iota(changed.length), (i) => readies[i].used != ps[changed[i]].buf.length) == 0) {
+        return [[], []] as const;
+    }
     const cut = fold(iota(changed.length), ps, (acc, i) => readies[i].used == 0 ? acc : acc.with(changed[i], pendingOf(acc[changed[i]].id, acc[changed[i]].buf.slice(readies[i].used, acc[changed[i]].buf.length))));
     // (those that gave requests and have bytes left, read again: more may be
     // complete; those with none left out of the table, D738: it held each
@@ -908,9 +940,10 @@ action respondFrom(handler: action (Request) => Response, ps: Pending[n], change
     const i = owner(upto, j, 0, upto.length);
     const r = readies[i];
     const k = j - (upto[i] - counts[i]);
-    const f = r.frames[k];
+    const item = r.items[k];
+    const f = item.frame;
     const keep = f.fault == 0 && f.keep;
-    const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
+    const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, item.start, item.end, item.head, f.length));
     return respondFrom(handler, ps, changed, readies, upto, counts, date, j + 1, acc.with(j, outOf(ps[changed[i]].id, responseBytes(response, keep, f.head, date), keep)));
 }
 
@@ -920,7 +953,7 @@ action serveActionLoop(s: net.Server, handler: action (Request) => Response, ps:
     // only the connections that received bytes, or gave requests the turn
     // before, read (D354)
     const readies = map(changed, (i) => readyOf(ps[i].buf));
-    const counts = map(readies, (r) => r.ends.length);
+    const counts = map(readies, (r) => r.items.length);
     const upto = scan(counts, (a, b) => a + b, 0);
     const total = upto.length == 0 ? 0 : upto[upto.length - 1];
     if (total == 0) {
@@ -956,7 +989,7 @@ action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], 
     // only the connections that received bytes, or gave requests the turn
     // before, read (D354)
     const readies = map(changed, (i) => readyOf(ps[i].buf));
-    const counts = map(readies, (r) => r.ends.length);
+    const counts = map(readies, (r) => r.items.length);
     const upto = scan(counts, (a, b) => a + b, 0);
     const total = upto.length == 0 ? 0 : upto[upto.length - 1];
     if (total == 0) {
@@ -977,9 +1010,10 @@ action serveLoop(s: net.Server, handler: (Request) => Response, ps: Pending[n], 
         const i = owner(upto, j, 0, upto.length);
         const r = readies[i];
         const k = j - (upto[i] - counts[i]);
-        const f = r.frames[k];
+        const item = r.items[k];
+        const f = item.frame;
         const keep = f.fault == 0 && f.keep;
-        const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, r.starts[k], r.ends[k], r.heads[k], f.length));
+        const response = f.fault != 0 ? textResponse(f.fault, reason(f.fault)) : handler(requestAt(ps[changed[i]].buf, item.start, item.end, item.head, f.length));
         return outOf(ps[changed[i]].id, responseBytes(response, keep, f.head, date), keep);
     });
     const [left, again] = afterAnswers(s, ps, changed, readies, outs);

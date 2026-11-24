@@ -282,6 +282,15 @@ pub const MAP_WIDTH: u32 = 16;
 /// own are made where the `map` is, without a task (D520).
 const HEAVY_FEW: i64 = 4;
 
+/// The most elements of an exact `reduce` computed where it is, in one
+/// block, rather than by a task of one block (D754).
+const REDUCE_HERE: i64 = 256;
+
+/// The indices of a filter of rule M tested at once (D754): a vector of 32
+/// bytes read for each read of its condition, its mask an `i32`; a shorter
+/// filter by the path before.
+const MASK_LANES: u32 = 32;
+
 /// The indices a search of rule F tests one at a time before its vectors
 /// (D512).
 const FIRST_SCALAR: i64 = 8;
@@ -12275,6 +12284,27 @@ impl<'p> Gen<'p> {
                 Ok(())
             })?;
         } else {
+            // a short block (at most REDUCE_HERE elements): computed here,
+            // the same block as task 0 would, without the task, its
+            // context, its padded result on the heap and its dispatch (D754:
+            // the count of the bytes of each head of a request of `serve`,
+            // 40 bytes, gave the loop of a server a task of one block at
+            // each request; a block of 4096 here, 18.7 % slower than in its
+            // task, `json.message` over 4096 errors)
+            let lone = self.label();
+            let lmany = self.label();
+            let lend = self.label();
+            // (not in a function whose tail calls to others reuse its frame:
+            // the vectors of the block aligned on its stack would realign
+            // it, and a frame realigned is not given to the callee, D754)
+            let limit = if self.frame_given() { 0 } else { REDUCE_HERE };
+            let short = self.ins(format!("icmp sle i64 {}, {}", n, limit));
+            self.cbr(&short, &lone, &lmany);
+            self.block(&lone);
+            let r = self.reduce_block(&src, "0", &n, l, &zv, &t, w)?;
+            self.store_elem(&parts, &c0, "0", &t, &r, 1);
+            self.br(&lend);
+            self.block(&lmany);
             // the first level in parallel: block j is computed by task j and
             // stored in parts[j], so the result is the same for any number of
             // threads (SPEC section 10)
@@ -12339,6 +12369,8 @@ impl<'p> Gen<'p> {
             self.emit(format!("call void @isc_free(ptr {})", dst));
             self.br(&ldone);
             self.block(&ldone);
+            self.br(&lend);
+            self.block(&lend);
         }
         // upper levels, in place in `parts`
         let ca = self.alloca("i64");
@@ -12808,6 +12840,21 @@ impl<'p> Gen<'p> {
     }
 
     fn filter(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
+        // the indices kept by masks (rule M, D754); not a `filter` asked
+        // for the counts of a later one (D426), which its pass by blocks
+        // makes
+        let index_ty = Type::Int(IntKind::I64);
+        let sequential = self.in_task;
+        let counting = self.count_req.as_ref().is_some_and(|r| std::ptr::eq(r.0, e));
+        if !counting {
+            if let Some(r) = self.filter_masks_or(x, l, &[], &index_ty, sequential, &mut |g| g.filter_plain(e, x, l))? {
+                return Ok(r);
+            }
+        }
+        self.filter_plain(e, x, l)
+    }
+
+    fn filter_plain(&mut self, e: &Expr, x: &Expr, l: &Lambda) -> R<V> {
         let elem_ty = x.ty.elem().clone();
         // (counted or read in order by its consumer, a `filter` of rows
         // makes no array: only the one kept as an array is refused, D593;
@@ -12823,18 +12870,22 @@ impl<'p> Gen<'p> {
         let several = self.ins(format!("icmp sgt i64 {}, {}", n, BLOCK));
         // the pass by blocks also when it makes counts (D426): on one thread
         let counting = self.count_req.as_ref().is_some_and(|r| std::ptr::eq(r.0, e));
-        let big = if counting {
-            several
-        } else {
-            let threads = self.ins("call i64 @isc_thread_count()".to_string());
-            let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
-            self.ins(format!("and i1 {}, {}", several, multi))
-        };
         let res = self.alloca("{ ptr, i64 }");
         let lpar = self.label();
         let lseq = self.label();
         let ljoin = self.label();
-        self.cbr(&big, &lpar, &lseq);
+        if counting {
+            self.cbr(&several, &lpar, &lseq);
+        } else {
+            // (the threads counted only for more than a block: a call of the
+            // runtime at each small filter before, D754)
+            let lthreads = self.label();
+            self.cbr(&several, &lthreads, &lseq);
+            self.block(&lthreads);
+            let threads = self.ins("call i64 @isc_thread_count()".to_string());
+            let multi = self.ins(format!("icmp sgt i64 {}, 1", threads));
+            self.cbr(&multi, &lpar, &lseq);
+        }
         self.block(&lpar);
         let r = self.filter_parallel(e, x, l, &n, w)?;
         self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
@@ -13728,6 +13779,13 @@ impl<'p> Gen<'p> {
     /// variable bound before the `fold`, `p` an `i64` of variables bound
     /// before it (neither `j` nor the accumulator nor a variable of `l`).
     fn fold_index_reads<'a>(&self, l: &'a Lambda) -> Vec<(&'a Expr, &'a Expr)> {
+        self.index_reads(&l.body, &l.params, l.params[1])
+    }
+
+    /// The reads `x[j + p]` of `body`, `x` and `p` from outside it (not
+    /// bound by `params` or in it), `j` the index of the loop: those of a
+    /// fold of rule F, or of a filter of rule M (D754).
+    fn index_reads<'a>(&self, body: &'a Expr, params: &[VarId], j: VarId) -> Vec<(&'a Expr, &'a Expr)> {
         fn binders(e: &Expr, out: &mut HashSet<VarId>) {
             match &e.kind {
                 ExprKind::Let { var, .. } => {
@@ -13740,9 +13798,9 @@ impl<'p> Gen<'p> {
                 binders(c, out);
             }
         }
-        let (c, j) = (l.params[0], l.params[1]);
-        let mut inner = HashSet::from([c, j]);
-        binders(&l.body, &mut inner);
+        let mut inner: HashSet<VarId> = params.iter().copied().collect();
+        inner.insert(j);
+        binders(body, &mut inner);
         let outer = |e: &Expr| -> bool {
             let (mut bound, mut free) = (HashSet::new(), Vec::new());
             free_vars(e, &mut bound, &mut free);
@@ -13763,7 +13821,7 @@ impl<'p> Gen<'p> {
         // not inside another function (its own loop, its own index)
         let nested = |e: &Expr| matches!(e.kind, ExprKind::Map(..) | ExprKind::Reduce(..) | ExprKind::Fold(..) | ExprKind::Scan(..) | ExprKind::Filter(..) | ExprKind::Tasks(..));
         walk(
-            &l.body,
+            body,
             &mut |e: &'a Expr| {
                 if let ExprKind::Index(a, i) = &e.kind {
                     let affine = is_j(i)
@@ -14222,10 +14280,19 @@ impl<'p> Gen<'p> {
     /// holds at one of them, and the mask of those (`fold_first_lane` gives
     /// the first).
     fn fold_first_vector(&mut self, c: &Expr, (a, j): (VarId, VarId), iv: &V, reads: &[(&Expr, &Expr)], i: &str, w: u32) -> R<(String, String)> {
+        self.bind(a, iv.clone());
+        let bits = self.cond_bits(c, j, reads, i, w)?;
+        let any = self.ins(format!("icmp ne i{} {}, 0", w, bits));
+        Ok((any, bits))
+    }
+
+    /// `c` on the `w` indices from `i` (`j` bound to their lanes), its reads
+    /// `reads` checked before (`fold_precheck`): the mask of the indices
+    /// where it holds, an integer of `w` bits (rules F and M).
+    fn cond_bits(&mut self, c: &Expr, j: VarId, reads: &[(&Expr, &Expr)], i: &str, w: u32) -> R<String> {
         for (_, k) in reads {
             self.prechecked.insert(*k as *const Expr);
         }
-        self.bind(a, iv.clone());
         let lanes = self.elem(&Src::Iota, i, w)?;
         self.bind(j, lanes);
         let cv = self.ex(c, w);
@@ -14233,9 +14300,181 @@ impl<'p> Gen<'p> {
             self.prechecked.remove(&(*k as *const Expr));
         }
         let cv = self.widen(&cv?, w);
-        let bits = self.ins(format!("bitcast <{} x i1> {} to i{}", w, cv.r, w));
-        let any = self.ins(format!("icmp ne i{} {}, 0", w, bits));
-        Ok((any, bits))
+        Ok(self.ins(format!("bitcast <{} x i1> {} to i{}", w, cv.r, w)))
+    }
+
+    /// The function being emitted gives its frame to the functions it calls
+    /// in tail position (`tailcc`, D113): the code added by D754 where it is
+    /// (a block of a `reduce`, the masks of rule M, the vectors of a stream)
+    /// is left out of it, its vectors spilled to a stack aligned on more than
+    /// 16 bytes would realign its frame, and LLVM does not give a frame it
+    /// realigns (`mutual_tail_recursion`: the stack overflowed at the first
+    /// tail call after `sum` of 3 numbers was made here).
+    fn frame_given(&self) -> bool {
+        !self.other_tails.is_empty()
+    }
+
+    /// Rule M (D754): `filter(iota(n), (j) => c)`, `c` a condition of rule
+    /// F (`safe_cond_in`) whose reads are all `b[j + p]` of arrays of bytes
+    /// from outside it: its reads; None otherwise.
+    fn mask_filter_reads<'a>(&self, x: &Expr, l: &'a Lambda) -> Option<Vec<(&'a Expr, &'a Expr)>> {
+        if !matches!(x.kind, ExprKind::Iota(_)) || l.params.len() != 1 || l.body.ty != Type::Bool || self.opts.isa.is_wasm() {
+            return None;
+        }
+        let reads = self.index_reads(&l.body, &[], l.params[0]);
+        fn count(e: &Expr, k: &mut usize) {
+            if matches!(e.kind, ExprKind::Index(..)) {
+                *k += 1;
+            }
+            for c in e.children() {
+                count(c, k);
+            }
+        }
+        let mut indexes = 0;
+        count(&l.body, &mut indexes);
+        let bytes = reads.iter().all(|(a, _)| a.ty.is_array() && esize(a.ty.elem()) == 1);
+        (!reads.is_empty() && indexes == reads.len() && bytes && safe_cond_in(&l.body, true)).then_some(reads)
+    }
+
+    /// The indices that `filter(iota(n), l)` keeps, found by masks (rule M,
+    /// D754), each mapped by `posts` in turn, into an array of `out_ty`:
+    /// `c` on MASK_LANES indices at a time, its mask counted, then its bits
+    /// written in order, the lowest first; the indices after the last whole
+    /// vector by the vector that ends at `n`, its lanes already seen shifted
+    /// out. The caller checks `n` (at least MASK_LANES) and the reads at both
+    /// ends (D754: the ends of the lines of the head of each request of
+    /// `serve`, by a filter of 16 lanes of indices of 64 bits before, its
+    /// predicate widened to them and its results compressed, in two passes,
+    /// 16 % of the instructions of the server in `headOf` and `headEnds`).
+    fn filter_by_masks(&mut self, l: &Lambda, reads: &[(&Expr, &Expr)], n: &str, posts: &[&Lambda], out_ty: &Type) -> R<V> {
+        let w = MASK_LANES;
+        let j = l.params[0];
+        self.decls.insert(format!("declare i{w} @llvm.ctpop.i{w}(i{w})", w = w));
+        self.decls.insert(format!("declare i{w} @llvm.cttz.i{w}(i{w}, i1)", w = w));
+        let full = self.ins(format!("and i64 {}, -{}", n, w));
+        let rem = self.ins(format!("sub i64 {}, {}", n, full));
+        let chunks = self.ins(format!("lshr i64 {}, {}", full, w.trailing_zeros()));
+        let has_tail = self.ins(format!("icmp ne i64 {}, 0", rem));
+        // the mask of the indices `full .. n`: the vector that ends at `n`,
+        // shifted by the lanes before `full`
+        let tail_bits = |g: &mut Self| -> R<String> {
+            let at = g.ins(format!("sub i64 {}, {}", n, w));
+            let bits = g.cond_bits(&l.body, j, reads, &at, w)?;
+            let r = g.ins(format!("trunc i64 {} to i{}", rem, w));
+            let sh = g.ins(format!("sub i{} {}, {}", w, w, r));
+            Ok(g.ins(format!("lshr i{} {}, {}", w, bits, sh)))
+        };
+        // 1. the indices kept counted
+        let cnt = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", cnt));
+        let add_count = |g: &mut Self, bits: &str| {
+            let pc = g.ins(format!("call i{w} @llvm.ctpop.i{w}(i{w} {b})", w = w, b = bits));
+            let pc = g.ins(format!("zext i{} {} to i64", w, pc));
+            let c0 = g.ins(format!("load i64, ptr {}", cnt));
+            let c1 = g.ins(format!("add i64 {}, {}", c0, pc));
+            g.emit(format!("store i64 {}, ptr {}", c1, cnt));
+        };
+        self.for_range("0", &chunks, 1, &mut |g, q| {
+            let base = g.ins(format!("shl i64 {}, {}", q, w.trailing_zeros()));
+            let bits = g.cond_bits(&l.body, j, reads, &base, w)?;
+            add_count(g, &bits);
+            Ok(())
+        })?;
+        let (ltail, ldone) = (self.label(), self.label());
+        self.cbr(&has_tail, &ltail, &ldone);
+        self.block(&ltail);
+        let bits = tail_bits(self)?;
+        add_count(self, &bits);
+        self.br(&ldone);
+        self.block(&ldone);
+        let k = self.ins(format!("load i64, ptr {}", cnt));
+        let out = self.alloc_elems(&k, out_ty);
+        // 2. written in order: each bit set, the lowest first, then cleared
+        let pos = self.alloca("i64");
+        self.emit(format!("store i64 0, ptr {}", pos));
+        let write_bits = |g: &mut Self, bits: &str, base: &str| -> R<()> {
+            let m = g.alloca(&format!("i{}", w));
+            g.emit(format!("store i{} {}, ptr {}", w, bits, m));
+            let (lhead, lbody, lend) = (g.label(), g.label(), g.label());
+            g.br(&lhead);
+            g.block(&lhead);
+            let mv = g.ins(format!("load i{}, ptr {}", w, m));
+            let some = g.ins(format!("icmp ne i{} {}, 0", w, mv));
+            g.cbr(&some, &lbody, &lend);
+            g.block(&lbody);
+            let t = g.ins(format!("call i{w} @llvm.cttz.i{w}(i{w} {b}, i1 true)", w = w, b = mv));
+            let t = g.ins(format!("zext i{} {} to i64", w, t));
+            let idx = g.ins(format!("add i64 {}, {}", base, t));
+            let mut y = v(idx, "i64");
+            for p in posts {
+                g.bind(p.params[0], y);
+                y = g.ex(&p.body, 1)?;
+            }
+            let at = g.ins(format!("load i64, ptr {}", pos));
+            g.store_elem(&out, &k, &at, out_ty, &y, 1);
+            let at1 = g.ins(format!("add i64 {}, 1", at));
+            g.emit(format!("store i64 {}, ptr {}", at1, pos));
+            let m1 = g.ins(format!("sub i{} {}, 1", w, mv));
+            let m2 = g.ins(format!("and i{} {}, {}", w, mv, m1));
+            g.emit(format!("store i{} {}, ptr {}", w, m2, m));
+            g.br(&lhead);
+            g.block(&lend);
+            Ok(())
+        };
+        self.for_range("0", &chunks, 1, &mut |g, q| {
+            let base = g.ins(format!("shl i64 {}, {}", q, w.trailing_zeros()));
+            let bits = g.cond_bits(&l.body, j, reads, &base, w)?;
+            write_bits(g, &bits, &base)
+        })?;
+        let (ltail2, ldone2) = (self.label(), self.label());
+        self.cbr(&has_tail, &ltail2, &ldone2);
+        self.block(&ltail2);
+        let bits = tail_bits(self)?;
+        write_bits(self, &bits, &full)?;
+        self.br(&ldone2);
+        self.block(&ldone2);
+        Ok(self.arr(&out, &k))
+    }
+
+    /// `filter(x, l)` (mapped by `posts`) by masks when it is of rule M and
+    /// `n` holds a vector and its reads are in bounds at both ends, by
+    /// `other` otherwise: None when it is not of rule M. `sequential`: where
+    /// `other` runs on one thread (in a task, the stream of a `map`), any
+    /// length; else a block at most, `other` sharing a longer one between
+    /// the threads.
+    fn filter_masks_or(&mut self, x: &Expr, l: &Lambda, posts: &[&Lambda], out_ty: &Type, sequential: bool, other: &mut dyn FnMut(&mut Self) -> R<V>) -> R<Option<V>> {
+        if self.frame_given() {
+            return Ok(None);
+        }
+        let Some(reads) = self.mask_filter_reads(x, l) else { return Ok(None) };
+        let (_, n) = self.prepare_src(x)?;
+        let res = self.alloca("{ ptr, i64 }");
+        let (lcheck, lmask, lother, ljoin) = (self.label(), self.label(), self.label(), self.label());
+        let wide = self.ins(format!("icmp sge i64 {}, {}", n, MASK_LANES));
+        // (a `filter` of more than a block where it may run in parallel: by
+        // blocks on the threads, D178; D754: the heads of the bases of
+        // revcomp, 250 MB, 18 % slower by masks on one thread)
+        let wide = if sequential {
+            wide
+        } else {
+            let small = self.ins(format!("icmp sle i64 {}, {}", n, BLOCK));
+            self.ins(format!("and i1 {}, {}", wide, small))
+        };
+        self.cbr(&wide, &lcheck, &lother);
+        self.block(&lcheck);
+        let ok = self.fold_precheck(&reads, l.params[0], &n, 1)?;
+        self.cbr(&ok, &lmask, &lother);
+        self.block(&lmask);
+        let r = self.filter_by_masks(l, &reads, &n, posts, out_ty)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
+        self.br(&ljoin);
+        self.block(&lother);
+        let r = other(self)?;
+        self.emit(format!("store {{ ptr, i64 }} {}, ptr {}", r.r, res));
+        self.br(&ljoin);
+        self.block(&ljoin);
+        let r = self.ins(format!("load {{ ptr, i64 }}, ptr {}", res));
+        Ok(Some(V { r, t: "{ ptr, i64 }".into(), uni: true }))
     }
 
     /// The index of the first lane set of `bits` (not 0), the mask of the
@@ -15323,7 +15562,52 @@ impl<'p> Gen<'p> {
     /// An evaluated `map` of a stream: the elements kept are counted, then
     /// mapped into an array of exactly that size.
     fn materialize_stream(&mut self, e: &Expr) -> R<V> {
+        // a `map` of the indices of a filter of rule M, that cannot fail:
+        // each index kept mapped as it is written (D754)
+        if let ExprKind::Map(ins, post) = &e.kind {
+            if let ExprKind::Filter(x, pl) = &ins[0].kind {
+                let out_ty = e.ty.elem().clone();
+                if out_ty.is_scalar() && lam_ok(post) && isc_ir::passes::cannot_panic(&post.body) {
+                    if let Some(r) = self.filter_masks_or(x, pl, &[post], &out_ty, true, &mut |g| g.stream_plain(e))? {
+                        return Ok(r);
+                    }
+                }
+            }
+        }
+        self.stream_plain(e)
+    }
+
+    fn stream_plain(&mut self, e: &Expr) -> R<V> {
         let elem_ty = e.ty.elem().clone();
+        // a `filter` and a `map` of its elements to the same scalars that
+        // cannot fail: the `filter` in vector code as alone (its predicate
+        // may fail in its lanes, replayed, D362), then the `map` in place
+        // in its result (D754: the ends of the lines of each head of a
+        // request of `serve`, `map(filter(iota(n), (i) => b[a + i] == 13u8
+        // && b[a + i + 1] == 10u8), (i) => a + i)`, two scalar passes of a
+        // byte at a time, a check of bounds at each read)
+        if let ExprKind::Map(ins, post) = &e.kind {
+            if let ExprKind::Filter(x, pl) = &ins[0].kind {
+                let kept_ty = x.ty.elem().clone();
+                if kept_ty == elem_ty && kept_ty.is_scalar() && lam_ok(post) && isc_ir::passes::cannot_panic(&post.body) && !self.frame_given() {
+                    let w = self.filter_width(x, pl, &kept_ty);
+                    if w > 1 {
+                        let (src, n) = self.prepare_src(x)?;
+                        let kept = self.filter_range(&src, &n, pl, &kept_ty, w)?;
+                        let p = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 0", kept.r));
+                        let k = self.ins(format!("extractvalue {{ ptr, i64 }} {}, 1", kept.r));
+                        self.for_range("0", &k, 1, &mut |g, i| {
+                            let el = g.load_elem(&p, &k, i, &kept_ty, 1);
+                            g.bind(post.params[0], el);
+                            let y = g.ex(&post.body, 1)?;
+                            g.store_elem(&p, &k, i, &kept_ty, &y, 1);
+                            Ok(())
+                        })?;
+                        return Ok(kept);
+                    }
+                }
+            }
+        }
         let st = self.prepare_stream(e)?;
         let cnt = self.alloca("i64");
         self.emit(format!("store i64 0, ptr {}", cnt));

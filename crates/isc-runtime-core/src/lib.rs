@@ -2477,6 +2477,26 @@ big_module!(big256, 256);
 /// rest by `from_utf8` from the first block with a byte of 128 or more,
 /// which starts a character (D436: `from_utf8` tests ASCII 16 bytes a
 /// step; `stringOf` of 1 KiB spent 43.7 % of its cycles there).
+/// The bytes of `b` (fewer than 64) all below 0x80: by words of 8 bytes,
+/// the last one read where it ends (over the one before), as words of 4
+/// below 8 bytes (D754: the fold of the bytes one by one, a vector loop
+/// and its end, about 150 instructions for the head of a request of 40
+/// bytes, at each request of `http.serve`).
+fn ascii(b: &[u8]) -> bool {
+    let n = b.len();
+    // (each part of 8 or 4 bytes one load: its array of a fixed size)
+    let word8 = |c: &[u8]| u64::from_le_bytes(c.try_into().unwrap_or([0x80; 8]));
+    let word4 = |c: &[u8]| u32::from_le_bytes(c.try_into().unwrap_or([0x80; 4]));
+    if n >= 8 {
+        let acc = b.chunks_exact(8).fold(word8(&b[n - 8..]), |a, c| a | word8(c));
+        return acc & 0x8080_8080_8080_8080 == 0;
+    }
+    if n >= 4 {
+        return (word4(&b[..4]) | word4(&b[n - 4..])) & 0x8080_8080 == 0;
+    }
+    b.iter().fold(0u8, |a, &x| a | x) < 0x80
+}
+
 pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
     let mut at = 0;
     let blocks = b.chunks_exact(64);
@@ -2490,12 +2510,32 @@ pub fn utf8_check(b: &[u8]) -> Result<(), usize> {
     // the bytes after the whole blocks (a short text: all of it) tested
     // the same way, when the blocks were ASCII (D440: the lines of a
     // request, shorter than a block, went to `from_utf8` whole)
-    if at == b.len() - rest.len() && rest.iter().fold(0u8, |a, &x| a | x) < 0x80 {
+    if at == b.len() - rest.len() && ascii(rest) {
         return Ok(());
     }
     match core::str::from_utf8(&b[at..]) {
         Ok(_) => Ok(()),
         Err(e) => Err(at + e.valid_up_to()),
+    }
+}
+
+#[cfg(test)]
+mod ascii_tests {
+    /// `ascii` (D754): every length below 64, all of it ASCII, then a byte
+    /// of 0x80 or more at each place; `utf8_check` the same on them.
+    #[test]
+    fn every_length_and_place() {
+        for n in 0..64usize {
+            let mut buf = [b'a'; 64];
+            assert!(super::ascii(&buf[..n]), "{} bytes", n);
+            assert_eq!(super::utf8_check(&buf[..n]), Ok(()));
+            for at in 0..n {
+                buf[at] = 0x80 | (at as u8);
+                assert!(!super::ascii(&buf[..n]), "{} bytes, one at {}", n, at);
+                assert_eq!(super::utf8_check(&buf[..n]), Err(at), "{} bytes, one at {}", n, at);
+                buf[at] = b'a';
+            }
+        }
     }
 }
 
