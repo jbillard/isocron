@@ -19244,4 +19244,93 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the servers that answer 20 to 40 % more requests a second have a longer
   tail of latency there with a far lower median. Point 4 of the goal at
   16 connections (as many as asked since D757) is out of reach of a
-  faster server: the blocking, measured, reported to the author.
+  faster server: the blocking, measured, reported to the author. Wrong
+  (D758): the latency of 99 % there came from the order in which the
+  loops answered their connections, not from their speed.
+
+- **D758 — The connections of a server watched edge-triggered: each
+  answered in the order of its request; point 4 of the goal met
+  (2026-11-24).** The author, on D757's blocking: « règle le point 4 ».
+  D757 had taken `ceiling.c` (76 us) for the floor of the latency of 99 %
+  at 16 connections on 2 cores, and nginx's 71.5 for out of reach of a
+  faster server: wrong. The whole latency (a script of wrk printing its
+  percentiles from 1 to 99.9 %) spread Isocron's requests wide, 17 to 53
+  us for 90 % of them against nginx's 32 to 50, their mean set by the
+  requests a second (16 connections / 425 thousand a second: 37.6 us);
+  `ceiling.c` measured again was below nginx in some rounds (65, 67 us).
+  Variants of `ceiling.c` (2 rounds, 16 connections on 2 cores) found the
+  cause: told as long as it has bytes (level-triggered, Isocron's and
+  `ceiling.c`'s), a connection is put back in the queue of the set as soon
+  as a wait gives it, before the loop reads it; its next request, come
+  before the next wait, keeps that place, ahead of the requests of the
+  connections that came before it: a loop answers the connections it has
+  just answered first again. Told once each time bytes come
+  (edge-triggered, nginx's), each is queued when its request comes.
+  `ceiling.c` level-triggered 60 to 80 us, edge-triggered 45 to 55 (the
+  deviation 4 to 9 us against 12 to 14); reading every connection of a
+  wait then sending, 16 events a wait (as `http`): 64 to 66, 49 to 57;
+  nginx 71 to 76.
+  Now the connections of a server without TLS are watched edge-triggered
+  with their end (`EPOLLIN | EPOLLRDHUP | EPOLLET`, `CONN_EVENTS`): a read
+  that fills the bytes asked (`max`), or comes with the end told, leaves
+  the connection in a list read again at the next wait without sleeping
+  (`more`), since the set will not tell it again; a server of TLS stays
+  level-triggered (its session may hold bytes its socket no longer has).
+  Two tests, each failing with the list removed (the 3 configurations):
+  a body of 200000 bytes then a request written while the server is
+  stopped (more than a wait reads of a connection), answered; a request
+  then the end of the client's writing, answered and the connection
+  closed before the end of the server.
+  The measures of the goal again (the client of D757, the probe of the
+  split not run: its processes on the CPUs of the client took from wrk),
+  8 rounds alternated with 0.9.0: a pure function, requests a second (the
+  mean of the first 6) +1.8 to +22.5 %, the latency of 50 % 0 to -24 %,
+  of 99 % -0.5 to -42.6 %, the CPU time of a request -5.0 to -12.0 %;
+  given an action +1.7 to +17.1 %, 0 to -22.7 %, -0.5 to -35.4 %, -4.7 to
+  -12.0 %: every case within the goal. At 16 connections on 2 cores the
+  latency of 50 % 35 against 35.5 us, of 99 % 63.5 against 99 (an action
+  61 against 88). Against nginx there, 6 rounds alternated: the latency of
+  99 % 61 us (58 to 67, and one round of 546 us whose two loops waited
+  113 and 117 ms for a processor), given an action 63 (62 to 66, below
+  nginx at each round), nginx 71 (64 to 88); of 50 % 35 against 43; 426
+  and 422 thousand requests a second against 348. Memory (`measure.sh`):
+  from 16 to 1024 connections 93 bytes a connection on 2 cores (an action
+  93), 240 on 4 (an action 244), 244 and 305 with 4 threads on 2 cores
+  (2 rounds). results/http_servers.md measured again.
+  Not kept: each loop asking for a slice of 100 us even when the loops
+  are no more than the processors (two loops on one core alternating at
+  100 us): 8 rounds on 4 cores at 256 connections, 416 to 440 us for 99 %
+  against D758's 416 to 432 but one round of 1.81 ms, 1.3 % fewer
+  requests; with a task always busy on a core of the server, 4.26 ms for
+  99 % as D758 and 0.9.0 (a loop waits for the slice of the other task,
+  not its own).
+  Open: on 4 cores at 256 connections two loops of the listener now and
+  then share a core for 0.2 to 0.9 s while another core has none (sampled
+  every 20 ms: no thread of the kernel above 1 ms then): they wait 100 to
+  490 ms in 10 s for a processor, the latency of 99 % 1.8 to 3.5 ms; more
+  often with the siblings of the server's cores busy (the rest of the
+  machine runs there, D757). Rounds with it: D758 10 of 33, D755 4 of 11,
+  0.9.0 2 of 30; each loop bound to a processor of its own (`taskset`
+  from the outside), none in 9 rounds, 0 to 7 % fewer requests a second;
+  not done by the runtime (several servers on one machine would each take
+  the first processors). The medians of 8 rounds within the goal (above).
+  The latency of 99.9 % there, 14 to 42 ms for D755 and D758 alike (0.8
+  to 4 ms for 0.9.0): not a point of the goal, open.
+  Checked: the suite (552) and the four series of the tests of isocron-ui
+  on the compiler of the commit. `regress.py` against b035583: of its 31
+  programs 24 the same byte for byte as with D755; the 7 others (the 6
+  groups of the network, which hold the server, and regexredux, whose
+  runtime moved) measured: the corpus without regression (regexredux -0.2
+  %), `serve.pipelined` -9.0 %, `serve.action.pipelined` -9.0 %; flagged
+  at their place, each measured again (3 passes, the last of 21 runs):
+  `http headerOf` +3.3 % at each pass, over 40 places of code and blocks
+  +0.10 % (standard error 0.32, 20 of 40 slower): the same; `strings
+  padStart` +3.3 % in one pass of 3 (its binary the same as with D755),
+  -0.10 % over 40 places (0.52, 20); `http textResponse` +7.7 to +8.1 %,
+  `strings trim`, `time format`, `sys join` and `ioError.message` as with
+  D754, the programs of their sweeps of D754 the same byte for byte
+  (-0.20, -0.23, -1.08, -0.18 and -0.00 % over 40 places); `http
+  request.post` +21 % in one pass (its ranges the same, 42.9 to 58.8 us
+  against 43.1 to 58.3), within 3 % in the 2 others; `sha256 hex.32` and
+  `sorts sort.i64` +3.7 and +3.1 % in one pass (their binaries the same
+  as with D755), not again.

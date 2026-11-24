@@ -492,6 +492,110 @@ fn server_keeps_heads_cut_on_many_connections() {
     }
 }
 
+/// D758: the connections watched edge-triggered: bytes left in a socket
+/// after a wait's read are read again without being told. The server
+/// stopped, a request with a body of 200000 bytes then a second request
+/// written on one connection (more than a wait reads of a connection,
+/// 65536), the server goes on: both answered, then a third on the same
+/// connection, then the end of the server.
+#[test]
+fn server_reads_bytes_left_in_a_socket() {
+    use std::io::{BufRead, BufReader};
+    let src = include_str!("data/std_http_many.isc");
+    let bin = compile(src, "std_http_left");
+    for (mode, threads) in [("pure", "1"), ("pure", "4"), ("action", "1")] {
+        let mut child = std::process::Command::new(&bin)
+            .args(["3", mode])
+            .env("ISC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        let port: u16 = line.trim().parse().unwrap_or_else(|_| panic!("{}: no port: {:?}", mode, line));
+        let pid = child.id().to_string();
+        let signal = |s: &str| assert!(std::process::Command::new("kill").args([s, &pid]).status().unwrap().success());
+        let s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+        // (accepted while the server runs)
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        signal("-STOP");
+        let mut w = s.try_clone().unwrap();
+        // (written by a thread of its own: the kernel may hold fewer bytes
+        // than these while the server is stopped)
+        let writer = std::thread::spawn(move || {
+            write!(w, "POST /a?big HTTP/1.1\r\nHost: t\r\nContent-Length: 200000\r\n\r\n{}GET /b?next HTTP/1.1\r\nHost: t\r\n\r\n", "x".repeat(200000)).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        signal("-CONT");
+        writer.join().unwrap();
+        let mut r = BufReader::new(s);
+        let a = read_response(&mut r);
+        let b = read_response(&mut r);
+        assert_eq!((a.0, a.2, b.0, b.2), (200, b"/a big".to_vec(), 200, b"/b next".to_vec()), "{} on {} threads", mode, threads);
+        write!(r.get_mut(), "GET /c?last HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+        let c = read_response(&mut r);
+        assert_eq!((c.0, c.2), (200, b"/c last".to_vec()), "{} on {} threads", mode, threads);
+        let o = child.wait_with_output().unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+        assert_eq!((o.status.code(), rest.as_str()), (Some(0), "done\n"), "{} on {} threads: {}", mode, threads, String::from_utf8_lossy(&o.stderr));
+    }
+}
+
+/// D758: the end of a connection told with its last request (edge-
+/// triggered, once): the server stopped, a request then the end of the
+/// client's writing (`shutdown`) on a connection; the server goes on, answers
+/// it and closes it (the client reads the end), before its own end: a
+/// second request on another connection answered, then the end of the
+/// server.
+#[test]
+fn server_closes_a_connection_ended_with_its_request() {
+    use std::io::{BufRead, BufReader, Read};
+    let src = include_str!("data/std_http_many.isc");
+    let bin = compile(src, "std_http_ended");
+    for (mode, threads) in [("pure", "1"), ("pure", "4"), ("action", "1")] {
+        let mut child = std::process::Command::new(&bin)
+            .args(["2", mode])
+            .env("ISC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        let port: u16 = line.trim().parse().unwrap_or_else(|_| panic!("{}: no port: {:?}", mode, line));
+        let pid = child.id().to_string();
+        let signal = |s: &str| assert!(std::process::Command::new("kill").args([s, &pid]).status().unwrap().success());
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        signal("-STOP");
+        write!(s, "GET /a?ended HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        signal("-CONT");
+        let mut r = BufReader::new(s);
+        let a = read_response(&mut r);
+        assert_eq!((a.0, a.2), (200, b"/a ended".to_vec()), "{} on {} threads", mode, threads);
+        let mut tail = Vec::new();
+        let end = r.read_to_end(&mut tail);
+        assert!(end.is_ok() && tail.is_empty(), "{} on {} threads: the connection not closed: {:?}", mode, threads, end);
+        let mut t = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        t.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+        write!(t, "GET /b?other HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+        let b = read_response(&mut BufReader::new(t));
+        assert_eq!((b.0, b.2), (200, b"/b other".to_vec()), "{} on {} threads", mode, threads);
+        let o = child.wait_with_output().unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut out, &mut rest).unwrap();
+        assert_eq!((o.status.code(), rest.as_str()), (Some(0), "done\n"), "{} on {} threads: {}", mode, threads, String::from_utf8_lossy(&o.stderr));
+    }
+}
+
 /// D352: a handler that is an action (`serveOn`, D386): it prints each
 /// request and reads a file, the requests of one connection answered one at
 /// a time in their order; a pure function where an action is expected;

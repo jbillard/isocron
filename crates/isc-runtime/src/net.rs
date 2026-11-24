@@ -175,6 +175,11 @@ struct ServerState<F: Copy> {
     /// kept from one wait to the next with their room (D376): a wait reads
     /// into the room it reserved for each connection, then copies.
     scratch: (alloc::vec::Vec<i64>, alloc::vec::Vec<i64>, alloc::vec::Vec<u8>),
+    /// The connections whose last read may have left bytes or an end in
+    /// their socket (as many bytes as asked, or an end told with them),
+    /// read again at the next wait: edge-triggered, `epoll` does not tell
+    /// them again (D758; under Linux only).
+    more: alloc::vec::Vec<i64>,
 
     /// Whether its listener is one of `sysListenShared` that other servers
     /// share (D739): each connection it accepts given to the server that
@@ -541,7 +546,8 @@ mod imp {
                 return false;
             }
             let to = &mut e.servers[at];
-            let ev = EpollEvent { events: EPOLLIN, data: GIVEN | c as u64 };
+            // (a connection of a server without TLS: `CONN_EVENTS`)
+            let ev = EpollEvent { events: CONN_EVENTS, data: GIVEN | c as u64 };
             // SAFETY: as `watch`; the set of a server in this list, open
             if unsafe { syscall6(SYS_EPOLL_CTL, to.ep as usize, EPOLL_CTL_ADD, c as usize, &ev as *const EpollEvent as usize, 0, 0) } < 0 {
                 return false;
@@ -563,7 +569,7 @@ mod imp {
             }
         });
         let id = st.adopt(c);
-        let ev = EpollEvent { events: EPOLLIN, data: id as u64 };
+        let ev = EpollEvent { events: conn_events(st), data: id as u64 };
         // SAFETY: as `watch`
         unsafe { syscall6(SYS_EPOLL_CTL, st.ep as usize, EPOLL_CTL_MOD, c as usize, &ev as *const EpollEvent as usize, 0, 0) };
         id
@@ -888,7 +894,8 @@ mod imp {
         unsafe { out.write(r) };
     }
 
-    // ----- servers (D342): `epoll`, level-triggered ----------------------
+    // ----- servers (D342): `epoll`; the connections of a server without TLS
+    // edge-triggered (D758), its listener and those of TLS level-triggered
 
     const SYS_POLL: usize = 7;
     const SYS_FCNTL: usize = 72;
@@ -903,7 +910,25 @@ mod imp {
     const EPOLL_CTL_ADD: usize = 1;
     const EPOLL_CTL_MOD: usize = 3;
     const EPOLLIN: u32 = 1;
+    const EPOLLERR: u32 = 8;
+    const EPOLLHUP: u32 = 0x10;
+    const EPOLLRDHUP: u32 = 0x2000;
     const EPOLLEXCLUSIVE: u32 = 1 << 28;
+    const EPOLLET: u32 = 1 << 31;
+    /// The events of a connection of a server without TLS: told once each
+    /// time bytes come (edge-triggered), its end with them (D758). Told as
+    /// long as it has bytes (level-triggered), a connection was put back in
+    /// the queue of the set as soon as a wait gave it, before it was read:
+    /// its next request, come before the next wait, kept that place, ahead
+    /// of the requests of other connections that came before it. A loop
+    /// answered its connections out of the order of their requests: on 2
+    /// cores at 16 connections the latency of 99 % 79 to 87 us against
+    /// nginx's 70 to 78 (edge-triggered), 17 to 53 us for 90 % of the
+    /// requests against 32 to 50. The server of `ceiling.c` the same: 60 to
+    /// 80 us level-triggered, 45 to 55 edge-triggered; reading all the
+    /// connections of a wait then sending, 16 events a wait (as `http`):
+    /// 64 to 66, 49 to 57.
+    const CONN_EVENTS: u32 = EPOLLIN | EPOLLRDHUP | EPOLLET;
     const POLLOUT: i16 = 4;
     const IPPROTO_TCP: usize = 6;
     const TCP_NODELAY: usize = 1;
@@ -928,9 +953,9 @@ mod imp {
         revents: i16,
     }
 
-    /// `fd` watched by the set `ep` for reading, with the number `data`.
-    fn watch(ep: c_int, fd: c_int, data: u64) -> isize {
-        let ev = EpollEvent { events: EPOLLIN, data };
+    /// `fd` watched by the set `ep` for `events`, with the number `data`.
+    fn watch(ep: c_int, fd: c_int, data: u64, events: u32) -> isize {
+        let ev = EpollEvent { events, data };
         // SAFETY: the kernel reads the event of 12 bytes of this frame
         unsafe { syscall6(SYS_EPOLL_CTL, ep as usize, EPOLL_CTL_ADD, fd as usize, &ev as *const EpollEvent as usize, 0, 0) }
     }
@@ -947,7 +972,14 @@ mod imp {
                 return r;
             }
         }
-        watch(ep, fd, LISTENER)
+        watch(ep, fd, LISTENER, EPOLLIN)
+    }
+
+    /// The events a connection of `st` is watched for: `CONN_EVENTS`, or
+    /// level-triggered for a server of TLS (its session may hold bytes
+    /// read from the socket, `read_pending`).
+    fn conn_events(st: &ServerState<c_int>) -> u32 {
+        if st.tls == 0 { CONN_EVENTS } else { EPOLLIN }
     }
 
     /// `poll` of `fd` for `events`, SEND_WAIT_MS at most: 0 at the end of
@@ -986,7 +1018,7 @@ mod imp {
             close_listener(l);
             return HandleCode { h: -1, code: net_code(r) };
         }
-        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)), wake: Wake::default() });
+        let st = alloc::boxed::Box::new(ServerState { listener: l as c_int, next: 1, conns: alloc::vec::Vec::new(), ep: ep as c_int, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), more: alloc::vec::Vec::new(), shared, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)), wake: Wake::default() });
         if shared {
             join(&st);
         }
@@ -1124,6 +1156,36 @@ mod imp {
         let deadline = (ms >= 0).then(|| crate::isc_clock_ns().saturating_add(ms as u64 * 1_000_000));
         if st.tls != 0 {
             read_pending(st, max, &mut ids, &mut lens, &mut data);
+            if !ids.is_empty() {
+                let r = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
+                st.keep_scratch((ids, lens, data));
+                return r;
+            }
+        }
+        // the connections whose last read may have left bytes (`more`), read
+        // again without sleeping, after the events there are now
+        if !st.more.is_empty() {
+            let mut more = core::mem::take(&mut st.more);
+            // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`, of
+            // this frame
+            let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, 0, 0, 0) });
+            if n > 0 {
+                read_ready(st, &evs[..n as usize], max, &mut ids, &mut lens, &mut data);
+            }
+            for &id in &more {
+                // (each once a wait: one that its events gave is read; read
+                // again until it has nothing or ends, its end maybe told)
+                if !ids.contains(&id) {
+                    if let Some(fd) = st.fd(id) {
+                        read_conn(st, id, fd, max, true, &mut ids, &mut lens, &mut data);
+                    }
+                }
+            }
+            // (the room of the list kept)
+            if st.more.is_empty() {
+                more.clear();
+                st.more = more;
+            }
             if !ids.is_empty() {
                 let r = WaitOut { ids: array_of(&ids), lens: array_of(&lens), data: array_of(&data), code: 0 };
                 st.keep_scratch((ids, lens, data));
@@ -1274,7 +1336,7 @@ mod imp {
                         continue;
                     }
                     let id = st.add(c as c_int);
-                    if watch(st.ep, c as c_int, id as u64) < 0 {
+                    if watch(st.ep, c as c_int, id as u64, conn_events(st)) < 0 {
                         st.take(id);
                         linux::close(c as c_int);
                         continue;
@@ -1299,19 +1361,33 @@ mod imp {
                 read_tls(st, id, max, ids, lens, data);
                 continue;
             }
-            data.reserve(max);
-            let at = data.len();
-            // SAFETY: the kernel writes at most `max` bytes in the room
-            // reserved after the `at` bytes of `data`
-            let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, data.as_mut_ptr().add(at) as usize, max, 0, 0, 0) });
-            if r == EAGAIN {
-                continue;
-            }
-            let got = r.max(0) as usize;
-            // SAFETY: the kernel wrote `got` bytes (at most `max`) there
-            unsafe { data.set_len(at + got) };
-            ids.push(id);
-            lens.push(got as i64);
+            let ended = { ev.events } & (EPOLLRDHUP | EPOLLHUP | EPOLLERR) != 0;
+            read_conn(st, id, fd, max, ended, ids, lens, data);
+        }
+    }
+
+    /// The connection `id` (socket `fd`) of a server without TLS read: at
+    /// most `max` bytes (none: an end or a fault), nothing if it has none;
+    /// in `more` when there may be more, or an end after them (`ended`:
+    /// its events told one), since its events will not tell them again
+    /// (edge-triggered, `CONN_EVENTS`).
+    #[allow(clippy::too_many_arguments)]
+    fn read_conn(st: &mut ServerState<c_int>, id: i64, fd: c_int, max: usize, ended: bool, ids: &mut alloc::vec::Vec<i64>, lens: &mut alloc::vec::Vec<i64>, data: &mut alloc::vec::Vec<u8>) {
+        data.reserve(max);
+        let at = data.len();
+        // SAFETY: the kernel writes at most `max` bytes in the room reserved
+        // after the `at` bytes of `data`
+        let r = again(|| unsafe { syscall6(SYS_RECVFROM, fd as usize, data.as_mut_ptr().add(at) as usize, max, 0, 0, 0) });
+        if r == EAGAIN {
+            return;
+        }
+        let got = r.max(0) as usize;
+        // SAFETY: the kernel wrote `got` bytes (at most `max`) there
+        unsafe { data.set_len(at + got) };
+        ids.push(id);
+        lens.push(got as i64);
+        if got > 0 && (got == max || ended) {
+            st.more.push(id);
         }
     }
 
@@ -2057,7 +2133,7 @@ mod imp {
                 *out = HandleCode { h: -1, code };
                 return;
             }
-            let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), shared: false, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)), wake: Wake::default() });
+            let st = alloc::boxed::Box::new(ServerState { listener: l as usize, next: 1, conns: alloc::vec::Vec::new(), ep: 0usize, tls: 0, sessions: alloc::vec::Vec::new(), scratch: Default::default(), more: alloc::vec::Vec::new(), shared: false, load: alloc::boxed::Box::new(core::sync::atomic::AtomicUsize::new(0)), wake: Wake::default() });
             *out = HandleCode { h: alloc::boxed::Box::into_raw(st) as i64, code: 0 };
     
         }

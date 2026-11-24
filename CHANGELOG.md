@@ -25,6 +25,11 @@ D754, D755).
   many threads as divide the connections, so that it is no longer the
   limit on 4 cores and opens as many connections as asked (16 were 12);
   every table of results/http_servers.md measured again (D757).
+- A server of HTTP answers its connections in the order of their requests:
+  they are watched edge-triggered, as nginx does (level-triggered, a
+  connection just answered could pass ahead of those waiting). On 2 cores
+  at 16 connections the latency of 99 % 59 to 70 us against 80 to 125 for
+  0.9.0, the median of 6 rounds 61 us against nginx's 71 (D758).
 
 ## 0.9.1 — 2026-11-23
 
