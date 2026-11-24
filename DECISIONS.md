@@ -19178,3 +19178,60 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   the work of a cheaper server but of wrk's turns, the limit at that point.
   A series of 8 rounds within 5 % of 0.9.0 at each draw is out of reach of
   any server: the blocking, measured, reported to the author.
+
+- **D757 — The client of `bench/http_servers` corrected: the siblings of
+  its cores, and as many connections as asked (2026-11-24).** The author,
+  on D756 (the latency of 50 % on 4 cores at 256 connections set by wrk's
+  turns): « si ça dépend de wrk, corrige wrk ». Three faults of the client
+  of the measures, each the same for every server:
+  - wrk ran on the first hardware thread of the cores after the server's
+    (`machine.sh apply parallel`), every other process on their siblings:
+    on 4 cores its 4 threads were the limit (D742: 85 % of its cycles in
+    the kernel), the ceiling of the machine kept only 3.2 of its 4 cores
+    busy, the latency of every server the shape of wrk's turns (D756).
+    Now `machine.sh apply http`: the benchmarks on the first thread of
+    every core and on the siblings of the second half of the cores, every
+    other process on the siblings of the first half; wrk on the cores
+    after the server's and their siblings (8 or 10 CPUs). On 4 cores at
+    256 connections given an action, 8 rounds alternated: 0.9.0 866
+    thousand requests a second, the latency of 50 % 240 to 262 us; D755
+    975 thousand (+12.6 %), 233 to 246 us (-8.6 %), of 99 % -35 %; the
+    ceiling 1 million on 3.75 to 3.95 cores (3.2 before): the servers the
+    limit.
+  - wrk gives each of its threads c / t connections, rounded down: with a
+    thread for each CPU of the client, 16 connections on 2 cores were 12
+    with 6 threads (the « 12 connections » of D739 to D753), 10 with 10;
+    256 and 1024 were 252 and 1020. Now the most threads, one a CPU at
+    most, that divide c (8 for 16, 256 and 1024): every count exact,
+    `measure.sh` and the scripts of the rounds alike. At 16 connections on
+    2 cores, 4 rounds: the latency of 50 % 33.5 against 34.0 us (an
+    action 34.5 against 35.5), of 99 % 79.5 against 88.5; 0.9.0's split
+    of 18 (11/7 to 6/12) no longer lowers its median.
+  - the probe of the split of the connections (SPLIT=1, at 5 s of each
+    round: a `readlink` for each descriptor of the server, 270 to 1030
+    processes) ran on any CPU of the container, the server's too: with
+    the servers the limit, rounds whose loops waited 0.9 to 1.7 s in 10 s
+    for a CPU, the latency of 99 % 3 to 4 ms. Now bound to the CPUs of
+    the client (`taskset -p`).
+  The measures of the goal again with that client (`d755`, the compiler
+  of the commit of D755; 8 rounds alternated with 0.9.0, the probe bound):
+  a pure function, requests a second (the mean of the first 6) +0.9 to
+  +19.9 %, the latency of 50 % 0 to -26 %, of 99 % -29 to +3.3 % (4 cores
+  at 1024 connections), the CPU time of a request -5.4 to -12.8 %; given
+  an action +0.7 to +15.8 %, 0 to -24 %, -32.5 to +2.9 % (2 cores, one
+  connection: 18 against 17.5 us), -3.7 to -13.4 %: every case within the
+  goal at each series. On 4 cores at 256 connections: 236 against 257 us
+  (an action 233 against 253), the latency of 99 % 566 against 674 us (429
+  against 636). Three rounds of 8 of D755 there (1.6 to 3.5 ms) and some
+  of 0.9.0 before the probe was bound: the loops waited for a CPU 0.5 to
+  1.3 s in 10 s; the medians within the goal.
+  Memory (`measure.sh` with that client): from 16 to 1024 connections 89
+  bytes a connection on 2 cores (an action 97), 305 on 4 (an action 268).
+  Against nginx at 16 connections on 2 cores (6 rounds): the latency of 50
+  % 35 against 43 us, of 99 % 82 against 71 (D754's 40.5 against 52 were
+  12 connections): with 16 the goal's point 4 is not met. Tried: each
+  response sent as soon as it is made, a pure handler or an action
+  (`respondSend`, `respondSendPure`, `afterSent`): 83 us (77 to 305), not
+  kept. The loops did not wait for a CPU there (1 to 45 ms in 10 s); the
+  latencies of Isocron are spread wider (50 % 35, 99 % 82) than nginx's
+  (43, 71) at 19 % more requests a second: left open, reported.

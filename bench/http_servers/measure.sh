@@ -85,7 +85,11 @@ run() {
     pids=$(pids_of "$comm")
     read -r idle _ < <(mem_of $pids)
     for c in 1 16 256 1024; do
+        # (wrk gives each thread c / t connections, rounded down: the most
+        # threads, one a CPU of the client at most, that divide c, so that
+        # it opens c connections; 10 threads opened 10 of 16, D757)
         local t=$(( c < nclient ? c : nclient ))
+        while (( c % t != 0 )); do t=$((t - 1)); done
         local t0 t1 spid mp mr
         # the requests a second, the latency and the cores: nothing else
         # running (D743: the sampler of the memory, on the CPUs of the

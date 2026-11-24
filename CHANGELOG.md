@@ -20,6 +20,11 @@ D754, D755).
   on 4 cores (98 thousand times in 10 s at 1024 connections against 17
   thousand for 0.9.0), the latency of 99 % 12 % above 0.9.0; now 42
   thousand, below 0.9.0 (D755).
+- The measures of the server of HTTP (`bench/http_servers`): wrk runs on
+  its cores and their siblings (`bench/machine.sh apply http`), with as
+  many threads as divide the connections, so that it is no longer the
+  limit on 4 cores and opens as many connections as asked (16 were 12);
+  every table of results/http_servers.md measured again (D757).
 
 ## 0.9.1 — 2026-11-23
 

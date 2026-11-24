@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Machine settings for the benchmarks (SPEC section 14, "Mesure").
-#   machine.sh apply [single|parallel]
+#   machine.sh apply [single|parallel|http]
 #       fixed frequency (governor `performance`, turbo off, minimum = maximum),
 #       CPU counters allowed for perf, and isolated CPUs:
 #       single    the physical cores are split in two halves: every other
@@ -10,6 +10,12 @@
 #       parallel  the benchmarks get the first hardware thread of every
 #                 physical core; every other process is confined to the
 #                 sibling threads (without SMT: no confinement)
+#       http      as parallel, and the siblings of the second half of the
+#                 cores to the benchmarks too: the client of
+#                 bench/http_servers (wrk) on the cores after the server's
+#                 and their siblings, every other process confined to the
+#                 siblings of the first half (D757: on 4 cores wrk was the
+#                 limit, the latency the shape of its turns)
 #       The state before `apply` is saved first.
 #   machine.sh run ...   runs `bench/run.py ...` (or `--script f.py ...`) in its
 #                        own slice on the benchmark CPUs
@@ -59,6 +65,11 @@ if mode == "single":
 elif mode == "parallel":
     bench = [t[0] for t in threads]
     others = [c for t in threads for c in t[1:]]
+    pin = threads[-1][0]
+elif mode == "http":
+    half = len(threads) // 2
+    bench = [t[0] for t in threads] + [c for t in threads[half:] for c in t[1:]]
+    others = [c for t in threads[:half] for c in t[1:]]
     pin = threads[-1][0]
 else:
     sys.exit("unknown mode " + mode)
@@ -138,5 +149,5 @@ restore)
     status
     ;;
 status) status ;;
-*) echo "usage: $0 apply [single|parallel] | run [--script f.py] ... | restore | status" >&2; exit 2 ;;
+*) echo "usage: $0 apply [single|parallel|http] | run [--script f.py] ... | restore | status" >&2; exit 2 ;;
 esac
