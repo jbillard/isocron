@@ -19322,14 +19322,16 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   groups of the network, which hold the server, and regexredux, whose
   runtime moved) measured: the corpus without regression (regexredux -0.2
   %), `serve.pipelined` -9.0 %, `serve.action.pipelined` -9.0 %; flagged
-  at their place, each measured again (3 passes, the last of 21 runs):
-  `http headerOf` +3.3 % at each pass, over 40 places of code and blocks
-  +0.10 % (standard error 0.32, 20 of 40 slower): the same; `strings
-  padStart` +3.3 % in one pass of 3 (its binary the same as with D755),
-  -0.10 % over 40 places (0.52, 20); `http textResponse` +7.7 to +8.1 %,
-  `strings trim`, `time format`, `sys join` and `ioError.message` as with
-  D754, the programs of their sweeps of D754 the same byte for byte
-  (-0.20, -0.23, -1.08, -0.18 and -0.00 % over 40 places); `http
+  at their place, each measured again (3 passes, the last of 21 runs),
+  then over 40 places of code and blocks (`sweep2e.py`, b035583 against
+  the programs built by the compiler of the commit): `http headerOf` +3.3
+  % at each pass, over the places +0.10, +0.11 and -0.11 % in 3 sweeps
+  (+0.03 % over 120 places, the standard error of a sweep 0.32); `http
+  textResponse` +7.7 to +8.1 %, -0.06 % (0.04, 12 of 40 slower);
+  `strings trim` -0.13 % (0.07, 8); `sys join` -0.75 % (0.53, 18); `sys
+  ioError.message` +0.02 % (0.09, 22); `time format` -1.12 % (0.26, 12);
+  `strings padStart` +3.3 % in one pass of 3 (its binary the same as with
+  D755), -0.10 % (0.52, 20): none slower beyond its standard error; `http
   request.post` +21 % in one pass (its ranges the same, 42.9 to 58.8 us
   against 43.1 to 58.3), within 3 % in the 2 others; `sha256 hex.32` and
   `sorts sort.i64` +3.7 and +3.1 % in one pass (their binaries the same
