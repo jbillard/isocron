@@ -19123,3 +19123,27 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   before any push. The
   author's choice (2026-11-24): D754 and D755 pushed as they are, each
   point the same as 0.9.1 or better, which had that gap already.
+
+- **D756 — The latency of 50 % on 4 cores at 256 connections given an
+  action: four tries, none moves it (2026-11-24).** Left by D755: 151 us
+  at each round against 0.9.0's 141 to 146 (+6.3 % in D755's series).
+  Asked again after the push (the goal: every point true, or a blocking
+  proven by a measure). Each try 8 rounds alternated with 0.9.0 and D755,
+  given an action, on 4 cores at 256 connections:
+  - 64 events a wait (`WAIT_EVENTS`, 16 since D741, 64 in 0.9.0): 152 us
+    at each round (150 to 153), D755 152, 0.9.0 146 (140 to 246);
+  - each response of an action sent as soon as it is made (`respondSend`,
+    `afterSent`; D750 had tried it at 16 connections on 2 cores): 151
+    (150 to 152); the latency of 99 % 441 us against 632 for D755;
+  - each connection kept by the loop that accepts it (`give` left out:
+    the loops woken by `EPOLLEXCLUSIVE` take 5 to 140 of the 260 each,
+    0.9.0's hash 50 to 90): 281 us (212 to 332) against 141.5 for 0.9.0,
+    the latency of 99 % 608 against 456 for D755;
+  - and before them (D754, D755): the CPU time of a request 8 % apart
+    and 20 to 100 thousand sleeps in 10 s, 149 to 153 us at each round.
+  D755 against 0.9.0 in the series of the night given an action: +6.3,
+  +4.1 and +6.7 % (8 rounds), +3.8 % (16, D754); 0.9.0 at 139 to 151 us
+  at most rounds, 160 to 246 at some. Neither the turns, the sends, the
+  cost nor the sleeps of the server set it, and a split left to the
+  kernel makes it worse: not found, reported to the author. Not kept:
+  each variant (the sources of D755 again).
