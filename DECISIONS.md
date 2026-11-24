@@ -19317,7 +19317,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   The latency of 99.9 % there, 14 to 42 ms for D755 and D758 alike (0.8
   to 4 ms for 0.9.0): not a point of the goal, open.
   Checked: the suite (552) and the four series of the tests of isocron-ui
-  on the compiler of the commit. `regress.py` against b035583: of its 31
+  on the compiler of the commit. The cores at the same requests a second
+  (one connection, the 8 rounds alternated): 74823 a second on 0.520
+  cores against 73125 on 0.551 for 0.9.0 on 2 cores, 75555 on 0.519
+  against 74155 on 0.554 on 4 (given an action 0.521 to 0.523 against
+  0.549): no wait that keeps a core busy. `regress.py --only
+  memory,rtiow` against b035583: no regression (every peak the same or
+  lower, walk -4.8 %, rtiow final -8.8 and -5.8 %; rtiow 0 to -2.5 %). `regress.py` against b035583: of its 31
   programs 24 the same byte for byte as with D755; the 7 others (the 6
   groups of the network, which hold the server, and regexredux, whose
   runtime moved) measured: the corpus without regression (regexredux -0.2
