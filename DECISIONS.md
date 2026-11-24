@@ -19147,3 +19147,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   cost nor the sleeps of the server set it, and a split left to the
   kernel makes it worse: not found, reported to the author. Not kept:
   each variant (the sources of D755 again).
+  The whole latency then (wrk's 50, 75, 90 and 99 %, 6 rounds alternated,
+  given an action): 0.9.0 142 to 231, 275 to 289, 290 to 400 us and 0.50
+  to 3.03 ms; D755 149 to 152, 158 to 188, 285 to 295 us and 0.45 to 2.31
+  ms. Both give two heaps of latencies, near 150 and near 290 us (one turn
+  of wrk's loop or two: wrk is the limit here); D755 puts 75 to 85 % of
+  the requests in the first, 0.9.0 50 to 60 %: its 75 % 40 % lower, its 99
+  % lower, its 50 % the middle of the first heap where 0.9.0's falls on its
+  lower edge (142) at some rounds and in the second heap (201, 231) at
+  others. The +5 % of the 50 % alone is the shape of the latencies, not a
+  delay of the server.
