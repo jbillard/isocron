@@ -19157,3 +19157,14 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   lower edge (142) at some rounds and in the second heap (201, 231) at
   others. The +5 % of the 50 % alone is the shape of the latencies, not a
   delay of the server.
+  Every round of the night at that point, alternated (0.9.0 against
+  0.9.1, D754, its tries and D755, given an action, nine series): 0.9.0
+  76 rounds, their median 144.5 us (mean 156.6), 59 of them at 156 or
+  less, 17 at 160 to 246; the new servers 92 rounds, their median 151.0,
+  88 of them at 149 to 153: +4.5 %, within the 5 %. Series by series
+  +5.7, +3.1, +5.2, +3.8 (16 rounds), +6.3, +4.1, +6.7, +0.3 and -14.0 %:
+  a series of 8 rounds past 5 % (4 of 9) or below by the rounds of
+  0.9.0 that fall in its second heap, the new servers the same at each
+  round. A server slowed by 20 us a wait (to see the heaps move) became
+  the limit itself: 718 to 755 thousand requests a second on 4 cores,
+  every request in the second heap (310 to 313 us).
