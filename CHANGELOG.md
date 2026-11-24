@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+The server of HTTP answers a request for less: 2 to 12 % less CPU time
+than 0.9.0 on 2 and 4 cores, as many requests a second or more (DECISIONS
+D754, D755).
+
+- The compiler makes an exact `reduce` of 32 to 256 elements where it is,
+  without a task; a `filter(iota(n), ...)` whose condition reads bytes at
+  `j + p` by masks of 32 bits, a `map` after it applied to each index
+  kept; a `map` of a `filter` to the same scalars in vector code. The
+  runtime runs a parallel loop of one task at once and tests the bytes of
+  a short text by words of 8. `http` keeps the requests of a connection
+  in one array of records and skips the arrays of a turn whose reads gave
+  whole requests (D754).
+- A loop of a server tries its connections for up to twice its mean work
+  before it sleeps, and tries again as soon as a sleep ends within that
+  time: the cheaper turns of D754 had made the loops sleep twice as often
+  on 4 cores (98 thousand times in 10 s at 1024 connections against 17
+  thousand for 0.9.0), the latency of 99 % 12 % above 0.9.0; now 42
+  thousand, below 0.9.0 (D755).
+
 ## 0.9.1 — 2026-11-23
 
 Fixes and speed, the language the same: n-body, behind C since 0.8.0, is

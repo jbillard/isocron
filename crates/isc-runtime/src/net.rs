@@ -190,7 +190,8 @@ struct ServerState<F: Copy> {
 /// The tries of the waits of a server before they sleep: the counter of
 /// the processor when its last wait ended, the mean of its work between two
 /// waits (counts of the processor), the waits left without a try and the
-/// tries that found nothing in a row, whether its loops are no more than
+/// tries that found nothing in a row, whether the current wait was left
+/// without one (D755), whether its loops are no more than
 /// its processors (0: not yet known, 1: yes, 2: no) and its waits since it
 /// was counted, whether its thread asked for a short slice of time
 /// (`CROWDED_SLICE`).
@@ -200,6 +201,7 @@ struct Wake {
     busy: u64,
     skip: u32,
     fails: u32,
+    skipped: bool,
     allowed: u8,
     checks: u32,
     sliced: bool,
@@ -1135,14 +1137,24 @@ mod imp {
                 None => -1,
             };
             let mut n = 0;
+            st.wake.skipped = false;
             if first && left != 0 {
                 n = try_before_sleep(st, &mut evs);
             }
             first = false;
             if n == 0 {
+                let before = counter();
                 // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`, of this
                 // frame
                 n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, left as usize, 0, 0) });
+                // a wait left without a try whose events came within the
+                // time of a try: a try would have found them, the tries
+                // taken again (a loop that its clients keep busy, whose
+                // tries failed now and then)
+                if st.wake.skipped && n > 0 && counter().wrapping_sub(before) < st.wake.busy.saturating_mul(2).min(TRY_MAX) {
+                    st.wake.fails = 0;
+                    st.wake.skip = 0;
+                }
             }
             st.wake.last = counter();
             if n < 0 {
@@ -1170,9 +1182,9 @@ mod imp {
         0
     }
 
-    /// The tries of a wait before it sleeps last at most the mean work of
-    /// the server between two waits, and at most this many counts of the
-    /// processor (about 60 us); a server with fewer connections than a wait
+    /// The tries of a wait before it sleeps last at most twice the mean work
+    /// of the server between two waits (D755), and at most this many counts
+    /// of the processor (about 60 us); a server with fewer connections than a wait
     /// gives (`WAIT_EVENTS`) sleeps at once (D743: with few connections the
     /// next request comes after the round trip of its client, longer than
     /// a turn: on 4 cores at 16 connections, 4 a loop, the tries cost 2 %
@@ -1198,16 +1210,19 @@ mod imp {
     }
 
     /// The events a server finds by waits that do not sleep before it
-    /// sleeps (D743): tried for at most its mean work between two waits
-    /// (`TRY_MAX` at most), their count (0: none found, it sleeps); a try
-    /// that found nothing leaves the next 1, 3, 7... 1023 waits without one.
-    /// A loop that its work keeps busy finds its next requests there instead
-    /// of sleeping and being woken for each (on 4 cores at 1024 connections
-    /// 200 thousand sleeps in 10 s against 17 thousand for 0.9.0, the latency
-    /// of 99 % 11 % higher; 57 thousand with tries of all its work, 18 %
-    /// lower); with one connection a loop never tries (the server busy 0.53
-    /// of a core, as without the tries, against 1.01 with tries without a
-    /// bound).
+    /// sleeps (D743): tried for at most twice its mean work between two
+    /// waits (`TRY_MAX` at most), their count (0: none found, it sleeps); a
+    /// try that found nothing leaves the next 1, 3, 7... 1023 waits without
+    /// one, until a wait left without one finds its events within the time
+    /// of a try (`server_wait`). A loop that its work keeps busy finds its
+    /// next requests there instead of sleeping and being woken for each (on
+    /// 4 cores at 1024 connections 200 thousand sleeps in 10 s against 17
+    /// thousand for 0.9.0, the latency of 99 % 11 % higher; 57 thousand with
+    /// tries of all its work, 18 % lower). D755: the turns of D754, cheaper,
+    /// made the tries shorter while the clients' requests came as before:
+    /// 98 thousand sleeps, 44 thousand with twice the work. With one
+    /// connection a loop never tries (the server busy 0.53 of a core, as
+    /// without the tries, against 1.01 with tries without a bound).
     fn try_before_sleep(st: &mut ServerState<c_int>, evs: &mut [EpollEvent; WAIT_EVENTS]) -> isize {
         let now = counter();
         if st.wake.last != 0 && now != 0 {
@@ -1219,9 +1234,10 @@ mod imp {
         }
         if st.wake.skip > 0 {
             st.wake.skip -= 1;
+            st.wake.skipped = true;
             return 0;
         }
-        let budget = st.wake.busy.min(TRY_MAX);
+        let budget = st.wake.busy.saturating_mul(2).min(TRY_MAX);
         let n = loop {
             // SAFETY: the kernel writes at most WAIT_EVENTS events at `evs`
             let n = again(|| unsafe { syscall6(SYS_EPOLL_WAIT, st.ep as usize, evs.as_mut_ptr() as usize, WAIT_EVENTS, 0, 0, 0) });

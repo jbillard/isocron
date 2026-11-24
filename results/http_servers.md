@@ -35,10 +35,10 @@ falls a little when wrk starts, which maps the same library: its pages
 then shared by one more process (a peak under the memory at rest). The
 server of Isocron calls no C library: its Pss is its Rss.
 
-Measured at 55f7623 (D736 to D744: the `iscc` built from it, the same
-byte for byte as the one measured), 2026-11-23, 10 s a point; Isocron
-0.9.0 (D732, and rounds alternated with it, D743) in the text after each
-table.
+Measured with the compiler of D755 (D754 and D755: the `iscc` built from
+the sources of its commit, the server it makes the same byte for byte),
+2026-11-24, 10 s a point; Isocron 0.9.0 (D732, and rounds alternated with
+it, D743, D754, D755) in the text after each table.
 
 ## The server on 2 cores, the client on 6
 
@@ -49,70 +49,74 @@ connections on): the measure of the cost of a request. (At 03b2847, D535:
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 73372 (0.53 cores) | 413523 (2.02 cores) | 464775 (2.00 cores) | 453959 (2.00 cores) |
-| Isocron `serve`, an action | 76042 (0.52 cores) | 425097 (2.02 cores) | 463091 (2.00 cores) | 456523 (1.99 cores) |
-| nginx (2 workers) | 72164 (0.56 cores) | 359026 (2.02 cores) | 368988 (2.00 cores) | 353363 (1.98 cores) |
-| lighttpd | 71616 (0.62 cores) | 185632 (1.01 cores) | 192180 (1.00 cores) | 181493 (1.00 cores) |
-| ceiling, 1 thread | 81312 (0.47 cores) | 266281 (1.01 cores) | 283241 (1.00 cores) | 265059 (0.99 cores) |
-| ceiling, 2 threads | 83330 (0.47 cores) | 521443 (2.01 cores) | 557678 (1.99 cores) | 545759 (1.97 cores) |
+| Isocron `serve` | 74497 (0.51 cores) | 435207 (2.02 cores) | 491673 (2.00 cores) | 448111 (1.98 cores) |
+| Isocron `serve`, an action | 75945 (0.51 cores) | 440777 (2.02 cores) | 487684 (2.00 cores) | 470795 (1.97 cores) |
+| nginx (2 workers) | 71929 (0.57 cores) | 368946 (2.01 cores) | 380184 (2.00 cores) | 360652 (1.99 cores) |
+| lighttpd | 70642 (0.63 cores) | 184342 (1.01 cores) | 189042 (1.00 cores) | 178138 (0.99 cores) |
+| ceiling, 1 thread | 82289 (0.47 cores) | 265537 (1.01 cores) | 280548 (1.00 cores) | 260392 (0.99 cores) |
+| ceiling, 2 threads | 81897 (0.47 cores) | 508790 (2.02 cores) | 555509 (1.99 cores) | 534178 (1.97 cores) |
 
 | Isocron over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| `serve` over nginx | 101.7 % | 115.2 % | 126.0 % | 128.5 % |
-| `serve` over the ceiling of 2 threads | 88.1 % | 79.3 % | 83.3 % | 83.2 % |
-| `serve`, an action over nginx | 105.4 % | 118.4 % | 125.5 % | 129.2 % |
-| `serve`, an action over the ceiling of 2 threads | 91.3 % | 81.5 % | 83.0 % | 83.6 % |
+| `serve` over nginx | 103.6 % | 118.0 % | 129.3 % | 124.3 % |
+| `serve` over the ceiling of 2 threads | 91.0 % | 85.5 % | 88.5 % | 83.9 % |
+| `serve`, an action over nginx | 105.6 % | 119.5 % | 128.3 % | 130.5 % |
+| `serve`, an action over the ceiling of 2 threads | 92.7 % | 86.6 % | 87.8 % | 88.1 % |
 
 The latency of 50 % of the requests (wrk):
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 12.00us | 27.00us | 525.00us | 2.20ms |
-| Isocron `serve`, an action | 12.00us | 26.00us | 536.00us | 2.14ms |
-| nginx (2 workers) | 13.00us | 33.00us | 682.00us | 2.81ms |
-| lighttpd | 13.00us | 63.00us | 1.30ms | 5.57ms |
-| ceiling, 1 thread | 11.00us | 37.00us | 0.88ms | 3.71ms |
-| ceiling, 2 threads | 11.00us | 21.00us | 438.00us | 1.83ms |
+| Isocron `serve` | 12.00us | 25.00us | 500.00us | 2.11ms |
+| Isocron `serve`, an action | 12.00us | 25.00us | 503.00us | 2.09ms |
+| nginx (2 workers) | 13.00us | 31.00us | 663.00us | 2.76ms |
+| lighttpd | 13.00us | 64.00us | 1.32ms | 5.68ms |
+| ceiling, 1 thread | 11.00us | 37.00us | 0.89ms | 3.77ms |
+| ceiling, 2 threads | 11.00us | 24.00us | 443.00us | 1.83ms |
 
 The latency of 99 % of the requests (wrk):
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 19.00us | 56.00us | 0.88ms | 2.72ms |
-| Isocron `serve`, an action | 16.00us | 39.00us | 711.00us | 3.97ms |
-| nginx (2 workers) | 17.00us | 42.00us | 786.00us | 3.77ms |
-| lighttpd | 17.00us | 119.00us | 2.57ms | 11.03ms |
-| ceiling, 1 thread | 15.00us | 78.00us | 1.01ms | 5.18ms |
-| ceiling, 2 threads | 14.00us | 42.00us | 803.00us | 2.76ms |
+| Isocron `serve` | 18.00us | 50.00us | 748.00us | 4.26ms |
+| Isocron `serve`, an action | 17.00us | 48.00us | 772.00us | 3.77ms |
+| nginx (2 workers) | 18.00us | 48.00us | 720.00us | 3.46ms |
+| lighttpd | 18.00us | 120.00us | 2.61ms | 11.67ms |
+| ceiling, 1 thread | 15.00us | 79.00us | 0.97ms | 5.76ms |
+| ceiling, 2 threads | 15.00us | 42.00us | 766.00us | 2.96ms |
 
 The memory of the server (all its processes): the sum of their Pss at rest, then its highest while wrk runs (their Rss in brackets):
 
 | server | at rest | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: | --: |
-| Isocron `serve` | 516 KiB | 660 KiB (664 KiB) | 868 KiB (872 KiB) | 944 KiB (948 KiB) | 968 KiB (972 KiB) |
-| Isocron `serve`, an action | 584 KiB | 664 KiB (668 KiB) | 868 KiB (872 KiB) | 944 KiB (948 KiB) | 972 KiB (976 KiB) |
-| nginx (2 workers) | 5.9 MiB | 5.5 MiB (8.4 MiB) | 5.6 MiB (8.4 MiB) | 5.7 MiB (8.4 MiB) | 5.6 MiB (8.4 MiB) |
-| lighttpd | 1.5 MiB | 1.5 MiB (2.7 MiB) | 1.5 MiB (2.7 MiB) | 2.4 MiB (3.6 MiB) | 5.3 MiB (6.6 MiB) |
-| ceiling, 1 thread | 629 KiB | 577 KiB (1.7 MiB) | 638 KiB (1.7 MiB) | 1.6 MiB (2.7 MiB) | 4.6 MiB (5.7 MiB) |
-| ceiling, 2 threads | 610 KiB | 518 KiB (1.7 MiB) | 608 KiB (1.7 MiB) | 2.1 MiB (3.3 MiB) | 7.5 MiB (8.6 MiB) |
+| Isocron `serve` | 580 KiB | 724 KiB (728 KiB) | 932 KiB (936 KiB) | 1008 KiB (1012 KiB) | 1.0 MiB (1.0 MiB) |
+| Isocron `serve`, an action | 532 KiB | 612 KiB (616 KiB) | 820 KiB (824 KiB) | 896 KiB (900 KiB) | 924 KiB (928 KiB) |
+| nginx (2 workers) | 6.1 MiB | 6.0 MiB (8.6 MiB) | 5.9 MiB (8.6 MiB) | 5.9 MiB (8.6 MiB) | 5.9 MiB (8.6 MiB) |
+| lighttpd | 1.5 MiB | 1.5 MiB (2.7 MiB) | 1.6 MiB (2.8 MiB) | 2.5 MiB (3.7 MiB) | 5.4 MiB (6.6 MiB) |
+| ceiling, 1 thread | 591 KiB | 486 KiB (1.6 MiB) | 595 KiB (1.7 MiB) | 1.5 MiB (2.6 MiB) | 4.5 MiB (5.6 MiB) |
+| ceiling, 2 threads | 604 KiB | 518 KiB (1.7 MiB) | 615 KiB (1.7 MiB) | 2.1 MiB (3.3 MiB) | 7.4 MiB (8.6 MiB) |
 
 Against 0.9.0 (D732: 75145, 410388, 449512 and 413544 requests a second,
 the latency of 99 % 17 us, 56 us, 0.85 ms and 3.78 ms): the memory of the
 server no longer grows with its connections, 2.7 MiB at 1024 connections
-then, 968 KiB now, 100 KiB more than at 16 (D736 to D741: the table of the
+then, 1032 KiB now, 100 KiB more than at 16 (D736 to D741: the table of the
 connections grown in place and holding only those with bytes pending, the
 first blocks of a class of a thread taken from a run of 32 by its own
 needs, 16 connections a turn at most). In 8 rounds alternated with 0.9.0,
-nothing beside wrk (D743, again at 55f7623 in D745): +0.1, +5.0, +4.7 and
-+7.3 % requests a second with 1, 16, 256 and 1024 connections, the
-latency of 50 % 12, 26.5, 525 us and 2.22 ms against 12, 25.5, 555 us and
-2.39 ms, that of 99 % 17, 43.5, 865 us and 4.04 ms against 17, 60.5, 925
-us and 4.24 ms, as many cores busy;
-with 4 threads on these 2 cores (`ISC_THREADS=4`) +7.7 and +8.3 % requests at 256 and 1024 connections, the latency of
-99 % 5.26 to 9.18 ms against 6.08 to 9.36 (the slices of the system: each loop asks for 100 us while the loops
-outnumber the processors, D743). The latency of 99 % with 16 connections
-moves from one run to the next, 39 to 59 us in 8 rounds (56 us above);
-in six rounds alternated with nginx 46 us against 52: the kernel gave each connection
+nothing beside wrk (D754 at 1 and 16 connections, D755 at 256 and 1024,
+where the tries of its loops act): +2.1, +7.5, +9.7 and +13.6 % requests
+a second with 1, 16, 256 and 1024 connections, the latency of 50 % 12,
+26, 497 us and 2.10 ms against 12, 26, 550 us and 2.42 ms, that of 99 %
+17, 41.5, 836 us and 3.84 ms against 17.5, 56.5, 861 us and 4.33 ms, as
+many cores busy, the CPU time of a request 6.8 to 11.7 % lower; given an
+action +2.7, +7.5, +11.2 and +14.5 % requests, the latency within 5 % of
+0.9.0 or below; with 4 threads on these 2 cores (`ISC_THREADS=4`) +11.7
+and +13.2 % requests at 256 and 1024 connections, the latency of 99 %
+8.26 and 9.13 ms against 8.29 and 9.36 (the slices of the system: each
+loop asks for 100 us while the loops outnumber the processors, D743).
+The latency of 99 % with 16 connections moves from one run to the next,
+37 to 47 us in 8 rounds (50 us above), 0.9.0 44 to 63; in six rounds
+alternated with nginx 40.5 us against 52 (D754): the kernel gave each connection
 to the listener of one loop by a hash of its addresses (`SO_REUSEPORT`),
 12 connections split 6 and 6 or 2 and 10; the loops now share one
 listener, each connection given to the loop that has the fewest (D739).
@@ -135,73 +139,81 @@ request, one `epoll_wait` for about 6 of them): the gap is in the program.
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 75932 (0.52 cores) | 737501 (3.87 cores) | 808105 (3.95 cores) | 776219 (3.85 cores) |
-| Isocron `serve`, an action | 75416 (0.53 cores) | 730734 (3.95 cores) | 809360 (3.97 cores) | 787838 (3.88 cores) |
-| nginx (4 workers) | 73507 (0.56 cores) | 627621 (3.70 cores) | 784180 (3.99 cores) | 744012 (3.95 cores) |
-| lighttpd | 71417 (0.62 cores) | 186304 (1.01 cores) | 196852 (1.00 cores) | 180364 (0.99 cores) |
-| ceiling, 1 thread | 82707 (0.47 cores) | 275246 (1.01 cores) | 286436 (1.00 cores) | 262415 (0.98 cores) |
-| ceiling, 4 threads | 82037 (0.48 cores) | 735403 (3.20 cores) | 800692 (3.29 cores) | 775151 (3.09 cores) |
+| Isocron `serve` | 77604 (0.51 cores) | 737926 (3.80 cores) | 792245 (3.95 cores) | 769474 (3.87 cores) |
+| Isocron `serve`, an action | 76549 (0.52 cores) | 719455 (3.79 cores) | 806614 (3.97 cores) | 774283 (3.80 cores) |
+| nginx (4 workers) | 72801 (0.56 cores) | 629370 (3.82 cores) | 771332 (3.95 cores) | 726127 (3.96 cores) |
+| lighttpd | 71852 (0.63 cores) | 188817 (1.01 cores) | 196322 (1.00 cores) | 180395 (0.99 cores) |
+| ceiling, 1 thread | 81826 (0.47 cores) | 272710 (1.01 cores) | 297897 (1.00 cores) | 262750 (0.99 cores) |
+| ceiling, 4 threads | 81475 (0.48 cores) | 738698 (3.17 cores) | 797187 (3.28 cores) | 761044 (3.06 cores) |
 
 | Isocron over | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| `serve` over nginx | 103.3 % | 117.5 % | 103.1 % | 104.3 % |
-| `serve` over the ceiling of 4 threads | 92.6 % | 100.3 % | 100.9 % | 100.1 % |
-| `serve`, an action over nginx | 102.6 % | 116.4 % | 103.2 % | 105.9 % |
-| `serve`, an action over the ceiling of 4 threads | 91.9 % | 99.4 % | 101.1 % | 101.6 % |
+| `serve` over nginx | 106.6 % | 117.2 % | 102.7 % | 106.0 % |
+| `serve` over the ceiling of 4 threads | 95.2 % | 99.9 % | 99.4 % | 101.1 % |
+| `serve`, an action over nginx | 105.1 % | 114.3 % | 104.6 % | 106.6 % |
+| `serve`, an action over the ceiling of 4 threads | 94.0 % | 97.4 % | 101.2 % | 101.7 % |
 
 The latency of 50 % of the requests (wrk):
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 12.00us | 19.00us | 150.00us | 631.00us |
-| Isocron `serve`, an action | 12.00us | 19.00us | 151.00us | 626.00us |
-| nginx (4 workers) | 13.00us | 20.00us | 289.00us | 1.26ms |
-| lighttpd | 13.00us | 84.00us | 1.28ms | 5.59ms |
-| ceiling, 1 thread | 11.00us | 51.00us | 0.87ms | 3.72ms |
-| ceiling, 4 threads | 11.00us | 19.00us | 156.00us | 638.00us |
+| Isocron `serve` | 12.00us | 19.00us | 151.00us | 633.00us |
+| Isocron `serve`, an action | 12.00us | 20.00us | 149.00us | 628.00us |
+| nginx (4 workers) | 13.00us | 20.00us | 286.00us | 1.29ms |
+| lighttpd | 13.00us | 83.00us | 1.28ms | 5.62ms |
+| ceiling, 1 thread | 11.00us | 51.00us | 842.00us | 3.70ms |
+| ceiling, 4 threads | 11.00us | 19.00us | 156.00us | 644.00us |
 
 The latency of 99 % of the requests (wrk):
 
 | server | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: |
-| Isocron `serve` | 16.00us | 30.00us | 442.00us | 1.58ms |
-| Isocron `serve`, an action | 16.00us | 32.00us | 405.00us | 1.67ms |
-| nginx (4 workers) | 18.00us | 41.00us | 436.00us | 2.20ms |
-| lighttpd | 17.00us | 163.00us | 2.52ms | 11.24ms |
-| ceiling, 1 thread | 15.00us | 107.00us | 1.36ms | 5.57ms |
-| ceiling, 4 threads | 15.00us | 32.00us | 314.00us | 1.28ms |
+| Isocron `serve` | 15.00us | 29.00us | 459.00us | 1.37ms |
+| Isocron `serve`, an action | 17.00us | 31.00us | 390.00us | 3.71ms |
+| nginx (4 workers) | 18.00us | 45.00us | 510.00us | 2.30ms |
+| lighttpd | 18.00us | 160.00us | 2.55ms | 11.36ms |
+| ceiling, 1 thread | 15.00us | 108.00us | 0.97ms | 6.20ms |
+| ceiling, 4 threads | 15.00us | 31.00us | 324.00us | 1.27ms |
 
 The memory of the server (all its processes): the sum of their Pss at rest, then its highest while wrk runs (their Rss in brackets):
 
 | server | at rest | 1 conn. | 16 conn. | 256 conn. | 1024 conn. |
 | :-- | --: | --: | --: | --: | --: |
-| Isocron `serve` | 564 KiB | 712 KiB (716 KiB) | 1.1 MiB (1.1 MiB) | 1.3 MiB (1.3 MiB) | 1.3 MiB (1.3 MiB) |
-| Isocron `serve`, an action | 540 KiB | 624 KiB (628 KiB) | 1000 KiB (1004 KiB) | 1.2 MiB (1.2 MiB) | 1.2 MiB (1.2 MiB) |
-| nginx (4 workers) | 5.9 MiB | 5.7 MiB (8.8 MiB) | 5.6 MiB (8.8 MiB) | 5.6 MiB (8.8 MiB) | 5.6 MiB (8.8 MiB) |
-| lighttpd | 1.4 MiB | 1.5 MiB (2.7 MiB) | 1.5 MiB (2.7 MiB) | 2.5 MiB (3.6 MiB) | 5.4 MiB (6.6 MiB) |
-| ceiling, 1 thread | 627 KiB | 598 KiB (1.7 MiB) | 662 KiB (1.7 MiB) | 1.6 MiB (2.7 MiB) | 4.6 MiB (5.7 MiB) |
-| ceiling, 4 threads | 681 KiB | 684 KiB (1.8 MiB) | 756 KiB (1.9 MiB) | 2.4 MiB (3.6 MiB) | 8.7 MiB (9.9 MiB) |
+| Isocron `serve` | 596 KiB | 740 KiB (744 KiB) | 1.1 MiB (1.1 MiB) | 1.4 MiB (1.4 MiB) | 1.4 MiB (1.4 MiB) |
+| Isocron `serve`, an action | 572 KiB | 656 KiB (660 KiB) | 1.0 MiB (1.0 MiB) | 1.2 MiB (1.2 MiB) | 1.2 MiB (1.2 MiB) |
+| nginx (4 workers) | 5.9 MiB | 5.6 MiB (8.5 MiB) | 5.6 MiB (8.5 MiB) | 5.6 MiB (8.5 MiB) | 5.6 MiB (8.5 MiB) |
+| lighttpd | 1.5 MiB | 1.5 MiB (2.7 MiB) | 1.6 MiB (2.8 MiB) | 2.4 MiB (3.7 MiB) | 5.4 MiB (6.6 MiB) |
+| ceiling, 1 thread | 635 KiB | 597 KiB (1.7 MiB) | 651 KiB (1.7 MiB) | 1.6 MiB (2.7 MiB) | 4.5 MiB (5.7 MiB) |
+| ceiling, 4 threads | 711 KiB | 672 KiB (1.8 MiB) | 757 KiB (1.9 MiB) | 2.4 MiB (3.6 MiB) | 8.7 MiB (9.9 MiB) |
 
-Here the ceiling keeps only 3.09 to 3.29 of its 4 cores busy, and nginx
-3.70 with 16 connections: the client limits them, wrk on its 4 CPUs (D742:
+Here the ceiling keeps only 3.06 to 3.28 of its 4 cores busy: the
+client limits them, wrk on its 4 CPUs (D742:
 `perf stat` of wrk, 85 % of its cycles in the kernel, the same for every
-server), and Isocron's 99 to 102 % of the ceiling from 16 connections on
+server), and Isocron's 97 to 102 % of the ceiling from 16 connections on
 says as much. The measure of 2 cores above is the one that compares the
 servers. Against 0.9.0 (D732: 75693, 702499, 796872 and 766015 requests a
-second, on 3.67 to 3.96 cores; 4.7 MiB at 1024 connections): 1.3 MiB at
+second, on 3.67 to 3.96 cores; 4.7 MiB at 1024 connections): 1.4 MiB at
 1024 connections, and in 8 rounds alternated with 0.9.0, nothing beside
-wrk (D743, again in D745): +0.2, +8.4, +0.3 and +1.3 % requests a second
-with 1, 16, 256 and 1024 connections, the latency of 99 % 17, 31, 589 us
-and 4.06 ms against 17, 43, 1105 us and 4.34 ms (at 256 and 1024 it moves
-with the queue of wrk, 0.43 to 2.55 ms and 3.4 to 5.1 ms from one round
-to the next for both), that of 50 % 12, 19, 150 and 628 us against 12,
-20, 146 and 604 us. The server needs 30 % fewer cycles of its own for a request than
+wrk (D754 at 1 and 16 connections, D755 at 256 and 1024): +2.6, +11.1,
++1.0 and +2.8 % requests a second with 1, 16, 256 and 1024 connections,
+the latency of 99 % 16, 31, 517 us and 3.75 ms against 17, 39, 1840 us
+and 4.54 ms (at 256 and 1024 it moves with the queue of wrk, 0.38 to
+3.27 ms and 3.5 to 5.0 ms from one round to the next for both), that of
+50 % 12, 19, 151 and 627 us against 12, 20.5, 153 and 608 us; given an
+action the same but the latency of 50 % at 256 connections, 151 us at
+each round against 142 (+6.3 %: every server since D739 at 149 to 153
+us at each round, 0.9.0 at 139 to 151 or 180 to 264 by the round,
+D755). The server needs 30 % fewer cycles of its own for a request than
 0.9.0, and its loops slept between requests, each woken by wrk (D742: 200
 thousand sleeps in 10 s at 1024 connections against 17 thousand, the
 latency of 99 % 11 % above 0.9.0): a loop with at least 16 connections
-now tries its set without sleeping for at most its mean work between two
-waits before it sleeps, and a try that found nothing leaves the next
-waits without one (D743). The CPU time of the server for a request (the time of its threads on
+now tries its set without sleeping before it sleeps, and a try that
+found nothing leaves the next waits without one (D743); the cheaper
+turns of D754 made those tries shorter (98 thousand sleeps, the latency
+of 99 % 12 % above 0.9.0 in 16 rounds): a try now lasts up to twice the
+mean work of the loop between two waits, and a wait left without one
+whose events come within that time takes the tries again (D755: 42
+thousand sleeps). The CPU time of the server for a request (the time of its threads on
 a CPU, read from `schedstat`, 10 rounds alternated, D745): 5246 ns at
 16 connections against 5321 for 0.9.0, 4902 at 256 against 4875 (the
 difference within its standard error), given an action 5317 at 16

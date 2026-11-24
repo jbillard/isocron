@@ -18928,3 +18928,198 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   2.7 times cheaper than now; else the split of 5 and 7 (D752), a tuning
   to the 12 connections of wrk. The blocking of the point 3 at that point,
   measured.
+
+- **D754 — The cost of a request of `serve` lowered by the compiler, the
+  runtime and `http` (2026-11-24).** The latency of 50 % at 16 connections
+  on 2 cores (D752, D753): the server of 0.9.1 at 27 us at each round,
+  0.9.0 at 24 to 30 by the split of its connections; wrk gives whole
+  microseconds, and at its even split the server is within 5 % of 0.9.0's
+  best series (24.0) only at 25 us, about 447 thousand requests a second
+  (D753 asked 14.3 % more from its model; the rounding of wrk asks less).
+  Measured first: the same calls of the system for 0.9.0, the server and
+  the ceiling of `bench/http_servers` (a `recvfrom` and a `sendto` a
+  request, 0.29 `epoll_wait`), the same work of the kernel a request
+  (13 800 to 14 000 instructions, 12 200 cycles); the user code of the
+  ceiling 574 instructions and 656 cycles a request, the server's 5 560
+  and 2 680 (2.08 a cycle; 282 misses of the cache of instructions). The
+  profile of each function apart (a compiler of its own with `@noInline`
+  on the functions of a turn): the scans of the heads, the arrays of each
+  turn, the tasks of small loops. Kept, each a generic correction:
+  - compiler: an exact `reduce` of 32 to 256 elements made where it is,
+    in one block, without the task of one block, its context, its padded
+    result on the heap and its dispatch (REDUCE_HERE);
+  - compiler: rule M, `filter(iota(n), (j) => c)` whose condition reads
+    only bytes at `j + p` (rule F's conditions): its indices by masks of 32
+    bits, counted, then written by their lowest bits, a `map` after it
+    applied to each index written; at most a block where the filter may
+    run in parallel, and not a filter asked for the counts of a later one
+    (D426, which its pass by blocks makes);
+  - compiler: a `map` of a `filter` to the same scalars that cannot fail:
+    the filter in vector code, the map in place (two scalar passes before);
+  - compiler: the threads counted by a `filter` only past a block;
+  - compiler: none of the code above made in a function whose tail calls
+    to others give it frame (`tailcc`, D113): the vectors of a block of a
+    `reduce` made there realigned its frame on 256 bytes, and LLVM gives
+    no frame it realigns (suite 544: `mutual_tail_recursion` overflowed its
+    stack at 3 000 000 calls; with it the server the same byte for byte,
+    and of the 31 programs of `regress.py` only `json`'s other);
+  - runtime: a parallel loop of one task runs it at once, in a task too
+    (`parallel_job` offered it to the idle threads and ran it here all the
+    same);
+  - runtime: the bytes of a short text tested by words of 8 bytes before
+    `from_utf8` (`utf8_check`: a fold of the bytes one by one, about 150
+    instructions for a head of 40 bytes);
+  - `http`: the requests ready of a connection one array of records (four
+    arrays before); `afterAnswers` returns the empty table at once when
+    every connection read gave all its bytes and none closes; `arrive`, for
+    an empty table, places each arrival by the count of the numbers below
+    its own, by folds (a map or a count whose elements are loops is made
+    by tasks of the pool); the headers of a response checked by
+    `findIndex`;
+  - test `server_keeps_heads_cut_on_many_connections`: 12 heads cut,
+    received in one wait in the reverse order of their numbers; it failed
+    (400) with the table of the wait left in its order (`arrive` finds a
+    table by halving).
+  Measured on the way, 2 cores, 16 connections, an action, rounds
+  alternated: the first three changes of the compiler and the runtime
+  424.9 against 422.7 thousand requests a second (6 rounds); with the
+  vector stream 429.2 against 421.1, the latency of 50 % 26 us at each
+  round against 27, the CPU time of a request 4706 against 4795 ns; with
+  the changes of `http` 442.3 against 424.8 (8 rounds), 25 us at each
+  round against 26 (0.9.0 24.0 in that series); rule M 170 instructions
+  fewer a request (5 186 to 5 010).
+  Tried, not kept:
+  - LLVM's `hotcoldsplit` after the passes: the loop of the server 84.6
+    to 85.2 KB, the program 30 KB larger;
+  - a `reduce` of a few elements that are loops made here (as D520 for a
+    `map`): its body copied beside its task, `time.format` +14.7 % and
+    `strings indexOf.1` +7.3 % against 0.9.1 (15 runs);
+  - a `reduce` of one block made here up to 4096 elements: `json message`
+    +18.7 % over 4096 errors (in its task the loop has the registers to
+    itself), `http headerOf` +5.3 %, `maps get.string` +5.0 %, `strings
+    trim` +6.2 %;
+  - rule M on a filter of any length: revcomp +18.1 % (its filter of 250
+    MB on one thread instead of by blocks on the threads);
+  - `ascii` by a closure of 8 bytes: not inlined, 4.2 % of the user
+    instructions of the server, rewritten by `chunks_exact`;
+  - a loop opened inside a task run in place when no thread was in
+    `help_until_done`: decided when the loop opens, while the threads that
+    finish their shares come to help later, binarytrees +14.6 % and
+    knucleotide +6.1 % against b035583; no gain for the server (436.0
+    against 436.3 thousand requests a second).
+  `regress.py` against b035583 with the compiler of the commit: the
+  corpus, countwords, walk and rtiow without regression (rtiow on 8
+  threads +1.1 then +0.8 %, under 1 %); the primitives flagged at their
+  place, each over 40 places of code and blocks (`sweep2e.py`, on the CPU
+  of the benchmarks), not slower: `http textResponse` +7.7 % at its place,
+  -0.20 % over the places (standard error 0.09, 13 of 40 slower); `strings
+  includes.3` +4.4 %, -0.46 % (0.31, 13); `strings trim` +5.9 %, -0.23 %
+  (0.18, 16); `sys join` +3.9 %, -0.18 % (0.46, 16); `sys
+  ioError.message` +3.3 %, -0.00 % (0.08, 21); `time format` +3.8 %,
+  -1.08 % (0.26, 13); `json` measured again (its program other): no form
+  slower, `parse` -4.0 %, `decode` -12.4 %. Suite 545 and the four series
+  of the tests of isocron-ui green on the compiler of the commit.
+  The measures of the goal with the compiler of the commit (`d754r`, its
+  server the same bytes; Docker, rounds alternated with 0.9.0, nothing
+  beside wrk):
+  - 0.9.0 against an identical copy of itself at 16 connections on 2
+    cores, six series of 8 rounds: the medians of the latency of 50 % 2.0,
+    15.4, 2.0 % apart with a pure function, 6.2, 5.8, 1.8 % with an action;
+    of 99 % 9.7, 12.8, 16.3 % and 4.8, 0.0, 14.0 %: every series past 5 %
+    on one or the other. The criterion of 5 % at that point is below the
+    noise of a series of 8 rounds.
+  - Every case, 8 rounds, a pure function: requests a second +1.5 to
+    +13.4 % (4 cores at 256: -0.1 % over the first 6, -0.0 % over 8), the
+    CPU time of a request -1.2 to -12.1 %, the latency within 5 % but that
+    of 99 % on 4 cores at 1024 connections, +13.0 % (4.60 ms against
+    4.07; 4.44 to 5.01 at each round, 0.9.0 3.21 to 4.43). An action:
+    requests +1.1 to +12.8 %, CPU -1.8 to -11.6 %, the latency within 5 %
+    but that of 50 % on 4 cores at 256, +5.2 % (151 us at each round,
+    0.9.0 140 to 249 by its split; 0.9.1 +5.7 % in D749's series).
+  - 16 rounds on 4 cores with the archive of 0.9.1: at 1024 connections
+    the latency of 99 % +12.2 % (a pure function) and +6.1 % (an action)
+    for D754, +10.1 % and -2.4 % for 0.9.1 (+4.5 % in its series of 8 in
+    D749); the loops sleep 98 thousand times in 10 s, 55 thousand for
+    0.9.1, 17 thousand for 0.9.0 (D755); at 256 -19.0 and -26.2 %.
+  - 99 % at 16 connections on 2 cores against nginx, 6 rounds: 40.5 us
+    against 52.
+  - Memory (`measure.sh`, two passes): the highest Pss grows by 102 and
+    106 bytes a connection from 16 to 1024 on 2 cores, 305 and 309 with 4
+    threads, 236 and 236 on 4 cores (0.9.0 2211 to 4616).
+  The latency of 99 % on 4 cores at 1024 connections above 0.9.0: D755.
+
+- **D755 — The tries of a wait before it sleeps given back what D754 took
+  from them (2026-11-24).** On 4 cores at 1024 connections the latency of
+  99 % of D754 was 13.0 % above 0.9.0 in 8 rounds (D754), 12.2 % in 16;
+  the archive of 0.9.1 10.1 % in the same 16 (+4.5 % in its 8 of D749).
+  The time each loop slept: a loop of D743 tries its set without sleeping
+  for at most its mean work between two waits; the turns of D754, cheaper,
+  made the tries shorter, while the requests of wrk came as before: in
+  10 s 98 thousand sleeps against 55 thousand for 0.9.1 and 17 thousand
+  for 0.9.0, as D743 had found (200 thousand, p99 11 % above). Now:
+  - a try lasts at most twice the mean work (`TRY_MAX`, about 60 us, at
+    most), a try that finds nothing still leaving the next 1, 3, 7...
+    1023 waits without one;
+  - a wait left without a try whose events came within the time of a try
+    takes the tries again (`skipped`): it proves a try would have found
+    them.
+  16 rounds alternated with 0.9.0 on 4 cores, a pure function (`d754t1`
+  the second change alone, `d754t2` both):
+
+  | 4 cores | requests a second | p99 | CPU a request | sleeps in 10 s |
+  | :-- | --: | --: | --: | --: |
+  | 1024, 0.9.0 | 731 thousand | 4.51 ms | | 21 508 |
+  | 1024, D754 | +2.5 % | +2.9 % (halves -6.8, +7.0) | -6.5 % | 97 523 |
+  | 1024, `d754t1` | +1.2 % | +9.4 % | -5.5 % | 93 350 |
+  | 1024, `d754t2` | +0.9 % | +0.3 % (halves -1.6, +0.0) | -2.9 % | 43 827 |
+  | 256, 0.9.0 | 789 thousand | 1.18 ms | | 41 268 |
+  | 256, D754 | -1.7 % | +83.4 % | -0.3 % | 83 375 |
+  | 256, `d754t1` | -0.9 % | -10.2 % | -0.5 % | 82 086 |
+  | 256, `d754t2` | -0.6 % | -31.1 % | +0.5 % | 28 872 |
+
+  The measures of the goal where the tries act (their loops no more
+  than the cores, 16 connections a loop at least: 2 and 4 cores at 256
+  and 1024 connections; the other cases never try, their measures those
+  of D754), 8 rounds alternated with 0.9.0 (`d754t2`, the compiler of
+  the commit):
+
+  | cores, connections | requests a second | p50 | p99 | CPU a request |
+  | :-- | --: | --: | --: | --: |
+  | 2, 256 | +9.7 % | -9.6 % | -2.9 % | -9.0 % |
+  | 2, 1024 | +13.6 % | -13.0 % | -11.3 % | -11.7 % |
+  | 4, 256 | +1.0 % | -1.3 % | -71.9 % | -0.2 % |
+  | 4, 1024 | +2.8 % | +3.1 % | -17.5 % | -4.7 % |
+  | 2, 256, an action | +11.2 % | -10.9 % | -12.0 % | -10.1 % |
+  | 2, 1024, an action | +14.5 % | -12.7 % | -12.7 % | -12.4 % |
+  | 4, 256, an action | +0.1 % | +6.3 % | -36.9 % | +0.1 % |
+  | 4, 1024, an action | +1.9 % | +3.3 % | +3.6 % | -3.6 % |
+
+  On 4 cores at 1024 connections the loops sleep 42 and 43 thousand
+  times in 10 s (0.9.0 18 and 16), 3.75 and 3.77 cores busy against 3.83
+  and 3.84; at 256 26 and 20 thousand (0.9.0 44 and 38), 3.94 and 3.93
+  cores against 3.91 and 3.93 (the CPU time of a request -0.2 and +0.1 %,
+  the resolution of the cores read).
+  Left: the latency of 50 % on 4 cores at 256 connections given an
+  action, +6.3 % (151 us at each round against 142). Every server since
+  D739 gives 149 to 153 us at each round of every series of the night
+  (0.9.1, D754 and both tries, a pure function or an action), whatever
+  its CPU time a request (8 % apart) or its sleeps (20 to 100 thousand):
+  not the cost of a turn. 0.9.0 gives 139 to 151 us at some rounds, 180
+  to 264 at others (its connections split by a hash, 67 to 88 a loop at
+  most); given an action mostly the first, the new server +3.5 to +6.3 %
+  above it by the series (+3.8 % over 16 rounds, +5.7 % for 0.9.1 in
+  D749); given a pure function the second often, the new server -1 to
+  -31 % below. The split of D739 (65 a loop at each round) or the turns
+  of 16 connections of D741 (64 for 0.9.0) are left to try, each a change
+  of all the cases and of the memory. Memory (`measure.sh`, two passes):
+  102 bytes a connection on 2 cores, 240 and 309 with 4 threads, 305 on 4
+  cores. `regress.py`: of its 31 programs, 25 the same byte for byte as
+  with the compiler of D754 (the corpus, walk, countwords, rtiow and the
+  primitives that open no socket); the 6 groups of the network measured
+  again against b035583: `http textResponse` +7.6 % at its place (+7.7 %
+  with D754), the 10 programs of its sweep of D754 the same byte for byte
+  now (-0.20 % over 40 places), no other form slower by 3 %
+  (`serve.pipelined` -9.2 %, `serve.action.pipelined` -9.1 %). Reported
+  before any push. The
+  author's choice (2026-11-24): D754 and D755 pushed as they are, each
+  point the same as 0.9.1 or better, which had that gap already.
