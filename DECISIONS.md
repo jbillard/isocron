@@ -19235,3 +19235,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   kept. The loops did not wait for a CPU there (1 to 45 ms in 10 s); the
   latencies of Isocron are spread wider (50 % 35, 99 % 82) than nginx's
   (43, 71) at 19 % more requests a second: left open, reported.
+  The ceiling of the machine there (`ceiling.c`, 6 rounds alternated with
+  D755, nginx and 0.9.0, 16 connections on 2 cores): about 500 thousand
+  requests a second, the latency of 50 % 27 to 31 us, of 99 % 70 to 81
+  (median 76); D755 420 thousand, 33 to 39, 77 to 86 (80); nginx 350
+  thousand, 42 to 49, 68 to 85 (71.5); 0.9.0 395 thousand, 83 to 110. The
+  cheapest server known is above nginx's latency of 99 % at that point:
+  the servers that answer 20 to 40 % more requests a second have a longer
+  tail of latency there with a far lower median. Point 4 of the goal at
+  16 connections (as many as asked since D757) is out of reach of a
+  faster server: the blocking, measured, reported to the author.
