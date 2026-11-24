@@ -19168,3 +19168,13 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   round. A server slowed by 20 us a wait (to see the heaps move) became
   the limit itself: 718 to 755 thousand requests a second on 4 cores,
   every request in the second heap (310 to 313 us).
+  The ceiling of the machine (`ceiling.c`, D355: the cheapest server
+  known for the same work), 8 rounds alternated with 0.9.0 and D755 given
+  an action, on 4 cores at 256 connections: 154 to 159 us at each round
+  (median 156.5) on 3.16 to 3.29 cores; D755 150 to 152 (one round 226),
+  median 151; 0.9.0 151 to 231, median 208.5 (D755 -27.6 % in that
+  series). No server, the cheapest included, is below 154 us at any round
+  there: the 141 to 146 us of 0.9.0's rounds of the first heap are not
+  the work of a cheaper server but of wrk's turns, the limit at that point.
+  A series of 8 rounds within 5 % of 0.9.0 at each draw is out of reach of
+  any server: the blocking, measured, reported to the author.
