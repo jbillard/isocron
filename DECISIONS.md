@@ -19325,8 +19325,9 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   at their place, each measured again (3 passes, the last of 21 runs),
   then over 40 places of code and blocks (`sweep2e.py`, b035583 against
   the programs built by the compiler of the commit): `http headerOf` +3.3
-  % at each pass, over the places +0.10, +0.11 and -0.11 % in 3 sweeps
-  (+0.03 % over 120 places, the standard error of a sweep 0.32); `http
+  % at each pass, over the places +0.10, +0.11, -0.11, -0.06, -0.04 and
+  -0.06 % in 6 sweeps: over 240 places 18.324 against 18.326 ns, -0.01 %
+  (by place +0.01 %, standard error 0.13, 109 of 240 slower); `http
   textResponse` +7.7 to +8.1 %, -0.06 % (0.04, 12 of 40 slower);
   `strings trim` -0.13 % (0.07, 8); `sys join` -0.75 % (0.53, 18); `sys
   ioError.message` +0.02 % (0.09, 22); `time format` -1.12 % (0.26, 12);
