@@ -19331,7 +19331,10 @@ at fixed frequency: 4 threads 1.666 s -> 1.601 s, one thread 3.700 s ->
   `strings trim` -0.13 % (0.07, 8); `sys join` -0.75 % (0.53, 18); `sys
   ioError.message` +0.02 % (0.09, 22); `time format` -1.12 % (0.26, 12);
   `strings padStart` +3.3 % in one pass of 3 (its binary the same as with
-  D755), -0.10 % (0.52, 20): none slower beyond its standard error; `http
+  D755), -0.10 % (0.52, 20): none slower beyond its standard error. The
+  sweep of b035583 against itself (the same binaries, alternated):
+  `headerOf` +0.02 and +0.04 %, `ioError.message` -0.05 and +0.16 %, so
+  D758's +0.03 and +0.02 % are the noise of the sweep; `http
   request.post` +21 % in one pass (its ranges the same, 42.9 to 58.8 us
   against 43.1 to 58.3), within 3 % in the 2 others; `sha256 hex.32` and
   `sorts sort.i64` +3.7 and +3.1 % in one pass (their binaries the same
